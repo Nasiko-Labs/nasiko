@@ -101,10 +101,15 @@ const SESSION_LIST_SELECT: &str = r#"
     LEFT JOIN LATERAL (
         SELECT COUNT(*) AS message_count,
                COUNT(DISTINCT m.trace_id) AS trace_count,
-               -- NULL rather than 0 when nothing was platform-paid, so the UI
-               -- shows "—" (not billed) instead of a misleading zero.
-               NULLIF(SUM(COALESCE(m.input_tokens, 0) + COALESCE(m.output_tokens, 0)), 0)
-                   AS total_tokens,
+               -- Aggregate only rows that actually carry usage, so NULL means
+               -- "nothing recorded" (BYO-key agent, or a message predating
+               -- migration 041) and a genuine 0 stays 0. `NULLIF(SUM(...), 0)`
+               -- would conflate those two, since SUM over all-NULL columns
+               -- coalesces to 0.
+               SUM(COALESCE(m.input_tokens, 0) + COALESCE(m.output_tokens, 0))
+                   FILTER (
+                       WHERE m.input_tokens IS NOT NULL OR m.output_tokens IS NOT NULL
+                   ) AS total_tokens,
                -- percentile_cont ignores NULL inputs, so messages written
                -- before migration 041 are skipped rather than counted as 0ms.
                percentile_cont(0.5) WITHIN GROUP (ORDER BY m.duration_ms)

@@ -178,7 +178,7 @@ class SessionsPage extends HTMLElement {
           <tr>
             <th>Sessions</th>
             <th>Traces count</th>
-            <th title="Platform-paid tokens. Agents using their own API key are not metered here — see the session's traces.">Tokens (billed)</th>
+            <th title="Platform-paid tokens. “—” means no usage was recorded for this session — an agent using its own API key, or messages from before usage tracking. Open the session's traces for the full picture.">Tokens (billed)</th>
             <th>Latency P50</th>
             <th>Date</th>
             <th class="col-actions">Actions</th>
@@ -218,12 +218,13 @@ class SessionsPage extends HTMLElement {
     const sessionId = s.session_id;
     const href = `/chat.html?session_id=${encodeURIComponent(sessionId)}&agent_id=${encodeURIComponent(s.agent_id || '')}&agent_name=${encodeURIComponent(agentName)}`;
     const msgCount = s.message_count ? `<span class="session-msg-count">${s.message_count} msgs</span>` : '';
-    // `total_tokens` is null when nothing in the session was platform-paid
-    // (a BYO-key agent), which reads as "—" — the same as no data. The header
-    // says "Tokens (billed)" so the blank isn't mistaken for zero usage.
+    // `total_tokens` is null when no usage was recorded at all (a BYO-key agent,
+    // or messages predating usage tracking) and reads as "—"; a recorded 0 is a
+    // real value and must render as "0", hence the null check rather than a
+    // truthiness test. Same for p50 — a sub-millisecond turn is not "no data".
     const traces = s.trace_count ?? '—';
-    const tokens = s.total_tokens ? this.#fmtCount(s.total_tokens) : '—';
-    const p50 = s.latency_p50_ms ? this.#fmtMs(s.latency_p50_ms) : '—';
+    const tokens = s.total_tokens != null ? this.#fmtCount(s.total_tokens) : '—';
+    const p50 = s.latency_p50_ms != null ? this.#fmtMs(s.latency_p50_ms) : '—';
 
     return `<tr data-href="${href}" tabindex="0">
       <td class="col-session">
