@@ -26,6 +26,14 @@ export async function apiFetch(path, opts = {}) {
   // Cross-origin CP calls ride the CP's host-only session cookie.
   const withCreds = base ? { credentials: "include", ...opts } : opts;
   const res = await fetch(`${base}/api${path}`, withCreds);
+
+  // Any CP response that ISN'T 401 means the workspace session was accepted —
+  // clear the enter-attempt counter so a later, transient 401 gets a fresh set
+  // of retries rather than inheriting stale failures from earlier in the session.
+  if (base && res.status !== 401) {
+    try { sessionStorage.removeItem('nasiko:enterTries'); } catch { /* ignore */ }
+  }
+
   if (res.status === 401 && !window.location.pathname.startsWith('/login')) {
     // A 401 from the workspace control plane means its session cookie is missing
     // or expired. Bootstrap it via redirect-and-return (docs/MULTITENANT.md §4.4):
@@ -35,30 +43,40 @@ export async function apiFetch(path, opts = {}) {
     //
     // Same-origin (single-tenant, apiBase empty) has no separate CP to bootstrap,
     // so it just re-auths at /login.html as before.
-    let restart = '/login.html';
-    if (base) {
-      // Remember the deep link: OIDC returns straight to it via /api/enter's
-      // redirect param; GitHub returns to `/`, where the injected restore
-      // snippet reads this and replaces to the deep link.
-      try {
-        sessionStorage.setItem(
-          'nasiko:returnTo',
-          JSON.stringify({ p: location.pathname + location.search, t: Date.now() }),
-        );
-      } catch { /* storage disabled — still redirect */ }
-      // Loop guard: if an entry attempt just happened and we're STILL 401 (e.g.
-      // admission rejected the account), fall back to a full BFF re-auth instead
-      // of bouncing through /api/enter forever.
-      let lastEnter = 0;
-      try { lastEnter = +(sessionStorage.getItem('nasiko:enterAt') || 0); } catch { /* ignore */ }
-      if (Date.now() - lastEnter < 15000) {
-        try { sessionStorage.removeItem('nasiko:enterAt'); } catch { /* ignore */ }
-      } else {
-        try { sessionStorage.setItem('nasiko:enterAt', String(Date.now())); } catch { /* ignore */ }
-        restart = '/api/enter?return_to=' + encodeURIComponent(location.pathname + location.search);
-      }
+    if (!base) {
+      window.location.href = '/login.html';
+      return new Promise(() => {}); // page is navigating away; never settle
     }
-    window.location.href = restart;
+
+    // Remember the deep link: OIDC returns straight to it via /api/enter's
+    // redirect param; GitHub returns to `/`, where the injected restore
+    // snippet reads this and replaces to the deep link.
+    try {
+      sessionStorage.setItem(
+        'nasiko:returnTo',
+        JSON.stringify({ p: location.pathname + location.search, t: Date.now() }),
+      );
+    } catch { /* storage disabled — still redirect */ }
+
+    // Loop guard — ATTEMPT-based, not time-based. Count CONSECUTIVE /api/enter
+    // round-trips that come back STILL 401; after MAX_ENTER_TRIES, dead-end on an
+    // explicit error instead of bouncing forever. Counting attempts (vs the old
+    // 15s window) is robust regardless of latency: a slow-but-succeeding enter
+    // clears the counter on its first non-401 response above, while a genuinely
+    // broken one (unregistered relay URI, admission reject, dead IdP session)
+    // stops after N tries even if each round-trip is slower than any time window.
+    const MAX_ENTER_TRIES = 2;
+    let tries = 0;
+    try { tries = +(sessionStorage.getItem('nasiko:enterTries') || 0); } catch { /* ignore */ }
+    if (tries >= MAX_ENTER_TRIES) {
+      try { sessionStorage.removeItem('nasiko:enterTries'); } catch { /* ignore */ }
+      // Couldn't establish a workspace session after repeated tries — a
+      // diagnosable dead-end beats an invisible spin. login.html shows #error.
+      window.location.href = '/login.html#error=workspace_session_failed';
+      return new Promise(() => {}); // page is navigating away; never settle
+    }
+    try { sessionStorage.setItem('nasiko:enterTries', String(tries + 1)); } catch { /* ignore */ }
+    window.location.href = '/api/enter?return_to=' + encodeURIComponent(location.pathname + location.search);
     return new Promise(() => {}); // page is navigating away; never settle
   }
   return res;
