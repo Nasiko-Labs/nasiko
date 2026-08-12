@@ -105,6 +105,7 @@ class AddAgentPage extends HTMLElement {
       window.location.href = '/add-agent-github.html';
     });
 
+    this.#checkGithubStatus();
     this.#wireUploadModal();
 
     this.querySelector('#btn-oci')?.addEventListener('click', async () => {
@@ -184,6 +185,25 @@ class AddAgentPage extends HTMLElement {
         submitEl.disabled = false;
       }
     });
+  }
+
+  async #checkGithubStatus() {
+    try {
+      const res = await apiFetch('/auth/github/token');
+      const body = await res.json();
+      if (body.status === 'connected') {
+        const btn = this.querySelector('#btn-github');
+        if (btn) {
+          btn.textContent = 'Import from GitHub';
+          btn.classList.add('connected');
+        }
+        const req = this.querySelector('.method-card .method-card-req');
+        if (req && req.closest('.method-card')?.querySelector('#btn-github')) {
+          req.textContent = `Connected as ${body.username || 'GitHub user'}`;
+          req.classList.add('connected');
+        }
+      }
+    } catch { /* leave default text */ }
   }
 
   #showUploadError(message) {

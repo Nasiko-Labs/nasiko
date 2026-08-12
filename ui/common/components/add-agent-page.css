@@ -164,6 +164,10 @@
     cursor: not-allowed;
   }
 
+  .method-card-req.connected {
+    color: var(--color-success, #22c55e);
+  }
+
   /* ── Upload modal form ─────────────────────────────────────────────────── */
   .upload-form {
     display: flex;
