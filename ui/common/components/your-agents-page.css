@@ -189,6 +189,7 @@
 
   /* ── Card — strokeless sand well ────────────────────────────────────────── */
   .agent-card {
+    position: relative;
     border: 1px solid transparent;
     border-radius: var(--r-8);
     padding: var(--s-12) var(--space-md);
@@ -219,7 +220,8 @@
   }
   .status-dot.is-running { background: var(--color-success); }
   .status-dot.is-error { background: var(--color-error); }
-  .status-dot.is-pending { background: var(--color-info); }
+  .status-dot.is-pending { background: var(--color-info, #3b82f6); animation: pulse-dot 1.5s ease-in-out infinite; }
+  @keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
   .agent-card-name {
     font-size: var(--font-size-base);
     font-weight: 600;
@@ -234,6 +236,18 @@
     font-size: var(--font-size-xs);
     color: var(--color-text-muted);
     flex-shrink: 0;
+  }
+  .agent-card-source {
+    position: absolute;
+    top: var(--space-sm);
+    right: var(--space-sm);
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: var(--color-text-muted);
+    background: transparent;
+    padding: 0;
+    line-height: 1;
   }
   .agent-card-tags {
     display: flex;
@@ -276,6 +290,53 @@
     font-weight: 500;
     text-decoration: underline;
   }
+
+  /* ── Setting-up state ──────────────────────────────────────────────────── */
+  .agent-card--setting-up {
+    border-color: var(--color-info, #3b82f6) !important;
+    border-style: solid;
+  }
+  .agent-card-setup {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+  }
+  .setup-progress {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .setup-spinner {
+    width: 14px;
+    height: 14px;
+    border: 2px solid var(--color-border);
+    border-top-color: var(--color-info, #3b82f6);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    flex-shrink: 0;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .setup-label {
+    font-size: var(--font-size-sm);
+    font-weight: 500;
+    color: var(--color-info, #3b82f6);
+  }
+  .setup-source {
+    display: inline-block;
+    font-size: var(--font-size-xs);
+    font-weight: 500;
+    color: var(--color-text-muted);
+    background: var(--bg-input);
+    padding: 2px 8px;
+    border-radius: var(--r-4);
+    width: fit-content;
+  }
+  .setup-hint {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+    margin: 0;
+  }
+
   /* Action row — hairline-separated footer; margin-top:auto keeps it aligned
      across cards of differing content heights */
   .agent-card-actions {

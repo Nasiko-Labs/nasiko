@@ -592,6 +592,14 @@ pub(crate) async fn upload_and_deploy(
     )
     .await;
 
+    // Tag this upload so the UI can show the source type.
+    let _ = sqlx::query(
+        "UPDATE upload_status SET metadata = jsonb_set(metadata, '{upload_type}', '\"zip\"') WHERE upload_id = $1",
+    )
+    .bind(&upload_id)
+    .execute(&state.db)
+    .await;
+
     tracing::info!(
         %build_id,
         %agent_id,
@@ -1846,11 +1854,12 @@ struct UploadAgentRow {
     icon_url: Option<String>,
     version: Option<String>,
     agent_status: Option<String>,
+    metadata: sqlx::types::Json<serde_json::Value>,
 }
 
 #[derive(Serialize, ToSchema)]
 pub(crate) struct UploadInfoResponse {
-    upload_type: &'static str,
+    upload_type: String,
     upload_status: String,
     status_message: Option<String>,
     error_detail: Option<String>,
@@ -1928,7 +1937,8 @@ pub(crate) async fn list_upload_agents(
                COALESCE(a.tags, '{}') AS tags,
                a.icon_url,
                a.version,
-               a.status AS agent_status
+               a.status AS agent_status,
+               us.metadata
            FROM upload_status us
            JOIN agents a ON a.id = us.agent_id AND a.deleted_at IS NULL
            WHERE us.owner_id = $1
@@ -1955,7 +1965,10 @@ pub(crate) async fn list_upload_agents(
                         agent_name: r.agent_name,
                         icon_url: r.icon_url,
                         upload_info: UploadInfoResponse {
-                            upload_type: "zip",
+                            upload_type: r.metadata.get("upload_type")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("zip")
+                                .to_string(),
                             upload_status: display_status.to_string(),
                             status_message,
                             error_detail: r.error_message,

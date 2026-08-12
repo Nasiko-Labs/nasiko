@@ -822,6 +822,14 @@ async fn github_clone(
     )
     .await;
 
+    // Tag this upload as a GitHub clone so the UI can show the source type.
+    let _ = sqlx::query(
+        "UPDATE upload_status SET metadata = jsonb_set(metadata, '{upload_type}', '\"github\"') WHERE upload_id = $1",
+    )
+    .bind(&upload_id)
+    .execute(&state.db)
+    .await;
+
     tracing::info!(%build_id, %agent_id, agent_name = %agent_name, "github clone-and-deploy queued");
 
     (

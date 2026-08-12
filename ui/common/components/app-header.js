@@ -15,6 +15,7 @@
  */
 import { authService } from "../services/auth-service.js";
 import { icons } from "../utils/icons.js";
+import { confirmDialog } from "../utils/confirm-dialog.js";
 import "./app-user-menu.js";
 import "./app-nav-search.js";
 
@@ -577,8 +578,14 @@ export class AppHeader extends HTMLElement {
     }
   }
 
-  #removeUser(username) {
-    if (confirm(`Remove account for ${username}?`)) {
+  async #removeUser(username) {
+    const confirmed = await confirmDialog({
+      title: 'Remove account',
+      message: `Remove the saved session for <strong>${username}</strong>?`,
+      confirmLabel: 'Remove',
+      danger: true,
+    });
+    if (confirmed) {
       authService.removeUserSession(username);
       const userMenu = this.querySelector("app-user-menu");
       if (userMenu) userMenu.users = authService.getUsers();
@@ -591,13 +598,16 @@ export class AppHeader extends HTMLElement {
       encodeURIComponent(window.location.pathname);
   }
 
-  #logout() {
+  async #logout() {
     const currentUser = authService.getCurrentUser();
-    if (currentUser && !confirm(`Sign out from ${currentUser}?`)) return;
-    // authService.logout() clears both the management and workspace-CP sessions
-    // and navigates to /login.html once they're cleared. The old code navigated
-    // to /u/{user}/ first, which cancelled the logout and re-authenticated the
-    // user off the still-valid cookie.
+    if (currentUser) {
+      const confirmed = await confirmDialog({
+        title: 'Sign out',
+        message: 'Are you sure you want to sign out?',
+        confirmLabel: 'Sign out',
+      });
+      if (!confirmed) return;
+    }
     authService.logout();
   }
 }
