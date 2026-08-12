@@ -1,10 +1,17 @@
 //! Integration tests for DELETE /api/agents/{id}.
 //!
+//! The route **soft**-deletes: it stamps `agents.deleted_at` and leaves the row
+//! in place, so history (metering, proxy logs, chat sessions) survives while the
+//! agent disappears from every read path. Foreign keys therefore never fire —
+//! the assertions below deliberately check that related rows are *retained*,
+//! which is the opposite of what a hard delete would give.
+//!
 //! Verifies:
 //!   - Auth / ownership guards (401, 403, 404)
 //!   - Clean 200 + JSON deletion report on success; 404 on repeat delete
-//!   - FK CASCADE: agent_deployments, agent_builds, agent_versions, proxy_logs
-//!   - FK SET NULL: chat_sessions.agent_id becomes NULL
+//!   - `agents.deleted_at` is stamped and the row is retained
+//!   - Related rows survive: agent_builds, agent_versions, agent_deployments,
+//!     proxy_logs, chat_sessions.agent_id
 //!
 //! Requires infra (Postgres :5432, Redis, S3):
 //!   cargo test -p nasiko-server --test agent_delete -- --test-threads=1
@@ -149,38 +156,56 @@ async fn delete_agent_returns_200_with_report() {
     assert_eq!(body["agent_id"].as_str().unwrap(), agent_id);
     assert!(body["runtime_errors"].is_array());
 
-    // Second delete → 404.
+    // Soft delete: the row stays, stamped with `deleted_at`.
+    let deleted_at: Option<chrono::DateTime<chrono::Utc>> =
+        sqlx::query_scalar("SELECT deleted_at FROM agents WHERE id = $1")
+            .bind(Uuid::parse_str(agent_id).unwrap())
+            .fetch_one(&server.db)
+            .await
+            .expect("soft delete must retain the agents row");
+    assert!(deleted_at.is_some(), "deleted_at should be stamped");
+
+    // Second delete → 404, because both the existence check and the UPDATE
+    // filter on `deleted_at IS NULL`. Without that filter this returned 200
+    // forever and re-ran container teardown on every call.
     let res = delete_as_superuser(&server, uid, agent_id).await;
     assert_eq!(res.status(), 404);
 
     server.cleanup().await;
 }
 
-// ─── CASCADE tests ───────────────────────────────────────────────────────────
+// ─── history-retention tests ─────────────────────────────────────────────────
+//
+// A soft delete leaves `agents` intact, so no FK action (CASCADE or SET NULL)
+// ever fires. These assert that dependent rows are kept — deleting an agent
+// must not destroy its build history, metering or conversations.
 
 #[tokio::test]
 #[serial]
-async fn delete_cascades_builds_and_versions() {
+async fn delete_retains_builds_and_versions() {
     let server = common::TestServer::start().await;
     let admin = init_admin(&server).await;
     let uid = admin["user_id"].as_str().unwrap();
     let uid_uuid: Uuid = uid.parse().unwrap();
 
-    let agent = create_agent(&server, uid, "cascade-build-agent").await;
+    let agent = create_agent(&server, uid, "retain-build-agent").await;
     let agent_id: Uuid = agent["id"].as_str().unwrap().parse().unwrap();
 
     let build_id: Uuid = sqlx::query_scalar(
         "INSERT INTO agent_builds (agent_id, version_tag, image_reference) \
-         VALUES ($1, '1.0.0', 'cascade-build-agent:1.0.0') RETURNING id",
+         VALUES ($1, '1.0.0', 'retain-build-agent:1.0.0') RETURNING id",
     )
     .bind(agent_id)
     .fetch_one(&server.db)
     .await
     .unwrap();
 
+    // `POST /api/agents` already registers a version row for the agent's own
+    // version (see `catalog::create`), so this second one must use a different
+    // version or it collides with `agent_versions_agent_id_version_key`.
     sqlx::query(
         "INSERT INTO agent_versions (agent_id, version, image_tag, is_active, can_rollback) \
-         VALUES ($1, '1.0.0', 'cascade-build-agent:1.0.0', true, false)",
+         VALUES ($1, '2.0.0', 'retain-build-agent:2.0.0', true, false)",
     )
     .bind(agent_id)
     .execute(&server.db)
@@ -207,7 +232,7 @@ async fn delete_cascades_builds_and_versions() {
             .fetch_one(&server.db)
             .await
             .unwrap();
-    assert_eq!(build_count, 0, "agent_builds should cascade-delete");
+    assert_eq!(build_count, 1, "agent_builds must survive a soft delete");
 
     let version_count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM agent_versions WHERE agent_id = $1")
@@ -215,7 +240,10 @@ async fn delete_cascades_builds_and_versions() {
             .fetch_one(&server.db)
             .await
             .unwrap();
-    assert_eq!(version_count, 0, "agent_versions should cascade-delete");
+    assert_eq!(
+        version_count, 2,
+        "agent_versions must survive: the auto-registered 1.0.0 plus 2.0.0"
+    );
 
     let deploy_count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM agent_deployments WHERE agent_id = $1")
@@ -223,14 +251,17 @@ async fn delete_cascades_builds_and_versions() {
             .fetch_one(&server.db)
             .await
             .unwrap();
-    assert_eq!(deploy_count, 0, "agent_deployments should cascade-delete");
+    assert_eq!(
+        deploy_count, 1,
+        "agent_deployments must survive a soft delete"
+    );
 
     server.cleanup().await;
 }
 
 #[tokio::test]
 #[serial]
-async fn delete_cascades_proxy_logs() {
+async fn delete_retains_proxy_logs() {
     let server = common::TestServer::start().await;
     let admin = init_admin(&server).await;
     let uid = admin["user_id"].as_str().unwrap();
@@ -266,14 +297,17 @@ async fn delete_cascades_proxy_logs() {
             .fetch_one(&server.db)
             .await
             .unwrap();
-    assert_eq!(log_count_after, 0, "proxy_logs should cascade-delete");
+    assert_eq!(
+        log_count_after, 1,
+        "proxy_logs must survive a soft delete — call history is audit data"
+    );
 
     server.cleanup().await;
 }
 
 #[tokio::test]
 #[serial]
-async fn delete_nullifies_chat_sessions() {
+async fn delete_retains_chat_session_agent_link() {
     let server = common::TestServer::start().await;
     let admin = init_admin(&server).await;
     let uid = admin["user_id"].as_str().unwrap();
@@ -303,9 +337,11 @@ async fn delete_nullifies_chat_sessions() {
             .fetch_one(&server.db)
             .await
             .unwrap();
-    assert!(
-        agent_id_in_session.is_none(),
-        "chat_sessions.agent_id should be NULL after agent delete"
+    assert_eq!(
+        agent_id_in_session,
+        Some(agent_id),
+        "chat_sessions.agent_id must keep pointing at the soft-deleted agent so \
+         the conversation still shows which agent answered"
     );
 
     server.cleanup().await;

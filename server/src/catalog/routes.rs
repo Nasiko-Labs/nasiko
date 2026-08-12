@@ -832,20 +832,28 @@ pub(crate) async fn delete(
 
     // Fetch agent name early — gives a clean 404 before touching the runtime,
     // and provides the primary container name needed for teardown.
-    let name: String = match sqlx::query_scalar("SELECT name FROM agents WHERE id = $1")
-        .bind(id)
-        .fetch_optional(&state.db)
-        .await
-    {
-        Ok(Some(n)) => n,
-        Ok(None) => {
-            return StatusCode::NOT_FOUND.into_response();
-        }
-        Err(e) => {
-            tracing::error!(%e, %id, "delete agent: fetch name");
-            return (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response();
-        }
-    };
+    //
+    // `deleted_at IS NULL` matters: this route soft-deletes, so without the
+    // filter an already-deleted agent still looks present here, the UPDATE
+    // below still reports a row, and a repeat delete returns 200 forever while
+    // re-running the whole container teardown. Every other read of `agents`
+    // filters the same way (see `acl::can_manage_agent`).
+    let name: String =
+        match sqlx::query_scalar("SELECT name FROM agents WHERE id = $1 AND deleted_at IS NULL")
+            .bind(id)
+            .fetch_optional(&state.db)
+            .await
+        {
+            Ok(Some(n)) => n,
+            Ok(None) => {
+                return StatusCode::NOT_FOUND.into_response();
+            }
+            Err(e) => {
+                tracing::error!(%e, %id, "delete agent: fetch name");
+                return (StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
+                    .into_response();
+            }
+        };
 
     // Every real deploy path keys the running container on the agent's UUID, never the
     // display name (see build_agent_spec's doc comment) — so the UUID-keyed id must always
@@ -895,10 +903,15 @@ pub(crate) async fn delete(
         }
     }
 
-    let result = sqlx::query("UPDATE agents SET deleted_at = NOW() WHERE id = $1")
-        .bind(id)
-        .execute(&state.db)
-        .await;
+    // `deleted_at IS NULL` again, so this is the single atomic point that decides
+    // whether this call is the one that deleted the agent. Without it the
+    // `rows_affected() == 0` arm below is unreachable (re-stamping `deleted_at`
+    // always affects a row), and two concurrent deletes would both report 200.
+    let result =
+        sqlx::query("UPDATE agents SET deleted_at = NOW() WHERE id = $1 AND deleted_at IS NULL")
+            .bind(id)
+            .execute(&state.db)
+            .await;
 
     match result {
         Ok(r) if r.rows_affected() > 0 => (

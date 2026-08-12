@@ -5,8 +5,8 @@
 //!   - Session lifecycle: open on first observation, last_seen bump, close on
 //!     disappearance; docker-restart (same key, new started_at) opens a second
 //!     session; not-ready instances never bill
-//!   - Sessions survive hard agent deletion; the API reports deleted agents
-//!     with `deleted: true`
+//!   - Sessions survive agent deletion (a soft delete — the row is retained and
+//!     stamped); the API reports deleted agents with `deleted: true`
 //!   - Windowed math: interval clipping, agent_id filter, epoch default, and
 //!     bucket=hour series additivity (Σ buckets == total_hours)
 //!   - FinOps dashboard carries container_hours / total_container_hours
@@ -248,7 +248,7 @@ async fn not_ready_instances_do_not_bill() {
 
 #[tokio::test]
 #[serial]
-async fn sessions_survive_hard_delete_and_api_flags_deleted() {
+async fn sessions_survive_delete_and_api_flags_deleted() {
     let server = common::TestServer::start().await;
     let admin = init_admin(&server).await;
     let uid = admin["user_id"].as_str().unwrap();
@@ -275,13 +275,14 @@ async fn sessions_survive_hard_delete_and_api_flags_deleted() {
     .unwrap();
     assert_eq!(res.status(), 200);
 
-    // The agent row is gone (hard delete) but the metering rows survive.
-    let agent_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agents WHERE id = $1")
-        .bind(agent_id)
-        .fetch_one(&server.db)
-        .await
-        .unwrap();
-    assert_eq!(agent_rows, 0);
+    // Soft delete: the row stays but is stamped, and the metering rows survive.
+    let live_rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM agents WHERE id = $1 AND deleted_at IS NULL")
+            .bind(agent_id)
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
+    assert_eq!(live_rows, 0, "the agent must no longer be live");
     assert_eq!(sessions_for(&server, agent_id).await.len(), 1);
 
     let body = get_agent_hours(&server, uid, "").await;
