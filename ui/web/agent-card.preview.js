@@ -53,6 +53,32 @@ const gotoAgent = async (page, id) => {
 
 export default {
   fetch: [
+    // Version history → GET /api/agents/{id}/versions, enveloped as {data:[…]}.
+    // Field names mirror `AgentVersion` (oss/server/src/catalog/models.rs).
+    [{ method: "GET", path: /^\/api\/agents\/[^/]+\/versions$/ }, {
+      data: [
+        {
+          id: "v-003", agent_id: "a-001", version: "0.1.2",
+          image_tag: "nasiko/devops-cluster:0.1.2", changelog: "Add readiness scoring for GPU nodes",
+          is_active: true, can_rollback: false, previous_version: "0.1.1",
+          status: "active", created_at: "2026-08-08T09:12:00Z",
+        },
+        {
+          id: "v-002", agent_id: "a-001", version: "0.1.1",
+          image_tag: "nasiko/devops-cluster:0.1.1", changelog: "Retry upstream LLM timeouts",
+          is_active: false, can_rollback: true, previous_version: "0.1.0",
+          status: "archived", created_at: "2026-07-29T16:40:00Z",
+        },
+        {
+          id: "v-001", agent_id: "a-001", version: "0.1.0",
+          image_tag: "nasiko/devops-cluster:0.1.0", changelog: null,
+          is_active: false, can_rollback: true, previous_version: null,
+          status: "archived", created_at: "2026-07-14T11:05:00Z",
+        },
+      ],
+      status_code: 200,
+      message: "version history retrieved successfully",
+    }],
     // Owner-scoped container usage → GET /api/observability/agent/{ref}/resources.
     // Registered as a fetch fixture, not a window one: navigation.js loads after
     // the fixtures and would clobber a window.fetchAgentResourceStats override.
@@ -266,6 +292,11 @@ export default {
       await gotoAgent(page, 'a-001');
       await page.click('[data-tab="access"]');
       await page.waitForSelector('.acp-table', { timeout: 5000 });
+    },
+    "versions": async (page) => {
+      await gotoAgent(page, 'a-001');
+      await page.click('[data-tab="versions"]');
+      await page.waitForSelector('#acp-versions-body .acp-table', { timeout: 5000 });
     },
     "owner-access-grant-modal": async (page) => {
       await gotoAgent(page, 'a-001');

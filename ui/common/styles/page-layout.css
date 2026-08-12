@@ -100,18 +100,25 @@ chat-page {
   flex-direction: column;
   height: calc(100dvh - var(--app-header-height));
   padding: 0 var(--space-md);
+  overflow: hidden;
 }
 
 /* Orchestrator: centered hero column with a deep top pad. The loaded page
    swaps this for a compact layout via `.has-response`, which stays in
    orchestrator-page.css — it is a runtime state, not a first-paint concern. */
 orchestrator-page {
+  /* Width of the page's centered content column. Declared here because the
+     desktop side padding is derived from it (see the module-nav gutter block
+     below) — if the two ever disagree the column stops being centered. */
+  --orch-column-w: 820px;
+
   display: flex;
   flex-direction: column;
   align-items: center;
-  min-height: calc(100dvh - 80px);
+  height: calc(100dvh - var(--app-header-height));
   padding: var(--space-md);
   padding-top: max(48px, 16dvh);
+  overflow: hidden;
 }
 
 /* Login: full-bleed light plane over the shell's ink body backdrop (this page
@@ -192,8 +199,31 @@ login-page {
     padding-left: calc(224px + var(--s-64));
   }
 
+  /*
+    Orchestrator is the one module-nav page whose content is a centered column
+    rather than left-aligned, so the plain left gutter above would center it in
+    the space *right* of the nav — a constant ~136px off the card's own center,
+    which reads as the whole page tilting right.
+
+    Padding both sides by the same amount keeps it centered on the card at any
+    width. The `max()` floor is what stops the two requirements from fighting:
+    below ~1400px the centered 820px column would reach into the nav's gutter,
+    so there the gutter wins and the column narrows instead of overlapping.
+  */
+  orchestrator-page {
+    padding-inline: max(
+      calc(224px + var(--s-64)),
+      calc((100% - var(--orch-column-w)) / 2)
+    );
+    height: calc(100dvh - var(--shell-topbar-height) - var(--s-12));
+    min-height: 0;
+    flex: none;
+  }
+
   /* Chat fills the floating card exactly (topbar + 16px card margins). */
   chat-page {
     height: calc(100dvh - var(--shell-topbar-height) - var(--s-12));
+    min-height: 0;
+    flex: none;
   }
 }

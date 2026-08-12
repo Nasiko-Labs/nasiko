@@ -16,6 +16,7 @@ document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 const TABS = [
   { key: 'overview', label: 'Overview' },
   { key: 'access', label: 'Access & security', managed: true },
+  { key: 'versions', label: 'Versions', managed: true },
   { key: 'configure', label: 'Configure', managed: true },
   { key: 'settings', label: 'Settings', managed: true },
   { key: 'logs', label: 'Logs' },
@@ -37,6 +38,10 @@ class AgentCardPage extends HTMLElement {
   #secretsLoaded = false;
   #accessLoaded = false;
   #configureLoaded = false;
+  #versionsLoaded = false;
+  #versions = [];
+  // Version targeted by the open rollback modal.
+  #rollbackTarget = null;
   #logsTail = 100;
   #logsFollowing = true;
   // Access & security state
@@ -117,6 +122,7 @@ class AgentCardPage extends HTMLElement {
         </nav>
         ${this.#overviewPanelHtml(a)}
         ${this.#canManage ? this.#accessPanelHtml() : ''}
+        ${this.#canManage ? this.#versionsPanelHtml() : ''}
         ${this.#canManage ? this.#configurePanelHtml(a) : ''}
         ${this.#canManage ? this.#settingsPanelHtml(a) : ''}
         ${this.#logsPanelHtml()}
@@ -131,6 +137,7 @@ class AgentCardPage extends HTMLElement {
       this.#wireSettings();
       this.#wireGrantModal();
       this.#wireTransferModal();
+      this.#wireVersionModals();
     }
     this.#loadStats();
     this.#loadResourceUsage();
@@ -309,6 +316,7 @@ class AgentCardPage extends HTMLElement {
         this.querySelector('#acp-secrets')?.refresh();
       }
       if (tab.dataset.tab === 'access' && !this.#accessLoaded) this.#loadAccess();
+      if (tab.dataset.tab === 'versions' && !this.#versionsLoaded) this.#loadVersions();
       if (tab.dataset.tab === 'configure' && !this.#configureLoaded) this.#loadConfigure();
     });
   }
@@ -322,6 +330,8 @@ class AgentCardPage extends HTMLElement {
     if (action === 'restart') this.#runContainerAction(btn, 'restart', 'Restarting...');
     else if (action === 'stop') this.#runContainerAction(btn, 'stop', 'Stopping...');
     else if (action === 'delete') this.#deleteAgent(btn);
+    else if (action === 'reupload') this.#openReuploadModal();
+    else if (action === 'rollback') this.#openRollbackModal(btn.dataset.version);
   }
 
   async #runContainerAction(btn, verb, busyLabel) {
@@ -366,6 +376,193 @@ class AgentCardPage extends HTMLElement {
         </div>`;
   }
 
+  /* ── Versions tab ──────────────────────────────────────────────────────── */
+
+  #versionsPanelHtml() {
+    return `
+        <div class="acp-panel" data-panel="versions">
+          <section class="acp-section">
+            <div class="acp-versions-head">
+              <div>
+                <h2 class="acp-section-title">Version history</h2>
+                <p class="acp-section-sub">Every build of this agent. Re-upload to ship a new
+                  version, or roll back to a previous image.</p>
+              </div>
+              <button type="button" class="acp-primary-btn" data-action="reupload">${icons.upload('', 14)} Re-upload</button>
+            </div>
+            <div id="acp-versions-body"><app-skeleton height="200px"></app-skeleton></div>
+          </section>
+        </div>`;
+  }
+
+  async #loadVersions() {
+    this.#versionsLoaded = true;
+    const el = this.querySelector('#acp-versions-body');
+    if (!el) return;
+    try {
+      const resp = await fetchApi(`/agents/${this.#agent.id}/versions`);
+      this.#versions = (resp?.data ?? resp) || [];
+    } catch (e) {
+      el.innerHTML = `<div class="acp-stats-empty"><app-empty-state
+        title="Version history unavailable"
+        description="${this.#escAttr(e.message)}"
+        icon="${this.#escAttr(icons.layers('', 32))}"></app-empty-state></div>`;
+      return;
+    }
+    this.#renderVersions();
+  }
+
+  #renderVersions() {
+    const el = this.querySelector('#acp-versions-body');
+    if (!el) return;
+
+    if (!this.#versions.length) {
+      el.innerHTML = `<div class="acp-stats-empty"><app-empty-state
+        title="No versions recorded"
+        description="Versions appear here once this agent has been built through upload, push or re-upload."
+        icon="${this.#escAttr(icons.layers('', 32))}"></app-empty-state></div>`;
+      return;
+    }
+
+    const statusBadge = (v) => {
+      if (v.is_active) return '<span class="badge badge--brand"><span class="badge__dot"></span>Active</span>';
+      if (v.status === 'archived') return '<span class="badge badge--muted">Archived</span>';
+      return `<span class="badge badge--muted">${this.#esc(v.status || '—')}</span>`;
+    };
+
+    el.innerHTML = `
+      <table class="acp-table">
+        <thead>
+          <tr>
+            <th>Version</th><th>Status</th><th>Image</th><th>Changelog</th><th>Built</th><th></th>
+          </tr>
+        </thead>
+        <tbody>
+          ${this.#versions.map((v) => `
+            <tr>
+              <td><code>${this.#esc(v.version)}</code></td>
+              <td>${statusBadge(v)}</td>
+              <td class="acp-td-muted"><code>${this.#esc(v.image_tag || '—')}</code></td>
+              <td class="acp-td-muted">${this.#esc(v.changelog || '—')}</td>
+              <td class="acp-td-muted">${v.created_at ? new Date(v.created_at).toLocaleString() : '—'}</td>
+              <td>
+                ${v.is_active || !v.can_rollback ? '' : `
+                  <button type="button" class="acp-action-btn" data-action="rollback"
+                    data-version="${this.#escAttr(v.version)}">Roll back</button>`}
+              </td>
+            </tr>`).join('')}
+        </tbody>
+      </table>`;
+  }
+
+  #wireVersionModals() {
+    const reupload = this.querySelector('#acp-reupload-modal');
+    this.querySelector('#acp-reupload-cancel').addEventListener('click', () => reupload.close());
+    this.querySelector('#acp-reupload-submit').addEventListener('click', () => this.#submitReupload());
+
+    const rollback = this.querySelector('#acp-rollback-modal');
+    this.querySelector('#acp-rollback-cancel').addEventListener('click', () => rollback.close());
+    this.querySelector('#acp-rollback-submit').addEventListener('click', () => this.#submitRollback());
+  }
+
+  #openReuploadModal() {
+    this.querySelector('#acp-reupload-file').value = '';
+    this.querySelector('#acp-reupload-version').value = 'patch';
+    this.querySelector('#acp-reupload-changelog').value = '';
+    this.querySelector('#acp-reupload-error').hidden = true;
+    this.querySelector('#acp-reupload-modal').open();
+  }
+
+  /// `PUT /api/agents/{id}/update` — multipart `source` (.zip) plus an optional
+  /// `version` (semver or one of auto|patch|minor|major) and `changelog`.
+  /// Queues a build; progress shows up under Builds.
+  async #submitReupload() {
+    const submit = this.querySelector('#acp-reupload-submit');
+    const error = this.querySelector('#acp-reupload-error');
+    const file = this.querySelector('#acp-reupload-file').files[0];
+    const version = this.querySelector('#acp-reupload-version').value.trim();
+    const changelog = this.querySelector('#acp-reupload-changelog').value.trim();
+
+    error.hidden = true;
+    if (!file) {
+      this.#showModalError(error, 'Choose a .zip archive to upload.');
+      return;
+    }
+    if (!version) {
+      this.#showModalError(error, 'A version or bump strategy is required.');
+      return;
+    }
+
+    const form = new FormData();
+    form.append('source', file, file.name);
+    form.append('version', version);
+    if (changelog) form.append('changelog', changelog);
+
+    submit.disabled = true;
+    try {
+      const res = await apiFetch(`/agents/${encodeURIComponent(this.#agent.id)}/update`, {
+        method: 'PUT',
+        body: form,
+      });
+      if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
+      const body = await res.json().catch(() => null);
+      this.querySelector('#acp-reupload-modal').close();
+      showToast(`Build queued for v${body?.new_version || version}`);
+      this.#refreshVersions();
+    } catch (err) {
+      this.#showModalError(error, err.message);
+    } finally {
+      submit.disabled = false;
+    }
+  }
+
+  #openRollbackModal(targetVersion) {
+    this.#rollbackTarget = targetVersion;
+    this.querySelector('#acp-rollback-summary').textContent =
+      `Redeploys the image built for ${targetVersion} and archives the current version. `
+      + 'The rollback runs as a build, so it appears in the version history too.';
+    this.querySelector('#acp-rollback-reason').value = '';
+    this.querySelector('#acp-rollback-error').hidden = true;
+    this.querySelector('#acp-rollback-modal').open();
+  }
+
+  async #submitRollback() {
+    const submit = this.querySelector('#acp-rollback-submit');
+    const error = this.querySelector('#acp-rollback-error');
+    const reason = this.querySelector('#acp-rollback-reason').value.trim();
+    error.hidden = true;
+
+    submit.disabled = true;
+    try {
+      const res = await apiFetch(`/agents/${encodeURIComponent(this.#agent.id)}/rollback`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target_version: this.#rollbackTarget, reason: reason || null }),
+      });
+      if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
+      const body = await res.json().catch(() => null);
+      this.querySelector('#acp-rollback-modal').close();
+      showToast(`Rollback to ${body?.rolled_back_to || this.#rollbackTarget} queued`);
+      this.#refreshVersions();
+    } catch (err) {
+      this.#showModalError(error, err.message);
+    } finally {
+      submit.disabled = false;
+    }
+  }
+
+  /// Builds are asynchronous, so the row that just changed won't be `active`
+  /// yet — re-reading is still the honest thing to show.
+  #refreshVersions() {
+    this.#versionsLoaded = false;
+    this.#loadVersions();
+  }
+
+  #showModalError(el, message) {
+    el.textContent = message;
+    el.hidden = false;
+  }
+
   // Feature-detects what the running edition serves: EE answers
   // /teams and /departments with arrays; OSS has no such routes (the request
   // falls through to the agent proxy and fails), so those grantee tabs hide.
@@ -398,10 +595,19 @@ class AgentCardPage extends HTMLElement {
     this.#renderAccess();
   }
 
+  // `null` means "this edition doesn't serve the route" — the caller uses that
+  // to decide whether Team/Department exist at all, so an enveloped array must
+  // NOT be mistaken for a missing route. EE answers /users with a bare array
+  // but /teams and /departments as {data:{accessible_teams|accessible_departments}},
+  // and reading only the bare form is what silently hid both grantee types.
   async #fetchArray(path) {
     try {
       const v = await fetchApi(path);
-      return Array.isArray(v) ? v : null;
+      if (Array.isArray(v)) return v;
+      const inner = v?.data;
+      if (Array.isArray(inner)) return inner;
+      const nested = Object.values(inner || {}).find(Array.isArray);
+      return nested ?? null;
     } catch {
       return null;
     }
@@ -723,6 +929,47 @@ class AgentCardPage extends HTMLElement {
         <div data-slot="footer">
           <button type="button" class="acp-action-btn" id="acp-transfer-cancel">Cancel</button>
           <button type="button" class="acp-primary-btn" id="acp-transfer-submit" disabled>Transfer ownership</button>
+        </div>
+      </app-modal>
+      <app-modal id="acp-reupload-modal" heading="Re-upload agent">
+        <div class="acp-grant-form">
+          <p class="acp-section-sub">Uploads a new source archive and queues a build. The running
+            container is replaced once the build succeeds.</p>
+          <label class="acp-field">
+            <span class="acp-field-label">Source archive (.zip)</span>
+            <input type="file" id="acp-reupload-file" accept=".zip,application/zip" required />
+          </label>
+          <label class="acp-field">
+            <span class="acp-field-label">Version</span>
+            <input type="text" id="acp-reupload-version" value="patch" autocomplete="off" />
+            <span class="acp-field-hint">A semver string (e.g. 1.2.3), or one of
+              <code>auto</code>, <code>patch</code>, <code>minor</code>, <code>major</code>.</span>
+          </label>
+          <label class="acp-field">
+            <span class="acp-field-label">Changelog (optional)</span>
+            <input type="text" id="acp-reupload-changelog" autocomplete="off"
+              placeholder="What changed in this version?" />
+          </label>
+          <p class="acp-form-error" id="acp-reupload-error" hidden></p>
+        </div>
+        <div data-slot="footer">
+          <button type="button" class="acp-action-btn" id="acp-reupload-cancel">Cancel</button>
+          <button type="button" class="acp-primary-btn" id="acp-reupload-submit">Queue build</button>
+        </div>
+      </app-modal>
+      <app-modal id="acp-rollback-modal" heading="Roll back version">
+        <div class="acp-grant-form">
+          <p class="acp-section-sub" id="acp-rollback-summary"></p>
+          <label class="acp-field">
+            <span class="acp-field-label">Reason (optional)</span>
+            <input type="text" id="acp-rollback-reason" autocomplete="off"
+              placeholder="Recorded against the rollback build" />
+          </label>
+          <p class="acp-form-error" id="acp-rollback-error" hidden></p>
+        </div>
+        <div data-slot="footer">
+          <button type="button" class="acp-action-btn" id="acp-rollback-cancel">Cancel</button>
+          <button type="button" class="acp-primary-btn" id="acp-rollback-submit">Roll back</button>
         </div>
       </app-modal>`;
   }
@@ -1169,47 +1416,66 @@ class AgentCardPage extends HTMLElement {
   /* ── Overview stats ────────────────────────────────────────────────────── */
 
   async #loadStats() {
+    const el = this.querySelector('#acp-stats');
+    if (!el) return;
+
+    // Renders in place of the skeletons. A section that can't answer must say
+    // so — silently returning leaves four skeletons pulsing forever, which is
+    // indistinguishable from a hung page.
+    const unavailable = (description) => {
+      el.innerHTML = `<div class="acp-stats-empty"><app-empty-state
+        title="Metrics unavailable"
+        description="${this.#escAttr(description)}"
+        icon="${this.#escAttr(icons.trace('', 32))}"></app-empty-state></div>`;
+    };
+
+    let stats;
     try {
       // Same endpoint/shape as `nasiko observe stats`: {data:{project:{...}}}.
       const resp = await fetchApi(`/observability/agent/${this.#agentId}/stats`);
-      const s = resp?.data?.project;
-      const el = this.querySelector('#acp-stats');
-      if (!el || !s) return;
-
-      const hasData = (s.trace_count != null && s.trace_count > 0) ||
-                      (s.cost_summary?.total?.cost > 0);
-
-      if (!hasData) {
-        el.innerHTML = `
-          <div class="acp-stats-empty">
-            <app-empty-state
-              title="No usage data yet"
-              description="Stats will appear after the first request to this agent."
-              icon="${this.#escAttr(icons.trace('', 32))}">
-            </app-empty-state>
-          </div>`;
-        return;
-      }
-
-      const fmtInt = (n) => n == null ? '—' : Number(n).toLocaleString();
-      const fmtCost = (n) => {
-        if (n == null) return '—';
-        const v = +n;
-        if (v === 0) return '$0';
-        if (v < 0.01) return `$${v.toFixed(4)}`;
-        return `$${v.toFixed(2)}`;
-      };
-      const fmtMs = (n) => n == null ? '—' : `${Math.round(n)} ms`;
-
-      el.innerHTML = `
-        <div class="acp-stat"><div class="acp-stat-label">Traces</div><div class="acp-stat-value">${fmtInt(s.trace_count)}</div></div>
-        <div class="acp-stat"><div class="acp-stat-label">Total cost</div><div class="acp-stat-value">${fmtCost(s.cost_summary?.total?.cost)}</div></div>
-        <div class="acp-stat"><div class="acp-stat-label">P50 latency</div><div class="acp-stat-value">${fmtMs(s.latency_ms_p50)}</div></div>
-        <div class="acp-stat"><div class="acp-stat-label">P99 latency</div><div class="acp-stat-value">${fmtMs(s.latency_ms_p99)}</div></div>
-      `;
+      stats = resp?.data?.project;
     } catch {
-      /* stats are optional — fail silently */
+      // 503 when TEMPO_URL/LOKI_URL aren't configured, or any transport error.
+      unavailable("The observability backend did not answer, so recent metrics can't be shown.");
+      return;
     }
+
+    if (!stats) {
+      unavailable('The observability backend returned no data for this agent.');
+      return;
+    }
+
+    const hasData = (stats.trace_count != null && stats.trace_count > 0) ||
+                    (stats.cost_summary?.total?.cost > 0);
+
+    if (!hasData) {
+      el.innerHTML = `
+        <div class="acp-stats-empty">
+          <app-empty-state
+            title="No usage data yet"
+            description="Stats will appear after the first request to this agent."
+            icon="${this.#escAttr(icons.trace('', 32))}">
+          </app-empty-state>
+        </div>`;
+      return;
+    }
+
+    const fmtInt = (n) => n == null ? '—' : Number(n).toLocaleString();
+    const fmtCost = (n) => {
+      if (n == null) return '—';
+      const v = +n;
+      if (v === 0) return '$0';
+      if (v < 0.01) return `$${v.toFixed(4)}`;
+      return `$${v.toFixed(2)}`;
+    };
+    const fmtMs = (n) => n == null ? '—' : `${Math.round(n)} ms`;
+
+    el.innerHTML = `
+      <div class="acp-stat"><div class="acp-stat-label">Traces</div><div class="acp-stat-value">${fmtInt(stats.trace_count)}</div></div>
+      <div class="acp-stat"><div class="acp-stat-label">Total cost</div><div class="acp-stat-value">${fmtCost(stats.cost_summary?.total?.cost)}</div></div>
+      <div class="acp-stat"><div class="acp-stat-label">P50 latency</div><div class="acp-stat-value">${fmtMs(stats.latency_ms_p50)}</div></div>
+      <div class="acp-stat"><div class="acp-stat-label">P99 latency</div><div class="acp-stat-value">${fmtMs(stats.latency_ms_p99)}</div></div>
+    `;
   }
 
   /**
