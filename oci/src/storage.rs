@@ -78,7 +78,19 @@ impl S3Storage {
             .key(&key)
             .send()
             .await
-            .map_err(|e| OciError::Storage(e.to_string()))?;
+            // A missing object is "not found", not a storage failure. Collapsing
+            // both into `Storage` made a pull of an absent blob a 500, where the
+            // Distribution Spec requires 404 — and disagreed with `blob_size`,
+            // which already reports absence as `NotFound`, so HEAD and GET on the
+            // same missing digest answered differently.
+            .map_err(|e| {
+                let msg = e.to_string();
+                if e.into_service_error().is_no_such_key() {
+                    OciError::NotFound(format!("blob {digest} not found"))
+                } else {
+                    OciError::Storage(msg)
+                }
+            })?;
         let data = resp
             .body
             .collect()
