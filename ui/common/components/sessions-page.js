@@ -1,6 +1,7 @@
 import styles from './sessions-page.css' with { type: 'css' };
 import { icons } from '../utils/icons.js';
 import './app-button.js';
+import './app-module-nav.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 /// Rows requested per page. `/api/chat/sessions` is keyset-paginated — it
@@ -26,6 +27,7 @@ class SessionsPage extends HTMLElement {
 
   #render() {
     this.innerHTML = `
+      <app-module-nav module="observability"></app-module-nav>
       <div class="sessions-header">
         <div class="sessions-header-info">
           <h1 class="title-page">Execution history</h1>
