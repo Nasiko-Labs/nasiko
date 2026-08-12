@@ -201,11 +201,23 @@ class AgentCardPage extends HTMLElement {
 
   #overviewPanelHtml(a) {
     const skills = a.skills || [];
-    const skillsHtml = skills.map(s => `
-      <div class="acp-skill-card">
+    const skillsHtml = skills.map(s => {
+      const href = s.sample_query
+        ? `/chat.html?agent_id=${encodeURIComponent(a.id)}&query=${encodeURIComponent(s.sample_query)}`
+        : null;
+      const wrapper = href ? 'a' : 'div';
+      const hrefAttr = href ? ` href="${this.#escAttr(href)}"` : '';
+      return `
+      <${wrapper} class="acp-skill-card"${hrefAttr}>
         <div class="acp-skill-name">${this.#esc(s.name)}</div>
         <div class="acp-skill-desc">${this.#esc(s.description || '')}</div>
-      </div>`).join('');
+        ${s.sample_query ? `
+        <div class="acp-skill-sample">
+          <span class="acp-skill-sample-icon">${icons.send('', 14)}</span>
+          <span class="acp-skill-sample-text">${this.#esc(s.sample_query)}</span>
+        </div>` : ''}
+      </${wrapper}>`;
+    }).join('');
 
     const caps = a.capabilities || {};
 
@@ -232,7 +244,7 @@ class AgentCardPage extends HTMLElement {
           ${skills.length ? `
           <section class="acp-section">
             <h2 class="acp-section-title">Skills</h2>
-            <p class="acp-section-sub">What this agent can do.</p>
+            <p class="acp-section-sub">What this agent can do. Click a skill to start a session with a sample query.</p>
             <div class="acp-skills-grid">${skillsHtml}</div>
           </section>` : ''}
 
