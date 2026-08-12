@@ -25,7 +25,7 @@ class OrchestratorPage extends HTMLElement {
       <app-module-nav module="orchestrator"></app-module-nav>
       <div class="hero-icon" aria-hidden="true">${icons.route('', 24)}</div>
       <h1 class="title">Orchestrate a task</h1>
-      <p class="subtitle">Describe a task and Nasiko will orchestrate the right agents to execute it</p>
+      <p class="subtitle">Describe a task and Nasiko will orchestrate the right agents to execute it.</p>
       <div class="recent-agents" id="recent-agents">
         <div class="recent-agents-grid" id="recent-agents-grid">
           <div class="agent-card-skel"></div>

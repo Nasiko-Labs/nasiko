@@ -29,9 +29,6 @@ pub struct A2aTool {
     /// (internal tool activity + reply chunks) is relayed as
     /// `SubStatus`/`SubContent` orchestrator events.
     progress: Option<tokio::sync::mpsc::Sender<OrchestratorEvent>>,
-    /// File parts from the user's upload, forwarded to the agent alongside
-    /// the LLM-generated text message. Pre-serialized as JSON values.
-    file_parts: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -55,7 +52,6 @@ impl A2aTool {
             client,
             delegation: None,
             progress: None,
-            file_parts: vec![],
         }
     }
 
@@ -64,12 +60,6 @@ impl A2aTool {
     /// `/api/mcp` on behalf of `delegation.user_id`.
     pub fn with_delegation(mut self, delegation: Option<DelegationContext>) -> Self {
         self.delegation = delegation;
-        self
-    }
-
-    /// Attach file parts from the user's upload to forward to the agent.
-    pub fn with_file_parts(mut self, parts: Vec<serde_json::Value>) -> Self {
-        self.file_parts = parts;
         self
     }
 
@@ -182,7 +172,6 @@ impl Tool for A2aTool {
                         &args.message,
                         args.context_id.as_deref(),
                         &headers,
-                        &self.file_parts,
                     )
                     .await
                     .map_err(|e| A2aToolError {
@@ -246,7 +235,6 @@ impl A2aTool {
                 args.context_id.as_deref(),
                 Some(tx),
                 per_call_headers,
-                &self.file_parts,
             )
             .await;
 

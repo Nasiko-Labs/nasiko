@@ -21,7 +21,7 @@ class AddAgentGithubPage extends HTMLElement {
       <div class="page-head">
         <div>
           <h1 class="title-page">Import from GitHub</h1>
-          <p class="subtitle">Connect your GitHub repository, configure options, and register it as an agent</p>
+          <p class="subtitle">Connect your GitHub repository, configure options, and register it as an agent.</p>
         </div>
       </div>
 
@@ -30,7 +30,7 @@ class AddAgentGithubPage extends HTMLElement {
           <div class="step-section">
             <p class="step-label">Step 1/3</p>
             <p class="step-title">Select repository</p>
-            <p class="step-desc">Choose a repository containing the agent source code</p>
+            <p class="step-desc">Choose a repository containing a Nasiko agent. The repo must include an <code>AgentCard.json</code> at the root.</p>
             <div class="search-wrap">
               ${icons.search('', 16)}
               <input type="search" class="search-box" placeholder="Filter repositories..." />
@@ -47,17 +47,17 @@ class AddAgentGithubPage extends HTMLElement {
           <div class="step-section step-two">
             <p class="step-label">Step 2/3</p>
             <p class="step-title">Configure options</p>
-            <p class="step-desc step-two-desc">Please select a repository in step 1 first</p>
+            <p class="step-desc step-two-desc">Please select a repository in step 1 first.</p>
             <div class="config-fields" inert>
               <label class="field">
                 <span class="field-label">Branch</span>
                 <input type="text" class="field-input branch-input" placeholder="main" />
-                <span class="field-hint">Leave blank to use the default branch</span>
+                <span class="field-hint">Leave blank to use the default branch.</span>
               </label>
               <label class="field">
                 <span class="field-label">Agent name</span>
                 <input type="text" class="field-input name-input" placeholder="Custom agent name" />
-                <span class="field-hint">Auto-detected from repository name. Override if needed</span>
+                <span class="field-hint">Auto-detected from repository name. Override if needed.</span>
               </label>
             </div>
           </div>
@@ -67,7 +67,7 @@ class AddAgentGithubPage extends HTMLElement {
           <div class="step-section step-three">
             <p class="step-label">Step 3/3</p>
             <p class="step-title">Clone and upload</p>
-            <p class="step-desc">The selected repository will be cloned and registered as an agent</p>
+            <p class="step-desc">The selected repository will be cloned and registered as an agent.</p>
             <app-button variant="primary" size="sm" class="clone-btn" disabled>Clone and upload</app-button>
           </div>
         </div>
@@ -258,7 +258,7 @@ class AddAgentGithubPage extends HTMLElement {
     fields.removeAttribute('inert');
 
     const desc = this.querySelector('.step-two-desc');
-    desc.textContent = 'Configure repository options';
+    desc.textContent = 'Configure repository options.';
 
     this.querySelector('.clone-btn').removeAttribute('disabled');
 

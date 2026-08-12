@@ -1,3 +1,4 @@
+import { apiFetch } from '/common/services/api.js';
 import styles from './connect-github.css' with { type: 'css' };
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
@@ -5,9 +6,6 @@ const GITHUB_ICON = `<svg viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c
 
 class ConnectGithub extends HTMLElement {
   connectedCallback() {
-    const redirectPath = this.getAttribute('redirect') || window.location.pathname + window.location.search;
-    const scope = this.getAttribute('scope') || 'repo,read:user';
-
     this.innerHTML = `
       <div class="connect-card">
         <div class="connect-icon">${GITHUB_ICON}</div>
@@ -15,13 +13,71 @@ class ConnectGithub extends HTMLElement {
         <p class="connect-desc">
           Connect your GitHub account to browse repositories, deploy agents directly from source, and enable automated builds.
         </p>
-        <a href="/api/github/login?scope=${encodeURIComponent(scope)}&redirect=${encodeURIComponent(redirectPath)}" class="connect-btn">
+        <button class="connect-btn" type="button">
           ${GITHUB_ICON}
           Connect GitHub Account
-        </a>
+        </button>
         <p class="connect-scopes">Permissions requested: repository access, user profile</p>
       </div>
     `;
+
+    this.querySelector('.connect-btn').addEventListener('click', () => this.#startAuth());
+  }
+
+  async #startAuth() {
+    const btn = this.querySelector('.connect-btn');
+    btn.disabled = true;
+    btn.textContent = 'Connecting...';
+
+    try {
+      const res = await apiFetch('/github/login');
+      if (!res.ok) throw new Error((await res.text()) || 'Failed to start GitHub login');
+      const { auth_url } = await res.json();
+      if (!auth_url) throw new Error('No authorization URL returned');
+
+      // Open GitHub OAuth in a popup and poll for completion.
+      const popup = window.open(auth_url, 'github-auth', 'width=600,height=700');
+      this.#pollForToken(popup);
+    } catch (err) {
+      btn.disabled = false;
+      btn.innerHTML = `${GITHUB_ICON} Connect GitHub Account`;
+      const { showToast } = await import('/common/utils/toast.js');
+      showToast(`GitHub connect failed: ${err.message}`);
+    }
+  }
+
+  #pollForToken(popup) {
+    let attempts = 0;
+    const maxAttempts = 90; // 3 minutes at 2s intervals
+    const redirectPath = this.getAttribute('redirect') || window.location.pathname;
+
+    const timer = setInterval(async () => {
+      attempts++;
+      if (attempts > maxAttempts) {
+        clearInterval(timer);
+        return;
+      }
+      // If the user closed the popup, stop polling.
+      if (popup && popup.closed) {
+        clearInterval(timer);
+        const btn = this.querySelector('.connect-btn');
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = `${GITHUB_ICON} Connect GitHub Account`;
+        }
+        return;
+      }
+      try {
+        const res = await apiFetch('/auth/github/token');
+        if (!res.ok) return; // keep polling
+        const body = await res.json();
+        if (body.connected || body.status === 'connected') {
+          clearInterval(timer);
+          if (popup && !popup.closed) popup.close();
+          window.location.href = redirectPath;
+        }
+      } catch { /* keep polling */ }
+    }, 2000);
   }
 }
 

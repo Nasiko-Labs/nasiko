@@ -211,14 +211,21 @@
     grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
     gap: var(--space-sm);
   }
-  /* Surface + hover lift: common/styles/surface.css */
   .agent-card {
     display: flex;
     flex-direction: column;
     gap: var(--space-2xs);
     padding: var(--space-md);
+    border: 1px solid transparent;
+    border-radius: var(--r-8);
+    background: var(--color-bg-base);
     text-decoration: none;
     color: var(--color-text-main);
+    transition: border-color 0.15s;
+
+    &:hover {
+      border-color: var(--color-border);
+    }
   }
   .agent-card-top {
     display: flex;
@@ -252,7 +259,7 @@
     /* Mirrors a rendered suggestion card (name row + two description lines)
        so the grid doesn't grow when real cards replace the skeletons. */
     height: 96px;
-    border-radius: var(--r-12);
+    border-radius: var(--r-8);
     background: var(--color-bg-base);
     animation: orch-skel-pulse 1.5s ease-in-out infinite;
   }
@@ -301,32 +308,21 @@
     line-height: 18px;
     color: var(--color-text-muted);
   }
-  /* Tertiary + stroke, not the secondary yellow-100 fill: yellow-100 on the
-     sand-50 banner is a 1.02:1 contrast ratio with no border, so the button had
-     essentially no edge and read as decoration. The stroke carries the shape at
-     rest; the yellow fill is demoted to the hover/press acknowledgement, which
-     the CTA previously had none of. */
   .wf-banner-cta {
     display: inline-flex;
     align-items: center;
     min-height: var(--control-h-sm);
     padding: 0 var(--s-12);
-    border: 1px solid light-dark(var(--sand-300), var(--neutral-600));
     border-radius: var(--r-8);
-    background: transparent;
+    background: light-dark(var(--yellow-100), var(--yellow-900));
     font-size: 13px;
     font-weight: 500;
     color: var(--color-text-main);
     white-space: nowrap;
     flex-shrink: 0;
-    transition: background var(--transition-fast),
-      border-color var(--transition-fast);
+    transition: background var(--transition-fast);
   }
   .wf-banner:hover .wf-banner-cta {
-    background: light-dark(var(--yellow-100), var(--yellow-900));
-    border-color: light-dark(var(--yellow-200), var(--yellow-800));
-  }
-  .wf-banner:active .wf-banner-cta {
     background: light-dark(var(--yellow-200), var(--yellow-800));
   }
   @media (max-width: 640px) {

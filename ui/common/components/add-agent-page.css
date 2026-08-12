@@ -5,12 +5,6 @@
   /* Host box (display + padding): common/styles/page-layout.css — linked, so
      it is in effect at first paint. */
 
-  /* Mobile: the module nav is a full-width disclosure bar in normal flow, and
-     this host is a centered flex column — without this it shrinks to its own
-     content width. Desktop pins it out of flow, so this is inert there. */
-  app-module-nav,
-  .pre-modnav { align-self: stretch; }
-
   .page-icon {
     display: inline-flex;
     align-items: center;
@@ -100,12 +94,20 @@
     .method-grid { grid-template-columns: 1fr; width: min(100%, 520px); }
   }
 
-  /* Surface + hover lift: common/styles/surface.css */
   .method-card {
+    border: 1px solid var(--color-border);
+    border-radius: var(--r-12);
     padding: var(--space-lg);
+    background: light-dark(var(--white), var(--neutral-900));
     display: flex;
     flex-direction: column;
     gap: var(--space-sm);
+    transition: box-shadow var(--transition-fast), border-color var(--transition-fast);
+  }
+
+  .method-card:hover {
+    border-color: light-dark(var(--sand-300), var(--neutral-600));
+    box-shadow: var(--shadow-md);
   }
 
   .method-card-header {
@@ -125,9 +127,6 @@
     font-size: var(--font-size-xs);
     font-weight: 500;
     color: var(--color-text-muted);
-  }
-  .method-card-req.connected {
-    color: var(--color-success, #22c55e);
   }
 
   .method-card-desc {
@@ -163,6 +162,10 @@
   .method-btn:disabled {
     opacity: 0.4;
     cursor: not-allowed;
+  }
+
+  .method-card-req.connected {
+    color: var(--color-success, #22c55e);
   }
 
   /* ── Upload modal form ─────────────────────────────────────────────────── */
