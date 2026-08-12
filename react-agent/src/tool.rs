@@ -147,7 +147,8 @@ impl Tool for A2aTool {
                     // A2A stream): the agent never started work, safe to retry
                     // non-streaming.
                     Err(A2aClientError::Http(..)) | Err(A2aClientError::InvalidResponse(_)) => None,
-                    Err(A2aClientError::A2aProtocol { code: -32601, .. }) => None,
+                    Err(A2aClientError::A2aProtocol { code: -32601, .. })
+                    | Err(A2aClientError::A2aProtocol { code: -32004, .. }) => None,
                     // Task failures and mid-stream errors: the agent may have run —
                     // do NOT re-send (side effects would duplicate); report instead.
                     Err(e) => {
@@ -193,8 +194,9 @@ impl Tool for A2aTool {
 }
 
 impl A2aTool {
-    /// Call the agent via `message/stream`, forwarding its live events
-    /// into the orchestrator stream as `SubStatus`/`SubContent`.
+    /// Call the agent via streaming (`message/stream`, or the proto
+    /// `SendStreamingMessage` fallback), forwarding its live events into the
+    /// orchestrator stream as `SubStatus`/`SubContent`.
     async fn call_streaming(
         &self,
         args: &A2aToolArgs,

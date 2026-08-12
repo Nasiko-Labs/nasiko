@@ -71,7 +71,7 @@
   .messages {
     flex: 1;
     overflow-y: auto;
-    padding: var(--space-lg) 0;
+    padding: var(--space-lg) var(--space-md) var(--space-lg) 0;
     min-height: 0;
     width: 100%;
     max-width: 900px;
