@@ -18,6 +18,16 @@ function apiBase() {
   return window.nasikoConfig?.apiBase || "";
 }
 
+// Once any 401 in THIS document has begun a redirect, every other in-flight 401
+// must skip the guard. A page fires several control-plane requests at once, and
+// when the CP cookie is missing they ALL 401 before the navigation actually
+// happens — so without this, each 401 continuation would read+increment the
+// persistent attempt counter, and a single page load with N requests could burn
+// all N retries and jump straight to the dead-end. Module-scoped, so it resets to
+// false on the next document load (each enter round-trip is a fresh navigation),
+// giving exactly one increment per round-trip.
+let enterRedirectStarted = false;
+
 /// Low-level: performs the request and handles 401 by redirecting to the
 /// login page. Returns the raw Response for callers that stream, read text,
 /// or branch on status themselves.
@@ -35,6 +45,15 @@ export async function apiFetch(path, opts = {}) {
   }
 
   if (res.status === 401 && !window.location.pathname.startsWith('/login')) {
+    // Once-per-document: only the FIRST 401 drives the redirect. Every other
+    // concurrent 401 just hangs (a navigation is already underway), so the
+    // attempt counter below is incremented once per document — i.e. once per
+    // enter round-trip — never once per in-flight request.
+    if (enterRedirectStarted) {
+      return new Promise(() => {}); // redirect already underway; never settle
+    }
+    enterRedirectStarted = true;
+
     // A 401 from the workspace control plane means its session cookie is missing
     // or expired. Bootstrap it via redirect-and-return (docs/MULTITENANT.md §4.4):
     // hand the browser to the BFF's /api/enter, which sends it into the
