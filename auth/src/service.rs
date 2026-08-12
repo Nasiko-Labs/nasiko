@@ -288,10 +288,25 @@ impl AuthService for AuthServiceImpl {
             user_id
         };
 
+        // Read the real superuser flag from the DB instead of hardcoding false.
+        // A user seeded via the admin API with `is_superuser=true` (e.g. the
+        // multi-tenant workspace CREATOR, pre-designated by tenant-server's
+        // finalize) MUST keep it when they first sign in through SSO — hardcoding
+        // false silently demoted them to a plain member and made the whole
+        // "creator is admin" path a no-op. A brand-new SSO user was just INSERTed
+        // above with `is_superuser=false`, so this reads false for them: the
+        // "new SSO users land as members" default is unchanged.
+        let is_superuser: bool = sqlx::query_scalar(
+            "SELECT is_superuser FROM users WHERE id = $1 AND deleted_at IS NULL",
+        )
+        .bind(user_id)
+        .fetch_one(&self.db)
+        .await?;
+
         let identity = Identity {
             user_id: user_id.to_string(),
             username: username.to_owned(),
-            is_superuser: false,
+            is_superuser,
         };
 
         let token = self.issue_token(&identity).await?;
@@ -301,7 +316,7 @@ impl AuthService for AuthServiceImpl {
             token,
             user_id: user_id.to_string(),
             username: username.to_owned(),
-            is_superuser: false,
+            is_superuser,
             expires_in: TOKEN_EXPIRY_SECS,
             access_key: None,
             access_secret: None,
