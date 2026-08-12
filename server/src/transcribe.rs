@@ -62,7 +62,13 @@ async fn transcribe(
         .text("response_format", "json")
         .part("file", part);
 
-    let url = format!("{}/v1/audio/transcriptions", base_url.trim_end_matches('/'));
+    // `OPENAI_BASE_URL` is commonly written with the `/v1` already on it (that
+    // is how cp.nasiko.dev has it), so strip it before appending our own —
+    // otherwise this posts to `.../v1/v1/audio/transcriptions` and 404s.
+    let url = format!(
+        "{}/v1/audio/transcriptions",
+        nasiko_config::openai_base_url_without_v1(base_url)
+    );
 
     let res = state
         .http_client
