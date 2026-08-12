@@ -1,16 +1,25 @@
 use axum::{
     body::Body,
-    extract::{Path, Request, State},
-    http::StatusCode,
+    extract::{Path, Query, Request, State},
+    http::{HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
 };
+use serde::Deserialize;
 
 use crate::OciState;
 use crate::authz::{
     Caller, CallerIdentity, Writer, check_pull_access, check_repo_delete_access, check_write_access,
 };
-use crate::error::Result;
+use crate::error::{OciError, Result};
 use crate::ops;
+
+/// Header values here are digests and paths, already constrained to ASCII, so a
+/// rejection means something upstream let a control character through.
+fn header_value(raw: &str) -> Result<HeaderValue> {
+    HeaderValue::from_str(raw).map_err(|_| {
+        OciError::manifest_invalid(format!("value '{raw}' cannot be sent as a header"))
+    })
+}
 
 pub async fn get_manifest(
     State(state): State<OciState>,
@@ -49,22 +58,24 @@ pub async fn put_manifest(
 
     let body = axum::body::to_bytes(request.into_body(), 4 * 1024 * 1024)
         .await
-        .map_err(|e| crate::error::OciError::BadRequest(e.to_string()))?;
+        .map_err(|e| OciError::manifest_invalid(e.to_string()))?;
 
     let result = ops::put_manifest(&state, &name, &reference, &content_type, &body).await?;
 
     let location = format!("/v2/{name}/manifests/{}", result.digest);
 
-    Ok((
-        StatusCode::CREATED,
-        [
-            ("Location", location.as_str()),
-            ("Docker-Content-Digest", result.digest.as_str()),
-            ("Content-Length", "0"),
-        ],
-        "",
-    )
-        .into_response())
+    let mut headers = HeaderMap::new();
+    headers.insert("Location", header_value(&location)?);
+    headers.insert("Docker-Content-Digest", header_value(&result.digest)?);
+    headers.insert("Content-Length", HeaderValue::from_static("0"));
+    // Required of any registry implementing the referrers API: it is how a client
+    // learns its attachment was indexed and it need not fall back to the tag
+    // scheme.
+    if let Some(subject) = result.subject {
+        headers.insert("OCI-Subject", header_value(&subject)?);
+    }
+
+    Ok((StatusCode::CREATED, headers, "").into_response())
 }
 
 pub async fn delete_manifest(
@@ -78,14 +89,28 @@ pub async fn delete_manifest(
     Ok((StatusCode::ACCEPTED, "").into_response())
 }
 
+/// `?artifactType=` narrowing for the referrers index (end-12b).
+#[derive(Deserialize)]
+pub struct ReferrerParams {
+    #[serde(rename = "artifactType")]
+    artifact_type: Option<String>,
+}
+
 pub async fn get_referrers(
     State(state): State<OciState>,
     caller: Caller,
     Path((owner, repo, subject_digest)): Path<(String, String, String)>,
+    Query(params): Query<ReferrerParams>,
 ) -> Result<Response> {
     check_pull_access(&state, &caller, &repo).await?;
     let name = format!("{owner}/{repo}");
-    let entries = ops::get_referrers(&state, &name, &subject_digest).await?;
+    let entries = ops::get_referrers(
+        &state,
+        &name,
+        &subject_digest,
+        params.artifact_type.as_deref(),
+    )
+    .await?;
 
     let manifests: Vec<serde_json::Value> = entries
         .into_iter()
@@ -112,13 +137,20 @@ pub async fn get_referrers(
     });
 
     let body = index.to_string();
-    Ok((
-        StatusCode::OK,
-        [
-            ("content-type", "application/vnd.oci.image.index.v1+json"),
-            ("OCI-Filters-Applied", ""),
-        ],
-        body,
-    )
-        .into_response())
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "content-type",
+        HeaderValue::from_static("application/vnd.oci.image.index.v1+json"),
+    );
+    // Announced only when a filter was really applied. Sending it empty on every
+    // response claims filtering happened, telling a client its results are
+    // already narrowed when they are not.
+    if params.artifact_type.is_some() {
+        headers.insert(
+            "OCI-Filters-Applied",
+            HeaderValue::from_static("artifactType"),
+        );
+    }
+
+    Ok((StatusCode::OK, headers, body).into_response())
 }

@@ -593,8 +593,13 @@ async fn backfill_sql_populates_refs_from_existing_manifest_content() {
     // Bypass put_manifest entirely — simulates a row that existed BEFORE this
     // migration shipped, with zero oci_blob_refs rows.
     sqlx::query(
-        "INSERT INTO oci_manifests (digest, repository, reference, media_type, content, size_bytes)
-         VALUES ($1, $2, 'latest', 'application/vnd.oci.image.manifest.v1+json', $3, $4)",
+        "WITH m AS (
+             INSERT INTO oci_manifests (digest, repository, media_type, content, size_bytes)
+             VALUES ($1, $2, 'application/vnd.oci.image.manifest.v1+json', $3, $4)
+             RETURNING repository, digest
+         )
+         INSERT INTO oci_tags (repository, tag, digest)
+         SELECT repository, 'latest', digest FROM m",
     )
     .bind(&manifest_digest)
     .bind(&repo)
@@ -664,8 +669,13 @@ async fn backfill_sql_skips_manifest_lists_without_erroring() {
     });
 
     sqlx::query(
-        "INSERT INTO oci_manifests (digest, repository, reference, media_type, content, size_bytes)
-         VALUES ($1, $2, 'latest', 'application/vnd.oci.image.index.v1+json', $3, $4)",
+        "WITH m AS (
+             INSERT INTO oci_manifests (digest, repository, media_type, content, size_bytes)
+             VALUES ($1, $2, 'application/vnd.oci.image.index.v1+json', $3, $4)
+             RETURNING repository, digest
+         )
+         INSERT INTO oci_tags (repository, tag, digest)
+         SELECT repository, 'latest', digest FROM m",
     )
     .bind(&manifest_digest)
     .bind(&repo)
@@ -732,8 +742,13 @@ async fn get_referrers_join_scoped_to_repository_not_just_digest() {
     // is (repository, digest), not digest alone).
     for repo in [&repo_a, &repo_b] {
         sqlx::query(
-            "INSERT INTO oci_manifests (digest, repository, reference, media_type, content, size_bytes)
-             VALUES ($1, $2, 'ref-tag', 'application/vnd.oci.artifact.manifest.v1+json', '{}', 2)",
+            "WITH m AS (
+                 INSERT INTO oci_manifests (digest, repository, media_type, content, size_bytes)
+                 VALUES ($1, $2, 'application/vnd.oci.artifact.manifest.v1+json', '{}', 2)
+                 RETURNING repository, digest
+             )
+             INSERT INTO oci_tags (repository, tag, digest)
+             SELECT repository, 'ref-tag', digest FROM m",
         )
         .bind(&shared_referrer_digest)
         .bind(repo)

@@ -111,11 +111,12 @@ pub fn router(state: OciState) -> Router {
         )
         .route(
             "/v2/{owner}/{repo}/blobs/uploads/{uuid}",
-            patch(blobs::patch_upload),
-        )
-        .route(
-            "/v2/{owner}/{repo}/blobs/uploads/{uuid}",
-            put(blobs::complete_upload),
+            patch(blobs::patch_upload)
+                .put(blobs::complete_upload)
+                // end-13: resume a partial upload after losing local bookkeeping.
+                .get(blobs::upload_status)
+                // Abandon a session and free its buffer immediately.
+                .delete(blobs::cancel_upload),
         )
         .route("/v2/{owner}/{repo}/tags/list", get(tags::list_tags))
         // Defense-in-depth: reject oversized request bodies at the router/

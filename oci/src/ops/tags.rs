@@ -3,6 +3,8 @@ use sqlx::Row;
 use crate::OciState;
 use crate::error::Result;
 
+/// Reads `oci_tags`, which holds only real tags — a digest-addressed push creates
+/// no row there, so nothing needs filtering out.
 pub async fn list_tags(
     state: &OciState,
     repository: &str,
@@ -11,13 +13,11 @@ pub async fn list_tags(
 ) -> Result<Vec<String>> {
     let rows = sqlx::query(
         r#"
-        SELECT DISTINCT reference
-        FROM oci_manifests
+        SELECT tag
+        FROM oci_tags
         WHERE repository = $1
-          AND reference IS NOT NULL
-          AND reference NOT LIKE 'sha256:%'
-          AND ($2::text IS NULL OR reference > $2)
-        ORDER BY reference
+          AND ($2::text IS NULL OR tag > $2)
+        ORDER BY tag
         LIMIT $3
         "#,
     )
@@ -29,7 +29,7 @@ pub async fn list_tags(
 
     let tags: Vec<String> = rows
         .into_iter()
-        .filter_map(|r| r.try_get::<Option<String>, _>("reference").ok().flatten())
+        .filter_map(|r| r.try_get::<String, _>("tag").ok())
         .collect();
 
     Ok(tags)

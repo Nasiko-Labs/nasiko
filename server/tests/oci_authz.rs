@@ -40,8 +40,13 @@ async fn insert_agent(db: &PgPool, name: &str, owner_id: Uuid) {
 
 async fn insert_manifest(db: &PgPool, repository: &str) {
     sqlx::query(
-        "INSERT INTO oci_manifests (digest, repository, reference, media_type, content, size_bytes)
-         VALUES ($1, $2, 'latest', 'application/vnd.oci.image.manifest.v1+json', '{}', 2)",
+        "WITH m AS (
+             INSERT INTO oci_manifests (digest, repository, media_type, content, size_bytes)
+             VALUES ($1, $2, 'application/vnd.oci.image.manifest.v1+json', '{}', 2)
+             RETURNING repository, digest
+         )
+         INSERT INTO oci_tags (repository, tag, digest)
+         SELECT repository, 'latest', digest FROM m",
     )
     .bind(format!("sha256:{}", Uuid::new_v4().simple()))
     .bind(repository)

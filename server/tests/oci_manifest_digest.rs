@@ -125,8 +125,8 @@ async fn get_manifest_by_digest_rejects_content_digest_mismatch() {
     // simulating corruption / a bug that updates one without the other.
     let bogus_digest = format!("sha256:{}", "0".repeat(64));
     sqlx::query(
-        "INSERT INTO oci_manifests (digest, repository, reference, media_type, content, size_bytes)
-         VALUES ($1, $2, $1, 'application/vnd.oci.image.manifest.v1+json', '{\"real\":true}', 2)",
+        "INSERT INTO oci_manifests (digest, repository, media_type, content, size_bytes)
+         VALUES ($1, $2, 'application/vnd.oci.image.manifest.v1+json', '{\"real\":true}', 2)",
     )
     .bind(&bogus_digest)
     .bind(&repo)
@@ -174,8 +174,8 @@ async fn get_manifest_by_matching_digest_succeeds() {
     let real_digest = format!("sha256:{hex_digest}");
 
     sqlx::query(
-        "INSERT INTO oci_manifests (digest, repository, reference, media_type, content, size_bytes)
-         VALUES ($1, $2, $1, 'application/vnd.oci.image.manifest.v1+json', $3, $4)",
+        "INSERT INTO oci_manifests (digest, repository, media_type, content, size_bytes)
+         VALUES ($1, $2, 'application/vnd.oci.image.manifest.v1+json', $3, $4)",
     )
     .bind(&real_digest)
     .bind(&repo)
@@ -219,8 +219,13 @@ async fn get_manifest_by_tag_is_not_digest_verified() {
 
     let real_digest = format!("sha256:{}", Uuid::new_v4().simple());
     sqlx::query(
-        "INSERT INTO oci_manifests (digest, repository, reference, media_type, content, size_bytes)
-         VALUES ($1, $2, 'latest', 'application/vnd.oci.image.manifest.v1+json', '{}', 2)",
+        "WITH m AS (
+             INSERT INTO oci_manifests (digest, repository, media_type, content, size_bytes)
+             VALUES ($1, $2, 'application/vnd.oci.image.manifest.v1+json', '{}', 2)
+             RETURNING repository, digest
+         )
+         INSERT INTO oci_tags (repository, tag, digest)
+         SELECT repository, 'latest', digest FROM m",
     )
     .bind(&real_digest)
     .bind(&repo)

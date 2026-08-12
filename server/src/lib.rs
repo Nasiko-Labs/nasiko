@@ -288,6 +288,16 @@ where
         .with_state(state.clone());
 
     let oci_state = nasiko_oci::OciState::new(state.db.clone(), state.oci_storage.clone());
+    // Blob deletes commit a reclaim tombstone and then remove the bytes, so a
+    // crash or storage outage between the two leaves work queued. Drain it in the
+    // background at boot — inline would delay serving on a slow storage backend,
+    // and nothing else ever revisits a stranded tombstone.
+    {
+        let sweep_state = oci_state.clone();
+        tokio::spawn(async move {
+            nasiko_oci::ops::blobs::sweep_pending_blob_gc(&sweep_state).await;
+        });
+    }
     let oci_pull_limiter = RateLimiter::new(300, Duration::from_secs(60));
     let build_push_token_hash = (!state.config.build_push_token.is_empty())
         .then(|| nasiko_oci::pull_credentials::hash_token(&state.config.build_push_token));
