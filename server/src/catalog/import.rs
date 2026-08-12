@@ -299,6 +299,7 @@ pub(crate) async fn build_and_deploy(
         state.config.agent_max_replicas,
         // Catalog import has no --writable equivalent yet.
         false,
+        None,
         owner_id,
     );
     crate::agents::attach_pull_credential(
@@ -885,6 +886,7 @@ pub(crate) async fn import_registry(
             state.config.agent_max_replicas,
             // Catalog import has no --writable equivalent yet.
             false,
+            None,
             owner_id,
         );
         crate::agents::attach_pull_credential(

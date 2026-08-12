@@ -249,6 +249,7 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
             ports,
             env,
             writable,
+            writable_path,
         } => {
             let mut platform_env = state.agent_env(agent_id).await;
             platform_env.extend(env);
@@ -272,6 +273,7 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
                 state.config.agent_image_registry.clone(),
                 state.config.agent_max_replicas,
                 writable,
+                writable_path,
                 state.config.agent_default_memory.clone(),
             )
             .await;
@@ -290,6 +292,7 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
             prev_image,
             changelog,
             writable,
+            writable_path,
         } => {
             let source_data = match zip_path {
                 Some(ref path) => match tokio::fs::read(path).await {
@@ -322,6 +325,7 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
                 prev_image,
                 changelog,
                 writable,
+                writable_path,
             )
             .await;
         }
@@ -336,6 +340,7 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
             target_image_tag,
             reason,
             writable,
+            writable_path,
         } => {
             let target = AgentVersionRow {
                 version: target_version,
@@ -352,6 +357,7 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
                 target,
                 reason,
                 writable,
+                writable_path,
             )
             .await;
         }

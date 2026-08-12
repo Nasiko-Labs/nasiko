@@ -660,6 +660,7 @@ fn build_mcp_server_spec(
         // read (see DeploymentSpec::owner_id's doc comment) — no need to thread
         // a real owner through for a value that stays inert.
         writable: false,
+        writable_path: None,
         owner_id: Uuid::nil(),
     }
 }

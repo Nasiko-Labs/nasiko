@@ -7,7 +7,6 @@ pub mod llm_config;
 pub mod update;
 pub mod upload;
 pub(crate) mod utils;
-pub mod versions;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -163,6 +162,7 @@ pub(crate) fn build_agent_spec(
     default_memory: &str,
     max_replicas: u32,
     writable: bool,
+    writable_path: Option<String>,
     owner_id: Uuid,
 ) -> DeploymentSpec {
     DeploymentSpec {
@@ -192,6 +192,7 @@ pub(crate) fn build_agent_spec(
         network_override: None,
         workload_kind: Default::default(),
         writable,
+        writable_path,
         owner_id,
     }
 }
@@ -241,6 +242,7 @@ mod spec_tests {
             "512Mi",
             1,
             false,
+            None,
             Uuid::nil(),
         );
         let b = build_agent_spec(
@@ -252,6 +254,7 @@ mod spec_tests {
             "512Mi",
             1,
             false,
+            None,
             Uuid::nil(),
         );
         assert_eq!(a.container_id, ContainerId::from_uuid(id));
@@ -272,6 +275,7 @@ mod spec_tests {
             "512Mi",
             1,
             false,
+            None,
             Uuid::nil(),
         );
         assert_eq!(s.ports, vec![9091]);
@@ -289,6 +293,7 @@ mod spec_tests {
             "512Mi",
             5,
             false,
+            None,
             Uuid::nil(),
         );
         assert_eq!(
@@ -310,6 +315,7 @@ mod spec_tests {
             "2Gi",
             1,
             false,
+            None,
             Uuid::nil(),
         );
         assert_eq!(

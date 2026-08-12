@@ -310,10 +310,42 @@ pub struct DeploymentSpec {
     ///
     /// Defaults to `false` for every existing agent deploy.
     pub writable: bool,
+    /// Container-side mount target for the `writable` volume (`--writable-path`).
+    /// `None` = [`DeploymentSpec::DEFAULT_WRITABLE_PATH`]. Purely where the
+    /// agent *sees* its persistent directory — the volume-side layout stays
+    /// `{owner_id}/{container_id}` regardless, so changing this never moves or
+    /// loses data. Must be an absolute, dedicated state directory: a mount
+    /// **shadows** whatever the image ships at that path (mounting over the
+    /// image's code directory hides the code itself), which is why it is the
+    /// agent author's choice and never inferred from the image. Ignored when
+    /// `writable` is `false`.
+    pub writable_path: Option<String>,
     /// The agent's owning user (`agents.owner_id`). Used only to namespace the
     /// `writable` subdirectory path (`{owner_id}/{container_id}`) — see
     /// `writable`'s doc comment. Not read at all when `writable` is `false`.
     pub owner_id: uuid::Uuid,
+}
+
+/// Validates a `--writable-path` mount target. Both backends consume the path
+/// verbatim (Docker `Mount.target`, K8s `volumeMounts.mountPath`), so reject
+/// anything either would choke on or that could escape/alias: relative paths,
+/// `..` traversal, `:` (illegal in a K8s mountPath), control characters, and
+/// `/` itself (mounting over the entire rootfs). `pub` so the server's upload
+/// handler can reject a bad path at request time (400) instead of surfacing it
+/// later as a failed deploy.
+pub fn validate_writable_path(path: &str) -> std::result::Result<(), String> {
+    let bad = !path.starts_with('/')
+        || path == "/"
+        || path.len() > 255
+        || path.split('/').any(|seg| seg == "..")
+        || path.chars().any(|c| c == ':' || c.is_control());
+    if bad {
+        return Err(format!(
+            "writable_path `{path}` must be an absolute path (not `/`), \
+             without `..` segments, `:` or control characters, ≤255 chars"
+        ));
+    }
+    Ok(())
 }
 
 /// Distinguishes agent deployments from MCP connector deployments so that
@@ -327,12 +359,28 @@ pub enum WorkloadKind {
 }
 
 impl DeploymentSpec {
+    /// Where the `writable` volume lands in the container when
+    /// [`DeploymentSpec::writable_path`] is unset.
+    pub const DEFAULT_WRITABLE_PATH: &'static str = "/workspace";
+
+    /// The effective container-side mount target for the `writable` volume.
+    pub fn writable_mount_path(&self) -> &str {
+        self.writable_path
+            .as_deref()
+            .unwrap_or(Self::DEFAULT_WRITABLE_PATH)
+    }
+
     /// Validate the spec before handing it to a backend.
     ///
     /// Called automatically by both backend `deploy()` implementations; callers
     /// may also call this eagerly to surface errors before the async call.
     pub fn validate(&self) -> Result<()> {
         self.container_id.validate()?;
+        if let Some(path) = &self.writable_path
+            && let Err(e) = validate_writable_path(path)
+        {
+            return Err(RuntimeError::InvalidSpec(e));
+        }
         if self.image.is_empty() {
             return Err(RuntimeError::InvalidSpec(
                 "image must not be empty".to_owned(),

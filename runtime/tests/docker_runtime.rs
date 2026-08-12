@@ -74,6 +74,7 @@ fn test_spec() -> DeploymentSpec {
         network_override: None,
         workload_kind: Default::default(),
         writable: false,
+        writable_path: None,
         owner_id: uuid::Uuid::nil(),
     }
 }
@@ -233,6 +234,7 @@ async fn docker_runtime_deploy_and_destroy_alpine() {
         network_override: None,
         workload_kind: Default::default(),
         writable: false,
+        writable_path: None,
         owner_id: uuid::Uuid::nil(),
     };
 
@@ -301,6 +303,7 @@ async fn docker_runtime_deploy_recreates_container_when_env_changes() {
         network_override: None,
         workload_kind: Default::default(),
         writable: false,
+        writable_path: None,
         owner_id: uuid::Uuid::nil(),
     };
 
@@ -359,6 +362,7 @@ async fn docker_runtime_deploy_does_not_recreate_when_unchanged() {
         network_override: None,
         workload_kind: Default::default(),
         writable: false,
+        writable_path: None,
         owner_id: uuid::Uuid::nil(),
     };
 
@@ -426,6 +430,7 @@ async fn docker_runtime_writable_persists_across_redeploy_and_is_private_per_age
             network_override: None,
             workload_kind: Default::default(),
             writable: true,
+            writable_path: None,
             owner_id: uuid::Uuid::nil(),
         }
     }

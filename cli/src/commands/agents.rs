@@ -491,8 +491,10 @@ pub fn cmd_deploy(source: &str, agent_name: Option<&str>) -> Result<()> {
         "latest",
         &[8000],
         &std::collections::HashMap::new(),
-        // `nasiko agents deploy` has no --writable flag of its own yet.
+        // `nasiko agents deploy` has no --writable/--writable-path flags of
+        // its own yet.
         false,
+        None,
     );
 
     if is_temp {

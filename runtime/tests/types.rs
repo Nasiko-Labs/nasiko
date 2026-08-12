@@ -213,6 +213,7 @@ fn minimal_spec() -> DeploymentSpec {
         network_override: None,
         workload_kind: Default::default(),
         writable: false,
+        writable_path: None,
         owner_id: uuid::Uuid::nil(),
     }
 }
@@ -254,6 +255,7 @@ fn deployment_spec_with_all_fields() {
         network_override: None,
         workload_kind: Default::default(),
         writable: true,
+        writable_path: None,
         owner_id: uuid::Uuid::nil(),
     };
 
@@ -449,4 +451,38 @@ fn workload_kind_default_is_agent() {
         WorkloadKind::Agent,
         "default must be Agent for backward compatibility with existing callers"
     );
+}
+
+#[test]
+fn writable_path_validation_rules() {
+    use nasiko_runtime::validate_writable_path as v;
+    // Accepted: absolute, dedicated state directories.
+    assert!(v("/workspace").is_ok());
+    assert!(v("/app/data").is_ok());
+    assert!(v("/var/lib/agent-state").is_ok());
+    // Rejected: everything a backend would choke on or that could alias out.
+    assert!(v("relative/path").is_err(), "relative");
+    assert!(v("/").is_err(), "rootfs");
+    assert!(v("/a/../b").is_err(), "traversal");
+    assert!(v("/a:b").is_err(), "colon (illegal in k8s mountPath)");
+    assert!(v("/a\nb").is_err(), "control char");
+    assert!(v(&format!("/{}", "x".repeat(300))).is_err(), "over-long");
+}
+
+#[test]
+fn spec_validate_rejects_bad_writable_path() {
+    let mut spec = minimal_spec();
+    spec.writable = true;
+    spec.writable_path = Some("not-absolute".to_owned());
+    assert!(spec.validate().is_err());
+    spec.writable_path = Some("/fine".to_owned());
+    assert!(spec.validate().is_ok());
+}
+
+#[test]
+fn writable_mount_path_defaults_to_workspace() {
+    let mut spec = minimal_spec();
+    assert_eq!(spec.writable_mount_path(), "/workspace");
+    spec.writable_path = Some("/app/data".to_owned());
+    assert_eq!(spec.writable_mount_path(), "/app/data");
 }

@@ -47,6 +47,10 @@ struct DeployRequest {
     replicas: Option<u32>,
     #[serde(default)]
     writable: bool,
+    /// Container-side mount target for the writable volume (`--writable-path`).
+    /// `None` = `/workspace`. Implies `writable` when set.
+    #[serde(default)]
+    writable_path: Option<String>,
 }
 
 async fn deploy(
@@ -131,7 +135,10 @@ async fn deploy(
         harden: false,
         network_override: None,
         workload_kind: Default::default(),
-        writable: req.writable,
+        // A path implies the mount — requiring both flags would make
+        // `--writable-path X` alone silently deploy without storage.
+        writable: req.writable || req.writable_path.is_some(),
+        writable_path: req.writable_path.clone(),
         owner_id,
     };
     // Only a name that already maps to a registered catalog agent has an
@@ -162,24 +169,6 @@ async fn deploy(
                         .await;
                 let image = spec.image.clone();
                 let owner_id = claims.user_uuid().ok();
-
-                // Probe the agent's card and persist `transport_path` (plus
-                // description/skills/tags/capabilities) — the same probe the
-                // seed / upload / update / restart deploy paths already run.
-                // Without it, an agent that mounts A2A at a non-root path (Go
-                // `a2a-go` agents serve `/a2a`) keeps an empty `transport_path`,
-                // so the orchestrator/proxy POSTs to `/` and every routed call
-                // 404s; and its description/skills stay empty, starving the
-                // routing engine of any signal but the bare name. This ad-hoc
-                // `nasiko deploy` (`POST /containers`) path was the only deploy
-                // path that skipped the probe.
-                tokio::spawn(crate::agents::utils::fetch_agent_card_with_retry(
-                    state.db.clone(),
-                    state.http_client.clone(),
-                    agent_id,
-                    endpoint.clone(),
-                ));
-
                 tokio::spawn(async move {
                     // Write the live endpoint URL + running status + image back to
                     // the catalog, so restart (which needs `image` to redeploy) works
@@ -380,23 +369,43 @@ async fn restart(
     // (which the sibling stop/start/scale/logs ops use) — without this, copying
     // the UUID `nasiko ps` prints into `nasiko restart <uuid>` 404'd even though
     // the identical UUID worked for `nasiko rm`.
-    let agent: Option<(Uuid, Uuid, Option<String>, bool)> = if let Ok(id) = name.parse::<Uuid>() {
-        sqlx::query_as("SELECT id, owner_id, image, writable FROM agents WHERE id = $1")
-            .bind(id)
-            .fetch_optional(&state.db)
-            .await
-            .ok()
-            .flatten()
+    #[derive(sqlx::FromRow)]
+    struct RestartAgentRow {
+        id: Uuid,
+        owner_id: Uuid,
+        image: Option<String>,
+        writable: bool,
+        writable_path: Option<String>,
+    }
+
+    let agent: Option<RestartAgentRow> = if let Ok(id) = name.parse::<Uuid>() {
+        sqlx::query_as(
+            "SELECT id, owner_id, image, writable, writable_path FROM agents WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten()
     } else {
-        sqlx::query_as("SELECT id, owner_id, image, writable FROM agents WHERE name = $1")
-            .bind(&name)
-            .fetch_optional(&state.db)
-            .await
-            .ok()
-            .flatten()
+        sqlx::query_as(
+            "SELECT id, owner_id, image, writable, writable_path FROM agents WHERE name = $1",
+        )
+        .bind(&name)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten()
     };
 
-    let Some((agent_id, owner_id, image, writable)) = agent else {
+    let Some(RestartAgentRow {
+        id: agent_id,
+        owner_id,
+        image,
+        writable,
+        writable_path,
+    }) = agent
+    else {
         return (StatusCode::NOT_FOUND, "agent not found").into_response();
     };
 
@@ -459,6 +468,7 @@ async fn restart(
         &state.config.agent_default_memory,
         state.config.agent_max_replicas,
         writable,
+        writable_path,
         owner_id,
     );
     crate::agents::attach_pull_credential(

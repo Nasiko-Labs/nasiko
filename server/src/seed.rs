@@ -159,6 +159,7 @@ pub async fn seed_agents_if_configured(state: &AppState) {
             state.config.agent_max_replicas,
             // SEED_AGENTS has no --writable equivalent yet.
             false,
+            None,
             owner_id,
         );
         crate::agents::attach_pull_credential(

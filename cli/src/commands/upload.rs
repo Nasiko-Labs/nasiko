@@ -25,6 +25,7 @@ pub fn upload(
     env_file: Option<&str>,
     env_args: &[String],
     writable: bool,
+    writable_path: Option<&str>,
 ) -> Result<()> {
     let source_path = Path::new(source);
 
@@ -80,7 +81,9 @@ pub fn upload(
         &resolved_version,
         &[port],
         &env,
-        writable,
+        // A path implies the mount (mirrors the server-side rule).
+        writable || writable_path.is_some(),
+        writable_path,
     );
 
     if is_temp {

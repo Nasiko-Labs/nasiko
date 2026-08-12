@@ -97,6 +97,8 @@ struct AgentDeployInfo {
     /// `agents.writable` — carried forward so a restart doesn't drop the agent's
     /// persistent-storage mount (same reasoning as update/rollback).
     writable: bool,
+    /// `agents.writable_path` — same carry-forward reasoning as `writable`.
+    writable_path: Option<String>,
 }
 
 // ─── GET /deployments ────────────────────────────────────────────────────────
@@ -274,7 +276,7 @@ pub(crate) async fn restart_deployment(
 
     // Fetch deployment and agent info together, including stored spec columns.
     let info = match sqlx::query_as::<_, AgentDeployInfo>(
-        "SELECT a.name, a.image, a.id as agent_id, a.writable, a.owner_id,
+        "SELECT a.name, a.image, a.id as agent_id, a.writable, a.writable_path, a.owner_id,
                 d.build_id, d.status::text as status,
                 d.spec_ports, d.spec_image, d.k8s_deployment_name
          FROM agent_deployments d
@@ -407,6 +409,7 @@ pub(crate) async fn restart_deployment(
             network_override: None,
             workload_kind: Default::default(),
             writable: info.writable,
+            writable_path: info.writable_path.clone(),
             owner_id: info.owner_id,
         };
 

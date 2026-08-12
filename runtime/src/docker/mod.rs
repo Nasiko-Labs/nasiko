@@ -370,7 +370,7 @@ fn build_host_config(
     // this container is created; Docker (unlike Kubernetes) does not create it.
     let mounts = spec.writable.then(|| {
         vec![Mount {
-            target: Some("/workspace".to_owned()),
+            target: Some(spec.writable_mount_path().to_owned()),
             source: Some(agent_memory_volume.to_owned()),
             typ: Some(MountTypeEnum::VOLUME),
             volume_options: Some(MountVolumeOptions {
@@ -1494,6 +1494,7 @@ mod hardening_tests {
             network_override: None,
             workload_kind: Default::default(),
             writable: false,
+            writable_path: None,
             owner_id: uuid::Uuid::nil(),
         }
     }
@@ -1547,6 +1548,7 @@ mod writable_tests {
             network_override: None,
             workload_kind: Default::default(),
             writable,
+            writable_path: None,
             owner_id: TEST_OWNER,
         }
     }
@@ -1586,6 +1588,27 @@ mod writable_tests {
         let hc = build_host_config(&s, bindings, "nasiko-agent-memory");
         assert_eq!(hc.readonly_rootfs, Some(true));
         assert!(hc.mounts.is_some());
+    }
+
+    #[test]
+    fn writable_path_overrides_mount_target_but_not_volume_layout() {
+        let mut s = spec(true);
+        s.writable_path = Some("/app/data".to_owned());
+        let (bindings, _) = build_port_config(&[8080], "127.0.0.1");
+        let hc = build_host_config(&s, bindings, "nasiko-agent-memory");
+        let mounts = hc.mounts.expect("writable spec must set a mount");
+        assert_eq!(mounts[0].target.as_deref(), Some("/app/data"));
+        // Container-side target only: the volume-side subpath is untouched,
+        // so changing --writable-path never moves or orphans data.
+        assert_eq!(
+            mounts[0]
+                .volume_options
+                .as_ref()
+                .expect("volume_options")
+                .subpath
+                .as_deref(),
+            Some(format!("{TEST_OWNER}/test-agent-42").as_str())
+        );
     }
 }
 

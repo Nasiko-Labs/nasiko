@@ -180,6 +180,7 @@ mod tests {
             network_override: None,
             workload_kind: Default::default(),
             writable: false,
+            writable_path: None,
             owner_id: uuid::Uuid::nil(),
         }
     }

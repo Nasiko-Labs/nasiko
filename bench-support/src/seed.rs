@@ -117,6 +117,7 @@ pub async fn seed(
             network_override: None,
             workload_kind: Default::default(),
             writable: false,
+            writable_path: None,
             owner_id,
         };
         runtime
