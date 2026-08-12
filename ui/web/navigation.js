@@ -290,7 +290,7 @@ window.fetchUsageSummary = async () => {
 window.fetchTokenopsDashboard = async (startTime, endTime) => {
   const q = new URLSearchParams();
   if (startTime) q.set('start_time', startTime);
-  if (endTime) q.set('end_time', endTime);
+  // if (endTime) q.set('end_time', endTime);
   const params = q.size ? `?${q}` : '';
   return fetchApi(`/observability/finops/dashboard${params}`);
 };
