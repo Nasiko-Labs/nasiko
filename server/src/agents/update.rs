@@ -223,12 +223,16 @@ pub(crate) async fn update_agent(
             bump_major_version(&current_version)
         }
         Some(v) => {
-            let new_sv = match semver::Version::parse(v) {
-                Ok(sv) => sv,
-                Err(_) => {
+            // Must be a plain `x.y.z` — the same rule `record_version_change` enforces
+            // below. Accepting a fuller SemVer here (e.g. a prerelease like `1.2.3-beta`)
+            // would let the deploy go through while history-recording later rejects it,
+            // leaving the running agent on a version with no history row.
+            let new_sv = match super::versions::parse_plain_version(v) {
+                Some(sv) => sv,
+                None => {
                     return (
                         StatusCode::BAD_REQUEST,
-                        "version must be valid semver (e.g. 1.2.3) or a strategy keyword: auto, patch, minor, major",
+                        "version must be in x.y.z format (e.g. 1.2.3) or a strategy keyword: auto, patch, minor, major",
                     )
                         .into_response()
                 }
@@ -580,40 +584,18 @@ pub async fn execute_agent_update(
 
     match result {
         Ok((deploy_status, spec_ports)) => {
-            // Archive the previously active version, insert the new one, mark old as rollback-eligible.
-            let _ = sqlx::query(
-                "UPDATE agent_versions SET is_active = false, status = 'archived' \
-                 WHERE agent_id = $1 AND is_active = true",
-            )
-            .bind(agent_id)
-            .execute(db)
-            .await;
-
-            let _ = sqlx::query(
-                "INSERT INTO agent_versions \
-                   (agent_id, build_id, version, image_tag, changelog, is_active, can_rollback, previous_version, status) \
-                 VALUES ($1, $2, $3, $4, $5, true, false, $6, 'active') \
-                 ON CONFLICT (agent_id, version) DO UPDATE \
-                   SET build_id = EXCLUDED.build_id, is_active = true, status = 'active', \
-                       can_rollback = false, previous_version = EXCLUDED.previous_version",
-            )
-            .bind(agent_id)
-            .bind(build_id)
-            .bind(&new_version)
-            .bind(&image_tag)
-            .bind(&changelog)
-            .bind(&prev_version)
-            .execute(db)
-            .await;
-
-            // Allow rolling back to the previous version.
-            let _ = sqlx::query(
-                "UPDATE agent_versions SET can_rollback = true \
-                 WHERE agent_id = $1 AND version = $2",
-            )
-            .bind(agent_id)
-            .bind(&prev_version)
-            .execute(db)
+            // Record the new version (archives the old one, enables rollback).
+            // No overwrite here — a reused version was already rejected earlier.
+            super::versions::record_version_change_with_retry(db, || {
+                super::versions::VersionChange {
+                    agent_id,
+                    build_id: Some(build_id),
+                    version: &new_version,
+                    image_tag: &image_tag,
+                    changelog: changelog.as_deref(),
+                    allow_overwrite: false,
+                }
+            })
             .await;
 
             let agent_url = crate::agents::resolve_agent_url(

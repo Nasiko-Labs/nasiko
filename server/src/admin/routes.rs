@@ -169,6 +169,24 @@ async fn deploy(
                         .await;
                 let image = spec.image.clone();
                 let owner_id = claims.user_uuid().ok();
+
+                // Probe the agent's card and persist `transport_path` (plus
+                // description/skills/tags/capabilities) — the same probe the
+                // seed / upload / update / restart deploy paths already run.
+                // Without it, an agent that mounts A2A at a non-root path (Go
+                // `a2a-go` agents serve `/a2a`) keeps an empty `transport_path`,
+                // so the orchestrator/proxy POSTs to `/` and every routed call
+                // 404s; and its description/skills stay empty, starving the
+                // routing engine of any signal but the bare name. This ad-hoc
+                // `nasiko deploy` (`POST /containers`) path was the only deploy
+                // path that skipped the probe.
+                tokio::spawn(crate::agents::utils::fetch_agent_card_with_retry(
+                    state.db.clone(),
+                    state.http_client.clone(),
+                    agent_id,
+                    endpoint.clone(),
+                ));
+
                 tokio::spawn(async move {
                     // Write the live endpoint URL + running status + image back to
                     // the catalog, so restart (which needs `image` to redeploy) works
