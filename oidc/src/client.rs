@@ -140,33 +140,20 @@ impl OidcClient {
         oauth_state: &str,
         nonce: &str,
         code_challenge: &str,
-        // Optional IdP account hint (a verified email). When set, the IdP
-        // pre-selects that account and skips the account chooser — used so a
-        // user who authenticated moments ago (e.g. the dashboard sign-in) isn't
-        // prompted again on the workspace-enter round-trip. Empty is ignored.
-        // Deliberately NOT `prompt=none`: that errors with `interaction_required`
-        // whenever the IdP needs any interaction, whereas `login_hint` degrades
-        // gracefully to a normal (pre-filled) prompt.
-        login_hint: Option<&str>,
     ) -> Result<String, OidcError> {
         let doc = self.discovery_doc().await?;
         let mut url = reqwest::Url::parse(&doc.authorization_endpoint)
             .map_err(|e| OidcError::Discovery(format!("invalid authorization_endpoint: {e}")))?;
-        {
-            let mut q = url.query_pairs_mut();
-            q.append_pair("client_id", &self.config.client_id)
-                .append_pair("response_type", "code")
-                .append_pair("response_mode", "query")
-                .append_pair("redirect_uri", self.effective_redirect_uri())
-                .append_pair("scope", &self.config.scopes)
-                .append_pair("state", oauth_state)
-                .append_pair("nonce", nonce)
-                .append_pair("code_challenge", code_challenge)
-                .append_pair("code_challenge_method", "S256");
-            if let Some(hint) = login_hint.filter(|h| !h.is_empty()) {
-                q.append_pair("login_hint", hint);
-            }
-        }
+        url.query_pairs_mut()
+            .append_pair("client_id", &self.config.client_id)
+            .append_pair("response_type", "code")
+            .append_pair("response_mode", "query")
+            .append_pair("redirect_uri", self.effective_redirect_uri())
+            .append_pair("scope", &self.config.scopes)
+            .append_pair("state", oauth_state)
+            .append_pair("nonce", nonce)
+            .append_pair("code_challenge", code_challenge)
+            .append_pair("code_challenge_method", "S256");
         Ok(url.into())
     }
 

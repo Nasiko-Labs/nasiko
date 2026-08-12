@@ -830,36 +830,19 @@ pub(crate) async fn delete(
         return StatusCode::FORBIDDEN.into_response();
     }
 
-    // Claim the delete up front: one statement is both the existence check and
-    // the mutual exclusion, and it hands back the primary container name needed
-    // for teardown.
-    //
-    // This route soft-deletes, so `deleted_at IS NULL` is what makes a repeat
-    // delete 404 instead of re-stamping the row and reporting success forever.
-    // Doing it as a single `UPDATE ... RETURNING` rather than SELECT-then-UPDATE
-    // also means only the caller that actually flipped `deleted_at` proceeds —
-    // two concurrent deletes would otherwise both pass a separate SELECT and
-    // both run the whole container teardown below before one of them lost.
-    //
-    // Teardown therefore runs *after* the row is marked. A runtime failure
-    // still leaves the agent deleted, which is the pre-existing behavior: the
-    // errors are reported in `runtime_errors` rather than rolling the delete
-    // back.
-    let name: String = match sqlx::query_scalar(
-        "UPDATE agents SET deleted_at = NOW() \
-         WHERE id = $1 AND deleted_at IS NULL \
-         RETURNING name",
-    )
-    .bind(id)
-    .fetch_optional(&state.db)
-    .await
+    // Fetch agent name early — gives a clean 404 before touching the runtime,
+    // and provides the primary container name needed for teardown.
+    let name: String = match sqlx::query_scalar("SELECT name FROM agents WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await
     {
         Ok(Some(n)) => n,
         Ok(None) => {
             return StatusCode::NOT_FOUND.into_response();
         }
         Err(e) => {
-            tracing::error!(%e, %id, "delete agent: claim soft delete");
+            tracing::error!(%e, %id, "delete agent: fetch name");
             return (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response();
         }
     };
@@ -912,18 +895,28 @@ pub(crate) async fn delete(
         }
     }
 
-    // The row was already marked by the claiming UPDATE above, so reaching here
-    // means this caller owns the delete — nothing left to decide.
-    (
-        StatusCode::OK,
-        Json(DeletedAgent {
-            deleted: true,
-            agent_id: id,
-            containers_stopped,
-            runtime_errors,
-        }),
-    )
-        .into_response()
+    let result = sqlx::query("UPDATE agents SET deleted_at = NOW() WHERE id = $1")
+        .bind(id)
+        .execute(&state.db)
+        .await;
+
+    match result {
+        Ok(r) if r.rows_affected() > 0 => (
+            StatusCode::OK,
+            Json(DeletedAgent {
+                deleted: true,
+                agent_id: id,
+                containers_stopped,
+                runtime_errors,
+            }),
+        )
+            .into_response(),
+        Ok(_) => StatusCode::NOT_FOUND.into_response(),
+        Err(e) => {
+            tracing::error!(%e, %id, "delete agent: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response()
+        }
+    }
 }
 
 /// List an agent's build/version history.

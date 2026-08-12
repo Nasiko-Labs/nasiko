@@ -128,9 +128,6 @@
     font-weight: 500;
     color: var(--color-text-muted);
   }
-  .method-card-req.connected {
-    color: var(--color-success, #22c55e);
-  }
 
   .method-card-desc {
     font-size: var(--font-size-sm);

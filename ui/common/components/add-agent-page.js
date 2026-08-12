@@ -105,7 +105,6 @@ class AddAgentPage extends HTMLElement {
       window.location.href = '/add-agent-github.html';
     });
 
-    this.#checkGithubStatus();
     this.#wireUploadModal();
 
     this.querySelector('#btn-oci')?.addEventListener('click', async () => {
@@ -124,21 +123,6 @@ class AddAgentPage extends HTMLElement {
         showToast(`Import failed: ${err.message}`);
       }
     });
-  }
-
-  async #checkGithubStatus() {
-    try {
-      const res = await apiFetch('/auth/github/token');
-      const body = await res.json();
-      if (body.status === 'connected') {
-        const card = this.querySelector('#btn-github')?.closest('.method-card');
-        if (!card) return;
-        const req = card.querySelector('.method-card-req');
-        const btn = this.querySelector('#btn-github');
-        if (req) { req.textContent = `Connected as ${body.username || 'GitHub user'}`; req.classList.add('connected'); }
-        if (btn) btn.textContent = 'Import from GitHub';
-      }
-    } catch { /* leave default text */ }
   }
 
   /// The agent name becomes part of an OCI image reference, so the server

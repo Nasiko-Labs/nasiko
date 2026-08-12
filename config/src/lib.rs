@@ -393,22 +393,6 @@ impl Config {
     }
 }
 
-/// Strips a trailing `/v1` (and any trailing slashes) from an OpenAI-compatible
-/// base URL, for callers that append their own `/v1/...` path segment.
-///
-/// `OPENAI_BASE_URL` is commonly written *with* the `/v1` — that is how
-/// `cp.nasiko.dev` and `ee/server/.env` have it — so appending `/v1/whatever`
-/// to the raw value doubles up into `.../v1/v1/whatever`, which 404s.
-///
-/// Deliberately a free function rather than normalization applied to
-/// [`Config::openai_base_url`] itself: `ee/artifact-registry` uses the opposite
-/// convention (base URL *includes* `/v1`, it appends bare `/embeddings`), so
-/// the stored value has to stay verbatim.
-pub fn openai_base_url_without_v1(base_url: &str) -> &str {
-    let trimmed = base_url.trim_end_matches('/');
-    trimmed.strip_suffix("/v1").unwrap_or(trimmed)
-}
-
 fn validate_secrets_key_format(key: &str) -> Result<(), String> {
     use base64::Engine;
     let bytes = base64::engine::general_purpose::STANDARD
@@ -450,44 +434,5 @@ mod tests {
     #[test]
     fn invalid_base64_fails() {
         assert!(validate_secrets_key_format("not base64 at all!!!").is_err());
-    }
-
-    #[test]
-    fn base_url_written_with_v1_is_stripped() {
-        // The cp.nasiko.dev form — appending `/v1/audio/transcriptions` to the
-        // raw value produced `.../v1/v1/audio/transcriptions` and 404'd.
-        assert_eq!(
-            openai_base_url_without_v1("https://api.openai.com/v1"),
-            "https://api.openai.com"
-        );
-        assert_eq!(
-            openai_base_url_without_v1("https://api.openai.com/v1/"),
-            "https://api.openai.com"
-        );
-    }
-
-    #[test]
-    fn base_url_written_without_v1_is_unchanged() {
-        assert_eq!(
-            openai_base_url_without_v1("https://api.deepseek.com"),
-            "https://api.deepseek.com"
-        );
-        assert_eq!(
-            openai_base_url_without_v1("http://localhost:11434/"),
-            "http://localhost:11434"
-        );
-    }
-
-    #[test]
-    fn only_a_trailing_v1_segment_is_stripped() {
-        // A host or path that merely contains "v1" must survive intact.
-        assert_eq!(
-            openai_base_url_without_v1("https://v1.example.com"),
-            "https://v1.example.com"
-        );
-        assert_eq!(
-            openai_base_url_without_v1("https://example.com/openai/v1/proxy"),
-            "https://example.com/openai/v1/proxy"
-        );
     }
 }
