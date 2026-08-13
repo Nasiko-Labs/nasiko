@@ -1,7 +1,6 @@
 import { apiFetch } from '/common/services/api.js';
 import "./voice-input.js";
 import "./agent-steps.js";
-import "./app-module-nav.js";
 import { icons } from '/common/utils/icons.js';
 import { renderMarkdown } from '/common/utils/markdown.js';
 import { readA2aStream, frameRenderer, nearBottom } from '/common/utils/a2a-stream.js';
@@ -66,7 +65,6 @@ class ChatPage extends HTMLElement {
     const agentCardUrl = this.#agentId ? `/agent-card.html?id=${encodeURIComponent(this.#agentId)}` : null;
 
     this.innerHTML = `
-      ${this.#agentId ? '' : '<app-module-nav module="orchestrator"></app-module-nav>'}
       <div class="chat-header">
         <div class="chat-header-avatar" aria-hidden="true">${initial}</div>
         <div class="chat-header-info">

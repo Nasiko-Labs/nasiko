@@ -44,10 +44,9 @@ const MODULE_NAVS = {
   orchestrator: {
     title: 'Orchestrator', icon: 'brain',
     groups: [
-      // A group with a url and no items is a heading-level link (see
-      // app-module-nav's #groupHtml) — the entry point sits above the
-      // session list, not inside it.
-      { label: 'Orchestrate a task', url: '/index.html' },
+      { label: 'Session', items: [
+        { label: 'Orchestrate a task', section: 'orchestrate' },
+      ]},
       { label: 'Workflows', items: [
         { label: 'All workflows', section: 'workflows' },
         { label: 'Executions', section: 'executions' },
@@ -91,8 +90,9 @@ const MODULE_NAVS = {
     title: 'Observability', icon: 'activity',
     groups: [
       { label: 'Home', items: [
-        { label: 'Execution history', url: '/sessions.html' },
-        { label: 'Resources', url: '/resources.html' },
+        { label: 'Execution history', section: 'history' },
+        { label: 'Live flows', section: 'flows' },
+        { label: 'Resources', section: 'resources' },
       ]},
     ],
   },
@@ -117,44 +117,9 @@ const MODULE_NAVS = {
   },
 };
 
-// Orchestrator chats listed under the Session group. `agent_name: null` is the
-// marker for a session the orchestrator routed (a direct agent chat carries the
-// agent's name and belongs to that agent, not here). The API has no filter for
-// it, so over-fetch one page and filter client-side.
-const ORCH_SESSION_ROWS = 15;
-const orchestratorSessionItems = async () => {
-  try {
-    const res = await window.fetchSessions('', 50);
-    return (res?.data || [])
-      .filter((s) => !s.agent_name)
-      .slice(0, ORCH_SESSION_ROWS)
-      .map((s) => ({
-        // Titles are auto-generated and often the literal "New chat", which
-        // makes every row look the same — fall back to the last message.
-        // Sliced: a last_message is a whole markdown answer, and the row
-        // ellipsises anyway — no reason to carry KBs of it through the cache.
-        label: ((s.title && s.title !== 'New chat' ? s.title : s.last_message) || 'New chat')
-          .replace(/\s+/g, ' ').trim().slice(0, 60),
-        // Same target as an Execution history row: chat.html loads the
-        // transcript and posts to /orchestrator/a2a when there's no agent_id.
-        url: `/chat.html?session_id=${encodeURIComponent(s.session_id)}&agent_name=Orchestrator`,
-      }));
-  } catch {
-    return []; // a flaky request must not blank the sidebar
-  }
-};
-
 window.fetchModuleNav = async (module) => {
   const nav = MODULE_NAVS[module];
   if (!nav) return null;
-  if (module === 'orchestrator') {
-    const sessions = await orchestratorSessionItems();
-    const groups = [...nav.groups];
-    // Last, below Workflows; omitted entirely when empty, since a group with
-    // no items renders as a stray heading.
-    if (sessions.length) groups.push({ label: 'Session', items: sessions });
-    return { ...nav, groups };
-  }
   // Observability used to append a dynamic "Recent activity" group listing the
   // five newest sessions. Dropped: on sessions.html — the only page it appeared
   // on — it restated the first five rows of the table beside it, and the table

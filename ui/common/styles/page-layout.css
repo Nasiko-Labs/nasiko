@@ -301,11 +301,4 @@ login-page {
     min-height: 0;
     flex: none;
   }
-
-  /* An orchestrator session opened from the module nav keeps that nav, so the
-     transcript clears its gutter. Keyed on `:has` — a direct agent chat renders
-     no nav (chat-page.js) and must keep the full width. */
-  chat-page:has(> app-module-nav) {
-    padding-left: calc(224px + var(--s-64));
-  }
 }

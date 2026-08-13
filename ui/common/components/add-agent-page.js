@@ -99,31 +99,6 @@ class AddAgentPage extends HTMLElement {
           <button type="button" class="btn-dark" id="upload-submit">Upload and deploy</button>
         </div>
       </app-modal>
-
-      <app-modal id="oci-modal" heading="Import from OCI registry">
-        <div class="upload-form" id="oci-form">
-          <label class="field">
-            <span class="field-label">Artifact reference</span>
-            <input type="text" id="oci-ref" autocomplete="off" spellcheck="false"
-                   placeholder="registry.example.com/owner/my-agent:v1.0" />
-            <span class="field-hint">Format <code>registry.host/owner/name[:tag]</code>; defaults to
-              <code>:latest</code>. The host must be allow-listed on the server.</span>
-          </label>
-          <p class="form-error" id="oci-error" hidden></p>
-        </div>
-        <div class="agent-card-setup" id="oci-progress" hidden>
-          <div class="setup-progress">
-            <span class="setup-spinner"></span>
-            <span class="setup-label">Setting up…</span>
-          </div>
-          <p class="setup-hint">Pulling the image and starting the container. This may take a few
-            minutes. You can close this dialog — it keeps running — but don't leave the page.</p>
-        </div>
-        <div data-slot="footer">
-          <button type="button" class="btn-outline" id="oci-cancel">Cancel</button>
-          <button type="button" class="btn-dark" id="oci-submit">Import and deploy</button>
-        </div>
-      </app-modal>
     `;
 
     this.querySelector('#btn-github')?.addEventListener('click', () => {
@@ -132,71 +107,21 @@ class AddAgentPage extends HTMLElement {
 
     this.#checkGithubStatus();
     this.#wireUploadModal();
-    this.#wireOciModal();
-  }
 
-  /// The import runs synchronously server-side (build/pull + deploy inside the
-  /// request), so the request — not the dialog — is what has to survive: hence a
-  /// real "setting up" state in the body, and an unload guard, because leaving
-  /// the page aborts the fetch, which drops the handler and strands the agent
-  /// in `deploying`. Closing the dialog is harmless; the fetch keeps going.
-  #wireOciModal() {
-    const modal = this.querySelector('#oci-modal');
-    // app-modal has no isOpen(); the internal <dialog> is a plain child.
-    const dialogEl = modal.querySelector('dialog');
-    const form = this.querySelector('#oci-form');
-    const progress = this.querySelector('#oci-progress');
-    const refEl = this.querySelector('#oci-ref');
-    const errorEl = this.querySelector('#oci-error');
-    const submitEl = this.querySelector('#oci-submit');
-
-    const blockUnload = (e) => e.preventDefault();
-    const setBusy = (busy) => {
-      form.hidden = busy;
-      progress.hidden = !busy;
-      modal.toggleAttribute('hide-footer', busy);
-      if (busy) window.addEventListener('beforeunload', blockUnload);
-      else window.removeEventListener('beforeunload', blockUnload);
-    };
-
-    this.querySelector('#btn-oci').addEventListener('click', () => {
-      refEl.value = '';
-      errorEl.hidden = true;
-      setBusy(false);
-      modal.open();
-    });
-    this.querySelector('#oci-cancel').addEventListener('click', () => modal.close());
-    refEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') submitEl.click(); });
-
-    submitEl.addEventListener('click', async () => {
-      const reference = refEl.value.trim();
-      errorEl.hidden = true;
-      // Mirrors the server's parse (oss/server/src/catalog/import.rs): the
-      // reference must carry a registry host, otherwise it 400s.
-      const [repoWithHost] = reference.split(':');
-      if (!repoWithHost.includes('/')) {
-        errorEl.textContent = 'Enter a full reference: registry.host/owner/name[:tag].';
-        errorEl.hidden = false;
-        return;
-      }
-
-      setBusy(true);
+    this.querySelector('#btn-oci')?.addEventListener('click', async () => {
+      const reference = prompt('Enter artifact reference (e.g. nasiko/my-agent:v1.0):');
+      if (!reference) return;
       try {
         const res = await apiFetch('/import/registry', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ reference }),
         });
-        if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
-        setBusy(false);  // drops the unload guard, so the redirect below isn't blocked
-        // Don't yank someone who dismissed the dialog and moved on.
-        if (dialogEl.open) window.location.href = '/your-agents.html';
-        else this.#toast('Agent imported. See Your agents.');
+        if (!res.ok) throw new Error(await res.text());
+        window.location.href = '/agents.html?view=your-agents';
       } catch (err) {
-        setBusy(false);
-        if (!dialogEl.open) { this.#toast(`Import failed: ${err.message}`); return; }
-        errorEl.textContent = `Import failed: ${err.message}`;
-        errorEl.hidden = false;
+        const { showToast } = await import('/common/utils/toast.js');
+        showToast(`Import failed: ${err.message}`);
       }
     });
   }
@@ -275,11 +200,6 @@ class AddAgentPage extends HTMLElement {
         submitEl.disabled = false;
       }
     });
-  }
-
-  async #toast(message) {
-    const { showToast } = await import('/common/utils/toast.js');
-    showToast(message);
   }
 
   #showUploadError(message) {

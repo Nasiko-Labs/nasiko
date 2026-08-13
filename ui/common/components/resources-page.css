@@ -171,12 +171,7 @@
     height: 6px;
     border-radius: var(--r-4);
     overflow: hidden;
-    /* The tint ramp is far more saturated against a white surface than the dark
-       ramp is against a near-black one, so an empty light-mode bar reads as a
-       full green one. Dilute the track in light only; dark is already right. */
-    background: light-dark(
-      color-mix(in oklab, var(--track, var(--color-border)) 40%, var(--color-bg-surface)),
-      var(--track, var(--color-border)));
+    background: var(--track, var(--color-border));
   }
 
   .meter-fill {

@@ -140,15 +140,12 @@ app-module-nav:not(:defined) { display: block; }
   }
 
   .child { padding-left: 26px; }
-  /* Keyed on .row, not .child: a group can itself be a link row (a
-     heading-level page with no children) and takes the same active state.
-     No backticks in this sheet — it is a template literal. */
-  .row.is-active {
+  .child.is-active {
     background: light-dark(var(--sand-100), var(--neutral-700));
     color: var(--fg-primary);
     font-weight: 500;
   }
-  .row.is-active:hover { background: light-dark(var(--sand-100), var(--neutral-700)); }
+  .child.is-active:hover { background: light-dark(var(--sand-100), var(--neutral-700)); }
 
   /* Skeleton while fetchModuleNav resolves */
   .skel-row {
@@ -421,30 +418,6 @@ export class AppModuleNav extends HTMLElement {
       ${active ? 'aria-current="page"' : ""}><span class="row-label">${this.#esc(item.label)}</span></a>`;
   }
 
-  /** A group carrying a `url` and no items is a heading-level link, not a
-   *  collapsible group (Orchestrator's "Orchestrate a task") — no chevron,
-   *  since there is nothing to collapse. */
-  #groupHtml(g) {
-    if (g.url && !g.items?.length) {
-      const active = this.#isActive(g.url);
-      return `<a class="row group-head${active ? " is-active" : ""}" href="${this.#esc(g.url)}"
-        ${active ? 'aria-current="page"' : ""}><span class="row-label">${this.#esc(g.label)}</span></a>`;
-    }
-    return `
-      <div class="group${this.#collapsed.has(g.label) ? " is-collapsed" : ""}">
-        <button type="button" class="row group-head" data-group="${this.#esc(g.label)}"
-          aria-expanded="${!this.#collapsed.has(g.label)}">
-          <span class="chev">${icons.chevronDown("", 12)}</span>
-          <span class="row-label">${this.#esc(g.label)}</span>
-        </button>
-        <div class="group-items">
-          <div class="items-clip">
-            ${(g.items || []).map((item) => this.#itemHtml(item)).join("")}
-          </div>
-        </div>
-      </div>`;
-  }
-
   #render() {
     const nav = this.#nav;
     if (!nav || !nav.groups?.length) {
@@ -460,10 +433,13 @@ export class AppModuleNav extends HTMLElement {
     // first section item. Sections owned by another page are skipped — one
     // would otherwise light up next to that page's own active row.
     if (!this.getAttribute("active-section")) {
-      const first = nav.groups
-        .flatMap((g) => g.items || [])
-        .find((i) => i.section != null && (!i.url || this.#isActive(i.url)));
-      if (first) this.setAttribute("active-section", first.section);
+      const sections = nav.groups
+        .flatMap((g) => g.items)
+        .filter((i) => i.section != null && (!i.url || this.#isActive(i.url)))
+        .map((i) => i.section);
+      if (sections.length) {
+        this.setAttribute("active-section", initialView(sections));
+      }
     }
 
     const iconHtml = nav.icon && icons[nav.icon] ? icons[nav.icon]("", 14) : "";
@@ -479,7 +455,20 @@ export class AppModuleNav extends HTMLElement {
         <span class="mod-title">${this.#esc(nav.title)}</span>
       </div>
       <nav class="mod-groups" aria-label="${this.#esc(nav.title)} navigation">
-        ${nav.groups.map((g) => this.#groupHtml(g)).join("")}
+        ${nav.groups.map((g) => `
+          <div class="group${this.#collapsed.has(g.label) ? " is-collapsed" : ""}">
+            <button type="button" class="row group-head" data-group="${this.#esc(g.label)}"
+              aria-expanded="${!this.#collapsed.has(g.label)}">
+              <span class="chev">${icons.chevronDown("", 12)}</span>
+              <span class="row-label">${this.#esc(g.label)}</span>
+            </button>
+            <div class="group-items">
+              <div class="items-clip">
+                ${g.items.map((item) => this.#itemHtml(item)).join("")}
+              </div>
+            </div>
+          </div>
+        `).join("")}
       </nav>`;
   }
 }

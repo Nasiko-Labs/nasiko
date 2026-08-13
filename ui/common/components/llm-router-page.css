@@ -43,7 +43,7 @@
   }
 
   .kpi-value {
-    font-size: var(--font-size-lg);
+    font-size: var(--font-size-xl);
     font-weight: 500;
     color: var(--color-text-main);
     overflow: hidden;
