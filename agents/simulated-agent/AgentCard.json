@@ -1,0 +1,47 @@
+{
+  "agentFramework": "starlette",
+  "capabilities": {
+    "chat_agent": false,
+    "pushNotifications": false,
+    "stateTransitionHistory": false,
+    "streaming": true
+  },
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "description": "The simulated agent generates randomized lorem-ipsum text responses with variable latency, mimicking the behavior of a real LLM-backed agent for control-plane load testing.",
+  "framework": "starlette",
+  "llm_provider": null,
+  "name": "simulated-agent",
+  "preferredTransport": "JSONRPC",
+  "protocolVersion": "0.2.9",
+  "skills": [
+    {
+      "description": "Streams randomized lorem-ipsum text back at variable latency",
+      "examples": [
+        "Hello world",
+        "Testing 123"
+      ],
+      "id": "simulate",
+      "name": "Simulate",
+      "tags": [
+        "utility",
+        "benchmark",
+        "load-test"
+      ]
+    }
+  ],
+  "tags": [
+    "benchmark",
+    "load-testing",
+    "simulation",
+    "lorem-ipsum",
+    "python"
+  ],
+  "transport": "http",
+  "url": "http://localhost:8000/",
+  "version": "0.1.0"
+}

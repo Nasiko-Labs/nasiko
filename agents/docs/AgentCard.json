@@ -1,0 +1,50 @@
+{
+  "agentFramework": "axum",
+  "capabilities": {
+    "chat_agent": true,
+    "pushNotifications": false,
+    "stateTransitionHistory": false,
+    "streaming": true
+  },
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "description": "The Docs agent provides version-accurate documentation lookup across various programming ecosystems, including Rust, JavaScript, and Python, by utilizing multiple package registries and GitHub.",
+  "framework": "axum",
+  "llm_provider": "openai",
+  "name": "docs",
+  "preferredTransport": "JSONRPC",
+  "protocolVersion": "0.2.9",
+  "skills": [
+    {
+      "description": "Look up documentation for any library across Rust, JS, and Python ecosystems",
+      "examples": [
+        "Look up the latest version of the 'serde' crate",
+        "Find documentation for 'express' package on npm"
+      ],
+      "id": "docs-lookup",
+      "name": "Docs Lookup",
+      "tags": [
+        "docs",
+        "rust",
+        "npm",
+        "python"
+      ]
+    }
+  ],
+  "tags": [
+    "documentation",
+    "rust",
+    "npm",
+    "python",
+    "web-search",
+    "api",
+    "openai"
+  ],
+  "transport": "http",
+  "url": "http://localhost:8000/",
+  "version": "0.1.0"
+}

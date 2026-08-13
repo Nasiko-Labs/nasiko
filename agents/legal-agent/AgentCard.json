@@ -1,0 +1,76 @@
+{
+  "agentFramework": "axum",
+  "capabilities": {
+    "chat_agent": true,
+    "pushNotifications": false,
+    "stateTransitionHistory": false,
+    "streaming": true
+  },
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "description": "The legal-agent provides legal research capabilities, allowing users to search for SEC filings, Federal Register regulations, and case law.",
+  "framework": "axum",
+  "llm_provider": "openai",
+  "name": "legal-agent",
+  "preferredTransport": "JSONRPC",
+  "protocolVersion": "0.2.9",
+  "skills": [
+    {
+      "description": "Search SEC EDGAR for corporate filings (10-K, 10-Q, 8-K)",
+      "examples": [
+        "Find Apple's latest 10-K filing"
+      ],
+      "id": "sec-filings",
+      "name": "SEC Filings",
+      "tags": [
+        "legal",
+        "sec",
+        "filings",
+        "corporate"
+      ]
+    },
+    {
+      "description": "Search the Federal Register for regulations and notices",
+      "examples": [
+        "Find recent AI regulation proposals"
+      ],
+      "id": "regulations",
+      "name": "Federal Register",
+      "tags": [
+        "legal",
+        "regulations",
+        "compliance"
+      ]
+    },
+    {
+      "description": "Search court opinions and case law via CourtListener",
+      "examples": [
+        "Find Supreme Court cases about fair use"
+      ],
+      "id": "case-law",
+      "name": "Case Law Search",
+      "tags": [
+        "legal",
+        "cases",
+        "courts"
+      ]
+    }
+  ],
+  "tags": [
+    "legal",
+    "research",
+    "sec",
+    "federal-register",
+    "case-law",
+    "compliance",
+    "court",
+    "filings"
+  ],
+  "transport": "http",
+  "url": "http://localhost:8000/",
+  "version": "0.1.0"
+}

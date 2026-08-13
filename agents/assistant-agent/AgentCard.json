@@ -1,0 +1,48 @@
+{
+  "agentFramework": "starlette",
+  "capabilities": {
+    "chat_agent": false,
+    "pushNotifications": false,
+    "stateTransitionHistory": false,
+    "streaming": true
+  },
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "description": "The assistant agent discovers other agents via the A2A registry, delegates tasks to them, and synthesizes their responses into a coherent answer for the user.",
+  "framework": "starlette",
+  "llm_provider": "openai",
+  "name": "assistant-agent",
+  "preferredTransport": "JSONRPC",
+  "protocolVersion": "0.2.9",
+  "skills": [
+    {
+      "description": "Discovers agents, delegates tasks via A2A, synthesizes results",
+      "examples": [
+        "Convert 100 USD to EUR",
+        "Echo hello world",
+        "What is the capital of France?"
+      ],
+      "id": "orchestrate",
+      "name": "Multi-Agent Orchestration",
+      "tags": [
+        "orchestration",
+        "multi-agent",
+        "a2a"
+      ]
+    }
+  ],
+  "tags": [
+    "orchestration",
+    "multi-agent",
+    "a2a",
+    "python",
+    "http"
+  ],
+  "transport": "http",
+  "url": "http://localhost:8000/",
+  "version": "0.1.0"
+}

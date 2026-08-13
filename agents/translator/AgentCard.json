@@ -1,0 +1,51 @@
+{
+  "agentFramework": "fastapi",
+  "capabilities": {
+    "chat_agent": false,
+    "pushNotifications": false,
+    "stateTransitionHistory": false,
+    "streaming": true
+  },
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "description": "The Translator agent translates text and web content between languages using AI, leveraging tools like Google Translate and language detection.",
+  "framework": "fastapi",
+  "llm_provider": "openai",
+  "name": "translator",
+  "preferredTransport": "JSONRPC",
+  "protocolVersion": "0.2.9",
+  "skills": [
+    {
+      "description": "Translate text or web page content between any languages",
+      "examples": [
+        "Translate 'Hello world' to Spanish",
+        "What does this French website say in English?",
+        "Detect the language of this text"
+      ],
+      "id": "translate",
+      "name": "Translation",
+      "tags": [
+        "translation",
+        "language",
+        "text",
+        "url"
+      ]
+    }
+  ],
+  "tags": [
+    "translation",
+    "language",
+    "text",
+    "web-content",
+    "google-translate",
+    "openai",
+    "python"
+  ],
+  "transport": "http",
+  "url": "http://localhost:8000/",
+  "version": "0.1.0"
+}
