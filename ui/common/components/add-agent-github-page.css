@@ -1,10 +1,6 @@
-/* Import from GitHub — NightOwl: back link, Chivo Mono title, sand search
-   well, hairline repo list. */
+/* Import from GitHub — 3-step flow: select repo → configure → clone & upload */
 
 @scope (add-agent-github-page) {
-  /* Host box — display, padding, the desktop card padding and (where the page
-     has one) the module-nav gutter: common/styles/page-layout.css. Linked, not
-     adopted, so it is already in effect at first paint. */
 
   .back-link {
     display: inline-flex;
@@ -40,6 +36,96 @@
     font-family: var(--font-mono);
   }
 
+  /* Two-column layout: steps (left) + connection status (right) */
+  .page-layout {
+    display: flex;
+    gap: var(--space-lg);
+    align-items: flex-start;
+  }
+  .steps-col { flex: 3; min-width: 0; }
+  .status-col { flex: 2; position: sticky; top: var(--space-md); }
+
+  @media (max-width: 768px) {
+    .page-layout { flex-direction: column-reverse; }
+    .status-col { position: static; width: 100%; }
+  }
+
+  /* Steps */
+  .step-section { margin-bottom: var(--space-sm); }
+
+  .step-label {
+    font-size: var(--font-size-xs);
+    font-weight: 600;
+    color: var(--color-text-muted);
+    margin: 0 0 var(--space-xs);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .step-title {
+    font-weight: 600;
+    font-size: var(--font-size-base);
+    margin: 0 0 var(--space-xs);
+    color: var(--color-text-main);
+  }
+  .step-desc {
+    color: var(--color-text-muted);
+    font-size: var(--font-size-sm);
+    margin: 0 0 var(--space-sm);
+  }
+  .step-desc code {
+    padding: 1px 5px;
+    background: var(--bg-input);
+    border-radius: var(--r-4);
+    font-size: var(--font-size-xs);
+    font-family: var(--font-mono);
+  }
+
+  .step-divider {
+    border: none;
+    border-top: 1px solid var(--color-border);
+    margin: var(--space-md) 0;
+  }
+
+  /* Connection status banner */
+  .connect-status {
+    border: 1px solid var(--color-border);
+    border-radius: var(--r-8);
+    padding: var(--space-md);
+    background: light-dark(var(--white), var(--neutral-900));
+  }
+  .connect-status-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .connect-status-header svg,
+  .connect-status-header .gh-icon {
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+    fill: currentColor;
+  }
+  .connect-status-title {
+    font-weight: 600;
+    font-size: var(--font-size-sm);
+    color: var(--color-text-main);
+    margin: 0;
+  }
+  .connect-status.loading .connect-status-title {
+    color: var(--color-text-muted);
+  }
+  .connect-status-sub {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+    margin: var(--space-xs) 0 0;
+  }
+  .connect-status-actions {
+    margin-top: var(--space-sm);
+    display: flex;
+    justify-content: flex-end;
+  }
+
+  /* Search */
   .search-wrap {
     position: relative;
     max-width: 400px;
@@ -69,11 +155,14 @@
   .search-box:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
   .search-box::placeholder { color: var(--color-text-muted); }
 
+  /* Repo list */
   .repo-list {
     border: 1px solid var(--color-border);
     border-radius: var(--r-8);
     overflow: hidden;
-    margin-top: var(--space-md);
+    margin-top: var(--space-sm);
+    max-height: 360px;
+    overflow-y: auto;
   }
   .repo-item {
     display: flex;
@@ -85,7 +174,8 @@
     transition: background var(--transition-fast);
   }
   .repo-item:last-child { border-bottom: none; }
-  .repo-item:hover { background: var(--bg-input); }
+  .repo-selectable { cursor: pointer; }
+  .repo-selectable:hover { background: var(--bg-input); }
   .repo-info { flex: 1; min-width: 0; display: flex; align-items: center; gap: var(--space-md); }
   .repo-name {
     font-weight: 500;
@@ -104,4 +194,66 @@
     color: var(--color-text-muted);
     white-space: nowrap;
   }
+
+  /* Radio indicator */
+  .repo-radio {
+    flex-shrink: 0;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    border: 2px solid var(--color-text-muted);
+    transition: border-color var(--transition-fast), background var(--transition-fast);
+    position: relative;
+  }
+  .repo-radio[data-selected="true"] {
+    border-color: var(--color-primary);
+  }
+  .repo-radio[data-selected="true"]::after {
+    content: '';
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--color-primary);
+  }
+
+  /* Config fields (step 2) */
+  .config-fields {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--space-md);
+    margin-top: var(--space-xs);
+  }
+  .config-fields[inert] { opacity: 0.4; pointer-events: none; }
+
+  @media (max-width: 560px) {
+    .config-fields { grid-template-columns: 1fr; }
+  }
+
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field-label {
+    font-size: var(--font-size-sm);
+    font-weight: 500;
+    color: var(--color-text-main);
+  }
+  .field-input {
+    height: var(--control-h-md);
+    padding: 0 var(--s-12);
+    border: 1px solid var(--color-border);
+    border-radius: var(--r-8);
+    background: var(--bg-input);
+    font-size: var(--font-size-sm);
+    color: var(--color-text-main);
+  }
+  .field-input:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
+  .field-input::placeholder { color: var(--color-text-muted); }
+  .field-hint {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+  }
+
+  /* Clone button (step 3) */
+  .clone-btn { margin-top: var(--space-xs); }
 }

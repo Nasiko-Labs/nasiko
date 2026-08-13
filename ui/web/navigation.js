@@ -3,23 +3,29 @@ import { apiFetch, fetchApi } from '/common/services/api.js';
 window.fetchNavigation = async () => [
   // rail: true → shown as a rail module icon; everything else is reachable
   // through the module tree navs and the ⌘F nav search.
-  { title: "Orchestrator", url: "/index.html", icon: "brain", rail: true },
-  // On the rail: without it the only route to the workflow list was to open
-  // "Create workflow" and back out of it.
-  { title: "Workflows", url: "/workflows.html", icon: "workflow", rail: true },
-  { title: "Executions", url: "/executions.html", icon: "play" },
-  { title: "Agents", url: "/agents.html", icon: "bot", rail: true },
-  { title: "Sessions", url: "/sessions.html", icon: "activity", rail: true },
-  { title: "MCP gateway", url: "/mcp.html", icon: "server", rail: true },
+  // module → which module tree (MODULE_NAVS below) a page belongs to. The rail
+  // item carrying the same key stays selected while any of its children is
+  // open, so a child page never leaves the rail with nothing highlighted.
+  { title: "Orchestrator", url: "/index.html", icon: "brain", rail: true, module: "orchestrator" },
+  // Not on the rail: workflows are the Orchestrator module's second group, and
+  // a second rail icon into the same tree read as a separate module.
+  { title: "Workflows", url: "/workflows.html", icon: "workflow", module: "orchestrator" },
+  { title: "Executions", url: "/executions.html", icon: "play", module: "orchestrator" },
+  { title: "Agents", url: "/agents.html", icon: "bot", rail: true, module: "agents" },
+  { title: "Sessions", url: "/sessions.html", icon: "activity", rail: true, module: "observability" },
+  { title: "MCP gateway", url: "/mcp.html", icon: "server", rail: true, module: "mcp" },
   { title: "LLM router", url: "/llm-router.html", icon: "route", rail: true },
   { title: "TokenOps", url: "/tokenops.html", icon: "banknote", rail: true },
-  { title: "Your Agents", url: "/your-agents.html", icon: "user" },
-  { title: "Add Agent", url: "/add-agent.html", icon: "plus" },
+  { title: "Your Agents", url: "/your-agents.html", icon: "user", module: "agents" },
+  { title: "Add Agent", url: "/add-agent.html", icon: "plus", module: "agents" },
   { title: "Set up CLI", url: "/setup-cli.html", icon: "terminal" },
-  { title: "Flows", url: "/flows.html", icon: "cornerUpRight" },
-  { title: "Builds", url: "/builds.html", icon: "cube" },
-  { title: "Secrets", url: "/secrets.html", icon: "lock" },
-  { title: "Settings", url: "/settings.html", icon: "settings", rail: true },
+  { title: "Flows", url: "/flows.html", icon: "cornerUpRight", module: "observability" },
+  // In the Observability module tree but missing here, so ⌘F couldn't find it
+  // and the rail lost its selection on the page.
+  { title: "Resources", url: "/resources.html", icon: "activity", module: "observability" },
+  { title: "Builds", url: "/builds.html", icon: "cube", module: "agents" },
+  { title: "Secrets", url: "/secrets.html", icon: "lock", module: "settings" },
+  { title: "Settings", url: "/settings.html", icon: "settings", rail: true, module: "settings" },
 ];
 
 // In-card module tree navs (app-module-nav). Items are either page links
@@ -45,15 +51,11 @@ const MODULE_NAVS = {
       // to custom MCP servers only (toolkits are platform-registered).
       { label: 'MCP servers', items: [
         { label: 'All', section: 'all' },
-        { label: 'Created by you', section: 'created-by-you' },
+        { label: 'My servers', section: 'my-servers' },
         { label: 'Shared with me', section: 'shared-with-me' },
-        { label: 'My uploads', section: 'uploads' },
       ]},
       { label: 'Toolkits', items: [
         { label: 'All toolkits', section: 'toolkits' },
-      ]},
-      { label: 'Access', items: [
-        { label: 'Agent access', section: 'agent-access' },
       ]},
     ],
   },
@@ -475,4 +477,8 @@ window.saveAgentMcpToolRules = async (agentId, rules) => {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ rules }),
   });
+};
+
+window.fetchMcpConnectorDetail = async (id) => {
+  return fetchApi(`/mcp/connectors/${encodeURIComponent(id)}`);
 };

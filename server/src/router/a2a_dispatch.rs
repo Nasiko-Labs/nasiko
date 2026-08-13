@@ -200,6 +200,7 @@ pub async fn a2a_dispatch_handler(
                 user_id,
                 is_superuser: claims.is_superuser,
                 client_owns_transcript: session_id.is_some(),
+                file_parts: vec![],
             },
         )
         .await
@@ -219,7 +220,7 @@ pub async fn a2a_dispatch_handler(
         if !crate::acl::can_access_agent(&state, &claims, agent.id).await {
             return Err(A2aDispatchError::AgentNotFound(target.to_string()));
         }
-        agent_stream(&state, agent, &query, &task_id, &context_id, user_id).await
+        agent_stream(&state, agent, &query, &task_id, &context_id, user_id, &[]).await
     }
 }
 
@@ -239,6 +240,8 @@ struct OrchestratorTurn<'a> {
     is_superuser: bool,
     /// Caller persists its own turns (web UI) — the server must not also.
     client_owns_transcript: bool,
+    /// File parts uploaded with the request (multipart upload path).
+    file_parts: Vec<nasiko_types::a2a::Part>,
 }
 
 async fn orchestrator_stream(
@@ -253,6 +256,7 @@ async fn orchestrator_stream(
         user_id,
         is_superuser,
         client_owns_transcript,
+        file_parts,
     } = turn;
     // Orchestrator-routed chats never had a `chat_sessions` row, unlike
     // `agent_proxy.rs`'s `ensure_chat_session` for direct agent chat — so
@@ -442,7 +446,7 @@ async fn orchestrator_stream(
         .await
         .map_err(|e| A2aDispatchError::Internal(e.to_string()))?;
 
-    let mut rx = orchestrator.run_stream(query);
+    let mut rx = orchestrator.run_stream(query, file_parts);
     let task_id = task_id.to_string();
     let context_id = context_id.to_string();
     let artifact_id = Uuid::new_v4().to_string();
@@ -712,6 +716,7 @@ async fn agent_stream(
     task_id: &str,
     context_id: &str,
     user_id: Uuid,
+    file_parts: &[nasiko_types::a2a::Part],
 ) -> Result<Response, A2aDispatchError> {
     let endpoint = resolve_endpoint(state, &agent.id.to_string(), &agent.name)
         .await
@@ -778,7 +783,11 @@ async fn agent_stream(
     // stream on its own (upstream bug). Agents that answer with plain JSON
     // (or reject `message/stream`) fall through to the non-streaming branch,
     // which retries with `message/send`.
-    let req_body = nasiko_types::a2a::build_stream_request(query, Some(context_id));
+    let req_body = if file_parts.is_empty() {
+        nasiko_types::a2a::build_stream_request(query, Some(context_id))
+    } else {
+        nasiko_types::a2a::build_stream_request_with_parts(query, Some(context_id), file_parts)
+    };
 
     let build_agent_req = || {
         let mut req = state
@@ -1142,7 +1151,7 @@ pub async fn a2a_upload_handler(
     mut multipart: Multipart,
 ) -> Result<Response, A2aDispatchError> {
     let mut query = String::new();
-    let mut file_count = 0usize;
+    let mut collected_files: Vec<nasiko_types::a2a::Part> = Vec::new();
 
     while let Some(field) = multipart
         .next_field()
@@ -1150,6 +1159,8 @@ pub async fn a2a_upload_handler(
         .map_err(|e| A2aDispatchError::InvalidRequest(format!("multipart error: {e}")))?
     {
         let field_name = field.name().unwrap_or("").to_string();
+        let file_name = field.file_name().map(|s| s.to_string());
+        let content_type = field.content_type().map(|s| s.to_string());
 
         let bytes = field
             .bytes()
@@ -1161,9 +1172,14 @@ pub async fn a2a_upload_handler(
                 A2aDispatchError::InvalidRequest("query must be valid UTF-8".into())
             })?;
         } else {
-            file_count += 1;
+            collected_files.push(nasiko_types::a2a::file_part(
+                bytes.to_vec(),
+                file_name.or(Some(field_name)),
+                content_type,
+            ));
         }
     }
+    let file_count = collected_files.len();
 
     if query.trim().is_empty() {
         return Err(A2aDispatchError::InvalidRequest(
@@ -1200,6 +1216,7 @@ pub async fn a2a_upload_handler(
             // Fresh context id, minted here — no client-side session owns
             // this transcript, so the server persists the turn.
             client_owns_transcript: false,
+            file_parts: collected_files,
         },
     )
     .await

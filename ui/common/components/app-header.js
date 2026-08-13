@@ -19,17 +19,22 @@ import { confirmDialog } from "../utils/confirm-dialog.js";
 import "./app-user-menu.js";
 import "./app-nav-search.js";
 
+/* Collapsed is the default rail state. The key is versioned so the change reaches
+   users who already toggled the old rail open — a stored `true` under the previous
+   key would have kept them expanded forever. Toggling still persists per user. */
+const RAIL_KEY = "app-rail-expanded-v2";
+
 const styles = new CSSStyleSheet();
 styles.replaceSync(`@keyframes ah-skel-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.35; }
 }
 
-::view-transition-old(app-header),
-::view-transition-new(app-header) {
-  animation: none;
-  mix-blend-mode: normal;
-}
+/* view-transition-name + the frozen ::view-transition-old/new rules for this
+   element live in common/global.css, NOT here. This sheet is adopted when the
+   module evaluates, which is after the incoming document is snapshotted for a
+   cross-document transition — naming the header here meant it had no group on
+   the new page and the whole shell cross-faded on every navigation. */
 
 @scope (app-header) {
   :scope {
@@ -37,7 +42,6 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
     position: sticky;
     top: 0;
     z-index: 100;
-    view-transition-name: app-header;
 
     @media (min-width: 1024px) {
       position: fixed;
@@ -159,13 +163,22 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
       position: fixed;
       top: var(--shell-topbar-height);
       bottom: 0;
-      left: 0;
+      /* Floats inside the shell gutter rather than sitting flush at left:0, so
+         the ink frame around the content card is even on all three open sides.
+         Width is the 32px button column only — the gutters live outside it. */
+      left: var(--shell-gutter);
       width: var(--app-sidebar-width);
-      padding: var(--s-12);
+      /* Top gutter matches the design's padding-top:12px on both rails — the
+         first item sits 12px below the topbar, not flush against it. */
+      padding: var(--shell-gutter) 0;
       background: var(--shell-bg);
       color: var(--shell-fg);
-      overflow-y: auto;
-      overflow-x: hidden;
+      /* Collapsed rail must not clip: the hover pill sits outside its 32px column,
+         and any scroll container here would cut it off.
+         ponytail: an icon-only rail is short enough not to scroll. If a deployment
+         ever exceeds a viewport of rail items, move the pill to the top layer
+         (popover / anchor positioning) and put overflow-y:auto back. */
+      overflow: visible;
       scrollbar-width: none;
       transition: width var(--transition-base);
     }
@@ -187,49 +200,94 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
     justify-content: center;
     border: none;
     border-radius: var(--r-8);
-    background: var(--shell-control);
-    color: var(--shell-fg);
+    /* Selection is a fill, not a hue shift. The old rail had it inverted —
+       every *inactive* item carried a raised chip and the active one was the
+       only bare surface, so at 18px the pale-gold glyph was the sole signal and
+       it failed first without colour vision. Rest is now bare, hover raises,
+       active fills gold — which is also what the expanded rail already did, so
+       the two rails finally agree instead of contradicting each other. */
+    background: transparent;
+    color: var(--shell-fg-muted);
     font-size: 13px;
     font-weight: 500;
     text-decoration: none;
     cursor: pointer;
-    transition: background var(--transition-fast);
+    transition: background var(--transition-fast), color var(--transition-fast);
     white-space: nowrap;
   }
   .rail-item:hover { background: var(--shell-control-hover); color: var(--shell-fg); }
   .rail-item:active { background: var(--shell-control-active); }
   .rail-item.is-active {
-    background: transparent;
-    color: var(--shell-selected);
+    background: var(--shell-selected);
+    color: var(--sand-900);
   }
+  .rail-item.is-active:hover {
+    background: var(--shell-selected);
+    color: var(--sand-900);
+  }
+  /* White, not --shell-selected: the ring sits 1px outside the item, so gold
+     merged into the gold fill on the one item most likely to be focused. */
   .rail-item:focus-visible {
-    outline: 2px solid var(--shell-selected);
+    outline: 2px solid var(--shell-fg);
     outline-offset: 1px;
   }
   .rail-item .rail-label { display: none; }
 
+  /* Instant hover tooltip. The collapsed rail shows a glyph and nothing else, and
+     the native title= tip only appears after ~1s — too late to be the label. Dark
+     pill right of the icon per the NightOwl mock. */
+  .rail-item { position: relative; }
+  .rail-item::after {
+    content: attr(data-tip);
+    position: absolute;
+    left: calc(100% + var(--s-8));
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 90;
+    padding: 5px var(--s-8);
+    border-radius: var(--r-6);
+    background: var(--shell-bg);
+    color: var(--shell-fg);
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 16px;
+    white-space: nowrap;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity var(--transition-fast);
+  }
+  .rail-item:hover::after,
+  .rail-item:focus-visible::after { opacity: 1; }
+  /* The expanded rail and the mobile sheet already render the name inline. */
+  :scope.is-expanded .rail-item::after,
+  .mobile-nav .rail-item::after { content: none; }
+
+  /* Expanded rail keeps its scroll container — labelled rows are tall, no pill. */
+  :scope.is-expanded .rail {
+    overflow-y: auto;
+    overflow-x: hidden;
+  }
   :scope.is-expanded .rail-item {
     width: 100%;
     justify-content: flex-start;
     padding: 0 var(--s-8);
-    background: transparent;
   }
-  :scope.is-expanded .rail-item:hover { background: var(--shell-control-hover); }
-  :scope.is-expanded .rail-item.is-active {
-    background: var(--yellow-100);
-    color: var(--sand-900);
-  }
-  :scope.is-expanded .rail-item .rail-label {
-    display: inline;
-    animation: panel-in var(--transition-base) 60ms backwards;
-  }
-  :scope.is-expanded .rail-identity .identity-name {
+  :scope.is-expanded .rail-item .rail-label { display: inline; }
+
+  /* Labels fade in when the user TOGGLES the rail open — gated on .is-toggling,
+     which only the toggle handler sets. Ungated, this replayed on every fresh
+     render, so each MPA navigation held every label at opacity 0 for 60ms and
+     then faded it back in: the expanded rail blinked on every click. It also
+     meant the incoming page was snapshotted for the cross-document view
+     transition with invisible labels. */
+  :scope.is-expanded.is-toggling .rail-item .rail-label,
+  :scope.is-expanded.is-toggling .rail-identity .identity-name {
     animation: panel-in var(--transition-base) 60ms backwards;
   }
 
   @media (prefers-reduced-motion: reduce) {
-    :scope.is-expanded .rail-item .rail-label,
-    :scope.is-expanded .rail-identity .identity-name { animation: none; }
+    :scope.is-expanded.is-toggling .rail-item .rail-label,
+    :scope.is-expanded.is-toggling .rail-identity .identity-name { animation: none; }
   }
 
   .rail-bottom {
@@ -261,7 +319,7 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
     --user-dropdown-position: fixed;
     --user-dropdown-top: auto;
     --user-dropdown-bottom: var(--s-12);
-    --user-dropdown-left: calc(var(--app-sidebar-width) + var(--s-4));
+    --user-dropdown-left: calc(var(--shell-gutter) + var(--app-sidebar-width) + var(--s-4));
     --user-dropdown-right: auto;
   }
   .rail-identity .identity-name {
@@ -289,10 +347,8 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
     width: 100%;
     justify-content: flex-start;
     padding: 0 var(--s-8);
-    background: transparent;
   }
   .mobile-nav .rail-item .rail-label { display: inline; }
-  .mobile-nav .rail-item.is-active { background: var(--yellow-100); color: var(--sand-900); }
 
   .mobile-menu-btn { display: inline-flex; }
 
@@ -318,8 +374,9 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 export class AppHeader extends HTMLElement {
-  #expanded = localStorage.getItem("app-rail-expanded") === "true";
+  #expanded = localStorage.getItem(RAIL_KEY) === "true";
   #mobileOpen = false;
+  #toggleTimer = 0;
 
   #esc(str) {
     if (!str) return "";
@@ -342,8 +399,8 @@ export class AppHeader extends HTMLElement {
   #handleClick = (e) => {
     if (e.target.closest("[data-rail-toggle]")) {
       this.#expanded = !this.#expanded;
-      localStorage.setItem("app-rail-expanded", this.#expanded);
-      this.#applyExpanded();
+      localStorage.setItem(RAIL_KEY, this.#expanded);
+      this.#applyExpanded({ animate: true });
       return;
     }
     if (e.target.closest("[data-mobile-menu]")) {
@@ -363,7 +420,16 @@ export class AppHeader extends HTMLElement {
     }
   };
 
-  #applyExpanded() {
+  /** `animate` is the user hitting the toggle; a page load must not animate. */
+  #applyExpanded({ animate = false } = {}) {
+    if (animate) {
+      this.classList.add("is-toggling");
+      // ponytail: a timer, not animationend — the labels animate as one group
+      // with a 60ms delay, so one fixed clear beats N listeners. Bump if
+      // panel-in's duration/delay changes.
+      clearTimeout(this.#toggleTimer);
+      this.#toggleTimer = setTimeout(() => this.classList.remove("is-toggling"), 400);
+    }
     this.classList.toggle("is-expanded", this.#expanded);
     document.documentElement.style.setProperty(
       "--app-sidebar-width",
@@ -472,16 +538,24 @@ export class AppHeader extends HTMLElement {
     return this.navItems || [];
   }
 
-  #railItem(link) {
+  /** Nav `module` of the page being viewed, so its rail parent stays selected. */
+  #activeModule(navLinks) {
+    return navLinks.find(l => this.#isActive(l.url))?.module;
+  }
+
+  #railItem(link, activeModule) {
     const href = link.url;
-    const active = this.#isActive(href);
+    // A child page (Workflows, Builds, Import agent, Secrets, Team access …)
+    // has no rail item of its own; the rail item for its module carries the
+    // selection instead, so the rail is never left with nothing highlighted.
+    const active = this.#isActive(href) || (!!link.module && link.module === activeModule);
     const titleEsc = this.#esc(link.title);
     // Chrome icons (rail + topbar) render at 1px stroke per the NightOwl weight rule.
     // Rail glyphs: 1.25 stroke — the mockup's 1px chrome weight reads wispy at
     // 18px on the ink rail; topbar utility icons stay at 1.
     const iconHtml = link.icon && icons[link.icon] ? icons[link.icon]('', 18, 1.75) : icons.cube('', 18, 1.75);
     return `<a href="${this.#esc(href)}" class="rail-item${active ? " is-active" : ""}"
-      title="${titleEsc}" ${active ? 'aria-current="page"' : ""}>${iconHtml}<span class="rail-label">${titleEsc}</span></a>`;
+      aria-label="${titleEsc}" data-tip="${titleEsc}" ${active ? 'aria-current="page"' : ""}>${iconHtml}<span class="rail-label">${titleEsc}</span></a>`;
   }
 
   #renderSkeleton() {
@@ -511,6 +585,9 @@ export class AppHeader extends HTMLElement {
     // flag (attribute-driven navs, EE overrides) every link is a rail item.
     const hasRailFlags = mainLinks.some(l => l.rail);
     const railLinks = mainLinks.filter(l => l !== addAgent && (!hasRailFlags || l.rail));
+    // Rail + bottom cluster only: the mobile sheet lists every page, so there
+    // the exact match is the right one.
+    const activeModule = this.#activeModule(navLinks);
 
     this.innerHTML = `
       <a href="#main-content" class="sr-only is-focusable">Skip to main content</a>
@@ -538,9 +615,9 @@ export class AppHeader extends HTMLElement {
         </div>
       </header>
       <nav class="rail" aria-label="Main navigation">
-        ${railLinks.map(l => this.#railItem(l)).join("")}
+        ${railLinks.map(l => this.#railItem(l, activeModule)).join("")}
         <div class="rail-bottom">
-          ${settingsLinks.map(l => this.#railItem(l)).join("")}
+          ${settingsLinks.map(l => this.#railItem(l, activeModule)).join("")}
           ${isAuthenticated ? `
           <div class="rail-identity">
             <app-user-menu current-user="${this.#esc(currentUser)}"></app-user-menu>
@@ -553,6 +630,15 @@ export class AppHeader extends HTMLElement {
       </div>
       ${navLinks.length ? `<app-nav-search></app-nav-search>` : ""}
     `;
+
+    // The skip link above targets #main-content, which no page actually
+    // declares — adopt the page component instead of editing 40 HTML files.
+    // tabindex=-1 so the link moves focus, not just the scroll position.
+    const main = this.nextElementSibling;
+    if (main && !main.id) {
+      main.id = "main-content";
+      main.tabIndex = -1;
+    }
 
     const userMenu = this.querySelector("app-user-menu");
     if (userMenu) {

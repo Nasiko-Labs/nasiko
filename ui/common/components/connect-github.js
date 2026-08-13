@@ -15,7 +15,7 @@ class ConnectGithub extends HTMLElement {
         <p class="connect-desc">
           Connect your GitHub account to browse repositories, deploy agents directly from source, and enable automated builds.
         </p>
-        <a href="/api/auth/github/connect?scope=${encodeURIComponent(scope)}&redirect=${encodeURIComponent(redirectPath)}" class="connect-btn">
+        <a href="/api/github/login?scope=${encodeURIComponent(scope)}&redirect=${encodeURIComponent(redirectPath)}" class="connect-btn">
           ${GITHUB_ICON}
           Connect GitHub Account
         </a>

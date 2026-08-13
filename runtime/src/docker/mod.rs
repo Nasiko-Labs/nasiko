@@ -193,6 +193,26 @@ impl DockerRuntime {
         }
     }
 
+    /// Connect an arbitrary container (by name or ID) to a Docker network.
+    /// Used at startup to attach the server's own container to the MCP servers
+    /// network when it runs inside Docker.
+    pub async fn connect_container_to_network(
+        &self,
+        container: &str,
+        network: &str,
+    ) -> Result<()> {
+        self.client
+            .connect_network(
+                network,
+                bollard::network::ConnectNetworkOptions {
+                    container,
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(map_bollard_err)
+    }
+
     /// Names of every Docker network `container_id`'s container is currently
     /// attached to. Introspection helper (not part of `ContainerRuntime` — this
     /// is Docker-specific, used to verify network-segmentation guarantees in
@@ -504,6 +524,35 @@ fn extract_endpoint(
                         key.split('/').next().and_then(|p| p.parse::<u16>().ok())
                     {
                         return Some(format!("http://{ip}:{container_port}"));
+                    }
+                }
+            }
+        }
+    }
+
+    // Try any network the container is actually on (covers network_override
+    // containers whose network differs from the runtime's default).
+    if network.is_some() && let Some(nets) = ns.networks.as_ref() {
+        for ep_net in nets.values() {
+            let ip = ep_net
+                .ip_address
+                .as_deref()
+                .filter(|ip| !ip.is_empty());
+            if let Some(ip) = ip {
+                if let Some(ports) = ns.ports.as_ref() {
+                    let mut keys: Vec<&String> = ports.keys().collect();
+                    keys.sort_by_key(|k| {
+                        k.split('/')
+                            .next()
+                            .and_then(|p| p.parse::<u16>().ok())
+                            .unwrap_or(0)
+                    });
+                    for key in &keys {
+                        if let Some(container_port) =
+                            key.split('/').next().and_then(|p| p.parse::<u16>().ok())
+                        {
+                            return Some(format!("http://{ip}:{container_port}"));
+                        }
                     }
                 }
             }
