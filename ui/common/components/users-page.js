@@ -2,6 +2,7 @@ import { apiFetch } from '/common/services/api.js';
 import '/common/components/app-module-nav.js';
 import { icons } from '/common/utils/icons.js';
 import { showToast } from '/common/utils/toast.js';
+import { confirmDialog } from '/common/utils/confirm-dialog.js';
 import { withLoading } from '/common/utils/async-button.js';
 import '/common/components/app-modal.js';
 import '/common/components/app-button.js';
@@ -543,7 +544,13 @@ class UsersPage extends HTMLElement {
         filterTeamsByDepartment();
         reassignModal.open();
       } else if (action === 'delete') {
-        if (!confirm(`Delete user "${name}"? This cannot be undone.`)) return;
+        const confirmed = await confirmDialog({
+          title: `Delete ${name}`,
+          message: 'This will permanently remove the user. This cannot be undone.',
+          confirmLabel: 'Delete',
+          danger: true,
+        });
+        if (!confirmed) return;
         try {
           const res = await apiFetch(`/users/${id}`, { method: 'DELETE' });
           if (!res.ok) throw new Error(res.statusText);

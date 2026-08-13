@@ -15,6 +15,7 @@ import '/common/components/app-skeleton.js';
 import styles from './llm-router-page.css' with { type: 'css' };
 import { icons } from '../utils/icons.js';
 import { showToast } from '../utils/toast.js';
+import { confirmDialog } from '../utils/confirm-dialog.js';
 import '/common/components/app-button.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
@@ -347,7 +348,13 @@ class LlmRouterPage extends HTMLElement {
   }
 
   async #deleteConfig(id) {
-    if (!confirm('Delete this routing config?')) return;
+    const confirmed = await confirmDialog({
+      title: 'Delete routing config',
+      message: 'This will permanently remove the routing configuration. This cannot be undone.',
+      confirmLabel: 'Delete',
+      danger: true,
+    });
+    if (!confirmed) return;
     try {
       await window.deleteLlmConfig(id);
     } catch (err) {

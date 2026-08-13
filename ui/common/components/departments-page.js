@@ -3,6 +3,7 @@ import { authService } from '/common/services/auth-service.js';
 import '/common/components/app-module-nav.js';
 import { icons } from '/common/utils/icons.js';
 import { showToast } from '/common/utils/toast.js';
+import { confirmDialog } from '/common/utils/confirm-dialog.js';
 import '/common/components/app-modal.js';
 import '/common/components/app-button.js';
 import '/common/components/user-picker.js';
@@ -199,7 +200,13 @@ class DepartmentsPage extends HTMLElement {
   }
 
   async #deleteDept(id, name) {
-    if (!confirm(`Delete department "${name}"? Its teams and members are unassigned, not deleted.`)) return;
+    const confirmed = await confirmDialog({
+      title: `Delete ${name}`,
+      message: 'Its teams and members will be unassigned, not deleted. This cannot be undone.',
+      confirmLabel: 'Delete',
+      danger: true,
+    });
+    if (!confirmed) return;
     try {
       const res = await apiFetch(`/departments/${encodeURIComponent(id)}`, { method: 'DELETE' });
       if (!res.ok) throw new Error((await res.text()) || 'Failed to delete department');

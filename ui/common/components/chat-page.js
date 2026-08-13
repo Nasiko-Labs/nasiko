@@ -21,6 +21,7 @@ class ChatPage extends HTMLElement {
   #agentId = null;
   #agentLabel = null;
   #lastUserContent = null;
+  #sampleQueries = [];
 
   connectedCallback() {
     if (this.#initialized) return;
@@ -36,6 +37,8 @@ class ChatPage extends HTMLElement {
 
     this.#render();
     this.#bindEvents();
+
+    const prefillQuery = params.get("query");
 
     if (this.#sessionId) {
       const messagesEl = this.querySelector("#messages");
@@ -53,6 +56,17 @@ class ChatPage extends HTMLElement {
         </div></div>
       `;
       this.#loadMessages(messagesEl);
+    } else if (prefillQuery) {
+      // Skill link from agent card — pre-fill and auto-send the query.
+      const chatInput = this.querySelector("#chat-input");
+      const textarea = chatInput?.querySelector('#textarea');
+      if (textarea) {
+        textarea.value = prefillQuery;
+        textarea.focus();
+      }
+      if (this.#agentId) this.#loadSampleQueries();
+    } else if (this.#agentId) {
+      this.#loadSampleQueries();
     }
   }
 
@@ -82,31 +96,48 @@ class ChatPage extends HTMLElement {
     `;
   }
 
-  #renderWelcome() {
-    const prompts = [
-      "Help me debug a failing deployment",
-      "Explain how container networking works",
-      "Generate a Dockerfile for my service",
-    ];
+  #renderWelcome(prompts) {
+    const chips = (prompts || []).length
+      ? prompts
+      : ["Help me debug a failing deployment", "Explain how container networking works", "Generate a Dockerfile for my service"];
     return `
       <div class="welcome-state">
         <div class="welcome-avatar" aria-hidden="true">${this.#agentLabel.charAt(0).toUpperCase()}</div>
         <h2 class="welcome-title">${this.#esc(this.#agentLabel)}</h2>
         <p class="welcome-subtitle">Ask me anything</p>
         <div class="welcome-prompts">
-          ${prompts.map(p => `<button type="button" class="welcome-chip">${this.#esc(p)}</button>`).join('')}
+          ${chips.map(p => `<button type="button" class="welcome-chip">${this.#esc(p)}</button>`).join('')}
         </div>
       </div>
     `;
   }
 
-  #bindEvents() {
-    const messagesEl = this.querySelector("#messages");
-    const chatInput = this.querySelector("#chat-input");
+  async #loadSampleQueries() {
+    try {
+      const res = await apiFetch(`/agents/${encodeURIComponent(this.#agentId)}`);
+      if (!res.ok) return;
+      const body = await res.json();
+      const agent = body.data || body;
+      if (agent.display_name) {
+        this.#agentLabel = agent.display_name;
+      }
+      const skills = agent.skills || [];
+      const queries = skills
+        .map(s => s.sample_query || (Array.isArray(s.examples) && s.examples[0]) || null)
+        .filter(Boolean);
+      if (!queries.length) return;
+      this.#sampleQueries = queries;
+      const welcome = this.querySelector('.welcome-state');
+      if (welcome) {
+        welcome.outerHTML = this.#renderWelcome(queries);
+        this.#bindWelcomeChips();
+      }
+    } catch { /* non-critical */ }
+  }
 
-    // Welcome prompt chips
-    const chips = this.querySelectorAll(".welcome-chip");
-    for (const chip of chips) {
+  #bindWelcomeChips() {
+    const chatInput = this.querySelector("#chat-input");
+    for (const chip of this.querySelectorAll(".welcome-chip")) {
       chip.addEventListener("click", () => {
         const textarea = chatInput.querySelector('#textarea');
         if (textarea) {
@@ -115,6 +146,13 @@ class ChatPage extends HTMLElement {
         }
       });
     }
+  }
+
+  #bindEvents() {
+    const messagesEl = this.querySelector("#messages");
+
+    // Welcome prompt chips
+    this.#bindWelcomeChips();
 
     // Copy code blocks (delegated)
     messagesEl.addEventListener("click", (e) => {

@@ -3,6 +3,7 @@ import { authService } from '/common/services/auth-service.js';
 import '/common/components/app-module-nav.js';
 import { icons } from '/common/utils/icons.js';
 import { showToast } from '/common/utils/toast.js';
+import { confirmDialog } from '/common/utils/confirm-dialog.js';
 import '/common/components/app-modal.js';
 import '/common/components/app-button.js';
 import '/common/components/smart-table.js';
@@ -220,7 +221,13 @@ class TeamsPage extends HTMLElement {
   }
 
   async #deleteTeam(id, name) {
-    if (!confirm(`Delete team "${name}"? Its members are unassigned, not deleted.`)) return;
+    const confirmed = await confirmDialog({
+      title: `Delete ${name}`,
+      message: 'Its members will be unassigned, not deleted. This cannot be undone.',
+      confirmLabel: 'Delete',
+      danger: true,
+    });
+    if (!confirmed) return;
     try {
       const res = await apiFetch(`/teams/${encodeURIComponent(id)}`, { method: 'DELETE' });
       if (!res.ok) throw new Error((await res.text()) || 'Failed to delete team');

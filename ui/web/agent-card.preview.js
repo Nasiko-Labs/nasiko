@@ -23,19 +23,25 @@ const baseAgent = {
   },
   skills: [
     {
+      id: "cluster-provisioning",
       name: "Cluster Provisioning",
       description: "Create new vClusters with specified resource blueprints, networking policies, and storage configurations.",
-      sample_query: "Create a new vCluster with 4 GPU nodes for team-ml",
+      tags: ["cluster", "provisioning"],
+      examples: ["Create a new vCluster with 4 GPU nodes for team-ml"],
     },
     {
+      id: "cluster-scaling",
       name: "Cluster Scaling",
       description: "Scale cluster resources up or down based on workload demands with pre-flight safety checks.",
-      sample_query: "Scale gpu-cluster-prod to 8 GPU nodes",
+      tags: ["cluster", "scaling"],
+      examples: ["Scale gpu-cluster-prod to 8 GPU nodes"],
     },
     {
+      id: "cluster-readiness",
       name: "Cluster Readiness Scoring",
       description: "Compute a readiness score (0-100) for clusters based on node health, networking, storage, and GPU accessibility.",
-      sample_query: "What is the readiness score for gpu-cluster-prod?",
+      tags: ["cluster", "health"],
+      examples: ["What is the readiness score for gpu-cluster-prod?"],
     },
   ],
 };

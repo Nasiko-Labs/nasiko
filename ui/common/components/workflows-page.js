@@ -9,6 +9,7 @@
  */
 import { icons } from '/common/utils/icons.js';
 import { showToast } from '/common/utils/toast.js';
+import { confirmDialog } from '/common/utils/confirm-dialog.js';
 import { timeAgo, formatDisplay } from '/common/utils/date-utils.js';
 import '/common/components/app-module-nav.js';
 import '/common/components/app-action-menu.js';
@@ -88,7 +89,13 @@ class WorkflowsPage extends HTMLElement {
       }
     } else if (action === 'delete') {
       const wf = this.#workflows.find((w) => w.id === id);
-      if (!confirm(`Delete workflow "${wf?.name || id}"? Its execution history goes with it.`)) return;
+      const confirmed = await confirmDialog({
+        title: `Delete ${wf?.name || 'workflow'}`,
+        message: 'Its execution history goes with it. This cannot be undone.',
+        confirmLabel: 'Delete',
+        danger: true,
+      });
+      if (!confirmed) return;
       try {
         await window.deleteWorkflow(id);
         this.#workflows = this.#workflows.filter((w) => w.id !== id);

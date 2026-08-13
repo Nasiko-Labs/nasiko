@@ -202,8 +202,9 @@ class AgentCardPage extends HTMLElement {
   #overviewPanelHtml(a) {
     const skills = a.skills || [];
     const skillsHtml = skills.map(s => {
-      const href = s.sample_query
-        ? `/chat.html?agent_id=${encodeURIComponent(a.id)}&query=${encodeURIComponent(s.sample_query)}`
+      const sampleQuery = s.sample_query || (Array.isArray(s.examples) && s.examples[0]) || null;
+      const href = sampleQuery
+        ? `/chat.html?agent_id=${encodeURIComponent(a.id)}&agent_name=${encodeURIComponent(a.display_name || a.name)}&query=${encodeURIComponent(sampleQuery)}`
         : null;
       const wrapper = href ? 'a' : 'div';
       const hrefAttr = href ? ` href="${this.#escAttr(href)}"` : '';
@@ -211,10 +212,10 @@ class AgentCardPage extends HTMLElement {
       <${wrapper} class="acp-skill-card"${hrefAttr}>
         <div class="acp-skill-name">${this.#esc(s.name)}</div>
         <div class="acp-skill-desc">${this.#esc(s.description || '')}</div>
-        ${s.sample_query ? `
+        ${sampleQuery ? `
         <div class="acp-skill-sample">
           <span class="acp-skill-sample-icon">${icons.send('', 14)}</span>
-          <span class="acp-skill-sample-text">${this.#esc(s.sample_query)}</span>
+          <span class="acp-skill-sample-text">${this.#esc(sampleQuery)}</span>
         </div>` : ''}
       </${wrapper}>`;
     }).join('');

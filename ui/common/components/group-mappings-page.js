@@ -1,6 +1,7 @@
 import { icons } from '/common/utils/icons.js';
 import '/common/components/app-module-nav.js';
 import { showToast } from '/common/utils/toast.js';
+import { confirmDialog } from '/common/utils/confirm-dialog.js';
 import '/common/components/app-modal.js';
 import '/common/components/app-button.js';
 
@@ -223,7 +224,13 @@ class GroupMappingsPage extends HTMLElement {
         this.querySelector('#mapping-description').value = btn.dataset.description || '';
         modal.open();
       } else if (action === 'delete') {
-        if (!confirm(`Delete the mapping for group "${group}"?`)) return;
+        const confirmed = await confirmDialog({
+          title: `Delete mapping`,
+          message: `Remove the mapping for group "${group}"? This cannot be undone.`,
+          confirmLabel: 'Delete',
+          danger: true,
+        });
+        if (!confirmed) return;
         try {
           const res = await window.deleteGroupMapping(id);
           if (!res.ok) throw new Error(res.statusText);

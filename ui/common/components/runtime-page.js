@@ -2,6 +2,7 @@ import { icons } from '/common/utils/icons.js';
 import { connectSSE } from '/common/services/sse.js';
 import '/common/components/app-module-nav.js';
 import { showToast } from '/common/utils/toast.js';
+import { confirmDialog } from '/common/utils/confirm-dialog.js';
 import { timeAgo } from '/common/utils/date-utils.js';
 import '/common/components/app-modal.js';
 import '/common/components/app-button.js';
@@ -298,7 +299,13 @@ class RuntimePage extends HTMLElement {
   // ── Destroy ───────────────────────────────────────────────────────────────
 
   async #destroy(id, name) {
-    if (!confirm(`Destroy cluster "${name}"? Its cloud resources will be removed. This cannot be undone.`)) return;
+    const confirmed = await confirmDialog({
+      title: `Destroy ${name}`,
+      message: 'Its cloud resources will be removed. This cannot be undone.',
+      confirmLabel: 'Destroy',
+      danger: true,
+    });
+    if (!confirmed) return;
     try {
       const res = await window.destroyInfraCluster(id);
       if (!res.ok) throw new Error((await res.text()) || res.statusText);
