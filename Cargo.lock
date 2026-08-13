@@ -3604,6 +3604,7 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
@@ -3814,6 +3815,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "crossterm 0.29.0",
+ "semver",
  "serial_test",
  "tempfile",
  "zip 2.4.2",
