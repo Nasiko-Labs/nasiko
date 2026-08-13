@@ -364,7 +364,11 @@
     border-radius: var(--r-4);
     overflow: hidden;
     margin-top: var(--space-xs);
-    background: var(--track, var(--color-border));
+    /* Same dilution as .meter in resources-page.css: the light tint ramp is too
+       saturated on a white surface, so an empty bar reads as a full one. */
+    background: light-dark(
+      color-mix(in oklab, var(--track, var(--color-border)) 40%, var(--color-bg-surface)),
+      var(--track, var(--color-border)));
   }
   .acp-meter > i {
     display: block;

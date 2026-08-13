@@ -549,8 +549,13 @@ class YourAgentsPage extends HTMLElement {
       } else if (action === "restart" || action === "stop") {
         const name = btn.dataset.name;
         const original = btn.innerHTML;
-        btn.disabled = true;
-        btn.textContent = action === "restart" ? "Restarting..." : "Stopping...";
+        // These are fixed-size icon buttons: swapping in a label overflows the
+        // square and lands on the card body. Swap the icon for a same-size
+        // spinner and lock the card's other lifecycle buttons instead.
+        const siblings = [...btn.closest(".agent-card-actions").querySelectorAll("[data-action]")];
+        for (const b of siblings) b.disabled = true;
+        btn.setAttribute("aria-busy", "true");
+        btn.innerHTML = `<span class="setup-spinner"></span>`;
         try {
           const res = await apiFetch(
             `/containers/${encodeURIComponent(name)}/${action}`,
@@ -560,11 +565,15 @@ class YourAgentsPage extends HTMLElement {
           showToast(
             `${action === "restart" ? "Restarted" : "Stopped"} ${name}`,
           );
-          this.#load();
+          await this.#load();
         } catch (err) {
           showToast(`Failed to ${action}: ${err.message}`);
-          btn.disabled = false;
+        } finally {
+          // #load() usually replaces these nodes; restore anyway so a failed
+          // reload can't leave the card stuck on a spinner.
+          btn.removeAttribute("aria-busy");
           btn.innerHTML = original;
+          for (const b of siblings) b.disabled = false;
         }
       } else if (action === "delete") {
         const name = btn.dataset.name;

@@ -37,7 +37,7 @@
     display: flex;
     align-items: center;
     gap: var(--space-md);
-    width: 100%;
+    width: min(100%, 780px);
     padding: var(--space-md) var(--space-lg);
     border-radius: var(--r-8);
     background: var(--bg-input);
@@ -93,14 +93,11 @@
     display: grid;
     grid-template-columns: repeat(3, 1fr);
     gap: var(--space-md);
-    /* No max-width cap: the 1020px column left the three cards cramped, wrapping
-       every title onto two lines while the card had width to spare. The host's
-       padding (page-layout.css) is what bounds this now. */
-    width: 100%;
+    width: min(100%, 1020px);
   }
 
   @media (max-width: 900px) {
-    .method-grid { grid-template-columns: 1fr; }
+    .method-grid { grid-template-columns: 1fr; width: min(100%, 520px); }
   }
 
   /* Surface + hover lift: common/styles/surface.css */
@@ -207,6 +204,43 @@
   .form-error {
     color: var(--color-error);
     font-size: var(--font-size-xs);
+  }
+  .field-hint code {
+    font-family: var(--font-mono, monospace);
+    font-size: 0.95em;
+  }
+
+  /* ── OCI import "setting up" state — same treatment as the setting-up agent
+     card on Your agents (your-agents-page.css), which is @scope'd to that page. */
+  .agent-card-setup {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+  }
+  .setup-progress {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .setup-spinner {
+    width: 14px;
+    height: 14px;
+    border: 2px solid var(--color-border);
+    border-top-color: var(--color-info, #3b82f6);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    flex-shrink: 0;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .setup-label {
+    font-size: var(--font-size-sm);
+    font-weight: 500;
+    color: var(--color-info, #3b82f6);
+  }
+  .setup-hint {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+    margin: 0;
   }
   /* Footer actions: reuse the card button shape, sized to content. */
   [data-slot="footer"] .btn-dark,
