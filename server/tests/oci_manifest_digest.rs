@@ -207,10 +207,17 @@ async fn get_manifest_by_matching_digest_succeeds() {
 
 #[tokio::test]
 #[serial_test::serial]
-async fn get_manifest_by_tag_is_not_digest_verified() {
-    // Tag references (mutable pointers) must NOT be subject to the
-    // digest-equality check — only reference values that ARE themselves a
-    // content digest are.
+async fn get_manifest_by_tag_is_also_digest_verified() {
+    // Deliberate behaviour change, from when a tag lived in a `reference` column
+    // on the manifest row itself and repointing rewrote that row in place: back
+    // then "the content behind this tag changed" was normal, so verifying a tag
+    // lookup would have rejected legitimate pulls.
+    //
+    // Now a tag is a pointer in `oci_tags` and manifest rows are immutable
+    // content keyed by their own hash — repointing updates the pointer and never
+    // touches content. So a row whose stored digest disagrees with its bytes can
+    // only be corruption, however it was reached, and serving it would contradict
+    // the `Docker-Content-Digest` header sent with it.
     let server = common::TestServer::start().await;
     let owner_id = insert_user(&server.db, "oci-digest-owner-tag").await;
     let agent_name = format!("oci-digest-agent-tag-{}", Uuid::new_v4());
@@ -246,8 +253,9 @@ async fn get_manifest_by_tag_is_not_digest_verified() {
 
     assert_eq!(
         resp.status(),
-        200,
-        "fetching by tag must succeed regardless of whether content hashes to any particular digest"
+        500,
+        "a tag pointing at a row whose content does not hash to its stored digest \
+         must be refused as corruption, not served under a digest it contradicts"
     );
 
     server.cleanup().await;
