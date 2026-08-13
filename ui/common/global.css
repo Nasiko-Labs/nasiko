@@ -125,7 +125,7 @@
      both sides, so the card's left edge lands at 12 + 32 + 12 = 56. */
   --shell-gutter:         var(--s-12);
   --shell-rail-width:     32px;
-  --shell-rail-expanded:  200px;
+  --shell-rail-expanded:  240px;
   --shell-logo-glow:      drop-shadow(0 4px 16px rgba(247, 225, 156, 0.16));
 
   /* ==== Control metrics (fig-tokens control-*) ==== */

@@ -16,11 +16,13 @@ sheet.replaceSync(`
   .confirm-btn, .cancel-btn {
     display: inline-flex;
     align-items: center;
-    padding: 8px var(--space-md);
-    border-radius: var(--r-8);
+    min-height: var(--control-h-lg);
+    padding: 0 var(--space-md);
+    border-radius: var(--r-10);
     font-size: var(--font-size-sm);
     font-weight: 500;
     cursor: pointer;
+    & svg { width: 20px; height: 20px; flex-shrink: 0; }
   }
   .cancel-btn {
     border: 1px solid var(--color-border);

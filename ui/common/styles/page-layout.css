@@ -119,7 +119,11 @@ orchestrator-page {
   height: calc(100dvh - var(--app-header-height));
   padding: var(--space-md);
   padding-top: max(48px, 16dvh);
-  overflow: hidden;
+  /* Scrolls, unlike chat-page: the hero state stacks agent cards + composer +
+     workflow banner, which overflow a short viewport. In the .has-response state
+     .messages (flex: 1; min-height: 0) absorbs the space, so no second scrollbar
+     appears. */
+  overflow-y: auto;
 }
 
 /* Login: full-bleed light plane over the shell's ink body backdrop (this page
@@ -182,6 +186,7 @@ login-page {
     Must follow the `padding` shorthand above, which would otherwise reset it.
   */
   access-control-page,
+  add-agent-page,
   agents-page,
   builds-page,
   departments-page,
@@ -191,6 +196,7 @@ login-page {
   mcp-page,
   resources-page,
   runtime-page,
+  secrets-page,
   sessions-page,
   settings-page,
   team-access-page,

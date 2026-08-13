@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Nasiko</title>
+    <link rel="icon" type="image/svg+xml" href="/common/mark-nasiko.svg" />
+    <!-- Inline and synchronous on purpose. theme.js is a deferred ES module, so without this the
+         skeleton flashes the OS theme. The rail width is set here too as the fallback for browsers
+         without the `blocking` script attribute (Firefox), where app-header.js is still plain deferred
+         and an expanded rail would collapse and re-expand on every MPA navigation.
+         Must stay inline and non-module. -->
+    <script>try{var t=localStorage.getItem('app-theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t;if(localStorage.getItem('app-rail-expanded-v2')==='true')document.documentElement.style.setProperty('--app-sidebar-width','var(--app-sidebar-width-expanded)')}catch(e){}</script>
+    <link rel="stylesheet" href="/common/global.css" />
+    <link rel="stylesheet" href="/common/components.css" />
+    <script type="module" src="/navigation.js"></script>
+    <!-- blocking=render: the shell has to be painted (and view-transition-named)
+         before the browser snapshots this document for the cross-document
+         transition. A plain deferred module runs after that snapshot, so the
+         incoming page was captured with an empty header and the whole shell
+         cross-faded on every navigation. -->
+    <script type="module" blocking="render" src="/common/components/app-header.js"></script>
+    <script type="module" src="/common/components/flows-page.js"></script>
+  </head>
+  <body>
+    <app-header></app-header>
+    <flows-page>
+      <!-- Pre-upgrade paint: real header and controls (they need no backend and must
+           not move), shimmer only for what the API feeds. The component replaces
+           all of this on upgrade — see common/styles/not-defined.css. -->
+      <div class="pre-modnav"></div>
+      <div class="pre-head" style="--pre-head-gap:var(--space-2xs)">
+        <h1 class="title-page">Flows</h1>
+        <p>Agent orchestration traces and multi-step flow history.</p>
+      </div>
+      <div class="pre-controls">
+        <div class="pre-search" style="--pre-search-max:none;--pre-search-pl:34px">
+          <span class="pre-search__icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="width:14px;height:14px;flex-shrink:0"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg></span>
+          <input class="pre-search__input" type="search" placeholder="Search flows by agent or query..." aria-label="Search table data" />
+        </div>
+      </div>
+      <div class="pre-table" style="--pre-cols:12fr 30fr 13fr 11fr 7fr 9fr 12fr 6fr">
+        <div class="pre-table__row pre-table__row--head"><div class="pre-th">Flow ID</div><div class="pre-th">Query</div><div class="pre-th">Agent</div><div class="pre-th">Status</div><div class="pre-th">Calls</div><div class="pre-th">Duration</div><div class="pre-th">Started</div><div class="pre-th"></div></div>
+        <div class="pre-table__row"><div class="pre-td"><div class="pre-cell" style="width:60%"></div></div><div class="pre-td"><div class="pre-cell" style="width:80%"></div></div><div class="pre-td"><div class="pre-cell" style="width:40%"></div></div><div class="pre-td"><div class="pre-cell" style="width:70%"></div></div><div class="pre-td"><div class="pre-cell" style="width:60%"></div></div><div class="pre-td"><div class="pre-cell" style="width:80%"></div></div><div class="pre-td"><div class="pre-cell" style="width:40%"></div></div><div class="pre-td"><div class="pre-cell" style="width:70%"></div></div></div>
+        <div class="pre-table__row"><div class="pre-td"><div class="pre-cell" style="width:75%"></div></div><div class="pre-td"><div class="pre-cell" style="width:55%"></div></div><div class="pre-td"><div class="pre-cell" style="width:65%"></div></div><div class="pre-td"><div class="pre-cell" style="width:50%"></div></div><div class="pre-td"><div class="pre-cell" style="width:75%"></div></div><div class="pre-td"><div class="pre-cell" style="width:55%"></div></div><div class="pre-td"><div class="pre-cell" style="width:65%"></div></div><div class="pre-td"><div class="pre-cell" style="width:50%"></div></div></div>
+        <div class="pre-table__row"><div class="pre-td"><div class="pre-cell" style="width:50%"></div></div><div class="pre-td"><div class="pre-cell" style="width:90%"></div></div><div class="pre-td"><div class="pre-cell" style="width:45%"></div></div><div class="pre-td"><div class="pre-cell" style="width:80%"></div></div><div class="pre-td"><div class="pre-cell" style="width:50%"></div></div><div class="pre-td"><div class="pre-cell" style="width:90%"></div></div><div class="pre-td"><div class="pre-cell" style="width:45%"></div></div><div class="pre-td"><div class="pre-cell" style="width:80%"></div></div></div>
+        <div class="pre-table__row"><div class="pre-td"><div class="pre-cell" style="width:70%"></div></div><div class="pre-td"><div class="pre-cell" style="width:60%"></div></div><div class="pre-td"><div class="pre-cell" style="width:80%"></div></div><div class="pre-td"><div class="pre-cell" style="width:55%"></div></div><div class="pre-td"><div class="pre-cell" style="width:70%"></div></div><div class="pre-td"><div class="pre-cell" style="width:60%"></div></div><div class="pre-td"><div class="pre-cell" style="width:80%"></div></div><div class="pre-td"><div class="pre-cell" style="width:55%"></div></div></div>
+        <div class="pre-table__row"><div class="pre-td"><div class="pre-cell" style="width:65%"></div></div><div class="pre-td"><div class="pre-cell" style="width:75%"></div></div><div class="pre-td"><div class="pre-cell" style="width:50%"></div></div><div class="pre-td"><div class="pre-cell" style="width:70%"></div></div><div class="pre-td"><div class="pre-cell" style="width:65%"></div></div><div class="pre-td"><div class="pre-cell" style="width:75%"></div></div><div class="pre-td"><div class="pre-cell" style="width:50%"></div></div><div class="pre-td"><div class="pre-cell" style="width:70%"></div></div></div>
+        <div class="pre-table__row"><div class="pre-td"><div class="pre-cell" style="width:60%"></div></div><div class="pre-td"><div class="pre-cell" style="width:80%"></div></div><div class="pre-td"><div class="pre-cell" style="width:40%"></div></div><div class="pre-td"><div class="pre-cell" style="width:70%"></div></div><div class="pre-td"><div class="pre-cell" style="width:60%"></div></div><div class="pre-td"><div class="pre-cell" style="width:80%"></div></div><div class="pre-td"><div class="pre-cell" style="width:40%"></div></div><div class="pre-td"><div class="pre-cell" style="width:70%"></div></div></div>
+        <div class="pre-table__row"><div class="pre-td"><div class="pre-cell" style="width:75%"></div></div><div class="pre-td"><div class="pre-cell" style="width:55%"></div></div><div class="pre-td"><div class="pre-cell" style="width:65%"></div></div><div class="pre-td"><div class="pre-cell" style="width:50%"></div></div><div class="pre-td"><div class="pre-cell" style="width:75%"></div></div><div class="pre-td"><div class="pre-cell" style="width:55%"></div></div><div class="pre-td"><div class="pre-cell" style="width:65%"></div></div><div class="pre-td"><div class="pre-cell" style="width:50%"></div></div></div>
+        <div class="pre-table__row"><div class="pre-td"><div class="pre-cell" style="width:50%"></div></div><div class="pre-td"><div class="pre-cell" style="width:90%"></div></div><div class="pre-td"><div class="pre-cell" style="width:45%"></div></div><div class="pre-td"><div class="pre-cell" style="width:80%"></div></div><div class="pre-td"><div class="pre-cell" style="width:50%"></div></div><div class="pre-td"><div class="pre-cell" style="width:90%"></div></div><div class="pre-td"><div class="pre-cell" style="width:45%"></div></div><div class="pre-td"><div class="pre-cell" style="width:80%"></div></div></div>
+        <div class="pre-table__row"><div class="pre-td"><div class="pre-cell" style="width:70%"></div></div><div class="pre-td"><div class="pre-cell" style="width:60%"></div></div><div class="pre-td"><div class="pre-cell" style="width:80%"></div></div><div class="pre-td"><div class="pre-cell" style="width:55%"></div></div><div class="pre-td"><div class="pre-cell" style="width:70%"></div></div><div class="pre-td"><div class="pre-cell" style="width:60%"></div></div><div class="pre-td"><div class="pre-cell" style="width:80%"></div></div><div class="pre-td"><div class="pre-cell" style="width:55%"></div></div></div>
+        <div class="pre-table__row"><div class="pre-td"><div class="pre-cell" style="width:65%"></div></div><div class="pre-td"><div class="pre-cell" style="width:75%"></div></div><div class="pre-td"><div class="pre-cell" style="width:50%"></div></div><div class="pre-td"><div class="pre-cell" style="width:70%"></div></div><div class="pre-td"><div class="pre-cell" style="width:65%"></div></div><div class="pre-td"><div class="pre-cell" style="width:75%"></div></div><div class="pre-td"><div class="pre-cell" style="width:50%"></div></div><div class="pre-td"><div class="pre-cell" style="width:70%"></div></div></div>
+      </div>
+    </flows-page>
+  </body>
+</html>

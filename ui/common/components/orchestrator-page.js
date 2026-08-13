@@ -208,7 +208,26 @@ class OrchestratorPage extends HTMLElement {
       const agents = Array.isArray(body) ? body : (body.data || []);
 
       if (!agents.length) {
-        grid.innerHTML = `<span style="font-size:var(--font-size-sm);color:var(--color-text-muted)">No agents running</span>`;
+        // ponytail: nothing to route to, so the composer is dead UI — swap the
+        // whole page for the deploy CTA instead of a prompt box that can only fail.
+        // Same shape as the workflows empty state (tile → title → sub → pills → CTA),
+        // reusing this page's own hero/title/subtitle rules for the top three.
+        this.classList.add('is-empty');
+        this.innerHTML = `
+          <app-module-nav module="orchestrator"></app-module-nav>
+          <div class="empty-wrap">
+            <div class="hero-icon" aria-hidden="true">${icons.layers('', 24)}</div>
+            <h2 class="empty-title">No agents available</h2>
+            <p class="empty-sub">Your orchestrator is ready, but there aren't any agents to run yet. Create a new agent or deploy one from the Artifact Registry to start building workflows.</p>
+             <div class="empty-pills">
+              <span class="process-pill">${icons.layers('', 12)} Pick an agent</span>
+              ${icons.chevronRight('empty-arrow', 12)}
+              <span class="process-pill">${icons.upload('', 12)} Deploy</span>
+              ${icons.chevronRight('empty-arrow', 12)}
+              <span class="process-pill">${icons.route('', 12)} Orchestrate</span>
+            </div>
+            <a class="empty-cta" href="/add-agent.html">Import agent ${icons.plus('', 13)}</a>
+          </div>`;
         return;
       }
 

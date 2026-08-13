@@ -18,13 +18,6 @@
   @keyframes skel-pulse { from, to { opacity: 1; } }
 }
 
-/* Module shell: block from the start, and its inline default view is real
-   markup, so the pre-upgrade paint is already the loaded layout (the other
-   views are <template>s and render nothing either way). Host geometry —
-   padding, the nav gutter — is in page-layout.css, unfiltered, so it applies
-   before and after upgrade alike. */
-module-shell:not(:defined) { display: block; }
-
 /* Layout containers */
 app-stack:not(:defined) {
   display: flex;

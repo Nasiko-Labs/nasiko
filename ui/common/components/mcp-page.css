@@ -28,44 +28,56 @@
     flex-shrink: 0;
   }
 
+  /* These three predate app-button and drifted off the DS: near-black
+     neutral-900 instead of the DS primary sand-800, weight 600 instead of 500,
+     an ad-hoc 10px padding instead of the 36px control height, and an opacity
+     hover instead of a colour step. Values now match app-button's is-primary /
+     is-outline / is-ghost exactly, so the page reads as the same button family
+     as the rest of the product without restructuring its markup. */
   .btn-dark {
     display: inline-flex;
     align-items: center;
+    justify-content: center;
     gap: var(--space-xs);
-    padding: 10px var(--space-md);
-    border-radius: var(--r-8);
-    background: light-dark(var(--neutral-900), var(--neutral-100));
+    min-height: var(--control-h-lg);
+    padding: 0 var(--s-16);
+    border: 1px solid transparent;
+    border-radius: var(--r-10);
+    background: light-dark(var(--sand-800), var(--neutral-100));
     color: light-dark(var(--white), var(--neutral-900));
-    font-size: var(--font-size-sm);
-    font-weight: 600;
+    font: 500 var(--font-size-sm)/1 inherit;
     cursor: pointer;
+    transition: background var(--transition-fast);
 
-    &:hover { opacity: 0.85; }
-    & svg { width: 14px; height: 14px; }
+    &:hover { background: light-dark(var(--sand-700), var(--neutral-300)); }
+    & svg { width: 20px; height: 20px; }
   }
 
   .btn-outline {
     display: inline-flex;
     align-items: center;
+    justify-content: center;
     gap: var(--space-xs);
-    padding: 10px var(--space-md);
+    min-height: var(--control-h-lg);
+    padding: 0 var(--s-16);
     border: 1px solid var(--color-border);
-    border-radius: var(--r-8);
+    border-radius: var(--r-10);
     background: var(--color-bg-surface);
     color: var(--color-text-main);
-    font-size: var(--font-size-sm);
-    font-weight: 600;
+    font: 500 var(--font-size-sm)/1 inherit;
     cursor: pointer;
+    transition: background var(--transition-fast);
 
-    &:hover { background: var(--bg-input); }
-    & svg { width: 14px; height: 14px; }
+    &:hover { background: var(--color-bg-base); }
+    & svg { width: 20px; height: 20px; }
   }
 
   .btn-ghost {
     display: inline-flex;
     align-items: center;
     gap: var(--space-xs);
-    padding: 6px 8px;
+    min-height: var(--control-h-sm);
+    padding: 0 var(--s-8);
     border-radius: var(--r-8);
     background: transparent;
     color: var(--color-text-muted);
@@ -465,18 +477,13 @@
     padding: var(--space-xl);
   }
 
-  /* Strokeless sand well, matching the Agent hub cards */
+  /* Surface: common/styles/surface.css (the hover lift is scoped there to
+     .tk-card.is-clickable, so a static connector card doesn't fake an affordance) */
   .tk-card {
     display: flex;
     flex-direction: column;
     gap: var(--space-sm);
     padding: var(--space-md);
-    border: 1px solid transparent;
-    border-radius: var(--r-8);
-    background: var(--color-bg-base);
-    transition: border-color 0.15s ease;
-
-    &:hover { border-color: var(--color-border); }
   }
 
   /* Custom-server cards open the detail/management modal on body click */

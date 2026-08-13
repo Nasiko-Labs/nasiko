@@ -13,13 +13,6 @@
     <script>try{var t=localStorage.getItem('app-theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t;if(localStorage.getItem('app-rail-expanded-v2')==='true')document.documentElement.style.setProperty('--app-sidebar-width','var(--app-sidebar-width-expanded)')}catch(e){}</script>
     <link rel="stylesheet" href="/common/global.css" />
     <link rel="stylesheet" href="/common/components.css" />
-    <!-- The sibling view's sheet. Linked here rather than left to its own
-         module: a view has to be fully styled the instant the shell mounts it,
-         and that module is only imported when the view is first opened, so a
-         sheet arriving with it would paint one unstyled frame. (settings-page is
-         the inline default view and still adopts its own sheet, since its module
-         is loaded up front.) -->
-    <link rel="stylesheet" href="/common/components/secrets-page.css" />
     <script type="module" src="/navigation.js"></script>
     <!-- blocking=render: the shell has to be painted (and view-transition-named)
          before the browser snapshots this document for the cross-document
@@ -27,35 +20,13 @@
          incoming page was captured with an empty header and the whole shell
          cross-faded on every navigation. -->
     <script type="module" blocking="render" src="/common/components/app-header.js"></script>
-    <script type="module" src="/common/components/module-shell.js"></script>
-    <!-- Only the default view's module loads up front; module-shell imports the
-         others the first time the nested sidebar opens them. -->
     <script type="module" src="/common/components/settings-page.js"></script>
   </head>
   <body>
     <app-header></app-header>
-    <!--
-      The Settings module in one document: this page's own settings plus Secrets.
-
-      Two levels of selection, one `?view=` param. The shell's keys are the
-      *views* — `settings` and `secrets`; the four workspace sections (general |
-      limits | registry | sso) are a second, finer level that settings-page.js
-      owns, so they are deliberately NOT view keys here. `data-view="settings"`
-      names this element as a whole, and it is the shell's `default-view` for
-      exactly that reason: a `?view=limits` link names a key the shell does not
-      know, so it falls back to the default and keeps Settings on screen (with
-      settings-page.js resolving `limits` from the same param) rather than
-      showing nothing.
-    -->
-    <module-shell module="settings" default-view="settings">
-      <!-- Owned by the shell, not by any view: this is what makes switching
-           views inside the module leave the sidebar untouched. -->
-      <app-module-nav module="settings"></app-module-nav>
-      <settings-page data-view="settings" data-title="Settings">
-      <!-- Mirrors the loaded panel head + grid setting rows (960px content). -->
-      <!-- Stands in for the nav above, which has no footprint until it upgrades:
-           below 1024px that nav is a disclosure bar in normal flow, so without
-           this the whole header slides down when it arrives. -->
+    <settings-page>
+      <!-- Mirrors the loaded panel head + grid setting rows (960px content).
+           .pre-modnav reserves the mobile app-module-nav disclosure bar. -->
       <div class="pre-modnav"></div>
       <div style="max-width:960px;">
         <div style="display:flex;flex-direction:column;gap:var(--space-xs);margin-bottom:var(--space-lg);">
@@ -75,13 +46,6 @@
           <div class="skel-block" style="height:40px;border-radius:var(--r-8);"></div>
         </div>
       </div>
-      </settings-page>
-      <!-- Deferred view: a <template> keeps the element un-upgraded, so it runs
-           no code and issues no requests until first opened. -->
-      <template data-view="secrets" data-title="Secrets"
-                data-module="/common/components/secrets-page.js">
-        <secrets-page></secrets-page>
-      </template>
-    </module-shell>
+    </settings-page>
   </body>
 </html>

@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Nasiko — Resources</title>
+    <link rel="icon" type="image/svg+xml" href="/common/mark-nasiko.svg" />
+    <!-- Inline and synchronous on purpose. theme.js is a deferred ES module, so without this the
+         skeleton flashes the OS theme. The rail width is set here too as the fallback for browsers
+         without the `blocking` script attribute (Firefox), where app-header.js is still plain deferred
+         and an expanded rail would collapse and re-expand on every MPA navigation.
+         Must stay inline and non-module. -->
+    <script>try{var t=localStorage.getItem('app-theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t;if(localStorage.getItem('app-rail-expanded-v2')==='true')document.documentElement.style.setProperty('--app-sidebar-width','var(--app-sidebar-width-expanded)')}catch(e){}</script>
+    <link rel="stylesheet" href="/common/global.css" />
+    <link rel="stylesheet" href="/common/components.css" />
+    <script type="module" src="/navigation.js"></script>
+    <!-- blocking=render: the shell has to be painted (and view-transition-named)
+         before the browser snapshots this document for the cross-document
+         transition. A plain deferred module runs after that snapshot, so the
+         incoming page was captured with an empty header and the whole shell
+         cross-faded on every navigation. -->
+    <script type="module" blocking="render" src="/common/components/app-header.js"></script>
+    <script type="module" src="/common/components/app-module-nav.js"></script>
+    <script type="module" src="/common/components/resources-page.js"></script>
+  </head>
+  <body>
+    <app-loading-bar></app-loading-bar>
+    <app-header></app-header>
+    <resources-page>
+      <!-- Mirrors the loaded page: title + meta, KPI strip, then the three
+           group cards. Keep in step with resources-page.css or first paint jumps. -->
+      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:var(--space-md);margin-bottom:var(--space-lg);">
+        <div>
+          <div class="skel-card__line" style="height:28px;width:180px;"></div>
+          <div class="skel-card__line" style="width:420px;max-width:60vw;margin-top:var(--space-2xs);"></div>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));border-top:1px solid var(--color-border);border-bottom:1px solid var(--color-border);padding:var(--space-md) 0;margin-bottom:var(--space-lg);gap:var(--space-md);">
+        <div style="display:flex;flex-direction:column;gap:var(--space-2xs);"><div class="skel-card__line" style="width:80px;"></div><div class="skel-card__line" style="height:20px;width:110px;"></div></div>
+        <div style="display:flex;flex-direction:column;gap:var(--space-2xs);"><div class="skel-card__line" style="width:80px;"></div><div class="skel-card__line" style="height:20px;width:110px;"></div></div>
+        <div style="display:flex;flex-direction:column;gap:var(--space-2xs);"><div class="skel-card__line" style="width:80px;"></div><div class="skel-card__line" style="height:20px;width:110px;"></div></div>
+        <div style="display:flex;flex-direction:column;gap:var(--space-2xs);"><div class="skel-card__line" style="width:80px;"></div><div class="skel-card__line" style="height:20px;width:110px;"></div></div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:var(--space-md);">
+        <div class="skel-block" style="height:180px;border-radius:var(--r-12);"></div>
+        <div class="skel-block" style="height:240px;border-radius:var(--r-12);"></div>
+        <div class="skel-block" style="height:220px;border-radius:var(--r-12);"></div>
+      </div>
+    </resources-page>
+  </body>
+</html>

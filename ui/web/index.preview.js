@@ -23,72 +23,8 @@ const a2aStream = [
   { text: evt({ statusUpdate: { status: { state: "TASK_STATE_COMPLETED", message: { parts: [{ text: answer }] } } } }), delay: 50 },
 ];
 
-// The workflows and executions views absorbed into this page (see index.html).
-// MAF list endpoints answer {data:{data:[...],total},status_code,message}.
-const wfStep = (i, agent, task) => ({
-  step_id: `s-${agent}-${i}`, step_index: i, agent_id: `a-00${i + 1}`,
-  agent_name: agent, agent_endpoint: `http://agents/${agent}`, task_description: task,
-});
-
-const mafWorkflows = [
-  {
-    id: "wf-001",
-    name: "Social media content pipeline",
-    description: "Generate social media content, review it, and publish approved posts every weekday.",
-    maf_json: {
-      description: "Generate, review and publish approved posts.",
-      steps: [
-        wfStep(0, "research-agent", "Fetch the latest campaign brief and brand tone guide"),
-        wfStep(1, "content-writer", "Generate three caption variations from the brief"),
-        wfStep(2, "review-agent", "Evaluate captions for tone, grammar and alignment"),
-      ],
-      output_generation: "Summarise which captions were approved and when they ship.",
-    },
-    status: "active", execution_count: 126,
-    created_at: "2026-06-10T09:00:00Z", updated_at: "2026-08-05T09:00:00Z",
-  },
-  {
-    id: "wf-002",
-    name: "Agent onboarding pipeline",
-    description: "Provision, smoke-test and register newly deployed agents.",
-    maf_json: {
-      description: "Provision, smoke-test and register a new agent.",
-      steps: [
-        wfStep(0, "devops-agent", "Provision the container and attach secrets"),
-        wfStep(1, "qa-agent", "Run the smoke-test suite against the new endpoint"),
-      ],
-      output_generation: "Report whether the agent is registered and healthy.",
-    },
-    status: "active", execution_count: 12,
-    created_at: "2026-07-01T09:00:00Z", updated_at: "2026-08-01T09:00:00Z",
-  },
-  {
-    id: "wf-003",
-    name: "Nightly cost rollup",
-    description: "Aggregate per-agent token spend and post the daily summary.",
-    maf_json: {
-      description: "Roll up yesterday's spend.",
-      steps: [wfStep(0, "finance-bot", "Aggregate token usage and cost by agent")],
-      output_generation: "Post the rollup to the finance channel.",
-    },
-    status: "paused", execution_count: 43,
-    created_at: "2026-05-02T09:00:00Z", updated_at: "2026-07-20T09:00:00Z",
-  },
-];
-
-const mafExecutions = [
-  { id: "ex-90", execution_number: 90, maf_id: "wf-001", status: "success", workflow_name: "Social media content pipeline", workflow_status: "active", created_at: "2026-08-07T10:00:00Z", completed_at: "2026-08-07T10:02:14Z" },
-  { id: "ex-89", execution_number: 89, maf_id: "wf-001", status: "running", workflow_name: "Social media content pipeline", workflow_status: "active", created_at: "2026-08-07T09:30:00Z", completed_at: null },
-  { id: "ex-88", execution_number: 88, maf_id: "wf-002", status: "failed", workflow_name: "Agent onboarding pipeline", workflow_status: "active", created_at: "2026-08-06T18:30:00Z", completed_at: "2026-08-06T18:31:02Z" },
-  { id: "ex-87", execution_number: 87, maf_id: "wf-003", status: "success", workflow_name: "Nightly cost rollup", workflow_status: "paused", created_at: "2026-08-06T02:00:00Z", completed_at: "2026-08-06T02:00:48Z" },
-];
-
-const mafEnvelope = (rows) => ({ data: { data: rows, total: rows.length }, status_code: 200, message: "ok" });
-
 export default {
   fetch: [
-    [{ method: "GET", path: /^\/api\/maf\/workflows/ }, mafEnvelope(mafWorkflows)],
-    [{ method: "GET", path: /^\/api\/maf\/executions/ }, mafEnvelope(mafExecutions)],
     ["POST /api/chat/sessions", { session_id: "s-preview-001", id: "s-preview-001" }],
     [{ method: "POST", path: /^\/api\/chat\/sessions\/.*\/messages$/ }, { ok: true }],
     ["POST /api/orchestrator/a2a", { __stream: a2aStream }],
@@ -100,28 +36,6 @@ export default {
     ]],
   ],
   scenarios: {
-    // ── The module's views ──────────────────────────────────────────────────
-    // Opened the way a shared link does (`?view=`), which also proves the shell
-    // honours the param on load and not only on a nav click.
-    "view-workflows": async (page) => {
-      await page.goto(`${page.url().split("?")[0]}?view=workflows`);
-      await page.waitForSelector("workflows-page .page-head");
-      await page.waitForTimeout(400);
-    },
-    "view-executions": async (page) => {
-      await page.goto(`${page.url().split("?")[0]}?view=executions`);
-      await page.waitForSelector("executions-page .page-title");
-      await page.waitForTimeout(400);
-    },
-    // Switching through the nested sidebar. Two things to check here: the
-    // sidebar is identical to the default capture, and the orchestrate view's
-    // clipped, height-capped box has given way to one that scrolls normally.
-    "view-switch-click": async (page) => {
-      await page.waitForSelector(".input-wrap");
-      await page.click('app-module-nav [data-section="workflows"]');
-      await page.waitForSelector("workflows-page .page-head");
-      await page.waitForTimeout(400);
-    },
     // Labeled sidebar after clicking the topbar rail toggle.
     "rail-expanded": async (page) => {
       await page.click("[data-rail-toggle]");
@@ -209,10 +123,7 @@ export default {
     "streamed-response": async (page) => {
       await page.fill("#textarea", "Why is my deployment failing?");
       await page.click("#submitBtn");
-      // `.stream-content` is what #readStream renders the reply into. This waited
-      // on `.response-content.is-visible`, a class no component has — the
-      // scenario had been failing on a stale selector.
-      await page.waitForSelector(".stream-content", { timeout: 8000 });
+      await page.waitForSelector(".response-content.is-visible", { timeout: 8000 });
       await page.waitForTimeout(300);
     },
     // Completed response hovered: copy + trace toolbar visible.
