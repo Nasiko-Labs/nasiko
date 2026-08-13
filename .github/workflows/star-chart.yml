@@ -1,0 +1,25 @@
+name: Star chart
+
+# Generates a real star-history chart as a committed SVG (shieldcn action).
+# Runs daily + on-demand; writes .github/shieldcn/star-chart-{light,dark}.svg.
+#
+# NOTE: GitHub restricted the public stargazers API (June 2026), so hosted star
+# charts are gone. This action renders the chart inside the repo using the
+# workflow's own token, where that access still exists.
+
+on:
+  schedule:
+    - cron: "0 6 * * *"   # every day at 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  stars:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jal-co/shieldcn@v1
+        with:
+          theme: blue
