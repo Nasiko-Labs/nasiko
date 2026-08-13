@@ -1,9 +1,6 @@
 -- =============================================================================
--- Migration 021: Multi-Agent Flow (MAF) tables
--- Depends on: users table (001_schema.sql)
+-- Multi-Agent Flow (MAF) tables
 --
--- What this migration adds
--- ────────────────────────
 -- mafs              — workflow definitions (soft-delete via status column)
 -- maf_executions    — per-run state with retry counters
 -- Indexes for fast list-my-MAFs, ownership checks, and history queries
@@ -34,6 +31,10 @@ CREATE INDEX idx_mafs_user ON mafs (user_id) WHERE status = 'active';
 -- One row per execution run.  Status written to DB on every transition.
 -- DB is the single source of truth — no Redis status cache.
 -- The execution id doubles as the A2A context_id so all steps share one thread.
+--
+-- execution_number is a purely cosmetic, globally incrementing display id
+-- (Postgres IDENTITY sequence — concurrency-safe with no app-level locking);
+-- id (UUID) stays the internal identifier.
 -- =============================================================================
 
 CREATE TABLE maf_executions (
@@ -50,8 +51,10 @@ CREATE TABLE maf_executions (
     output        TEXT,
     step_results  JSONB,
     error         TEXT,
-    created_at    TIMESTAMPTZ  NOT NULL DEFAULT now()
+    created_at    TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    execution_number BIGINT GENERATED ALWAYS AS IDENTITY
 );
 
 CREATE INDEX idx_maf_executions_user ON maf_executions (user_id);
 CREATE INDEX idx_maf_executions_maf  ON maf_executions (maf_id);
+CREATE UNIQUE INDEX idx_maf_executions_number ON maf_executions (execution_number);

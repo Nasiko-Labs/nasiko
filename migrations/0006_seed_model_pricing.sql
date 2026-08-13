@@ -1,6 +1,12 @@
 -- Seed pricing for models in active use. model_pricing is the single source
 -- of truth for cost calculation; the static table in
--- oss/observability/src/pricing.rs is only a fallback.
+-- oss/observability/src/pricing.rs is only a fallback. The token_usage cost
+-- trigger reads model_pricing by (provider, model) and fills cost_usd;
+-- without a row, cost is left NULL (best-effort, per spec).
+--
+-- Prices are USD per 1M tokens, best-effort public list rates as of authoring —
+-- VERIFY against current provider pricing before relying on cost figures.
+-- Columns: (provider, model, input/output per-1M, cache create/read, notes).
 
 INSERT INTO model_pricing (provider, model, input_price_per_1m, output_price_per_1m, cache_creation_price_per_1m, cache_read_price_per_1m, notes) VALUES
 ('openai', 'gpt-4o', 2.50, 10.00, NULL, NULL, 'GPT-4o standard'),
@@ -26,3 +32,19 @@ INSERT INTO model_pricing (provider, model, input_price_per_1m, output_price_per
 ('deepseek', 'deepseek-chat', 0.14, 0.28, 0.014, 0.014, 'DeepSeek Chat'),
 ('deepseek', 'deepseek-reasoner', 0.55, 2.19, NULL, NULL, 'DeepSeek R1'),
 ('deepseek', 'deepseek-v4-flash', 0.14, 0.28, NULL, NULL, 'DeepSeek V4 Flash');
+
+-- Models the LLM router advertises (GET /v1/models) that the block above
+-- doesn't already price.
+INSERT INTO model_pricing
+    (provider, model, input_price_per_1m, output_price_per_1m, cache_creation_price_per_1m, cache_read_price_per_1m, notes)
+VALUES
+    -- Anthropic (dated variants of the catalog models). Cache: 1.25x write, 0.1x read.
+    ('anthropic', 'claude-3-5-sonnet-20241022', 3.00, 15.00, 3.75, 0.30, 'Claude 3.5 Sonnet'),
+    ('anthropic', 'claude-3-5-haiku-20241022',  0.80,  4.00, 1.00, 0.08, 'Claude 3.5 Haiku'),
+    -- Gemini (no prompt-cache pricing modeled here).
+    ('gemini', 'gemini-1.5-pro',   1.25, 5.00, NULL, NULL, 'Gemini 1.5 Pro'),
+    ('gemini', 'gemini-1.5-flash', 0.075, 0.30, NULL, NULL, 'Gemini 1.5 Flash'),
+    ('gemini', 'gemini-2.0-flash', 0.10, 0.40, NULL, NULL, 'Gemini 2.0 Flash'),
+    -- OpenAI embeddings (no output tokens).
+    ('openai', 'text-embedding-3-small', 0.02, 0.00, NULL, NULL, 'OpenAI text-embedding-3-small'),
+    ('openai', 'text-embedding-3-large', 0.13, 0.00, NULL, NULL, 'OpenAI text-embedding-3-large');

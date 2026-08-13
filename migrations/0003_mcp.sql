@@ -1,14 +1,13 @@
 -- =============================================================================
--- MCP Gateway schema — unified connectors + owner-controlled sharing
--- =============================================================================
+-- MCP Gateway schema — unified connectors + owner-controlled sharing.
 --
--- Backs the `nasiko-mcp-gateway` crate. A single `mcp_connectors` registry holds
--- both Composio toolkits and custom MCP servers (discriminated by
--- `provider_type`), keyed by connector id (UUID), with owner-controlled sharing
--- (`mcp_connector_grants`, mirroring the platform's existing `agent_grants`
--- shape). Enum-like columns use TEXT + CHECK (matches the platform's
--- build_jobs.status / agent-grants pattern) so adding a provider or auth type
--- later is a CHECK change, not an ALTER TYPE.
+-- Backs the `nasiko-mcp-gateway` crate. A single `mcp_connectors` registry
+-- holds Composio toolkits, external MCP servers, and platform-built ("upload
+-- your own") MCP servers, discriminated by `provider_type`/`source_kind`,
+-- keyed by connector id (UUID), with owner-controlled sharing
+-- (`mcp_connector_grants`, mirroring the platform's `agent_grants` shape).
+-- Enum-like columns use TEXT + CHECK (matches build_jobs.status etc.) so
+-- adding a provider or auth type later is a CHECK change, not an ALTER TYPE.
 --
 -- Design invariants baked in (enforced in crate code; see
 -- MCP_GATEWAY_TECHNICAL_DESIGN.md §18):
@@ -19,6 +18,14 @@
 --   #4 no credential_type column — derived by joining connectors.auth_type.
 --   #5 owner_id is ON DELETE RESTRICT — deleting a user can't destroy a shared
 --      connector out from under everyone it was shared with.
+-- =============================================================================
+
+-- Where an MCP-server connector's URL comes from: a user-typed external
+-- address, or a platform build+deploy ("upload your own MCP server"). Every
+-- downstream system (sharing, permissions, tool aggregation) is unaware of
+-- this distinction — it only matters for (a) which SSRF policy applies and
+-- (b) whether build_status/mcp_connector_builds rows are meaningful.
+CREATE TYPE mcp_connector_source_kind AS ENUM ('external_url', 'uploaded_build');
 
 -- =============================================================================
 -- mcp_connectors — the unified registry
@@ -27,8 +34,10 @@
 -- which; provider-specific columns are populated only for the matching type.
 --   * composio   : owner_id IS NULL (globally connectable; each user connects
 --                  their own account). auth_config_id set; url NULL.
---   * mcp_server : owner_id always set (even admin-created) — private until the
---                  owner shares it. url set; auth_config_id NULL.
+--   * mcp_server : owner_id always set (even admin-created) — private until
+--                  the owner shares it. auth_config_id NULL; url set once the
+--                  server is reachable (immediately for external_url, after
+--                  the build for uploaded_build).
 -- `name` is a display/search label only, NEVER the tool-routing key (that is
 -- derived from `id` in crate code — invariant #1).
 CREATE TABLE mcp_connectors (
@@ -58,15 +67,37 @@ CREATE TABLE mcp_connectors (
     oauth_client_id               TEXT,
     oauth_client_secret           TEXT,   -- encrypted at rest (SecretsCrypto)
 
+    -- uploaded_build-only state (NULL/meaningless for external_url)
+    source_kind                   mcp_connector_source_kind NOT NULL DEFAULT 'external_url',
+    build_status                  TEXT CHECK (build_status IN ('pending', 'building', 'running', 'failed') OR build_status IS NULL),
+    build_secrets_env             JSONB NOT NULL DEFAULT '{}'::jsonb,
+    container_image_tag           TEXT,
+
+    -- Connector-level setup status for the plain URL-connect/probe flow (NOT
+    -- the upload flow, which owns build_status). Tracks whether the connector
+    -- itself is usable yet — relevant for auth_type='oauth2'/credential-
+    -- requiring servers, where registering and finishing setup (a credential,
+    -- or a browser OAuth round-trip) are two separate steps. NULL for
+    -- composio rows, which don't use this field.
+    setup_status                  TEXT CHECK (setup_status IN ('pending', 'active', 'failed')),
+    setup_error                   TEXT,
+
     created_at                    TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at                    TIMESTAMPTZ NOT NULL DEFAULT now(),
 
-    -- Two-directional: requires the correct provider's fields, not just forbids
-    -- the wrong provider's (invariant #3) — an empty, unusable connector cannot
-    -- be inserted.
+    -- Two-directional: requires the correct provider's fields, not just
+    -- forbids the wrong provider's (invariant #3) — an empty, unusable
+    -- connector cannot be inserted. A NULL url is allowed only for an
+    -- uploaded_build row whose build hasn't finished yet.
     CONSTRAINT chk_connectors_provider_fields CHECK (
-        (provider_type = 'composio'   AND auth_config_id IS NOT NULL AND url IS NULL) OR
-        (provider_type = 'mcp_server' AND url IS NOT NULL AND auth_config_id IS NULL)
+        (provider_type = 'composio' AND auth_config_id IS NOT NULL AND url IS NULL) OR
+        (provider_type = 'mcp_server' AND (
+            (source_kind = 'external_url' AND url IS NOT NULL AND auth_config_id IS NULL) OR
+            (source_kind = 'uploaded_build' AND auth_config_id IS NULL AND (
+                (build_status IN ('pending', 'building', 'failed')) OR
+                (build_status = 'running' AND url IS NOT NULL)
+            ))
+        ))
     )
 );
 -- name is unique within one owner's scope; platform (composio, owner_id NULL)
@@ -86,16 +117,18 @@ CREATE TRIGGER trg_mcp_connectors_updated_at
 -- mcp_connector_grants — owner-controlled sharing
 -- =============================================================================
 -- Mirrors agent_grants (0001_schema.sql): grant_type 'user' targets a specific
--- user id, 'public' targets everyone via the '*' sentinel. Only meaningful for
--- provider_type='mcp_server' connectors (composio is always globally connectable
--- and has no owner). Revoking a grant must also delete the grantee's
--- mcp_user_connections row for the connector — enforced transactionally in crate
--- code (invariant #2), not by the schema.
+-- user id, 'agent' a specific agent id (lets whoever manages that agent enable
+-- the connector for it, even without their own reachability), 'public'
+-- targets everyone via the '*' sentinel. Only meaningful for
+-- provider_type='mcp_server' connectors (composio is always globally
+-- connectable and has no owner). Revoking a grant must also delete the
+-- grantee's mcp_user_connections row for the connector — enforced
+-- transactionally in crate code (invariant #2), not by the schema.
 CREATE TABLE mcp_connector_grants (
     id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     connector_id  UUID NOT NULL REFERENCES mcp_connectors(id) ON DELETE CASCADE,
-    grant_type    TEXT NOT NULL CONSTRAINT chk_mcp_grants_grant_type CHECK (grant_type IN ('user', 'public')),
-    grantee_id    TEXT NOT NULL,              -- a user id as text, or '*' for everyone
+    grant_type    TEXT NOT NULL CONSTRAINT chk_mcp_grants_grant_type CHECK (grant_type IN ('user', 'public', 'agent')),
+    grantee_id    TEXT NOT NULL,              -- user/agent UUID as text, or '*' for everyone
     granted_by    UUID REFERENCES users(id) ON DELETE SET NULL,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
 
@@ -107,13 +140,20 @@ CREATE TABLE mcp_connector_grants (
 );
 CREATE INDEX idx_mcp_grants_grantee ON mcp_connector_grants(grantee_id, grant_type);
 CREATE INDEX idx_mcp_grants_connector ON mcp_connector_grants(connector_id);
+-- Plain btree for the UUID-valued grantee_id lookups
+-- (`agent_has_connector_grant`/`list_agent_granted_connectors` filter
+-- `grantee_id = $agent_id` directly as text).
+CREATE INDEX idx_mcp_grants_grantee_agent
+    ON mcp_connector_grants (grantee_id)
+    WHERE grant_type = 'agent';
 
 -- =============================================================================
 -- mcp_connector_tools — synced tool catalog
 -- =============================================================================
--- Persisted so permission-configuration screens render instantly without a live
--- backend call. A cache of what the live backend reports (not the enforcement
--- source of truth); last_synced_at makes staleness visible rather than silent.
+-- Persisted so permission-configuration screens render instantly without a
+-- live backend call. A cache of what the live backend reports (not the
+-- enforcement source of truth); last_synced_at makes staleness visible rather
+-- than silent.
 CREATE TABLE mcp_connector_tools (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     connector_id    UUID NOT NULL REFERENCES mcp_connectors(id) ON DELETE CASCADE,
@@ -182,20 +222,10 @@ CREATE TRIGGER trg_mcp_composio_sessions_updated_at
     BEFORE UPDATE ON mcp_composio_sessions FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 -- =============================================================================
--- mcp_agent_connector_access — per (user, agent, connector) permission override
+-- mcp_agent_connector_access — per-agent permission override
 -- =============================================================================
--- user_id is the CALLER (an agent can be invoked by its owner or by anyone
--- granted access via agent_grants — each caller's restrictions apply
--- independently). The single most important rule: NO ROW = fully allowed. A row
--- only ever exists to restrict — disable the whole connector for the agent, or
--- apply per-tool allow/ask/block rules. tool_rules is a JSONB array of
--- {pattern, stance}; app code validates/dedupes it on write (the JSONB array has
--- no DB-level uniqueness — accepted tradeoff). This table must never be consulted
--- on its own: every access check confirms connector reachability (owner/grant)
--- FIRST (§12), so a stale enabled=true row can never re-admit a revoked grant.
 CREATE TABLE mcp_agent_connector_access (
     id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id        UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     agent_id       UUID NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
     connector_id   UUID NOT NULL REFERENCES mcp_connectors(id) ON DELETE CASCADE,
     enabled        BOOLEAN NOT NULL DEFAULT true,
@@ -203,11 +233,69 @@ CREATE TABLE mcp_agent_connector_access (
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
 
-    UNIQUE (user_id, agent_id, connector_id)
+    CONSTRAINT uq_mcp_agent_connector_access UNIQUE (agent_id, connector_id)
 );
-CREATE INDEX idx_mcp_agent_connector_access_user_agent
-    ON mcp_agent_connector_access(user_id, agent_id);
+CREATE INDEX idx_mcp_agent_connector_access_agent ON mcp_agent_connector_access(agent_id);
 CREATE INDEX idx_mcp_agent_connector_access_connector
     ON mcp_agent_connector_access(connector_id);
 CREATE TRIGGER trg_mcp_agent_connector_access_updated_at
     BEFORE UPDATE ON mcp_agent_connector_access FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+COMMENT ON TABLE mcp_agent_connector_access IS
+    'Per-agent permission override, shared by every caller who manages the agent. '
+    'The single most important rule: NO ROW = fully allowed. A row only ever exists '
+    'to restrict — disable the whole connector for the agent, or apply per-tool '
+    'allow/ask/block rules. tool_rules is a JSONB array of {pattern, stance}; app '
+    'code validates/dedupes it on write. This table must never be consulted on its '
+    'own: every access check confirms connector reachability (owner/grant) FIRST, '
+    'so a stale enabled=true row can never re-admit a revoked grant.';
+
+-- =============================================================================
+-- mcp_connector_pins — per-user quick-access shortlist for the catalog UI
+-- =============================================================================
+-- "Recent" is intentionally NOT a table — it's derived from
+-- mcp_user_connections.updated_at (real connect/reconnect activity), which
+-- avoids a write on every catalog page view.
+CREATE TABLE mcp_connector_pins (
+    user_id      UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    connector_id UUID NOT NULL REFERENCES mcp_connectors(id) ON DELETE CASCADE,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, connector_id)
+);
+CREATE INDEX idx_mcp_connector_pins_user ON mcp_connector_pins(user_id, created_at DESC);
+
+-- =============================================================================
+-- mcp_connector_builds — build history for uploaded MCP servers
+-- =============================================================================
+-- Mirrors agent_builds (0001_schema.sql): one row per build attempt;
+-- mcp_connectors itself only ever reflects the latest state.
+CREATE TABLE mcp_connector_builds (
+    id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    connector_id     UUID NOT NULL REFERENCES mcp_connectors(id) ON DELETE CASCADE,
+    owner_id         UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    version_tag      TEXT NOT NULL,
+    github_url       TEXT,
+    source_key       TEXT, -- S3 zip path; NULL when github_url is set
+    image_tag        TEXT,
+    detected_runtime TEXT, -- diagnostic only: 'python' | 'node' | 'unknown', from validation.rs
+    status           TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'building', 'success', 'failed')),
+    error_msg        TEXT,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    completed_at     TIMESTAMPTZ
+);
+CREATE INDEX idx_mcp_connector_builds_connector ON mcp_connector_builds(connector_id, created_at DESC);
+CREATE TRIGGER trg_mcp_connector_builds_updated_at
+    BEFORE UPDATE ON mcp_connector_builds FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- MCP-server builds share the durable agent build queue (0001_schema.sql):
+-- an MCP build job has no agents row, so it references the connector instead.
+-- The CHECK guarantees every job references exactly one real target.
+ALTER TABLE build_jobs
+    ADD COLUMN connector_id UUID REFERENCES mcp_connectors(id) ON DELETE CASCADE,
+    ADD CONSTRAINT chk_build_jobs_one_target CHECK (
+        (agent_id IS NOT NULL AND connector_id IS NULL) OR
+        (agent_id IS NULL AND connector_id IS NOT NULL)
+    );
+CREATE INDEX idx_build_jobs_connector ON build_jobs(connector_id) WHERE connector_id IS NOT NULL;

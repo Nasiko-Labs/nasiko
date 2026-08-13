@@ -1,3 +1,15 @@
+-- =============================================================================
+-- Baseline schema: users, agents, builds/deployments, chat, artifacts,
+-- observability, flows, settings, metering.
+--
+-- Domain-specific schemas live in their own files:
+--   0002_oci.sql          OCI registry storage (manifests, tags, blobs, ...)
+--   0003_mcp.sql          MCP gateway (connectors, grants, connections, ...)
+--   0004_maf.sql          Multi-agent flow definitions and executions
+--   0005_llm_routing.sql  LLM configs, model registry, router learning cells
+--   0006_seed_model_pricing.sql  Pricing seed data
+-- =============================================================================
+
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 CREATE EXTENSION IF NOT EXISTS "pg_trgm";
 CREATE EXTENSION IF NOT EXISTS "vector";
@@ -128,6 +140,14 @@ CREATE TABLE agents (
     supports_authenticated_extended_card BOOLEAN NOT NULL DEFAULT false,
     provider_org VARCHAR(255),
     provider_url TEXT,
+    -- `--writable` deploy flag, persisted so redeploy/update/rollback paths
+    -- restore it without the caller passing it again.
+    writable BOOLEAN NOT NULL DEFAULT false,
+    -- Container-side mount target for the `--writable` persistent volume
+    -- (`--writable-path`). NULL = the default `/workspace`. Only meaningful
+    -- when `writable` is true; carried through update/rollback/restart
+    -- exactly like `writable` so a redeploy never silently moves the mount.
+    writable_path TEXT,
     deleted_at TIMESTAMPTZ,
     search_vector tsvector GENERATED ALWAYS AS (
         to_tsvector('english'::regconfig,
@@ -136,6 +156,9 @@ CREATE TABLE agents (
     ) STORED,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    -- LLM routing columns (inbound_format, llm_config_id, pinned_model) are
+    -- added by 0005_llm_routing.sql, which owns the llm_configs table they
+    -- reference.
 );
 
 CREATE INDEX idx_agents_owner ON agents(owner_id);
@@ -301,10 +324,13 @@ CREATE INDEX idx_agent_deployments_running ON agent_deployments(status) WHERE st
 CREATE INDEX idx_agent_deployments_owner ON agent_deployments(owner_id, created_at DESC);
 CREATE INDEX idx_agent_deployments_ns ON agent_deployments(namespace);
 
--- Durable build queue (workers claim with SKIP LOCKED)
+-- Durable build queue (workers claim with SKIP LOCKED).
+-- agent_id is nullable because 0003_mcp.sql adds connector_id as an
+-- alternative build target (MCP-server builds have no agents row), with a
+-- CHECK that exactly one of the two is set.
 CREATE TABLE build_jobs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    agent_id UUID NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    agent_id UUID REFERENCES agents(id) ON DELETE CASCADE,
     owner_id UUID NOT NULL,
     payload JSONB NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','in_progress','done','failed')),
@@ -356,11 +382,25 @@ CREATE TABLE chat_sessions (
 );
 CREATE INDEX idx_sessions_created ON chat_sessions(created_at DESC);
 CREATE INDEX idx_chat_sessions_recent ON chat_sessions(user_id, created_at DESC);
+-- Matches the sessions list's actual sort order: GET /api/chat/sessions orders
+-- by (updated_at DESC, session_id DESC) and pages with a keyset cursor on that
+-- pair. Without it Postgres reads every session the user owns before sorting;
+-- with it the query stops after the page (measured 182ms -> 0.75ms at
+-- 5000 sessions x 40 messages).
+CREATE INDEX idx_chat_sessions_user_updated
+    ON chat_sessions (user_id, updated_at DESC, session_id DESC);
 CREATE TRIGGER trg_chat_sessions_updated_at BEFORE UPDATE ON chat_sessions FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 -- role is TEXT, not an enum: sessions are written by multiple clients that
 -- disagree on the assistant role name (web UI stores "assistant", CLI/TUI
 -- store "agent") and renderers treat anything non-"user" as an agent reply.
+--
+-- The usage/trace columns are populated for platform-paid usage only (the LLM
+-- router / orchestrator); bring-your-own-key agent spend is deliberately not
+-- metered — those messages carry duration/trace only. `usage_estimated` marks
+-- token counts derived from a character estimate (streamed orchestrator turns,
+-- where the provider stream reports no usage) so UIs can label them
+-- approximate.
 CREATE TABLE chat_messages (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     session_id TEXT NOT NULL REFERENCES chat_sessions(session_id) ON DELETE CASCADE,
@@ -368,7 +408,14 @@ CREATE TABLE chat_messages (
     content TEXT NOT NULL,
     file_parts JSONB,
     has_file_parts BOOLEAN NOT NULL DEFAULT false,
-    timestamp TIMESTAMPTZ NOT NULL DEFAULT now()
+    timestamp TIMESTAMPTZ NOT NULL DEFAULT now(),
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    model TEXT,
+    duration_ms INTEGER,
+    cost_usd DECIMAL(10, 8),
+    usage_estimated BOOLEAN,
+    trace_id TEXT
 );
 CREATE INDEX idx_messages_session ON chat_messages(session_id, timestamp);
 
@@ -401,76 +448,6 @@ CREATE TABLE session_traces (
     PRIMARY KEY (session_id, trace_id)
 );
 CREATE INDEX idx_session_traces_trace ON session_traces(trace_id);
-
--- =============================================================================
--- OCI Registry
--- =============================================================================
-
--- Manifests are scoped per repository: the same digest may be pushed by many
--- repos (content-addressed dedup happens one layer down, at blob storage), and
--- a global digest PK would let one repo's push hijack another's tag pointer.
-CREATE TABLE oci_manifests (
-    digest TEXT NOT NULL,
-    repository TEXT NOT NULL,
-    reference TEXT,
-    media_type TEXT NOT NULL,
-    content TEXT NOT NULL,
-    size_bytes BIGINT NOT NULL DEFAULT 0,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (repository, digest)
-);
-CREATE INDEX idx_manifests_repo_ref ON oci_manifests(repository, reference);
-
--- Blob reference counting: blobs live at a flat, globally content-addressed
--- key with no linkage to the repositories that reference them. This table
--- provides that linkage so (a) deleting a blob from one repo cannot destroy a
--- layer another repo still needs, and (b) a repo owner can only GET/HEAD
--- blobs their repo actually references.
-CREATE TABLE oci_blob_refs (
-    digest TEXT NOT NULL,
-    repository TEXT NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (digest, repository)
-);
--- Fan-out check on delete: "does any OTHER repo still reference this digest".
-CREATE INDEX idx_blob_refs_digest ON oci_blob_refs(digest);
-
-CREATE TABLE oci_uploads (
-    uuid UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    repository TEXT NOT NULL,
-    offset_bytes BIGINT NOT NULL DEFAULT 0,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE TABLE oci_referrers (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    subject_digest TEXT NOT NULL,
-    repository TEXT NOT NULL,
-    referrer_digest TEXT NOT NULL,
-    artifact_type TEXT,
-    annotations JSONB,
-    size_bytes BIGINT NOT NULL DEFAULT 0,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE(subject_digest, referrer_digest)
-);
-CREATE INDEX idx_referrers_subject ON oci_referrers(repository, subject_digest);
-
--- Per-agent credentials for pulling that agent's image from the built-in OCI
--- registry out of a real Kubernetes cluster: kubelet/containerd need the
--- `kubernetes.io/dockerconfigjson` (HTTP Basic) shape, which the registry's
--- normal bearer-JWT auth doesn't fit. One row per agent — minted on first
--- deploy, reused across update/rollback/restart, revoked on destroy. Scoped
--- per-agent so a leaked credential only exposes one agent's image.
-CREATE TABLE oci_pull_credentials (
-    agent_id UUID PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
-    username TEXT NOT NULL,
-    token_hash VARCHAR(64) NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    revoked_at TIMESTAMPTZ
-);
-CREATE UNIQUE INDEX idx_oci_pull_credentials_token_hash_active
-    ON oci_pull_credentials(token_hash)
-    WHERE revoked_at IS NULL;
 
 -- =============================================================================
 -- Artifacts (OCI catalog with vector search)
@@ -568,7 +545,7 @@ CREATE INDEX idx_token_usage_request ON token_usage(request_id) WHERE request_id
 CREATE INDEX idx_token_usage_cost ON token_usage(created_at DESC, cost_usd) WHERE cost_usd IS NOT NULL;
 CREATE INDEX idx_token_usage_metadata ON token_usage USING gin(metadata);
 
--- Model pricing (for cost calculation). Seeded by 0002_seed_model_pricing.sql.
+-- Model pricing (for cost calculation). Seeded by 0006_seed_model_pricing.sql.
 CREATE TABLE model_pricing (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     provider TEXT NOT NULL,
@@ -750,3 +727,62 @@ CREATE TABLE flow_steps (
 );
 CREATE INDEX idx_flow_steps_flow ON flow_steps(flow_id, step_order);
 CREATE INDEX idx_flow_steps_agent ON flow_steps(agent_id) WHERE agent_id IS NOT NULL;
+
+-- =============================================================================
+-- Settings
+-- =============================================================================
+
+-- Singleton row (id = 1) backing GET/PUT /api/settings; the handler upserts
+-- with `INSERT ... VALUES (1, ...) ON CONFLICT (id) DO UPDATE`.
+--
+-- OIDC fields are admin-configurable SSO settings. Non-secret fields are
+-- plain columns; `oidc_client_secret_encrypted` holds an AES-256-GCM
+-- ciphertext (see SecretsCrypto::for_platform_settings) — the plaintext
+-- secret is never persisted and never leaves the encrypted column.
+--
+-- `catalog_tabs` is a comma-separated tag list for the agent-catalog UI;
+-- NULL/empty means the UI derives tabs from the most common agent tags.
+CREATE TABLE settings (
+    id               INT PRIMARY KEY,
+    router_model     TEXT,
+    default_provider TEXT,
+    max_flow_depth   INT,
+    max_flow_fan_out INT,
+    max_flow_tokens  BIGINT,
+    flow_timeout_secs INT,
+    registry_url     TEXT,
+    oidc_issuer_url  TEXT,
+    oidc_client_id   TEXT,
+    oidc_client_secret_encrypted TEXT,
+    oidc_redirect_uri TEXT,
+    oidc_scopes      TEXT,
+    oidc_provider_label TEXT,
+    catalog_tabs     TEXT
+);
+
+-- =============================================================================
+-- Metering
+-- =============================================================================
+
+-- Replica-hours metering: one row per container/pod run, written by the
+-- hours meter reconciler (oss/server/src/agents/hours_meter.rs).
+-- agent_id intentionally has NO foreign key: rows must survive hard agent
+-- deletion (DELETE FROM agents, catalog/routes.rs) for billing continuity.
+CREATE TABLE agent_instance_sessions (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    agent_id     UUID NOT NULL,
+    agent_name   TEXT NOT NULL,        -- snapshot at first observation
+    instance_key TEXT NOT NULL,        -- docker container id / k8s pod uid
+    runtime      TEXT NOT NULL,        -- 'docker' | 'kubernetes'
+    started_at   TIMESTAMPTZ NOT NULL, -- backend-reported or first-seen fallback
+    last_seen_at TIMESTAMPTZ NOT NULL, -- bumped every tick while observed
+    ended_at     TIMESTAMPTZ,          -- NULL while running
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT agent_instance_sessions_run_unique UNIQUE (instance_key, started_at)
+);
+
+CREATE INDEX idx_agent_instance_sessions_agent_started
+    ON agent_instance_sessions (agent_id, started_at);
+
+CREATE INDEX idx_agent_instance_sessions_open
+    ON agent_instance_sessions (instance_key) WHERE ended_at IS NULL;
