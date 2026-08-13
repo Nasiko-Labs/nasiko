@@ -44,7 +44,7 @@ The only prerequisite is **Docker** (with Docker Compose)
 ### 1. Clone and configure
 
 ```sh
-git clone https://github.com/nasiko-labs/nasiko.git
+git clone https://github.com/Nasiko-Labs/nasiko.git
 cd nasiko
 cp .env.example .env
 ```
