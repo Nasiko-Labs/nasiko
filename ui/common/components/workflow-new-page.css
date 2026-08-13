@@ -176,17 +176,15 @@
     line-height: 18px;
     color: var(--color-text-muted);
   }
-  /* Placeholder for a step card — same surface, edge and padding as
-     wf-step-editor's real card, so resolving the draft doesn't shift the page. */
+  /* Placeholder for a step card — same padding as wf-step-editor's real card, so
+     resolving the draft doesn't shift the page. Both draw the shared surface from
+     common/styles/surface.css, so the edge matches by construction. */
   .drafting-card {
     display: flex;
     flex-direction: column;
     gap: 10px;
     min-height: 122px;
     padding: var(--s-16) var(--s-20);
-    border: 1px solid light-dark(var(--sand-100), var(--neutral-800));
-    border-radius: var(--r-8);
-    background: var(--color-bg-base);
     animation: wfn-pulse 1.6s ease-in-out infinite;
   }
   .drafting-bar {

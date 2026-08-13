@@ -18,12 +18,11 @@ styles.replaceSync(`@keyframes skel-pulse {
 }
 
 @scope (app-stat-card) {
+    /* Surface: common/styles/surface.css (.stat-card is listed there). This sheet
+       is adopted on document, so it cascades after the linked sheets — declaring
+       the surface here would silently fork it. Layout only. */
     .stat-card {
       padding: var(--space-lg);
-      border: 1px solid var(--color-border);
-      border-radius: var(--radius-lg);
-      background: var(--color-bg-surface);
-      box-shadow: var(--shadow-sm);
     }
     .stat-card.is-loading {
       min-height: 100px;

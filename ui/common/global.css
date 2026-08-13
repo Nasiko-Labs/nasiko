@@ -116,10 +116,15 @@
   --shell-control-hover:  #4A423C;
   --shell-control-active: #242628;
   --shell-fg:             #FFFFFF;
-  --shell-fg-muted:       color-mix(in srgb, #FFFFFF 62%, transparent);
-  --shell-selected:       var(--yellow-200); /* pale-gold selected glyph #F7E19C */
+  /* sand-500, not white@62%: the ink plane is warm (#242628 family), and a cool
+     grey glyph read as a different palette beside the gold selected state. */
+  --shell-fg-muted:       var(--sand-500);
+  --shell-selected:       var(--yellow-200); /* pale-gold selected fill #F7E19C */
   --shell-topbar-height:  52px;
-  --shell-rail-width:     56px;  /* 32px buttons + gutters */
+  /* The rail is the 32px button column only. It floats inside --shell-gutter on
+     both sides, so the card's left edge lands at 12 + 32 + 12 = 56. */
+  --shell-gutter:         var(--s-12);
+  --shell-rail-width:     32px;
   --shell-rail-expanded:  240px;
   --shell-logo-glow:      drop-shadow(0 4px 16px rgba(247, 225, 156, 0.16));
 
@@ -251,15 +256,14 @@
   --radius-md: var(--r-8);
   --radius-lg: var(--r-12);
 
-  /* Shadows — DS is flat; keep the legacy ramp shallow */
-  --shadow-sm: light-dark(0 1px 2px 0 rgba(0, 0, 0, 0.04),
-      0 1px 2px 0 rgba(0, 0, 0, 0.3));
-  --shadow-md: light-dark(var(--shadow-menu),
-      0 4px 16px rgba(0, 0, 0, 0.4));
-  --shadow-lg: light-dark(var(--shadow-card-hover),
-      0 2px 16px rgba(0, 0, 0, 0.5));
-  --shadow-xl: light-dark(0 8px 24px rgba(0, 0, 0, 0.12),
-      0 8px 24px rgba(0, 0, 0, 0.5));
+  /* Shadows — DS is flat; keep the legacy ramp shallow.
+     light-dark() is a *color* function, so it wraps only the color — wrapping a
+     whole shadow value (as this ramp used to) is invalid and computes to `none`,
+     which silently dropped every shadow in the UI. Geometry is theme-independent. */
+  --shadow-sm: 0 1px 2px 0 light-dark(rgba(0, 0, 0, 0.04), rgba(0, 0, 0, 0.3));
+  --shadow-md: 0 4px 16px light-dark(rgba(0, 0, 0, 0.08), rgba(0, 0, 0, 0.4));
+  --shadow-lg: 0 2px 16px light-dark(rgba(0, 0, 0, 0.10), rgba(0, 0, 0, 0.5));
+  --shadow-xl: 0 8px 24px light-dark(rgba(0, 0, 0, 0.12), rgba(0, 0, 0, 0.5));
 
   /* Typography - Fluid sizing with clamp() (DS sizes carry the same clamps
      in Flutter: body 14–18, titles 36–44) */
@@ -354,7 +358,9 @@ main.app-shell {
      renders both bars; body padding carves out their space. */
   body {
     padding-top: var(--shell-topbar-height);
-    padding-left: var(--app-sidebar-width);
+    /* Gutter + rail: the rail is fixed at left:var(--shell-gutter), so the
+       content plane starts past both it and the gutter it floats in. */
+    padding-left: calc(var(--shell-gutter) + var(--app-sidebar-width));
   }
 
   body > main, .app-layout > main {
@@ -394,7 +400,11 @@ main.app-shell {
     background: var(--color-bg-surface);
     border: none;
     border-radius: var(--r-8);
-    margin: 0 var(--s-12) var(--s-12) 0;
+    /* Even frame on left/right/bottom. Left was 0, which put the card's two
+       left corners flush against the rail — the 8px radius cut notches of ink
+       out of the edge instead of reading as a floating panel. Top stays 0: the
+       card butts the topbar by design. */
+    margin: 0 var(--shell-gutter) var(--shell-gutter);
     min-height: calc(100dvh - var(--shell-topbar-height) - var(--s-12));
     box-shadow: 0 8px 16px rgba(100, 116, 139, 0.12);
   }
@@ -887,16 +897,33 @@ dialog::backdrop {
 }
 
 /* ─── MPA View Transitions ───────────────────────────────────────────────────
-   Opt-in to cross-document view transitions. The header is frozen via
-   animation: none in app-header.css regardless of motion preference.
-   Animation rules in app-header.css are gated on prefers-reduced-motion.
+   Opt-in to cross-document view transitions, and freeze the shell so a
+   navigation never cross-fades the chrome.
+
+   These rules MUST live here, in a render-blocking stylesheet, not in
+   app-header.js's adopted sheet: the incoming document is snapshotted when it
+   is ready to render, and a deferred module has not run by then. Named there,
+   the outgoing page had an `app-header` group and the incoming page had none,
+   so the header cross-faded out to nothing and the root group cross-faded the
+   whole viewport — the "every click flickers the page" bug. The name is on the
+   pre-upgrade placeholder too, for the same reason.
 ──────────────────────────────────────────────────────────────────────────── */
 @view-transition {
   navigation: auto;
 }
 
-/* nav-active view-transition rules live in app-header.css (outside @scope)
-   to keep them co-located with the component that owns them. */
+app-header,
+app-header:not(:defined) {
+  view-transition-name: app-header;
+}
+
+/* Frozen regardless of prefers-reduced-motion: the shell is the same shell on
+   both sides of the navigation, so there is nothing to animate between. */
+::view-transition-old(app-header),
+::view-transition-new(app-header) {
+  animation: none;
+  mix-blend-mode: normal;
+}
 
 /* Shared micro-transition for tab/section panel switches — components apply
    `animation: panel-in var(--transition-base)` to their active panel and gate

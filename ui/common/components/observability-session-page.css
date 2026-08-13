@@ -175,9 +175,10 @@
   }
 
   /* ── Chat history pane ────────────────────────────────────────────────── */
+  /* Surface: common/styles/surface.css. The brand stroke is the one deliberate
+     override — this pane is the page's focal object, not another card. */
   .chat-card {
-    border: 1px solid var(--fg-brand-highlight, var(--yellow-400));
-    border-radius: var(--r-12);
+    border-color: var(--fg-brand-highlight, var(--yellow-400));
     padding: var(--space-md);
     display: flex;
     flex-direction: column;

@@ -96,11 +96,9 @@
     grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
     gap: var(--space-sm);
   }
+  /* Surface: common/styles/surface.css */
   .summary-card {
-    border: none;
-    border-radius: var(--r-8);
     padding: var(--space-sm) var(--space-md);
-    background: var(--bg-surface);
     min-width: 0;
   }
   .summary-card-label {

@@ -173,10 +173,15 @@ class ObservabilitySessionPage extends HTMLElement {
     const meta = this.querySelector('.chat-meta');
     if (!meta) return;
     const s = this.#session;
+    // `?? 0` used to render every absent metric as a confident 0 / $ 0.00 /
+    // 0.0 s. When the trace backend is unconfigured or hasn't ingested the
+    // session yet these are *unknown*, and asserting a zero cost is worse than
+    // admitting we don't know — an em dash is the convention elsewhere.
+    const num = (v, fmt) => (v == null ? '—' : fmt(v));
     meta.innerHTML = `
-      <span class="chip">${icons.layers('', 12)} ${(s?.token_usage?.total ?? 0).toLocaleString()}</span>
-      <span class="chip">$ ${(s?.cost_summary?.total?.cost ?? 0).toFixed(2)}</span>
-      <span class="chip">${icons.clock('', 12)} ${((s?.latency_p50 ?? 0) / 1000).toFixed(1)} s</span>
+      <span class="chip">${icons.layers('', 12)} ${num(s?.token_usage?.total, (v) => v.toLocaleString())}</span>
+      <span class="chip">${num(s?.cost_summary?.total?.cost, (v) => `$ ${v.toFixed(2)}`)}</span>
+      <span class="chip">${icons.clock('', 12)} ${num(s?.latency_p50, (v) => `${(v / 1000).toFixed(1)} s`)}</span>
     `;
   }
 

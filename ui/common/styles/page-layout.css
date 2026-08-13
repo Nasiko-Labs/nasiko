@@ -182,6 +182,7 @@ login-page {
     Must follow the `padding` shorthand above, which would otherwise reset it.
   */
   access-control-page,
+  add-agent-page,
   agents-page,
   builds-page,
   departments-page,
@@ -191,6 +192,7 @@ login-page {
   mcp-page,
   resources-page,
   runtime-page,
+  secrets-page,
   sessions-page,
   settings-page,
   team-access-page,

@@ -141,20 +141,14 @@
     grid-column: 1 / -1;
   }
 
-  /* ── Card — strokeless sand well ────────────────────────────────────────── */
+  /* Card — surface (border, radius, gradient, shadow, hover lift) is shared:
+     common/styles/surface.css. Layout only here. */
   .card {
-    border: 1px solid transparent;
-    border-radius: var(--r-8);
     padding: var(--space-md);
-    background: var(--color-bg-base);
     display: flex;
     flex-direction: column;
     gap: var(--space-sm);
     cursor: pointer;
-    transition: border-color 0.15s ease;
-  }
-  .card:hover {
-    border-color: var(--color-border);
   }
   .card-top {
     display: flex;
@@ -172,9 +166,13 @@
   .status-dot.is-running { background: var(--color-success); }
   .status-dot.is-error { background: var(--color-error); }
   .status-dot.is-pending { background: var(--color-info); }
+  /* Stays at base: an agent name is a label, not a metric, so scaling it up
+     read as a heading rather than a focal point. Hierarchy comes from the weight
+     and the full-strength color against the muted description. */
   .card-name {
     font-size: var(--font-size-base);
     font-weight: 600;
+    line-height: 1.25;
     color: var(--color-text-main);
     overflow: hidden;
     text-overflow: ellipsis;
@@ -192,16 +190,7 @@
     overflow: hidden;
     max-height: 1.9em;
   }
-  .tag {
-    font-size: var(--font-size-xs);
-    color: var(--color-text-main);
-    background: var(--color-bg-surface);
-    border: 1px solid var(--color-border);
-    padding: 1px var(--space-xs);
-    border-radius: var(--radius-sm);
-    white-space: nowrap;
-  }
-  .tag--more { color: var(--color-text-muted); }
+  /* .tag / .tag--more: common/styles/badge.css */
   .card-desc {
     font-size: var(--font-size-sm);
     color: var(--color-text-muted);
@@ -235,7 +224,7 @@
     padding: 0 var(--s-12);
     border: 1px solid var(--color-border);
     border-radius: var(--r-8);
-    background: var(--color-bg-surface);
+    background: var(--color-bg-base);
     color: var(--color-text-main);
     font-size: 13px;
     font-weight: 500;

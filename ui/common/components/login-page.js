@@ -105,7 +105,7 @@ class LoginPage extends HTMLElement {
     }
 
     this.innerHTML = `
-      <div class="card">
+      <div class="login-card">
         <div class="brand">
           <div class="brand-icon">${LOGO_ICON}</div>
         </div>

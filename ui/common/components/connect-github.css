@@ -1,12 +1,10 @@
 @scope (connect-github) {
   :scope { display: block; }
+  /* Surface: common/styles/surface.css */
   .connect-card {
     max-width: 480px;
     margin: var(--space-xl) auto;
     padding: var(--space-2xl);
-    border: 1px solid var(--color-border);
-    border-radius: var(--r-12);
-    background: light-dark(var(--white), var(--neutral-900));
     text-align: center;
   }
   .connect-icon {

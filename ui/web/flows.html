@@ -5,13 +5,21 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Nasiko</title>
     <link rel="icon" type="image/svg+xml" href="/common/mark-nasiko.svg" />
-    <!-- Inline and synchronous on purpose: both theme.js and app-header.js are deferred ES modules, so they apply the stored theme / rail width only after first paint —
-         the skeleton would flash the OS theme, and an expanded rail would collapse and re-expand on every MPA navigation. Must stay inline and non-module. -->
-    <script>try{var t=localStorage.getItem('app-theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t;if(localStorage.getItem('app-rail-expanded')==='true')document.documentElement.style.setProperty('--app-sidebar-width','var(--app-sidebar-width-expanded)')}catch(e){}</script>
+    <!-- Inline and synchronous on purpose. theme.js is a deferred ES module, so without this the
+         skeleton flashes the OS theme. The rail width is set here too as the fallback for browsers
+         without the `blocking` script attribute (Firefox), where app-header.js is still plain deferred
+         and an expanded rail would collapse and re-expand on every MPA navigation.
+         Must stay inline and non-module. -->
+    <script>try{var t=localStorage.getItem('app-theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t;if(localStorage.getItem('app-rail-expanded-v2')==='true')document.documentElement.style.setProperty('--app-sidebar-width','var(--app-sidebar-width-expanded)')}catch(e){}</script>
     <link rel="stylesheet" href="/common/global.css" />
     <link rel="stylesheet" href="/common/components.css" />
     <script type="module" src="/navigation.js"></script>
-    <script type="module" src="/common/components/app-header.js"></script>
+    <!-- blocking=render: the shell has to be painted (and view-transition-named)
+         before the browser snapshots this document for the cross-document
+         transition. A plain deferred module runs after that snapshot, so the
+         incoming page was captured with an empty header and the whole shell
+         cross-faded on every navigation. -->
+    <script type="module" blocking="render" src="/common/components/app-header.js"></script>
     <script type="module" src="/common/components/flows-page.js"></script>
   </head>
   <body>

@@ -202,10 +202,26 @@ app-module-nav:not(:defined) { display: block; }
 }`);
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
+/* Collapsed groups outlive the element. 20 page components render
+   `<app-module-nav>` inside their own innerHTML, so every data refresh
+   destroys this element and builds a new one — per-instance state meant a
+   group the user had closed sprang back open each time, which reads as the
+   sidebar resetting itself.
+   ponytail: keyed by module in memory, which is all an MPA page lifetime
+   needs. The structural fix is to stop page components owning this markup —
+   see the note on #load(). */
+const COLLAPSED = new Map();
+
 export class AppModuleNav extends HTMLElement {
   #nav = null;
-  #collapsed = new Set();
   #mobileOpen = false;
+
+  get #collapsed() {
+    const module = this.getAttribute("module") || "";
+    let set = COLLAPSED.get(module);
+    if (!set) COLLAPSED.set(module, (set = new Set()));
+    return set;
+  }
 
   static get observedAttributes() {
     return ["module", "active-section"];
@@ -214,7 +230,19 @@ export class AppModuleNav extends HTMLElement {
   attributeChangedCallback(name) {
     if (!this.isConnected) return;
     if (name === "module") this.#load();
-    else this.#render();
+    else this.#applyActiveSection();
+  }
+
+  /** The active section is only ever a class on one row, so move the class
+   *  instead of rebuilding the whole tree on every section click. */
+  #applyActiveSection() {
+    const active = this.getAttribute("active-section");
+    for (const row of this.querySelectorAll("[data-section]")) {
+      const on = row.dataset.section === active;
+      row.classList.toggle("is-active", on);
+      if (on) row.setAttribute("aria-current", "true");
+      else row.removeAttribute("aria-current");
+    }
   }
 
   connectedCallback() {
@@ -242,8 +270,11 @@ export class AppModuleNav extends HTMLElement {
 
     // Per-tab cache, same reasoning as app-header's: this is an MPA, so
     // without it every navigation shows a skeleton and then swaps in an
-    // identical tree. Role-gated trees are dropped on logout by
-    // `clearShellCache`.
+    // identical tree. It is also what makes a content refresh invisible —
+    // 20 page components render this element inside their own innerHTML, so
+    // an API-driven re-render destroys and recreates it, and the cache lets
+    // the replacement paint the same tree synchronously instead of flashing a
+    // skeleton. Role-gated trees are dropped on logout by `clearShellCache`.
     const cacheKey = `app-module-nav:${module}`;
     let cached = null;
     try {
@@ -251,26 +282,45 @@ export class AppModuleNav extends HTMLElement {
       if (raw) cached = JSON.parse(raw);
     } catch { /* ignore bad cache */ }
 
-    if (cached) {
+    // `.groups?.length` rather than a plain truthiness check: a previous run
+    // could have written a degraded (or literal `null`) tree here.
+    if (cached?.groups?.length) {
       this.#nav = cached;
       this.#render();
     } else {
+      cached = null;
       this.#renderSkeleton();
     }
 
+    let fresh = null;
     try {
-      this.#nav = await window.fetchModuleNav(module);
-      try {
-        sessionStorage.setItem(cacheKey, JSON.stringify(this.#nav));
-      } catch { /* quota exceeded */ }
+      fresh = await window.fetchModuleNav(module);
     } catch (e) {
       console.warn("fetchModuleNav failed:", e);
-      this.#nav = cached ?? null;
-      if (cached) return; // already on screen, and it's still our best answer
     }
 
+    // An empty answer is transient far more often than it is real. EE's
+    // fetchModuleNav awaits `/org/context` over the network and degrades to a
+    // thinner tree (or nothing) whenever that request wobbles, and #render()
+    // deletes this element when handed nothing — which is why the nested
+    // sidebar sometimes vanished mid-session on an API call. One flaky request
+    // is not a reason to delete a sidebar: keep what is on screen, don't cache
+    // the degraded answer over the good one, and let the next load correct it.
+    if (!fresh?.groups?.length) {
+      if (!cached) {
+        this.#nav = fresh;
+        this.#render();
+      }
+      return;
+    }
+
+    try {
+      sessionStorage.setItem(cacheKey, JSON.stringify(fresh));
+    } catch { /* quota exceeded */ }
+
     // Skip the repaint when the freshly fetched tree matches what's rendered.
-    if (cached && JSON.stringify(cached) === JSON.stringify(this.#nav)) return;
+    if (cached && JSON.stringify(cached) === JSON.stringify(fresh)) return;
+    this.#nav = fresh;
     this.#render();
   }
 

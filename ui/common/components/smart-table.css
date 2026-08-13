@@ -100,6 +100,26 @@
       & tr:hover { background: var(--color-bg-base); }
       & tr.is-clickable { cursor: pointer; }
     }
+
+    /* Row actions pin to the right edge. Every .td is nowrap, so a table with
+       many columns is wider than its .scroll container and the action buttons
+       were the part that overflowed — reachable only by first noticing an
+       overlay scrollbar and scrolling sideways. Pinned, they are always hit-
+       testable at rest. box-shadow, not border-left: with border-collapse the
+       borders of a sticky cell paint unreliably in Chrome. */
+    .th.is-plain,
+    .td.is-plain {
+      position: sticky;
+      right: 0;
+      z-index: 1;
+      text-align: right;
+      box-shadow: inset 1px 0 0 var(--color-border);
+    }
+    .th.is-plain { background: var(--color-bg-base); }
+    .td.is-plain { background: var(--color-bg-surface); }
+    /* The pinned cell needs the row's own hover fill, or the row appears to
+       stop short of the right edge on hover. */
+    .tbody tr:hover .td.is-plain { background: var(--color-bg-base); }
     .detail-list {
       display: flex;
       flex-direction: column;

@@ -1,4 +1,5 @@
 import { icons } from '/common/utils/icons.js';
+import '/common/components/app-module-nav.js';
 import '/common/components/secrets-manager.js';
 
 import styles from './secrets-page.css' with { type: 'css' };
@@ -14,6 +15,7 @@ class SecretsPage extends HTMLElement {
     if (this.#initialized) return;
     this.#initialized = true;
     this.innerHTML = `
+      <app-module-nav module="settings"></app-module-nav>
       <header class="page-head">
         <h1 class="title-page">Secrets</h1>
         <p class="page-sub">API credentials stored in this workspace. Router configs and agents reference secrets by name.</p>

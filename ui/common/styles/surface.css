@@ -6,17 +6,79 @@
   border-radius: var(--r-8);
 }
 
-/* Card — sand-tinted product card on the white plane */
-.card {
-  background: var(--bg-surface);
-  border: 1px solid transparent;
-  border-radius: var(--r-8);
-  padding: var(--space-lg);
-  transition: border-color var(--transition-fast);
+/* ── Card — the one product-card surface ─────────────────────────────────────
+   A lifted white plane with a brand-tinted bottom-up wash. Every card-shaped
+   thing in the product draws its surface from here; page sheets keep only that
+   card's layout (padding, gap, grid) and its content rules, so changing the card
+   changes it everywhere.
+
+   The page-local class names are listed here on purpose: pages are @scope'd and
+   render their cards from ~80 template sites, so giving every element a shared
+   `card` class would be a large markup diff for the same result. Add a name here
+   when a page grows a new card; don't re-declare the surface in the page sheet. */
+.card,
+.agent-card,
+.wf-card,
+.method-card,
+.run-card,
+.tk-card,
+.acp-skill-card,
+.acp-details-card,
+.acp-mcp-card,
+.provider-card,
+.config-card,
+.info-card,
+.stat-card,
+.summary-card,
+.connect-card,
+.pull-card,
+.step-card,
+.drafting-card,
+.chat-card,
+.agent-access-card {
+  /* One step off the content plane, not --color-bg-surface: that IS the plane
+     (white / neutral-800), which left cards camouflaged in dark mode. */
+  --card-surface: light-dark(var(--white), var(--neutral-900));
+  border: 1px solid color-mix(in srgb, var(--color-border) 50%, transparent);
+  /* r-12, not r-8: at card size the tighter radius read institutional. */
+  border-radius: var(--r-12);
+  /* Tint pools under the content (shadcn's `bg-gradient-to-t from-primary/5
+     to-card`) and stops at 45% so it is gone before any card-footer hairline —
+     run to the top edge, the bottom third read as a separate footer band. */
+  background: linear-gradient(
+    to top,
+    color-mix(in srgb, var(--color-primary) 5%, var(--card-surface)) 0%,
+    var(--card-surface) 45%
+  );
+  /* No ring: a 1px ring outside the 1px border stacked into a 2px edge. The
+     border is the ring — shadcn's `border` and `ring` are the same hairline. */
+  box-shadow: var(--shadow-sm);
 }
 
-.card:hover {
-  border-color: var(--color-border);
+/* Clickable cards only — a lift on a static panel reads as a broken affordance.
+   120ms with transform, because the border-color-only hover this replaces was
+   invisible; the lift is what makes a card feel responsive. */
+:root { --card-lift: translateY(-2px); }
+@media (prefers-reduced-motion: reduce) {
+  :root { --card-lift: none; }
+}
+.card,
+.agent-card,
+.wf-card,
+.method-card,
+.acp-skill-card,
+.provider-card,
+.tk-card.is-clickable {
+  transition: border-color 0.12s ease, box-shadow 0.12s ease,
+    transform 0.12s ease;
+
+  /* Skeleton placeholders keep the surface but not the affordance — there is
+     nothing to click yet. Both class names are in use across the pages. */
+  &:not(.skeleton-card, .is-skeleton):hover {
+    border-color: var(--color-border);
+    box-shadow: var(--shadow-md);
+    transform: var(--card-lift);
+  }
 }
 
 /* Row item — for list/table rows inside a surface */

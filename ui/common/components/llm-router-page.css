@@ -85,14 +85,9 @@
     gap: var(--space-md);
   }
 
+  /* Surface: common/styles/surface.css */
   .config-card {
-    background: var(--bg-surface);
-    border: 1px solid transparent;
-    border-radius: var(--r-8);
     padding: var(--space-md);
-    transition: border-color var(--transition-fast);
-
-    &:hover { border-color: var(--color-border); }
 
     & .config-head {
       display: flex;
@@ -231,15 +226,10 @@
     gap: var(--space-md);
   }
 
+  /* Surface + hover lift: common/styles/surface.css */
   .provider-card {
-    background: var(--bg-surface);
-    border: 1px solid transparent;
-    border-radius: var(--r-8);
     padding: var(--space-md);
     cursor: pointer;
-    transition: border-color var(--transition-fast);
-
-    &:hover { border-color: var(--color-border); }
 
     &:focus-visible {
       outline: 2px solid var(--color-primary);

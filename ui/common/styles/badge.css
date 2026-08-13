@@ -41,6 +41,24 @@
   background: var(--color-bg-base);
 }
 
+/* Tag — the label pill that sits inside a card (skills, capabilities, versions).
+   Fill only, no stroke: three bordered pills inside a bordered card inside a
+   bordered button row was too many outlines, and --color-neutral-bg is already
+   one step off the card surface in both themes (sand-100 / neutral-800), so the
+   fill alone carries the pill. Padding absorbs the 1px the border used to add. */
+.tag {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-main);
+  background: var(--color-neutral-bg);
+  padding: 2px calc(var(--space-xs) + 1px);
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+}
+
+.tag--more {
+  color: var(--color-text-muted);
+}
+
 /* Optional leading status dot inside a .badge pill */
 .badge__dot {
   width: 6px;

@@ -109,6 +109,11 @@
     padding: var(--space-sm) var(--space-md);
     border-bottom: 1px solid var(--color-border);
     vertical-align: middle;
+    /* Uniform rows. `.session-preview` only renders when the session has a
+       last_message, so without a floor the list alternated tall and short rows
+       depending on the data and read as broken rather than as a table. On a
+       table cell `height` behaves as a minimum, so a two-line row still grows. */
+    height: 56px;
   }
   .sessions-table tbody tr:last-child td { border-bottom: none; }
 
