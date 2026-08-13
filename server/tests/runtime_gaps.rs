@@ -45,10 +45,8 @@ fn make_zip_dockerfile_no_from() -> Vec<u8> {
     ])
 }
 
-/// Create a non-Python agent zip: a Dockerfile (with FROM + CMD) and a
-/// non-Python source file. The Dockerfile is the universal build contract, so
-/// this must be accepted regardless of language.
-fn make_zip_non_python_agent() -> Vec<u8> {
+/// Create an agent zip with a Dockerfile but no Python entrypoint.
+fn make_zip_no_entrypoint() -> Vec<u8> {
     common::make_zip(&[
         ("Dockerfile", b"FROM node:20\nCMD [\"node\", \"server.js\"]"),
         ("server.js", b"console.log('hi')"),
@@ -532,30 +530,25 @@ async fn upload_dockerfile_without_from_returns_400() {
 
 #[tokio::test]
 #[serial]
-async fn upload_non_python_agent_accepted() {
-    // Any language is accepted as long as it ships a Dockerfile: the upload
-    // path must not gate on a Python entrypoint. A Node agent (Dockerfile +
-    // server.js, no main.py) is queued for build (202), not rejected.
+async fn upload_missing_entrypoint_returns_400() {
     let server = common::TestServer::start().await;
     let admin = init_admin(&server).await;
     let uid = admin["user_id"].as_str().unwrap();
 
-    // Override do_upload's default "v1" — the handler requires a plain x.y.z
-    // version (parse_plain_version), so without this the request would 400 at
-    // the version gate rather than reaching the 202 we're asserting.
     let res = do_upload(
         &server,
         uid,
-        "node-agent-202",
-        vec![("version_tag", "1.0.0".to_string())],
-        make_zip_non_python_agent(),
+        "no-entry-400",
+        vec![],
+        make_zip_no_entrypoint(),
     )
     .await;
 
-    assert_eq!(
-        res.status(),
-        202,
-        "a non-Python agent with a valid Dockerfile should be accepted"
+    assert_eq!(res.status(), 400);
+    let text = res.text().await.unwrap();
+    assert!(
+        text.contains("entrypoint") || text.contains("main.py"),
+        "error should mention entrypoint: {text}"
     );
     server.cleanup().await;
 }
