@@ -7,6 +7,14 @@
   with a single command</strong> — no gateway, no sidecar, no glue code.
 </p>
 
+<p align="center">
+  <a href="https://docs.nasiko.com"><b>📚 Documentation</b></a>
+  &nbsp;•&nbsp;
+  <a href="https://discord.com/invite/HmnfkTfjFv"><b>💬 Discord</b></a>
+  &nbsp;•&nbsp;
+  <a href="https://github.com/Nasiko-Labs/nasiko/issues"><b>🐛 Report a bug</b></a>
+</p>
+
 <!-- Shieldcn badges: badge groups + colored single badges, tuned for both GitHub color schemes -->
 <p align="center">
   <a href="https://github.com/Nasiko-Labs/nasiko/stargazers">
@@ -67,6 +75,24 @@
   </a>
 </p>
 
+## Table of Contents
+
+- [What is Nasiko?](#what-is-nasiko)
+- [Features](#features)
+- [Architecture](#architecture)
+- [Requirements](#requirements)
+- [Quick Start — Docker only (no Rust needed)](#quick-start--docker-only-no-rust-needed)
+- [Setup guides by operating system](#setup-guides-by-operating-system)
+- [CLI — install & use](#cli--install--use)
+- [Environment Variables](#environment-variables)
+- [Project Structure](#project-structure)
+- [Troubleshooting](#troubleshooting)
+- [Project Activity](#project-activity)
+- [Documentation & Links](#documentation--links)
+- [Support](#support)
+- [Contributing](#contributing)
+- [License](#license)
+
 ## What is Nasiko?
 
 Running more than a couple of agents quickly turns into an operations problem: *who calls whom*,
@@ -116,13 +142,17 @@ flowchart LR
 
     subgraph CP["nasiko-server (single control-plane process)"]
         direction TB
-        API["REST API (agents, secrets, builds, uploads)"]
+        API["REST API (agents, builds, uploads)"]
+        AUTH["Auth (session JWT, TLS, rate-limit, ACLs)"]
+        OIDC["OIDC client (SSO)"]
         ROUTE["Routing engine (shortlist, rerank, select)"]
+        PROXY["A2A Proxy (generic agent reverse-proxy)"]
         MCP["MCP Gateway (tools/list, tools/call, OAuth)"]
         LLM["LLM Router (OpenAI-compatible egress)"]
         OCI["Embedded OCI registry (/v2/*)"]
-        AUTH["Auth, TLS, rate-limit, ACLs"]
-        PROXY["A2A Proxy (agent to agent)"]
+        FLOW["Flow guards (depth, fan-out, token budget, cycles)"]
+        SECRETS["Secrets engine (AES-256-GCM)"]
+        GITHUB["GitHub App integration"]
     end
 
     subgraph Infra["Backing services (Docker)"]
@@ -142,22 +172,48 @@ flowchart LR
 
     UI --> API
     CLI --> API
-    API --> ROUTE --> PROXY
-    MCP --> LLM
-    API --> AUTH
+    CLI -. "push / pull images" .-> OCI
 
-    CP --> PG
-    CP --> RD
-    CP --> S3
+    API --> ROUTE
+    API --> GITHUB
+    ROUTE --> FLOW
+    OIDC --> AUTH
+    SECRETS --> API
+
+    AUTH -. gates .-> API
+    AUTH -. gates .-> MCP
+    AUTH -. gates .-> OCI
+    AUTH -. gates .-> PROXY
+
+    ROUTE -- "selected agent, direct call" --> Agents
+    PROXY -. "proxied A2A calls (bypasses routing)" .-> A1
+    PROXY -. "proxied A2A calls (bypasses routing)" .-> A2
+    PROXY -. "proxied A2A calls (bypasses routing)" .-> A3
+    OCI -- "image pull at deploy" --> Agents
+    Agents -- "OPENAI_BASE_URL" --> LLM
+    Agents -- "tools/list, tools/call" --> MCP
+
+    OCI --> S3
+    FLOW --> RD
+    SECRETS --> PG
+    AUTH --> PG
     CP --> OTEL --> TEMPO
     OTEL --> LOKI
-
-    PROXY -. "proxied A2A calls only" .-> A1
-    PROXY -. "proxied A2A calls only" .-> A2
-    PROXY -. "proxied A2A calls only" .-> A3
 ```
 
-> Every request to an agent flows **through** the server — agents never receive a direct, public request.
+> Every request to an agent is either dispatched by the routing engine or proxied generically — both
+> paths originate **inside** the server. Agents never receive a direct, public request, and both call
+> back out into the LLM Router and MCP Gateway rather than holding real API keys or tool credentials.
+
+---
+
+## Requirements
+
+| Component | Minimum version | Why |
+|---|---|---|
+| **Docker Engine + Compose V2** | Compose V2 plugin (the `docker compose` command — not the legacy standalone `docker-compose` v1 binary) | `docker-compose.yml` uses the extended `depends_on: condition: service_healthy` syntax; the Docker-only path needs nothing else. |
+| **Rust** | 1.85+ (stable) | The workspace targets `edition = "2024"` (see [`Cargo.toml`](Cargo.toml)), stabilized in Rust 1.85 — only needed for the CLI / Path B developer setup, not the Docker-only path. |
+| **A2A protocol** | Spec **v1.0** exactly (latest upstream release: v1.0.1, Linux Foundation) | Nasiko requires and hardcodes the `A2A-Version: 1.0` header on every request; agents on older/pre-1.0 spec versions (e.g. 0.2.x, 0.3.0) are rejected with `-32009 VersionNotSupported` (see [`docs/A2A_PROTOCOL.md`](docs/A2A_PROTOCOL.md)). Any agent speaking v1.0 works, regardless of its implementation language. |
 
 ---
 
@@ -398,7 +454,8 @@ nasiko connect http://localhost:8080
 nasiko auth login                          # log in with ADMIN_USERNAME / ADMIN_PASSWORD
 nasiko new openai my-agent && cd my-agent  # scaffold from a template
 nasiko deploy .                            # build, push, and deploy
-nasiko chat "Hello"                        # talk to your agent
+nasiko chat "Hello there"                  # talk to your agent (message must contain a space,
+                                            # or use --agent: nasiko chat --agent my-agent "Hello")
 ```
 
 You can also deploy agents directly from the dashboard UI — upload source, import from GitHub, or
@@ -417,14 +474,14 @@ pull from the artifact registry.
 | `nasiko ps` | List running agents |
 | `nasiko logs <agent> -f` | Stream (and follow) agent logs |
 | `nasiko stop` / `start` / `restart` / `scale <n>` | Agent lifecycle |
-| `nasiko rm <agent>` | Terminate + deregister an agent |
+| `nasiko rm --name <agent>` | Terminate + deregister an agent (positional `id` only accepts a UUID) |
 | `nasiko chat <agent>` | Interactive or one-shot A2A chat |
 | `nasiko secrets set` | Configure encrypted per-agent secrets |
 | `nasiko mcp` | Manage MCP Gateway connectors and tool permissions |
 | `nasiko observe` | Observability: sessions, traces, spans, stats, FinOps |
 | `nasiko maf` | Multi-agent flow workflows (create/run/inspect) |
 | `nasiko registry` | Browse the artifact registry |
-| `nasiko github` | GitHub integration (status/repos/connect/clone) |
+| `nasiko github` | GitHub integration (status/repos/connect/disconnect/clone) |
 
 Run `nasiko --help` for the full, workflow-ordered command list.
 
@@ -576,6 +633,7 @@ docs/           Design docs (architecture, protocol, conventions)
 
 ## Documentation & Links
 
+- **Official docs** — **[docs.nasiko.com](https://docs.nasiko.com)** — guides, API reference, and concepts
 - **Design docs** — [`docs/`](docs/): architecture, the A2A protocol, agent lifecycle, MCP Gateway internals, CLI design, networking
 - **A2A protocol** — https://github.com/a2aproject/a2a-spec
 - **Rust toolchain** — https://rustup.rs
@@ -583,6 +641,12 @@ docs/           Design docs (architecture, protocol, conventions)
 - **`just` command runner** — https://github.com/casey/just
 - **`cargo-watch`** (hot-reload) — https://github.com/watchexec/cargo-watch
 - **Versus shields** — https://shieldcn.dev (premium README badges & charts)
+
+## Support
+
+Questions, ideas, or stuck on setup? Join the community on Discord:
+
+**[discord.com/invite/HmnfkTfjFv](https://discord.com/invite/HmnfkTfjFv)**
 
 ## Contributing
 
