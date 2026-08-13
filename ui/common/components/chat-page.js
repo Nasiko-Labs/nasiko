@@ -22,6 +22,7 @@ class ChatPage extends HTMLElement {
   #agentLabel = null;
   #lastUserContent = null;
   #sampleQueries = [];
+  #sending = false;
 
   connectedCallback() {
     if (this.#initialized) return;
@@ -188,6 +189,8 @@ class ChatPage extends HTMLElement {
   }
 
   async #sendMessage(content) {
+    if (this.#sending) return;
+    this.#sending = true;
     const messagesEl = this.querySelector("#messages");
     const chatInput = this.querySelector("#chat-input");
 
@@ -293,6 +296,7 @@ class ChatPage extends HTMLElement {
       this.#appendMsg(messagesEl, "assistant", `Error: ${err.message}`);
       this.#updateRetryButtons(messagesEl);
     } finally {
+      this.#sending = false;
       chatInput.setLoading(false);
     }
   }

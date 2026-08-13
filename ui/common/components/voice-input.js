@@ -18,6 +18,7 @@ import styles from './voice-input.css' with { type: 'css' };
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 export class VoiceInputForm extends HTMLElement {
+  #loading = false;
   constructor() {
     super();
     this.voiceRecorder = new VoiceRecorder();
@@ -144,6 +145,7 @@ export class VoiceInputForm extends HTMLElement {
   }
 
   setState(state) {
+    this.#loading = state === "loading";
     this.wrapper.dataset.state = state;
     this.recordBtn.dataset.state = state;
 
@@ -199,6 +201,7 @@ export class VoiceInputForm extends HTMLElement {
   }
 
   handleSubmit() {
+    if (this.#loading) return;
     const query = this.textarea.value.trim();
     if (!query && this.attachedFiles.length === 0) return;
     const files = [...this.attachedFiles];
