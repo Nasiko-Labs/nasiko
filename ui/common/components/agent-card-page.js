@@ -169,7 +169,7 @@ class AgentCardPage extends HTMLElement {
         return url.pathname + url.search;
       }
     } catch { /* invalid referrer */ }
-    return '/agents.html?view=your-agents';
+    return '/your-agents.html';
   }
 
   #heroHtml(a, displayName) {
@@ -201,11 +201,23 @@ class AgentCardPage extends HTMLElement {
 
   #overviewPanelHtml(a) {
     const skills = a.skills || [];
-    const skillsHtml = skills.map(s => `
-      <div class="acp-skill-card">
+    const skillsHtml = skills.map(s => {
+      const href = s.sample_query
+        ? `/chat.html?agent_id=${encodeURIComponent(a.id)}&query=${encodeURIComponent(s.sample_query)}`
+        : null;
+      const wrapper = href ? 'a' : 'div';
+      const hrefAttr = href ? ` href="${this.#escAttr(href)}"` : '';
+      return `
+      <${wrapper} class="acp-skill-card"${hrefAttr}>
         <div class="acp-skill-name">${this.#esc(s.name)}</div>
         <div class="acp-skill-desc">${this.#esc(s.description || '')}</div>
-      </div>`).join('');
+        ${s.sample_query ? `
+        <div class="acp-skill-sample">
+          <span class="acp-skill-sample-icon">${icons.send('', 14)}</span>
+          <span class="acp-skill-sample-text">${this.#esc(s.sample_query)}</span>
+        </div>` : ''}
+      </${wrapper}>`;
+    }).join('');
 
     const caps = a.capabilities || {};
 
@@ -232,7 +244,7 @@ class AgentCardPage extends HTMLElement {
           ${skills.length ? `
           <section class="acp-section">
             <h2 class="acp-section-title">Skills</h2>
-            <p class="acp-section-sub">What this agent can do.</p>
+            <p class="acp-section-sub">What this agent can do. Click a skill to start a session with a sample query.</p>
             <div class="acp-skills-grid">${skillsHtml}</div>
           </section>` : ''}
 
@@ -365,7 +377,7 @@ class AgentCardPage extends HTMLElement {
     try {
       const res = await apiFetch(`/agents/${encodeURIComponent(this.#agent.id)}`, { method: 'DELETE' });
       if (!res.ok) throw new Error(await res.text());
-      location.href = '/agents.html?view=your-agents';
+      location.href = '/your-agents.html';
     } catch (err) {
       showToast(`Failed to delete: ${err.message}`);
       btn.disabled = false;
@@ -1245,7 +1257,7 @@ class AgentCardPage extends HTMLElement {
   #connectorCardHtml(c) {
     const name = c.display_name || c.name || 'Connector';
     const tools = this.#connectorTools.get(c.connector_id) || [];
-    const allowed = tools.filter((t) => t.stance !== 'block').length;
+    const allowed = tools.filter((t) => t.stance !== 'deny').length;
     const summary = c.enabled === false
       ? 'Disabled'
       : tools.length ? `${allowed} of ${tools.length} tools allowed` : 'No tools synced yet';
@@ -1289,9 +1301,9 @@ class AgentCardPage extends HTMLElement {
             <span class="acp-mcp-tool-desc">${this.#esc(t.description || '')}</span>
             <div class="acp-stance">
               <button type="button" class="acp-stance-btn is-allow" data-tool-index="${i}" data-stance="allow"
-                aria-pressed="${t.stance !== 'block'}" ${disabled ? 'disabled' : ''}>Allow</button>
-              <button type="button" class="acp-stance-btn is-block" data-tool-index="${i}" data-stance="block"
-                aria-pressed="${t.stance === 'block'}" ${disabled ? 'disabled' : ''}>Block</button>
+                aria-pressed="${t.stance !== 'deny'}" ${disabled ? 'disabled' : ''}>Allow</button>
+              <button type="button" class="acp-stance-btn is-block" data-tool-index="${i}" data-stance="deny"
+                aria-pressed="${t.stance === 'deny'}" ${disabled ? 'disabled' : ''}>Block</button>
             </div>
           </div>`).join('')}
       </div>`;
@@ -1339,7 +1351,7 @@ class AgentCardPage extends HTMLElement {
       const rules = tools.map((t) => ({
         connector_id: connectorId,
         tool_pattern: t.name,
-        stance: t.stance === 'block' ? 'block' : 'allow',
+        stance: t.stance === 'deny' ? 'deny' : 'allow',
       }));
       await window.saveAgentMcpToolRules(this.#agent.id, rules);
     } catch (e) {

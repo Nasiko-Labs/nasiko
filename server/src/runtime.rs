@@ -65,8 +65,6 @@ pub async fn build_docker_runtime(
     let docker = DockerRuntime::new(DockerRuntimeConfig {
         network: config.docker_agent_network.clone(),
         registry_host: config.oci_registry_host.clone(),
-        agent_memory_volume: config.agent_memory_volume.clone(),
-        agent_memory_init_image: config.agent_memory_init_image.clone(),
         ..DockerRuntimeConfig::default()
     })
     .await?

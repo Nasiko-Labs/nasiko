@@ -227,7 +227,7 @@ async fn github_token(State(state): State<AppState>, claims: Claims) -> impl Int
 /// GitHub redirects the browser here after the user grants access.
 /// Verifies the HMAC-signed state (extracts `user_id` without needing
 /// the auth header), exchanges the code, encrypts the token, and upserts
-/// it into `user_identities`.  Redirects to the import-agent view on success.
+/// it into `user_identities`.  Redirects to `/add-agent.html` on success.
 #[derive(Deserialize)]
 struct CallbackQuery {
     code: String,
@@ -346,7 +346,7 @@ async fn github_callback(
     .await
     {
         Ok(r) if r.rows_affected() > 0 => {
-            Redirect::temporary("/agents.html?view=import&github_connected=true").into_response()
+            Redirect::temporary("/add-agent.html?github_connected=true").into_response()
         }
         Ok(_) => {
             warn!(
@@ -583,7 +583,7 @@ async fn github_repos(State(state): State<AppState>, claims: Claims) -> impl Int
     let Some(token) = load_github_token(&state.db, user_id).await else {
         return (
             StatusCode::FORBIDDEN,
-            "GitHub not connected — visit /agents.html?view=import to connect",
+            "GitHub not connected — visit /add-agent.html to connect",
         )
             .into_response();
     };
@@ -684,7 +684,7 @@ async fn github_clone(
     if load_github_token(&state.db, user_id).await.is_none() {
         return (
             StatusCode::FORBIDDEN,
-            "GitHub not connected — visit /agents.html?view=import to connect",
+            "GitHub not connected — visit /add-agent.html to connect",
         )
             .into_response();
     }

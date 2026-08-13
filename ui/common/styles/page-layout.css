@@ -106,65 +106,20 @@ chat-page {
 
 /* Orchestrator: centered hero column with a deep top pad. The loaded page
    swaps this for a compact layout via `.has-response`, which stays in
-   orchestrator-page.css — it is a runtime state, not a first-paint concern.
- *
- * Below the desktop breakpoint this is a normal document-scroll page: the
- * viewport-height cap plus `overflow: hidden` belong to the desktop layout,
- * where `.messages` is the internal scroller and the composer is pinned. Held
- * at every width they hid the composer and the create-workflow banner outright
- * on a narrow or short viewport — the column overflowed a clipped box that
- * nothing could scroll. The deep `16dvh` pad is desktop-only for the same
- * reason: it is unaffordable when the content has to fit above the fold. */
+   orchestrator-page.css — it is a runtime state, not a first-paint concern. */
 orchestrator-page {
+  /* Width of the page's centered content column. Declared here because the
+     desktop side padding is derived from it (see the module-nav gutter block
+     below) — if the two ever disagree the column stops being centered. */
+  --orch-column-w: 820px;
+
   display: flex;
   flex-direction: column;
   align-items: center;
-  min-height: calc(100dvh - var(--app-header-height));
+  height: calc(100dvh - var(--app-header-height));
   padding: var(--space-md);
-  padding-top: var(--space-lg);
-}
-
-/* ── Module shell ─────────────────────────────────────────────────────────────
-   One module's views in a single document (components/module-shell.js). This is
-   the direct body child, so the generic card rule in global.css makes *it* the
-   white content card and its views become plain content inside it — they keep
-   their own host padding from the rules above, minus the left gutter, which the
-   shell owns because the module nav pins into it (position: relative comes from
-   the nav's own host contract).
-
-   `> [hidden]` is spelled out because a view's host rule sets `display`, which
-   would otherwise beat the UA `[hidden]` rule and leave every view on screen at
-   once. Child + attribute out-specifies the bare element selectors above, so
-   this holds without `!important`. */
-module-shell {
-  display: block;
-
-  /* Width of the orchestrator view's centered content column. Declared on the
-     shell, not the view: the desktop side padding derived from it is the
-     shell's (see the `data-active-view` block below), and a custom property set
-     on the child would not be visible there. */
-  --orch-column-w: 820px;
-}
-
-module-shell > [hidden] {
-  display: none;
-}
-
-/* Narrow viewports: no card and no gutter — the nav is a disclosure bar stacked
-   above the views. The shell owns the page box there so that bar is inset like
-   the content it heads, and the views contribute no page padding of their own:
-   the nav's own `margin-bottom` is the gap below it. Without this the bar sat
-   flush against the screen edges and the view's top padding stacked on top of
-   that margin, doubling the space before the title. */
-@media (max-width: 1023.98px) {
-  module-shell {
-    padding: var(--space-lg) var(--space-md);
-  }
-
-  module-shell > [data-view] {
-    padding-block-start: 0;
-    padding-inline: 0;
-  }
+  padding-top: max(48px, 16dvh);
+  overflow: hidden;
 }
 
 /* Login: full-bleed light plane over the shell's ink body backdrop (this page
@@ -225,24 +180,25 @@ login-page {
     phase 1 for the pages that inject their nav from JS).
 
     Must follow the `padding` shorthand above, which would otherwise reset it.
-
-    Views hosted in a module-shell are absent: there the shell owns this gutter
-    (see the `module-shell` block below), because the nav belongs to the shell
-    and outlives every view switch.
   */
+  access-control-page,
+  agents-page,
+  builds-page,
+  departments-page,
+  executions-page,
+  flows-page,
+  group-mappings-page,
   mcp-page,
-  runtime-page {
+  resources-page,
+  runtime-page,
+  sessions-page,
+  settings-page,
+  team-access-page,
+  teams-page,
+  users-page,
+  workflows-page,
+  your-agents-page {
     padding-left: calc(224px + var(--s-64));
-  }
-
-  /* The shell clears the nav column once, for every view it hosts; a view
-     keeping its own left pad on top of that would double the inset. */
-  module-shell {
-    padding-left: calc(224px + var(--s-64));
-  }
-
-  module-shell > [data-view] {
-    padding-left: 0;
   }
 
   /*
@@ -256,43 +212,14 @@ login-page {
     below ~1400px the centered 820px column would reach into the nav's gutter,
     so there the gutter wins and the column narrows instead of overlapping.
   */
-  module-shell[data-active-view="orchestrate"] {
+  orchestrator-page {
     padding-inline: max(
       calc(224px + var(--s-64)),
       calc((100% - var(--orch-column-w)) / 2)
     );
-    /* Pinned-composer layout: the host fills the card exactly and clips, and
-       `.messages` inside the view is the only scroller. Keyed on the active view,
-       not on the element being present: hidden views stay in the DOM, so a
-       `:has()` on the orchestrator view would clip the scrolling tables its
-       sibling views are. Desktop only — see the base rule above.
-
-       The pad is a third of what it was (16dvh, i.e. 128px on a 800px-tall
-       window): in a box that clips, every pixel above the hero is a pixel the
-       composer and the workflow banner below it can lose. It scales with height
-       so a tall window still gets air, and the `max()` floor keeps a short one
-       from crowding the title against the card edge. */
-    padding-top: max(var(--space-xl), 6dvh);
     height: calc(100dvh - var(--shell-topbar-height) - var(--s-12));
     min-height: 0;
-    overflow: hidden;
-  }
-
-  /* Once a reply arrives the hero collapses and the transcript needs the room,
-     so the deep pad above becomes a thin one. `.has-response` is a runtime class
-     on the view, but the padding belongs to the shell — hence `:has()` rather
-     than a rule on the view, which could not reach it. */
-  module-shell[data-active-view="orchestrate"]:has(> orchestrator-page.has-response) {
-    padding-top: var(--space-md);
-  }
-
-  /* The view fills that box and does the flex-column work itself; its own
-     padding would double the shell's. */
-  module-shell[data-active-view="orchestrate"] > orchestrator-page {
-    height: 100%;
-    min-height: 0;
-    padding: 0;
-    overflow: hidden;
+    flex: none;
   }
 
   /* Chat fills the floating card exactly (topbar + 16px card margins). */

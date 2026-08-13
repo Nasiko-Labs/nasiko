@@ -17,7 +17,7 @@ class AddAgentGithubPage extends HTMLElement {
 
   connectedCallback() {
     this.innerHTML = `
-      <a class="back-link" href="/agents.html?view=import">${icons.chevronLeft('', 14)} Back</a>
+      <a class="back-link" href="/add-agent.html">${icons.chevronLeft('', 14)} Back</a>
       <div class="page-head">
         <div>
           <h1 class="title-page">Import from GitHub</h1>
@@ -284,7 +284,7 @@ class AddAgentGithubPage extends HTMLElement {
         body: JSON.stringify(payload),
       });
       if (!res.ok) throw new Error(await res.text());
-      window.location.href = '/agents.html?view=your-agents';
+      window.location.href = '/your-agents.html';
     } catch (err) {
       btn.removeAttribute('loading');
       btn.textContent = 'Clone and upload';

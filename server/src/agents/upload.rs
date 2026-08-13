@@ -86,15 +86,6 @@ pub(crate) struct UploadAndDeployForm {
     ports: Option<String>,
     /// JSON object of extra env vars, e.g. `{"FOO":"bar"}`.
     env: Option<String>,
-    /// `"true"`/`"false"` to mount / not mount a persistent, private-per-agent
-    /// directory at `/workspace`. Tri-state: omit the field to keep an existing
-    /// agent's stored setting (false for a new agent) — the CLI only sends it
-    /// when `--writable` was passed.
-    writable: Option<String>,
-    /// Container-side mount target for the writable volume (`--writable-path`).
-    /// Absolute path; implies `writable`. Omit to keep an existing agent's
-    /// stored path (`/workspace` for a new agent).
-    writable_path: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema, sqlx::FromRow)]
@@ -133,11 +124,6 @@ pub enum BuildJobPayload {
         image_tag: String,
         ports: Vec<u16>,
         env: HashMap<String, String>,
-        writable: bool,
-        /// `--writable-path`; `None` = `/workspace`. `#[serde(default)]` so
-        /// job rows queued before this field existed still deserialize.
-        #[serde(default)]
-        writable_path: Option<String>,
     },
     /// In-place agent update (PUT /api/agents/{id}/update).
     Update {
@@ -160,12 +146,6 @@ pub enum BuildJobPayload {
         prev_version: String,
         prev_image: Option<String>,
         changelog: Option<String>,
-        /// Carried forward from `agents.writable` — this endpoint has no flag of
-        /// its own to set it (see `update_agent`'s fetch of the agent row).
-        writable: bool,
-        /// Carried forward from `agents.writable_path`, same reasoning.
-        #[serde(default)]
-        writable_path: Option<String>,
     },
     /// Rollback to a prior version (POST /api/agents/{id}/rollback).
     Rollback {
@@ -182,12 +162,6 @@ pub enum BuildJobPayload {
         target_version: String,
         target_image_tag: String,
         reason: Option<String>,
-        /// Carried forward from `agents.writable` — same reasoning as
-        /// `Update::writable`.
-        writable: bool,
-        /// Carried forward from `agents.writable_path`, same reasoning.
-        #[serde(default)]
-        writable_path: Option<String>,
     },
     /// Standalone image build without deploy (POST /api/build/builds).
     StandaloneBuild {
@@ -316,35 +290,12 @@ pub(crate) async fn upload_and_deploy(
     let mut env: HashMap<String, String> = HashMap::new();
     // Which LLM SDK the agent's code speaks (drives gateway env injection). Default openai.
     let mut inbound_format: Option<String> = None;
-    // Mounts a persistent, private-per-agent directory at /workspace (see
-    // DeploymentSpec::writable's doc comment). Tri-state: the CLI omits the
-    // field entirely unless `--writable` was passed, and for an existing agent
-    // "not specified" must mean "keep the stored value" — collapsing it to
-    // false would silently detach the agent from its volume on every plain
-    // re-upload of a new version. None = carry forward (false for a new agent).
-    let mut writable: Option<bool> = None;
-    // Container-side mount target (--writable-path); implies `writable`.
-    // Tri-state for the same reason: an unspecified path must not move an
-    // existing agent's mount back to /workspace.
-    let mut writable_path: Option<String> = None;
 
     while let Ok(Some(field)) = multipart.next_field().await {
         match field.name().unwrap_or("") {
             "name" | "agent_name" => name = field.text().await.ok(),
             "version_tag" => version_tag = field.text().await.ok(),
             "inbound_format" => inbound_format = field.text().await.ok(),
-            "writable" => {
-                // Anything other than an explicit true/false (unreadable field,
-                // junk value) counts as "not specified", not as false.
-                writable = match field.text().await.ok().as_deref() {
-                    Some("true") => Some(true),
-                    Some("false") => Some(false),
-                    _ => None,
-                };
-            }
-            "writable_path" => {
-                writable_path = field.text().await.ok().filter(|s| !s.is_empty());
-            }
             "source" | "file" => {
                 use crate::multipart_util::{StreamUploadError, stream_field_to_fresh_temp_file};
                 match stream_field_to_fresh_temp_file(
@@ -392,16 +343,6 @@ pub(crate) async fn upload_and_deploy(
                 }
             }
             _ => {}
-        }
-    }
-
-    // A path implies the mount (`--writable-path X` alone must not silently
-    // deploy without storage), and a bad path is a caller error — reject now
-    // with a 400 instead of surfacing it minutes later as a failed deploy.
-    if let Some(path) = &writable_path {
-        writable = Some(true);
-        if let Err(e) = nasiko_runtime::validate_writable_path(path) {
-            return (StatusCode::BAD_REQUEST, e).into_response();
         }
     }
 
@@ -504,39 +445,25 @@ pub(crate) async fn upload_and_deploy(
     // Atomic INSERT ... ON CONFLICT against the (owner_id, name) partial unique
     // index (migration 015) — closes the SELECT-then-INSERT TOCTOU that let two
     // concurrent same-name uploads create duplicate rows (SRV-2).
-    //
-    // `writable`/`writable_path` COALESCE on conflict, not overwrite: a NULL
-    // bind means the caller didn't specify them (the CLI omits both fields
-    // unless the flags were passed), and an unconditional `EXCLUDED.writable`
-    // would reset the flag to false on every plain re-upload — silently
-    // detaching a `--writable` agent from its volume, the exact drop the
-    // update/rollback/restart paths already guard against. RETURNING hands
-    // back the effective values so the deploy uses the DB's truth. (There is
-    // deliberately no way to clear a stored writable_path back to NULL here —
-    // pass an explicit new path instead; clearing would move the mount.)
-    let (agent_id, writable, writable_path) = {
-        match sqlx::query_as::<_, (Uuid, bool, Option<String>)>(
-            "INSERT INTO agents (name, owner_id, version, image, status, inbound_format, writable, writable_path) \
-             VALUES ($1, $2, $3, $4, 'deploying', $5, COALESCE($6, false), $7) \
+    let agent_id = {
+        match sqlx::query_scalar::<_, Uuid>(
+            "INSERT INTO agents (name, owner_id, version, image, status, inbound_format) \
+             VALUES ($1, $2, $3, $4, 'deploying', $5) \
              ON CONFLICT (owner_id, name) WHERE deleted_at IS NULL \
              DO UPDATE SET version = EXCLUDED.version, image = EXCLUDED.image, \
                            inbound_format = EXCLUDED.inbound_format, \
-                           writable = COALESCE($6, agents.writable), \
-                           writable_path = COALESCE($7, agents.writable_path), \
                            status = 'deploying', updated_at = now() \
-             RETURNING id, writable, writable_path",
+             RETURNING id",
         )
         .bind(&name)
         .bind(owner_id)
         .bind(&version_tag)
         .bind(&image_tag)
         .bind(inbound_format)
-        .bind(writable)
-        .bind(&writable_path)
         .fetch_one(&mut *tx)
         .await
         {
-            Ok(row) => row,
+            Ok(id) => id,
             Err(e) => {
                 tracing::error!(%e, agent_name = %name, "upload: register agent db error");
                 let _ = tokio::fs::remove_dir_all(zip_path.parent().unwrap_or(&zip_path)).await;
@@ -618,8 +545,6 @@ pub(crate) async fn upload_and_deploy(
         image_tag: image_tag.clone(),
         ports,
         env,
-        writable,
-        writable_path: writable_path.clone(),
     };
 
     let payload_value = match serde_json::to_value(&payload) {
@@ -948,15 +873,11 @@ fn patch_otel_into_dockerfile(source_dir: &std::path::Path, dockerfile: &std::pa
         }
     };
 
-    // Only patch Python-based images. Matching bare `slim`/`alpine` here also
-    // catches `FROM node:20-slim`, `FROM ruby:3-alpine`, and friends — and since
-    // the injected `pip install` layer then fails on an image with no pip, that
-    // mismatch doesn't merely skip instrumentation, it fails the whole build for
-    // an agent that was never Python to begin with. Require `python` in the base
-    // image ref, matching this function's documented contract.
-    let is_python = contents
-        .lines()
-        .any(|l| l.trim().starts_with("FROM ") && l.contains("python"));
+    // Only patch Python-based images.
+    let is_python = contents.lines().any(|l| {
+        let t = l.trim();
+        t.starts_with("FROM ") && (t.contains("python") || t.contains("slim") || t.contains("alpine"))
+    });
     if !is_python {
         tracing::debug!("otel patch: Dockerfile does not appear Python-based, skipping");
         return;
@@ -976,13 +897,9 @@ fn patch_otel_into_dockerfile(source_dir: &std::path::Path, dockerfile: &std::pa
 
     // Append to Dockerfile: install OTel deps, copy bootstrap, set PYTHONSTARTUP.
     // Inserted before the last CMD/ENTRYPOINT line so the layer order is correct.
-    // `PIP_BREAK_SYSTEM_PACKAGES=1` is scoped to this RUN layer (not a persistent
-    // ENV) and keeps the install working on a distro-managed interpreter, where
-    // PEP 668 otherwise aborts with `error: externally-managed-environment`.
-    // pip older than 23.1 doesn't know the flag and simply ignores the env var.
     let patch = format!(
         "\n# ── Nasiko OTel auto-instrumentation (injected at build time) ──\n\
-         RUN PIP_BREAK_SYSTEM_PACKAGES=1 pip install --no-cache-dir {OTEL_PIP_PACKAGES}\n\
+         RUN pip install --no-cache-dir {OTEL_PIP_PACKAGES}\n\
          COPY _nasiko_otel_boot.py /opt/nasiko/_nasiko_otel_boot.py\n\
          ENV PYTHONSTARTUP=/opt/nasiko/_nasiko_otel_boot.py\n"
     );
@@ -1010,6 +927,7 @@ fn patch_otel_into_dockerfile(source_dir: &std::path::Path, dockerfile: &std::pa
     tracing::info!("otel patch: injected OTel auto-instrumentation into Dockerfile");
 }
 
+
 /// Execute the full upload-and-deploy pipeline: extract, OTel patch, docker build, deploy.
 /// Called by the build worker.
 #[allow(clippy::too_many_arguments)]
@@ -1033,9 +951,6 @@ pub async fn execute_upload_and_deploy(
     agent_runtime: String,
     agent_image_registry: String,
     max_replicas: u32,
-    writable: bool,
-    writable_path: Option<String>,
-    default_memory: String,
 ) {
     if let Some(key) = openai_api_key {
         env.entry("OPENAI_API_KEY".to_owned()).or_insert(key);
@@ -1095,11 +1010,8 @@ pub async fn execute_upload_and_deploy(
             image_tag.clone(),
             ports,
             env,
-            &default_memory,
+            None,
             max_replicas,
-            writable,
-            writable_path.clone(),
-            owner_id,
         );
         crate::agents::attach_pull_credential(
             &db,
@@ -1232,7 +1144,6 @@ pub async fn execute_clone_and_deploy(
     agent_runtime: String,
     agent_image_registry: String,
     max_replicas: u32,
-    default_memory: String,
 ) {
     if let Some(key) = openai_api_key {
         env.entry("OPENAI_API_KEY".to_owned()).or_insert(key);
@@ -1330,12 +1241,8 @@ pub async fn execute_clone_and_deploy(
             image_tag.clone(),
             ports,
             env,
-            &default_memory,
-            max_replicas,
-            // GitHub-clone deploys don't expose a --writable flag yet.
-            false,
             None,
-            owner_id,
+            max_replicas,
         );
         crate::agents::attach_pull_credential(
             &db,
@@ -1582,7 +1489,6 @@ pub async fn execute_github_clone_and_deploy(
         state.config.agent_runtime.clone(),
         state.config.agent_image_registry.clone(),
         state.config.agent_max_replicas,
-        state.config.agent_default_memory.clone(),
     )
     .await;
 }
@@ -2083,80 +1989,5 @@ pub(crate) async fn list_upload_agents(
             tracing::error!(%e, "list_upload_agents db error");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
-    }
-}
-
-#[cfg(test)]
-mod otel_patch_tests {
-    use super::*;
-
-    /// Write `dockerfile_contents` into a fresh temp dir, run the patch over it,
-    /// and hand back what the Dockerfile looks like afterwards.
-    fn patch(dockerfile_contents: &str, marker: &str) -> String {
-        let dir = std::env::temp_dir().join(format!("nasiko-otel-patch-test-{marker}"));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let dockerfile = dir.join("Dockerfile");
-        std::fs::write(&dockerfile, dockerfile_contents).unwrap();
-
-        patch_otel_into_dockerfile(&dir, &dockerfile);
-
-        let patched = std::fs::read_to_string(&dockerfile).unwrap();
-        let _ = std::fs::remove_dir_all(&dir);
-        patched
-    }
-
-    #[test]
-    fn node_slim_image_is_left_untouched() {
-        // `node:20-slim` matches neither "python" nor a Python toolchain, but it
-        // does contain "slim" — the old check patched it and the injected `pip`
-        // layer failed the build outright.
-        let original = "FROM node:20-slim\nRUN apt-get install -y python3\nENTRYPOINT [\"./run.sh\"]\n";
-
-        assert_eq!(
-            patch(original, "node-slim"),
-            original,
-            "a Node base image must not receive the Python OTel patch"
-        );
-    }
-
-    #[test]
-    fn alpine_non_python_image_is_left_untouched() {
-        let original = "FROM ruby:3-alpine\nENTRYPOINT [\"./run.sh\"]\n";
-
-        assert_eq!(patch(original, "ruby-alpine"), original);
-    }
-
-    #[test]
-    fn python_image_is_patched_before_the_entrypoint() {
-        let patched = patch(
-            "FROM python:3.12-slim\nCOPY . /app\nENTRYPOINT [\"python\", \"main.py\"]\n",
-            "python-slim",
-        );
-
-        assert!(patched.contains("pip install"), "expected the pip layer");
-        assert!(patched.contains("ENV PYTHONSTARTUP=/opt/nasiko/_nasiko_otel_boot.py"));
-
-        let pip_at = patched.find("pip install").unwrap();
-        let entrypoint_at = patched.find("ENTRYPOINT").unwrap();
-        assert!(
-            pip_at < entrypoint_at,
-            "the pip layer must be inserted before ENTRYPOINT"
-        );
-    }
-
-    #[test]
-    fn pip_layer_tolerates_a_distro_managed_interpreter() {
-        let patched = patch(
-            "FROM python:3.12-slim\nENTRYPOINT [\"python\", \"main.py\"]\n",
-            "pep668",
-        );
-
-        // Without this, PEP 668 aborts the layer with
-        // `error: externally-managed-environment` on a distro-managed Python.
-        assert!(
-            patched.contains("PIP_BREAK_SYSTEM_PACKAGES=1 pip install"),
-            "pip install must be able to write to a distro-managed interpreter"
-        );
     }
 }

@@ -128,21 +128,11 @@
   }
   .search-clear:hover { color: var(--color-text-main); }
 
-  .sort-wrap { position: relative; display: flex; }
-  .sort-icon {
-    position: absolute;
-    left: 12px;
-    top: 50%;
-    transform: translateY(-50%);
-    color: var(--color-text-muted);
-    pointer-events: none;
-    display: flex;
-  }
   .sort-select {
     width: auto;
     flex-shrink: 0;
     min-height: var(--control-h-lg);
-    padding: 0 var(--space-md) 0 34px;
+    padding: 0 var(--space-md);
     border: 1px solid transparent;
     border-radius: var(--r-8);
     background: var(--bg-input);
@@ -177,18 +167,13 @@
   .empty-action-link {
     display: inline-flex;
     align-items: center;
-    min-height: var(--control-h-lg);
-    padding: 0 var(--s-16);
-    /* Transparent border, not none: --secondary adds a 1px border, and with an
-       auto height that would make it 2px taller than the primary beside it. */
-    border: 1px solid transparent;
-    border-radius: var(--r-10);
+    padding: var(--space-xs) var(--space-md);
+    border-radius: var(--radius-md);
     background: var(--color-primary);
     color: var(--color-on-primary);
     font-size: var(--font-size-sm);
     font-weight: 500;
     text-decoration: none;
-    & svg { width: 20px; height: 20px; flex-shrink: 0; }
   }
   .empty-action-link:hover { background: var(--color-primary-hover); }
   .empty-action-link--secondary {
@@ -202,16 +187,20 @@
     background: var(--color-bg-surface);
   }
 
-  /* ── Card — surface + hover lift: common/styles/surface.css ─────────────── */
+  /* ── Card — strokeless sand well ────────────────────────────────────────── */
   .agent-card {
-    /* Anchors `.agent-card-source`. Without it that badge resolved against
-       whichever ancestor happened to be positioned, so every card's badge
-       stacked in one corner of the page instead of sitting on its own card. */
     position: relative;
+    border: 1px solid transparent;
+    border-radius: var(--r-8);
     padding: var(--s-12) var(--space-md);
+    background: var(--color-bg-base);
     display: flex;
     flex-direction: column;
     gap: var(--space-xs);
+    transition: border-color 0.15s ease;
+  }
+  .agent-card:hover {
+    border-color: var(--color-border);
   }
   .agent-card--error:hover {
     border-color: var(--color-error-border);
@@ -259,12 +248,6 @@
     background: transparent;
     padding: 0;
     line-height: 1;
-    opacity: 0;
-    transition: opacity 0.12s ease;
-  }
-  .agent-card:hover .agent-card-source,
-  .agent-card:focus-within .agent-card-source {
-    opacity: 1;
   }
   .agent-card-tags {
     display: flex;
@@ -273,7 +256,16 @@
     overflow: hidden;
     max-height: 1.9em;
   }
-  /* .tag / .tag--more: common/styles/badge.css */
+  .tag {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-main);
+    background: var(--color-bg-surface);
+    border: 1px solid var(--color-border);
+    padding: 1px var(--space-xs);
+    border-radius: var(--radius-sm);
+    white-space: nowrap;
+  }
+  .tag--more { color: var(--color-text-muted); }
   .agent-card-desc {
     font-size: var(--font-size-sm);
     color: var(--color-text-muted);
@@ -300,6 +292,10 @@
   }
 
   /* ── Setting-up state ──────────────────────────────────────────────────── */
+  .agent-card--setting-up {
+    border-color: var(--color-info, #3b82f6) !important;
+    border-style: solid;
+  }
   .agent-card-setup {
     display: flex;
     flex-direction: column;
@@ -497,8 +493,7 @@
     display: inline-flex;
     align-items: center;
     gap: var(--space-xs);
-    min-height: var(--control-h-sm);
-    padding: 0 var(--space-sm);
+    padding: var(--space-xs) var(--space-sm);
     border: 1px dashed var(--color-border);
     border-radius: var(--radius-md);
     background: none;
@@ -540,28 +535,24 @@
     margin-top: var(--space-md);
   }
   .btn-deploy {
-    min-height: var(--control-h-lg);
-    padding: 0 var(--space-lg);
+    padding: var(--space-xs) var(--space-lg);
     background: var(--color-primary);
     color: var(--color-on-primary);
     border: none;
-    border-radius: var(--r-10);
+    border-radius: var(--radius-md);
     font-size: var(--font-size-sm);
     font-weight: 500;
     cursor: pointer;
-    & svg { width: 20px; height: 20px; flex-shrink: 0; }
   }
   .btn-deploy:hover:not(:disabled) { background: var(--color-primary-hover); }
   .btn-deploy:disabled { opacity: 0.6; cursor: not-allowed; }
   .btn-cancel {
-    min-height: var(--control-h-lg);
-    padding: 0 var(--space-lg);
+    padding: var(--space-xs) var(--space-lg);
     background: var(--color-bg-surface);
     border: 1px solid var(--color-border);
-    border-radius: var(--r-10);
+    border-radius: var(--radius-md);
     color: var(--color-text-main);
     font-size: var(--font-size-sm);
     cursor: pointer;
-    & svg { width: 20px; height: 20px; flex-shrink: 0; }
   }
 }

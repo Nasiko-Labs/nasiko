@@ -118,7 +118,7 @@ class AddAgentPage extends HTMLElement {
           body: JSON.stringify({ reference }),
         });
         if (!res.ok) throw new Error(await res.text());
-        window.location.href = '/agents.html?view=your-agents';
+        window.location.href = '/your-agents.html';
       } catch (err) {
         const { showToast } = await import('/common/utils/toast.js');
         showToast(`Import failed: ${err.message}`);
@@ -193,7 +193,7 @@ class AddAgentPage extends HTMLElement {
       try {
         const res = await apiFetch('/agents/upload', { method: 'POST', body: formData });
         if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
-        window.location.href = '/agents.html?view=your-agents';
+        window.location.href = '/your-agents.html';
       } catch (err) {
         this.#showUploadError(`Upload failed: ${err.message}`);
       } finally {

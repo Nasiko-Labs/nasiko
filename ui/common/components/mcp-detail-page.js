@@ -311,7 +311,7 @@ class McpDetailPage extends HTMLElement {
       <div class="mdp-panel" data-panel="access">
         <div class="mdp-section">
           <h2 class="mdp-section-title">Agent access</h2>
-          <p class="mdp-muted">Select an agent to manage its access to this connector and set per-tool allow/block rules</p>
+          <p class="mdp-muted">Select an agent to manage its access to this connector and set per-tool allow/deny rules</p>
           <div class="mdp-agent-picker">
             <auto-complete id="mdp-agent-select" placeholder="Search agents..." aria-label="Agent"></auto-complete>
           </div>
@@ -416,7 +416,7 @@ class McpDetailPage extends HTMLElement {
     }
     editor.innerHTML = `
       <div class="mdp-tools-list">
-        ${tools.map((t, i) => '<div class="mdp-tool-line"><div class="mdp-tool-info"><span class="mdp-tool-info-name">' + this.#esc(t.name) + '</span>' + (t.description ? '<span class="mdp-tool-info-desc">' + this.#esc(t.description) + '</span>' : '') + '</div><select class="mdp-tool-stance" data-index="' + i + '"><option value="allow"' + (t.stance !== 'block' ? ' selected' : '') + '>Allow</option><option value="block"' + (t.stance === 'block' ? ' selected' : '') + '>Block</option></select></div>').join('')}
+        ${tools.map((t, i) => '<div class="mdp-tool-line"><div class="mdp-tool-info"><span class="mdp-tool-info-name">' + this.#esc(t.name) + '</span>' + (t.description ? '<span class="mdp-tool-info-desc">' + this.#esc(t.description) + '</span>' : '') + '</div><select class="mdp-tool-stance" data-index="' + i + '"><option value="allow"' + (t.stance !== 'deny' ? ' selected' : '') + '>Allow</option><option value="deny"' + (t.stance === 'deny' ? ' selected' : '') + '>Deny</option></select></div>').join('')}
       </div>
       <div class="mdp-tools-actions">
         <span class="mdp-save-status" id="mdp-save-status" hidden></span>

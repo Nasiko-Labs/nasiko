@@ -28,56 +28,44 @@
     flex-shrink: 0;
   }
 
-  /* These three predate app-button and drifted off the DS: near-black
-     neutral-900 instead of the DS primary sand-800, weight 600 instead of 500,
-     an ad-hoc 10px padding instead of the 36px control height, and an opacity
-     hover instead of a colour step. Values now match app-button's is-primary /
-     is-outline / is-ghost exactly, so the page reads as the same button family
-     as the rest of the product without restructuring its markup. */
   .btn-dark {
     display: inline-flex;
     align-items: center;
-    justify-content: center;
     gap: var(--space-xs);
-    min-height: var(--control-h-lg);
-    padding: 0 var(--s-16);
-    border: 1px solid transparent;
-    border-radius: var(--r-10);
-    background: light-dark(var(--sand-800), var(--neutral-100));
+    padding: 10px var(--space-md);
+    border-radius: var(--r-8);
+    background: light-dark(var(--neutral-900), var(--neutral-100));
     color: light-dark(var(--white), var(--neutral-900));
-    font: 500 var(--font-size-sm)/1 inherit;
+    font-size: var(--font-size-sm);
+    font-weight: 600;
     cursor: pointer;
-    transition: background var(--transition-fast);
 
-    &:hover { background: light-dark(var(--sand-700), var(--neutral-300)); }
-    & svg { width: 20px; height: 20px; }
+    &:hover { opacity: 0.85; }
+    & svg { width: 14px; height: 14px; }
   }
 
   .btn-outline {
     display: inline-flex;
     align-items: center;
-    justify-content: center;
     gap: var(--space-xs);
-    min-height: var(--control-h-lg);
-    padding: 0 var(--s-16);
+    padding: 10px var(--space-md);
     border: 1px solid var(--color-border);
-    border-radius: var(--r-10);
+    border-radius: var(--r-8);
     background: var(--color-bg-surface);
     color: var(--color-text-main);
-    font: 500 var(--font-size-sm)/1 inherit;
+    font-size: var(--font-size-sm);
+    font-weight: 600;
     cursor: pointer;
-    transition: background var(--transition-fast);
 
-    &:hover { background: var(--color-bg-base); }
-    & svg { width: 20px; height: 20px; }
+    &:hover { background: var(--bg-input); }
+    & svg { width: 14px; height: 14px; }
   }
 
   .btn-ghost {
     display: inline-flex;
     align-items: center;
     gap: var(--space-xs);
-    min-height: var(--control-h-sm);
-    padding: 0 var(--s-8);
+    padding: 6px 8px;
     border-radius: var(--r-8);
     background: transparent;
     color: var(--color-text-muted);
@@ -279,17 +267,6 @@
   }
 
   /* ── Agent access ─────────────────────────────────────────────────────── */
-  /* Own section band inside the detail modal. Without the rule and the wider
-     top gap the heading sat tight under the auth block and read as part of it
-     rather than as a new section. */
-  .detail-section {
-    margin-top: var(--space-lg);
-    padding-top: var(--space-lg);
-    border-top: 1px solid var(--color-border);
-
-    & > .detail-subtitle { margin-top: 0; }
-  }
-
   .agent-access-card {
     border: 1px solid var(--color-border);
     border-radius: var(--r-10);
@@ -300,21 +277,22 @@
   .agent-picker {
     display: flex;
     align-items: center;
-    flex-wrap: wrap;
     gap: var(--space-sm);
     padding: var(--space-md);
     border-bottom: 1px solid var(--color-border);
     background: var(--bg-input);
 
     & label { font-size: var(--font-size-sm); font-weight: 600; }
-    /* Takes the rest of the row and shrinks with it instead of holding a fixed
-       280px, which overflowed the card once the modal narrowed. */
     & auto-complete {
-      flex: 1 1 200px;
-      max-width: 280px;
-      min-width: 0;
+      width: 280px;
       font-size: var(--font-size-sm);
     }
+  }
+
+  .agent-picker-hint {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+    margin-left: auto;
   }
 
   .agent-access-empty {
@@ -487,13 +465,18 @@
     padding: var(--space-xl);
   }
 
-  /* Surface: common/styles/surface.css (the hover lift is scoped there to
-     .tk-card.is-clickable, so a static connector card doesn't fake an affordance) */
+  /* Strokeless sand well, matching the Agent hub cards */
   .tk-card {
     display: flex;
     flex-direction: column;
     gap: var(--space-sm);
     padding: var(--space-md);
+    border: 1px solid transparent;
+    border-radius: var(--r-8);
+    background: var(--color-bg-base);
+    transition: border-color 0.15s ease;
+
+    &:hover { border-color: var(--color-border); }
   }
 
   /* Custom-server cards open the detail/management modal on body click */
