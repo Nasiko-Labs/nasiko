@@ -38,8 +38,6 @@ class ChatPage extends HTMLElement {
     this.#render();
     this.#bindEvents();
 
-    const prefillQuery = params.get("query");
-
     if (this.#sessionId) {
       const messagesEl = this.querySelector("#messages");
       messagesEl.innerHTML = `
@@ -56,15 +54,6 @@ class ChatPage extends HTMLElement {
         </div></div>
       `;
       this.#loadMessages(messagesEl);
-    } else if (prefillQuery) {
-      // Skill link from agent card — pre-fill and auto-send the query.
-      const chatInput = this.querySelector("#chat-input");
-      const textarea = chatInput?.querySelector('#textarea');
-      if (textarea) {
-        textarea.value = prefillQuery;
-        textarea.focus();
-      }
-      if (this.#agentId) this.#loadSampleQueries();
     } else if (this.#agentId) {
       this.#loadSampleQueries();
     }
