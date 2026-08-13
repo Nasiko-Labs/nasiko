@@ -1,5 +1,4 @@
 import { icons } from '/common/utils/icons.js';
-import '/common/components/app-module-nav.js';
 import { showToast } from '/common/utils/toast.js';
 import { confirmDialog } from '/common/utils/confirm-dialog.js';
 import '/common/components/app-modal.js';
@@ -28,7 +27,6 @@ class GroupMappingsPage extends HTMLElement {
       .join('');
 
     this.innerHTML = `
-      <app-module-nav module="org"></app-module-nav>
       <div class="page-header">
         <div>
           <h1 class="title-page">Group mappings</h1>

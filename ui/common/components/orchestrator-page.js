@@ -1,12 +1,11 @@
 import { apiFetch } from '/common/services/api.js';
 import { icons } from '/common/utils/icons.js';
 import { renderMarkdown } from '/common/utils/markdown.js';
-import { readA2aStream, frameRenderer, nearBottom } from '/common/utils/a2a-stream.js';
+import { readA2aStream, frameRenderer, nearBottom, scrollerFor, stickToBottom } from '/common/utils/a2a-stream.js';
 import { usageChipsHtml } from '/common/utils/usage-chips.js';
 import { transcribeBlob } from '/common/utils/voice-utils.js';
 import '/common/components/voice-input.js';
 import '/common/components/agent-steps.js';
-import '/common/components/app-module-nav.js';
 
 window.transcribeAudio = transcribeBlob;
 
@@ -22,7 +21,6 @@ class OrchestratorPage extends HTMLElement {
     this.#initialized = true;
 
     this.innerHTML = `
-      <app-module-nav module="orchestrator"></app-module-nav>
       <div class="hero-icon" aria-hidden="true">${icons.route('', 24)}</div>
       <h1 class="title">Orchestrate a task</h1>
       <p class="subtitle">Describe a task and Nasiko will orchestrate the right agents to execute it</p>
@@ -97,7 +95,7 @@ class OrchestratorPage extends HTMLElement {
       pendingRow.className = 'msg-row is-assistant';
       pendingRow.innerHTML = `<div class="typing-indicator" aria-label="Agent is responding"><span></span><span></span><span></span></div>`;
       messagesEl.appendChild(pendingRow);
-      messagesEl.scrollTop = messagesEl.scrollHeight;
+      stickToBottom(messagesEl);
 
       try {
         // Create session on first message, reuse for subsequent ones
@@ -188,7 +186,7 @@ class OrchestratorPage extends HTMLElement {
     }
 
     messagesEl.appendChild(row);
-    messagesEl.scrollTop = messagesEl.scrollHeight;
+    stickToBottom(messagesEl);
   }
 
   #traceLinkHtml(traceId) {
@@ -226,7 +224,7 @@ class OrchestratorPage extends HTMLElement {
               ${icons.chevronRight('empty-arrow', 12)}
               <span class="process-pill">${icons.route('', 12)} Orchestrate</span>
             </div>
-            <a class="empty-cta" href="/add-agent.html">Import agent ${icons.plus('', 13)}</a>
+            <a class="empty-cta" href="/agents.html?view=import">Import agent ${icons.plus('', 13)}</a>
           </div>`;
         return;
       }
@@ -270,10 +268,10 @@ class OrchestratorPage extends HTMLElement {
     streamArea.appendChild(contentEl);
     streamRow.appendChild(streamArea);
     messagesEl.appendChild(streamRow);
-    messagesEl.scrollTop = messagesEl.scrollHeight;
+    stickToBottom(messagesEl);
 
     const follow = () => {
-      if (nearBottom(messagesEl)) messagesEl.scrollTop = messagesEl.scrollHeight;
+      if (nearBottom(scrollerFor(messagesEl))) stickToBottom(messagesEl);
     };
 
     const showContent = (html, { progress = false } = {}) => {

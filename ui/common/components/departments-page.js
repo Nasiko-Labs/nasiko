@@ -1,6 +1,5 @@
 import { apiFetch } from '/common/services/api.js';
 import { authService } from '/common/services/auth-service.js';
-import '/common/components/app-module-nav.js';
 import { icons } from '/common/utils/icons.js';
 import { showToast } from '/common/utils/toast.js';
 import { confirmDialog } from '/common/utils/confirm-dialog.js';
@@ -28,7 +27,6 @@ class DepartmentsPage extends HTMLElement {
     this.#canEdit = authService.isSuperuser();
 
     this.innerHTML = `
-      <app-module-nav module="org"></app-module-nav>
       <div class="page-head">
         <h1 class="title-page">Departments</h1>
         <span class="count-chips" id="dept-stats"><span class="pre-chip" style="--pre-chip-w:106px"></span><span class="pre-chip" style="--pre-chip-w:124px"></span></span>

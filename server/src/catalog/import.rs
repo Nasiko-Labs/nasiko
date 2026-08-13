@@ -486,7 +486,7 @@ pub(crate) async fn import_github(
         None => {
             return (
                 StatusCode::FORBIDDEN,
-                "GitHub not connected — visit /add-agent.html to connect",
+                "GitHub not connected — visit /agents.html?view=import to connect",
             )
                 .into_response();
         }

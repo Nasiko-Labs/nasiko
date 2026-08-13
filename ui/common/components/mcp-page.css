@@ -279,6 +279,17 @@
   }
 
   /* ── Agent access ─────────────────────────────────────────────────────── */
+  /* Own section band inside the detail modal. Without the rule and the wider
+     top gap the heading sat tight under the auth block and read as part of it
+     rather than as a new section. */
+  .detail-section {
+    margin-top: var(--space-lg);
+    padding-top: var(--space-lg);
+    border-top: 1px solid var(--color-border);
+
+    & > .detail-subtitle { margin-top: 0; }
+  }
+
   .agent-access-card {
     border: 1px solid var(--color-border);
     border-radius: var(--r-10);
@@ -289,22 +300,21 @@
   .agent-picker {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: var(--space-sm);
     padding: var(--space-md);
     border-bottom: 1px solid var(--color-border);
     background: var(--bg-input);
 
     & label { font-size: var(--font-size-sm); font-weight: 600; }
+    /* Takes the rest of the row and shrinks with it instead of holding a fixed
+       280px, which overflowed the card once the modal narrowed. */
     & auto-complete {
-      width: 280px;
+      flex: 1 1 200px;
+      max-width: 280px;
+      min-width: 0;
       font-size: var(--font-size-sm);
     }
-  }
-
-  .agent-picker-hint {
-    font-size: var(--font-size-xs);
-    color: var(--color-text-muted);
-    margin-left: auto;
   }
 
   .agent-access-empty {
