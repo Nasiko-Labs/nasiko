@@ -822,180 +822,7 @@ async fn record_uploaded_version(
     .await;
 }
 
-// ─── Build-time OTel patching ────────────────────────────────────────────────
-
-/// Python bootstrap script injected as `_nasiko_otel_boot.py` and loaded via
-/// `PYTHONSTARTUP`. Runs before the agent's own code, so the agent doesn't need
-/// to call `init_telemetry()` or install any OTel packages explicitly.
-///
-/// What it does:
-/// - Sets up W3C TraceContext propagation (`traceparent` on all outbound HTTP)
-/// - Auto-instruments httpx, requests, and the OpenAI/Anthropic SDKs
-/// - Exports traces + metrics to the OTLP collector if `OTEL_EXPORTER_OTLP_ENDPOINT` is set
-///
-/// Gracefully no-ops if the OTel packages aren't installed (shouldn't happen
-/// since `patch_otel_into_dockerfile` adds them to the Dockerfile).
-const OTEL_BOOTSTRAP_PY: &str = r#""""Auto-injected by the Nasiko build pipeline — DO NOT EDIT."""
-import os as _os, logging as _logging
-
-def _nasiko_otel_boot():
-    try:
-        from opentelemetry import trace, metrics
-        from opentelemetry.sdk.trace import TracerProvider
-        from opentelemetry.sdk.trace.export import BatchSpanProcessor
-        from opentelemetry.sdk.resources import Resource
-        from opentelemetry.propagate import set_global_textmap
-        from opentelemetry.propagators.composite import CompositePropagator
-        from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
-    except ImportError:
-        return
-
-    name = _os.environ.get("OTEL_SERVICE_NAME", "nasiko-agent")
-    resource = Resource.create({"service.name": name})
-    set_global_textmap(CompositePropagator([TraceContextTextMapPropagator()]))
-    tp = TracerProvider(resource=resource)
-
-    endpoint = _os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
-    if endpoint:
-        try:
-            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
-            from opentelemetry.sdk.metrics import MeterProvider
-            from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
-            from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
-            tp.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint, insecure=True)))
-            metrics.set_meter_provider(MeterProvider(
-                resource=resource,
-                metric_readers=[PeriodicExportingMetricReader(
-                    OTLPMetricExporter(endpoint=endpoint, insecure=True),
-                    export_interval_millis=10000,
-                )],
-            ))
-        except Exception:
-            pass
-
-    trace.set_tracer_provider(tp)
-
-    # Auto-instrument HTTP clients + LLM SDKs (best-effort per library).
-    for mod_path, cls in [
-        ("opentelemetry.instrumentation.httpx", "HTTPXClientInstrumentor"),
-        ("opentelemetry.instrumentation.requests", "RequestsInstrumentor"),
-        ("opentelemetry.instrumentation.openai_v2", "OpenAIInstrumentor"),
-        ("opentelemetry.instrumentation.openai", "OpenAIInstrumentor"),
-        ("opentelemetry.instrumentation.anthropic", "AnthropicInstrumentor"),
-    ]:
-        try:
-            import importlib
-            instrumentor = getattr(importlib.import_module(mod_path), cls)()
-            if not instrumentor.is_instrumented_by_opentelemetry:
-                instrumentor.instrument()
-        except Exception:
-            pass
-
-_nasiko_otel_boot()
-del _nasiko_otel_boot
-"#;
-
-/// OTel pip packages injected into the Dockerfile. Kept minimal — only what the
-/// bootstrap script actually imports. `--no-deps` would be ideal but some of
-/// these have transitive deps, so we let pip resolve.
-const OTEL_PIP_PACKAGES: &str = "\
-    opentelemetry-api \
-    opentelemetry-sdk \
-    opentelemetry-exporter-otlp-proto-grpc \
-    opentelemetry-instrumentation-httpx \
-    opentelemetry-instrumentation-requests \
-    opentelemetry-instrumentation-openai-v2";
-
-/// Patch a Python agent's Dockerfile to auto-install OTel packages and inject
-/// the bootstrap script. Skips non-Python Dockerfiles (no `python` base image).
-/// Best-effort: errors are logged and the build proceeds unpatched.
-fn patch_otel_into_dockerfile(source_dir: &std::path::Path, dockerfile: &std::path::Path) {
-    let contents = match std::fs::read_to_string(dockerfile) {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::warn!(%e, "otel patch: cannot read Dockerfile, skipping");
-            return;
-        }
-    };
-
-    // Only patch genuinely Python-based builds. `slim`/`alpine` are shared across
-    // many languages' base images (`rust:*-slim`, `debian:*-slim`, alpine build
-    // stages, …), so matching on them wrongly injects `pip install` into a
-    // non-Python image and breaks the build. Key off real Python signals instead:
-    // a `python` base image, or Python project/entrypoint files in the source.
-    //
-    // The patch lands in the *final* stage (before the last CMD/ENTRYPOINT), so
-    // only the final `FROM` decides whether `pip` will exist — a multi-stage
-    // build like `FROM python … AS codegen` feeding a `FROM node:20` runtime is
-    // NOT a Python image. Checking every `FROM` would misclassify it and break
-    // the build. `has_python_source` stays a fallback for bases that install
-    // Python themselves (e.g. `FROM debian-slim` + `apt install python3-pip`).
-    let final_from_is_python = contents
-        .lines()
-        .map(str::trim)
-        .filter(|t| t.starts_with("FROM "))
-        .last()
-        .is_some_and(|t| t.contains("python"));
-    let has_python_source = [
-        "requirements.txt",
-        "pyproject.toml",
-        "main.py",
-        "src/main.py",
-        "__main__.py",
-        "src/__main__.py",
-    ]
-    .iter()
-    .any(|p| source_dir.join(p).exists());
-    if !final_from_is_python && !has_python_source {
-        tracing::debug!("otel patch: build does not appear Python-based, skipping");
-        return;
-    }
-
-    // Don't double-patch if the agent already bundles the bootstrap.
-    if source_dir.join("_nasiko_otel_boot.py").exists() {
-        tracing::debug!("otel patch: _nasiko_otel_boot.py already exists, skipping");
-        return;
-    }
-
-    // Write the bootstrap script.
-    if let Err(e) = std::fs::write(source_dir.join("_nasiko_otel_boot.py"), OTEL_BOOTSTRAP_PY) {
-        tracing::warn!(%e, "otel patch: failed to write bootstrap script, skipping");
-        return;
-    }
-
-    // Append to Dockerfile: install OTel deps, copy bootstrap, set PYTHONSTARTUP.
-    // Inserted before the last CMD/ENTRYPOINT line so the layer order is correct.
-    let patch = format!(
-        "\n# ── Nasiko OTel auto-instrumentation (injected at build time) ──\n\
-         RUN pip install --no-cache-dir {OTEL_PIP_PACKAGES}\n\
-         COPY _nasiko_otel_boot.py /opt/nasiko/_nasiko_otel_boot.py\n\
-         ENV PYTHONSTARTUP=/opt/nasiko/_nasiko_otel_boot.py\n"
-    );
-
-    // Find the last CMD or ENTRYPOINT line and insert before it.
-    let lines: Vec<&str> = contents.lines().collect();
-    let insert_pos = lines
-        .iter()
-        .rposition(|l| {
-            let t = l.trim();
-            t.starts_with("CMD ") || t.starts_with("ENTRYPOINT ")
-        })
-        .unwrap_or(lines.len());
-
-    let mut patched = lines[..insert_pos].join("\n");
-    patched.push_str(&patch);
-    patched.push_str(&lines[insert_pos..].join("\n"));
-    patched.push('\n');
-
-    if let Err(e) = std::fs::write(dockerfile, &patched) {
-        tracing::warn!(%e, "otel patch: failed to write patched Dockerfile");
-        return;
-    }
-
-    tracing::info!("otel patch: injected OTel auto-instrumentation into Dockerfile");
-}
-
-/// Execute the full upload-and-deploy pipeline: extract, OTel patch, docker build, deploy.
+/// Execute the full upload-and-deploy pipeline: extract, docker build, deploy.
 /// Called by the build worker.
 #[allow(clippy::too_many_arguments)]
 pub async fn execute_upload_and_deploy(
@@ -1048,12 +875,10 @@ pub async fn execute_upload_and_deploy(
             return Err("no Dockerfile found in source zip".into());
         }
 
-        // ── OTel patch ───────────────────────────────────────────────────────
-        // Inject traceparent propagation + GenAI instrumentation into Python
-        // agents so they get traces, LLM spans, and classifier support without
-        // any agent-side code changes. Best-effort: a non-Python Dockerfile is
-        // left untouched.
-        patch_otel_into_dockerfile(&tmp_dir, &dockerfile_path);
+        // Observability is wired without touching the agent's source or image:
+        // the OTEL_* env vars are injected at deploy time (see `OtelInjector` /
+        // `InstrumentedRuntime`), and agents carry their own OTel SDK. The build
+        // pipeline deliberately does not rewrite the Dockerfile.
 
         // Build Docker image.
         let tar_bytes = build::tar_directory(&tmp_dir).map_err(|e| format!("tar source: {e}"))?;
@@ -1196,7 +1021,7 @@ pub async fn execute_upload_and_deploy(
     }
 }
 
-/// Execute the full clone-and-deploy pipeline: extract tar.gz, OTel patch, docker build, deploy.
+/// Execute the full clone-and-deploy pipeline: extract tar.gz, docker build, deploy.
 /// Called by the build worker for `BuildJobPayload::Clone` jobs.
 #[allow(clippy::too_many_arguments)]
 pub async fn execute_clone_and_deploy(
@@ -1287,8 +1112,8 @@ pub async fn execute_clone_and_deploy(
             return Err("no Dockerfile found in cloned repository".into());
         }
 
-        // OTel patch (same as upload path — see doc on `patch_otel_into_dockerfile`).
-        patch_otel_into_dockerfile(&tmp_dir, &dockerfile_path);
+        // No source/image rewriting — observability is env-injected at deploy
+        // (same as the upload path).
 
         // Build Docker image.
         let tar_bytes = build::tar_directory(&tmp_dir).map_err(|e| format!("tar source: {e}"))?;
@@ -2070,89 +1895,5 @@ pub(crate) async fn list_upload_agents(
             tracing::error!(%e, "list_upload_agents db error");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
-    }
-}
-
-#[cfg(test)]
-mod otel_patch_tests {
-    use super::*;
-
-    /// Run `patch_otel_into_dockerfile` against a Dockerfile (plus any extra
-    /// source files that act as Python signals) in a throwaway temp dir, and
-    /// report whether the OTel `pip install` layer was injected. Hermetic —
-    /// touches only the filesystem, no network/DB/Docker.
-    fn otel_injected(dockerfile: &str, source_files: &[&str]) -> bool {
-        let dir = std::env::temp_dir().join(format!("nasiko-otel-{}", Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        for f in source_files {
-            let path = dir.join(f);
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent).unwrap();
-            }
-            std::fs::write(&path, b"").unwrap();
-        }
-        let dockerfile_path = dir.join("Dockerfile");
-        std::fs::write(&dockerfile_path, dockerfile).unwrap();
-
-        patch_otel_into_dockerfile(&dir, &dockerfile_path);
-
-        let patched = std::fs::read_to_string(&dockerfile_path).unwrap();
-        let _ = std::fs::remove_dir_all(&dir);
-        patched.contains("pip install")
-    }
-
-    #[test]
-    fn python_image_is_patched() {
-        assert!(otel_injected(
-            "FROM python:3.11-slim\nCMD [\"python\", \"main.py\"]\n",
-            &[],
-        ));
-    }
-
-    #[test]
-    fn rust_slim_image_is_not_patched() {
-        // `rust:*-slim` matched the old `slim` substring — must be left alone now.
-        assert!(!otel_injected(
-            "FROM rust:1-slim\nCOPY . .\nRUN cargo build --release\nENTRYPOINT [\"/agent\"]\n",
-            &[],
-        ));
-    }
-
-    #[test]
-    fn golang_alpine_image_is_not_patched() {
-        // `golang:*-alpine` matched the old `alpine` substring — must be left alone now.
-        assert!(!otel_injected(
-            "FROM golang:1.25-alpine AS builder\nRUN go build -o /agent .\nENTRYPOINT [\"/agent\"]\n",
-            &[],
-        ));
-    }
-
-    #[test]
-    fn node_image_is_not_patched() {
-        assert!(!otel_injected(
-            "FROM node:20\nCMD [\"node\", \"server.js\"]\n",
-            &[],
-        ));
-    }
-
-    #[test]
-    fn multistage_python_builder_with_non_python_runtime_is_not_patched() {
-        // The regression Copilot flagged: only the FINAL stage's base decides
-        // whether `pip` exists. A Python build stage feeding a Node runtime must
-        // NOT be patched — the injected `pip install` would fail in the node stage.
-        assert!(!otel_injected(
-            "FROM python:3.11 AS codegen\nRUN true\nFROM node:20\nCMD [\"node\", \"server.js\"]\n",
-            &[],
-        ));
-    }
-
-    #[test]
-    fn python_source_files_patch_a_generic_base() {
-        // A base that installs Python itself (no `python` in FROM) is still
-        // recognised via Python project files.
-        assert!(otel_injected(
-            "FROM debian:bookworm-slim\nRUN apt-get install -y python3-pip\nCMD [\"/app/run\"]\n",
-            &["requirements.txt"],
-        ));
     }
 }
