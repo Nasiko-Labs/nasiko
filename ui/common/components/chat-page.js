@@ -113,7 +113,8 @@ class ChatPage extends HTMLElement {
       const skills = agent.skills || [];
       const queries = skills
         .map(s => s.sample_query || (Array.isArray(s.examples) && s.examples[0]) || null)
-        .filter(Boolean);
+        .filter(Boolean)
+        .slice(0, 3);
       if (!queries.length) return;
       this.#sampleQueries = queries;
       const welcome = this.querySelector('.welcome-state');
