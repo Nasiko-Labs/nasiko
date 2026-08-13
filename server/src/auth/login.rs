@@ -155,15 +155,23 @@ async fn login(
     }
 }
 
-/// Logout: revoke the active token in the DB so it immediately stops working
-/// at the gateway, then clear the browser cookie.
+/// Logout: revoke the calling session's own token in the DB so it immediately
+/// stops working, then clear the browser cookie.
+///
+/// Revokes by `jti` (this session only) — NOT `revoke_tokens_for_user`, which
+/// would kill every other active session for this user (e.g. a CLI session
+/// logging out would silently sign the browser out too, and vice versa).
 async fn logout(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
-    claims: Claims,
+    _claims: Claims,
 ) -> impl IntoResponse {
     // Best-effort revocation — don't fail the logout if the DB write fails
-    let _ = state.auth.revoke_tokens_for_user(&claims.sub).await;
+    if let Some(token) = super::middleware::extract_token(&headers)
+        && let Some(jti) = nasiko_auth::jwt::extract_jti(&token)
+    {
+        let _ = state.auth.revoke_token(&jti).await;
+    }
     (
         [(
             header::SET_COOKIE,

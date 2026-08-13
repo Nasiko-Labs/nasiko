@@ -358,6 +358,20 @@ impl AuthService for AuthServiceImpl {
         Ok(())
     }
 
+    async fn revoke_token(&self, jti: &str) -> Result<u64, AuthError> {
+        let hash = crate::jwt::hash_jti(jti);
+
+        let result = sqlx::query(
+            "UPDATE auth_tokens SET revoked_at = now() WHERE token_hash = $1 AND revoked_at IS NULL AND expires_at > now()",
+        )
+        .bind(&hash)
+        .execute(&self.db)
+        .await
+?;
+
+        Ok(result.rows_affected())
+    }
+
     async fn revoke_tokens_for_user(&self, user_id: &str) -> Result<u64, AuthError> {
         let user_uuid = user_id
             .parse::<uuid::Uuid>()

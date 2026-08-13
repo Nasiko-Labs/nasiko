@@ -1139,7 +1139,6 @@ async fn test_update_user_password_change_takes_effect_on_login() {
 async fn test_login_records_token_and_logout_revokes_it() {
     let server = common::TestServer::start().await;
     let admin = init_admin(&server).await;
-    let admin_id = admin["user_id"].as_str().unwrap();
 
     // Login — records token in auth_tokens
     let login_resp = login(
@@ -1168,15 +1167,16 @@ async fn test_login_records_token_and_logout_revokes_it() {
         "token should be valid before logout"
     );
 
-    // Logout — sets revoked_at in auth_tokens
-    let logout_res = as_superuser(
-        server.client.post(server.url("/api/auth/logout")),
-        admin_id,
-        "admin",
-    )
-    .send()
-    .await
-    .unwrap();
+    // Logout — sets revoked_at in auth_tokens. Uses the actual login token
+    // (not a freshly-signed test JWT) since revocation is now scoped to the
+    // specific session's jti, not every token for the user.
+    let logout_res = server
+        .client
+        .post(server.url("/api/auth/logout"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
     assert_eq!(logout_res.status(), 204, "logout should succeed");
 
     // After logout the DB row has revoked_at set.
@@ -1249,22 +1249,23 @@ async fn test_logout_revokes_only_the_calling_users_tokens() {
     let alice_id = alice["id"].as_str().unwrap();
 
     // Alice logs in
-    login(
+    let alice_login = login(
         &server,
         alice["access_key"].as_str().unwrap(),
         alice["access_secret"].as_str().unwrap(),
     )
     .await;
+    let alice_token = alice_login["token"].as_str().unwrap().to_owned();
 
-    // Alice logs out
-    as_member(
-        server.client.post(server.url("/api/auth/logout")),
-        alice_id,
-        "alice",
-    )
-    .send()
-    .await
-    .unwrap();
+    // Alice logs out — using her actual login token, since revocation is now
+    // scoped to the specific session's jti, not every token for the user.
+    server
+        .client
+        .post(server.url("/api/auth/logout"))
+        .bearer_auth(&alice_token)
+        .send()
+        .await
+        .unwrap();
 
     // Alice's tokens are revoked, admin's are not
     let alice_revoked: i64 = sqlx::query_scalar(

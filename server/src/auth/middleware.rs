@@ -185,7 +185,7 @@ pub(crate) async fn validate_bearer(
     Ok(Claims::from(identity))
 }
 
-fn extract_token(headers: &axum::http::HeaderMap) -> Option<String> {
+pub(crate) fn extract_token(headers: &axum::http::HeaderMap) -> Option<String> {
     // Prefer Authorization: Bearer <token>
     if let Some(auth) = headers.get(header::AUTHORIZATION)
         && let Ok(value) = auth.to_str()

@@ -100,9 +100,16 @@ fn format_duration(secs: i64) -> String {
     }
 }
 
-/// Clear stored token.
+/// Revoke the session server-side, then clear the stored token.
+///
+/// The revocation call is best-effort: an unreachable or already-invalid
+/// server must not block clearing the local token, or `logout` would leave
+/// you stuck "logged in" to a cluster you can no longer reach.
 pub fn logout() -> Result<()> {
     let (name, _) = config::active_cluster()?;
+    if let Ok(client) = crate::api::Client::from_active_cluster() {
+        let _ = client.post_void("/auth/logout");
+    }
     config::clear_token()?;
     println!("Logged out from: {}", name);
     Ok(())
