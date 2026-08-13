@@ -42,7 +42,7 @@ class ResourcesPage extends HTMLElement {
       <div class="page-head">
         <div>
           <h1 class="title-page">Resources</h1>
-          <p class="page-sub">Live CPU, memory and disk for the control plane, the agents and the supporting infrastructure.</p>
+          <p class="page-sub">Live CPU, memory and disk for the control plane, agents and infrastructure</p>
         </div>
         <div class="head-meta" id="head-meta"></div>
       </div>

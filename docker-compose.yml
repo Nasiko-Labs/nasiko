@@ -1,0 +1,127 @@
+# Nasiko Platform — Full Stack (Docker only, no Rust required)
+#
+# Start:  docker compose up -d
+# Stop:   docker compose down
+# Logs:   docker compose logs -f server
+# UI:     http://localhost:8080
+#
+# Copy .env.example to .env and edit before starting:
+#   cp .env.example .env
+
+services:
+  postgres:
+    image: docker.io/pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: nasiko
+      POSTGRES_PASSWORD: nasiko
+      POSTGRES_DB: nasiko_dev
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./init-databases.sql:/docker-entrypoint-initdb.d/create-extra-dbs.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nasiko -d nasiko_dev"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - nasiko
+
+  redis:
+    image: docker.io/library/redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - nasiko
+
+  rustfs:
+    image: docker.io/rustfs/rustfs:latest
+    command: server /data --address :9000
+    environment:
+      RUSTFS_ROOT_USER: nasiko
+      RUSTFS_ROOT_PASSWORD: nasiko123
+    ports:
+      - "9000:9000"
+    volumes:
+      - rustfs-data:/data
+    networks:
+      - nasiko
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.119.0
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./observability/config/otel-collector.yaml:/etc/otel-collector-config.yaml
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+    depends_on:
+      - tempo
+      - loki
+    networks:
+      - nasiko
+
+  tempo:
+    image: grafana/tempo:2.6.1
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./observability/config/tempo.yaml:/etc/tempo.yaml
+    ports:
+      - "3200:3200"
+    networks:
+      - nasiko
+
+  loki:
+    image: grafana/loki:3.3.2
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    ports:
+      - "3100:3100"
+    networks:
+      - nasiko
+
+  server:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      # Override connection URLs to use Docker service names.
+      DATABASE_URL: postgres://nasiko:nasiko@postgres:5432/nasiko_dev
+      REDIS_URL: redis://redis:6379
+      S3_ENDPOINT: http://rustfs:9000
+      TEMPO_URL: http://tempo:3200
+      LOKI_URL: http://loki:3100
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_COLLECTOR_ENDPOINT: http://otel-collector:4317
+      # Agents inside Docker reach the server via this name.
+      MCP_GATEWAY_PUBLIC_URL: http://server:8080/api/mcp
+      # Shared network so the server can reach agent containers by IP.
+      DOCKER_AGENT_NETWORK: nasiko
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rustfs:
+        condition: service_started
+    networks:
+      - nasiko
+
+networks:
+  nasiko:
+    name: nasiko
+
+volumes:
+  postgres-data:
+  rustfs-data:

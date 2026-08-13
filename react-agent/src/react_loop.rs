@@ -334,9 +334,22 @@ impl Orchestrator {
 
     /// Run the ReAct loop, streaming events to the caller via a channel.
     /// Returns a receiver; the orchestration runs in the background.
-    pub fn run_stream(&mut self, user_query: &str) -> mpsc::Receiver<OrchestratorEvent> {
+    /// `file_parts` are pre-serialized A2A Part JSON values from the user's
+    /// upload — forwarded to whichever agent the orchestrator selects.
+    pub fn run_stream(
+        &mut self,
+        user_query: &str,
+        file_parts: Vec<nasiko_types::a2a::Part>,
+    ) -> mpsc::Receiver<OrchestratorEvent> {
         let (tx, rx) = mpsc::channel(64);
         let query = user_query.to_string();
+
+        // Pre-serialize file parts to JSON once; the A2aTool will include them
+        // in every agent call's message.parts alongside the text part.
+        let file_parts_json: Vec<serde_json::Value> = file_parts
+            .iter()
+            .filter_map(|p| serde_json::to_value(p).ok())
+            .collect();
 
         // Clone what we need for the spawned task
         let config = self.config.clone();
@@ -357,6 +370,7 @@ impl Orchestrator {
                 &query,
                 &tx,
                 guard.as_deref(),
+                &file_parts_json,
             )
             .await;
         });
@@ -465,6 +479,7 @@ struct AgentCallContext {
 }
 
 /// Inner streaming implementation. Sends events to the channel as orchestration progresses.
+#[allow(clippy::too_many_arguments)]
 async fn run_stream_inner(
     config: &OrchestratorConfig,
     registry: &AgentRegistry,
@@ -473,6 +488,7 @@ async fn run_stream_inner(
     user_query: &str,
     tx: &mpsc::Sender<OrchestratorEvent>,
     guard: Option<&dyn CallGuard>,
+    file_parts: &[serde_json::Value],
 ) -> Result<(), OrchestratorError> {
     context.push_user(user_query);
 
@@ -528,7 +544,8 @@ async fn run_stream_inner(
         // this branch) and live progress relay (main).
         let tool = A2aTool::new(agent.clone(), agents_ctx.a2a_client.clone())
             .with_delegation(agents_ctx.delegation.clone())
-            .with_progress(tx.clone());
+            .with_progress(tx.clone())
+            .with_file_parts(file_parts.to_vec());
         tool_defs.push(ToolDyn::definition(&tool, String::new()).await);
         builder = builder.static_tool(tool);
     }

@@ -591,6 +591,15 @@
     gap: var(--space-2xs);
   }
 
+  .tk-action.tk-action-ghost {
+    background: transparent;
+    color: var(--color-text-muted);
+    padding: 0 var(--space-2xs);
+    min-height: unset;
+
+    &:hover { background: var(--bg-input); color: var(--color-text); }
+  }
+
   /* Connected: quiet success state that offers Disconnect on hover */
   .tk-action.is-connected {
     background: transparent;
@@ -618,6 +627,27 @@
     min-height: calc(2 * 1.5em);
     max-height: calc(2 * 1.5em);
   }
+
+  .tk-card--setting-up {
+    border-color: var(--color-info, #3b82f6);
+  }
+  .tk-card--failed {
+    border-color: var(--fg-error);
+  }
+
+  .tk-setup {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+    min-height: calc(2 * 1.5em);
+  }
+  .tk-setup-label {
+    font-size: var(--font-size-sm);
+    font-weight: 500;
+    color: var(--color-info, #3b82f6);
+  }
+  .tk-setup--error .tk-setup-label { color: var(--fg-error); }
+  .tk-setup--error svg { width: 14px; height: 14px; color: var(--fg-error); flex-shrink: 0; }
 
   /* Skeleton cards mirror the rendered card so the grid doesn't shift */
   .tk-card-skel .tk-skel-logo { width: 32px; flex-shrink: 0; }
@@ -664,7 +694,12 @@
     & input[type="file"] {
       display: flex;
       align-items: center;
+      padding: var(--space-xs) var(--s-12);
+      height: auto;
+      min-height: var(--control-h-lg);
       cursor: pointer;
+      font-size: var(--font-size-xs);
+      color: var(--color-text-muted);
     }
     & input[type="file"]::file-selector-button {
       height: var(--control-h-sm);
@@ -678,6 +713,11 @@
       font-size: var(--font-size-xs);
       font-weight: 500;
       cursor: pointer;
+    }
+    & .field-hint {
+      font-size: var(--font-size-xs);
+      font-weight: 400;
+      color: var(--color-text-muted);
     }
     & textarea {
       resize: vertical;
@@ -723,50 +763,99 @@
     padding: var(--space-xs) 0;
   }
 
-  .upload-tabs {
-    display: flex;
-    gap: var(--space-xs);
-    border-bottom: 1px solid var(--color-border);
-    margin-bottom: var(--space-md);
+  .upload-picker {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--space-md);
   }
 
-  .upload-tab {
-    display: inline-flex;
-    align-items: center;
+  .upload-method-card {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
     gap: var(--space-xs);
-    padding: 8px var(--space-md);
-    font-size: var(--font-size-sm);
-    font-weight: 500;
-    color: var(--color-text-muted);
-    border-bottom: 2px solid transparent;
-    margin-bottom: -1px;
-    background: transparent;
+    padding: var(--space-md);
+    border: 1px solid var(--color-border);
+    border-radius: var(--r-8);
+    background: var(--bg-card);
     cursor: pointer;
+    text-align: left;
+    transition: border-color var(--transition-fast), background var(--transition-fast);
 
-    & svg { width: 14px; height: 14px; }
-    &:hover { color: var(--color-text-main); }
-    &.is-active {
-      color: var(--color-text-main);
-      font-weight: 600;
-      border-bottom-color: light-dark(var(--neutral-900), var(--neutral-100));
+    &:hover {
+      border-color: var(--color-text-muted);
+      background: var(--bg-input);
     }
   }
 
-  /* Sliding indicator takes over the (neutral, not gold) active bar */
-  .upload-tabs.has-tab-indicator .upload-tab.is-active { border-bottom-color: transparent; }
-  .upload-tabs .tab-indicator { background: light-dark(var(--neutral-900), var(--neutral-100)); }
+  .upload-method-icon {
+    display: flex;
+    color: var(--color-text-muted);
+    & svg { width: 22px; height: 22px; }
+  }
+
+  .upload-method-title {
+    font-size: var(--font-size-sm);
+    font-weight: 600;
+    color: var(--color-text-main);
+  }
+
+  .upload-method-desc {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+    line-height: 1.4;
+  }
 
   .upload-queued {
-    display: flex;
-    align-items: center;
-    gap: var(--space-xs);
-    font-size: var(--font-size-xs);
-    color: var(--fg-success);
     padding: var(--space-sm) 0 0;
-
-    & svg { width: 14px; height: 14px; flex-shrink: 0; }
-    & code { font-family: var(--font-mono, monospace); }
   }
+
+  .upload-progress {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-sm);
+    padding: var(--space-md);
+    border-radius: var(--r-8);
+    background: var(--bg-input);
+  }
+
+  .upload-progress-icon {
+    flex-shrink: 0;
+    color: var(--color-info, #3b82f6);
+    & svg { width: 16px; height: 16px; }
+  }
+
+  .upload-progress.is-ok .upload-progress-icon { color: var(--fg-success); }
+  .upload-progress.is-error .upload-progress-icon { color: var(--fg-error); }
+
+  .upload-progress-body {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .upload-progress-phase {
+    font-size: var(--font-size-sm);
+    font-weight: 600;
+    color: var(--color-text-main);
+  }
+
+  .upload-progress-msg {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+  }
+
+  .setup-spinner {
+    width: 16px;
+    height: 16px;
+    border: 2px solid var(--color-border);
+    border-top-color: var(--color-info, #3b82f6);
+    border-radius: 50%;
+    animation: mcp-spin 0.8s linear infinite;
+    flex-shrink: 0;
+  }
+
+  @keyframes mcp-spin { to { transform: rotate(360deg); } }
 
   /* ── Detail modal ─────────────────────────────────────────────────────── */
   .detail-meta {

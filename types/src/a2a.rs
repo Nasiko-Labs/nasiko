@@ -18,6 +18,15 @@ pub fn text_part(s: impl Into<String>) -> Part {
     }
 }
 
+pub fn file_part(data: Vec<u8>, filename: Option<String>, media_type: Option<String>) -> Part {
+    Part {
+        content: PartContent::Raw(data),
+        filename,
+        media_type,
+        metadata: None,
+    }
+}
+
 pub fn data_part(value: serde_json::Value) -> Part {
     Part {
         content: PartContent::Data(value),
@@ -148,11 +157,19 @@ pub fn agent_message(context_id: &str, task_id: &str, part: Part) -> Message {
 // ─── Request builders ───────────────────────────────────────────────────────
 
 pub fn build_send_request(text: &str, context_id: Option<&str>) -> JsonRpcRequest {
-    build_request("SendMessage", text, context_id)
+    build_request("SendMessage", text, context_id, &[])
 }
 
 pub fn build_stream_request(text: &str, context_id: Option<&str>) -> JsonRpcRequest {
-    build_request("SendStreamingMessage", text, context_id)
+    build_request("SendStreamingMessage", text, context_id, &[])
+}
+
+pub fn build_stream_request_with_parts(
+    text: &str,
+    context_id: Option<&str>,
+    extra_parts: &[Part],
+) -> JsonRpcRequest {
+    build_request("SendStreamingMessage", text, context_id, extra_parts)
 }
 
 pub fn build_stream_request_with_metadata(
@@ -160,7 +177,7 @@ pub fn build_stream_request_with_metadata(
     context_id: Option<&str>,
     metadata: serde_json::Value,
 ) -> JsonRpcRequest {
-    let mut req = build_request("SendStreamingMessage", text, context_id);
+    let mut req = build_request("SendStreamingMessage", text, context_id, &[]);
     if let Some(params) = req.params.as_mut()
         && let Some(obj) = params.as_object_mut()
     {
@@ -391,17 +408,25 @@ pub fn extract_text_from_response(response: &JsonRpcResponse) -> Option<String> 
 
 // ─── Private ────────────────────────────────────────────────────────────────
 
-fn build_request(method: &str, text: &str, context_id: Option<&str>) -> JsonRpcRequest {
+fn build_request(
+    method: &str,
+    text: &str,
+    context_id: Option<&str>,
+    extra_parts: &[Part],
+) -> JsonRpcRequest {
     let ctx = context_id
         .map(|s| s.to_string())
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+    let mut parts = vec![text_part(text)];
+    parts.extend(extra_parts.iter().cloned());
 
     let message = Message {
         message_id: uuid::Uuid::new_v4().to_string(),
         context_id: Some(ctx),
         task_id: None,
         role: Role::User,
-        parts: vec![text_part(text)],
+        parts,
         metadata: None,
         extensions: None,
         reference_task_ids: None,

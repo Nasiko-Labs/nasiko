@@ -22,6 +22,7 @@
 import styles from './mcp-page.css' with { type: 'css' };
 import { icons } from '../utils/icons.js';
 import { attachSlidingIndicator } from '../utils/tab-indicator.js';
+import { confirmDialog } from '../utils/confirm-dialog.js';
 import './app-modal.js';
 import './app-skeleton.js';
 import './app-module-nav.js';
@@ -44,9 +45,9 @@ const AUTH_FLOWS = { oauth2: 'oauth', bearer: 'api_key', basic: 'api_key', url_p
 // custom MCP servers only — Composio toolkits are platform-registered.
 const CATALOG_SCOPES = {
   all: { filter: () => true, empty: '' },
-  'created-by-you': {
+  'my-servers': {
     filter: (s) => s.kind === 'server' && !s.__shared,
-    empty: 'You haven’t registered or uploaded any MCP servers yet',
+    empty: 'You haven\'t registered or uploaded any MCP servers yet',
   },
   'shared-with-me': {
     filter: (s) => s.kind === 'server' && s.__shared,
@@ -64,7 +65,6 @@ class McpPage extends HTMLElement {
   #initialized = false;
   #connectors = [];
   #toolkits = [];
-  #uploads = [];
   #agents = [];
   #selectedAgentId = '';
   #agentConnectors = [];
@@ -99,37 +99,6 @@ class McpPage extends HTMLElement {
         <div class="tk-grid" id="catalog-grid" aria-busy="true">${this.#catalogSkeletonCards()}</div>
       </div>
 
-      <div id="uploads-section" hidden>
-        <h2 class="section-title">My uploads</h2>
-        <div class="table-wrap">
-          <table>
-            <thead><tr>
-              <th>Name</th><th>Status</th><th>Message</th><th>Endpoint</th><th class="th-actions"></th>
-            </tr></thead>
-            <tbody id="uploads-tbody"></tbody>
-          </table>
-        </div>
-        <div class="logs-panel" id="logs-panel" hidden>
-          <div class="logs-head">
-            <span class="logs-title">${icons.terminal('', 14)} Build logs — <span id="logs-name"></span></span>
-            <button class="btn-ghost" id="logs-close" type="button">${icons.x('', 14)}</button>
-          </div>
-          <pre id="logs-pre"></pre>
-        </div>
-      </div>
-
-      <h2 class="section-title">Agent access</h2>
-      <div class="agent-access-card">
-        <div class="agent-picker">
-          <label for="agent-select">Agent</label>
-          <auto-complete id="agent-select" placeholder="Search agents…" aria-label="Agent"></auto-complete>
-          <span class="agent-picker-hint">Choose which connectors this agent may call, and set per-tool allow/deny rules.</span>
-        </div>
-        <div id="agent-access-body">
-          <div class="agent-access-empty">${icons.network('', 28)}<p>Select an agent to manage its connector access</p></div>
-        </div>
-      </div>
-
       ${this.#registerModalHtml()}
       ${this.#uploadModalHtml()}
       ${this.#connectModalHtml()}
@@ -138,9 +107,8 @@ class McpPage extends HTMLElement {
       </app-modal>
     `;
 
-    // Module tree nav: catalog scopes re-filter the unified grid; the other
-    // rows scroll to their page block ("My uploads" only renders once uploads
-    // exist — its row no-ops until then).
+    // Module tree nav: catalog scopes re-filter the unified grid. The "My
+    // servers" scope also reveals the uploads table below the catalog.
     this.addEventListener('module-nav-select', (e) => {
       const section = e.detail.section;
       if (CATALOG_SCOPES[section]) {
@@ -152,43 +120,10 @@ class McpPage extends HTMLElement {
         window.scrollTo({ top: 0, behavior: 'smooth' });
         return;
       }
-      const target = {
-        uploads: '#uploads-section',
-        'agent-access': '.agent-access-card',
-      }[section];
-      const el = target && this.querySelector(target);
-      if (el && !el.hidden) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
     });
 
     this.querySelector('#register-btn').addEventListener('click', () => this.#openRegister());
     this.querySelector('#upload-btn').addEventListener('click', () => this.#openUpload());
-    this.querySelector('#logs-close').addEventListener('click', () => {
-      this.querySelector('#logs-panel').hidden = true;
-    });
-    const agentPicker = this.querySelector('#agent-select');
-    agentPicker.filterFn = (query) => {
-      const q = query.toLowerCase();
-      return this.#agents
-        .filter((a) => !q
-          || (a.display_name || '').toLowerCase().includes(q)
-          || (a.name || '').toLowerCase().includes(q))
-        .map((a) => ({
-          label: a.display_name || a.name,
-          subtitle: a.name !== (a.display_name || a.name) ? a.name : (a.status || ''),
-          value: a.id,
-        }));
-    };
-    agentPicker.addEventListener('option-selected', (e) => {
-      this.#selectedAgentId = e.detail.value;
-      this.#loadAgentAccess();
-    });
-    // Clearing the input deselects the agent and returns to the empty state.
-    agentPicker.addEventListener('input', () => {
-      if (agentPicker.value.trim() === '' && this.#selectedAgentId) {
-        this.#selectedAgentId = '';
-        this.#loadAgentAccess();
-      }
-    });
     this.#wireRegisterModal();
     this.#wireUploadModal();
     this.#wireConnectModal();
@@ -209,12 +144,10 @@ class McpPage extends HTMLElement {
 
   async #load() {
     let connResp;
-    let uploadsResp;
     let toolkitsResp;
     try {
-      [connResp, uploadsResp, toolkitsResp] = await Promise.all([
+      [connResp, toolkitsResp] = await Promise.all([
         window.fetchMcpConnectors(),
-        window.fetchMcpMyUploads().catch(() => ({ data: [] })),
         window.fetchMcpToolkits().catch(() => ({ data: { toolkits: [] } })),
       ]);
     } catch (e) {
@@ -233,9 +166,8 @@ class McpPage extends HTMLElement {
       ...(d.shared_with_you || []).map((c) => ({ ...c, __shared: true })),
     ];
     this.#toolkits = toolkitsResp?.data?.toolkits || [];
-    this.#uploads = uploadsResp?.data || [];
     this.#renderCatalog();
-    this.#renderUploads();
+    this.#scheduleBuildPoll();
   }
 
   async #loadAgents() {
@@ -329,10 +261,12 @@ class McpPage extends HTMLElement {
       // Broken logo URLs fall back to the letter avatar underneath.
       card.querySelector('.tk-logo img')
         ?.addEventListener('error', (e) => e.target.remove());
-      // Custom server cards open the existing detail/management modal.
+      // Custom server cards navigate to the full detail page.
       if (card.classList.contains('is-clickable')) {
         card.addEventListener('click', (e) => {
-          if (!e.target.closest('button')) this.#openDetail(id);
+          if (!e.target.closest('button')) {
+            window.location.href = '/mcp-detail.html?id=' + encodeURIComponent(id);
+          }
         });
       }
     });
@@ -353,13 +287,26 @@ class McpPage extends HTMLElement {
 
   #serviceCardHtml(s) {
     const name = s.display_name || s.name;
+    const isSettingUp = s.kind === 'server' && s.source_kind === 'uploaded_build'
+      && (s.build_status === 'pending' || s.build_status === 'building');
+    const isFailed = s.kind === 'server' && s.source_kind === 'uploaded_build'
+      && s.build_status === 'failed';
     const chips = [`<span class="tk-chip">${s.tool_count ?? 0} tools</span>`];
     if (s.version) chips.push(`<span class="tk-chip">${this.#esc(s.version)}</span>`);
     if (s.__shared) {
       chips.push(`<span class="tk-by">shared by ${this.#esc(s.owner_username || 'someone')}</span>`);
     }
+    const cardCls = isSettingUp ? ' tk-card--setting-up' : isFailed ? ' tk-card--failed' : '';
+    let bodyHtml;
+    if (isSettingUp) {
+      bodyHtml = `<div class="tk-setup"><span class="setup-spinner"></span><span class="tk-setup-label">Building and deploying...</span></div>`;
+    } else if (isFailed) {
+      bodyHtml = `<div class="tk-setup tk-setup--error">${icons.xCircle('', 14)}<span class="tk-setup-label">Build failed</span></div>`;
+    } else {
+      bodyHtml = `<p class="tk-desc">${this.#esc(s.description || 'No description provided.')}</p>`;
+    }
     return `
-      <div class="tk-card${s.kind === 'server' ? ' is-clickable' : ''}" data-id="${this.#esc(s.connector_id)}">
+      <div class="tk-card${s.kind === 'server' ? ' is-clickable' : ''}${cardCls}" data-id="${this.#esc(s.connector_id)}">
         <div class="tk-top">
           <span class="tk-logo" aria-hidden="true">${this.#esc(name.charAt(0))}${s.logo_url
             ? `<img src="${this.#esc(s.logo_url)}" alt="" loading="lazy" />` : ''}</span>
@@ -367,20 +314,13 @@ class McpPage extends HTMLElement {
             <span class="tk-name" title="${this.#esc(name)}">${this.#esc(name)}</span>
             <span class="tk-chips">${chips.join('')}</span>
           </div>
-          ${this.#serviceActionHtml(s, name)}
+          ${isSettingUp || isFailed ? '' : this.#serviceActionHtml(s, name)}
         </div>
-        <p class="tk-desc">${this.#esc(s.description || 'No description provided.')}</p>
+        ${bodyHtml}
       </div>`;
   }
 
-  /** Connect/Connected button; uploads mid-build show their status instead. */
   #serviceActionHtml(s, name) {
-    if (s.kind === 'server' && s.source_kind === 'uploaded_build') {
-      if (s.build_status === 'pending' || s.build_status === 'building') {
-        return `<span class="chip is-building">Building</span>`;
-      }
-      if (s.build_status === 'failed') return `<span class="chip is-error">Failed</span>`;
-    }
     if (s.is_connected) {
       return `<button class="tk-action is-connected act-disconnect" type="button"
                 title="Disconnect ${this.#esc(name)}" aria-label="Disconnect ${this.#esc(name)}">
@@ -388,7 +328,7 @@ class McpPage extends HTMLElement {
           <span class="tk-hover">${icons.x('', 14)} Disconnect</span>
         </button>`;
     }
-    return `<button class="tk-action act-connect" type="button">${icons.plus('', 14)} Connect</button>`;
+    return `<button class="tk-action tk-action-ghost act-connect" type="button" title="Connect ${this.#esc(name)}">${icons.plus('', 14)} Connect</button>`;
   }
 
   // ── Connect / disconnect (shared by toolkits and custom servers) ────────
@@ -432,7 +372,13 @@ class McpPage extends HTMLElement {
   async #disconnectService(id) {
     const s = this.#findService(id);
     const name = s?.display_name || s?.name || id;
-    if (!confirm(`Disconnect "${name}"? Agents lose access to its tools until you reconnect.`)) return;
+    const confirmed = await confirmDialog({
+      title: 'Disconnect ' + name,
+      message: 'Agents lose access to its tools until you reconnect.',
+      confirmLabel: 'Disconnect',
+      danger: true,
+    });
+    if (!confirmed) return;
     try {
       await window.disconnectMcpConnection(id);
       this.#load();
@@ -491,7 +437,13 @@ class McpPage extends HTMLElement {
 
   async #deleteConnector(id) {
     const c = this.#connectors.find((x) => x.connector_id === id);
-    if (!confirm(`Delete connector "${c?.display_name || c?.name || id}"? Agents will lose access to its tools.`)) return false;
+    const confirmed = await confirmDialog({
+      title: 'Delete ' + (c?.display_name || c?.name || 'connector'),
+      message: 'Agents will lose access to its tools. This cannot be undone.',
+      confirmLabel: 'Delete',
+      danger: true,
+    });
+    if (!confirmed) return false;
     try {
       await window.deleteMcpConnector(id);
       this.#load();
@@ -519,6 +471,9 @@ class McpPage extends HTMLElement {
   async #openDetail(id) {
     const c = this.#connectors.find((x) => x.connector_id === id);
     if (!c) return;
+    this.#selectedAgentId = '';
+    this.#agentConnectors = [];
+    this.#agentTools = new Map();
     const modal = this.querySelector('#detail-modal');
     modal.setAttribute('heading', c.display_name || c.name);
     const body = this.querySelector('#detail-body');
@@ -539,9 +494,45 @@ class McpPage extends HTMLElement {
         <div class="detail-actions">
           <button class="btn-ghost danger" id="detail-delete" type="button">${icons.trash('', 14)} Delete connector</button>
         </div>` : ''}
+      <h4 class="detail-subtitle">${icons.network('', 14)} Agent access</h4>
+      <div class="agent-access-card">
+        <div class="agent-picker">
+          <label for="detail-agent-select">Agent</label>
+          <auto-complete id="detail-agent-select" placeholder="Search agents…" aria-label="Agent"></auto-complete>
+          <span class="agent-picker-hint">Select an agent to manage its access to this connector.</span>
+        </div>
+        <div id="detail-agent-access-body">
+          <div class="agent-access-empty">${icons.network('', 28)}<p>Select an agent to manage its access to this connector</p></div>
+        </div>
+      </div>
     `;
     body.querySelector('#detail-delete')?.addEventListener('click', async () => {
       if (await this.#deleteConnector(id)) modal.close();
+    });
+    // Wire agent picker inside the detail modal.
+    const agentPicker = body.querySelector('#detail-agent-select');
+    agentPicker.filterFn = (query) => {
+      const q = query.toLowerCase();
+      return this.#agents
+        .filter((a) => !q
+          || (a.display_name || '').toLowerCase().includes(q)
+          || (a.name || '').toLowerCase().includes(q))
+        .map((a) => ({
+          label: a.display_name || a.name,
+          subtitle: a.name !== (a.display_name || a.name) ? a.name : (a.status || ''),
+          value: a.id,
+        }));
+    };
+    agentPicker.addEventListener('option-selected', (e) => {
+      this.#selectedAgentId = e.detail.value;
+      this.#loadAgentAccessForConnector(id);
+    });
+    agentPicker.addEventListener('input', () => {
+      if (agentPicker.value.trim() === '' && this.#selectedAgentId) {
+        this.#selectedAgentId = '';
+        const accessBody = body.querySelector('#detail-agent-access-body');
+        accessBody.innerHTML = `<div class="agent-access-empty">${icons.network('', 28)}<p>Select an agent to manage its access to this connector</p></div>`;
+      }
     });
     modal.open();
     if (c.auth_type === 'oauth2') this.#renderOauthSection(c);
@@ -768,18 +759,29 @@ class McpPage extends HTMLElement {
   #uploadModalHtml() {
     return `
       <app-modal heading="Upload MCP server" id="upload-modal">
-        <div class="upload-tabs" role="tablist">
-          <button class="upload-tab is-active" data-tab="zip" type="button" role="tab">${icons.upload('', 14)} Upload zip</button>
-          <button class="upload-tab" data-tab="github" type="button" role="tab">${icons.github('', 14)} From GitHub</button>
+        <div id="upload-picker" class="upload-picker">
+          <button class="upload-method-card" data-method="zip" type="button">
+            <span class="upload-method-icon">${icons.upload('', 22)}</span>
+            <span class="upload-method-title">Upload a zip</span>
+            <span class="upload-method-desc">Upload a .zip archive containing your MCP server source code</span>
+          </button>
+          <button class="upload-method-card" data-method="github" type="button">
+            <span class="upload-method-icon">${icons.github('', 22)}</span>
+            <span class="upload-method-title">Import from GitHub</span>
+            <span class="upload-method-desc">Clone a GitHub repository containing your MCP server</span>
+          </button>
         </div>
-        <form id="upload-zip-form" class="modal-form" data-pane="zip">
-          <label>Name <input name="name" required placeholder="my-mcp-server" autocomplete="off" /></label>
-          <label>Version tag <input name="version_tag" placeholder="v1" autocomplete="off" /></label>
+        <form id="upload-zip-form" class="modal-form" hidden>
           <label>Source archive (.zip)
             <input name="file" type="file" accept=".zip,application/zip" required />
           </label>
+          <label>Name
+            <input name="name" required placeholder="my-mcp-server" autocomplete="off" />
+            <span class="field-hint">Auto-filled from the file name. You can change it.</span>
+          </label>
+          <label>Version tag <input name="version_tag" placeholder="v1" autocomplete="off" /></label>
         </form>
-        <form id="upload-github-form" class="modal-form" data-pane="github" hidden>
+        <form id="upload-github-form" class="modal-form" hidden>
           <label>Name <input name="name" required placeholder="my-mcp-server" autocomplete="off" /></label>
           <label>Version tag <input name="version_tag" placeholder="v1" autocomplete="off" /></label>
           <label>GitHub repository URL
@@ -787,122 +789,202 @@ class McpPage extends HTMLElement {
           </label>
         </form>
         <div class="form-error" id="upload-error" hidden></div>
-        <div class="upload-queued" id="upload-queued" hidden></div>
-        <div data-slot="footer">
-          <button class="btn-outline" id="upload-cancel" type="button">Cancel</button>
-          <button class="btn-dark" id="upload-submit" type="button">Queue build</button>
+        <div id="upload-footer" data-slot="footer" hidden>
+          <button class="btn-outline" id="upload-back" type="button">${icons.chevronLeft('', 14)} Back</button>
+          <button class="btn-dark" id="upload-submit" type="button">Upload and build</button>
         </div>
       </app-modal>`;
   }
 
   #wireUploadModal() {
     const modal = this.querySelector('#upload-modal');
-    let activeTab = 'zip';
-    attachSlidingIndicator(modal.querySelector('.upload-tabs'), '.upload-tab', '.is-active');
-    modal.querySelectorAll('.upload-tab').forEach((tab) => {
-      tab.addEventListener('click', () => {
-        activeTab = tab.dataset.tab;
-        modal.querySelectorAll('.upload-tab').forEach((t) =>
-          t.classList.toggle('is-active', t === tab));
-        modal.querySelectorAll('[data-pane]').forEach((p) => {
-          p.hidden = p.dataset.pane !== activeTab;
-        });
+    let activeMethod = '';
+    const picker = this.querySelector('#upload-picker');
+    const zipForm = this.querySelector('#upload-zip-form');
+    const ghForm = this.querySelector('#upload-github-form');
+    const footer = this.querySelector('#upload-footer');
+    const err = this.querySelector('#upload-error');
+
+    const showPicker = () => {
+      activeMethod = '';
+      picker.hidden = false;
+      zipForm.hidden = true;
+      ghForm.hidden = true;
+      footer.hidden = true;
+      err.hidden = true;
+      modal.setAttribute('heading', 'Upload MCP server');
+    };
+
+    picker.querySelectorAll('.upload-method-card').forEach((card) => {
+      card.addEventListener('click', () => {
+        activeMethod = card.dataset.method;
+        picker.hidden = true;
+        zipForm.hidden = activeMethod !== 'zip';
+        ghForm.hidden = activeMethod !== 'github';
+        footer.hidden = false;
+        modal.setAttribute('heading', activeMethod === 'zip' ? 'Upload zip' : 'Import from GitHub');
       });
     });
-    this.querySelector('#upload-cancel').addEventListener('click', () => modal.close());
-    this.querySelector('#upload-submit').addEventListener('click', async () => {
-      const err = this.querySelector('#upload-error');
-      const queued = this.querySelector('#upload-queued');
+
+    this.querySelector('#upload-back').addEventListener('click', showPicker);
+
+    // Auto-fill name from the chosen file, like the agent upload flow.
+    zipForm.elements.file.addEventListener('change', () => {
+      const file = zipForm.elements.file.files[0];
+      if (!file || zipForm.elements.name.value.trim()) return;
+      zipForm.elements.name.value = file.name
+        .replace(/\.zip$/i, '')
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9._-]+/g, '-')
+        .replace(/^[^a-z0-9_]+/, '')
+        .replace(/-{2,}/g, '-')
+        .replace(/-+$/, '')
+        .slice(0, 128);
+    });
+
+    const submitBtn = this.querySelector('#upload-submit');
+    submitBtn.addEventListener('click', async () => {
       err.hidden = true;
-      queued.hidden = true;
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Uploading...';
       try {
         let resp;
-        if (activeTab === 'zip') {
-          const form = this.querySelector('#upload-zip-form');
-          if (!form.reportValidity()) return;
+        if (activeMethod === 'zip') {
+          if (!zipForm.reportValidity()) { submitBtn.disabled = false; submitBtn.textContent = 'Upload and build'; return; }
           const fd = new FormData();
-          fd.append('name', form.elements.name.value.trim());
-          fd.append('version_tag', form.elements.version_tag.value.trim() || 'v1');
-          fd.append('file', form.elements.file.files[0]);
+          fd.append('name', zipForm.elements.name.value.trim());
+          fd.append('version_tag', zipForm.elements.version_tag.value.trim() || 'v1');
+          fd.append('file', zipForm.elements.file.files[0]);
           resp = await window.uploadMcpServerZip(fd);
         } else {
-          const form = this.querySelector('#upload-github-form');
-          if (!form.reportValidity()) return;
+          if (!ghForm.reportValidity()) { submitBtn.disabled = false; submitBtn.textContent = 'Upload and build'; return; }
           resp = await window.uploadMcpServerGithub({
-            name: form.elements.name.value.trim(),
-            version_tag: form.elements.version_tag.value.trim() || 'v1',
-            github_url: form.elements.github_url.value.trim(),
+            name: ghForm.elements.name.value.trim(),
+            version_tag: ghForm.elements.version_tag.value.trim() || 'v1',
+            github_url: ghForm.elements.github_url.value.trim(),
           });
         }
-        queued.innerHTML = `${icons.checkCircle('', 14)} Build queued — connector <code>${this.#esc(resp?.data?.connector_id || '')}</code>. Track progress under “My uploads”.`;
-        queued.hidden = false;
-        this.#load();
+        // Inject a placeholder card immediately so the user sees progress.
+        const connName = (activeMethod === 'zip' ? zipForm.elements.name.value : ghForm.elements.name.value).trim();
+        const connectorId = resp?.data?.connector_id || '';
+        this.#connectors.push({
+          connector_id: connectorId,
+          name: connName,
+          display_name: connName,
+          kind: 'server',
+          source_kind: 'uploaded_build',
+          build_status: 'building',
+          is_active: false,
+          is_connected: false,
+          is_owner: true,
+          tool_count: 0,
+        });
+        this.#renderCatalog();
+        modal.close();
+        this.#scheduleBuildPoll();
       } catch (e) {
         err.textContent = `Upload failed: ${e.message}`;
         err.hidden = false;
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Upload and build';
       }
     });
   }
 
+  /** Poll building connectors and re-render only the cards whose status changed. */
+  #scheduleBuildPoll() {
+    clearTimeout(this._pollTimer);
+    const hasBuilding = this.#connectors.some(
+      (c) => c.source_kind === 'uploaded_build'
+        && (c.build_status === 'pending' || c.build_status === 'building'));
+    if (hasBuilding) {
+      this._pollTimer = setTimeout(() => this.#pollBuilding(), 5000);
+    }
+  }
+
+  async #pollBuilding() {
+    let connResp;
+    try {
+      connResp = await window.fetchMcpConnectors();
+    } catch { this.#scheduleBuildPoll(); return; }
+    const d = connResp?.data ?? {};
+    const fresh = [
+      ...(d.created_by_you || []),
+      ...(d.shared_with_you || []).map((c) => ({ ...c, __shared: true })),
+    ];
+    const freshMap = new Map();
+    for (const c of fresh) freshMap.set(c.connector_id, c);
+
+    for (const c of this.#connectors) {
+      if (c.source_kind !== 'uploaded_build') continue;
+      if (c.build_status !== 'pending' && c.build_status !== 'building') continue;
+      const fc = freshMap.get(c.connector_id);
+      if (!fc || fc.build_status === c.build_status) continue;
+      // Status changed — update in place and re-render just this card.
+      const shared = c.__shared;
+      Object.assign(c, fc);
+      c.__shared = shared;
+      // If build completed, fetch full detail to get tools/description.
+      if (fc.build_status !== 'pending' && fc.build_status !== 'building') {
+        try {
+          const detail = await window.fetchMcpConnectorDetail(c.connector_id);
+          const dd = detail?.data ?? detail;
+          if (dd) {
+            Object.assign(c, dd);
+            c.__shared = shared;
+          }
+        } catch { /* best-effort */ }
+      }
+      this.#replaceCard(c);
+    }
+    this.#scheduleBuildPoll();
+  }
+
+  #replaceCard(c) {
+    const card = this.querySelector(`.tk-card[data-id="${CSS.escape(c.connector_id)}"]`);
+    if (!card) return;
+    const tmp = document.createElement('div');
+    tmp.innerHTML = this.#serviceCardHtml({ ...c, kind: 'server' });
+    const newCard = tmp.firstElementChild;
+    card.replaceWith(newCard);
+    if (newCard.classList.contains('is-clickable')) {
+      newCard.addEventListener('click', (e) => {
+        if (!e.target.closest('button')) {
+          window.location.href = '/mcp-detail.html?id=' + encodeURIComponent(c.connector_id);
+        }
+      });
+    }
+    newCard.querySelector('.act-connect')
+      ?.addEventListener('click', () => this.#connectService(c.connector_id));
+    newCard.querySelector('.act-disconnect')
+      ?.addEventListener('click', () => this.#disconnectService(c.connector_id));
+    newCard.querySelector('.tk-logo img')
+      ?.addEventListener('error', (e) => e.target.remove());
+  }
+
   #openUpload() {
+    // Reset to the method picker step.
+    this.querySelector('#upload-picker').hidden = false;
+    this.querySelector('#upload-zip-form').hidden = true;
+    this.querySelector('#upload-github-form').hidden = true;
+    this.querySelector('#upload-footer').hidden = true;
+    this.querySelector('#upload-error').hidden = true;
+    this.querySelector('#upload-modal').setAttribute('heading', 'Upload MCP server');
     this.querySelector('#upload-modal').open();
   }
 
-  // ── My uploads ───────────────────────────────────────────────────────────
+  // ── Agent access (per-connector, inside the detail modal) ────────────────
 
-  #renderUploads() {
-    const section = this.querySelector('#uploads-section');
-    if (!this.#uploads.length) {
-      section.hidden = true;
-      return;
-    }
-    section.hidden = false;
-    const chipClass = { Active: 'is-ok', Deploying: 'is-building', Failed: 'is-error' };
-    const tbody = this.querySelector('#uploads-tbody');
-    tbody.innerHTML = this.#uploads.map((u) => {
-      const info = u.upload_info || {};
-      const cls = chipClass[info.upload_status] || 'is-off';
-      return `
-        <tr data-id="${this.#esc(u.connector_id)}" data-name="${this.#esc(u.connector_name)}">
-          <td class="cell-name"><span class="name-main">${this.#esc(u.connector_name)}</span></td>
-          <td><span class="chip ${cls}">${this.#esc(info.upload_status || 'Unknown')}</span></td>
-          <td class="cell-muted">${this.#esc(info.error_detail || info.status_message || '—')}</td>
-          <td class="cell-url">${this.#esc(u.url || '—')}</td>
-          <td class="cell-actions">
-            <button class="btn-ghost act-logs" type="button" title="Build logs">${icons.terminal('', 14)}</button>
-          </td>
-        </tr>`;
-    }).join('');
-    tbody.querySelectorAll('.act-logs').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const tr = btn.closest('tr');
-        this.#showBuildLogs(tr.dataset.id, tr.dataset.name);
-      });
-    });
-  }
-
-  async #showBuildLogs(connectorId, name) {
-    const panel = this.querySelector('#logs-panel');
-    panel.hidden = false;
-    panel.scrollIntoView({ block: 'nearest' });
-    this.querySelector('#logs-name').textContent = name;
-    const pre = this.querySelector('#logs-pre');
-    pre.textContent = 'Loading logs…';
-    try {
-      const resp = await window.fetchMcpBuildLogs(connectorId, 200);
-      const logs = typeof resp?.data === 'string' ? resp.data : (resp?.data ?? '');
-      pre.textContent = logs || '(no logs)';
-    } catch (e) {
-      pre.textContent = `Failed to load logs: ${e.message}`;
-    }
-  }
-
-  // ── Agent access ─────────────────────────────────────────────────────────
-
-  async #loadAgentAccess() {
-    const body = this.querySelector('#agent-access-body');
+  /**
+   * Load agent access for a specific connector and render it in the detail modal.
+   * Shows whether the selected agent has access to this connector plus tool rules.
+   */
+  async #loadAgentAccessForConnector(connectorId) {
+    const body = this.querySelector('#detail-agent-access-body');
     if (!this.#selectedAgentId) {
-      body.innerHTML = `<div class="agent-access-empty">${icons.network('', 28)}<p>Select an agent to manage its connector access</p></div>`;
+      body.innerHTML = `<div class="agent-access-empty">${icons.network('', 28)}<p>Select an agent to manage its access to this connector</p></div>`;
       return;
     }
     body.innerHTML = `<div class="detail-loading" aria-busy="true"><app-skeleton lines="3"></app-skeleton></div>`;
@@ -914,59 +996,54 @@ class McpPage extends HTMLElement {
       return;
     }
     this.#agentTools = new Map();
-    this.#renderAgentAccess();
+    // Find this specific connector in the agent's connector list.
+    const match = this.#agentConnectors.find((c) => c.connector_id === connectorId);
+    this.#renderAgentAccessForConnector(connectorId, match);
   }
 
-  #renderAgentAccess() {
-    const body = this.querySelector('#agent-access-body');
-    if (!this.#agentConnectors.length) {
-      body.innerHTML = `<div class="agent-access-empty">${icons.cube('', 28)}<p>No connectors are available to this agent yet</p></div>`;
-      return;
-    }
+  /**
+   * Render the access toggle + tool rules for a single connector within the
+   * detail modal. If `match` is null the connector is not in the agent's list
+   * but we still show the enable toggle (off).
+   */
+  #renderAgentAccessForConnector(connectorId, match) {
+    const body = this.querySelector('#detail-agent-access-body');
+    const enabled = match ? !!match.enabled : false;
     body.innerHTML = `
-      <table class="agent-access-table">
-        <thead><tr><th>Connector</th><th>Description</th><th>Enabled</th><th class="th-actions"></th></tr></thead>
-        <tbody>
-          ${this.#agentConnectors.map((c) => `
-            <tr data-id="${this.#esc(c.connector_id)}">
-              <td class="cell-name"><span class="name-main">${this.#esc(c.display_name || c.name)}</span></td>
-              <td class="cell-muted">${this.#esc(c.description || '—')}</td>
-              <td>
-                <label class="switch">
-                  <input type="checkbox" class="access-toggle" ${c.enabled ? 'checked' : ''} />
-                  <span class="slider"></span>
-                </label>
-              </td>
-              <td class="cell-actions">
-                <button class="btn-ghost act-tools" type="button">${icons.chevronDown('', 14)} Tools</button>
-              </td>
-            </tr>
-            <tr class="tools-row" data-for="${this.#esc(c.connector_id)}" hidden>
-              <td colspan="4"><div class="tools-editor" data-id="${this.#esc(c.connector_id)}"></div></td>
-            </tr>
-          `).join('')}
-        </tbody>
-      </table>`;
+      <div class="agent-access-table" style="margin-top:0.5rem">
+        <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:0.75rem">
+          <label class="switch">
+            <input type="checkbox" class="access-toggle" ${enabled ? 'checked' : ''} />
+            <span class="slider"></span>
+          </label>
+          <span>${enabled ? 'Enabled' : 'Disabled'}</span>
+        </div>
+        ${enabled ? `
+          <button class="btn-ghost act-tools" type="button">${icons.chevronDown('', 14)} Tool rules</button>
+          <div class="tools-editor" data-id="${this.#esc(connectorId)}" hidden></div>
+        ` : ''}
+      </div>`;
 
-    body.querySelectorAll('.access-toggle').forEach((toggle) => {
-      toggle.addEventListener('change', async () => {
-        const id = toggle.closest('tr').dataset.id;
-        try {
-          await window.setAgentMcpConnectorAccess(this.#selectedAgentId, id, toggle.checked);
-        } catch (e) {
-          toggle.checked = !toggle.checked;
-          alert(`Failed to update access: ${e.message}`);
-        }
-      });
+    const toggle = body.querySelector('.access-toggle');
+    toggle.addEventListener('change', async () => {
+      try {
+        await window.setAgentMcpConnectorAccess(this.#selectedAgentId, connectorId, toggle.checked);
+        // Re-load to refresh the tool rules section.
+        this.#loadAgentAccessForConnector(connectorId);
+      } catch (e) {
+        toggle.checked = !toggle.checked;
+        alert(`Failed to update access: ${e.message}`);
+      }
     });
-    body.querySelectorAll('.act-tools').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const id = btn.closest('tr').dataset.id;
-        const row = body.querySelector(`.tools-row[data-for="${CSS.escape(id)}"]`);
-        row.hidden = !row.hidden;
-        if (!row.hidden) this.#renderToolsEditor(id);
+
+    const toolsBtn = body.querySelector('.act-tools');
+    if (toolsBtn) {
+      toolsBtn.addEventListener('click', () => {
+        const editor = body.querySelector(`.tools-editor[data-id="${CSS.escape(connectorId)}"]`);
+        editor.hidden = !editor.hidden;
+        if (!editor.hidden) this.#renderToolsEditor(connectorId);
       });
-    });
+    }
   }
 
   async #renderToolsEditor(connectorId) {

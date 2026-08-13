@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Nasiko</title>
+    <link rel="icon" type="image/svg+xml" href="/common/mark-nasiko.svg" />
+    <script>try{var t=localStorage.getItem('app-theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t;if(localStorage.getItem('app-rail-expanded')==='true')document.documentElement.style.setProperty('--app-sidebar-width','var(--app-sidebar-width-expanded)')}catch(e){}</script>
+    <link rel="stylesheet" href="/common/global.css" />
+    <link rel="stylesheet" href="/common/components.css" />
+    <script type="module" src="/navigation.js"></script>
+    <script type="module" src="/common/components/app-header.js"></script>
+    <script type="module" src="/common/components/app-badge.js"></script>
+    <script type="module" src="/common/components/app-skeleton.js"></script>
+    <script type="module" src="/common/components/app-empty-state.js"></script>
+    <script type="module" src="/common/components/mcp-detail-page.js"></script>
+  </head>
+  <body>
+    <app-header></app-header>
+    <mcp-detail-page>
+      <div style="display:flex;align-items:center;gap:var(--space-sm);margin-bottom:var(--space-lg);">
+        <div class="skel-block" style="width:36px;height:36px;border-radius:var(--r-8);"></div>
+        <div class="skel-card__line" style="height:28px;width:200px;"></div>
+      </div>
+      <div class="skel-card__line" style="width:60%;max-width:600px;margin-bottom:var(--space-md);"></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--space-md);margin-bottom:var(--space-xl);">
+        <div class="skel-card__line" style="height:20px;"></div>
+        <div class="skel-card__line" style="height:20px;"></div>
+        <div class="skel-card__line" style="height:20px;"></div>
+        <div class="skel-card__line" style="height:20px;"></div>
+      </div>
+      <div class="skel-card__line" style="height:22px;width:100px;margin-bottom:var(--space-md);"></div>
+      <div class="skel-grid">
+        <div class="skel-card"></div>
+        <div class="skel-card"></div>
+        <div class="skel-card"></div>
+      </div>
+    </mcp-detail-page>
+  </body>
+</html>

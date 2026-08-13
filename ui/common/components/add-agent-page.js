@@ -126,6 +126,21 @@ class AddAgentPage extends HTMLElement {
     });
   }
 
+  async #checkGithubStatus() {
+    try {
+      const res = await apiFetch('/auth/github/token');
+      const body = await res.json();
+      if (body.status === 'connected') {
+        const card = this.querySelector('#btn-github')?.closest('.method-card');
+        if (!card) return;
+        const req = card.querySelector('.method-card-req');
+        const btn = this.querySelector('#btn-github');
+        if (req) { req.textContent = `Connected as ${body.username || 'GitHub user'}`; req.classList.add('connected'); }
+        if (btn) btn.textContent = 'Import from GitHub';
+      }
+    } catch { /* leave default text */ }
+  }
+
   /// The agent name becomes part of an OCI image reference, so the server
   /// enforces `[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}` on it (`validate_version_tag`).
   /// A raw file name routinely violates that ("My Agent.zip", "agent (1).zip"),
@@ -185,25 +200,6 @@ class AddAgentPage extends HTMLElement {
         submitEl.disabled = false;
       }
     });
-  }
-
-  async #checkGithubStatus() {
-    try {
-      const res = await apiFetch('/auth/github/token');
-      const body = await res.json();
-      if (body.status === 'connected') {
-        const btn = this.querySelector('#btn-github');
-        if (btn) {
-          btn.textContent = 'Import from GitHub';
-          btn.classList.add('connected');
-        }
-        const req = this.querySelector('.method-card .method-card-req');
-        if (req && req.closest('.method-card')?.querySelector('#btn-github')) {
-          req.textContent = `Connected as ${body.username || 'GitHub user'}`;
-          req.classList.add('connected');
-        }
-      }
-    } catch { /* leave default text */ }
   }
 
   #showUploadError(message) {

@@ -480,9 +480,9 @@ export default {
     },
     // Nav scopes — ownership scopes show custom servers only; the toolkits
     // scope shows Composio cards only.
-    'created-by-you': async (page) => {
+    'my-servers': async (page) => {
       await page.waitForSelector('.tk-card[data-id]');
-      await page.click('app-module-nav [data-section="created-by-you"]');
+      await page.click('app-module-nav [data-section="my-servers"]');
       await new Promise((r) => setTimeout(r, 400));
     },
     'toolkits-filter': async (page) => {
@@ -509,28 +509,23 @@ export default {
       });
       await page.waitForSelector('#catalog-grid .empty-state');
     },
-    'agent-access': async (page) => {
-      // Type into the autocomplete and pick the first suggestion.
-      await page.click('#agent-select .ac-input');
-      await page.fill('#agent-select .ac-input', 'coding');
-      await page.waitForSelector('#agent-select .ac-option');
-      await page.click('#agent-select .ac-option');
-      await page.waitForSelector('.agent-access-table');
-      await page.click('.act-tools');
-      await page.waitForSelector('.tool-line');
-      await page.evaluate(() => document.querySelector('.agent-access-card')?.scrollIntoView());
-      await new Promise((r) => setTimeout(r, 300));
-    },
-    'agent-picker-open': async (page) => {
-      await page.evaluate(() => document.querySelector('.agent-access-card')?.scrollIntoView());
-      await page.click('#agent-select .ac-input');
-      await page.waitForSelector('#agent-select .ac-option');
+    'agent-access-in-detail': async (page) => {
+      // Open a connector detail modal, then use the agent picker inside it.
+      await page.waitForSelector('.tk-card[data-id]');
+      await page.click('.tk-card[data-id="6f1d2a3b-1111-4a4a-9b9b-000000000001"] .tk-name');
+      await page.waitForSelector('#detail-modal dialog[open]');
+      await page.click('#detail-agent-select .ac-input');
+      await page.fill('#detail-agent-select .ac-input', 'coding');
+      await page.waitForSelector('#detail-agent-select .ac-option');
+      await page.click('#detail-agent-select .ac-option');
       await new Promise((r) => setTimeout(r, 300));
     },
     'build-logs': async (page) => {
+      await page.click('app-module-nav [data-section="my-servers"]');
+      await new Promise((r) => setTimeout(r, 400));
       await page.click('#uploads-tbody .act-logs');
       await page.waitForSelector('#logs-panel:not([hidden])');
-      await page.evaluate(() => document.querySelector('#uploads-section')?.scrollIntoView());
+      await page.evaluate(() => document.querySelector('#uploads-inline')?.scrollIntoView());
       await new Promise((r) => setTimeout(r, 300));
     },
   },
