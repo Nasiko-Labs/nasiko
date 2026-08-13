@@ -26,6 +26,9 @@
   .hero-icon {
     width: 72px;
     height: 72px;
+    /* Host is a fixed-height flex column, so height is the main axis: without
+       this the tile shrinks to its 24px icon. */
+    flex-shrink: 0;
     border-radius: var(--r-12);
     background: var(--color-bg-base);
     color: var(--color-text-main);

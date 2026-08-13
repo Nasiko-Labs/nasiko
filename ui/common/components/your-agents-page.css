@@ -128,11 +128,21 @@
   }
   .search-clear:hover { color: var(--color-text-main); }
 
+  .sort-wrap { position: relative; display: flex; }
+  .sort-icon {
+    position: absolute;
+    left: 12px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--color-text-muted);
+    pointer-events: none;
+    display: flex;
+  }
   .sort-select {
     width: auto;
     flex-shrink: 0;
     min-height: var(--control-h-lg);
-    padding: 0 var(--space-md);
+    padding: 0 var(--space-md) 0 34px;
     border: 1px solid transparent;
     border-radius: var(--r-8);
     background: var(--bg-input);
@@ -194,6 +204,7 @@
 
   /* ── Card — surface + hover lift: common/styles/surface.css ─────────────── */
   .agent-card {
+    position: relative;
     padding: var(--s-12) var(--space-md);
     display: flex;
     flex-direction: column;
@@ -245,6 +256,12 @@
     background: transparent;
     padding: 0;
     line-height: 1;
+    opacity: 0;
+    transition: opacity 0.12s ease;
+  }
+  .agent-card:hover .agent-card-source,
+  .agent-card:focus-within .agent-card-source {
+    opacity: 1;
   }
   .agent-card-tags {
     display: flex;
@@ -280,10 +297,6 @@
   }
 
   /* ── Setting-up state ──────────────────────────────────────────────────── */
-  .agent-card--setting-up {
-    border-color: var(--color-info, #3b82f6) !important;
-    border-style: solid;
-  }
   .agent-card-setup {
     display: flex;
     flex-direction: column;

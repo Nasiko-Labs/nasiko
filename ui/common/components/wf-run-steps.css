@@ -53,6 +53,15 @@
     flex-wrap: wrap;
     min-height: 20px;
   }
+  .step-detail {
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-start;
+    align-items: start;
+    gap: var(--s-12);
+    flex-wrap: wrap;
+    min-height: 20px;
+  }
   .step-title {
     font-size: 13px;
     font-weight: 500;
