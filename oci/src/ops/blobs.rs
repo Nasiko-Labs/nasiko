@@ -239,10 +239,30 @@ pub async fn delete_blob(state: &OciState, repository: &str, digest: &str) -> Re
 /// already holds. Blobs live in one global content-addressed key space, so there
 /// is nothing to copy — mounting *is* the claim.
 ///
-/// Returns `false` when the registry does not hold the digest, which the spec
-/// requires be handled by falling back to a normal upload session rather than
-/// failing the push.
-pub async fn mount_blob(state: &OciState, repository: &str, digest: &str) -> Result<bool> {
+/// `from` is the source repository, and it is **required and verified**, not
+/// advisory. Blob reads are gated on `blob_linked`, so a mount that accepted any
+/// digest present anywhere in storage would be a way around that gate: a caller
+/// who learned a digest belonging to a repository they cannot read could claim it
+/// into one they own and then read it. The digest must actually be linked to
+/// `from`; the caller's right to read `from` is checked by the route layer, which
+/// is where authorization lives.
+///
+/// Returns `false` when the mount cannot be satisfied — no `from`, the source
+/// does not claim the digest, or the bytes are absent. The spec requires that
+/// case fall back to a normal upload session rather than failing the push, so the
+/// client simply uploads the blob.
+pub async fn mount_blob(
+    state: &OciState,
+    repository: &str,
+    digest: &str,
+    from: Option<&str>,
+) -> Result<bool> {
+    let Some(from) = from else {
+        return Ok(false);
+    };
+    if !blob_linked(state, from, digest).await? {
+        return Ok(false);
+    }
     if !state.storage.blob_exists(digest).await {
         return Ok(false);
     }
@@ -339,13 +359,21 @@ pub async fn append_chunk(
     chunk: Bytes,
     declared_start: Option<i64>,
 ) -> Result<ChunkResult> {
-    let row =
-        sqlx::query("SELECT offset_bytes FROM oci_uploads WHERE uuid = $1 AND repository = $2")
-            .bind(upload_id)
-            .bind(repository)
-            .fetch_optional(&state.pool)
-            .await?
-            .ok_or_else(|| OciError::upload_unknown("upload session not found"))?;
+    // One critical section per upload, taken with `FOR UPDATE` on the session row.
+    // Reading the offset outside a lock lets two concurrent PATCHes observe the
+    // same `current_offset`, both append to the buffer, and both write the same
+    // `new_offset` — leaving the buffer longer than the offset the registry
+    // believes it holds, so the finished blob has duplicated bytes and fails its
+    // digest check only at the very end of the upload.
+    let mut tx = state.pool.begin().await?;
+    let row = sqlx::query(
+        "SELECT offset_bytes FROM oci_uploads WHERE uuid = $1 AND repository = $2 FOR UPDATE",
+    )
+    .bind(upload_id)
+    .bind(repository)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| OciError::upload_unknown("upload session not found"))?;
 
     let current_offset: i64 = row.try_get("offset_bytes")?;
 
@@ -365,20 +393,28 @@ pub async fn append_chunk(
     let chunk_len = chunk.len() as i64;
     let new_offset = current_offset + chunk_len;
     if new_offset > MAX_UPLOAD_TOTAL_BYTES {
+        drop(tx);
         return Err(abort_oversized(state, repository, upload_id).await);
     }
+
+    // Commit the offset BEFORE growing the buffer. The buffer is in memory and
+    // cannot join the transaction, so one of the two has to go first, and this
+    // order is the recoverable one: a failure here leaves the offset ahead of the
+    // buffer, and the client's next chunk is refused with a `416` carrying the
+    // real offset. The reverse order would leave bytes in the buffer that the
+    // offset does not account for, and a retried chunk would append them twice.
+    sqlx::query("UPDATE oci_uploads SET offset_bytes = $1 WHERE uuid = $2")
+        .bind(new_offset)
+        .bind(upload_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
 
     state
         .upload_buffers
         .entry(upload_id)
         .or_default()
         .extend_from_slice(&chunk);
-
-    sqlx::query("UPDATE oci_uploads SET offset_bytes = $1 WHERE uuid = $2")
-        .bind(new_offset)
-        .bind(upload_id)
-        .execute(&state.pool)
-        .await?;
 
     Ok(ChunkResult {
         upload_id,

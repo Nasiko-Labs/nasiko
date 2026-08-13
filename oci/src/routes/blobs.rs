@@ -105,7 +105,20 @@ pub async fn initiate_upload(
     let name = format!("{owner}/{repo}");
 
     if let Some(mount_digest) = params.mount.as_deref() {
-        if ops::mount_blob(&state, &name, mount_digest).await? {
+        // Authorize the SOURCE as well as the destination. Without this, mounting
+        // is a way around the `blob_linked` gate on reads: claim a digest from a
+        // repository you cannot read into one you own, then read it there. For a
+        // session caller this is the same `check_repo_access` a pull would do;
+        // the build service is already trusted everywhere.
+        //
+        // `from` arrives as a full repository name (`owner/name`), while the
+        // access check keys on the trailing name segment, as the path extractors
+        // elsewhere in this file do.
+        if let Some(source) = params.from.as_deref() {
+            let source_repo = source.rsplit('/').next().unwrap_or(source);
+            check_write_access(&state, &writer, source_repo).await?;
+        }
+        if ops::mount_blob(&state, &name, mount_digest, params.from.as_deref()).await? {
             tracing::debug!(
                 "mounted blob {mount_digest} into {name} from {}",
                 params.from.as_deref().unwrap_or("<unspecified>"),
