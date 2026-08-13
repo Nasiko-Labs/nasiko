@@ -1245,7 +1245,7 @@ class AgentCardPage extends HTMLElement {
   #connectorCardHtml(c) {
     const name = c.display_name || c.name || 'Connector';
     const tools = this.#connectorTools.get(c.connector_id) || [];
-    const allowed = tools.filter((t) => t.stance !== 'deny').length;
+    const allowed = tools.filter((t) => t.stance !== 'block').length;
     const summary = c.enabled === false
       ? 'Disabled'
       : tools.length ? `${allowed} of ${tools.length} tools allowed` : 'No tools synced yet';
@@ -1289,9 +1289,9 @@ class AgentCardPage extends HTMLElement {
             <span class="acp-mcp-tool-desc">${this.#esc(t.description || '')}</span>
             <div class="acp-stance">
               <button type="button" class="acp-stance-btn is-allow" data-tool-index="${i}" data-stance="allow"
-                aria-pressed="${t.stance !== 'deny'}" ${disabled ? 'disabled' : ''}>Allow</button>
-              <button type="button" class="acp-stance-btn is-block" data-tool-index="${i}" data-stance="deny"
-                aria-pressed="${t.stance === 'deny'}" ${disabled ? 'disabled' : ''}>Block</button>
+                aria-pressed="${t.stance !== 'block'}" ${disabled ? 'disabled' : ''}>Allow</button>
+              <button type="button" class="acp-stance-btn is-block" data-tool-index="${i}" data-stance="block"
+                aria-pressed="${t.stance === 'block'}" ${disabled ? 'disabled' : ''}>Block</button>
             </div>
           </div>`).join('')}
       </div>`;
@@ -1339,7 +1339,7 @@ class AgentCardPage extends HTMLElement {
       const rules = tools.map((t) => ({
         connector_id: connectorId,
         tool_pattern: t.name,
-        stance: t.stance === 'deny' ? 'deny' : 'allow',
+        stance: t.stance === 'block' ? 'block' : 'allow',
       }));
       await window.saveAgentMcpToolRules(this.#agent.id, rules);
     } catch (e) {
