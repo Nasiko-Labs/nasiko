@@ -104,7 +104,7 @@ class ChatPage extends HTMLElement {
   async #loadSampleQueries() {
     try {
       const res = await apiFetch(`/agents/${encodeURIComponent(this.#agentId)}`);
-      if (!res.ok) return;
+      if (!res.ok) { console.warn('loadSampleQueries: fetch failed', res.status); return; }
       const body = await res.json();
       const agent = body.data || body;
       if (agent.display_name) {
@@ -115,14 +115,13 @@ class ChatPage extends HTMLElement {
         .map(s => s.sample_query || (Array.isArray(s.examples) && s.examples[0]) || null)
         .filter(Boolean)
         .slice(0, 3);
-      if (!queries.length) return;
+      if (!queries.length) { console.warn('loadSampleQueries: no examples found in skills', skills); return; }
       this.#sampleQueries = queries;
       const welcome = this.querySelector('.welcome-state');
-      if (welcome) {
-        welcome.outerHTML = this.#renderWelcome(queries);
-        this.#bindWelcomeChips();
-      }
-    } catch { /* non-critical */ }
+      if (!welcome) { console.warn('loadSampleQueries: .welcome-state not found in DOM'); return; }
+      welcome.outerHTML = this.#renderWelcome(queries);
+      this.#bindWelcomeChips();
+    } catch (err) { console.warn('loadSampleQueries failed:', err); }
   }
 
   #bindWelcomeChips() {
@@ -140,6 +139,7 @@ class ChatPage extends HTMLElement {
 
   #bindEvents() {
     const messagesEl = this.querySelector("#messages");
+    const chatInput = this.querySelector("#chat-input");
 
     // Welcome prompt chips
     this.#bindWelcomeChips();
