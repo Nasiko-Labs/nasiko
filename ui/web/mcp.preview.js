@@ -135,9 +135,9 @@ const githubTools = {
   tools: [
     { name: 'create_issue', description: 'Open a new issue in a repository.', stance: 'allow', last_synced_at: '2026-07-30T10:00:00Z' },
     { name: 'get_pull_request', description: 'Fetch a pull request with its metadata and review state.', stance: 'allow', last_synced_at: '2026-07-30T10:00:00Z' },
-    { name: 'merge_pull_request', description: 'Merge an open pull request. Requires write access.', stance: 'deny', last_synced_at: '2026-07-30T10:00:00Z' },
+    { name: 'merge_pull_request', description: 'Merge an open pull request. Requires write access.', stance: 'block', last_synced_at: '2026-07-30T10:00:00Z' },
     { name: 'search_code', description: 'Search code across repositories with the GitHub code-search syntax.', stance: 'allow', last_synced_at: '2026-07-30T10:00:00Z' },
-    { name: 'delete_branch', description: 'Delete a branch from a repository. Destructive.', stance: 'deny', last_synced_at: '2026-07-30T10:00:00Z' },
+    { name: 'delete_branch', description: 'Delete a branch from a repository. Destructive.', stance: 'block', last_synced_at: '2026-07-30T10:00:00Z' },
   ],
 };
 
@@ -437,8 +437,8 @@ export default {
     [{ method: 'GET', path: /^\/api\/mcp\/agents\/[^/]+\/tools$/ }, {
       data: {
         rules: [
-          { connector_id: '6f1d2a3b-1111-4a4a-9b9b-000000000001', tool_pattern: 'merge_pull_request', stance: 'deny' },
-          { connector_id: '6f1d2a3b-1111-4a4a-9b9b-000000000001', tool_pattern: 'delete_branch', stance: 'deny' },
+          { connector_id: '6f1d2a3b-1111-4a4a-9b9b-000000000001', tool_pattern: 'merge_pull_request', stance: 'block' },
+          { connector_id: '6f1d2a3b-1111-4a4a-9b9b-000000000001', tool_pattern: 'delete_branch', stance: 'block' },
         ],
       },
       status_code: 200,

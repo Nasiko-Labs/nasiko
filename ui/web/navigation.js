@@ -266,6 +266,14 @@ window.createLlmConfig = async (body) => {
   });
 };
 
+window.updateLlmConfig = async (id, body) => {
+  return fetchApi(`/llm-configs/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+};
+
 window.deleteLlmConfig = async (id) => {
   return fetchApi(`/llm-configs/${encodeURIComponent(id)}`, { method: 'DELETE' });
 };

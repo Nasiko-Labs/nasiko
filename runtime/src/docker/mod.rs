@@ -280,6 +280,14 @@ fn map_bollard_err(err: bollard::errors::Error) -> RuntimeError {
             status_code: 409,
             message,
         } => RuntimeError::ResourceConflict(message.clone()),
+        // bollard folds a mid-stream `{"error": ...}` payload (build/pull/push)
+        // into this variant, but its `Display` is the bare string "Docker stream
+        // error" — the daemon's actual message lives only in the field. Surface
+        // it, or every mid-stream build failure reaches the operator as an
+        // untraceable "internal error: Docker stream error".
+        bollard::errors::Error::DockerStreamError { error } => {
+            RuntimeError::Internal(error.clone())
+        }
         _ => RuntimeError::Internal(err.to_string()),
     }
 }

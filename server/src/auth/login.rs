@@ -11,11 +11,7 @@ use uuid::Uuid;
 use crate::auth::Claims;
 use crate::state::AppState;
 
-/// Must match the JWT TTL (`nasiko_auth::TOKEN_EXPIRY_SECS`, 7 days). When this
-/// was shorter the browser dropped a still-valid cookie — the session appeared
-/// to expire early and the user had to log in again while their token had days
-/// left.
-const COOKIE_MAX_AGE: u64 = nasiko_auth::TOKEN_EXPIRY_SECS;
+const COOKIE_MAX_AGE: u64 = 12 * 60 * 60; // 12 hours — aligned with JWT TTL
 
 /// Routes shared by OSS and EE: initialize-admin and token validation.
 /// Does not include /api/auth/login — each edition registers its own login

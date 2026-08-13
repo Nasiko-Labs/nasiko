@@ -611,7 +611,7 @@ export class AppHeader extends HTMLElement {
         </button>` : ""}
         <span class="topbar-spacer"></span>
         <div class="topbar-right">
-          ${addAgent ? `<a href="${this.#esc(addAgent.url)}" class="chrome-btn is-labeled">${icons.plus("", 16, 1)} Add agent</a>` : ""}
+          ${addAgent ? `<a href="${this.#esc(addAgent.url)}" class="chrome-btn is-labeled">${icons.plus("", 16, 1)} Import agent</a>` : ""}
           <button class="chrome-btn mobile-menu-btn" data-mobile-menu aria-label="Menu" type="button">${icons.menu("", 16, 1)}</button>
         </div>
       </header>

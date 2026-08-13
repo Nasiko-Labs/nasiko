@@ -256,6 +256,7 @@ class YourAgentsPage extends HTMLElement {
           <button class="search-clear" id="search-clear" aria-label="Clear search" style="display:none">${icons.x("", 16)}</button>
         </div>
         <div class="sort-wrap">
+          <span class="sort-icon">${icons.sortBoth("", 16)}</span>
           <select id="sort-select" class="sort-select" aria-label="Sort agents">
             <option value="name">Sort: Name</option>
             <option value="status">Sort: Status</option>

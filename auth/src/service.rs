@@ -2,7 +2,9 @@ use async_trait::async_trait;
 use chrono::Utc;
 use sqlx::PgPool;
 
-use crate::{AuthError, AuthService, Identity, LoginResult, TOKEN_EXPIRY_SECS};
+use crate::{AuthError, AuthService, Identity, LoginResult};
+
+const TOKEN_EXPIRY_SECS: u64 = 7 * 24 * 60 * 60; // 7 days (matches EE auth)
 
 /// DB-backed implementation of AuthService.
 /// Handles user lookup, password verification, token issuance, and revocation.

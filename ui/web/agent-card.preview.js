@@ -206,7 +206,7 @@ export default {
     [{ method: "GET", path: /^\/api\/mcp\/agents\/[^/]+\/connectors\/mc-github\/tools$/ }, mcpEnvelope({
       tools: [
         { name: "create_issue", description: "Open a new issue in a repository.", stance: "allow", last_synced_at: null },
-        { name: "merge_pull_request", description: "Merge an open pull request.", stance: "deny", last_synced_at: null },
+        { name: "merge_pull_request", description: "Merge an open pull request.", stance: "block", last_synced_at: null },
         { name: "list_repos", description: "List repositories visible to the connected account.", stance: "allow", last_synced_at: null },
       ],
     })],
@@ -223,7 +223,7 @@ export default {
     })],
     [{ method: "GET", path: /^\/api\/mcp\/agents\/[^/]+\/tools$/ }, mcpEnvelope({
       rules: [
-        { connector_id: "mc-github", tool_pattern: "merge_pull_request", stance: "deny" },
+        { connector_id: "mc-github", tool_pattern: "merge_pull_request", stance: "block" },
       ],
     })],
     [{ method: "PUT", path: /^\/api\/mcp\/agents\// }, mcpEnvelope({})],

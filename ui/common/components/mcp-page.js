@@ -1073,8 +1073,8 @@ class McpPage extends HTMLElement {
               ${t.description ? `<span class="tool-desc">${this.#esc(t.description)}</span>` : ''}
             </div>
             <select class="tool-stance" data-index="${i}">
-              <option value="allow" ${t.stance !== 'deny' ? 'selected' : ''}>Allow</option>
-              <option value="deny" ${t.stance === 'deny' ? 'selected' : ''}>Deny</option>
+              <option value="allow" ${t.stance !== 'block' ? 'selected' : ''}>Allow</option>
+              <option value="block" ${t.stance === 'block' ? 'selected' : ''}>Block</option>
             </select>
           </div>`).join('')}
       </div>
