@@ -54,19 +54,14 @@ ui/
 | Page | File | Notes |
 |------|------|-------|
 | Orchestrator | `index.html` | Chat input → `POST /api/orchestrator/a2a` (SSE streaming) |
-| Agents | `agents.html` | Agent catalog browser |
-| Your Agents | `your-agents.html` | Deployed containers: status, restart/stop/start actions |
-| Add Agent | `add-agent.html` | Deploy methods: upload, registry import, GitHub |
+| Agents | `agents.html` | The whole Agents module in one document — `?view=hub` (catalog browser, default), `?view=your-agents` (deployed containers: status, restart/stop/start), `?view=import` (deploy methods: upload, registry import, GitHub), `?view=builds` (build jobs with SSE live progress). See "Module pages" below |
 | Chat | `chat.html?agent_id=X` | Direct chat with one agent via the A2A proxy |
-| Sessions | `sessions.html` | Chat session history (sidebar + messages) |
+| Observability | `sessions.html` | The whole Observability module in one document — `?view=history` (execution history: every query across agents, default), `?view=flows` (multi-agent flow list), `?view=resources` (live host/container CPU, memory and IO; admin-only endpoint). See "Module pages" below |
 | Observability Session | `observability-session.html?session_id=X` | The single trace view: chat transcript │ span tree │ span detail (Info/Attributes). Optional `&trace_id=` preselects one turn's trace. Polls briefly on open, since agent spans batch in a few seconds after a reply |
 | Session Trace | `session-trace.html` | **Redirect stub.** Resolves `?trace_id=` → session via the trace's `project_session_id` and forwards to `observability-session.html`; kept so old links survive |
-| Flows | `flows.html` | Multi-agent flow list |
 | Flow Detail | `flow.html?id=X` | Summary cards + hop/step trace |
-| Builds | `builds.html` | Server-side build jobs with SSE live progress |
 | Usage | `usage.html` | Token/cost stat cards + by-agent/by-model tables |
-| Secrets | `secrets.html` | Encrypted secrets CRUD |
-| Settings | `settings.html` | Runtime-editable config |
+| Settings | `settings.html` | The whole Settings module in one document — `?view=settings` (runtime-editable config, default; its own General / Flow limits / Registry / Single sign-on sections are addressed by the same param, e.g. `?view=limits`), `?view=secrets` (encrypted secrets CRUD). See "Module pages" below |
 | Agent Card | `agent-card.html?id=X` | Structured A2A AgentCard view |
 | Login | `login.html` | Credential login (sets the auth cookie) |
 
@@ -161,13 +156,68 @@ and the page component element (optionally wrapping static skeleton markup for z
 Load `navigation.js` first (it defines the `window.fetch*` data functions), then `app-header`, then
 the page component.
 
+### Module pages
+
+A module with a nested sidebar (Orchestrator, Agents, Observability, Settings, MCP gateway) is
+**one** document holding every view in that sidebar. Clicking a sidebar row shows a different view
+in place; the shell, the topbar, and the sidebar itself are never rebuilt, refetched, or
+re-animated. Only moving between *modules* is a real navigation.
+
+This is not client-side routing: nothing is fetched on a switch and no history entry is pushed. The
+active view is still named in the URL — `?view=<key>`, read once on load and rewritten with
+`replaceState` on each switch — so a view can be linked, shared, and reloaded. `app-tabs` uses the
+same contract via its `query-param` attribute; both go through `common/utils/module-view.js`, which
+is the only place the param is spelled.
+
+`module-shell` owns the nav and the view swapping:
+
+```html
+<module-shell module="agents" default-view="hub">
+  <app-module-nav module="agents"></app-module-nav>
+  <!-- Default view: real markup, so it paints before any module loads. -->
+  <agents-page data-view="hub" data-title="Agent hub"><!-- static shell --></agents-page>
+  <!-- Other views: a <template> keeps the element un-upgraded, so it runs no
+       code and issues no requests until first opened. -->
+  <template data-view="builds" data-title="Builds"
+            data-module="/common/components/builds-page.js">
+    <builds-page></builds-page>
+  </template>
+</module-shell>
+```
+
+Rules when adding or merging a view:
+
+- The `data-view` keys **must** match the `section` keys in that module's `MODULE_NAVS` entry
+  (`navigation.js`, and `ee/ui/web/navigation.js` for pages EE also serves). That pairing is the
+  whole nav contract; a mismatch shows a highlighted row with no content.
+- View components must **not** render an `app-module-nav` of their own — the shell owns it, and a
+  nav inside a view would be destroyed on every switch, which is the thing this pattern exists to
+  prevent.
+- Each view's sheet is `<link>`ed by the page, since a sheet imported by a lazily-loaded module
+  arrives after the view is already on screen.
+- Geometry: as the direct body child, `module-shell` is the white content card, and on desktop it
+  carries the nav's left gutter. Views inside it therefore do **not** take that gutter — see the
+  `module-shell` block in `common/styles/page-layout.css`.
+- Anything linking to a view uses `?view=` (`/agents.html?view=builds`), including the rail and ⌘F
+  entries in `navigation.js` and any server-side redirect.
+- A view may own a second, finer level of nav rows — Settings does: `settings-page` holds General /
+  Flow limits / Registry / Single sign-on as panels of the one `settings` view. Those `section` keys
+  are deliberately *not* view keys, so `module-shell` ignores them (it drops any key it has no
+  `data-view` for) and the view's own `module-nav-select` listener answers instead. Three
+  consequences: the listener goes on the shell, not on the view, because the nav is the shell's
+  child and the event no longer bubbles through the view; the view resolves its initial section from
+  the same `?view=` param via `initialView()`, and must be the shell's `default-view` so an inner
+  key falls back to it rather than to nothing; and when the row is clicked while a sibling view is
+  up, the view calls `shell.show()` on itself and then re-writes the URL and the nav highlight with
+  the finer key, which `show()` has just coarsened.
+
 ### Static shell
 
 Most pages fill that skeleton slot with the `.pre-*` classes from `common/styles/not-defined.css`
 — a parallel, page-agnostic vocabulary that mirrors the loaded geometry, because the component's
 own sheet isn't loaded yet.
 
-`agents.html` and `your-agents.html` take the other route: the page `<link>`s the component's
+`agents.html` takes the other route: the page `<link>`s the component's
 sheet, so the slot can hold the component's **real** markup and class names (title, description,
 search, toolbar) plus the component's own skeletons for the API-fed regions. The component then
 never wipes `innerHTML` — `connectedCallback` binds to the existing nodes and renders only into
@@ -189,7 +239,8 @@ Scope selectors to the component's tag name (or use `@scope`) since sheets are d
 A sheet imported this way only exists once its module does, so it cannot style anything the page
 paints before then. Where a page authors the component's real markup in HTML (see "Static shell"
 below), the page `<link>`s the sheet instead and the module drops the import — one sheet, one
-owner, either way. `agents.html` and `your-agents.html` are the two pages on that variant.
+owner, either way. `agents.html` is the page on that variant — and because it hosts a module's
+worth of views, it `<link>`s each view's sheet (see "Module pages").
 
 ### data-view / smart-table contract
 

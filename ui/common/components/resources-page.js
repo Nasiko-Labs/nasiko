@@ -38,7 +38,6 @@ class ResourcesPage extends HTMLElement {
     this.#initialized = true;
 
     this.innerHTML = `
-      <app-module-nav module="observability"></app-module-nav>
       <div class="page-head">
         <div>
           <h1 class="title-page">Resources</h1>

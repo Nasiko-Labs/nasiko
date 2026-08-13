@@ -14,7 +14,7 @@ class FlowDetailPage extends HTMLElement {
         <h1 class="title-page">Flow detail</h1>
         ${sub ? `<p class="page-sub">${sub}</p>` : ''}
       </div>
-      <a class="back-link" href="/flows.html">${icons.chevronLeft('', 16)}Back to flows</a>
+      <a class="back-link" href="/sessions.html?view=flows">${icons.chevronLeft('', 16)}Back to flows</a>
     </header>`;
   }
 

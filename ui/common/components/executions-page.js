@@ -12,7 +12,6 @@ import { icons } from '/common/utils/icons.js';
 import { timeAgo, formatDisplay } from '/common/utils/date-utils.js';
 import { fmtDuration, fmtTokens } from '/common/utils/units.js';
 import { attachSlidingIndicator } from '/common/utils/tab-indicator.js';
-import '/common/components/app-module-nav.js';
 import '/common/components/wf-run-steps.js';
 
 import styles from './executions-page.css' with { type: 'css' };
@@ -36,7 +35,6 @@ class ExecutionsPage extends HTMLElement {
     this.#initialized = true;
 
     this.innerHTML = `
-      <app-module-nav module="orchestrator"></app-module-nav>
       <h1 class="title-page page-title">All executions</h1>
       <div class="tabs" role="tablist">
         <button type="button" class="tab is-active" role="tab" data-tab="active" aria-selected="true">Active</button>
@@ -143,7 +141,7 @@ class ExecutionsPage extends HTMLElement {
           icon: icons.play('', 32),
           title: 'Your active runs will appear here',
           sub: 'Monitor live workflow executions, track progress across each step, and inspect outputs as they are generated.',
-          action: `<a class="cta-btn" href="/workflows.html">Browse workflows</a>`,
+          action: `<a class="cta-btn" href="/index.html?view=workflows">Browse workflows</a>`,
         });
         return;
       }
@@ -159,7 +157,7 @@ class ExecutionsPage extends HTMLElement {
         icon: icons.workflow('', 32),
         title: 'No finished runs yet',
         sub: 'Completed and failed workflow runs land here with their full step timelines.',
-        action: `<a class="cta-btn" href="/workflows.html">Browse workflows</a>`,
+        action: `<a class="cta-btn" href="/index.html?view=workflows">Browse workflows</a>`,
       });
       return;
     }

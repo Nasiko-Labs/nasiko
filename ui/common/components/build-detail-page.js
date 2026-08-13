@@ -25,7 +25,7 @@ class BuildDetailPage extends HTMLElement {
         <h1 class="title-page">Build detail</h1>
         ${sub ? `<p class="page-sub">${sub}</p>` : ''}
       </div>
-      <a class="back-link" href="/builds.html">${icons.chevronLeft('', 16)}Back to builds</a>
+      <a class="back-link" href="/agents.html?view=builds">${icons.chevronLeft('', 16)}Back to builds</a>
     </header>`;
   }
 

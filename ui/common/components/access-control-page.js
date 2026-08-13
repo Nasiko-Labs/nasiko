@@ -1,5 +1,4 @@
 import { icons } from '/common/utils/icons.js';
-import '/common/components/app-module-nav.js';
 import { showToast } from '/common/utils/toast.js';
 import '/common/components/app-button.js';
 import '/common/components/app-skeleton.js';
@@ -60,7 +59,6 @@ class AccessControlPage extends HTMLElement {
       // API-fed chips, attention band and tables shimmer, and nothing moves
       // when the overview lands.
       this.innerHTML = `
-        <app-module-nav module="org"></app-module-nav>
         <div class="page-head">
           <h1 class="title-page">Access control</h1>
           <div class="pre-chips">
@@ -87,7 +85,6 @@ class AccessControlPage extends HTMLElement {
       `;
     } else if (state === 'error') {
       this.innerHTML = `
-      <app-module-nav module="org"></app-module-nav>
         <div class="error-message">${this.#esc(error || 'Failed to load data.')}</div>
       `;
     } else if (state === 'success') {
@@ -133,7 +130,6 @@ class AccessControlPage extends HTMLElement {
       `<span class="count-chip"><b>${this.#fmtNum(value)}</b> ${label}</span>`;
 
     this.innerHTML = `
-      <app-module-nav module="org"></app-module-nav>
       <div class="page-head">
         <h1 class="title-page">Access control</h1>
         <div class="count-chips">
@@ -293,7 +289,8 @@ class AccessControlPage extends HTMLElement {
 
     // Button events
     this.querySelector('#btn-create-user')?.addEventListener('click', () => {
-      window.location.href = '/users.html';
+      // Users is a sibling view of the same module page, named by `?view=`.
+      window.location.href = '/organization.html?view=users';
     });
 
     this.querySelector('#btn-create-team')?.addEventListener('click', () => {

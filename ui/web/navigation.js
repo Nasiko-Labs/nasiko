@@ -8,23 +8,30 @@ window.fetchNavigation = async () => [
   // open, so a child page never leaves the rail with nothing highlighted.
   { title: "Orchestrator", url: "/index.html", icon: "brain", rail: true, module: "orchestrator" },
   // Not on the rail: workflows are the Orchestrator module's second group, and
-  // a second rail icon into the same tree read as a separate module.
-  { title: "Workflows", url: "/workflows.html", icon: "workflow", module: "orchestrator" },
-  { title: "Executions", url: "/executions.html", icon: "play", module: "orchestrator" },
+  // a second rail icon into the same tree read as a separate module. Views of
+  // that module page, not pages of their own — ⌘F and the rail reach them
+  // through `?view=`, which index.html reads once on load.
+  { title: "Workflows", url: "/index.html?view=workflows", icon: "workflow", module: "orchestrator" },
+  { title: "Executions", url: "/index.html?view=executions", icon: "play", module: "orchestrator" },
   { title: "Agents", url: "/agents.html", icon: "bot", rail: true, module: "agents" },
   { title: "Sessions", url: "/sessions.html", icon: "activity", rail: true, module: "observability" },
   { title: "MCP gateway", url: "/mcp.html", icon: "server", rail: true, module: "mcp" },
   { title: "LLM router", url: "/llm-router.html", icon: "route", rail: true },
   { title: "TokenOps", url: "/tokenops.html", icon: "banknote", rail: true },
-  { title: "Your Agents", url: "/your-agents.html", icon: "user", module: "agents" },
-  { title: "Add Agent", url: "/add-agent.html", icon: "plus", module: "agents" },
+  // Views of the Agents module page, not pages of their own — ⌘F and the rail
+  // reach them through `?view=`, which agents.html reads once on load.
+  { title: "Your Agents", url: "/agents.html?view=your-agents", icon: "user", module: "agents" },
+  { title: "Add Agent", url: "/agents.html?view=import", icon: "plus", module: "agents" },
   { title: "Set up CLI", url: "/setup-cli.html", icon: "terminal" },
-  { title: "Flows", url: "/flows.html", icon: "cornerUpRight", module: "observability" },
+  // Views of the Observability module page, not pages of their own — ⌘F and the
+  // rail reach them through `?view=`, which sessions.html reads once on load.
+  { title: "Flows", url: "/sessions.html?view=flows", icon: "cornerUpRight", module: "observability" },
   // In the Observability module tree but missing here, so ⌘F couldn't find it
   // and the rail lost its selection on the page.
-  { title: "Resources", url: "/resources.html", icon: "activity", module: "observability" },
-  { title: "Builds", url: "/builds.html", icon: "cube", module: "agents" },
-  { title: "Secrets", url: "/secrets.html", icon: "lock", module: "settings" },
+  { title: "Resources", url: "/sessions.html?view=resources", icon: "activity", module: "observability" },
+  { title: "Builds", url: "/agents.html?view=builds", icon: "cube", module: "agents" },
+  // A view of the Settings module page, not a page of its own.
+  { title: "Secrets", url: "/settings.html?view=secrets", icon: "lock", module: "settings" },
   { title: "Settings", url: "/settings.html", icon: "settings", rail: true, module: "settings" },
 ];
 
@@ -32,15 +39,17 @@ window.fetchNavigation = async () => [
 // ({label, url}) or in-page sections ({label, section} → the page handles
 // the `module-nav-select` event). Only real pages/features appear here.
 const MODULE_NAVS = {
+  // Section keys must match the `data-view` keys in web/index.html — the whole
+  // module lives in that one document, and these rows switch views in place.
   orchestrator: {
     title: 'Orchestrator', icon: 'brain',
     groups: [
       { label: 'Session', items: [
-        { label: 'Orchestrate a task', url: '/index.html' },
+        { label: 'Orchestrate a task', section: 'orchestrate' },
       ]},
       { label: 'Workflows', items: [
-        { label: 'All workflows', url: '/workflows.html' },
-        { label: 'Executions', url: '/executions.html' },
+        { label: 'All workflows', section: 'workflows' },
+        { label: 'Executions', section: 'executions' },
       ]},
     ],
   },
@@ -59,40 +68,50 @@ const MODULE_NAVS = {
       ]},
     ],
   },
+  // Section keys must match the `data-view` keys in web/agents.html — the whole
+  // module lives in that one document, and these rows switch views in place.
   agents: {
     title: 'Agent registry', icon: 'bot',
     groups: [
       { label: 'Agent sources', items: [
-        { label: 'Agent hub', url: '/agents.html' },
-        { label: 'Your agents', url: '/your-agents.html' },
-        { label: 'Import agent', url: '/add-agent.html' },
+        { label: 'Agent hub', section: 'hub' },
+        { label: 'Your agents', section: 'your-agents' },
+        { label: 'Import agent', section: 'import' },
       ]},
       { label: 'Builds', items: [
-        { label: 'All builds', url: '/builds.html' },
+        { label: 'All builds', section: 'builds' },
       ]},
     ],
   },
+  // Section keys must match the `data-view` keys in web/sessions.html — the
+  // whole module lives in that one document, and these rows switch views in
+  // place.
   observability: {
     title: 'Observability', icon: 'activity',
     groups: [
       { label: 'Home', items: [
-        { label: 'Execution history', url: '/sessions.html' },
-        { label: 'Live flows', url: '/flows.html' },
-        { label: 'Resources', url: '/resources.html' },
+        { label: 'Execution history', section: 'history' },
+        { label: 'Live flows', section: 'flows' },
+        { label: 'Resources', section: 'resources' },
       ]},
     ],
   },
+  // Section keys must match the `data-view` keys in web/settings.html — the
+  // whole module lives in that one document, and these rows switch views in
+  // place. The four workspace sections are the exception by design: they are
+  // sections *within* the `settings` view, handled by settings-page.js, which is
+  // why they name no view of their own (see the comment in settings.html).
   settings: {
     title: 'Settings', icon: 'settings',
     groups: [
       { label: 'Workspace', items: [
-        { label: 'General', section: 'general', url: '/settings.html' },
-        { label: 'Flow limits', section: 'limits', url: '/settings.html' },
-        { label: 'Registry', section: 'registry', url: '/settings.html' },
+        { label: 'General', section: 'general' },
+        { label: 'Flow limits', section: 'limits' },
+        { label: 'Registry', section: 'registry' },
       ]},
       { label: 'Security', items: [
-        { label: 'Single sign-on', section: 'sso', url: '/settings.html' },
-        { label: 'Secrets', url: '/secrets.html' },
+        { label: 'Single sign-on', section: 'sso' },
+        { label: 'Secrets', section: 'secrets' },
       ]},
     ],
   },

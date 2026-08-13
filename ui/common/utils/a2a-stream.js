@@ -229,3 +229,24 @@ export function frameRenderer(render) {
 export function nearBottom(el, slack = 80) {
   return el.scrollHeight - el.scrollTop - el.clientHeight < slack;
 }
+
+/**
+ * The element that actually scrolls `el`'s content: `el` itself when it has its
+ * own overflow, else the document.
+ *
+ * A transcript is an internal scroller only in the layouts that cap its height
+ * (the desktop pinned-composer ones). Where the page scrolls as a single
+ * document instead, `el.scrollTop` is not writable in any useful sense and
+ * following the stream has to move the document.
+ */
+export function scrollerFor(el) {
+  return el.scrollHeight > el.clientHeight + 1
+    ? el
+    : document.scrollingElement || document.documentElement;
+}
+
+/** Pin `el`'s content to its latest line, whichever element does the scrolling. */
+export function stickToBottom(el) {
+  const scroller = scrollerFor(el);
+  scroller.scrollTop = scroller.scrollHeight;
+}

@@ -3,6 +3,14 @@ pub mod service;
 
 pub use service::AuthServiceImpl;
 
+/// Lifetime of an issued session token, and the single source of truth for it.
+///
+/// Both editions mint tokens with this TTL, and the server's session cookie
+/// `Max-Age` is derived from it — a cookie shorter than the token logs the user
+/// out while their token is still valid, which is what a hardcoded 12-hour
+/// cookie used to do here.
+pub const TOKEN_EXPIRY_SECS: u64 = 7 * 24 * 60 * 60;
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 

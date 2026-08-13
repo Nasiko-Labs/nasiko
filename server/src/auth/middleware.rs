@@ -129,7 +129,14 @@ fn is_gated_page(path: &str) -> bool {
 /// methods (e.g. the OCI registry's Basic-auth-or-bearer mount, see
 /// `lib.rs`'s `authenticate_oci_request`) can reuse it without going through
 /// the all-or-nothing `middleware::from_fn` wrapper.
-pub(crate) async fn validate_bearer(
+///
+/// `pub`, not `pub(crate)`: this is the seam for out-of-crate mounts that sit in
+/// front of OSS routes and must authenticate before OSS middleware would.
+/// EE's catalog interceptor (`ee/server/src/catalog.rs`) is one, and it used to
+/// carry its own transcription of this function — which then silently missed
+/// every rule added here, the caller-still-exists check below being the case
+/// that exposed it. Any new mount calls this; nothing re-implements it.
+pub async fn validate_bearer(
     state: &AppState,
     headers: &axum::http::HeaderMap,
 ) -> Result<Claims, (StatusCode, &'static str)> {
@@ -156,18 +163,38 @@ pub(crate) async fn validate_bearer(
         return Err((StatusCode::UNAUTHORIZED, "token missing jti"));
     };
 
+    // The caller's own row is checked in the same round trip. A token can be
+    // signature-valid, unexpired and unrevoked while naming a user that no
+    // longer exists — the database was recreated under it (a squashed migration
+    // set, a restored dump), or the row was hard-deleted. Every handler that
+    // then looks the caller up fails at a different depth: `fetch_one` on
+    // `users` is a 500, and an insert into anything with a `user_id` foreign key
+    // (chat_sessions) is a 500 too, so the app reads as broken rather than as
+    // logged out. Rejecting here turns all of that into the one thing the
+    // frontend already knows how to handle — a 401 sends it to /login.html
+    // through the single funnel in common/services/api.js.
+    //
+    // `is_active` is deliberately NOT part of this: deactivating a user would
+    // then kill their live sessions, which is a policy change, not a fix.
+    let caller_id = identity.user_id.parse::<uuid::Uuid>().ok();
     let hash = nasiko_auth::jwt::hash_jti(&jti);
-    let revoked: bool = match sqlx::query_scalar(
-        "SELECT EXISTS(
-            SELECT 1 FROM auth_tokens
-            WHERE token_hash = $1 AND revoked_at IS NOT NULL
-        )",
+    let (revoked, caller_exists): (bool, bool) = match sqlx::query_as(
+        "SELECT
+            EXISTS(
+                SELECT 1 FROM auth_tokens
+                WHERE token_hash = $1 AND revoked_at IS NOT NULL
+            ),
+            EXISTS(
+                SELECT 1 FROM users
+                WHERE id = $2 AND deleted_at IS NULL
+            )",
     )
     .bind(&hash)
+    .bind(caller_id)
     .fetch_one(&state.db)
     .await
     {
-        Ok(revoked) => revoked,
+        Ok(row) => row,
         Err(e) => {
             tracing::error!(%e, "revocation lookup failed; failing closed");
             return Err((StatusCode::UNAUTHORIZED, "token validation unavailable"));
@@ -176,6 +203,17 @@ pub(crate) async fn validate_bearer(
 
     if revoked {
         return Err((StatusCode::UNAUTHORIZED, "token revoked"));
+    }
+
+    // Only enforced for an identity that names a UUID user: `caller_exists` is
+    // false whenever the bind was NULL, and an identity whose `user_id` is not a
+    // UUID has no row to find in the first place.
+    if caller_id.is_some() && !caller_exists {
+        tracing::warn!(
+            user_id = %identity.user_id,
+            "session token names a user that no longer exists; treating as logged out"
+        );
+        return Err((StatusCode::UNAUTHORIZED, "session user no longer exists"));
     }
 
     // Agent-typed tokens (minted by `issue_agent_token`) never reach this

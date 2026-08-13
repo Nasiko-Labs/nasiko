@@ -490,21 +490,22 @@ class McpPage extends HTMLElement {
         ${c.description ? this.#metaRow('Description', c.description) : ''}
       </div>
       <div id="detail-auth-section">${c.auth_type && c.auth_type !== 'none' ? '<div class="detail-loading">Checking connection…</div>' : ''}</div>
+      <section class="detail-section">
+        <h4 class="detail-subtitle">${icons.network('', 14)} Agent access</h4>
+        <div class="agent-access-card">
+          <div class="agent-picker">
+            <label for="detail-agent-select">Agent</label>
+            <auto-complete id="detail-agent-select" placeholder="Search agents…" aria-label="Agent"></auto-complete>
+          </div>
+          <div id="detail-agent-access-body">
+            <div class="agent-access-empty">${icons.network('', 28)}<p>Select an agent to manage its access to this connector</p></div>
+          </div>
+        </div>
+      </section>
       ${c.is_owner ? `
         <div class="detail-actions">
           <button class="btn-ghost danger" id="detail-delete" type="button">${icons.trash('', 14)} Delete connector</button>
         </div>` : ''}
-      <h4 class="detail-subtitle">${icons.network('', 14)} Agent access</h4>
-      <div class="agent-access-card">
-        <div class="agent-picker">
-          <label for="detail-agent-select">Agent</label>
-          <auto-complete id="detail-agent-select" placeholder="Search agents…" aria-label="Agent"></auto-complete>
-          <span class="agent-picker-hint">Select an agent to manage its access to this connector.</span>
-        </div>
-        <div id="detail-agent-access-body">
-          <div class="agent-access-empty">${icons.network('', 28)}<p>Select an agent to manage its access to this connector</p></div>
-        </div>
-      </div>
     `;
     body.querySelector('#detail-delete')?.addEventListener('click', async () => {
       if (await this.#deleteConnector(id)) modal.close();

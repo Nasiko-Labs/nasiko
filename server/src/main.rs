@@ -70,10 +70,14 @@ async fn main() {
 /// instead of relying on users to hard-refresh (assets aren't content-hashed,
 /// so a stale cached JS/CSS file would silently run against a new backend).
 /// 5 min is safe at a once-a-day deploy cadence; revisit if deploys get more frequent.
-// Debug builds serve from disk (rust-embed), so always revalidate there —
-// otherwise local UI edits appear stale for up to 5 minutes.
+// Debug builds serve from disk (rust-embed), so nothing is cached there at all:
+// `just run` is for editing the frontend, and a UI change must show up on the
+// next reload with no hard-refresh and no stale module. `no-store` rather than
+// `no-cache` because the latter still stores and revalidates, which leaves room
+// for a stale ES module to be reused. Use `just run-prod` to exercise the
+// release headers below.
 const STATIC_CACHE_CONTROL: &str = if cfg!(debug_assertions) {
-    "no-cache"
+    "no-store"
 } else {
     "max-age=300, must-revalidate"
 };

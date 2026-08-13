@@ -20,17 +20,27 @@
          incoming page was captured with an empty header and the whole shell
          cross-faded on every navigation. -->
     <script type="module" blocking="render" src="/common/components/app-header.js"></script>
+    <script type="module" src="/common/components/module-shell.js"></script>
+    <!-- Only the default view's module loads up front; module-shell imports the
+         others the first time the nested sidebar opens them. Each of these views
+         adopts its own stylesheet, so unlike agents.html there is nothing to
+         <link> here. -->
     <script type="module" src="/common/components/orchestrator-page.js"></script>
   </head>
   <body>
     <app-header></app-header>
-    <orchestrator-page>
+    <!-- `data-active-view` is authored, not left to JS: the orchestrate view's
+         desktop geometry (height cap, symmetric padding for the centred column)
+         is keyed on it in page-layout.css, and waiting for the shell to upgrade
+         would paint the landing page with the wrong box and then snap. -->
+    <module-shell module="orchestrator" default-view="orchestrate" data-active-view="orchestrate">
+      <!-- Owned by the shell, not by any view: this is what makes switching
+           views inside the module leave the sidebar untouched. -->
+      <app-module-nav module="orchestrator"></app-module-nav>
+      <orchestrator-page data-view="orchestrate" data-title="Orchestrate a task">
       <!-- Mirrors the loaded route screen: 72px hero icon, title + subtitle,
            recent-agents grid (96px cards), 88px composer, workflow banner —
            all in the page's centered --orch-column-w column. -->
-      <!-- Below 1024px the module nav is a disclosure bar above the content;
-           reserve it so the hero doesn't jump when the real nav arrives. -->
-      <div class="pre-modnav" style="align-self:stretch;"></div>
       <div style="display:flex;flex-direction:column;align-items:center;gap:0;width:min(100%,var(--orch-column-w));">
         <div class="skel-block" style="width:72px;height:72px;border-radius:var(--r-12);margin-bottom:var(--space-lg);"></div>
         <div class="skel-block" style="height:2rem;width:240px;margin-bottom:var(--space-xs);"></div>
@@ -43,6 +53,17 @@
         <div class="skel-block" style="height:88px;width:100%;border-radius:var(--radius-lg);"></div>
         <div class="skel-block" style="height:80px;width:100%;border-radius:var(--r-8);margin-top:var(--space-xl);"></div>
       </div>
-    </orchestrator-page>
+      </orchestrator-page>
+      <!-- Deferred views: a <template> keeps these elements un-upgraded, so they
+           run no code and issue no requests until first opened. -->
+      <template data-view="workflows" data-title="All workflows"
+                data-module="/common/components/workflows-page.js">
+        <workflows-page></workflows-page>
+      </template>
+      <template data-view="executions" data-title="Executions"
+                data-module="/common/components/executions-page.js">
+        <executions-page></executions-page>
+      </template>
+    </module-shell>
   </body>
 </html>

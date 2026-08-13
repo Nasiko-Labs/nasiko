@@ -410,7 +410,7 @@ export class AppNavSearch extends HTMLElement {
         (u) => hit(u.display_name, u.username, u.email),
         (u) => ({
           label: u.display_name || u.username || u.email,
-          value: `${pfx}/users.html`,
+          value: `${pfx}/organization.html?view=users`,
           subtitle: u.email || u.role || '',
         })),
       section('Pages', 'document', this.#navLinks,

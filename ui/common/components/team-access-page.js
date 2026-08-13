@@ -1,5 +1,4 @@
 import { showToast } from '/common/utils/toast.js';
-import '/common/components/app-module-nav.js';
 import '/common/components/app-modal.js';
 import '/common/components/app-button.js';
 
@@ -34,7 +33,6 @@ class TeamAccessPage extends HTMLElement {
       this.#ctx = await window.fetchOrgContext();
     } catch {
       this.innerHTML = `
-      <app-module-nav module="org"></app-module-nav>
       <p class="muted">Could not load your org context.</p>`;
       return;
     }
@@ -42,7 +40,6 @@ class TeamAccessPage extends HTMLElement {
     const canReassignPlacement = this.#ctx.is_superuser || this.#ctx.role === 'admin' || this.#ctx.role === 'department_manager';
 
     this.innerHTML = `
-      <app-module-nav module="org"></app-module-nav>
       <div class="page-head">
         <h1 class="title-page">Team access</h1>
         <span class="scope-line">Viewing as <span class="badge badge--info">${this.#esc(this.#ctx.role)}</span> — showing users in your ${this.#ctx.role === 'department_manager' ? 'department' : 'team'}.</span>

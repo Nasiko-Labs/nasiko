@@ -13,6 +13,14 @@
     <script>try{var t=localStorage.getItem('app-theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t;if(localStorage.getItem('app-rail-expanded-v2')==='true')document.documentElement.style.setProperty('--app-sidebar-width','var(--app-sidebar-width-expanded)')}catch(e){}</script>
     <link rel="stylesheet" href="/common/global.css" />
     <link rel="stylesheet" href="/common/components.css" />
+    <!-- The sibling views' sheets. Linked here rather than left to their own
+         modules: a view has to be fully styled the instant the shell mounts it,
+         and those modules are only imported when the view is first opened, so a
+         sheet arriving with them would paint one unstyled frame. (sessions-page
+         is the inline default view and still adopts its own sheet, since its
+         module is loaded up front.) -->
+    <link rel="stylesheet" href="/common/components/flows-page.css" />
+    <link rel="stylesheet" href="/common/components/resources-page.css" />
     <script type="module" src="/navigation.js"></script>
     <!-- blocking=render: the shell has to be painted (and view-transition-named)
          before the browser snapshots this document for the cross-document
@@ -21,15 +29,25 @@
          cross-faded on every navigation. -->
     <script type="module" blocking="render" src="/common/components/app-header.js"></script>
     <script type="module" src="/common/components/app-empty-state.js"></script>
+    <script type="module" src="/common/components/module-shell.js"></script>
+    <!-- Only the default view's module loads up front; module-shell imports the
+         others the first time the nested sidebar opens them. -->
     <script type="module" src="/common/components/sessions-page.js"></script>
   </head>
   <body>
     <app-header></app-header>
-    <sessions-page>
+    <module-shell module="observability" default-view="history">
+      <!-- Owned by the shell, not by any view: this is what makes switching
+           views inside the module leave the sidebar untouched. -->
+      <app-module-nav module="observability"></app-module-nav>
+      <sessions-page data-view="history" data-title="Execution history">
       <!-- Pre-upgrade paint: real header and filter field (neither needs a
            backend, and neither may move), shimmer only for the session rows.
            The component replaces all of this on upgrade — see
            common/styles/not-defined.css. -->
+      <!-- Stands in for the nav above, which has no footprint until it upgrades:
+           below 1024px that nav is a disclosure bar in normal flow, so without
+           this the whole header slides down when it arrives. -->
       <div class="pre-modnav"></div>
       <div class="pre-head pre-head--split" style="--pre-head-mb:var(--space-md);--pre-head-gap:var(--space-2xs);--pre-head-wrap:nowrap">
         <div>
@@ -81,6 +99,18 @@
           <div class="pre-td"><div class="pre-cell" style="width:70%"></div></div>
         </div>
       </div>
-    </sessions-page>
+      </sessions-page>
+      <!-- Deferred views: a <template> keeps these elements un-upgraded, so
+           they run no code and issue no requests until first opened — which
+           matters here because Resources starts a 5s poll the moment it does. -->
+      <template data-view="flows" data-title="Flows"
+                data-module="/common/components/flows-page.js">
+        <flows-page></flows-page>
+      </template>
+      <template data-view="resources" data-title="Resources"
+                data-module="/common/components/resources-page.js">
+        <resources-page></resources-page>
+      </template>
+    </module-shell>
   </body>
 </html>

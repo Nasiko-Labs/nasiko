@@ -169,7 +169,7 @@ class AgentCardPage extends HTMLElement {
         return url.pathname + url.search;
       }
     } catch { /* invalid referrer */ }
-    return '/your-agents.html';
+    return '/agents.html?view=your-agents';
   }
 
   #heroHtml(a, displayName) {
@@ -365,7 +365,7 @@ class AgentCardPage extends HTMLElement {
     try {
       const res = await apiFetch(`/agents/${encodeURIComponent(this.#agent.id)}`, { method: 'DELETE' });
       if (!res.ok) throw new Error(await res.text());
-      location.href = '/your-agents.html';
+      location.href = '/agents.html?view=your-agents';
     } catch (err) {
       showToast(`Failed to delete: ${err.message}`);
       btn.disabled = false;

@@ -2,7 +2,6 @@ import { icons } from "/common/utils/icons.js";
 import { attachSlidingIndicator } from "/common/utils/tab-indicator.js";
 import "/common/components/app-empty-state.js";
 import "/common/components/app-skeleton.js";
-import "/common/components/app-module-nav.js";
 
 // agents-page.css is <link>ed by the host page, not imported here: a sheet
 // pulled in by this module only exists once the module does, which is too late
@@ -133,7 +132,6 @@ class AgentsPage extends HTMLElement {
   /** Fallback shell — mirrors the static markup in web/agents.html. */
   #shell() {
     return `
-      <app-module-nav module="agents"></app-module-nav>
       <div class="page-top">
         <h1 class="title-page">Agent hub</h1>
         <!-- Deliberately count-free: the fleet size lands in the "All N" tab.

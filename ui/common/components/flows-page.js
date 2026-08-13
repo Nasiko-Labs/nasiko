@@ -1,5 +1,4 @@
 import '/common/components/smart-table.js';
-import '/common/components/app-module-nav.js';
 
 import styles from './flows-page.css' with { type: 'css' };
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
@@ -18,7 +17,6 @@ class FlowsPage extends HTMLElement {
     if (this.#initialized) return;
     this.#initialized = true;
     this.innerHTML = `
-      <app-module-nav module="observability"></app-module-nav>
       <header class="page-head">
         <div>
           <h1 class="title-page">Flows</h1>

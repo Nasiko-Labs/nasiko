@@ -20,9 +20,10 @@
   @media (max-width: 1023.98px) {
     app-module-nav { align-self: stretch; }
   }
-  :scope.has-response {
-    padding-top: var(--space-md);
-  }
+  /* The compact `.has-response` top pad lives with the rest of this host's
+     padding in page-layout.css, keyed on the shell that now owns it. Declaring
+     it here too would be the two-copies problem that file warns about — and the
+     copy here was simply dead, since the padding is no longer on this element. */
   .hero-icon {
     width: 72px;
     height: 72px;
@@ -70,12 +71,45 @@
     height: 88px;
   }
   /* ── Messages area ───────────────────────────────────────────────────── */
+  /* Grows with its content and lets the document scroll. Only the desktop
+     pinned layout (page-layout.css) makes this the internal scroller; keeping
+     `flex: 1` + `overflow-y: auto` at narrow widths gave it a zero-height box
+     inside an already-clipped host, so replies were unreachable. */
   .messages {
     width: min(100%, var(--orch-column-w));
     padding: var(--space-md) var(--space-md) var(--space-md) 0;
-    flex: 1;
-    overflow-y: auto;
-    min-height: 0;
+  }
+
+  @media (min-width: 1024px) {
+    .messages {
+      flex: 1;
+      overflow-y: auto;
+      min-height: 0;
+    }
+
+    /* Hero state, short window: the suggestion grid is the one thing that gives.
+       The host clips (that is what lets `.messages` be the scroller once a reply
+       arrives), so at 1024x700 four stacked cards pushed the composer and the
+       workflow banner out of the box with no scrollbar to find them.
+
+       Flex shrink is proportional to base size by default, which spread the
+       overflow across the icon, the headings and the banner as well — the banner
+       squashed to a sliver and the input still didn't fit. Everything above the
+       fold is therefore pinned to its intrinsic height (the composer already was)
+       and the grid alone absorbs the deficit, scrolling internally. */
+    :scope:not(.has-response) {
+      & .hero-icon,
+      & .title,
+      & .subtitle,
+      & .wf-banner {
+        flex-shrink: 0;
+      }
+
+      & .recent-agents {
+        min-height: 0;
+        overflow-y: auto;
+      }
+    }
   }
 
   .msg-row {

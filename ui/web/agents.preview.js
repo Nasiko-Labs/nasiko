@@ -1,6 +1,21 @@
-// Agents catalog page fixtures and scenarios
+// Agents module fixtures and scenarios. One page, four views (hub, your-agents,
+// import, builds) switched by the nested sidebar — so this file has to stub
+// every endpoint any of them calls, and each view gets a `view-*` scenario.
 export default {
   fetch: [
+    // your-agents view: upload provenance per card, and the deploy dialog's
+    // secret picker.
+    ["GET /api/agents/my-uploads", { data: [
+      { agent_name: "research-agent", upload_info: { upload_type: "github", status_message: null } },
+      { agent_name: "docs-agent", upload_info: { upload_type: "zip", status_message: "Building and deploying..." } },
+    ] }],
+    ["GET /api/secrets", [
+      { name: "OPENAI_API_KEY" },
+      { name: "GITHUB_TOKEN" },
+      { name: "DATABASE_URL" },
+    ]],
+    // import view: GitHub connect state for the two import routes.
+    ["GET /api/github/status", { connected: false }],
     [{ method: "GET", path: /^\/api\/agents/ }, {
       data: [
         { id: "a-001", version: "1.2.0", name: "coding-agent", display_name: "Coding Agent", image: "nasiko/coding:latest", status: "running", replicas: 1, description: "General-purpose coding assistant for any language. Supports code generation, review, debugging, and refactoring.", tags: ["devops", "code", "debugging"] },
@@ -44,6 +59,32 @@ export default {
     ] }],
   ],
   scenarios: {
+    // ── The module's views ──────────────────────────────────────────────────
+    // Each opens the way a shared link does (`?view=`), which also proves the
+    // shell honours the param on load rather than only on a nav click.
+    "view-your-agents": async (page) => {
+      await page.goto(`${page.url().split("?")[0]}?view=your-agents`);
+      await page.waitForSelector(".agent-card-name");
+      await page.waitForTimeout(300);
+    },
+    "view-import": async (page) => {
+      await page.goto(`${page.url().split("?")[0]}?view=import`);
+      await page.waitForSelector("add-agent-page .page-icon");
+      await page.waitForTimeout(300);
+    },
+    "view-builds": async (page) => {
+      await page.goto(`${page.url().split("?")[0]}?view=builds`);
+      await page.waitForSelector("builds-page .page-head");
+      await page.waitForTimeout(400);
+    },
+    // Switching by clicking the nested sidebar: the sidebar itself must not
+    // change between this and the default capture.
+    "view-switch-click": async (page) => {
+      await page.waitForSelector(".card-name");
+      await page.click('app-module-nav [data-section="builds"]');
+      await page.waitForSelector("builds-page .page-head");
+      await page.waitForTimeout(400);
+    },
     // ⌘F global palette anchored under the topbar search field: one query
     // that hits Agents, Workflows, Executions, Chats, Toolkits, Builds,
     // Users, and Pages at once.

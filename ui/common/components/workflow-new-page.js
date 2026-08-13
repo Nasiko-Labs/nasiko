@@ -28,7 +28,7 @@ class WorkflowNewPage extends HTMLElement {
     this.innerHTML = `
       <div class="col">
         <header class="page-head">
-          <a class="back-btn" href="/workflows.html" aria-label="Back to workflows">${icons.chevronLeft('', 16)}</a>
+          <a class="back-btn" href="/index.html?view=workflows" aria-label="Back to workflows">${icons.chevronLeft('', 16)}</a>
           <input class="name-input" id="wf-name" placeholder="Name this workflow" aria-label="Workflow name" />
           <span class="draft-pill">Draft</span>
         </header>
@@ -72,7 +72,7 @@ class WorkflowNewPage extends HTMLElement {
         <footer class="foot">
           <span class="footnote" id="footnote"></span>
           <div class="foot-actions">
-            <a class="cancel-link" href="/workflows.html">Cancel</a>
+            <a class="cancel-link" href="/index.html?view=workflows">Cancel</a>
             <app-button variant="secondary" size="sm" id="save-btn">Save workflow</app-button>
             <app-button variant="primary" size="sm" id="save-run-btn">${icons.play('', 12)} Save and run</app-button>
           </div>

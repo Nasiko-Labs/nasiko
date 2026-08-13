@@ -17,6 +17,12 @@
          module, so the static shell below is fully styled at first paint.
          agents-page.js must therefore NOT also adopt it. -->
     <link rel="stylesheet" href="/common/components/agents-page.css" />
+    <!-- The sibling views' sheets. Linked here rather than imported by their
+         modules for the same reason: a view must be fully styled the instant the
+         shell mounts it, and those modules are loaded on demand. -->
+    <link rel="stylesheet" href="/common/components/your-agents-page.css" />
+    <link rel="stylesheet" href="/common/components/add-agent-page.css" />
+    <link rel="stylesheet" href="/common/components/builds-page.css" />
     <script type="module" src="/navigation.js"></script>
     <!-- blocking=render: the shell has to be painted (and view-transition-named)
          before the browser snapshots this document for the cross-document
@@ -24,17 +30,23 @@
          incoming page was captured with an empty header and the whole shell
          cross-faded on every navigation. -->
     <script type="module" blocking="render" src="/common/components/app-header.js"></script>
+    <script type="module" src="/common/components/module-shell.js"></script>
+    <!-- Only the default view's module loads up front; module-shell imports the
+         others the first time the nested sidebar opens them. -->
     <script type="module" src="/common/components/agents-page.js"></script>
   </head>
   <body>
     <app-header></app-header>
-    <agents-page>
+    <module-shell module="agents" default-view="hub">
+      <!-- Owned by the shell, not by any view: this is what makes switching
+           views inside the module leave the sidebar untouched. -->
+      <app-module-nav module="agents"></app-module-nav>
+      <agents-page data-view="hub" data-title="Agent hub">
       <!-- Static shell: everything that needs no backend, in the component's
            own class names so it paints for real before the module loads. The
            component binds to these nodes instead of re-rendering them, and
            fills only the two API-fed regions (#category-tabs, #agents-grid),
            which start as the same skeletons the component would draw. -->
-      <app-module-nav module="agents"></app-module-nav>
       <div class="page-top">
         <h1 class="title-page">Agent hub</h1>
         <!-- Deliberately count-free: the fleet size lands in the "All N" tab.
@@ -95,6 +107,21 @@
           <div class="skel-line skel-line--desc2"></div>
         </div>
       </div>
-    </agents-page>
+      </agents-page>
+      <!-- Deferred views: a <template> keeps these elements un-upgraded, so
+           they run no code and issue no requests until first opened. -->
+      <template data-view="your-agents" data-title="Your agents"
+                data-module="/common/components/your-agents-page.js">
+        <your-agents-page></your-agents-page>
+      </template>
+      <template data-view="import" data-title="Import agent"
+                data-module="/common/components/add-agent-page.js">
+        <add-agent-page></add-agent-page>
+      </template>
+      <template data-view="builds" data-title="Builds"
+                data-module="/common/components/builds-page.js">
+        <builds-page></builds-page>
+      </template>
+    </module-shell>
   </body>
 </html>

@@ -204,6 +204,9 @@
 
   /* ── Card — surface + hover lift: common/styles/surface.css ─────────────── */
   .agent-card {
+    /* Anchors `.agent-card-source`. Without it that badge resolved against
+       whichever ancestor happened to be positioned, so every card's badge
+       stacked in one corner of the page instead of sitting on its own card. */
     position: relative;
     padding: var(--s-12) var(--space-md);
     display: flex;

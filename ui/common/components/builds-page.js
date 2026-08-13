@@ -1,5 +1,4 @@
 import '/common/components/smart-table.js';
-import '/common/components/app-module-nav.js';
 
 import styles from './builds-page.css' with { type: 'css' };
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
@@ -16,7 +15,6 @@ class BuildsPage extends HTMLElement {
     if (this.#initialized) return;
     this.#initialized = true;
     this.innerHTML = `
-      <app-module-nav module="agents"></app-module-nav>
       <header class="page-head">
         <div>
           <h1 class="title-page">Builds</h1>
