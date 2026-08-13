@@ -121,8 +121,13 @@ fn agent_query(agent_id: &str) -> String {
 /// span with `session.id` set — i.e., user-facing request traces only,
 /// excluding infrastructure traces (a2a-sdk remove_sink, dispatch loops, etc.).
 fn agent_session_query(agent_id: &str) -> String {
+    // Two separate span selectors joined by `&&` = trace-level AND.
+    // `session.id` lives on the server's proxy/dispatch spans (service.name =
+    // "nasiko"), while the agent's own spans carry service.name = agent name.
+    // A single-selector `{A && B}` would require both on the *same* span and
+    // always return zero results.
     format!(
-        r#"{{span.session.id != "" && resource.service.name="{0}"}}"#,
+        r#"{{span.session.id != ""}} && {{resource.service.name="{0}"}}"#,
         agent_id
     )
 }
