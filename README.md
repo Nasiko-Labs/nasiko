@@ -7,18 +7,64 @@
   with a single command</strong> — no gateway, no sidecar, no glue code.
 </p>
 
-<!-- Shieldcn badges: badge groups + colored single badges -->
+<!-- Shieldcn badges: badge groups + colored single badges, tuned for both GitHub color schemes -->
 <p align="center">
   <a href="https://github.com/Nasiko-Labs/nasiko/stargazers">
-    <img src="https://shieldcn.dev/group/github/stars/Nasiko-Labs/nasiko+github/forks/Nasiko-Labs/nasiko+github/release/Nasiko-Labs/nasiko+github/license/Nasiko-Labs/nasiko.svg?variant=outline&theme=blue" alt="GitHub stars · forks · release · license" />
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/github/stars/Nasiko-Labs/nasiko.svg?variant=secondary&mode=dark&theme=amber&font=geist-mono" />
+      <img src="https://shieldcn.dev/github/stars/Nasiko-Labs/nasiko.svg?variant=secondary&mode=light&theme=amber&font=geist-mono" alt="GitHub stars" />
+    </picture>
+  </a>
+  <a href="https://github.com/Nasiko-Labs/nasiko/network/members">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/github/forks/Nasiko-Labs/nasiko.svg?variant=secondary&mode=dark&theme=sky&font=geist-mono" />
+      <img src="https://shieldcn.dev/github/forks/Nasiko-Labs/nasiko.svg?variant=secondary&mode=light&theme=sky&font=geist-mono" alt="GitHub forks" />
+    </picture>
+  </a>
+  <a href="https://github.com/Nasiko-Labs/nasiko/releases">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/github/release/Nasiko-Labs/nasiko.svg?variant=secondary&mode=dark&theme=violet&font=geist-mono" />
+      <img src="https://shieldcn.dev/github/release/Nasiko-Labs/nasiko.svg?variant=secondary&mode=light&theme=violet&font=geist-mono" alt="Latest release" />
+    </picture>
+  </a>
+  <a href="https://github.com/Nasiko-Labs/nasiko/blob/main/LICENSE">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/github/license/Nasiko-Labs/nasiko.svg?variant=secondary&mode=dark&theme=rose&font=geist-mono" />
+      <img src="https://shieldcn.dev/github/license/Nasiko-Labs/nasiko.svg?variant=secondary&mode=light&theme=rose&font=geist-mono" alt="License" />
+    </picture>
   </a>
 </p>
 <p align="center">
-  <a href="https://github.com/Nasiko-Labs/nasiko"><img src="https://shieldcn.dev/badge/Language-Rust-orange.svg?logo=rust" alt="Built with Rust" /></a>
-  <a href="https://github.com/Nasiko-Labs/nasiko/issues"><img src="https://shieldcn.dev/github/issues/Nasiko-Labs/nasiko.svg?variant=outline" alt="Open issues" /></a>
-  <a href="https://github.com/Nasiko-Labs/nasiko/pulls"><img src="https://shieldcn.dev/github/prs/Nasiko-Labs/nasiko.svg?variant=outline" alt="Pull requests" /></a>
-  <a href="https://github.com/Nasiko-Labs/nasiko"><img src="https://shieldcn.dev/github/ci/Nasiko-Labs/nasiko.svg?variant=outline" alt="CI" /></a>
-  <a href="https://github.com/Nasiko-Labs/nasiko/blob/main/LICENSE"><img src="https://shieldcn.dev/badge/License-Apache_2.0-blue.svg" alt="Apache-2.0" /></a>
+  <a href="https://github.com/Nasiko-Labs/nasiko">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/badge/Language-Rust-orange.svg?logo=rust&mode=dark&font=geist-mono" />
+      <img src="https://shieldcn.dev/badge/Language-Rust-orange.svg?logo=rust&mode=light&font=geist-mono" alt="Built with Rust" />
+    </picture>
+  </a>
+  <a href="https://github.com/Nasiko-Labs/nasiko/issues">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/github/issues/Nasiko-Labs/nasiko.svg?variant=secondary&mode=dark&theme=blue&font=geist-mono" />
+      <img src="https://shieldcn.dev/github/issues/Nasiko-Labs/nasiko.svg?variant=secondary&mode=light&theme=blue&font=geist-mono" alt="Open issues" />
+    </picture>
+  </a>
+  <a href="https://github.com/Nasiko-Labs/nasiko/pulls">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/github/prs/Nasiko-Labs/nasiko.svg?variant=secondary&mode=dark&theme=green&font=geist-mono" />
+      <img src="https://shieldcn.dev/github/prs/Nasiko-Labs/nasiko.svg?variant=secondary&mode=light&theme=green&font=geist-mono" alt="Pull requests" />
+    </picture>
+  </a>
+  <a href="https://github.com/Nasiko-Labs/nasiko">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/github/ci/Nasiko-Labs/nasiko.svg?variant=secondary&mode=dark&theme=fuchsia&font=geist-mono" />
+      <img src="https://shieldcn.dev/github/ci/Nasiko-Labs/nasiko.svg?variant=secondary&mode=light&theme=fuchsia&font=geist-mono" alt="CI" />
+    </picture>
+  </a>
+  <a href="https://github.com/Nasiko-Labs/nasiko/blob/main/LICENSE">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/badge/License-Apache_2.0-teal.svg?mode=dark&font=geist-mono" />
+      <img src="https://shieldcn.dev/badge/License-Apache_2.0-teal.svg?mode=light&font=geist-mono" alt="Apache-2.0" />
+    </picture>
+  </a>
 </p>
 
 ## What is Nasiko?
