@@ -117,9 +117,24 @@ pub(crate) async fn list_providers(
 
 /// Collapse provider-ordered rows into per-provider groups. Relies on the query's
 /// `ORDER BY provider` so each provider's rows arrive contiguously.
+/// Normalize legacy provider names so the API returns a single canonical name.
+fn normalize_provider(name: &str) -> &str {
+    match name {
+        "google" => "gemini",
+        other => other,
+    }
+}
+
+/// Providers hidden from the catalog until their router integration is ready.
+const HIDDEN_PROVIDERS: &[&str] = &["groq", "deepseek"];
+
 fn group_by_provider(rows: Vec<PricingRow>) -> Vec<ProviderCatalog> {
     let mut out: Vec<ProviderCatalog> = Vec::new();
     for row in rows {
+        let provider = normalize_provider(&row.provider).to_owned();
+        if HIDDEN_PROVIDERS.contains(&provider.as_str()) {
+            continue;
+        }
         let entry = ModelEntry {
             model: row.model,
             input_price_per_1m: row.input_price_per_1m.to_f64().unwrap_or(0.0),
@@ -131,12 +146,13 @@ fn group_by_provider(rows: Vec<PricingRow>) -> Vec<ProviderCatalog> {
             effective_from: row.effective_from,
             effective_until: row.effective_until,
         };
-        match out.last_mut() {
-            Some(group) if group.provider == row.provider => group.models.push(entry),
-            _ => out.push(ProviderCatalog {
-                provider: row.provider,
+        if let Some(group) = out.iter_mut().find(|g| g.provider == provider) {
+            group.models.push(entry);
+        } else {
+            out.push(ProviderCatalog {
+                provider,
                 models: vec![entry],
-            }),
+            });
         }
     }
     out

@@ -86,12 +86,12 @@ const MODULE_NAVS = {
     title: 'Settings', icon: 'settings',
     groups: [
       { label: 'Workspace', items: [
-        { label: 'General', section: 'general', url: '/settings.html' },
-        { label: 'Flow limits', section: 'limits', url: '/settings.html' },
-        { label: 'Registry', section: 'registry', url: '/settings.html' },
+        { label: 'General', section: 'general' },
+        { label: 'Flow limits', section: 'limits' },
+        { label: 'Registry', section: 'registry' },
       ]},
       { label: 'Security', items: [
-        { label: 'Single sign-on', section: 'sso', url: '/settings.html' },
+        { label: 'Single sign-on', section: 'sso' },
         { label: 'Secrets', url: '/secrets.html' },
       ]},
     ],
@@ -261,6 +261,14 @@ window.fetchLlmConfigs = async () => {
 window.createLlmConfig = async (body) => {
   return fetchApi('/llm-configs', {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+};
+
+window.updateLlmConfig = async (id, body) => {
+  return fetchApi(`/llm-configs/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
