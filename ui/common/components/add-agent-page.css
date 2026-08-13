@@ -37,7 +37,7 @@
     display: flex;
     align-items: center;
     gap: var(--space-md);
-    width: min(100%, 780px);
+    width: 100%;
     padding: var(--space-md) var(--space-lg);
     border-radius: var(--r-8);
     background: var(--bg-input);
@@ -93,11 +93,14 @@
     display: grid;
     grid-template-columns: repeat(3, 1fr);
     gap: var(--space-md);
-    width: min(100%, 1020px);
+    /* No max-width cap: the 1020px column left the three cards cramped, wrapping
+       every title onto two lines while the card had width to spare. The host's
+       padding (page-layout.css) is what bounds this now. */
+    width: 100%;
   }
 
   @media (max-width: 900px) {
-    .method-grid { grid-template-columns: 1fr; width: min(100%, 520px); }
+    .method-grid { grid-template-columns: 1fr; }
   }
 
   /* Surface + hover lift: common/styles/surface.css */

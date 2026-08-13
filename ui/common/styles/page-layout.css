@@ -267,32 +267,62 @@ login-page {
        `:has()` on the orchestrator view would clip the scrolling tables its
        sibling views are. Desktop only — see the base rule above.
 
-       The pad is a third of what it was (16dvh, i.e. 128px on a 800px-tall
-       window): in a box that clips, every pixel above the hero is a pixel the
-       composer and the workflow banner below it can lose. It scales with height
-       so a tall window still gets air, and the `max()` floor keeps a short one
-       from crowding the title against the card edge. */
-    padding-top: max(var(--space-xl), 6dvh);
+       Block padding is symmetric and thin so the hero column can be centered in
+       what's left (see the view rule below); a deep top pad would push the
+       "centered" block visibly low, and in a box that clips every pixel above
+       the hero is a pixel the composer and the banner below it can lose. */
+    padding-block: var(--space-md);
     height: calc(100dvh - var(--shell-topbar-height) - var(--s-12));
     min-height: 0;
+    /* `body` is a flex column and global.css gives its children `flex: 1 1 0%`,
+       which makes flex resolution — not the `height` above — the shell's used
+       main size, and an *indefinite* one: the view's `height: 100%` resolved to
+       `auto`, so the hero sat at the top of a box 200px taller than itself with
+       nothing for `justify-content` to center. `flex: none` hands sizing back to
+       `height`; chat-page does the same for the same reason (below). */
+    flex: none;
     overflow: hidden;
-  }
-
-  /* Once a reply arrives the hero collapses and the transcript needs the room,
-     so the deep pad above becomes a thin one. `.has-response` is a runtime class
-     on the view, but the padding belongs to the shell — hence `:has()` rather
-     than a rule on the view, which could not reach it. */
-  module-shell[data-active-view="orchestrate"]:has(> orchestrator-page.has-response) {
-    padding-top: var(--space-md);
   }
 
   /* The view fills that box and does the flex-column work itself; its own
-     padding would double the shell's. */
+     padding would double the shell's. `justify-content` centers the hero
+     column vertically — inert once a reply arrives, since `.messages` then
+     takes `flex: 1` and there is no free space left to distribute. */
   module-shell[data-active-view="orchestrate"] > orchestrator-page {
     height: 100%;
     min-height: 0;
+    justify-content: center;
     padding: 0;
     overflow: hidden;
+  }
+
+  /*
+    Import agent: nav gutter on the left, the card's standard content pad on the
+    right, so the chooser spans the whole card instead of a narrow column.
+    Mirroring the 288px nav gutter on the right (to center the block on the card)
+    cost ~290px of the row the three chooser cards share and squeezed every card
+    title onto two lines — width beats a perfectly symmetric frame here. The
+    hero, headings and cards all center themselves inside this box.
+
+    A flex *column* (over the shell's base `block`) is what gives the view a
+    definite height to center in: the card's `min-height` (global.css) is the
+    flex container's, and the stretched view inherits it without this file
+    restating that calc. Column, not row, so a module nav that has not upgraded
+    to its absolute position yet still stacks above the view instead of being
+    laid out beside it. No `height`/`overflow` here — unlike orchestrate this
+    page has no internal scroller, so it must be free to outgrow the card and
+    let the document scroll.
+  */
+  module-shell[data-active-view="import"] {
+    display: flex;
+    flex-direction: column;
+    padding-inline: calc(224px + var(--s-64)) var(--s-64);
+  }
+
+  module-shell[data-active-view="import"] > add-agent-page {
+    flex: 1;
+    justify-content: center;
+    padding-inline: 0;
   }
 
   /* Chat fills the floating card exactly (topbar + 16px card margins). */

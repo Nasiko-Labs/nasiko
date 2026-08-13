@@ -105,6 +105,13 @@
         flex-shrink: 0;
       }
 
+      /* No transcript yet, so this is an empty box — with the `flex: 1` above it
+         still grew to eat every pixel of free space in the capped host, which
+         both pinned the hero to the top edge (nothing left for the host's
+         `justify-content: center`, page-layout.css) and pushed the composer and
+         banner apart. It becomes the scroller again once `.has-response` lands. */
+      & .messages { flex: none; }
+
       & .recent-agents {
         min-height: 0;
         overflow-y: auto;
