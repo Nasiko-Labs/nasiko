@@ -22,7 +22,6 @@ class ChatPage extends HTMLElement {
   #agentLabel = null;
   #lastUserContent = null;
   #sampleQueries = [];
-  #sending = false;
 
   connectedCallback() {
     if (this.#initialized) return;
@@ -38,6 +37,8 @@ class ChatPage extends HTMLElement {
 
     this.#render();
     this.#bindEvents();
+
+    const prefillQuery = params.get("query");
 
     if (this.#sessionId) {
       const messagesEl = this.querySelector("#messages");
@@ -55,6 +56,15 @@ class ChatPage extends HTMLElement {
         </div></div>
       `;
       this.#loadMessages(messagesEl);
+    } else if (prefillQuery) {
+      // Skill link from agent card — pre-fill and auto-send the query.
+      const chatInput = this.querySelector("#chat-input");
+      const textarea = chatInput?.querySelector('#textarea');
+      if (textarea) {
+        textarea.value = prefillQuery;
+        textarea.focus();
+      }
+      if (this.#agentId) this.#loadSampleQueries();
     } else if (this.#agentId) {
       this.#loadSampleQueries();
     }
@@ -105,7 +115,7 @@ class ChatPage extends HTMLElement {
   async #loadSampleQueries() {
     try {
       const res = await apiFetch(`/agents/${encodeURIComponent(this.#agentId)}`);
-      if (!res.ok) { console.warn('loadSampleQueries: fetch failed', res.status); return; }
+      if (!res.ok) return;
       const body = await res.json();
       const agent = body.data || body;
       if (agent.display_name) {
@@ -114,15 +124,15 @@ class ChatPage extends HTMLElement {
       const skills = agent.skills || [];
       const queries = skills
         .map(s => s.sample_query || (Array.isArray(s.examples) && s.examples[0]) || null)
-        .filter(Boolean)
-        .slice(0, 3);
-      if (!queries.length) { console.warn('loadSampleQueries: no examples found in skills', skills); return; }
+        .filter(Boolean);
+      if (!queries.length) return;
       this.#sampleQueries = queries;
       const welcome = this.querySelector('.welcome-state');
-      if (!welcome) { console.warn('loadSampleQueries: .welcome-state not found in DOM'); return; }
-      welcome.outerHTML = this.#renderWelcome(queries);
-      this.#bindWelcomeChips();
-    } catch (err) { console.warn('loadSampleQueries failed:', err); }
+      if (welcome) {
+        welcome.outerHTML = this.#renderWelcome(queries);
+        this.#bindWelcomeChips();
+      }
+    } catch { /* non-critical */ }
   }
 
   #bindWelcomeChips() {
@@ -140,7 +150,6 @@ class ChatPage extends HTMLElement {
 
   #bindEvents() {
     const messagesEl = this.querySelector("#messages");
-    const chatInput = this.querySelector("#chat-input");
 
     // Welcome prompt chips
     this.#bindWelcomeChips();
@@ -189,8 +198,6 @@ class ChatPage extends HTMLElement {
   }
 
   async #sendMessage(content) {
-    if (this.#sending) return;
-    this.#sending = true;
     const messagesEl = this.querySelector("#messages");
     const chatInput = this.querySelector("#chat-input");
 
@@ -296,7 +303,6 @@ class ChatPage extends HTMLElement {
       this.#appendMsg(messagesEl, "assistant", `Error: ${err.message}`);
       this.#updateRetryButtons(messagesEl);
     } finally {
-      this.#sending = false;
       chatInput.setLoading(false);
     }
   }

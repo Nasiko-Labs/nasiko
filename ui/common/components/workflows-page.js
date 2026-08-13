@@ -11,6 +11,7 @@ import { icons } from '/common/utils/icons.js';
 import { showToast } from '/common/utils/toast.js';
 import { confirmDialog } from '/common/utils/confirm-dialog.js';
 import { timeAgo, formatDisplay } from '/common/utils/date-utils.js';
+import '/common/components/app-module-nav.js';
 import '/common/components/app-action-menu.js';
 
 import styles from './workflows-page.css' with { type: 'css' };
@@ -32,6 +33,7 @@ class WorkflowsPage extends HTMLElement {
     this.#initialized = true;
 
     this.innerHTML = `
+      <app-module-nav module="orchestrator"></app-module-nav>
       <header class="page-head">
         <div class="page-head-text">
           <h1 class="title-page">Workflows</h1>
