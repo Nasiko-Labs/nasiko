@@ -319,6 +319,90 @@ async fn upload_reuses_agent_on_repeat_name() {
 
 #[tokio::test]
 #[serial]
+async fn reupload_without_writable_field_keeps_stored_writable() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+
+    let fetch_writable = |agent_id: uuid::Uuid| {
+        sqlx::query_as::<_, (bool, Option<String>)>(
+            "SELECT writable, writable_path FROM agents WHERE id = $1",
+        )
+        .bind(agent_id)
+        .fetch_one(&server.db)
+    };
+
+    // First upload opts in to persistent storage at a custom mount point.
+    let first: Value = upload(
+        &server,
+        uid,
+        vec![
+            ("name", "keeps-writable".into()),
+            ("version_tag", "1.0.0".into()),
+            ("writable", "true".into()),
+            ("writable_path", "/app/data".into()),
+        ],
+        Some(make_valid_structure_zip()),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let agent_id: uuid::Uuid = first["data"]["agent_id"].as_str().unwrap().parse().unwrap();
+
+    // Plain re-upload of a new version. The CLI omits both writable fields
+    // unless the flags are passed, and absent must mean "keep the stored
+    // values" — an unconditional overwrite here silently detached the agent
+    // from its volume (and moved the mount back to /workspace).
+    let second: Value = upload(
+        &server,
+        uid,
+        vec![
+            ("name", "keeps-writable".into()),
+            ("version_tag", "1.0.1".into()),
+        ],
+        Some(make_valid_structure_zip()),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(first["data"]["agent_id"], second["data"]["agent_id"]);
+
+    let (writable, writable_path) = fetch_writable(agent_id).await.unwrap();
+    assert!(writable, "re-upload without the field must keep writable=true");
+    assert_eq!(
+        writable_path.as_deref(),
+        Some("/app/data"),
+        "re-upload without the field must not move the mount"
+    );
+
+    // Explicit `writable=false` is still honored — carry-forward applies only
+    // when the field is absent, opting out stays possible.
+    let res = upload(
+        &server,
+        uid,
+        vec![
+            ("name", "keeps-writable".into()),
+            ("version_tag", "1.0.2".into()),
+            ("writable", "false".into()),
+        ],
+        Some(make_valid_structure_zip()),
+    )
+    .await;
+    assert_eq!(res.status(), 202);
+
+    let (writable, _) = fetch_writable(agent_id).await.unwrap();
+    assert!(
+        !writable,
+        "explicit writable=false must still disable the mount"
+    );
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
 async fn upload_rejects_reused_version_before_build() {
     // Re-uploading a version already in this agent's history must be rejected
     // synchronously, before a build is even queued — otherwise the post-build

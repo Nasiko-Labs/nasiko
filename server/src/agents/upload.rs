@@ -86,11 +86,14 @@ pub(crate) struct UploadAndDeployForm {
     ports: Option<String>,
     /// JSON object of extra env vars, e.g. `{"FOO":"bar"}`.
     env: Option<String>,
-    /// `"true"` to mount a persistent, private-per-agent directory at
-    /// `/workspace` (default: not writable).
+    /// `"true"`/`"false"` to mount / not mount a persistent, private-per-agent
+    /// directory at `/workspace`. Tri-state: omit the field to keep an existing
+    /// agent's stored setting (false for a new agent) — the CLI only sends it
+    /// when `--writable` was passed.
     writable: Option<String>,
     /// Container-side mount target for the writable volume (`--writable-path`).
-    /// Absolute path; implies `writable`. Unset = `/workspace`.
+    /// Absolute path; implies `writable`. Omit to keep an existing agent's
+    /// stored path (`/workspace` for a new agent).
     writable_path: Option<String>,
 }
 
@@ -314,9 +317,15 @@ pub(crate) async fn upload_and_deploy(
     // Which LLM SDK the agent's code speaks (drives gateway env injection). Default openai.
     let mut inbound_format: Option<String> = None;
     // Mounts a persistent, private-per-agent directory at /workspace (see
-    // DeploymentSpec::writable's doc comment). Default false.
-    let mut writable = false;
+    // DeploymentSpec::writable's doc comment). Tri-state: the CLI omits the
+    // field entirely unless `--writable` was passed, and for an existing agent
+    // "not specified" must mean "keep the stored value" — collapsing it to
+    // false would silently detach the agent from its volume on every plain
+    // re-upload of a new version. None = carry forward (false for a new agent).
+    let mut writable: Option<bool> = None;
     // Container-side mount target (--writable-path); implies `writable`.
+    // Tri-state for the same reason: an unspecified path must not move an
+    // existing agent's mount back to /workspace.
     let mut writable_path: Option<String> = None;
 
     while let Ok(Some(field)) = multipart.next_field().await {
@@ -325,7 +334,13 @@ pub(crate) async fn upload_and_deploy(
             "version_tag" => version_tag = field.text().await.ok(),
             "inbound_format" => inbound_format = field.text().await.ok(),
             "writable" => {
-                writable = field.text().await.ok().as_deref() == Some("true");
+                // Anything other than an explicit true/false (unreadable field,
+                // junk value) counts as "not specified", not as false.
+                writable = match field.text().await.ok().as_deref() {
+                    Some("true") => Some(true),
+                    Some("false") => Some(false),
+                    _ => None,
+                };
             }
             "writable_path" => {
                 writable_path = field.text().await.ok().filter(|s| !s.is_empty());
@@ -384,7 +399,7 @@ pub(crate) async fn upload_and_deploy(
     // deploy without storage), and a bad path is a caller error — reject now
     // with a 400 instead of surfacing it minutes later as a failed deploy.
     if let Some(path) = &writable_path {
-        writable = true;
+        writable = Some(true);
         if let Err(e) = nasiko_runtime::validate_writable_path(path) {
             return (StatusCode::BAD_REQUEST, e).into_response();
         }
@@ -489,17 +504,27 @@ pub(crate) async fn upload_and_deploy(
     // Atomic INSERT ... ON CONFLICT against the (owner_id, name) partial unique
     // index (migration 015) — closes the SELECT-then-INSERT TOCTOU that let two
     // concurrent same-name uploads create duplicate rows (SRV-2).
-    let agent_id = {
-        match sqlx::query_scalar::<_, Uuid>(
+    //
+    // `writable`/`writable_path` COALESCE on conflict, not overwrite: a NULL
+    // bind means the caller didn't specify them (the CLI omits both fields
+    // unless the flags were passed), and an unconditional `EXCLUDED.writable`
+    // would reset the flag to false on every plain re-upload — silently
+    // detaching a `--writable` agent from its volume, the exact drop the
+    // update/rollback/restart paths already guard against. RETURNING hands
+    // back the effective values so the deploy uses the DB's truth. (There is
+    // deliberately no way to clear a stored writable_path back to NULL here —
+    // pass an explicit new path instead; clearing would move the mount.)
+    let (agent_id, writable, writable_path) = {
+        match sqlx::query_as::<_, (Uuid, bool, Option<String>)>(
             "INSERT INTO agents (name, owner_id, version, image, status, inbound_format, writable, writable_path) \
-             VALUES ($1, $2, $3, $4, 'deploying', $5, $6, $7) \
+             VALUES ($1, $2, $3, $4, 'deploying', $5, COALESCE($6, false), $7) \
              ON CONFLICT (owner_id, name) WHERE deleted_at IS NULL \
              DO UPDATE SET version = EXCLUDED.version, image = EXCLUDED.image, \
                            inbound_format = EXCLUDED.inbound_format, \
-                           writable = EXCLUDED.writable, \
-                           writable_path = EXCLUDED.writable_path, \
+                           writable = COALESCE($6, agents.writable), \
+                           writable_path = COALESCE($7, agents.writable_path), \
                            status = 'deploying', updated_at = now() \
-             RETURNING id",
+             RETURNING id, writable, writable_path",
         )
         .bind(&name)
         .bind(owner_id)
@@ -511,7 +536,7 @@ pub(crate) async fn upload_and_deploy(
         .fetch_one(&mut *tx)
         .await
         {
-            Ok(id) => id,
+            Ok(row) => row,
             Err(e) => {
                 tracing::error!(%e, agent_name = %name, "upload: register agent db error");
                 let _ = tokio::fs::remove_dir_all(zip_path.parent().unwrap_or(&zip_path)).await;
