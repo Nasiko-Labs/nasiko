@@ -86,12 +86,12 @@ const MODULE_NAVS = {
     title: 'Settings', icon: 'settings',
     groups: [
       { label: 'Workspace', items: [
-        { label: 'General', section: 'general' },
-        { label: 'Flow limits', section: 'limits' },
-        { label: 'Registry', section: 'registry' },
+        { label: 'General', section: 'general', url: '/settings.html' },
+        { label: 'Flow limits', section: 'limits', url: '/settings.html' },
+        { label: 'Registry', section: 'registry', url: '/settings.html' },
       ]},
       { label: 'Security', items: [
-        { label: 'Single sign-on', section: 'sso' },
+        { label: 'Single sign-on', section: 'sso', url: '/settings.html' },
         { label: 'Secrets', url: '/secrets.html' },
       ]},
     ],

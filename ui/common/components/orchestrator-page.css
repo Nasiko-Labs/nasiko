@@ -32,7 +32,6 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    margin-bottom: var(--space-lg);
   }
   :scope.has-response .hero-icon { display: none; }
   .title {
@@ -200,6 +199,85 @@
     align-self: center;
     padding: 0 var(--space-2xs);
   }
+
+  /* ── Empty state (no running agents) — mirrors the workflows-page one ──── */
+  /* Drop the hero's top offset and let the auto margins centre the block in
+     what's left, so the module nav still sits at the top on mobile (where it
+     is in flow) instead of being centred along with the content. */
+  :scope.is-empty { padding-top: var(--space-md); }
+  /* Horizontally, centre on the space *right* of the nav gutter. The shared
+     rule in page-layout.css pads both sides by the gutter so the 820px composer
+     column stays centred on the card; with only this narrow block left, the
+     200px nav is the sole occupant of the left gutter and the block reads as
+     sitting left of centre. Desktop only — below 1024px the nav is a bar. */
+  @media (min-width: 1024px) {
+    :scope.is-empty { padding-inline: calc(224px + var(--s-64)) var(--s-64); }
+  }
+  /* Title/sub typography and the sub's pull-up match workflows-page.css so the
+     two empty states read identically. */
+  .empty-title {
+    margin: 0;
+    font-family: var(--font-display);
+    font-size: 20px;
+    line-height: 28px;
+    font-weight: 500;
+    letter-spacing: 0.16px;
+    color: var(--color-text-main);
+  }
+  .empty-sub {
+    margin: calc(-1 * var(--space-sm)) 0 0;
+    max-width: 460px;
+    font-size: 13px;
+    line-height: 20px;
+    color: var(--color-text-muted);
+    text-wrap: pretty;
+  }
+  .empty-wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    margin: auto 0;
+    gap: var(--space-lg);
+    text-align: center;
+  }
+  .empty-pills {
+    display: flex;
+    align-items: center;
+    gap: var(--s-12);
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  .process-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s-8);
+    height: var(--control-h-sm);
+    padding: 0 var(--s-12);
+    border-radius: var(--r-40);
+    background: var(--color-bg-base);
+    font-size: var(--font-size-xs);
+    line-height: 16px;
+    color: var(--color-text-main);
+    white-space: nowrap;
+  }
+  .process-pill svg { color: var(--fg-brand); }
+  .empty-arrow { color: var(--color-text-muted); }
+  .empty-cta {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    min-height: var(--control-h-md);
+    padding: 0 var(--s-16);
+    border-radius: var(--r-8);
+    background: light-dark(var(--sand-800), var(--neutral-100));
+    color: light-dark(var(--white), var(--neutral-900));
+    font-size: 13px;
+    font-weight: 500;
+    text-decoration: none;
+    white-space: nowrap;
+    transition: background var(--transition-fast);
+  }
+  .empty-cta:hover { background: light-dark(var(--sand-700), var(--neutral-300)); }
 
   .recent-agents {
     width: min(100%, var(--orch-column-w));

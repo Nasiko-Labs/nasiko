@@ -22,11 +22,12 @@
   .back-btn {
     display: grid;
     place-items: center;
-    width: 32px;
-    height: 32px;
-    border-radius: var(--r-8);
+    width: var(--control-h-lg);
+    height: var(--control-h-lg);
+    border-radius: var(--r-10);
     color: var(--color-text-main);
     flex-shrink: 0;
+    & svg { width: 20px; height: 20px; flex-shrink: 0; }
   }
   .back-btn:hover { background: var(--bg-surface-hover); color: var(--color-text-main); }
   .name-input {

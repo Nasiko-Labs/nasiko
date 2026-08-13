@@ -126,6 +126,8 @@
     background: none;
     border: none;
     cursor: pointer;
+    min-width: var(--control-h-sm);
+    min-height: var(--control-h-sm);
     padding: var(--space-xs);
     border-radius: var(--r-4);
     color: var(--color-text-muted);

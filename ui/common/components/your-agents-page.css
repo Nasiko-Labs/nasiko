@@ -167,13 +167,18 @@
   .empty-action-link {
     display: inline-flex;
     align-items: center;
-    padding: var(--space-xs) var(--space-md);
-    border-radius: var(--radius-md);
+    min-height: var(--control-h-lg);
+    padding: 0 var(--s-16);
+    /* Transparent border, not none: --secondary adds a 1px border, and with an
+       auto height that would make it 2px taller than the primary beside it. */
+    border: 1px solid transparent;
+    border-radius: var(--r-10);
     background: var(--color-primary);
     color: var(--color-on-primary);
     font-size: var(--font-size-sm);
     font-weight: 500;
     text-decoration: none;
+    & svg { width: 20px; height: 20px; flex-shrink: 0; }
   }
   .empty-action-link:hover { background: var(--color-primary-hover); }
   .empty-action-link--secondary {
@@ -476,7 +481,8 @@
     display: inline-flex;
     align-items: center;
     gap: var(--space-xs);
-    padding: var(--space-xs) var(--space-sm);
+    min-height: var(--control-h-sm);
+    padding: 0 var(--space-sm);
     border: 1px dashed var(--color-border);
     border-radius: var(--radius-md);
     background: none;
@@ -518,24 +524,28 @@
     margin-top: var(--space-md);
   }
   .btn-deploy {
-    padding: var(--space-xs) var(--space-lg);
+    min-height: var(--control-h-lg);
+    padding: 0 var(--space-lg);
     background: var(--color-primary);
     color: var(--color-on-primary);
     border: none;
-    border-radius: var(--radius-md);
+    border-radius: var(--r-10);
     font-size: var(--font-size-sm);
     font-weight: 500;
     cursor: pointer;
+    & svg { width: 20px; height: 20px; flex-shrink: 0; }
   }
   .btn-deploy:hover:not(:disabled) { background: var(--color-primary-hover); }
   .btn-deploy:disabled { opacity: 0.6; cursor: not-allowed; }
   .btn-cancel {
-    padding: var(--space-xs) var(--space-lg);
+    min-height: var(--control-h-lg);
+    padding: 0 var(--space-lg);
     background: var(--color-bg-surface);
     border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
+    border-radius: var(--r-10);
     color: var(--color-text-main);
     font-size: var(--font-size-sm);
     cursor: pointer;
+    & svg { width: 20px; height: 20px; flex-shrink: 0; }
   }
 }

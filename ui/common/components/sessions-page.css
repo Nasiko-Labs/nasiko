@@ -198,8 +198,8 @@
     cursor: pointer;
     color: var(--color-text-muted);
     line-height: 1;
-    width: 28px;
-    height: 28px;
+    width: var(--control-h-sm);
+    height: var(--control-h-sm);
     display: inline-grid;
     place-items: center;
     vertical-align: middle;

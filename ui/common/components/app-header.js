@@ -281,13 +281,13 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
      meant the incoming page was snapshotted for the cross-document view
      transition with invisible labels. */
   :scope.is-expanded.is-toggling .rail-item .rail-label,
-  :scope.is-expanded.is-toggling .rail-identity .identity-name {
+  :scope.is-expanded.is-toggling .rail-identity .user-info {
     animation: panel-in var(--transition-base) 60ms backwards;
   }
 
   @media (prefers-reduced-motion: reduce) {
     :scope.is-expanded.is-toggling .rail-item .rail-label,
-    :scope.is-expanded.is-toggling .rail-identity .identity-name { animation: none; }
+    :scope.is-expanded.is-toggling .rail-identity .user-info { animation: none; }
   }
 
   .rail-bottom {
@@ -300,13 +300,14 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
   .rail-identity {
     display: flex;
     align-items: center;
-    gap: var(--s-12);
   }
+  /* The menu button IS the row — it renders the name itself when the rail is
+     expanded. It used to be a 32px avatar next to an inert .identity-name
+     span, so two thirds of the row swallowed clicks. */
   .rail-identity app-user-menu {
-    flex-shrink: 0;
-    /* Match the 32px rail buttons: square avatar aligned to the icon column
-       instead of the default 36px circle; the inline name/chevron stay
-       hidden — the rail shows its own label when expanded. */
+    flex: 1;
+    min-width: 0;
+    /* Match the 32px rail buttons: square avatar aligned to the icon column. */
     --user-btn-w: var(--control-h-md);
     --user-btn-h: var(--control-h-md);
     --user-avatar-size: 30px;
@@ -322,15 +323,15 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
     --user-dropdown-left: calc(var(--shell-gutter) + var(--app-sidebar-width) + var(--s-4));
     --user-dropdown-right: auto;
   }
-  .rail-identity .identity-name {
-    display: none;
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--shell-fg);
-    overflow: hidden;
-    text-overflow: ellipsis;
+  /* Expanded: the trigger stretches to the full rail width and shows the name,
+     email and chevron, so the whole row is one hit target. */
+  :scope.is-expanded .rail-identity app-user-menu {
+    --user-name-display: flex;
+    --user-btn-w: 100%;
+    --user-btn-h: auto;
+    --user-btn-justify: flex-start;
+    --user-btn-padding: var(--s-4) var(--s-8);
   }
-  :scope.is-expanded .rail-identity .identity-name { display: block; }
 
   /* ── Mobile ─────────────────────────────────────────────────────────── */
   .mobile-nav {
@@ -621,7 +622,6 @@ export class AppHeader extends HTMLElement {
           ${isAuthenticated ? `
           <div class="rail-identity">
             <app-user-menu current-user="${this.#esc(currentUser)}"></app-user-menu>
-            <span class="identity-name">${this.#esc(currentUser)}</span>
           </div>` : ""}
         </div>
       </nav>

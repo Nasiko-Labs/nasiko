@@ -19,6 +19,14 @@ const TABS = [
   { key: 'sso', label: 'Single sign-on', sub: 'OIDC provider used for "Continue with Microsoft".' },
 ];
 
+// Sections are reachable from elsewhere in the module (the nav rows link here
+// as /settings.html#<key>), so the hash — not a hardcoded default — picks the
+// panel on load.
+const sectionFromHash = () => {
+  const key = decodeURIComponent(location.hash.slice(1));
+  return TABS.some(t => t.key === key) ? key : 'general';
+};
+
 class SettingsPage extends HTMLElement {
   #initialized = false;
   #settings = {};
@@ -27,12 +35,14 @@ class SettingsPage extends HTMLElement {
     if (this.#initialized) return;
     this.#initialized = true;
 
+    const initial = sectionFromHash();
+
     this.innerHTML = `
-      <app-module-nav module="settings"></app-module-nav>
+      <app-module-nav module="settings" active-section="${initial}"></app-module-nav>
 
       <div class="content">
         ${TABS.map(t => `
-          <div class="panel-head${t.key === 'general' ? ' is-active' : ''}" data-panel-head="${t.key}">
+          <div class="panel-head${t.key === initial ? ' is-active' : ''}" data-panel-head="${t.key}">
             <h1 class="title-page">${t.label}</h1>
             <p class="page-sub">${t.sub}</p>
           </div>
@@ -206,17 +216,25 @@ class SettingsPage extends HTMLElement {
       </div>
     `;
 
-    this.addEventListener('module-nav-select', (e) => {
-      const key = e.detail.section;
-      if (!TABS.some(t => t.key === key)) return;
-      this.querySelectorAll('.panel').forEach(p =>
-        p.classList.toggle('is-active', p.dataset.panel === key));
-      this.querySelectorAll('.panel-head').forEach(h =>
-        h.classList.toggle('is-active', h.dataset.panelHead === key));
+    this.addEventListener('module-nav-select', (e) => this.#show(e.detail.section));
+    // Nav rows are links, so back/forward only changes the hash.
+    window.addEventListener('hashchange', () => {
+      const key = sectionFromHash();
+      this.#show(key);
+      this.querySelector('app-module-nav')?.setAttribute('active-section', key);
     });
+    this.#show(initial);
 
     this.querySelector('#btn-save').addEventListener('click', () => this.#save());
     this.#load();
+  }
+
+  #show(key) {
+    if (!TABS.some(t => t.key === key)) return;
+    this.querySelectorAll('.panel').forEach(p =>
+      p.classList.toggle('is-active', p.dataset.panel === key));
+    this.querySelectorAll('.panel-head').forEach(h =>
+      h.classList.toggle('is-active', h.dataset.panelHead === key));
   }
 
   async #load() {

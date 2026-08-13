@@ -105,8 +105,9 @@
     display: inline-flex;
     align-items: center;
     gap: var(--space-xs);
-    padding: 10px var(--space-lg);
-    border-radius: var(--r-8);
+    min-height: var(--control-h-lg);
+    padding: 0 var(--space-lg);
+    border-radius: var(--r-10);
     background: light-dark(var(--sand-800), var(--neutral-100));
     color: light-dark(var(--white), var(--neutral-900));
     font-size: var(--font-size-sm);
@@ -115,6 +116,7 @@
     white-space: nowrap;
     flex-shrink: 0;
     transition: background var(--transition-fast);
+    & svg { width: 20px; height: 20px; flex-shrink: 0; }
   }
   .acp-start-btn svg { flex-shrink: 0; }
   .acp-start-btn:hover {
@@ -522,7 +524,8 @@
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    padding: var(--space-xs) var(--space-sm);
+    min-height: var(--control-h-sm);
+    padding: 0 var(--space-sm);
     border-radius: var(--radius-sm);
     border: 1px solid var(--color-border);
     background: var(--color-bg-surface);
@@ -624,8 +627,8 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 28px;
-    height: 28px;
+    width: var(--control-h-sm);
+    height: var(--control-h-sm);
     border: none;
     border-radius: var(--r-6);
     background: transparent;

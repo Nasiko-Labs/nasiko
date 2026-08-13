@@ -14,17 +14,17 @@
   }
 
   .back-btn {
-    width: 36px;
-    height: 36px;
+    width: var(--control-h-lg);
+    height: var(--control-h-lg);
     border: 1px solid transparent;
-    border-radius: var(--r-8);
+    border-radius: var(--r-10);
     background: var(--color-bg-base);
     color: var(--color-text-main);
     flex-shrink: 0;
     cursor: pointer;
 
     &:hover { border-color: var(--color-border); }
-    & svg { width: 16px; height: 16px; }
+    & svg { width: 20px; height: 20px; }
   }
 
   .page-title {

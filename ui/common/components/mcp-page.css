@@ -42,7 +42,7 @@
     min-height: var(--control-h-lg);
     padding: 0 var(--s-16);
     border: 1px solid transparent;
-    border-radius: var(--r-8);
+    border-radius: var(--r-10);
     background: light-dark(var(--sand-800), var(--neutral-100));
     color: light-dark(var(--white), var(--neutral-900));
     font: 500 var(--font-size-sm)/1 inherit;
@@ -50,7 +50,7 @@
     transition: background var(--transition-fast);
 
     &:hover { background: light-dark(var(--sand-700), var(--neutral-300)); }
-    & svg { width: 14px; height: 14px; }
+    & svg { width: 20px; height: 20px; }
   }
 
   .btn-outline {
@@ -61,7 +61,7 @@
     min-height: var(--control-h-lg);
     padding: 0 var(--s-16);
     border: 1px solid var(--color-border);
-    border-radius: var(--r-8);
+    border-radius: var(--r-10);
     background: var(--color-bg-surface);
     color: var(--color-text-main);
     font: 500 var(--font-size-sm)/1 inherit;
@@ -69,14 +69,15 @@
     transition: background var(--transition-fast);
 
     &:hover { background: var(--color-bg-base); }
-    & svg { width: 14px; height: 14px; }
+    & svg { width: 20px; height: 20px; }
   }
 
   .btn-ghost {
     display: inline-flex;
     align-items: center;
     gap: var(--space-xs);
-    padding: 6px 8px;
+    min-height: var(--control-h-sm);
+    padding: 0 var(--s-8);
     border-radius: var(--r-8);
     background: transparent;
     color: var(--color-text-muted);

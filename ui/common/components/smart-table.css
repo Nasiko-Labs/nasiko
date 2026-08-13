@@ -167,15 +167,15 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      min-width: 36px;
-      min-height: 36px;
+      min-width: var(--control-h-lg);
+      min-height: var(--control-h-lg);
       padding: 0 var(--space-sm);
       background: var(--color-bg-surface);
       color: var(--color-primary);
       border: 1px solid var(--color-border);
-      border-radius: var(--radius-md);
+      border-radius: var(--r-10);
 
-      & svg { width: 16px; height: 16px; }
+      & svg { width: 20px; height: 20px; }
       &:hover:not(:disabled) { background: var(--color-bg-base); border-color: var(--color-primary); }
       &:disabled { opacity: 0.35; cursor: not-allowed; }
       &:focus-visible { box-shadow: 0 0 0 2px var(--color-primary-ring); outline: none; }

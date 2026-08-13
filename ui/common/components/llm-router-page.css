@@ -162,8 +162,8 @@
   .badge.is-mono { font-family: var(--font-mono); }
 
   .icon-btn {
-    width: 28px;
-    height: 28px;
+    width: var(--control-h-sm);
+    height: var(--control-h-sm);
     border-radius: var(--r-8);
     color: var(--color-text-muted);
     background: transparent;
@@ -290,15 +290,15 @@
   }
 
   .back-btn {
-    width: 36px;
-    height: 36px;
-    border-radius: var(--r-8);
+    width: var(--control-h-lg);
+    height: var(--control-h-lg);
+    border-radius: var(--r-10);
     background: var(--bg-surface);
     color: var(--color-text-main);
     flex-shrink: 0;
 
     &:hover { background: var(--bg-surface-hover); }
-    & svg { width: 16px; height: 16px; }
+    & svg { width: 20px; height: 20px; }
   }
 
   .config-form {

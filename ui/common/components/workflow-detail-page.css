@@ -22,14 +22,15 @@
   .back-btn {
     display: grid;
     place-items: center;
-    width: 32px;
-    height: 32px;
+    width: var(--control-h-lg);
+    height: var(--control-h-lg);
     border: none;
-    border-radius: var(--r-8);
+    border-radius: var(--r-10);
     background: transparent;
     color: var(--color-text-main);
     cursor: pointer;
     flex-shrink: 0;
+    & svg { width: 20px; height: 20px; flex-shrink: 0; }
   }
   .back-btn:hover { background: var(--bg-surface-hover); color: var(--color-text-main); }
 

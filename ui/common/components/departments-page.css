@@ -166,7 +166,8 @@
     width: 100%;
   }
   .row-btn {
-    padding: 2px var(--space-sm);
+    min-height: var(--control-h-sm);
+    padding: 0 var(--space-sm);
     border: 1px solid var(--color-border);
     border-radius: var(--r-8);
     background: transparent;

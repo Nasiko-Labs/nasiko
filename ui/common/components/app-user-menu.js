@@ -12,188 +12,160 @@ import { getTheme, setTheme } from "../utils/theme.js";
 const styles = new CSSStyleSheet();
 styles.replaceSync(`@scope (app-user-menu) {
     :scope { display: block; }
+    /* The trigger only ever lives in app-header's ink rail, so it wears the
+       dark-chrome control recipe (--shell-*) like .rail-item and .chrome-btn.
+       It used to paint --bg-input / --bg-surface-hover on hover+open: those are
+       sand-50/100, i.e. a near-white chip on the rail. Layout comes from the
+       host via the --user-btn-* vars. */
     .user-button {
+      display: flex;
+      align-items: center;
+      gap: var(--s-8);
       justify-content: var(--user-btn-justify, center);
-      width: var(--user-btn-w, 36px);
-      height: var(--user-btn-h, 36px);
+      width: var(--user-btn-w, var(--control-h-md));
+      height: var(--user-btn-h, var(--control-h-md));
       padding: var(--user-btn-padding, 0);
-      border: 1px solid transparent;
+      border: none;
       border-radius: var(--r-8);
-      /* DS: quiet fill on hover, gold ring on :focus-visible only — the old
-         gold glow rings on hover/active/open were this component's own
-         invention and read as a different system to everything around it. */
-      &:hover { background: var(--bg-surface-hover); }
-      &:active, &.is-open {
-        background: var(--bg-surface-hover);
-        border-color: var(--color-border);
-      }
+      color: var(--shell-fg);
+      text-align: left;
+      transition: background var(--transition-fast);
+      &:hover { background: var(--shell-control-hover); }
+      &:active, &.is-open { background: var(--shell-control); }
       &:focus-visible {
-        outline: none;
-        box-shadow: 0 0 0 2px var(--color-primary-ring);
+        outline: 2px solid var(--shell-selected);
+        outline-offset: 1px;
       }
-      & svg:last-child { display: none; }
-
-      @media (min-width: 1024px) {
-        gap: var(--space-sm);
-        border: 1px solid transparent;
-        border-radius: var(--r-10);
-        &:hover {
-          border-color: transparent;
-          background: var(--bg-input);
-          box-shadow: none;
-        }
-        &:active, &.is-open {
-          border-color: var(--border-canvas);
-          background: var(--bg-input);
-          box-shadow: none;
-        }
-        & svg:last-child {
-          display: var(--user-name-display, block);
-          margin-left: auto;
-          flex-shrink: 0;
-          color: var(--color-text-muted);
-        }
+      & svg:last-child {
+        display: var(--user-name-display, none);
+        margin-left: auto;
+        flex-shrink: 0;
+        color: var(--shell-fg-muted);
       }
     }
     .user-avatar {
-      width: 100%;
-      height: 100%;
-      border-radius: var(--r-6);
+      width: var(--user-avatar-size, 30px);
+      height: var(--user-avatar-size, 30px);
+      flex-shrink: 0;
+      border-radius: var(--user-avatar-radius, var(--r-6));
       background: var(--color-primary);
       color: var(--color-on-primary);
       display: flex;
       align-items: center;
       justify-content: center;
-      font-weight: 700;
-      font-size: var(--font-size-sm);
-
-      @media (min-width: 1024px) {
-        width: var(--user-avatar-size, 34px);
-        height: var(--user-avatar-size, 34px);
-        flex-shrink: 0;
-        border-radius: var(--user-avatar-radius, var(--radius-full, 50%));
-      }
+      font-weight: 600;
+      font-size: 13px;
     }
     .user-info {
-      display: none;
-      @media (min-width: 1024px) {
-        display: var(--user-name-display, flex);
-        flex-direction: column;
-        justify-content: center;
-        gap: 1px;
-        flex: 1;
-        min-width: 0;
-        text-align: left;
-      }
+      display: var(--user-name-display, none);
+      flex-direction: column;
+      justify-content: center;
+      gap: 1px;
+      flex: 1;
+      min-width: 0;
     }
     .user-name {
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
-      font-size: var(--font-size-sm);
+      font-size: 13px;
       font-weight: 600;
-      line-height: 1.2;
-      color: var(--color-text-main);
+      line-height: 1.25;
+      color: var(--shell-fg);
     }
     .user-email {
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
-      font-size: var(--font-size-xs);
-      line-height: 1.2;
-      color: var(--color-text-muted);
+      font-size: 11px;
+      line-height: 1.25;
+      color: var(--shell-fg-muted);
     }
     .user-dropdown {
       /* Hosts inside overflow-clipped chrome (the rail) switch this to fixed
          and position against the viewport via the vars below. */
       position: var(--user-dropdown-position, absolute);
-      top: var(--user-dropdown-top, calc(100% + var(--space-xs)));
+      top: var(--user-dropdown-top, calc(100% + var(--s-4)));
       bottom: var(--user-dropdown-bottom, unset);
       right: var(--user-dropdown-right, 0);
       left: var(--user-dropdown-left, unset);
+      width: min(17.5rem, calc(100vw - 2rem));
+      max-height: min(32rem, calc(100dvh - 5rem));
+      /* One 4px gutter for the whole panel; every row insets from it, so the
+         menu has a single margin instead of the old per-section mix of
+         --space-xs / --space-sm / --space-md paddings. */
+      padding: var(--s-4);
       background: var(--color-bg-surface);
       /* Dark needs the stronger edge: the panel and the content plane are both
          --color-bg-surface there, so the default hairline leaves the flyout
          indistinguishable from the page behind it. */
       border: 1px solid light-dark(var(--color-border), var(--neutral-700));
-      /* r12 + the single menu shadow token, like every other floating DS
-         surface; the doubled md+xl stack read as a heavier, foreign card. */
       border-radius: var(--r-12);
       box-shadow: var(--shadow-md);
-      min-width: min(280px, calc(100vw - 2rem));
-      max-width: 320px;
-      max-height: min(400px, calc(100dvh - 6rem));
       overflow: hidden;
       z-index: 1000;
       display: none;
-      &.is-visible { display: block; }
-
-      @media (min-width: 1024px) {
-        min-width: 18rem;
-        width: min(20rem, calc(100vw - var(--app-sidebar-width) - var(--space-lg) - var(--space-lg)));
-        max-width: min(22rem, calc(100vw - var(--app-sidebar-width) - var(--space-lg) - var(--space-lg)));
-        max-height: min(32rem, calc(100dvh - var(--space-lg) - var(--space-lg)));
-      }
-    }
-    .dropdown-header {
-      padding: var(--space-md);
-      border-bottom: 1px solid var(--color-border);
-
-      @media (min-width: 1024px) {
-        padding: var(--space-sm) var(--space-md);
-      }
+      &.is-visible { display: flex; flex-direction: column; }
     }
     /* Sentence case, no tracking — the reskin dropped uppercase micro-labels
-       everywhere else (table headers, module-nav group headings). */
+       everywhere else (table headers, module-nav group headings). No divider:
+       the label already separates the section. */
+    .dropdown-header { padding: var(--s-8) var(--s-8) var(--s-4); }
     .dropdown-title {
-      font-size: var(--font-size-xs);
+      font-size: 11px;
       font-weight: 600;
       color: var(--color-text-muted);
     }
     .user-list {
-      padding: var(--space-xs);
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      padding: 0;
       margin: 0;
       list-style: none;
+      /* min-height:0 or the flex column refuses to shrink it and the list
+         scrollbar never appears — the panel just overflows its max-height. */
+      min-height: 0;
       overflow-y: auto;
 
       & li { padding: 0; margin: 0; }
-
-      @media (min-width: 1024px) {
-        max-height: min(22rem, calc(100dvh - 10rem));
-      }
     }
     /* Selected row = sand-100 fill at r8, the same active treatment the module
-       tree nav uses. The old 3px gold left-border + gold bold name was a
-       marker style used nowhere else in the product. */
+       tree nav uses. */
     .user-item {
       color: var(--color-text-main);
       display: flex;
       align-items: center;
-      gap: var(--space-sm);
-      padding: var(--space-sm) var(--space-md);
+      gap: var(--s-8);
+      padding: var(--s-8);
       border-radius: var(--r-8);
-      &:hover { color: var(--color-text-main); background: var(--bg-input); }
+      &:hover { color: var(--color-text-main); background: var(--bg-surface-hover); }
       &.is-active {
         background: var(--bg-surface-hover);
         & .user-item-name { font-weight: 600; }
       }
     }
     .user-item-info { flex: 1; min-width: 0; }
-    .user-item-name { font-weight: 500; font-size: var(--font-size-sm); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .user-item-email { font-size: var(--font-size-xs); color: var(--color-text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .user-item-name { font-weight: 500; font-size: 13px; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .user-item-email { font-size: 11px; line-height: 1.25; color: var(--color-text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .user-item-check { flex-shrink: 0; width: 16px; height: 16px; color: var(--color-primary); }
+    /* Dividers run full-bleed (negative gutter) while their content keeps the
+       12px text inset of the rows above, so labels line up down the panel. */
+    .dropdown-theme, .dropdown-footer {
+      margin: var(--s-4) calc(-1 * var(--s-4)) 0;
+      border-top: 1px solid var(--color-border);
+    }
     .dropdown-theme {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: var(--space-sm);
-      padding: var(--space-sm) var(--space-md);
-      border-top: 1px solid var(--color-border);
+      gap: var(--s-8);
+      padding: var(--s-8) var(--s-12);
     }
     .theme-title {
-      font-size: var(--font-size-xs);
-      font-weight: 600;
-      color: var(--color-text-muted);
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--color-text-main);
     }
     .theme-switch {
       display: inline-flex;
@@ -204,8 +176,8 @@ styles.replaceSync(`@scope (app-user-menu) {
       background: var(--bg-input);
     }
     .theme-option {
-      width: 32px;
-      height: 26px;
+      width: 28px;
+      height: 24px;
       border-radius: var(--r-6);
       color: var(--color-text-muted);
       &:hover { color: var(--color-text-main); }
@@ -216,7 +188,13 @@ styles.replaceSync(`@scope (app-user-menu) {
         box-shadow: var(--shadow-sm);
       }
     }
-    .dropdown-footer { padding: var(--space-xs); border-top: 1px solid var(--color-border); }
+    .dropdown-footer {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      /* No bottom padding: the panel's own 4px gutter closes the menu. */
+      padding: var(--s-4) var(--s-4) 0;
+    }
     .dropdown-button {
       width: 100%;
       /* justify-content + gap, not text-align: global.css's bare button reset
@@ -224,12 +202,12 @@ styles.replaceSync(`@scope (app-user-menu) {
          could never left-align these — the label sat centred and the icon
          jammed against it with no gap. */
       justify-content: flex-start;
-      gap: var(--space-sm);
-      padding: var(--space-sm) var(--space-md);
+      gap: var(--s-8);
+      padding: var(--s-8);
       border-radius: var(--r-8);
-      font-size: var(--font-size-sm);
+      font-size: 13px;
       color: var(--color-text-main);
-      &:hover { background: var(--bg-input); }
+      &:hover { background: var(--bg-surface-hover); }
       /* Both read as quiet menu rows matching the account rows above. "Add
          Account" was gold text (weak contrast on the sand plane, and gold is
          reserved for selection/accent, not for a routine action); only the
@@ -259,6 +237,7 @@ export class AppUserMenu extends HTMLElement {
     const btn = this.querySelector('[data-user-toggle]');
     const dropdown = this.querySelector('[data-user-dropdown]');
     btn?.classList.toggle('is-open', open);
+    btn?.setAttribute('aria-expanded', String(open));
     dropdown?.classList.toggle('is-visible', open);
   }
 
@@ -298,6 +277,7 @@ export class AppUserMenu extends HTMLElement {
 
     this.innerHTML = `
       <button class="user-button" data-user-toggle type="button"
+        aria-haspopup="menu" aria-expanded="false"
         aria-label="User menu${currentUser ? ` — ${currentUser}` : ''}">
         <div class="user-avatar">${initial}</div>
         <span class="user-info">
@@ -341,9 +321,6 @@ export class AppUserMenu extends HTMLElement {
           </div>
         </div>
         <div class="dropdown-footer">
-          <button class="dropdown-button" data-add-account>
-            ${icons.plus('btn-icon', 14)} Add Account
-          </button>
           <button class="dropdown-button is-danger" data-logout>
             ${icons.logOut('btn-icon', 14)} Sign Out
           </button>

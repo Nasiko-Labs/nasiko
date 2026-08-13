@@ -43,17 +43,18 @@
     color: light-dark(var(--white), var(--neutral-900));
     font-weight: 500;
     font-size: var(--font-size-sm);
-    border-radius: var(--r-8);
+    border-radius: var(--r-10);
     border: none;
     cursor: pointer;
     text-decoration: none;
     transition: background var(--transition-fast);
+    & svg { width: 20px; height: 20px; flex-shrink: 0; }
   }
   .connect-btn:hover {
     background: light-dark(var(--sand-700), var(--neutral-300));
     color: light-dark(var(--white), var(--neutral-900));
   }
-  .connect-btn svg { width: 18px; height: 18px; fill: currentColor; }
+  .connect-btn svg { width: 20px; height: 20px; fill: currentColor; }
   .connect-scopes {
     margin-top: var(--space-lg);
     font-size: var(--font-size-xs);

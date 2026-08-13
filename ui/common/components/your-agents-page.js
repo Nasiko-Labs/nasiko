@@ -360,7 +360,7 @@ class YourAgentsPage extends HTMLElement {
             description="Deploy your first agent from the catalog or add a new one."
             icon='${icons.layers("", 40)}'>
             <a href="/agents.html" class="empty-action-link">Browse catalog</a>
-            <a href="/add-agent.html" class="empty-action-link empty-action-link--secondary">Add agent</a>
+            <a href="/add-agent.html" class="empty-action-link empty-action-link--secondary">Import agent</a>
           </app-empty-state>
         </div>`;
       return;

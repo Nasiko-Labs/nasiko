@@ -145,13 +145,14 @@
     justify-content: center;
     height: var(--control-h-lg);
     border: none;
-    border-radius: var(--r-8);
+    border-radius: var(--r-10);
     background: light-dark(var(--sand-800), var(--neutral-100));
     color: light-dark(var(--white), var(--neutral-900));
     font-size: var(--font-size-sm);
     font-weight: 500;
     cursor: pointer;
     transition: background var(--transition-fast);
+    & svg { width: 20px; height: 20px; flex-shrink: 0; }
   }
 
   .method-btn:hover:not(:disabled) {

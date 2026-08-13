@@ -25,7 +25,8 @@
     gap: var(--space-sm);
   }
   .action-btn {
-    padding: var(--space-xs) var(--space-md);
+    min-height: var(--control-h-md);
+    padding: 0 var(--space-md);
     border: 1px solid var(--color-border);
     border-radius: var(--radius-md);
     background: var(--color-bg-surface);
@@ -118,7 +119,8 @@
   }
   .log-toolbar input { flex: 1; min-width: 160px; }
   .log-follow-btn {
-    padding: 4px 12px;
+    min-height: var(--control-h-sm);
+    padding: 0 var(--s-12);
     border: 1px solid var(--color-border);
     border-radius: var(--radius-sm);
     background: var(--color-bg-surface);

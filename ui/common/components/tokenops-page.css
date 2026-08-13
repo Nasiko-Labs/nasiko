@@ -59,7 +59,7 @@
     gap: var(--space-xs);
     height: var(--control-h-lg);
     padding: 0 var(--s-16);
-    border-radius: var(--r-8);
+    border-radius: var(--r-10);
     background: light-dark(var(--sand-800), var(--neutral-100));
     color: light-dark(var(--white), var(--neutral-900));
     font-size: var(--font-size-sm);
@@ -68,7 +68,7 @@
 
     &:hover { background: light-dark(var(--sand-700), var(--neutral-300)); }
     &:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
-    & svg { width: 14px; height: 14px; }
+    & svg { width: 20px; height: 20px; }
   }
 
   /* ── KPI strip: columns divided by hairlines, top+bottom rules ────────── */

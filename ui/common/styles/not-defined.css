@@ -218,7 +218,7 @@ voice-input:not(:defined) {
 }
 .skel-card__btn {
   width: 70px;
-  height: 26px;
+  height: var(--control-h-sm);
   border-radius: var(--radius-sm);
   background: var(--color-border);
   animation: skel-pulse 1.5s ease-in-out infinite;

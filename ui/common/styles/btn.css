@@ -1,7 +1,11 @@
-/* Icon button — 28×28 compact, transparent, hover bg */
-.btn-icon {
-  width: 28px;
-  height: 28px;
+/* Icon button — 28×28 compact, transparent, hover bg.
+   Element-qualified: the same class name is also put on bare <svg> icons inside
+   buttons (voice-input, app-user-menu), and an unqualified rule painted the
+   hover background behind the glyph. */
+button.btn-icon,
+a.btn-icon {
+  width: var(--control-h-sm);
+  height: var(--control-h-sm);
   border-radius: var(--radius-sm);
   color: var(--color-text-muted);
   flex-shrink: 0;
@@ -39,7 +43,8 @@
 /* Outlined button with optional SVG icon */
 .btn-outline {
   display: inline-flex; align-items: center; gap: var(--space-xs);
-  padding: var(--space-xs) var(--space-sm);
+  min-height: var(--control-h-md);
+  padding: 0 var(--space-sm);
   border: 1px solid var(--color-border); border-radius: var(--radius-sm);
   background: var(--color-bg-surface); color: var(--color-text-muted);
   font-size: var(--font-size-sm); font-weight: 500; cursor: pointer;
@@ -51,7 +56,8 @@
 }
 
 .btn-ghost {
-  padding: var(--space-xs) var(--space-sm);
+  min-height: var(--control-h-md);
+  padding: 0 var(--space-sm);
   border-radius: var(--radius-sm);
   color: var(--color-text-muted);
   font-size: var(--font-size-sm);

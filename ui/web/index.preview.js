@@ -45,6 +45,14 @@ export default {
       await page.click("[data-user-toggle]");
       await page.waitForSelector(".user-dropdown.is-visible");
     },
+    // Clicks the identity ROW (its centre lands on the name, not the avatar) —
+    // fails if the trigger ever shrinks back to the 32px avatar.
+    "rail-expanded-user-menu": async (page) => {
+      await page.click("[data-rail-toggle]");
+      await page.waitForTimeout(500);
+      await page.click(".rail-identity");
+      await page.waitForSelector(".user-dropdown.is-visible");
+    },
     // The timeline's full vocabulary in one shot, driven directly through
     // onEvent() so it doesn't depend on stream timing: an agent whose tools
     // arrive as STRUCTURED data parts (nested rows with JSON input/output),
@@ -89,6 +97,20 @@ export default {
       });
       await page.waitForSelector("agent-steps .step--tool");
       await page.waitForTimeout(500);
+    },
+    // Nothing deployed: the whole composer column is the deploy empty state.
+    "no-agents": async (page) => {
+      await page.evaluate(() => {
+        const real = window.fetch;
+        window.fetch = (url, opts) =>
+          String(url).includes("/api/agents")
+            ? Promise.resolve(new Response("[]", { headers: { "content-type": "application/json" } }))
+            : real(url, opts);
+        document
+          .querySelector("orchestrator-page")
+          .replaceWith(document.createElement("orchestrator-page"));
+      });
+      await page.waitForSelector("app-empty-state .title");
     },
     // Mid-stream: tool-call steps expanded and running.
     "streaming-steps": async (page) => {

@@ -340,6 +340,15 @@ export class AppModuleNav extends HTMLElement {
     }
     const section = e.target.closest("[data-section]");
     if (section) {
+      // A module can mix in-page sections with sibling pages (Settings' panels
+      // + /secrets.html). From the sibling page there is no panel to switch, so
+      // follow the link and let the owning page pick the section off the hash —
+      // swallowing the click there was what pinned the content to Secrets.
+      const href = section.getAttribute("href");
+      if (href && !this.#isActive(href.split("#")[0])) {
+        document.dispatchEvent(new CustomEvent("loading-start", { bubbles: true }));
+        return;
+      }
       this.setAttribute("active-section", section.dataset.section);
       this.dispatchEvent(new CustomEvent("module-nav-select", {
         bubbles: true,
@@ -386,9 +395,15 @@ export class AppModuleNav extends HTMLElement {
   #itemHtml(item) {
     if (item.section != null) {
       const active = this.getAttribute("active-section") === item.section;
-      return `<button type="button" class="row child${active ? " is-active" : ""}"
+      // `url` names the page that owns the sections: a link so the row works
+      // from anywhere in the module, and on the owning page it only moves the
+      // hash (no reload) while the click handler switches the panel.
+      const tag = item.url
+        ? `a href="${this.#esc(item.url)}#${this.#esc(item.section)}"`
+        : `button type="button"`;
+      return `<${tag} class="row child${active ? " is-active" : ""}"
         data-section="${this.#esc(item.section)}" ${active ? 'aria-current="true"' : ""}>
-        <span class="row-label">${this.#esc(item.label)}</span></button>`;
+        <span class="row-label">${this.#esc(item.label)}</span></${item.url ? "a" : "button"}>`;
     }
     const active = this.#isActive(item.url);
     return `<a class="row child${active ? " is-active" : ""}" href="${this.#esc(item.url)}"
@@ -404,9 +419,13 @@ export class AppModuleNav extends HTMLElement {
       return;
     }
 
-    // Default active section: the attribute, else the first section item.
+    // Default active section: the attribute, else the first section item that
+    // belongs to the page we're on — a section owned by another page would
+    // otherwise light up next to that page's own active row.
     if (!this.getAttribute("active-section")) {
-      const first = nav.groups.flatMap((g) => g.items).find((i) => i.section != null);
+      const first = nav.groups
+        .flatMap((g) => g.items)
+        .find((i) => i.section != null && (!i.url || this.#isActive(i.url)));
       if (first) this.setAttribute("active-section", first.section);
     }
 

@@ -61,8 +61,8 @@
   .tool-btn {
     display: grid;
     place-items: center;
-    width: 24px;
-    height: 24px;
+    width: var(--control-h-sm);
+    height: var(--control-h-sm);
     border: none;
     border-radius: var(--r-6);
     background: transparent;

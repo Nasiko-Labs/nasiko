@@ -210,8 +210,8 @@
     padding: var(--space-xs);
     border-radius: var(--r-4);
     color: var(--color-text-muted);
-    min-width: 28px;
-    min-height: 28px;
+    min-width: var(--control-h-sm);
+    min-height: var(--control-h-sm);
     display: inline-flex;
     align-items: center;
     justify-content: center;
