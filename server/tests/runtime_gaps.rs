@@ -540,11 +540,14 @@ async fn upload_non_python_agent_accepted() {
     let admin = init_admin(&server).await;
     let uid = admin["user_id"].as_str().unwrap();
 
+    // Override do_upload's default "v1" — the handler requires a plain x.y.z
+    // version (parse_plain_version), so without this the request would 400 at
+    // the version gate rather than reaching the 202 we're asserting.
     let res = do_upload(
         &server,
         uid,
         "node-agent-202",
-        vec![],
+        vec![("version_tag", "1.0.0".to_string())],
         make_zip_non_python_agent(),
     )
     .await;

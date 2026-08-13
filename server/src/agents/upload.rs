@@ -923,10 +923,19 @@ fn patch_otel_into_dockerfile(source_dir: &std::path::Path, dockerfile: &std::pa
     // stages, …), so matching on them wrongly injects `pip install` into a
     // non-Python image and breaks the build. Key off real Python signals instead:
     // a `python` base image, or Python project/entrypoint files in the source.
-    let from_is_python = contents.lines().any(|l| {
-        let t = l.trim();
-        t.starts_with("FROM ") && t.contains("python")
-    });
+    //
+    // The patch lands in the *final* stage (before the last CMD/ENTRYPOINT), so
+    // only the final `FROM` decides whether `pip` will exist — a multi-stage
+    // build like `FROM python … AS codegen` feeding a `FROM node:20` runtime is
+    // NOT a Python image. Checking every `FROM` would misclassify it and break
+    // the build. `has_python_source` stays a fallback for bases that install
+    // Python themselves (e.g. `FROM debian-slim` + `apt install python3-pip`).
+    let final_from_is_python = contents
+        .lines()
+        .map(str::trim)
+        .filter(|t| t.starts_with("FROM "))
+        .last()
+        .is_some_and(|t| t.contains("python"));
     let has_python_source = [
         "requirements.txt",
         "pyproject.toml",
@@ -937,7 +946,7 @@ fn patch_otel_into_dockerfile(source_dir: &std::path::Path, dockerfile: &std::pa
     ]
     .iter()
     .any(|p| source_dir.join(p).exists());
-    if !from_is_python && !has_python_source {
+    if !final_from_is_python && !has_python_source {
         tracing::debug!("otel patch: build does not appear Python-based, skipping");
         return;
     }
@@ -2035,7 +2044,9 @@ pub(crate) async fn list_upload_agents(
                         agent_name: r.agent_name,
                         icon_url: r.icon_url,
                         upload_info: UploadInfoResponse {
-                            upload_type: r.metadata.get("upload_type")
+                            upload_type: r
+                                .metadata
+                                .get("upload_type")
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("zip")
                                 .to_string(),
@@ -2059,5 +2070,89 @@ pub(crate) async fn list_upload_agents(
             tracing::error!(%e, "list_upload_agents db error");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
+    }
+}
+
+#[cfg(test)]
+mod otel_patch_tests {
+    use super::*;
+
+    /// Run `patch_otel_into_dockerfile` against a Dockerfile (plus any extra
+    /// source files that act as Python signals) in a throwaway temp dir, and
+    /// report whether the OTel `pip install` layer was injected. Hermetic —
+    /// touches only the filesystem, no network/DB/Docker.
+    fn otel_injected(dockerfile: &str, source_files: &[&str]) -> bool {
+        let dir = std::env::temp_dir().join(format!("nasiko-otel-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for f in source_files {
+            let path = dir.join(f);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(&path, b"").unwrap();
+        }
+        let dockerfile_path = dir.join("Dockerfile");
+        std::fs::write(&dockerfile_path, dockerfile).unwrap();
+
+        patch_otel_into_dockerfile(&dir, &dockerfile_path);
+
+        let patched = std::fs::read_to_string(&dockerfile_path).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        patched.contains("pip install")
+    }
+
+    #[test]
+    fn python_image_is_patched() {
+        assert!(otel_injected(
+            "FROM python:3.11-slim\nCMD [\"python\", \"main.py\"]\n",
+            &[],
+        ));
+    }
+
+    #[test]
+    fn rust_slim_image_is_not_patched() {
+        // `rust:*-slim` matched the old `slim` substring — must be left alone now.
+        assert!(!otel_injected(
+            "FROM rust:1-slim\nCOPY . .\nRUN cargo build --release\nENTRYPOINT [\"/agent\"]\n",
+            &[],
+        ));
+    }
+
+    #[test]
+    fn golang_alpine_image_is_not_patched() {
+        // `golang:*-alpine` matched the old `alpine` substring — must be left alone now.
+        assert!(!otel_injected(
+            "FROM golang:1.25-alpine AS builder\nRUN go build -o /agent .\nENTRYPOINT [\"/agent\"]\n",
+            &[],
+        ));
+    }
+
+    #[test]
+    fn node_image_is_not_patched() {
+        assert!(!otel_injected(
+            "FROM node:20\nCMD [\"node\", \"server.js\"]\n",
+            &[],
+        ));
+    }
+
+    #[test]
+    fn multistage_python_builder_with_non_python_runtime_is_not_patched() {
+        // The regression Copilot flagged: only the FINAL stage's base decides
+        // whether `pip` exists. A Python build stage feeding a Node runtime must
+        // NOT be patched — the injected `pip install` would fail in the node stage.
+        assert!(!otel_injected(
+            "FROM python:3.11 AS codegen\nRUN true\nFROM node:20\nCMD [\"node\", \"server.js\"]\n",
+            &[],
+        ));
+    }
+
+    #[test]
+    fn python_source_files_patch_a_generic_base() {
+        // A base that installs Python itself (no `python` in FROM) is still
+        // recognised via Python project files.
+        assert!(otel_injected(
+            "FROM debian:bookworm-slim\nRUN apt-get install -y python3-pip\nCMD [\"/app/run\"]\n",
+            &["requirements.txt"],
+        ));
     }
 }
