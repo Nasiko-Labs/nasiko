@@ -1,7 +1,6 @@
 import { apiFetch } from '/common/services/api.js';
 import { icons } from '/common/utils/icons.js';
 import '/common/components/app-modal.js';
-import '/common/components/app-module-nav.js';
 import styles from './add-agent-page.css' with { type: 'css' };
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
@@ -36,7 +35,6 @@ function agentNameError(name) {
 class AddAgentPage extends HTMLElement {
   connectedCallback() {
     this.innerHTML = `
-      <app-module-nav module="agents"></app-module-nav>
       <span class="page-icon">${icons.cube('', 28)}</span>
       <h1 class="title-page">Import new agent</h1>
       <p class="page-subtitle">Choose how you would like to register your agent.</p>
@@ -270,7 +268,7 @@ class AddAgentPage extends HTMLElement {
       try {
         const res = await apiFetch('/agents/upload', { method: 'POST', body: formData });
         if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
-        window.location.href = '/your-agents.html';
+        window.location.href = '/agents.html?view=your-agents';
       } catch (err) {
         this.#showUploadError(`Upload failed: ${err.message}`);
       } finally {

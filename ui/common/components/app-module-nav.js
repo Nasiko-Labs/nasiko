@@ -20,6 +20,7 @@
  * @fires module-nav-select - `{ detail: { section } }` on section item click.
  */
 import { icons } from "../utils/icons.js";
+import { initialView, syncView } from "../utils/module-view.js";
 
 const styles = new CSSStyleSheet();
 styles.replaceSync(`/* Host-page layout contract: the page component that contains a module nav is
@@ -343,16 +344,23 @@ export class AppModuleNav extends HTMLElement {
     }
     const section = e.target.closest("[data-section]");
     if (section) {
-      // A module can mix in-page sections with sibling pages (Settings' panels
-      // + /secrets.html). From the sibling page there is no panel to switch, so
-      // follow the link and let the owning page pick the section off the hash —
-      // swallowing the click there was what pinned the content to Secrets.
+      // A section row may carry a `url` (its sections live on another page of
+      // the module). From that other page there is nothing here to switch, so
+      // follow the link and let the owning page pick the section out of the URL
+      // — swallowing the click was what used to pin the content to one panel.
+      // Every module now keeps its sections in one document (module-shell), so
+      // no nav entry takes this branch today; it is the seam that keeps a
+      // multi-document module working if one is added back.
       const href = section.getAttribute("href");
       if (href && !this.#isActive(href.split("#")[0])) {
         document.dispatchEvent(new CustomEvent("loading-start", { bubbles: true }));
         return;
       }
       this.setAttribute("active-section", section.dataset.section);
+      // Name the view in the URL so the row the user is looking at is what a
+      // copied link opens. replaceState, not pushState: a section is a view of
+      // this page, not a place in history.
+      syncView(section.dataset.section);
       this.dispatchEvent(new CustomEvent("module-nav-select", {
         bubbles: true,
         detail: { section: section.dataset.section },
@@ -446,9 +454,11 @@ export class AppModuleNav extends HTMLElement {
       return;
     }
 
-    // Default active section: the attribute, else the first section item that
-    // belongs to the page we're on — a section owned by another page would
-    // otherwise light up next to that page's own active row.
+    // Active section, in precedence order: whatever the host already set (a
+    // module-shell resolves this before the nav loads, and it owns the answer),
+    // then `?view=` so a shared link highlights the row it opened, then the
+    // first section item. Sections owned by another page are skipped — one
+    // would otherwise light up next to that page's own active row.
     if (!this.getAttribute("active-section")) {
       const first = nav.groups
         .flatMap((g) => g.items || [])
