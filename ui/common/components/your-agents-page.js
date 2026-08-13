@@ -5,12 +5,13 @@ import { showToast } from "/common/utils/toast.js";
 import { withLoading } from "/common/utils/async-button.js";
 import { confirmDialog } from "/common/utils/confirm-dialog.js";
 import "/common/components/app-modal.js";
+import "/common/components/app-module-nav.js";
 import "/common/components/app-empty-state.js";
 import "/common/components/app-skeleton.js";
 
 // your-agents-page.css is <link>ed by the host page, not imported here: a sheet
 // pulled in by this module only exists once the module does, which is too late
-// to style the static shell the page paints before then (see web/agents.html).
+// to style the static shell the page paints before then (see web/your-agents.html).
 
 function statusClass(status) {
   if (status === "running") return "is-running";
@@ -36,7 +37,7 @@ class YourAgentsPage extends HTMLElement {
     if (this.#initialized) return;
     this.#initialized = true;
 
-    // The host page owns the shell (web/agents.html) so it paints styled
+    // The host page owns the shell (web/your-agents.html) so it paints styled
     // before this module arrives; here we only bind to it and fill the API-fed
     // regions. Fallback for hosts that don't supply it (element created in JS).
     if (!this.querySelector("#agents-grid")) this.insertAdjacentHTML("afterbegin", this.#shell());
@@ -158,7 +159,7 @@ class YourAgentsPage extends HTMLElement {
 
     let bodyHtml = "";
     if (isError) {
-      bodyHtml = `<div class="agent-card-error"><span class="agent-card-error-title">Agent failed</span>Container exited with an error. <a href="/sessions.html?view=flows&agent=${encodeURIComponent(a.id)}" class="error-logs-link">View logs</a></div>`;
+      bodyHtml = `<div class="agent-card-error"><span class="agent-card-error-title">Agent failed</span>Container exited with an error. <a href="/flows.html?agent=${encodeURIComponent(a.id)}" class="error-logs-link">View logs</a></div>`;
     } else if (isSettingUp) {
       const info = a._uploadInfo;
       const statusMsg = info?.status_message || (a.status === "starting" ? "Starting container..." : "Building and deploying...");
@@ -236,10 +237,10 @@ class YourAgentsPage extends HTMLElement {
     btn.style.display = input.value ? "" : "none";
   }
 
-  /** Fallback shell — mirrors the static markup in web/agents.html's
-   *  your-agents view. */
+  /** Fallback shell — mirrors the static markup in web/your-agents.html. */
   #shell() {
     return `
+      <app-module-nav module="agents"></app-module-nav>
       <div class="page-header">
         <div class="page-header-top">
           <div>
@@ -360,7 +361,7 @@ class YourAgentsPage extends HTMLElement {
             description="Deploy your first agent from the catalog or add a new one."
             icon='${icons.layers("", 40)}'>
             <a href="/agents.html" class="empty-action-link">Browse catalog</a>
-            <a href="/agents.html?view=import" class="empty-action-link empty-action-link--secondary">Import agent</a>
+            <a href="/add-agent.html" class="empty-action-link empty-action-link--secondary">Import agent</a>
           </app-empty-state>
         </div>`;
       return;
@@ -549,8 +550,13 @@ class YourAgentsPage extends HTMLElement {
       } else if (action === "restart" || action === "stop") {
         const name = btn.dataset.name;
         const original = btn.innerHTML;
-        btn.disabled = true;
-        btn.textContent = action === "restart" ? "Restarting..." : "Stopping...";
+        // These are fixed-size icon buttons: swapping in a label overflows the
+        // square and lands on the card body. Swap the icon for a same-size
+        // spinner and lock the card's other lifecycle buttons instead.
+        const siblings = [...btn.closest(".agent-card-actions").querySelectorAll("[data-action]")];
+        for (const b of siblings) b.disabled = true;
+        btn.setAttribute("aria-busy", "true");
+        btn.innerHTML = `<span class="setup-spinner"></span>`;
         try {
           const res = await apiFetch(
             `/containers/${encodeURIComponent(name)}/${action}`,
@@ -560,11 +566,15 @@ class YourAgentsPage extends HTMLElement {
           showToast(
             `${action === "restart" ? "Restarted" : "Stopped"} ${name}`,
           );
-          this.#load();
+          await this.#load();
         } catch (err) {
           showToast(`Failed to ${action}: ${err.message}`);
-          btn.disabled = false;
+        } finally {
+          // #load() usually replaces these nodes; restore anyway so a failed
+          // reload can't leave the card stuck on a spinner.
+          btn.removeAttribute("aria-busy");
           btn.innerHTML = original;
+          for (const b of siblings) b.disabled = false;
         }
       } else if (action === "delete") {
         const name = btn.dataset.name;

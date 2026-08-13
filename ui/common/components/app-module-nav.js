@@ -20,7 +20,6 @@
  * @fires module-nav-select - `{ detail: { section } }` on section item click.
  */
 import { icons } from "../utils/icons.js";
-import { initialView, syncView } from "../utils/module-view.js";
 
 const styles = new CSSStyleSheet();
 styles.replaceSync(`/* Host-page layout contract: the page component that contains a module nav is
@@ -140,12 +139,15 @@ app-module-nav:not(:defined) { display: block; }
   }
 
   .child { padding-left: 26px; }
-  .child.is-active {
+  /* Keyed on .row, not .child: a group can itself be a link row (a
+     heading-level page with no children) and takes the same active state.
+     No backticks in this sheet — it is a template literal. */
+  .row.is-active {
     background: light-dark(var(--sand-100), var(--neutral-700));
     color: var(--fg-primary);
     font-weight: 500;
   }
-  .child.is-active:hover { background: light-dark(var(--sand-100), var(--neutral-700)); }
+  .row.is-active:hover { background: light-dark(var(--sand-100), var(--neutral-700)); }
 
   /* Skeleton while fetchModuleNav resolves */
   .skel-row {
@@ -341,23 +343,16 @@ export class AppModuleNav extends HTMLElement {
     }
     const section = e.target.closest("[data-section]");
     if (section) {
-      // A section row may carry a `url` (its sections live on another page of
-      // the module). From that other page there is nothing here to switch, so
-      // follow the link and let the owning page pick the section out of the URL
-      // — swallowing the click was what used to pin the content to one panel.
-      // Every module now keeps its sections in one document (module-shell), so
-      // no nav entry takes this branch today; it is the seam that keeps a
-      // multi-document module working if one is added back.
+      // A module can mix in-page sections with sibling pages (Settings' panels
+      // + /secrets.html). From the sibling page there is no panel to switch, so
+      // follow the link and let the owning page pick the section off the hash —
+      // swallowing the click there was what pinned the content to Secrets.
       const href = section.getAttribute("href");
       if (href && !this.#isActive(href.split("#")[0])) {
         document.dispatchEvent(new CustomEvent("loading-start", { bubbles: true }));
         return;
       }
       this.setAttribute("active-section", section.dataset.section);
-      // Name the view in the URL so the row the user is looking at is what a
-      // copied link opens. replaceState, not pushState: a section is a view of
-      // this page, not a place in history.
-      syncView(section.dataset.section);
       this.dispatchEvent(new CustomEvent("module-nav-select", {
         bubbles: true,
         detail: { section: section.dataset.section },
@@ -418,6 +413,30 @@ export class AppModuleNav extends HTMLElement {
       ${active ? 'aria-current="page"' : ""}><span class="row-label">${this.#esc(item.label)}</span></a>`;
   }
 
+  /** A group carrying a `url` and no items is a heading-level link, not a
+   *  collapsible group (Orchestrator's "Orchestrate a task") — no chevron,
+   *  since there is nothing to collapse. */
+  #groupHtml(g) {
+    if (g.url && !g.items?.length) {
+      const active = this.#isActive(g.url);
+      return `<a class="row group-head${active ? " is-active" : ""}" href="${this.#esc(g.url)}"
+        ${active ? 'aria-current="page"' : ""}><span class="row-label">${this.#esc(g.label)}</span></a>`;
+    }
+    return `
+      <div class="group${this.#collapsed.has(g.label) ? " is-collapsed" : ""}">
+        <button type="button" class="row group-head" data-group="${this.#esc(g.label)}"
+          aria-expanded="${!this.#collapsed.has(g.label)}">
+          <span class="chev">${icons.chevronDown("", 12)}</span>
+          <span class="row-label">${this.#esc(g.label)}</span>
+        </button>
+        <div class="group-items">
+          <div class="items-clip">
+            ${(g.items || []).map((item) => this.#itemHtml(item)).join("")}
+          </div>
+        </div>
+      </div>`;
+  }
+
   #render() {
     const nav = this.#nav;
     if (!nav || !nav.groups?.length) {
@@ -427,19 +446,14 @@ export class AppModuleNav extends HTMLElement {
       return;
     }
 
-    // Active section, in precedence order: whatever the host already set (a
-    // module-shell resolves this before the nav loads, and it owns the answer),
-    // then `?view=` so a shared link highlights the row it opened, then the
-    // first section item. Sections owned by another page are skipped — one
-    // would otherwise light up next to that page's own active row.
+    // Default active section: the attribute, else the first section item that
+    // belongs to the page we're on — a section owned by another page would
+    // otherwise light up next to that page's own active row.
     if (!this.getAttribute("active-section")) {
-      const sections = nav.groups
-        .flatMap((g) => g.items)
-        .filter((i) => i.section != null && (!i.url || this.#isActive(i.url)))
-        .map((i) => i.section);
-      if (sections.length) {
-        this.setAttribute("active-section", initialView(sections));
-      }
+      const first = nav.groups
+        .flatMap((g) => g.items || [])
+        .find((i) => i.section != null && (!i.url || this.#isActive(i.url)));
+      if (first) this.setAttribute("active-section", first.section);
     }
 
     const iconHtml = nav.icon && icons[nav.icon] ? icons[nav.icon]("", 14) : "";
@@ -455,20 +469,7 @@ export class AppModuleNav extends HTMLElement {
         <span class="mod-title">${this.#esc(nav.title)}</span>
       </div>
       <nav class="mod-groups" aria-label="${this.#esc(nav.title)} navigation">
-        ${nav.groups.map((g) => `
-          <div class="group${this.#collapsed.has(g.label) ? " is-collapsed" : ""}">
-            <button type="button" class="row group-head" data-group="${this.#esc(g.label)}"
-              aria-expanded="${!this.#collapsed.has(g.label)}">
-              <span class="chev">${icons.chevronDown("", 12)}</span>
-              <span class="row-label">${this.#esc(g.label)}</span>
-            </button>
-            <div class="group-items">
-              <div class="items-clip">
-                ${g.items.map((item) => this.#itemHtml(item)).join("")}
-              </div>
-            </div>
-          </div>
-        `).join("")}
+        ${nav.groups.map((g) => this.#groupHtml(g)).join("")}
       </nav>`;
   }
 }
