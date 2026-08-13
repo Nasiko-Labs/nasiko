@@ -5,6 +5,7 @@ use std::io::Read;
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
+use nasiko_utils::version::parse_plain_version;
 use sha2::{Digest, Sha256};
 
 use crate::api::OciClient;
@@ -58,49 +59,119 @@ pub fn push_image(image: &str, repo: &str, tag: &str) -> Result<()> {
 ///
 /// Bare template names resolve to the `nasiko`-owned artifact of that name —
 /// exactly what `nasiko-ee registry publish` creates (`nasiko/<name>`, tagged
-/// with its semver version, no `latest` tag).
+/// with its semver version).
 /// Returns Err if registry is not configured or unreachable.
 pub fn pull_template(template_name: &str) -> Result<Vec<u8>> {
-    pull_artifact_tarball(&format!("nasiko/{template_name}"))
+    pull_artifact_tarball(&format!("nasiko/{template_name}"), None)
 }
 
-/// Pull a source-archive artifact (`owner/name`) from the artifact registry:
-/// resolve the newest tag, fetch the manifest, and return the single layer's
-/// tar.gz bytes.
-pub fn pull_artifact_tarball(repo: &str) -> Result<Vec<u8>> {
+/// Pull a source-archive artifact (`owner/name`) from the artifact registry and
+/// return its tar.gz bytes.
+///
+/// `version` is the exact tag to pull — pass the version the catalog reported
+/// for the artifact. With `None` the newest **semver** tag is resolved from
+/// `tags/list`.
+pub fn pull_artifact_tarball(repo: &str, version: Option<&str>) -> Result<Vec<u8>> {
     let oci = OciClient::for_artifact_registry()?
         .ok_or_else(|| anyhow::anyhow!("no artifact registry configured"))?;
 
-    // Artifacts are tagged with semver versions, never "latest" — take the
-    // registry's newest tag.
-    let tags_json = oci
-        .list_tags(repo)
-        .with_context(|| format!("artifact '{repo}' not found in registry"))?;
-    let tags: serde_json::Value = serde_json::from_str(&tags_json)?;
-    let tag = tags
-        .get("tags")
-        .and_then(|t| t.as_array())
-        .and_then(|arr| arr.last())
-        .and_then(|t| t.as_str())
-        .with_context(|| format!("no tags found for artifact '{repo}'"))?;
+    let tag = match version {
+        Some(v) => v.to_string(),
+        None => {
+            let tags_json = oci
+                .list_tags(repo)
+                .with_context(|| format!("artifact '{repo}' not found in registry"))?;
+            newest_source_tag(&serde_json::from_str(&tags_json)?, repo)?
+        }
+    };
 
     let manifest_json = oci
-        .pull_manifest(repo, tag)
+        .pull_manifest(repo, &tag)
         .with_context(|| format!("failed to pull manifest for '{repo}:{tag}'"))?;
     let manifest: serde_json::Value = serde_json::from_str(&manifest_json)?;
+    let layer_digest = source_layer_digest(&manifest, repo, &tag)?;
 
+    oci.pull_blob(repo, &layer_digest)
+}
+
+/// Pick the newest published version from an OCI `tags/list` body.
+///
+/// A repository can hold more than one kind of manifest under different tags —
+/// a source archive at `0.1.0` alongside a runnable container image at
+/// `latest`, say — and `tags/list` is lexically sorted, so "the last tag" is
+/// whatever sorts highest, not the newest version. Only plain `x.y.z` tags are
+/// candidates (`parse_plain_version` rejects `latest` and pre-release suffixes),
+/// and the winner is the highest by semver order.
+fn newest_source_tag(tags_body: &serde_json::Value, repo: &str) -> Result<String> {
+    let tags: Vec<&str> = tags_body
+        .get("tags")
+        .and_then(|t| t.as_array())
+        .map(|arr| arr.iter().filter_map(|t| t.as_str()).collect())
+        .unwrap_or_default();
+
+    if tags.is_empty() {
+        bail!("no tags found for artifact '{repo}'");
+    }
+
+    let mut versions: Vec<_> = tags
+        .iter()
+        .filter_map(|t| parse_plain_version(t).map(|v| (v, *t)))
+        .collect();
+    versions.sort_by(|a, b| a.0.cmp(&b.0));
+
+    match versions.pop() {
+        Some((_, tag)) => Ok(tag.to_string()),
+        None => bail!(
+            "artifact '{repo}' has no versioned tags (found: {}) — \
+             a source artifact is published with an x.y.z version",
+            tags.join(", ")
+        ),
+    }
+}
+
+/// Find the source-archive layer in a manifest.
+///
+/// Nasiko source artifacts carry a single `application/vnd.nasiko.<kind>.v1.tar+gzip`
+/// layer. A container image manifest also has `layers[0]`, so taking the first
+/// layer unconditionally happily unpacks a base image's filesystem over the
+/// user's project — match on the media type and refuse anything else.
+fn source_layer_digest(manifest: &serde_json::Value, repo: &str, tag: &str) -> Result<String> {
     let layers = manifest
         .get("layers")
         .and_then(|l| l.as_array())
         .context("invalid manifest: no layers")?;
 
-    let layer_digest = layers
-        .first()
-        .and_then(|l| l.get("digest"))
-        .and_then(|d| d.as_str())
-        .context("invalid manifest: no layer digest")?;
+    let media_type = |layer: &serde_json::Value| -> Option<String> {
+        layer
+            .get("mediaType")
+            .and_then(|m| m.as_str())
+            .map(String::from)
+    };
 
-    oci.pull_blob(repo, layer_digest)
+    if let Some(layer) = layers
+        .iter()
+        .find(|l| media_type(l).is_some_and(|mt| is_source_media_type(&mt)))
+    {
+        return layer
+            .get("digest")
+            .and_then(|d| d.as_str())
+            .map(String::from)
+            .context("invalid manifest: source layer has no digest");
+    }
+
+    let found = layers
+        .iter()
+        .filter_map(media_type)
+        .collect::<Vec<_>>()
+        .join(", ");
+    bail!(
+        "'{repo}:{tag}' is not a source artifact — its layers are [{found}]. \
+         Scaffolding needs the published source archive, not a container image."
+    )
+}
+
+fn is_source_media_type(media_type: &str) -> bool {
+    media_type.starts_with("application/vnd.nasiko.") && media_type.ends_with(".tar+gzip")
 }
 
 // ─── Docker image → OCI conversion ──────────────────────────────────────────
@@ -215,4 +286,88 @@ pub fn build_oci_manifest(entries: &DockerTarEntries, config_digest: &str) -> se
         },
         "layers": layers,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tags(list: &[&str]) -> serde_json::Value {
+        serde_json::json!({ "name": "nasiko/books", "tags": list })
+    }
+
+    fn source_manifest() -> serde_json::Value {
+        serde_json::json!({
+            "artifactType": "application/vnd.nasiko.agent.v1",
+            "layers": [{
+                "mediaType": "application/vnd.nasiko.agent.v1.tar+gzip",
+                "digest": "sha256:source",
+            }],
+        })
+    }
+
+    fn image_manifest() -> serde_json::Value {
+        serde_json::json!({
+            "config": { "mediaType": "application/vnd.oci.image.config.v1+json" },
+            "layers": [
+                { "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip", "digest": "sha256:certs" },
+                { "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip", "digest": "sha256:app" },
+            ],
+        })
+    }
+
+    #[test]
+    fn newest_tag_ignores_latest() {
+        // `latest` sorts after `0.1.0` lexically, which is how a container
+        // image tag used to win over the source archive.
+        let tag = newest_source_tag(&tags(&["0.1.0", "latest"]), "nasiko/books").unwrap();
+        assert_eq!(tag, "0.1.0");
+    }
+
+    #[test]
+    fn newest_tag_orders_by_semver_not_lexically() {
+        let tag = newest_source_tag(&tags(&["0.1.0", "0.10.0", "0.9.0"]), "nasiko/books").unwrap();
+        assert_eq!(tag, "0.10.0");
+    }
+
+    #[test]
+    fn newest_tag_errors_when_only_unversioned_tags_exist() {
+        let err = newest_source_tag(&tags(&["latest", "dev"]), "nasiko/books").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("no versioned tags"), "{msg}");
+        assert!(msg.contains("latest, dev"), "{msg}");
+    }
+
+    #[test]
+    fn newest_tag_errors_on_empty_tag_list() {
+        let err = newest_source_tag(&tags(&[]), "nasiko/books").unwrap_err();
+        assert!(err.to_string().contains("no tags found"), "{err}");
+    }
+
+    #[test]
+    fn source_layer_matches_nasiko_media_type() {
+        let digest = source_layer_digest(&source_manifest(), "nasiko/books", "0.1.0").unwrap();
+        assert_eq!(digest, "sha256:source");
+    }
+
+    #[test]
+    fn source_layer_rejects_container_image() {
+        let err = source_layer_digest(&image_manifest(), "nasiko/books", "latest").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("not a source artifact"), "{msg}");
+        // Never silently unpacks the base image's filesystem.
+        assert!(!msg.contains("sha256:certs"), "{msg}");
+    }
+
+    #[test]
+    fn source_layer_found_behind_other_layers() {
+        let manifest = serde_json::json!({
+            "layers": [
+                { "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip", "digest": "sha256:other" },
+                { "mediaType": "application/vnd.nasiko.skill.v1.tar+gzip", "digest": "sha256:skill" },
+            ],
+        });
+        let digest = source_layer_digest(&manifest, "nasiko/tracking-id", "1.0.0").unwrap();
+        assert_eq!(digest, "sha256:skill");
+    }
 }

@@ -88,8 +88,9 @@ fn fetch_frameworks() -> Result<Vec<Framework>> {
 /// Non-interactive: scaffold from a named template or registry artifact.
 ///
 /// If `template` contains a `/` (e.g. `nasiko/image-generator-agent`), pulls
-/// that exact artifact from the registry. Otherwise treats it as a framework
-/// template name (e.g. `crewai`).
+/// that exact artifact from the registry — optionally pinned with a `:version`
+/// suffix, otherwise its newest published version. Otherwise treats it as a
+/// framework template name (e.g. `crewai`).
 pub fn new_agent(template: &str, name: &str) -> Result<()> {
     let dest = Path::new(name);
     if dest.exists() {
@@ -97,7 +98,11 @@ pub fn new_agent(template: &str, name: &str) -> Result<()> {
     }
 
     if template.contains('/') {
-        pull_artifact(template, dest)?;
+        let (repo, version) = match template.split_once(':') {
+            Some((repo, version)) => (repo, Some(version)),
+            None => (template, None),
+        };
+        pull_artifact(repo, version, dest)?;
     } else {
         extract_template(template, dest)?;
     }
@@ -187,7 +192,7 @@ pub fn new_agent_interactive(name: Option<&str>) -> Result<()> {
         // Pull the specific artifact from registry
         let repo = format!("{}/{}", artifact.owner, artifact.name);
         println!("  registry: pulling {repo}...");
-        pull_artifact(&repo, &dest)?;
+        pull_artifact(&repo, Some(&artifact.version), &dest)?;
     } else {
         // Blank template flow
         extract_template(&framework.key, &dest)?;
@@ -320,13 +325,20 @@ fn extract_template(template: &str, dest: &Path) -> Result<()> {
 }
 
 /// Pull a specific artifact from the registry by owner/name (e.g. "nasiko/image-generator-agent").
-fn pull_artifact(repo: &str, dest: &Path) -> Result<()> {
+///
+/// `version` pins the exact tag — pass the version the catalog listed for this
+/// artifact, which keeps a repo's other tags (a container image at `latest`,
+/// say) out of the scaffold. `None` resolves the newest published version.
+fn pull_artifact(repo: &str, version: Option<&str>, dest: &Path) -> Result<()> {
     let url = crate::config::artifact_registry_url()
         .context("no artifact registry configured (set NASIKO_REGISTRY_URL)")?;
     println!("  registry: {url}");
-    println!("  pulling {repo}...");
+    match version {
+        Some(v) => println!("  pulling {repo}:{v}..."),
+        None => println!("  pulling {repo}..."),
+    }
 
-    let data = crate::oci::pull_artifact_tarball(repo)?;
+    let data = crate::oci::pull_artifact_tarball(repo, version)?;
     util::extract_tar_gz(&data, dest)
 }
 
