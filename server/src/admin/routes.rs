@@ -333,10 +333,7 @@ async fn stop(
         Err(resp) => return resp,
     };
     match state.runtime.scale(&id, 0).await {
-        Ok(()) => {
-            record_lifecycle_status(&state, &name, "stopped").await;
-            StatusCode::OK.into_response()
-        }
+        Ok(()) => StatusCode::OK.into_response(),
         Err(e) => {
             tracing::error!(%e, %name, "stop: runtime error");
             (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
@@ -354,10 +351,7 @@ async fn start(
         Err(resp) => return resp,
     };
     match state.runtime.scale(&id, 1).await {
-        Ok(()) => {
-            record_lifecycle_status(&state, &name, "running").await;
-            StatusCode::OK.into_response()
-        }
+        Ok(()) => StatusCode::OK.into_response(),
         Err(e) => {
             tracing::error!(%e, %name, "start: runtime error");
             (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
@@ -549,18 +543,7 @@ async fn scale(
         Err(resp) => return resp,
     };
     match state.runtime.scale(&id, req.replicas).await {
-        Ok(()) => {
-            // Scaling to zero is what `stop` does, so it must leave the same
-            // status behind — otherwise `scale 0` parks a container that the
-            // catalog still advertises as running.
-            let status = if req.replicas == 0 {
-                "stopped"
-            } else {
-                "running"
-            };
-            record_lifecycle_status(&state, &name, status).await;
-            StatusCode::OK.into_response()
-        }
+        Ok(()) => StatusCode::OK.into_response(),
         Err(e) => {
             tracing::error!(%e, %name, "scale: runtime error");
             (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
@@ -614,65 +597,6 @@ async fn logs(
 /// filter, `deploy()`'s ad-hoc image path found the old deleted row, updated
 /// it in place instead of treating the name as unclaimed, and left the
 /// resulting running container permanently invisible to `nasiko ps`/`rm`.
-/// Persist a lifecycle status change to the catalog row and its deployment row.
-///
-/// `GET /api/agents` reports `agents.status` straight from the column
-/// (`catalog::routes`) with no runtime reconciliation, so a lifecycle op that
-/// only talks to the runtime leaves the catalog lying: stopping a container left
-/// it listed as running forever, and the UI's "Stopped" filter never matched it.
-///
-/// Awaited, not spawned like `destroy`'s deployment write: the UI refetches the
-/// agent list as soon as the request returns, and a detached write would race
-/// that refetch and hand back the pre-stop status.
-async fn record_lifecycle_status(state: &AppState, name: &str, status: &str) {
-    let Some(agent_id) = resolve_agent_id_by_name(state, name).await else {
-        return;
-    };
-    if let Err(e) = sqlx::query("UPDATE agents SET status = $2, updated_at = now() WHERE id = $1")
-        .bind(agent_id)
-        .bind(status)
-        .execute(&state.db)
-        .await
-    {
-        tracing::error!(%e, %name, %status, "failed to record agent status");
-    }
-    // `agent_deployments` is append-only history: `restart_deployment` and every
-    // update/upload path mark the current row `stopped` (by id) and INSERT a new
-    // one, so an agent owns one live row and N historical ones.
-    //
-    // That makes the two directions asymmetric, and they must not share a query:
-    //
-    // - Bringing an agent UP may only touch the newest row. An agent-wide sweep
-    //   would resurrect every historical row as `running`, which is not just a
-    //   smudged history — EE's crash guardian polls *every* row in
-    //   ('starting','running') (ee/server/src/crash_guardian.rs), so each stale
-    //   row becomes a phantom deployment it probes and can mark crashed.
-    // - Taking one DOWN sweeps the agent, matching `destroy` above. Nothing of
-    //   this agent's is running afterwards, so any row still claiming otherwise
-    //   is stale by definition and this converges it on reality — including rows
-    //   orphaned `running` by an earlier crash.
-    let sql = if status == "stopped" {
-        "UPDATE agent_deployments SET status = $2, updated_at = now()
-         WHERE agent_id = $1 AND status != $2"
-    } else {
-        "UPDATE agent_deployments SET status = $2, updated_at = now()
-         WHERE id = (
-             SELECT id FROM agent_deployments
-             WHERE agent_id = $1
-             ORDER BY created_at DESC
-             LIMIT 1
-         ) AND status != $2"
-    };
-    if let Err(e) = sqlx::query(sql)
-        .bind(agent_id)
-        .bind(status)
-        .execute(&state.db)
-        .await
-    {
-        tracing::error!(%e, %name, %status, "failed to record deployment status");
-    }
-}
-
 async fn resolve_agent_id_by_name(state: &AppState, name_or_id: &str) -> Option<Uuid> {
     if let Ok(id) = name_or_id.parse::<Uuid>() {
         return sqlx::query_scalar::<_, Uuid>(
