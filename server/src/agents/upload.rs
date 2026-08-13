@@ -86,12 +86,6 @@ pub(crate) struct UploadAndDeployForm {
     ports: Option<String>,
     /// JSON object of extra env vars, e.g. `{"FOO":"bar"}`.
     env: Option<String>,
-    /// `"true"` to mount a persistent, private-per-agent directory at
-    /// `/workspace` (default: not writable).
-    writable: Option<String>,
-    /// Container-side mount target for the writable volume (`--writable-path`).
-    /// Absolute path; implies `writable`. Unset = `/workspace`.
-    writable_path: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema, sqlx::FromRow)]
@@ -130,11 +124,6 @@ pub enum BuildJobPayload {
         image_tag: String,
         ports: Vec<u16>,
         env: HashMap<String, String>,
-        writable: bool,
-        /// `--writable-path`; `None` = `/workspace`. `#[serde(default)]` so
-        /// job rows queued before this field existed still deserialize.
-        #[serde(default)]
-        writable_path: Option<String>,
     },
     /// In-place agent update (PUT /api/agents/{id}/update).
     Update {
@@ -157,12 +146,6 @@ pub enum BuildJobPayload {
         prev_version: String,
         prev_image: Option<String>,
         changelog: Option<String>,
-        /// Carried forward from `agents.writable` — this endpoint has no flag of
-        /// its own to set it (see `update_agent`'s fetch of the agent row).
-        writable: bool,
-        /// Carried forward from `agents.writable_path`, same reasoning.
-        #[serde(default)]
-        writable_path: Option<String>,
     },
     /// Rollback to a prior version (POST /api/agents/{id}/rollback).
     Rollback {
@@ -179,12 +162,6 @@ pub enum BuildJobPayload {
         target_version: String,
         target_image_tag: String,
         reason: Option<String>,
-        /// Carried forward from `agents.writable` — same reasoning as
-        /// `Update::writable`.
-        writable: bool,
-        /// Carried forward from `agents.writable_path`, same reasoning.
-        #[serde(default)]
-        writable_path: Option<String>,
     },
     /// Standalone image build without deploy (POST /api/build/builds).
     StandaloneBuild {
@@ -313,23 +290,12 @@ pub(crate) async fn upload_and_deploy(
     let mut env: HashMap<String, String> = HashMap::new();
     // Which LLM SDK the agent's code speaks (drives gateway env injection). Default openai.
     let mut inbound_format: Option<String> = None;
-    // Mounts a persistent, private-per-agent directory at /workspace (see
-    // DeploymentSpec::writable's doc comment). Default false.
-    let mut writable = false;
-    // Container-side mount target (--writable-path); implies `writable`.
-    let mut writable_path: Option<String> = None;
 
     while let Ok(Some(field)) = multipart.next_field().await {
         match field.name().unwrap_or("") {
             "name" | "agent_name" => name = field.text().await.ok(),
             "version_tag" => version_tag = field.text().await.ok(),
             "inbound_format" => inbound_format = field.text().await.ok(),
-            "writable" => {
-                writable = field.text().await.ok().as_deref() == Some("true");
-            }
-            "writable_path" => {
-                writable_path = field.text().await.ok().filter(|s| !s.is_empty());
-            }
             "source" | "file" => {
                 use crate::multipart_util::{StreamUploadError, stream_field_to_fresh_temp_file};
                 match stream_field_to_fresh_temp_file(
@@ -377,16 +343,6 @@ pub(crate) async fn upload_and_deploy(
                 }
             }
             _ => {}
-        }
-    }
-
-    // A path implies the mount (`--writable-path X` alone must not silently
-    // deploy without storage), and a bad path is a caller error — reject now
-    // with a 400 instead of surfacing it minutes later as a failed deploy.
-    if let Some(path) = &writable_path {
-        writable = true;
-        if let Err(e) = nasiko_runtime::validate_writable_path(path) {
-            return (StatusCode::BAD_REQUEST, e).into_response();
         }
     }
 
@@ -491,13 +447,11 @@ pub(crate) async fn upload_and_deploy(
     // concurrent same-name uploads create duplicate rows (SRV-2).
     let agent_id = {
         match sqlx::query_scalar::<_, Uuid>(
-            "INSERT INTO agents (name, owner_id, version, image, status, inbound_format, writable, writable_path) \
-             VALUES ($1, $2, $3, $4, 'deploying', $5, $6, $7) \
+            "INSERT INTO agents (name, owner_id, version, image, status, inbound_format) \
+             VALUES ($1, $2, $3, $4, 'deploying', $5) \
              ON CONFLICT (owner_id, name) WHERE deleted_at IS NULL \
              DO UPDATE SET version = EXCLUDED.version, image = EXCLUDED.image, \
                            inbound_format = EXCLUDED.inbound_format, \
-                           writable = EXCLUDED.writable, \
-                           writable_path = EXCLUDED.writable_path, \
                            status = 'deploying', updated_at = now() \
              RETURNING id",
         )
@@ -506,8 +460,6 @@ pub(crate) async fn upload_and_deploy(
         .bind(&version_tag)
         .bind(&image_tag)
         .bind(inbound_format)
-        .bind(writable)
-        .bind(&writable_path)
         .fetch_one(&mut *tx)
         .await
         {
@@ -593,8 +545,6 @@ pub(crate) async fn upload_and_deploy(
         image_tag: image_tag.clone(),
         ports,
         env,
-        writable,
-        writable_path: writable_path.clone(),
     };
 
     let payload_value = match serde_json::to_value(&payload) {
@@ -706,16 +656,11 @@ fn validate_agent_zip(
         return Err("Dockerfile has no FROM instruction".into());
     }
 
-    // At least one Python entrypoint must exist
-    let entrypoints = ["main.py", "src/main.py", "src/__main__.py", "__main__.py"];
-    let has_entrypoint = entrypoints.iter().any(|p| dest.join(p).exists());
-    if !has_entrypoint {
-        tracing::warn!(zip_path = %zip_path.display(), reason = "missing entrypoint", "upload rejected: invalid agent structure");
-        return Err(
-            "no Python entrypoint found (main.py, src/main.py, __main__.py, or src/__main__.py)"
-                .into(),
-        );
-    }
+    // No language-specific entrypoint check: the Dockerfile is the universal
+    // build/run contract, so any framework or language (Rust, Go, Node, Python,
+    // …) is accepted as long as it ships a Dockerfile with a FROM. The
+    // Dockerfile's own CMD/ENTRYPOINT decides how the agent starts — mirroring
+    // the CLI push/deploy path, which builds the image without inspecting source.
 
     // ── Extract version from project files ───────────────────────────────────
     // Resolution order mirrors the CLI: AgentCard.json → pyproject.toml → Cargo.toml.
@@ -923,14 +868,27 @@ fn patch_otel_into_dockerfile(source_dir: &std::path::Path, dockerfile: &std::pa
         }
     };
 
-    // Only patch Python-based images.
-    let is_python = contents.lines().any(|l| {
+    // Only patch genuinely Python-based builds. `slim`/`alpine` are shared across
+    // many languages' base images (`rust:*-slim`, `debian:*-slim`, alpine build
+    // stages, …), so matching on them wrongly injects `pip install` into a
+    // non-Python image and breaks the build. Key off real Python signals instead:
+    // a `python` base image, or Python project/entrypoint files in the source.
+    let from_is_python = contents.lines().any(|l| {
         let t = l.trim();
-        t.starts_with("FROM ")
-            && (t.contains("python") || t.contains("slim") || t.contains("alpine"))
+        t.starts_with("FROM ") && t.contains("python")
     });
-    if !is_python {
-        tracing::debug!("otel patch: Dockerfile does not appear Python-based, skipping");
+    let has_python_source = [
+        "requirements.txt",
+        "pyproject.toml",
+        "main.py",
+        "src/main.py",
+        "__main__.py",
+        "src/__main__.py",
+    ]
+    .iter()
+    .any(|p| source_dir.join(p).exists());
+    if !from_is_python && !has_python_source {
+        tracing::debug!("otel patch: build does not appear Python-based, skipping");
         return;
     }
 
@@ -1001,9 +959,6 @@ pub async fn execute_upload_and_deploy(
     agent_runtime: String,
     agent_image_registry: String,
     max_replicas: u32,
-    writable: bool,
-    writable_path: Option<String>,
-    default_memory: String,
 ) {
     if let Some(key) = openai_api_key {
         env.entry("OPENAI_API_KEY".to_owned()).or_insert(key);
@@ -1063,11 +1018,8 @@ pub async fn execute_upload_and_deploy(
             image_tag.clone(),
             ports,
             env,
-            &default_memory,
+            None,
             max_replicas,
-            writable,
-            writable_path.clone(),
-            owner_id,
         );
         crate::agents::attach_pull_credential(
             &db,
@@ -1200,7 +1152,6 @@ pub async fn execute_clone_and_deploy(
     agent_runtime: String,
     agent_image_registry: String,
     max_replicas: u32,
-    default_memory: String,
 ) {
     if let Some(key) = openai_api_key {
         env.entry("OPENAI_API_KEY".to_owned()).or_insert(key);
@@ -1298,12 +1249,8 @@ pub async fn execute_clone_and_deploy(
             image_tag.clone(),
             ports,
             env,
-            &default_memory,
-            max_replicas,
-            // GitHub-clone deploys don't expose a --writable flag yet.
-            false,
             None,
-            owner_id,
+            max_replicas,
         );
         crate::agents::attach_pull_credential(
             &db,
@@ -1550,7 +1497,6 @@ pub async fn execute_github_clone_and_deploy(
         state.config.agent_runtime.clone(),
         state.config.agent_image_registry.clone(),
         state.config.agent_max_replicas,
-        state.config.agent_default_memory.clone(),
     )
     .await;
 }
