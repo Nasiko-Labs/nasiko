@@ -45,15 +45,11 @@ const MODULE_NAVS = {
       // to custom MCP servers only (toolkits are platform-registered).
       { label: 'MCP servers', items: [
         { label: 'All', section: 'all' },
-        { label: 'Created by you', section: 'created-by-you' },
+        { label: 'My servers', section: 'my-servers' },
         { label: 'Shared with me', section: 'shared-with-me' },
-        { label: 'My uploads', section: 'uploads' },
       ]},
       { label: 'Toolkits', items: [
         { label: 'All toolkits', section: 'toolkits' },
-      ]},
-      { label: 'Access', items: [
-        { label: 'Agent access', section: 'agent-access' },
       ]},
     ],
   },
@@ -290,7 +286,7 @@ window.fetchUsageSummary = async () => {
 window.fetchTokenopsDashboard = async (startTime, endTime) => {
   const q = new URLSearchParams();
   if (startTime) q.set('start_time', startTime);
-  if (endTime) q.set('end_time', endTime);
+  // if (endTime) q.set('end_time', endTime);
   const params = q.size ? `?${q}` : '';
   return fetchApi(`/observability/finops/dashboard${params}`);
 };
@@ -475,4 +471,8 @@ window.saveAgentMcpToolRules = async (agentId, rules) => {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ rules }),
   });
+};
+
+window.fetchMcpConnectorDetail = async (id) => {
+  return fetchApi(`/mcp/connectors/${encodeURIComponent(id)}`);
 };

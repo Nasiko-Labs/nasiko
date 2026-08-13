@@ -2,6 +2,7 @@ import { icons } from '/common/utils/icons.js';
 import { fetchApi, apiFetch } from '/common/services/api.js';
 import { authService } from '/common/services/auth-service.js';
 import { showToast } from '/common/utils/toast.js';
+import { confirmDialog } from '/common/utils/confirm-dialog.js';
 import { ansiToHtml } from '/common/utils/ansi.js';
 import { attachSlidingIndicator } from '/common/utils/tab-indicator.js';
 import styles from './agent-card-page.css' with { type: 'css' };
@@ -153,11 +154,22 @@ class AgentCardPage extends HTMLElement {
             <button class="acp-action-btn" data-action="stop" title="Stop agent">${icons.square('', 14)} Stop</button>` : '';
     return `
         <div class="acp-topbar">
-          <a class="acp-back" href="/your-agents.html" title="Back to Your Agents" aria-label="Back to Your Agents">
+          <a class="acp-back" href="${this.#backUrl()}" title="Back" aria-label="Back">
             ${icons.x('', 16)}
           </a>
           <div class="acp-topbar-actions">${actions}</div>
         </div>`;
+  }
+
+  #backUrl() {
+    const ref = document.referrer;
+    try {
+      const url = ref ? new URL(ref) : null;
+      if (url && url.origin === location.origin && url.pathname !== location.pathname) {
+        return url.pathname + url.search;
+      }
+    } catch { /* invalid referrer */ }
+    return '/your-agents.html';
   }
 
   #heroHtml(a, displayName) {
@@ -352,7 +364,13 @@ class AgentCardPage extends HTMLElement {
 
   async #deleteAgent(btn) {
     const displayName = this.#agent.display_name || this.#agent.name;
-    if (!confirm(`Delete "${displayName}"? This removes the agent from the registry, revokes all grants, and stops its container.`)) return;
+    const confirmed = await confirmDialog({
+      title: `Delete ${displayName}`,
+      message: 'This removes the agent from the registry, revokes all grants, and stops its container. This action cannot be undone.',
+      confirmLabel: 'Delete',
+      danger: true,
+    });
+    if (!confirmed) return;
     const original = btn.innerHTML;
     btn.disabled = true;
     btn.textContent = 'Deleting...';
@@ -881,7 +899,13 @@ class AgentCardPage extends HTMLElement {
   }
 
   async #revokeGrant(kind, granteeId) {
-    if (!confirm('Revoke this access grant?')) return;
+    const confirmed = await confirmDialog({
+      title: 'Revoke access',
+      message: 'Revoke this access grant? The user or team will lose access to this agent.',
+      confirmLabel: 'Revoke',
+      danger: true,
+    });
+    if (!confirmed) return;
     const paths = { user: 'users', team: 'teams', department: 'departments', agent: 'agents' };
     try {
       const res = await apiFetch(
@@ -1146,7 +1170,13 @@ class AgentCardPage extends HTMLElement {
 
   async #submitTransfer() {
     if (!this.#transferPicked) return;
-    if (!confirm(`Transfer ownership to ${this.#transferPicked.label}? This cannot be undone from here.`)) return;
+    const transferConfirmed = await confirmDialog({
+      title: 'Transfer ownership',
+      message: `Transfer ownership to <strong>${this.#transferPicked.label}</strong>? This cannot be undone.`,
+      confirmLabel: 'Transfer',
+      danger: true,
+    });
+    if (!transferConfirmed) return;
     const err = this.querySelector('#acp-transfer-error');
     err.hidden = true;
     try {

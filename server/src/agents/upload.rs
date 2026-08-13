@@ -592,6 +592,14 @@ pub(crate) async fn upload_and_deploy(
     )
     .await;
 
+    // Tag this upload so the UI can show the source type.
+    let _ = sqlx::query(
+        "UPDATE upload_status SET metadata = jsonb_set(metadata, '{upload_type}', '\"zip\"') WHERE upload_id = $1",
+    )
+    .bind(&upload_id)
+    .execute(&state.db)
+    .await;
+
     tracing::info!(
         %build_id,
         %agent_id,
@@ -1148,7 +1156,7 @@ pub async fn execute_clone_and_deploy(
 
     let tmp_dir = std::env::temp_dir().join(format!("nasiko-clone-{build_id}"));
 
-    let result: Result<DeploymentStatus, String> = async {
+    let result: Result<(DeploymentStatus, String), String> = async {
         // Read tar.gz bytes then extract on the blocking pool.
         let tp = tar_gz_path.clone();
         let td = tmp_dir.clone();
@@ -1160,6 +1168,45 @@ pub async fn execute_clone_and_deploy(
         .map_err(|e| format!("spawn_blocking extract: {e}"))??;
 
         set_upload_status(&db, &upload_id, &name, owner_id, "processing", None, None).await;
+
+        // ── Extract version from project files (same logic as zip upload) ────
+        // Resolution order: AgentCard.json → pyproject.toml → Cargo.toml.
+        // If a valid x.y.z version is found, update the image tag and DB records
+        // so the clone path doesn't default everything to "latest".
+        let image_tag = {
+            let detected = detect_version_from_dir(&tmp_dir);
+            if let Some(ref ver) = detected {
+                if super::versions::parse_plain_version(ver).is_some() {
+                    let new_tag = crate::agents::build_image_tag(
+                        &agent_image_registry, &name, ver,
+                    );
+                    // Update agents.version + agent_builds.version_tag/image_reference
+                    // to reflect the real version instead of the placeholder.
+                    let _ = sqlx::query(
+                        "UPDATE agents SET version = $2, image = $3, updated_at = now() WHERE id = $1",
+                    )
+                    .bind(agent_id)
+                    .bind(ver)
+                    .bind(&new_tag)
+                    .execute(&db)
+                    .await;
+                    let _ = sqlx::query(
+                        "UPDATE agent_builds SET version_tag = $2, image_reference = $3 WHERE id = $1",
+                    )
+                    .bind(build_id)
+                    .bind(ver)
+                    .bind(&new_tag)
+                    .execute(&db)
+                    .await;
+                    tracing::info!(%build_id, %agent_id, version = %ver, "clone: detected version from source");
+                    new_tag
+                } else {
+                    image_tag
+                }
+            } else {
+                image_tag
+            }
+        };
 
         let dockerfile_path = tmp_dir.join("Dockerfile");
         if !dockerfile_path.exists() {
@@ -1221,7 +1268,7 @@ pub async fn execute_clone_and_deploy(
         )
         .await;
 
-        Ok(deploy_status)
+        Ok((deploy_status, image_tag))
     }
     .await;
 
@@ -1232,7 +1279,7 @@ pub async fn execute_clone_and_deploy(
     }
 
     match result {
-        Ok(deploy_status) => {
+        Ok((deploy_status, final_image_tag)) => {
             set_build_status(&db, build_id, BuildStatus::Success).await;
             set_upload_status(
                 &db,
@@ -1248,7 +1295,7 @@ pub async fn execute_clone_and_deploy(
             // already-deployed agent must land here too, which this activates and
             // archives whatever was previously running for (mirroring `update.rs`'s
             // redeploy path). A genuinely first upload has nothing to archive yet.
-            record_uploaded_version(&db, agent_id, build_id, &image_tag).await;
+            record_uploaded_version(&db, agent_id, build_id, &final_image_tag).await;
             let agent_url = crate::agents::resolve_agent_url(
                 &runtime,
                 &deploy_status,
@@ -1807,11 +1854,12 @@ struct UploadAgentRow {
     icon_url: Option<String>,
     version: Option<String>,
     agent_status: Option<String>,
+    metadata: sqlx::types::Json<serde_json::Value>,
 }
 
 #[derive(Serialize, ToSchema)]
 pub(crate) struct UploadInfoResponse {
-    upload_type: &'static str,
+    upload_type: String,
     upload_status: String,
     status_message: Option<String>,
     error_detail: Option<String>,
@@ -1889,7 +1937,8 @@ pub(crate) async fn list_upload_agents(
                COALESCE(a.tags, '{}') AS tags,
                a.icon_url,
                a.version,
-               a.status AS agent_status
+               a.status AS agent_status,
+               us.metadata
            FROM upload_status us
            JOIN agents a ON a.id = us.agent_id AND a.deleted_at IS NULL
            WHERE us.owner_id = $1
@@ -1916,7 +1965,10 @@ pub(crate) async fn list_upload_agents(
                         agent_name: r.agent_name,
                         icon_url: r.icon_url,
                         upload_info: UploadInfoResponse {
-                            upload_type: "zip",
+                            upload_type: r.metadata.get("upload_type")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("zip")
+                                .to_string(),
                             upload_status: display_status.to_string(),
                             status_message,
                             error_detail: r.error_message,

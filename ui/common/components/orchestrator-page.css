@@ -21,7 +21,6 @@
     app-module-nav { align-self: stretch; }
   }
   :scope.has-response {
-    min-height: auto;
     padding-top: var(--space-md);
   }
   .hero-icon {
@@ -60,6 +59,7 @@
   .input-wrap {
     width: min(100%, var(--orch-column-w));
     min-height: 88px;
+    flex-shrink: 0;
     transition: margin-bottom 0.3s;
     contain: layout style;
   }
@@ -67,74 +67,107 @@
     display: block;
     height: 88px;
   }
-  .response-area {
+  /* ── Messages area ───────────────────────────────────────────────────── */
+  .messages {
     width: min(100%, var(--orch-column-w));
-    margin-top: var(--space-md);
+    padding: var(--space-md) var(--space-md) var(--space-md) 0;
+    flex: 1;
+    overflow-y: auto;
+    min-height: 0;
+  }
+
+  .msg-row {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-xs);
+    margin-bottom: var(--space-md);
+    position: relative;
+    animation: msg-enter 0.25s ease-out;
+  }
+  .msg-row.is-user {
+    justify-content: flex-end;
+  }
+  .msg-row.is-assistant {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-xs);
+  }
+  .msg {
+    max-width: 85%;
+    padding: var(--space-sm) var(--space-md);
+    border-radius: var(--r-12);
+    font-size: var(--font-size-sm);
+    line-height: 1.6;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+  }
+  .msg.is-user {
+    background: var(--color-bg-base);
+    color: var(--color-text-main);
+    white-space: pre-wrap;
+  }
+  .msg.is-assistant {
+    background: transparent;
+    border: none;
+    padding: 0;
+    max-width: 100%;
+  }
+
+  .assistant-stream {
+    max-width: 100%;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+  }
+  .stream-content {
+    padding: 0;
+    background: transparent;
+    border: none;
     display: none;
   }
-  .response-area.is-visible { display: block; }
-  .steps-slot {
-    margin-bottom: var(--space-xs);
+  .stream-content.is-visible { display: block; }
+  .stream-content.is-progress {
+    color: var(--color-text-muted);
   }
-  .response-wrap {
-    position: relative;
-  }
-  .response-wrap .msg-actions {
+
+  .msg-actions {
     display: flex;
     align-items: center;
-    gap: 2px;
-    opacity: 0;
-    position: absolute;
-    top: calc(-1 * var(--space-sm) - 4px);
-    right: 0;
-    background: var(--color-bg-surface);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-sm);
-    padding: 2px;
-    box-shadow: var(--shadow-sm);
-    z-index: 1;
-  }
-  .response-wrap:hover .msg-actions,
-  .response-wrap:focus-within .msg-actions {
-    opacity: 1;
+    gap: var(--space-2xs);
+    margin-top: var(--space-2xs);
   }
   button.msg-action-copy,
   a.msg-action-trace {
-    display: grid;
-    place-items: center;
-    width: 28px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-2xs);
     height: 28px;
+    min-width: 28px;
+    padding: 0 var(--space-2xs);
     border: none;
     border-radius: var(--radius-sm);
     background: transparent;
     color: var(--color-text-muted);
+    font-size: var(--font-size-xs);
+    text-decoration: none;
     cursor: pointer;
 
     &:hover {
-      color: var(--color-primary);
-      background: color-mix(in srgb, var(--color-primary) 8%, transparent);
+      color: var(--color-text-main);
+      background: var(--bg-surface-hover);
     }
     &:focus-visible {
       outline: none;
       box-shadow: 0 0 0 2px var(--color-primary-ring);
     }
   }
-  .response-content {
-    font-size: var(--font-size-base);
-    line-height: 1.6;
+  a.msg-action-trace {
+    order: 99;
+    margin-left: auto;
     color: var(--color-text-main);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
-    background: var(--color-bg-surface);
-    padding: var(--space-sm) var(--space-md);
-    display: none;
-  }
-  .response-content.is-visible { display: block; }
-  /* Live progress prose (TASK_STATE_WORKING) — visibly provisional until the
-     real reply replaces it. */
-  .response-content.is-progress {
-    color: var(--color-text-muted);
-    border-style: dashed;
+    font-weight: 500;
   }
 
   .typing-indicator {
@@ -159,10 +192,6 @@
       & span { animation: none; opacity: 0.6; }
     }
   }
-  .response-usage {
-    margin-top: var(--space-xs);
-  }
-  .response-usage .msg-usage,
   .msg-actions .msg-usage {
     font-size: var(--font-size-xs);
     font-family: var(--font-mono);
@@ -171,16 +200,6 @@
     align-self: center;
     padding: 0 var(--space-2xs);
   }
-  .continue-link {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-xs);
-    margin-top: var(--space-sm);
-    font-size: var(--font-size-xs);
-    color: var(--color-primary);
-    text-decoration: none;
-  }
-  .continue-link:hover { text-decoration: underline; }
 
   .recent-agents {
     width: min(100%, var(--orch-column-w));
@@ -315,4 +334,15 @@
 @keyframes orch-typing-bounce {
   0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
   30% { transform: translateY(-4px); opacity: 1; }
+}
+
+@keyframes msg-enter {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  @keyframes msg-enter {
+    from, to { opacity: 1; transform: none; }
+  }
 }

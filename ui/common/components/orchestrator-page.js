@@ -1,7 +1,7 @@
 import { apiFetch } from '/common/services/api.js';
 import { icons } from '/common/utils/icons.js';
 import { renderMarkdown } from '/common/utils/markdown.js';
-import { readA2aStream, frameRenderer } from '/common/utils/a2a-stream.js';
+import { readA2aStream, frameRenderer, nearBottom } from '/common/utils/a2a-stream.js';
 import { usageChipsHtml } from '/common/utils/usage-chips.js';
 import { transcribeBlob } from '/common/utils/voice-utils.js';
 import '/common/components/voice-input.js';
@@ -15,6 +15,7 @@ document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 
 class OrchestratorPage extends HTMLElement {
   #initialized = false;
+  #sessionId = null;
 
   connectedCallback() {
     if (this.#initialized) return;
@@ -24,7 +25,7 @@ class OrchestratorPage extends HTMLElement {
       <app-module-nav module="orchestrator"></app-module-nav>
       <div class="hero-icon" aria-hidden="true">${icons.route('', 24)}</div>
       <h1 class="title">Orchestrate a task</h1>
-      <p class="subtitle">Describe a task and Nasiko will orchestrate the right agents to execute it.</p>
+      <p class="subtitle">Describe a task and Nasiko will orchestrate the right agents to execute it</p>
       <div class="recent-agents" id="recent-agents">
         <div class="recent-agents-grid" id="recent-agents-grid">
           <div class="agent-card-skel"></div>
@@ -32,25 +33,13 @@ class OrchestratorPage extends HTMLElement {
           <div class="agent-card-skel"></div>
         </div>
       </div>
+      <div class="messages" id="messages"></div>
       <div class="input-wrap">
         <voice-input
           id="voice-input"
           placeholder="Describe the task you want to execute..."
           transcription-callback="transcribeAudio"
         ></voice-input>
-      </div>
-      <div class="response-area" id="response-area">
-        <div class="steps-slot" id="steps-slot"></div>
-        <div class="response-wrap">
-          <div class="typing-indicator" id="response-typing" style="display:none;" aria-label="Agent is responding"><span></span><span></span><span></span></div>
-          <div class="response-content md-body" id="response-content"></div>
-          <div class="msg-actions" id="response-actions" style="display:none;">
-            <button type="button" class="msg-action-copy" aria-label="Copy response" title="Copy">${icons.copy('', 14)}</button>
-            <a class="msg-action-trace" id="response-trace" style="display:none;" href="#" aria-label="View trace" title="View trace">${icons.trace('', 14)}</a>
-          </div>
-        </div>
-        <div class="response-usage" id="response-usage"></div>
-        <a class="continue-link" id="continue-link" style="display:none;" href="#">Continue in chat</a>
       </div>
       <a class="wf-banner" href="/workflow-new.html">
         <span class="wf-banner-icon" aria-hidden="true">${icons.workflow('', 20)}</span>
@@ -65,31 +54,30 @@ class OrchestratorPage extends HTMLElement {
     this.#loadRecentAgents();
 
     const voiceInput = this.querySelector('#voice-input');
-    const responseArea = this.querySelector('#response-area');
-    const stepsSlot = this.querySelector('#steps-slot');
-    const responseContent = this.querySelector('#response-content');
-    const responseActions = this.querySelector('#response-actions');
-    const responseTrace = this.querySelector('#response-trace');
-    const continueLink = this.querySelector('#continue-link');
-    continueLink.insertAdjacentHTML('beforeend', ' ' + icons.chevronRight('', 14));
+    const messagesEl = this.querySelector('#messages');
 
-    // Copy full response
-    responseActions.querySelector('.msg-action-copy').addEventListener('click', (e) => {
-      const btn = e.currentTarget;
-      navigator.clipboard.writeText(responseContent.textContent).catch(() => {});
-      btn.innerHTML = icons.check('', 14);
-      setTimeout(() => { btn.innerHTML = icons.copy('', 14); }, 1500);
-    });
-
-    // Copy code blocks (delegated)
-    responseContent.addEventListener('click', (e) => {
+    // Copy code blocks (delegated on messages container)
+    messagesEl.addEventListener('click', (e) => {
       const copyBtn = e.target.closest('.md-code-copy');
-      if (!copyBtn) return;
-      const codeEl = copyBtn.closest('.md-code-block')?.querySelector('code');
-      if (codeEl) {
-        navigator.clipboard.writeText(codeEl.textContent).catch(() => {});
-        copyBtn.innerHTML = icons.check('', 14);
-        setTimeout(() => { copyBtn.innerHTML = icons.copy('', 14); }, 1500);
+      if (copyBtn) {
+        const codeEl = copyBtn.closest('.md-code-block')?.querySelector('code');
+        if (codeEl) {
+          navigator.clipboard.writeText(codeEl.textContent).catch(() => {});
+          copyBtn.innerHTML = icons.check('', 14);
+          setTimeout(() => { copyBtn.innerHTML = icons.copy('', 14); }, 1500);
+        }
+        return;
+      }
+
+      const msgCopyBtn = e.target.closest('.msg-action-copy');
+      if (msgCopyBtn) {
+        const row = msgCopyBtn.closest('.msg-row');
+        const msgEl = row?.querySelector('.msg, .stream-content');
+        if (msgEl) {
+          navigator.clipboard.writeText(msgEl.textContent).catch(() => {});
+          msgCopyBtn.innerHTML = icons.check('', 14);
+          setTimeout(() => { msgCopyBtn.innerHTML = icons.copy('', 14); }, 1500);
+        }
       }
     });
 
@@ -97,32 +85,37 @@ class OrchestratorPage extends HTMLElement {
       const { value: content, files } = e.detail;
       if (!content && files.length === 0) return;
 
+      voiceInput.reset();
       voiceInput.setLoading(true);
       this.classList.add('has-response');
-      responseArea.classList.add('is-visible');
-      stepsSlot.innerHTML = '';
-      const stepsEl = document.createElement('agent-steps');
-      stepsSlot.appendChild(stepsEl);
-      responseContent.textContent = '';
-      responseContent.classList.remove('is-visible');
-      responseActions.style.display = 'none';
-      responseTrace.style.display = 'none';
-      continueLink.style.display = 'none';
-      this.querySelector('#response-usage').innerHTML = '';
+
+      // Append user message
+      this.#appendMsg(messagesEl, 'user', content);
+
+      // Typing indicator
+      const pendingRow = document.createElement('div');
+      pendingRow.className = 'msg-row is-assistant';
+      pendingRow.innerHTML = `<div class="typing-indicator" aria-label="Agent is responding"><span></span><span></span><span></span></div>`;
+      messagesEl.appendChild(pendingRow);
+      messagesEl.scrollTop = messagesEl.scrollHeight;
 
       try {
-        // Create a session so the conversation can be continued
-        const sessionRes = await apiFetch('/chat/sessions', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ title: content.slice(0, 100) }),
-        });
-        const session = sessionRes.ok ? await sessionRes.json() : null;
-        const sessionId = session?.session_id;
+        // Create session on first message, reuse for subsequent ones
+        if (!this.#sessionId) {
+          const sessionRes = await apiFetch('/chat/sessions', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ first_prompt: content.slice(0, 100) }),
+          });
+          if (!sessionRes.ok) throw new Error('Failed to create session');
+          const sessionBody = await sessionRes.json();
+          const session = sessionBody.data || sessionBody;
+          this.#sessionId = session.session_id || session.id;
+        }
 
         // Persist user message
-        if (sessionId) {
-          apiFetch(`/chat/sessions/${sessionId}/messages`, {
+        if (this.#sessionId) {
+          apiFetch(`/chat/sessions/${this.#sessionId}/messages`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ role: 'user', content }),
@@ -138,12 +131,9 @@ class OrchestratorPage extends HTMLElement {
               messageId: (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2) + Date.now().toString(36)),
               role: 'ROLE_USER',
               parts: [{ text: content }],
-              // Same contract as chat-page: the server keys session_traces and
-              // the dispatch span's session.id on contextId, so it must be the
-              // CP session id or this turn's trace is unreachable by session.
-              contextId: sessionId || undefined,
+              contextId: this.#sessionId || undefined,
             },
-            metadata: sessionId ? { session_id: sessionId } : undefined,
+            metadata: this.#sessionId ? { session_id: this.#sessionId } : undefined,
           },
         };
 
@@ -154,50 +144,59 @@ class OrchestratorPage extends HTMLElement {
         });
         if (!res.ok) throw new Error(await res.text());
 
-        const { text: reply, traceId, usage } = await this.#readStream(res, stepsEl, responseContent);
-
-        responseActions.style.display = '';
-        if (traceId) {
-          const q = new URLSearchParams({ trace_id: traceId });
-          if (sessionId) q.set('session_id', sessionId);
-          responseTrace.href = `/observability-session.html?${q}`;
-          responseTrace.style.display = '';
-        }
-        this.querySelector('#response-usage').innerHTML = usageChipsHtml(usage);
-
-        // Persist assistant reply (with its usage so chips survive in chat history)
-        if (sessionId && reply) {
-          const persistBody = { role: 'assistant', content: reply };
-          if (traceId || usage) {
-            persistBody.usage = {
-              input_tokens: usage?.input_tokens ?? null,
-              output_tokens: usage?.output_tokens ?? null,
-              model: usage?.model ?? null,
-              duration_ms: usage?.duration_ms ?? null,
-              cost_usd: usage?.cost_usd ?? null,
-              estimated: usage?.estimated ?? null,
-              trace_id: traceId,
-            };
-          }
-          apiFetch(`/chat/sessions/${sessionId}/messages`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(persistBody),
-          }).catch(() => {});
-        }
-
-        if (sessionId) {
-          continueLink.href = `/chat.html?session_id=${encodeURIComponent(sessionId)}&agent_name=Orchestrator`;
-          continueLink.style.display = '';
-        }
+        pendingRow.remove();
+        await this.#readStream(res, messagesEl);
+        // Assistant reply is persisted server-side by the orchestrator dispatch
+        // (insert_assistant_message in a2a_dispatch.rs) — no client-side write
+        // needed, unlike the agent chat page whose direct-agent path does not.
       } catch (err) {
-        stepsEl.finish();
-        responseContent.classList.add('is-visible');
-        responseContent.innerHTML = `<span style="color:var(--color-error)">Error: ${this.#esc(err.message)}</span>`;
+        pendingRow.remove();
+        this.#appendMsg(messagesEl, 'assistant', `Error: ${err.message}`);
       } finally {
         voiceInput.setLoading(false);
       }
     });
+  }
+
+  #appendMsg(messagesEl, role, content, { usage = null, traceId = null } = {}) {
+    const isUser = role === 'user';
+    const roleClass = isUser ? 'is-user' : 'is-assistant';
+
+    const row = document.createElement('div');
+    row.className = `msg-row ${roleClass}`;
+
+    const div = document.createElement('div');
+    div.className = `msg ${roleClass}${isUser ? '' : ' md-body'}`;
+
+    if (isUser) {
+      div.textContent = content;
+    } else {
+      div.innerHTML = renderMarkdown(content);
+    }
+
+    row.appendChild(div);
+
+    if (!isUser) {
+      const actions = document.createElement('div');
+      actions.className = 'msg-actions';
+      actions.innerHTML = `
+        <button type="button" class="msg-action-copy" aria-label="Copy message" title="Copy">${icons.copy('', 14)}</button>
+        ${usageChipsHtml(usage)}
+        ${this.#traceLinkHtml(traceId)}
+      `;
+      row.appendChild(actions);
+    }
+
+    messagesEl.appendChild(row);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  #traceLinkHtml(traceId) {
+    if (!traceId) return '';
+    const q = new URLSearchParams({ trace_id: traceId });
+    if (this.#sessionId) q.set('session_id', this.#sessionId);
+    return `<a class="msg-action-trace" href="/observability-session.html?${q}"
+      aria-label="View trace" title="View trace">${icons.trace('', 14)}<span>Detailed trace</span></a>`;
   }
 
   async #loadRecentAgents() {
@@ -231,51 +230,85 @@ class OrchestratorPage extends HTMLElement {
     }
   }
 
-  async #readStream(res, stepsEl, responseContent) {
-    const typingEl = this.querySelector('#response-typing');
-    if (typingEl) typingEl.style.display = '';
+  async #readStream(res, messagesEl) {
+    const streamRow = document.createElement('div');
+    streamRow.className = 'msg-row is-assistant';
+    const streamArea = document.createElement('div');
+    streamArea.className = 'assistant-stream';
 
-    const show = (html, { progress = false } = {}) => {
-      if (typingEl) typingEl.style.display = 'none';
-      responseContent.classList.add('is-visible');
-      responseContent.classList.toggle('is-progress', progress);
-      responseContent.innerHTML = html;
+    const stepsEl = document.createElement('agent-steps');
+
+    const contentEl = document.createElement('div');
+    contentEl.className = 'stream-content md-body';
+
+    const typingEl = document.createElement('div');
+    typingEl.className = 'typing-indicator';
+    typingEl.setAttribute('aria-label', 'Agent is responding');
+    typingEl.innerHTML = '<span></span><span></span><span></span>';
+
+    streamArea.appendChild(stepsEl);
+    streamArea.appendChild(typingEl);
+    streamArea.appendChild(contentEl);
+    streamRow.appendChild(streamArea);
+    messagesEl.appendChild(streamRow);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+
+    const follow = () => {
+      if (nearBottom(messagesEl)) messagesEl.scrollTop = messagesEl.scrollHeight;
+    };
+
+    const showContent = (html, { progress = false } = {}) => {
+      typingEl.remove();
+      contentEl.classList.add('is-visible');
+      contentEl.classList.toggle('is-progress', progress);
+      contentEl.innerHTML = html;
+      follow();
     };
 
     const renderReply = frameRenderer((text) => {
       stepsEl.finish();
-      show(renderMarkdown(text));
+      showContent(renderMarkdown(text));
     });
     const out = await readA2aStream(res, {
       onReply: renderReply,
-      // See chat-page: working prose is tool activity and belongs in the
-      // timeline, not rendered into the response body and then replaced.
-      onActivity: (line) => stepsEl.onActivity(line),
-      onData: (d) => stepsEl.onEvent(d),
+      onActivity: (line) => {
+        stepsEl.onActivity(line);
+        follow();
+      },
+      onData: (d) => {
+        stepsEl.onEvent(d);
+        follow();
+      },
       onError: (message) => {
         stepsEl.finish();
-        show(`<span style="color:var(--color-error)">${this.#esc(message)}</span>`);
+        showContent(`<span style="color:var(--color-error)">${this.#esc(message)}</span>`);
       },
     });
 
     stepsEl.finish();
-    if (typingEl) typingEl.style.display = 'none';
+    typingEl.remove();
     let fullText = out.text;
     if (out.failed && !fullText) {
       fullText = out.errorMessage;
-      show(`<span style="color:var(--color-error)">${this.#esc(fullText)}</span>`);
+      showContent(`<span style="color:var(--color-error)">${this.#esc(fullText)}</span>`);
     } else if (!fullText) {
+      showContent(renderMarkdown('No response'));
       fullText = 'No response';
-      show(this.#esc(fullText));
     } else {
-      // Settle on the final text synchronously past any queued frame paint.
-      show(renderMarkdown(fullText));
+      showContent(renderMarkdown(fullText));
     }
-    return { text: fullText, traceId: out.traceId, usage: out.usage };
-  }
 
-  #formatName(id) {
-    return (id || '').replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+    // Add actions to stream row
+    const actions = document.createElement('div');
+    actions.className = 'msg-actions';
+    actions.innerHTML = `
+      <button type="button" class="msg-action-copy" aria-label="Copy message" title="Copy">${icons.copy('', 14)}</button>
+      ${usageChipsHtml(out.usage)}
+      ${this.#traceLinkHtml(out.traceId)}
+    `;
+    streamArea.appendChild(actions);
+
+    return { text: fullText, traceId: out.traceId, usage: out.usage };
   }
 
   #esc(s) {

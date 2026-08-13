@@ -88,7 +88,7 @@ export class VoiceInputForm extends HTMLElement {
             ${this.getMicIcon()}
           </button>
 
-          <button type="submit" class="submit-icon" id="submitBtn" title="Send (Ctrl+Enter)">
+          <button type="submit" class="submit-icon" id="submitBtn" title="Send (Enter)">
             ${icons.arrowUp("btn-icon", 14)}
           </button>
         </div>
@@ -115,7 +115,7 @@ export class VoiceInputForm extends HTMLElement {
     this.submitBtn.addEventListener("click", () => this.handleSubmit());
 
     this.textarea.addEventListener("keydown", (e) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+      if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
         e.stopPropagation();
         this.handleSubmit();
