@@ -485,7 +485,7 @@ fn extract_endpoint(
 
     // Try any network the container is actually on (covers network_override
     // containers whose network differs from the runtime's default).
-    if let Some(nets) = ns.networks.as_ref() {
+    if network.is_some() && let Some(nets) = ns.networks.as_ref() {
         for ep_net in nets.values() {
             let ip = ep_net
                 .ip_address
