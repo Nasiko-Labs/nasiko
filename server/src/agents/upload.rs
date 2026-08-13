@@ -923,12 +923,15 @@ fn patch_otel_into_dockerfile(source_dir: &std::path::Path, dockerfile: &std::pa
         }
     };
 
-    // Only patch Python-based images.
-    let is_python = contents.lines().any(|l| {
-        let t = l.trim();
-        t.starts_with("FROM ")
-            && (t.contains("python") || t.contains("slim") || t.contains("alpine"))
-    });
+    // Only patch Python-based images. Matching bare `slim`/`alpine` here also
+    // catches `FROM node:20-slim`, `FROM ruby:3-alpine`, and friends — and since
+    // the injected `pip install` layer then fails on an image with no pip, that
+    // mismatch doesn't merely skip instrumentation, it fails the whole build for
+    // an agent that was never Python to begin with. Require `python` in the base
+    // image ref, matching this function's documented contract.
+    let is_python = contents
+        .lines()
+        .any(|l| l.trim().starts_with("FROM ") && l.contains("python"));
     if !is_python {
         tracing::debug!("otel patch: Dockerfile does not appear Python-based, skipping");
         return;
@@ -948,9 +951,13 @@ fn patch_otel_into_dockerfile(source_dir: &std::path::Path, dockerfile: &std::pa
 
     // Append to Dockerfile: install OTel deps, copy bootstrap, set PYTHONSTARTUP.
     // Inserted before the last CMD/ENTRYPOINT line so the layer order is correct.
+    // `PIP_BREAK_SYSTEM_PACKAGES=1` is scoped to this RUN layer (not a persistent
+    // ENV) and keeps the install working on a distro-managed interpreter, where
+    // PEP 668 otherwise aborts with `error: externally-managed-environment`.
+    // pip older than 23.1 doesn't know the flag and simply ignores the env var.
     let patch = format!(
         "\n# ── Nasiko OTel auto-instrumentation (injected at build time) ──\n\
-         RUN pip install --no-cache-dir {OTEL_PIP_PACKAGES}\n\
+         RUN PIP_BREAK_SYSTEM_PACKAGES=1 pip install --no-cache-dir {OTEL_PIP_PACKAGES}\n\
          COPY _nasiko_otel_boot.py /opt/nasiko/_nasiko_otel_boot.py\n\
          ENV PYTHONSTARTUP=/opt/nasiko/_nasiko_otel_boot.py\n"
     );
@@ -2051,5 +2058,80 @@ pub(crate) async fn list_upload_agents(
             tracing::error!(%e, "list_upload_agents db error");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
+    }
+}
+
+#[cfg(test)]
+mod otel_patch_tests {
+    use super::*;
+
+    /// Write `dockerfile_contents` into a fresh temp dir, run the patch over it,
+    /// and hand back what the Dockerfile looks like afterwards.
+    fn patch(dockerfile_contents: &str, marker: &str) -> String {
+        let dir = std::env::temp_dir().join(format!("nasiko-otel-patch-test-{marker}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dockerfile = dir.join("Dockerfile");
+        std::fs::write(&dockerfile, dockerfile_contents).unwrap();
+
+        patch_otel_into_dockerfile(&dir, &dockerfile);
+
+        let patched = std::fs::read_to_string(&dockerfile).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        patched
+    }
+
+    #[test]
+    fn node_slim_image_is_left_untouched() {
+        // `node:20-slim` matches neither "python" nor a Python toolchain, but it
+        // does contain "slim" — the old check patched it and the injected `pip`
+        // layer failed the build outright.
+        let original = "FROM node:20-slim\nRUN apt-get install -y python3\nENTRYPOINT [\"./run.sh\"]\n";
+
+        assert_eq!(
+            patch(original, "node-slim"),
+            original,
+            "a Node base image must not receive the Python OTel patch"
+        );
+    }
+
+    #[test]
+    fn alpine_non_python_image_is_left_untouched() {
+        let original = "FROM ruby:3-alpine\nENTRYPOINT [\"./run.sh\"]\n";
+
+        assert_eq!(patch(original, "ruby-alpine"), original);
+    }
+
+    #[test]
+    fn python_image_is_patched_before_the_entrypoint() {
+        let patched = patch(
+            "FROM python:3.12-slim\nCOPY . /app\nENTRYPOINT [\"python\", \"main.py\"]\n",
+            "python-slim",
+        );
+
+        assert!(patched.contains("pip install"), "expected the pip layer");
+        assert!(patched.contains("ENV PYTHONSTARTUP=/opt/nasiko/_nasiko_otel_boot.py"));
+
+        let pip_at = patched.find("pip install").unwrap();
+        let entrypoint_at = patched.find("ENTRYPOINT").unwrap();
+        assert!(
+            pip_at < entrypoint_at,
+            "the pip layer must be inserted before ENTRYPOINT"
+        );
+    }
+
+    #[test]
+    fn pip_layer_tolerates_a_distro_managed_interpreter() {
+        let patched = patch(
+            "FROM python:3.12-slim\nENTRYPOINT [\"python\", \"main.py\"]\n",
+            "pep668",
+        );
+
+        // Without this, PEP 668 aborts the layer with
+        // `error: externally-managed-environment` on a distro-managed Python.
+        assert!(
+            patched.contains("PIP_BREAK_SYSTEM_PACKAGES=1 pip install"),
+            "pip install must be able to write to a distro-managed interpreter"
+        );
     }
 }
