@@ -104,6 +104,7 @@ services:
       OTEL_COLLECTOR_ENDPOINT: http://otel-collector:4317
       # Agents inside Docker reach the server via this name.
       MCP_GATEWAY_PUBLIC_URL: http://server:8080/api/mcp
+      LLM_GATEWAY_BASE_URL: http://server:8080
       # Shared network so the server can reach agent containers by IP.
       DOCKER_AGENT_NETWORK: nasiko
     volumes:
