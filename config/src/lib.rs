@@ -1,4 +1,4 @@
-use nasiko_utils::{env_or, env_parse, required_env};
+use nasiko_utils::{env_bool, env_or, env_parse, required_env};
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -59,6 +59,15 @@ pub struct Config {
     /// multi-tenant deployment. This crate has no notion of what a "tenant"
     /// is; it only passes the value through.
     pub tenant_id: Option<String>,
+    /// When true, a background worker periodically mirrors LLM token pricing
+    /// from Portkey's public dataset (`configs.portkey.ai`) into the
+    /// `model_pricing` table. Fails soft — a fetch error leaves existing rows
+    /// untouched. See `nasiko_observability::pricing_sync`.
+    pub model_pricing_sync_enabled: bool,
+    /// How often the pricing sync runs, in seconds. Provider list prices change
+    /// rarely, so daily (86400) is the default; the sync also runs once ~10s
+    /// after boot. Floored at 60s.
+    pub model_pricing_sync_interval_secs: u64,
     pub flow_max_depth: i32,
     pub flow_max_fan_out: i32,
     pub flow_max_tokens: i64,
@@ -208,27 +217,6 @@ pub struct Config {
     /// MCP connectors. AGENT_MAX_REPLICAS, default 1 (no autoscaling unless
     /// explicitly raised). Ignored by DockerRuntime.
     pub agent_max_replicas: u32,
-    /// Default memory limit for every agent container, Kubernetes notation
-    /// (`"512Mi"`, `"1Gi"`) — see `nasiko_runtime::ResourceLimits::memory`.
-    /// AGENT_DEFAULT_MEMORY, default `"1Gi"`. `nasiko_runtime::ResourceLimits`
-    /// itself still defaults to `"512Mi"` (its own hermetic fallback for
-    /// callers outside the server, e.g. tests) — this is the value the server
-    /// actually uses for every agent deploy unless a future per-agent
-    /// override is added. Raised from the runtime crate's original 512Mi
-    /// after opencode (3 concurrent Node/Bun processes) was repeatedly
-    /// OOM-killed under real chat load at that limit.
-    pub agent_default_memory: String,
-    /// Name of the single named Docker volume every `--writable` agent shares
-    /// (each mounted at its own `volume-subpath`) — see
-    /// `nasiko_runtime::DockerRuntimeConfig::agent_memory_volume`.
-    /// AGENT_MEMORY_VOLUME, default `"nasiko-agent-memory"`.
-    pub agent_memory_volume: String,
-    /// Image for the short-lived helper container that pre-creates a
-    /// `--writable` agent's subdirectory inside `agent_memory_volume` — see
-    /// `nasiko_runtime::DockerRuntimeConfig::agent_memory_init_image`.
-    /// AGENT_MEMORY_INIT_IMAGE, default `"alpine:3.21"` (override for
-    /// air-gapped or internal-mirror setups).
-    pub agent_memory_init_image: String,
     /// TTL (seconds) for the Redis-cached Composio toolkit tool count shown on
     /// unconnected catalog cards — changes rarely, so a much longer TTL than
     /// the permission/session caches.
@@ -292,6 +280,8 @@ impl Config {
             observability_enabled: std::env::var("TEMPO_URL").is_ok_and(|v| !v.is_empty())
                 && std::env::var("LOKI_URL").is_ok_and(|v| !v.is_empty()),
             tenant_id: std::env::var("TENANT_ID").ok(),
+            model_pricing_sync_enabled: env_bool("MODEL_PRICING_SYNC_ENABLED", true),
+            model_pricing_sync_interval_secs: env_parse("MODEL_PRICING_SYNC_INTERVAL_SECS", 86_400),
             flow_max_depth: env_parse("NASIKO_FLOW_MAX_DEPTH", 5),
             flow_max_fan_out: env_parse("NASIKO_FLOW_MAX_FAN_OUT", 20),
             flow_max_tokens: env_parse("NASIKO_FLOW_MAX_TOKENS", 100000),
@@ -392,9 +382,6 @@ impl Config {
             mcp_servers_network: env_or("MCP_SERVERS_NETWORK", "nasiko-mcp-servers-net"),
             mcp_upload_max_replicas: env_parse("MCP_UPLOAD_MAX_REPLICAS", 1),
             agent_max_replicas: env_parse("AGENT_MAX_REPLICAS", 1),
-            agent_default_memory: env_or("AGENT_DEFAULT_MEMORY", "1Gi"),
-            agent_memory_volume: env_or("AGENT_MEMORY_VOLUME", "nasiko-agent-memory"),
-            agent_memory_init_image: env_or("AGENT_MEMORY_INIT_IMAGE", "alpine:3.21"),
             mcp_toolcount_ttl_seconds: env_parse("MCP_TOOLCOUNT_TTL_SECONDS", 3600),
             seed_toolkits: std::env::var("SEED_TOOLKITS")
                 .unwrap_or_default()

@@ -22,9 +22,8 @@ base64 = { workspace = true }
 hex = { workspace = true }
 sqlx = { workspace = true }
 rust_decimal = { workspace = true }
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["sync", "time"] }
 nasiko-runtime = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }
-uuid = { workspace = true }

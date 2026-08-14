@@ -249,6 +249,17 @@ impl AppState {
             ));
         }
 
+        // Mirror LLM pricing from Portkey into model_pricing on a schedule, so
+        // cost calculation stays current without hand-written seed migrations.
+        // Fails soft; the seed rows + StaticPricing remain the floor.
+        if state.config.model_pricing_sync_enabled {
+            tokio::spawn(nasiko_observability::pricing_sync::run(
+                state.db.clone(),
+                state.http_client.clone(),
+                state.config.model_pricing_sync_interval_secs,
+            ));
+        }
+
         state
     }
 

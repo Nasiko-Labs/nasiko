@@ -3,6 +3,7 @@ pub mod error;
 pub mod injector;
 pub mod loki;
 pub mod pricing;
+pub mod pricing_sync;
 pub mod provider;
 pub mod runtime_ext;
 pub mod tempo;
