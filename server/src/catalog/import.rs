@@ -486,7 +486,7 @@ pub(crate) async fn import_github(
         None => {
             return (
                 StatusCode::FORBIDDEN,
-                "GitHub not connected — visit /agents.html?view=import to connect",
+                "GitHub not connected — visit /add-agent.html to connect",
             )
                 .into_response();
         }
@@ -559,12 +559,63 @@ pub(crate) async fn import_github(
 
 #[derive(Deserialize, ToSchema)]
 pub(crate) struct RegistryImportRequest {
-    /// OCI reference: `"registry.host/owner/name[:tag]"`. The host must be in
+    /// OCI reference: `"registry.host/owner/name[:tag]"`. The host must be
+    /// allowed: a built-in default, the settings-page registry URL, or
     /// `REGISTRY_IMPORT_ALLOWED_HOSTS`.
     reference: String,
 }
 
 const SOURCE_MEDIA_TYPE: &str = "application/vnd.nasiko.agent.v1.tar+gzip";
+
+/// Registry hosts always allowed for import, independent of any env var or the
+/// settings-page registry — Nasiko's own registry works out of the box.
+const BUILTIN_ALLOWED_REGISTRY_HOSTS: &[&str] = &["registry.nasiko.dev"];
+
+/// Extract the bare host from a configured registry URL such as
+/// `https://registry.nasiko.dev` or `registry.nasiko.dev:5000/path`: scheme and
+/// path are stripped; any port is left for `validate_registry_host` to normalize.
+fn registry_url_host(url: &str) -> Option<String> {
+    let s = url.trim();
+    let s = s
+        .strip_prefix("https://")
+        .or_else(|| s.strip_prefix("http://"))
+        .unwrap_or(s);
+    let s = s.split('/').next().unwrap_or(s).trim();
+    if s.is_empty() {
+        None
+    } else {
+        Some(s.to_string())
+    }
+}
+
+/// The effective import allowlist: built-in defaults ∪ `REGISTRY_IMPORT_ALLOWED_HOSTS`
+/// ∪ the settings-page registry URL (read live from the DB, so saving it in the UI
+/// takes effect immediately with no restart and no env var required).
+async fn effective_allowed_hosts(state: &AppState) -> Vec<String> {
+    let mut allowed: Vec<String> = BUILTIN_ALLOWED_REGISTRY_HOSTS
+        .iter()
+        .map(|h| (*h).to_string())
+        .collect();
+    allowed.extend(state.config.registry_import_allowed_hosts.iter().cloned());
+
+    let configured: Option<String> = match sqlx::query_scalar::<_, Option<String>>(
+        "SELECT registry_url FROM settings LIMIT 1",
+    )
+    .fetch_optional(&state.db)
+    .await
+    {
+        Ok(Some(url)) => url,
+        Ok(None) => None,
+        Err(e) => {
+            tracing::warn!(%e, "effective_allowed_hosts: could not read settings.registry_url");
+            None
+        }
+    };
+    if let Some(host) = configured.as_deref().and_then(registry_url_host) {
+        allowed.push(host);
+    }
+    allowed
+}
 
 fn validate_registry_host(host: &str, allowed: &[String]) -> Result<(), (StatusCode, String)> {
     if allowed.is_empty() {
@@ -633,9 +684,8 @@ pub(crate) async fn import_registry(
         }
     };
 
-    if let Err((code, msg)) =
-        validate_registry_host(host, &state.config.registry_import_allowed_hosts)
-    {
+    let allowed_hosts = effective_allowed_hosts(&state).await;
+    if let Err((code, msg)) = validate_registry_host(host, &allowed_hosts) {
         return (code, msg).into_response();
     }
 
@@ -940,7 +990,41 @@ pub(crate) async fn import_registry(
 
 #[cfg(test)]
 mod tests {
-    use super::{find_owned_agent, read_agent_card};
+    use super::{
+        BUILTIN_ALLOWED_REGISTRY_HOSTS, find_owned_agent, read_agent_card, registry_url_host,
+        validate_registry_host,
+    };
+
+    #[test]
+    fn registry_url_host_strips_scheme_and_path() {
+        assert_eq!(
+            registry_url_host("https://registry.nasiko.dev"),
+            Some("registry.nasiko.dev".to_string())
+        );
+        assert_eq!(
+            registry_url_host("http://registry.nasiko.dev/nasiko/foo"),
+            Some("registry.nasiko.dev".to_string())
+        );
+        assert_eq!(
+            registry_url_host("registry.nasiko.dev:5000/foo"),
+            Some("registry.nasiko.dev:5000".to_string())
+        );
+        assert_eq!(registry_url_host("   "), None);
+        assert_eq!(registry_url_host(""), None);
+    }
+
+    #[test]
+    fn builtin_host_allowed_without_env_or_settings() {
+        // Empty env/settings allowlist, but the built-in default still authorizes
+        // Nasiko's own registry (port-normalized comparison).
+        let allowed: Vec<String> = BUILTIN_ALLOWED_REGISTRY_HOSTS
+            .iter()
+            .map(|h| (*h).to_string())
+            .collect();
+        assert!(validate_registry_host("registry.nasiko.dev", &allowed).is_ok());
+        assert!(validate_registry_host("registry.nasiko.dev:443", &allowed).is_ok());
+        assert!(validate_registry_host("evil.example.com", &allowed).is_err());
+    }
 
     /// `find_owned_agent` must never see another owner's agent, even when the
     /// name collides — otherwise `build_and_deploy`'s subsequent UPDATE would
