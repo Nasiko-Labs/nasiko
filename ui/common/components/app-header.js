@@ -439,7 +439,7 @@ export class AppHeader extends HTMLElement {
   }
 
   static get observedAttributes() {
-    return ["nav-links", "brand-title", "brand-url"];
+    return ["nav-links", "brand-title", "brand-url", "active-module"];
   }
 
   attributeChangedCallback() {
@@ -539,9 +539,13 @@ export class AppHeader extends HTMLElement {
     return this.navItems || [];
   }
 
-  /** Nav `module` of the page being viewed, so its rail parent stays selected. */
+  /** Nav `module` of the page being viewed, so its rail parent stays selected.
+   *  A page that is not itself in the nav (chat.html — one document serving both
+   *  an orchestrator session and a direct agent chat, so the path alone cannot
+   *  say which module it belongs to) names its module with `active-module`. */
   #activeModule(navLinks) {
-    return navLinks.find(l => this.#isActive(l.url))?.module;
+    return navLinks.find(l => this.#isActive(l.url))?.module
+      || this.getAttribute("active-module");
   }
 
   #railItem(link, activeModule) {

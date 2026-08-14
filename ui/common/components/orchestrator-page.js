@@ -212,7 +212,6 @@ class OrchestratorPage extends HTMLElement {
         // reusing this page's own hero/title/subtitle rules for the top three.
         this.classList.add('is-empty');
         this.innerHTML = `
-          <app-module-nav module="orchestrator"></app-module-nav>
           <div class="empty-wrap">
             <div class="hero-icon" aria-hidden="true">${icons.layers('', 24)}</div>
             <h2 class="empty-title">No agents available</h2>

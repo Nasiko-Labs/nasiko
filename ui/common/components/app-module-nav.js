@@ -7,6 +7,8 @@
  * either `{ label, url }` (link, active by path match) or
  * `{ label, section }` (in-page section — clicking dispatches a bubbling
  * `module-nav-select` CustomEvent with `{ section }` for the host page).
+ * A link item may also carry `sessionId` (orchestrator chats): that row gets a
+ * delete button which removes the chat server-side and drops the row.
  *
  * Desktop (≥1024px): a 200px column pinned to the content card's left edge —
  * the host page component gets matching left padding from
@@ -20,7 +22,7 @@
  * @fires module-nav-select - `{ detail: { section } }` on section item click.
  */
 import { icons } from "../utils/icons.js";
-import { initialView, syncView } from "../utils/module-view.js";
+import { VIEW_PARAM, initialView, syncView } from "../utils/module-view.js";
 
 const styles = new CSSStyleSheet();
 styles.replaceSync(`/* Host-page layout contract: the page component that contains a module nav is
@@ -140,6 +142,7 @@ app-module-nav:not(:defined) { display: block; }
   }
 
   .child { padding-left: 26px; }
+
   /* Keyed on .row, not .child: a group can itself be a link row (a
      heading-level page with no children) and takes the same active state.
      No backticks in this sheet — it is a template literal. */
@@ -149,6 +152,34 @@ app-module-nav:not(:defined) { display: block; }
     font-weight: 500;
   }
   .row.is-active:hover { background: light-dark(var(--sand-100), var(--neutral-700)); }
+
+  /* A row with a delete button (orchestrator session rows). The button is a
+     sibling of the link, not a child: interactive content cannot nest inside
+     an anchor. Revealed on hover/focus, like the Execution history table's. */
+  .row-del-wrap { position: relative; }
+  .row-del-wrap .row { padding-right: 26px; }
+  .row-del {
+    position: absolute;
+    right: var(--s-4);
+    top: 50%;
+    translate: 0 -50%;
+    display: inline-grid;
+    place-items: center;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    border: none;
+    border-radius: var(--r-8);
+    background: transparent;
+    color: var(--fg-secondary);
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity var(--transition-fast), color var(--transition-fast);
+  }
+  .row-del-wrap:hover .row-del,
+  .row-del:focus-visible { opacity: 1; }
+  .row-del:hover { color: var(--color-error); }
+  .row-del[disabled] { opacity: 0.4; cursor: default; }
 
   /* Skeleton while fetchModuleNav resolves */
   .skel-row {
@@ -195,7 +226,7 @@ app-module-nav:not(:defined) { display: block; }
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .row, .group-head .chev, .group-items, .mobile-toggle .chev { transition: none; }
+    .row, .row-del, .group-head .chev, .group-items, .mobile-toggle .chev { transition: none; }
     .skel-row { animation: none; opacity: 0.6; }
   }
 }
@@ -329,6 +360,13 @@ export class AppModuleNav extends HTMLElement {
   }
 
   #handleClick = (e) => {
+    const del = e.target.closest("[data-delete-session]");
+    if (del) {
+      e.preventDefault();
+      e.stopPropagation();
+      this.#deleteSession(del);
+      return;
+    }
     if (e.target.closest("[data-mobile-toggle]")) {
       this.#mobileOpen = !this.#mobileOpen;
       this.classList.toggle("mobile-open", this.#mobileOpen);
@@ -348,14 +386,20 @@ export class AppModuleNav extends HTMLElement {
       // the module). From that other page there is nothing here to switch, so
       // follow the link and let the owning page pick the section out of the URL
       // — swallowing the click was what used to pin the content to one panel.
-      // Every module now keeps its sections in one document (module-shell), so
-      // no nav entry takes this branch today; it is the seam that keeps a
-      // multi-document module working if one is added back.
+      // Path only: the href carries this row's own `?view=`, which by
+      // definition differs from the one showing, so a full #isActive would
+      // reload the page we are already on instead of switching in place.
       const href = section.getAttribute("href");
-      if (href && !this.#isActive(href.split("#")[0])) {
+      // A modified click on a link row means "open elsewhere" — still a
+      // navigation, so leave it to the browser (same guard as module-shell).
+      if (href && (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)) return;
+      if (href && !this.#isActive(href.split(/[?#]/)[0])) {
         document.dispatchEvent(new CustomEvent("loading-start", { bubbles: true }));
         return;
       }
+      // A section row that carries a `url` is an anchor; on its own page we
+      // switch in place, so the browser must not also follow the href.
+      e.preventDefault();
       this.setAttribute("active-section", section.dataset.section);
       // Name the view in the URL so the row the user is looking at is what a
       // copied link opens. replaceState, not pushState: a section is a view of
@@ -371,6 +415,47 @@ export class AppModuleNav extends HTMLElement {
       document.dispatchEvent(new CustomEvent("loading-start", { bubbles: true }));
     }
   };
+
+  /** Delete the chat session a row points at (orchestrator session rows).
+   *  The rendered tree is also the cached tree, so drop the row from `#nav`
+   *  and rewrite the cache — otherwise the next page load repaints it. */
+  async #deleteSession(btn) {
+    const sessionId = btn.dataset.deleteSession;
+    const wrap = btn.closest(".row-del-wrap");
+    btn.disabled = true;
+    try {
+      await window.deleteSession?.(sessionId);
+    } catch (e) {
+      console.warn("deleteSession failed:", e);
+      btn.disabled = false;
+      return;
+    }
+
+    wrap?.remove();
+    if (this.#nav?.groups) {
+      this.#nav = {
+        ...this.#nav,
+        groups: this.#nav.groups
+          .map((g) => (g.items ? { ...g, items: g.items.filter((i) => i.sessionId !== sessionId) } : g))
+          // A group emptied by the deletion would render as a stray heading,
+          // the same reason fetchModuleNav omits it when there are no sessions.
+          .filter((g) => !g.items || g.items.length),
+      };
+      this.#render();
+      try {
+        sessionStorage.setItem(
+          `app-module-nav:${this.getAttribute("module")}`,
+          JSON.stringify(this.#nav),
+        );
+      } catch { /* quota exceeded */ }
+    }
+
+    // Deleting the chat that is on screen leaves a transcript with no session
+    // behind it — send the user back to the orchestrator entry point.
+    if (new URLSearchParams(window.location.search).get("session_id") === sessionId) {
+      window.location.href = "/index.html";
+    }
+  }
 
   #esc(str) {
     if (str == null) return "";
@@ -403,32 +488,39 @@ export class AppModuleNav extends HTMLElement {
       </div>`;
   }
 
-  #itemHtml(item) {
+  /** `cls` is the row's second class — `child` for a group item, `group-head`
+   *  for an itemless group rendered as a single heading-level row. */
+  #itemHtml(item, cls = "child") {
     if (item.section != null) {
       const active = this.getAttribute("active-section") === item.section;
       // `url` names the page that owns the sections: a link so the row works
-      // from anywhere in the module, and on the owning page it only moves the
-      // hash (no reload) while the click handler switches the panel.
+      // from anywhere in the module. `?view=` (not a hash) because that is what
+      // module-shell reads on load — a hash landed on the default view. On the
+      // owning page the click handler switches the panel with no reload.
       const tag = item.url
-        ? `a href="${this.#esc(item.url)}#${this.#esc(item.section)}"`
+        ? `a href="${this.#esc(item.url)}?${VIEW_PARAM}=${encodeURIComponent(item.section)}"`
         : `button type="button"`;
-      return `<${tag} class="row child${active ? " is-active" : ""}"
+      return `<${tag} class="row ${cls}${active ? " is-active" : ""}"
         data-section="${this.#esc(item.section)}" ${active ? 'aria-current="true"' : ""}>
         <span class="row-label">${this.#esc(item.label)}</span></${item.url ? "a" : "button"}>`;
     }
     const active = this.#isActive(item.url);
-    return `<a class="row child${active ? " is-active" : ""}" href="${this.#esc(item.url)}"
+    const link = `<a class="row ${cls}${active ? " is-active" : ""}" href="${this.#esc(item.url)}"
       ${active ? 'aria-current="page"' : ""}><span class="row-label">${this.#esc(item.label)}</span></a>`;
+    if (item.sessionId == null) return link;
+    return `<div class="row-del-wrap">${link}
+      <button type="button" class="row-del" data-delete-session="${this.#esc(item.sessionId)}"
+        title="Delete chat" aria-label="Delete chat ${this.#esc(item.label)}">${icons.trash("", 13)}</button>
+    </div>`;
   }
 
-  /** A group carrying a `url` and no items is a heading-level link, not a
-   *  collapsible group (Orchestrator's "Orchestrate a task") — no chevron,
-   *  since there is nothing to collapse. */
+  /** A group with no items is a single heading-level row, not a collapsible
+   *  group (Orchestrator's "Orchestrate a task") — no chevron, since there is
+   *  nothing to collapse. It takes either form an item can: a `section` (a view
+   *  of this same document) or a plain `url`. */
   #groupHtml(g) {
-    if (g.url && !g.items?.length) {
-      const active = this.#isActive(g.url);
-      return `<a class="row group-head${active ? " is-active" : ""}" href="${this.#esc(g.url)}"
-        ${active ? 'aria-current="page"' : ""}><span class="row-label">${this.#esc(g.label)}</span></a>`;
+    if (!g.items?.length && (g.url || g.section != null)) {
+      return this.#itemHtml(g, "group-head");
     }
     return `
       <div class="group${this.#collapsed.has(g.label) ? " is-collapsed" : ""}">
@@ -461,7 +553,10 @@ export class AppModuleNav extends HTMLElement {
     // would otherwise light up next to that page's own active row.
     if (!this.getAttribute("active-section")) {
       const first = nav.groups
-        .flatMap((g) => g.items || [])
+        // An itemless group is itself a row (see #groupHtml), so it is a
+        // candidate — otherwise the default lands on the first *child* row and
+        // highlights a view the page is not showing.
+        .flatMap((g) => (g.items?.length ? g.items : [g]))
         .find((i) => i.section != null && (!i.url || this.#isActive(i.url)));
       if (first) this.setAttribute("active-section", first.section);
     }

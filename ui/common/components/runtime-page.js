@@ -56,12 +56,12 @@ class RuntimePage extends HTMLElement {
       <app-module-nav module="observability"></app-module-nav>
       <div class="page-head">
         <h1 class="title-page">Agent runtime</h1>
-        <p class="page-sub">Kubernetes agent-runtime clusters provisioned by <code>nasiko-ee init</code>. Watch provisioning status and live logs here</p>
+        <p class="page-sub">Kubernetes agent runtime clusters provisioned by <code>nasiko-ee init</code>. Watch provisioning status and live logs here</p>
       </div>
       <smart-table id="clusters-table" limit="15"></smart-table>
       <div id="clusters-empty" hidden>
         <app-empty-state
-          title="No agent-runtime clusters yet"
+          title="No agent runtime clusters yet"
           description="Run nasiko-ee init with the Kubernetes agent runtime to provision your first cluster"
         ></app-empty-state>
       </div>

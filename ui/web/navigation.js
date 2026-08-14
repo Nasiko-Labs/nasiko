@@ -44,13 +44,20 @@ const MODULE_NAVS = {
   orchestrator: {
     title: 'Orchestrator', icon: 'brain',
     groups: [
-      // A group with a url and no items is a heading-level link (see
-      // app-module-nav's #groupHtml) — the entry point sits above the
-      // session list, not inside it.
-      { label: 'Orchestrate a task', url: '/index.html' },
+      // A group with no items is a heading-level row (see app-module-nav's
+      // #groupHtml) — the entry point sits above the session list, not inside
+      // it. A `section` (not a bare url): it is a view of index.html, so on
+      // that page it switches in place and its highlight tracks the shown view
+      // instead of only the path — a bare url stayed highlighted while
+      // Workflows was up. The url keeps the row working from elsewhere.
+      { label: 'Orchestrate a task', section: 'orchestrate', url: '/index.html' },
+      // Same `url` as above, and for the same reason: this nav also renders on
+      // chat.html (an orchestrator session), where a section with no url is a
+      // dead button — and the default-highlight in app-module-nav#render would
+      // light "All workflows" up there because it was the first url-less row.
       { label: 'Workflows', items: [
-        { label: 'All workflows', section: 'workflows' },
-        { label: 'Executions', section: 'executions' },
+        { label: 'All workflows', section: 'workflows', url: '/index.html' },
+        { label: 'Executions', section: 'executions', url: '/index.html' },
       ]},
     ],
   },
@@ -91,8 +98,8 @@ const MODULE_NAVS = {
     title: 'Observability', icon: 'activity',
     groups: [
       { label: 'Home', items: [
-        { label: 'Execution history', url: '/sessions.html' },
-        { label: 'Resources', url: '/resources.html' },
+        { label: 'Execution history', section: 'history' },
+        { label: 'Resources', section: 'resources' },
       ]},
     ],
   },
@@ -129,6 +136,8 @@ const orchestratorSessionItems = async () => {
       .filter((s) => !s.agent_name)
       .slice(0, ORCH_SESSION_ROWS)
       .map((s) => ({
+        // Present ⇒ app-module-nav renders the row's delete affordance.
+        sessionId: s.session_id,
         // Titles are auto-generated and often the literal "New chat", which
         // makes every row look the same — fall back to the last message.
         // Sliced: a last_message is a whole markdown answer, and the row
@@ -305,6 +314,14 @@ window.fetchSpanDetail = async (traceId, spanId) => {
 
 window.fetchChatSession = async (sessionId) => {
   return fetchApi(`/chat/sessions/${encodeURIComponent(sessionId)}`);
+};
+
+// Used by the Execution history table and the orchestrator sidebar's session
+// rows. apiFetch, not fetchApi: the endpoint answers 204 No Content and
+// fetchApi would throw parsing the empty body as JSON.
+window.deleteSession = async (sessionId) => {
+  const res = await apiFetch(`/chat/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
 };
 
 // LLM router — routing configs + provider/model catalog (see /api/docs)

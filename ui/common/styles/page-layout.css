@@ -122,6 +122,11 @@ orchestrator-page {
   min-height: calc(100dvh - var(--app-header-height));
   padding: var(--space-md);
   padding-top: var(--space-lg);
+  /* No `overflow` here, deliberately. Any value but `visible` makes this a
+     scroll container, and `.input-wrap`'s `position: sticky` would then stick to
+     *this* box — which grows with its content and never scrolls, so the composer
+     would never actually stick. The scroller is the document below 1024px and
+     the module shell above it. */
 }
 
 /* ── Module shell ─────────────────────────────────────────────────────────────
@@ -247,30 +252,38 @@ login-page {
 
   /*
     Orchestrator is the one module-nav page whose content is a centered column
-    rather than left-aligned, so the plain left gutter above would center it in
-    the space *right* of the nav — a constant ~136px off the card's own center,
-    which reads as the whole page tilting right.
+    rather than left-aligned, so it needs a box to center *in*. That box is the
+    space right of the nav gutter — same inset as every other module-nav page on
+    the left, the card's content pad on the right (the `import` view below is the
+    same construction).
 
-    Padding both sides by the same amount keeps it centered on the card at any
-    width. The `max()` floor is what stops the two requirements from fighting:
-    below ~1400px the centered 820px column would reach into the nav's gutter,
-    so there the gutter wins and the column narrows instead of overlapping.
+    Not padded symmetrically to center the column on the card instead: the nav is
+    the sole occupant of the left gutter, so a card-centered column reads as
+    sitting left of center against it — and every state has to agree. The empty
+    state and the pre-upgrade skeleton are narrower than the composer column, so
+    when this box was the card, each needed its own compensating padding to look
+    centered, and the three states landed on three different center lines. One box
+    here, and the hero, the skeleton, the empty state and the transcript all share
+    it. Also removes the old `max()` floor: the left gutter is now unconditional,
+    so the column can never reach into the nav.
   */
   module-shell[data-active-view="orchestrate"] {
-    padding-inline: max(
-      calc(224px + var(--s-64)),
-      calc((100% - var(--orch-column-w)) / 2)
-    );
-    /* Pinned-composer layout: the host fills the card exactly and clips, and
-       `.messages` inside the view is the only scroller. Keyed on the active view,
-       not on the element being present: hidden views stay in the DOM, so a
-       `:has()` on the orchestrator view would clip the scrolling tables its
-       sibling views are. Desktop only — see the base rule above.
+    padding-inline: calc(224px + var(--s-64)) var(--s-64);
+    /* The shell is the page's one scroller: it fills the card exactly, and
+       everything inside it — hero, agent grid, transcript — scrolls together
+       against its border box, which is the card edge. That is the point: an
+       inner scroller (`.messages` used to be one) parks its scrollbar at the
+       content column's edge, floating inboard of the card. The composer is
+       `position: sticky` (orchestrator-page.css) so it still stays put.
+
+       Keyed on the active view, not on the element being present: hidden views
+       stay in the DOM, so a `:has()` on the orchestrator view would catch the
+       scrolling tables its sibling views are. Desktop only — see the base rule
+       above.
 
        Block padding is symmetric and thin so the hero column can be centered in
        what's left (see the view rule below); a deep top pad would push the
-       "centered" block visibly low, and in a box that clips every pixel above
-       the hero is a pixel the composer and the banner below it can lose. */
+       "centered" block visibly low. */
     padding-block: var(--space-md);
     height: calc(100dvh - var(--shell-topbar-height) - var(--s-12));
     min-height: 0;
@@ -281,19 +294,31 @@ login-page {
        nothing for `justify-content` to center. `flex: none` hands sizing back to
        `height`; chat-page does the same for the same reason (below). */
     flex: none;
-    overflow: hidden;
+    /* Explicit on both axes: `overflow-y: auto` alone computes `overflow-x` to
+       `auto` too, which is a stray horizontal scrollbar on a page that never
+       overflows sideways. */
+    overflow: hidden auto;
   }
 
   /* The view fills that box and does the flex-column work itself; its own
-     padding would double the shell's. `justify-content` centers the hero
-     column vertically — inert once a reply arrives, since `.messages` then
-     takes `flex: 1` and there is no free space left to distribute. */
+     padding would double the shell's. */
   module-shell[data-active-view="orchestrate"] > orchestrator-page {
-    height: 100%;
-    min-height: 0;
-    justify-content: center;
+    /* `min-height`, not `height`: the view fills the shell so a short hero can be
+       centered in it, and grows past it so a long transcript or agent list scrolls
+       the shell rather than being clipped by a box the size of the viewport. */
+    min-height: 100%;
+    /* `safe` because this column can outgrow its box: with plain `center` the
+       overflow splits across both edges and the top half is unreachable — no
+       scroll position reaches above a flex container's start edge. */
+    justify-content: safe center;
     padding: 0;
-    overflow: hidden;
+  }
+
+  /* Once a transcript exists the column is top-aligned: centering it means every
+     streamed token re-centers the whole conversation, so the text the user is
+     reading slides up as the response grows. */
+  module-shell[data-active-view="orchestrate"] > orchestrator-page.has-response {
+    justify-content: flex-start;
   }
 
   /*

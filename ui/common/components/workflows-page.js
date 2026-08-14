@@ -126,7 +126,7 @@ class WorkflowsPage extends HTMLElement {
       <div class="wf-card" data-id="${this.#esc(wf.id)}" role="link" tabindex="0"
         aria-label="Open ${this.#esc(wf.name)}">
         <div class="wf-card-top">
-          <span class="wf-name">${this.#esc(wf.name)}</span>
+          <span class="wf-name" title="${this.#esc(wf.name)}">${this.#esc(wf.name)}</span>
           <app-action-menu trigger-title="Workflow actions" items='${MENU_ITEMS}'>
             ${icons.moreVertical('', 16)}
           </app-action-menu>

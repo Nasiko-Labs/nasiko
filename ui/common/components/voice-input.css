@@ -1,5 +1,23 @@
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* Bottom fade on the composer's scroll region. Registered so it interpolates —
+   a bare custom property is a string to the animation engine and would snap. */
+@property --textarea-fade {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+
+/* Driven by the textarea's own scroll position, so the fade is only there while
+   there is more text below: it lifts as you reach the end, and a prompt short
+   enough not to scroll has no timeline at all, so the initial 0px stands and the
+   last line is never dimmed. Browsers without scroll timelines keep the plain
+   hard edge — nothing to fall back to and nothing broken. */
+@keyframes textarea-bottom-fade {
+  from { --textarea-fade: 1.5rem; }
+  to { --textarea-fade: 0px; }
+}
+
 @scope (voice-input) {
     :scope {
       display: block;
@@ -8,6 +26,16 @@
       margin: 0 auto;
       --btn-size: 2rem;
       --icon-size: 1rem;
+      /* The box's inner inset — held by the text on top and by the absolutely
+         positioned button row at the bottom, so both have to read from the same
+         pair. Fixed, not the fluid `--space-*` ramp: those clamp between 8-12 and
+         12-16, so the composer's inset drifted with viewport width. */
+      /* 16/20 flat: 16 above the text and 16 below the button row, 20 either side.
+         The collapsed box is that plus the 25.6 line, the 32 button and 2 border,
+         so it comes out ~92px — taller than the old fluid `--space-*` insets made
+         it, which is the point. */
+      --pad-y: 16px;
+      --pad-x: 20px;
     }
     .voice-input { display: block; width: 100%; }
     .input-area {
@@ -16,6 +44,12 @@
       border-radius: var(--r-12);
       background: var(--bg-input);
       border: 1px solid transparent;
+      /* Reserves the button row here rather than as padding inside the textarea.
+         The buttons are absolutely positioned over this box, so while that space
+         belonged to the textarea it was *scrollable* — a long prompt ran its text
+         up behind the send and mic icons. Held by the box instead, the textarea's
+         scroll region ends above the row and nothing passes under it. */
+      padding-bottom: calc(var(--btn-size) + var(--pad-y));
 
       &.drag-over { border-color: var(--color-primary); outline: 3px solid color-mix(in srgb, var(--color-primary) 18%, transparent); outline-offset: -1px; }
       &:focus-within { border-color: var(--color-primary); }
@@ -24,8 +58,9 @@
     }
     .textarea {
       width: 100%;
-      padding: var(--space-sm) var(--space-md);
-      padding-bottom: calc(var(--btn-size) + var(--space-sm));
+      /* No bottom pad: the box below holds the button row, and any pad here would
+         be scrollable space the text could enter. */
+      padding: var(--pad-y) var(--pad-x) 0;
       background: transparent;
       color: var(--color-text-main);
       font-size: var(--font-size-base);
@@ -36,13 +71,35 @@
       box-shadow: none;
       display: block;
       field-sizing: content;
+      /* Opt out of the 80px floor global.css puts on every `textarea` for form
+         fields. `field-sizing: content` is supposed to be what sizes this box, and
+         the floor was silently winning — it is a bare element selector, so nothing
+         here overrode it without saying so — which pinned the collapsed composer
+         at 130px however the padding was set. */
+      min-height: 0;
+      /* `field-sizing: content` grows without bound, so a long prompt pushed the
+         send button and everything below it off the page. Past ~10 lines the
+         textarea scrolls itself instead. */
+      max-height: 16rem;
+      overflow-y: auto;
+      /* Softens the cut where the scroll region meets the button row. At the
+         resting 0px this gradient is a no-op, so it costs nothing until the
+         scroll timeline above drives it. */
+      mask-image: linear-gradient(
+        to bottom,
+        #000 calc(100% - var(--textarea-fade)),
+        transparent
+      );
+      animation: textarea-bottom-fade linear both;
+      animation-timeline: scroll(self block);
+      animation-range: 88% 100%;
     }
     .textarea::placeholder { color: var(--color-text-muted); }
     .textarea:focus { outline: none; border: none; box-shadow: none; }
     .attach-btn {
       position: absolute;
-      bottom: var(--space-sm);
-      left: var(--space-sm);
+      bottom: var(--pad-y);
+      left: var(--pad-x);
       width: var(--btn-size);
       height: var(--btn-size);
       border-radius: var(--radius-sm);
@@ -59,8 +116,8 @@
     }
     .record-btn {
       position: absolute;
-      bottom: var(--space-sm);
-      right: calc(var(--btn-size) + var(--space-sm) * 2);
+      bottom: var(--pad-y);
+      right: calc(var(--pad-x) + var(--btn-size) + var(--space-sm));
       width: var(--btn-size);
       height: var(--btn-size);
       border-radius: 50%;
@@ -79,8 +136,8 @@
     }
     .submit-icon {
       position: absolute;
-      bottom: var(--space-sm);
-      right: var(--space-sm);
+      bottom: var(--pad-y);
+      right: var(--pad-x);
       width: var(--btn-size);
       height: var(--btn-size);
       border-radius: 50%;
@@ -112,8 +169,8 @@
     }
     .timer {
       position: absolute;
-      bottom: var(--space-sm);
-      right: calc(var(--btn-size) * 2 + var(--space-sm) * 2 + var(--space-xs));
+      bottom: var(--pad-y);
+      right: calc(var(--pad-x) + var(--btn-size) * 2 + var(--space-sm) * 2);
       font-family: var(--font-mono);
       font-size: var(--font-size-xs);
       font-weight: 700;

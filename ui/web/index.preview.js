@@ -90,6 +90,17 @@ export default {
     [{ method: "GET", path: /^\/api\/maf\/workflows/ }, mafEnvelope(mafWorkflows)],
     [{ method: "GET", path: /^\/api\/maf\/executions/ }, mafEnvelope(mafExecutions)],
     ["POST /api/chat/sessions", { session_id: "s-preview-001", id: "s-preview-001" }],
+    // Feeds the sidebar's "Session" group (agent_name null = orchestrator-routed).
+    [{ method: "GET", path: /^\/api\/chat\/sessions\?/ }, {
+      data: [
+        { session_id: "s-1", agent_name: null, title: "Deploy the auth service", last_message: "", updated_at: "2026-08-07T10:00:00Z" },
+        { session_id: "s-2", agent_name: null, title: "New chat", last_message: "Summarise yesterday's incident", updated_at: "2026-08-06T10:00:00Z" },
+        { session_id: "s-3", agent_name: "coding-agent", title: "Refactor the parser", last_message: "", updated_at: "2026-08-05T10:00:00Z" },
+      ],
+      has_more: false,
+      next_cursor: null,
+    }],
+    [{ method: "DELETE", path: /^\/api\/chat\/sessions\/[^/]+$/ }, { ok: true }],
     [{ method: "POST", path: /^\/api\/chat\/sessions\/.*\/messages$/ }, { ok: true }],
     ["POST /api/orchestrator/a2a", { __stream: a2aStream }],
     ["GET /api/agents?status=running&limit=6", [
@@ -121,6 +132,16 @@ export default {
       await page.click('app-module-nav [data-section="workflows"]');
       await page.waitForSelector("workflows-page .page-head");
       await page.waitForTimeout(400);
+    },
+    // Deleting an orchestrator session from the sidebar: the row goes, the
+    // other session stays, and the agent-owned session was never listed.
+    // Throws (failing the scenario) if any of that stops holding.
+    "session-delete": async (page) => {
+      await page.waitForSelector('app-module-nav [data-delete-session="s-1"]');
+      await page.click('app-module-nav [data-delete-session="s-1"]');
+      await page.waitForSelector('app-module-nav [data-delete-session="s-1"]', { state: "detached" });
+      await page.waitForSelector('app-module-nav [data-delete-session="s-2"]');
+      await page.waitForTimeout(300);
     },
     // Labeled sidebar after clicking the topbar rail toggle.
     "rail-expanded": async (page) => {
