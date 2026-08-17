@@ -1,31 +1,361 @@
-# Claude SDK Research Agent
+# Nasiko Synthesizer Agent
 
-A Wikipedia research agent built with the Anthropic Python SDK, exposing the A2A protocol.
+A streaming A2A agent built with the Anthropic Python SDK that turns raw research, notes, and
+analysis into polished reports. It can produce summaries, key findings, conclusions, and
+structured answers from information supplied in the prompt.
 
-## What it does
+Example requests:
 
-Accepts a natural language question, searches Wikipedia for relevant information using Claude's tool use, and returns a concise answer.
-
-## Quick start
-
-```bash
-cp .env.example .env
-# Fill in your API key
-python src/__main__.py
+```text
+Synthesize these research findings into a concise report.
+Turn these notes into an executive summary with key risks and recommendations.
+Compare the evidence from these sources and identify the strongest conclusions.
+Rewrite this analysis as a structured briefing for leadership.
 ```
 
-## Docker
+The agent does not search external sources. It synthesizes the information supplied in the
+request, so callers should include the research or data that must appear in the report.
 
-```bash
-docker compose up
+## Architecture
+
+1. The A2A server receives a text prompt.
+2. `SynthesizerAgentExecutor` creates or resumes an in-memory A2A task.
+3. `SynthesizerAgent` sends the prompt to Anthropic's Messages API.
+4. Text tokens are emitted as A2A working-status updates.
+5. The complete report is returned as a text artifact.
+
+The implementation uses the official Anthropic Python SDK and defaults to Claude Sonnet 5.
+
+## Project layout
+
+```text
+claude-sdk/
+├── AgentCard.json          # Nasiko deployment identity, capabilities, skills, and version
+├── Dockerfile              # Python 3.12 runtime image
+├── pyproject.toml          # Python project metadata and dependencies
+└── src/
+    ├── __main__.py         # A2A server and runtime Agent Card
+    ├── agent.py            # Streaming synthesis implementation
+    ├── agent_executor.py   # A2A task, status, and artifact handling
+    └── telemetry.py        # OpenTelemetry initialization
 ```
 
-## Environment variables
+The Nasiko CLI manages validation, local execution, testing, deployment, and operations. The
+Dockerfile defines the runtime, but developers do not need to invoke Docker or Compose directly.
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| ANTHROPIC_API_KEY | Yes | Anthropic API key |
+## Configuration
 
-## A2A endpoint
+The agent reads these environment variables:
 
-`http://localhost:10002/`
+- `ANTHROPIC_API_KEY` is required for Anthropic API access.
+- `ANTHROPIC_MODEL` defaults to `claude-sonnet-5`.
+- `HOST_OVERRIDE` replaces the URL advertised by the runtime Agent Card when set.
+- `OTEL_EXPORTER_OTLP_ENDPOINT` enables OTLP trace and metric export.
+- `OTEL_SERVICE_NAME` defaults to `nasiko-agent`.
+
+The image listens on internal port `8000`. The Nasiko CLI maps or publishes this port through
+`nasiko run`, `nasiko deploy`, or `nasiko upload`.
+
+No `.env` file is required when the agent is deployed to Nasiko. Nasiko injects configured
+secrets and observability settings when the container starts.
+
+For local testing, create an untracked `.env`:
+
+```dotenv
+ANTHROPIC_API_KEY=replace-me
+ANTHROPIC_MODEL=claude-sonnet-5
+```
+
+Do not commit real credentials.
+
+## Prerequisites
+
+- The `nasiko` CLI
+- Docker or Podman running as the container runtime used internally by the CLI
+- An Anthropic API key with available Claude quota
+
+No local Python environment, `uv`, or manual container commands are required. The Nasiko CLI
+builds the Python runtime from the Dockerfile.
+
+## Agent Development Lifecycle (ADLC)
+
+The Nasiko Agent Development Lifecycle (ADLC) covers validation, local testing, deployment,
+operation, and iteration. This agent is already scaffolded, so its ADLC starts with validation
+rather than `nasiko new`.
+
+### 1. Validate the existing agent
+
+From this directory:
+
+```sh
+cd agents/claude-sdk
+nasiko validate .
+```
+
+Validation checks the Dockerfile, `AgentCard.json`, required metadata, and source layout. The
+runtime must bind to `0.0.0.0`, serve an Agent Card at
+`/.well-known/agent-card.json`, and accept A2A JSON-RPC requests.
+
+### 2. Build, run, and test locally
+
+After creating the untracked `.env`, let the Nasiko CLI build and start the agent:
+
+```sh
+nasiko run . --port 8000
+```
+
+`nasiko run` builds the development image, starts the agent, maps the selected host port to
+container port `8000`, and loads `.env`. No Nasiko control plane or connected cluster is
+required.
+
+In another terminal, test the agent through the Nasiko CLI:
+
+```sh
+nasiko chat http://localhost:8000 \
+  "Synthesize these notes into an executive summary: revenue grew 18%, churn fell 4%, and support response time improved by 30%."
+nasiko chat http://localhost:8000 --tui
+```
+
+For a build-only check:
+
+```sh
+nasiko build . --tag synthesizer-agent:1.0.1
+```
+
+`nasiko build` creates the image without starting the agent. Both commands manage the container
+runtime for you.
+
+### 3. Deploy to Nasiko
+
+Start or connect to a Nasiko control plane and select the cluster:
+
+```sh
+# Connect to a remote cluster
+nasiko connect https://nasiko.example.com --name prod
+nasiko auth login
+
+# Or register an already-running local control plane
+nasiko connect http://localhost:8080 --name local
+
+# Or let the CLI create and register a local cluster
+nasiko up
+
+nasiko clusters
+nasiko use local
+```
+
+Commands below operate against the active cluster.
+
+#### Configure secrets
+
+Store the provider credential as an encrypted Nasiko secret:
+
+```sh
+# Vault scope: available to every agent you own
+nasiko secrets set ANTHROPIC_API_KEY replace-me
+nasiko secrets ls
+
+# Agent scope: overrides the vault secret for this agent
+nasiko secrets set ANTHROPIC_API_KEY replace-me \
+  --agent synthesizer-agent
+nasiko secrets ls --agent synthesizer-agent
+```
+
+Secret precedence is: inline `nasiko deploy -e` values, agent-specific secrets, then vault
+secrets. Updating a secret does not change a running container; recreate it with:
+
+```sh
+nasiko restart synthesizer-agent
+```
+
+Remove a vault secret with `nasiko secrets rm <KEY>`. Add
+`--agent synthesizer-agent` when removing an agent-specific secret.
+
+#### Build and deploy
+
+From `agents/claude-sdk`:
+
+```sh
+nasiko deploy . \
+  --name synthesizer-agent \
+  --port 8000
+```
+
+`nasiko deploy`:
+
+1. Builds a `linux/amd64` image for the Nasiko runtime.
+2. Pushes it to Nasiko's embedded OCI registry.
+3. Registers or updates the agent.
+4. Starts its container with configured secrets and observability settings.
+5. Writes `.nasiko/agent.json` to bind this directory to the deployment.
+
+Keep `.nasiko/` out of source control. The explicit deployment name matches the registry-safe
+name in `AgentCard.json`.
+
+If an earlier version is still deployed as `claude-sdk-research-agent`, remove that obsolete
+registration once before deploying the renamed agent:
+
+```sh
+nasiko rm --name claude-sdk-research-agent
+```
+
+The agent is stateless, so this does not remove application data. The next `nasiko deploy`
+creates or binds the `synthesizer-agent` registration.
+
+#### Server-side source build
+
+This Python project provides `src/__main__.py`, so it also supports Nasiko's source-upload flow:
+
+```sh
+nasiko upload . \
+  --name synthesizer-agent \
+  --version 1.0.1 \
+  --port 8000
+```
+
+`nasiko upload` packages the source and lets the active Nasiko cluster build it. Use
+`nasiko deploy` for a local CLI-managed build and upload, or `nasiko upload` when the build
+should happen on the server.
+
+### 4. Operate the deployed agent
+
+Inspect and manage the deployment:
+
+```sh
+nasiko ps
+nasiko ps --json
+nasiko logs synthesizer-agent
+nasiko logs synthesizer-agent -n 200
+nasiko logs synthesizer-agent -n 200 -f
+nasiko stop synthesizer-agent
+nasiko start synthesizer-agent
+nasiko restart synthesizer-agent
+nasiko scale synthesizer-agent 2
+nasiko status
+```
+
+Chat with the deployed agent:
+
+```sh
+nasiko chat synthesizer-agent \
+  "Turn these findings into a report with a summary, key findings, and conclusion."
+```
+
+List and resume control-plane sessions:
+
+```sh
+nasiko sessions
+nasiko chat --agent synthesizer-agent --resume <session-id>
+nasiko chat --agent synthesizer-agent \
+  --session-id <session-id> \
+  "Rewrite the conclusion for an executive audience."
+```
+
+Control-plane session IDs begin with `ses_` and must be resumed through the deployed agent, not
+through the standalone `http://localhost:8000` development agent. The `--resume` option opens
+the TUI.
+
+Open Nasiko observability after the agent has handled traffic:
+
+```sh
+nasiko observe sessions
+nasiko observe session <session-id>
+```
+
+The telemetry bootstrap joins Nasiko's incoming trace context and instruments the A2A server,
+HTTP client, and Anthropic SDK when the corresponding instrumentation packages are available.
+Nasiko injects the collector endpoint during deployment.
+
+Remove the deployment when it is no longer needed:
+
+```sh
+nasiko rm --name synthesizer-agent
+nasiko rm --name synthesizer-agent -f
+```
+
+`stop` preserves registration and configuration. `rm` terminates and deregisters the agent.
+
+### 5. Version and iterate
+
+The version in `AgentCard.json` becomes the deployed image tag. For each release:
+
+1. Change the source.
+2. Bump `AgentCard.json`.
+3. Keep `pyproject.toml` and the runtime Agent Card in `src/__main__.py` aligned.
+4. Validate and test locally.
+5. Redeploy the same agent name.
+
+```sh
+nasiko validate .
+nasiko run . --port 8000
+nasiko chat http://localhost:8000 \
+  "Produce a short report from these test findings."
+nasiko deploy . \
+  --name synthesizer-agent \
+  --port 8000
+```
+
+Redeploying the same name updates the agent in place. `nasiko restart` recreates the existing
+container to pick up changed secrets or environment variables; it does not rebuild the image.
+
+Roll back to the previous deployment or a specific version:
+
+```sh
+nasiko rollback --name synthesizer-agent
+nasiko rollback --name synthesizer-agent --version 1.0.0
+```
+
+## Building a compatible Nasiko agent
+
+This project demonstrates the core contract for a streaming Python agent on Nasiko:
+
+1. Provide a valid, registry-safe `AgentCard.json`.
+2. Provide a Dockerfile that creates a self-contained `linux/amd64` image.
+3. Bind to `0.0.0.0` and use the configured deployment port.
+4. Serve the standard Agent Card endpoint and an A2A JSON-RPC handler.
+5. Emit valid working status, artifact, and completed events when streaming is advertised.
+6. Read the Anthropic credential and Claude model name from environment variables.
+7. Initialize telemetry before importing instrumented server libraries.
+8. Treat `.nasiko/agent.json` as local deployment state rather than source.
+9. Keep project, runtime, and deployment metadata aligned.
+
+## Troubleshooting
+
+### Provider requests fail with 401
+
+Verify `ANTHROPIC_API_KEY` is a valid Anthropic API key. After changing the Nasiko secret, run:
+
+```sh
+nasiko restart synthesizer-agent
+```
+
+### Provider reports that the model is unavailable
+
+Set `ANTHROPIC_MODEL` to a Claude model available to your Anthropic account.
+
+### Nasiko reports `-32601 Method not found`
+
+The current agent uses `a2a-sdk==1.1.2` and A2A protocol 1.0. This error usually means the
+deployed container still uses the previous `0.3.26` image. Bump the release version if needed
+and run `nasiko deploy` again; `nasiko restart` does not rebuild the image.
+
+### The Agent Card advertises the wrong URL
+
+Nasiko manages routing for deployed agents. If direct runtime testing needs a different
+advertised URL, set `HOST_OVERRIDE` to the externally reachable base URL.
+
+### Source upload fails
+
+Ensure `src/__main__.py`, `Dockerfile`, and `AgentCard.json` are at their current project paths.
+They satisfy Nasiko's Python source-upload validator.
+
+## Further reading
+
+- [Agent Development Lifecycle (ADLC)](../../docs/AGENT_LIFECYCLE.md)
+- [Nasiko project README](../../README.md)
+- [A2A agents and frameworks](https://docs.nasiko.com/adlc/a2a-agents)
+- [Running and chatting locally](https://docs.nasiko.com/adlc/build-run-test)
+- [Deploying and managing agents](https://docs.nasiko.com/adlc/deploy)
+- [Versions and lifecycle](https://docs.nasiko.com/adlc/versions-lifecycle)
+- [Anthropic Python SDK](https://github.com/anthropics/anthropic-sdk-python)
+- [A2A protocol specification](https://github.com/a2aproject/a2a-spec)
