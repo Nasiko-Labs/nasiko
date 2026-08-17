@@ -206,6 +206,23 @@ pub fn docker_save(image: &str) -> Result<Vec<u8>> {
     Ok(output.stdout)
 }
 
+/// Whether `image` resolves to a real local image the container runtime
+/// already has — checked before tagging/pushing so `deploy` never silently
+/// tags/pushes/deploys against a missing or wrong (e.g. stale `:latest`)
+/// image under the version label the user asked for.
+pub fn local_image_exists(image: &str) -> Result<bool> {
+    let bin = container_bin();
+    let status = Command::new(&bin)
+        .args(["image", "inspect", image])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .with_context(|| {
+            format!("failed to run `{bin} image inspect` — is the container runtime running?")
+        })?;
+    Ok(status.success())
+}
+
 pub fn parse_docker_tar(tar_data: &[u8]) -> Result<DockerTarEntries> {
     let mut archive = tar::Archive::new(tar_data);
     let mut files: HashMap<String, Vec<u8>> = HashMap::new();

@@ -220,6 +220,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn image_has_explicit_tag_true_for_a_real_tag() {
+        assert!(image_has_explicit_tag("legal-agent:1.0.1"));
+        assert!(image_has_explicit_tag("nasiko/legal-agent:1.0.1"));
+    }
+
+    #[test]
+    fn image_has_explicit_tag_false_for_a_bare_name() {
+        assert!(!image_has_explicit_tag("legal-agent"));
+        assert!(!image_has_explicit_tag("nasiko/legal-agent"));
+    }
+
+    #[test]
+    fn image_has_explicit_tag_ignores_colons_in_a_registry_host_port() {
+        // A `:` before the last `/` is a registry port, not a tag.
+        assert!(!image_has_explicit_tag(
+            "registry.example.com:5000/legal-agent"
+        ));
+        assert!(image_has_explicit_tag(
+            "registry.example.com:5000/legal-agent:1.0.1"
+        ));
+    }
+
+    #[test]
     fn sync_card_version_updates_a_changed_version() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("AgentCard.json");

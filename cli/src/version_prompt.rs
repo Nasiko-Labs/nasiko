@@ -1,26 +1,22 @@
 use std::io::IsTerminal;
 
 use anyhow::{Result, bail};
-use dialoguer::{Confirm, Input};
+use dialoguer::Input;
 use nasiko_utils::version::parse_plain_version;
 
 /// Used when there's no version to start from (first-ever deploy).
 const FIRST_VERSION: &str = "0.1.0";
 
-/// The version to use, plus whether it's okay to overwrite an existing one.
-/// `overwrite` must be forwarded to the server as `allow_overwrite`.
+/// The version to use for this build/push/deploy.
 #[derive(Debug)]
 pub struct VersionDecision {
     pub version: String,
-    pub overwrite: bool,
 }
 
-/// The CLI flags (`--version`, `--overwrite`, `--yes`) that control
-/// [`resolve_deploy_version`].
+/// The CLI flags (`--version`, `--yes`) that control [`resolve_deploy_version`].
 #[derive(Debug, Clone, Copy, Default)]
 pub struct VersionFlags<'a> {
     pub version: Option<&'a str>,
-    pub overwrite: bool,
     pub yes: bool,
 }
 
@@ -42,19 +38,15 @@ pub struct VersionContext<'a> {
 
 /// Picks the version to build/push/deploy under.
 ///
-/// Rules, in order:
-/// 1. `--version` wins if given (must be a plain `x.y.z`, e.g. `1.2.3`).
-/// 2. Otherwise, the AgentCard version is the priority — used as-is if it's
-///    a valid, unused `x.y.z`.
-/// 3. If the card version is invalid or already used (e.g. `"latest"`, or a
-///    version this agent has had before), it doesn't count as a real
-///    choice: we suggest the next unused patch bump and ask the user to
-///    confirm or pick another version. If they type in that same old
-///    version, they can either overwrite it (replace its content) or back
-///    out and run `nasiko rollback` to it instead.
+/// 1. `--version` wins if given (must be plain `x.y.z`).
+/// 2. Otherwise use the AgentCard version, if it's valid and unused.
+/// 3. Otherwise suggest the next unused patch bump and ask the user.
 ///
-/// In CI (no terminal), the same choice must come from an explicit
-/// `--version`, or `--yes` to accept the suggested bump — never silently.
+/// Versions are immutable: a collision is always a hard error (or a
+/// re-prompt) with a suggested next version — never an overwrite. Use
+/// `nasiko rollback` to go back to an old version.
+///
+/// Non-interactively, the version must come from `--version` or `--yes`.
 pub fn resolve_deploy_version(
     context: VersionContext<'_>,
     flags: VersionFlags,
@@ -70,21 +62,15 @@ pub fn resolve_deploy_version(
             bail!("--version {v} is not a valid version — expected x.y.z, e.g. 1.2.3");
         }
         if is_used(v, used_versions) {
-            if !flags.overwrite {
-                bail!(
-                    "version {v} already exists in this agent's history. To go back to it, run \
-                     `nasiko rollback --version {v}` instead — or re-run with --overwrite to \
-                     replace its content."
-                );
-            }
-            return Ok(VersionDecision {
-                version: v.to_string(),
-                overwrite: true,
-            });
+            let suggested = suggest_unused_version(Some(v), used_versions);
+            bail!(
+                "version {v} already exists in this agent's history and versions are \
+                 immutable. Suggested next version: {suggested}. To go back to it, run \
+                 `nasiko rollback --version {v}` instead."
+            );
         }
         return Ok(VersionDecision {
             version: v.to_string(),
-            overwrite: false,
         });
     }
 
@@ -119,11 +105,76 @@ pub fn resolve_deploy_version(
             }
             prompt_for_version(Some(cv), &suggested, used_versions, flags.yes)
         }
-        // A fresh, unused version is already in the card — use it, no prompt.
+        // Card version is unused but not ahead of what's deployed (e.g. a
+        // stale AgentCard.json) — don't trust it, treat like no card version.
+        (Some(cv), Some(dv)) if !is_ahead(cv, dv) => {
+            let suggested = suggest_unused_version(Some(dv), used_versions);
+            if !interactive && !flags.yes {
+                bail!(
+                    "AgentCard.json's version ({cv}) doesn't reflect what's actually deployed \
+                     ({dv}) and isn't ahead of it. Bump the version in AgentCard.json, pass \
+                     --version, or re-run with --yes to use the suggested {suggested}."
+                );
+            }
+            prompt_for_version(Some(dv), &suggested, used_versions, flags.yes)
+        }
+        // A fresh version, ahead of (or with nothing yet) deployed — use it,
+        // no prompt.
         (Some(cv), _) => Ok(VersionDecision {
             version: cv.to_string(),
-            overwrite: false,
         }),
+    }
+}
+
+/// Resolves the version for an already-built `image:tag`, as opposed to a
+/// source directory. Shared by `deploy_from_image` and `push_from_image`.
+///
+/// An explicit `:tag` is treated like `--version`: used as-is, or a hard
+/// error naming the exact artifact if it collides with history. A bare
+/// `image` (no `:tag`) falls back to the normal suggest/prompt logic.
+///
+/// `command` is the verb to print in the suggested next steps ("deploy" or
+/// "push").
+pub fn resolve_image_deploy_version(
+    image: &str,
+    image_tag_version: &str,
+    flags: VersionFlags,
+    current_deployed_version: Option<&str>,
+    used_versions: &[String],
+    command: &str,
+) -> Result<VersionDecision> {
+    if crate::util::image_has_explicit_tag(image) && is_used(image_tag_version, used_versions) {
+        let (name, _) = crate::util::parse_image_name_and_tag(image);
+        let suggested = suggest_unused_version(Some(image_tag_version), used_versions);
+        bail!(
+            "{image} already exists and versions are immutable.\n\n\
+             Suggested next version: {suggested}\n\n\
+             Build the new version first:\n  nasiko build --version {suggested}\n\n\
+             Then {command} the exact artifact:\n  nasiko {command} {name}:{suggested}"
+        );
+    }
+    let explicit_tag = crate::util::image_has_explicit_tag(image).then_some(image_tag_version);
+    let flags = VersionFlags {
+        version: flags.version.or(explicit_tag),
+        ..flags
+    };
+    let context = VersionContext {
+        card_version: None,
+        current_deployed_version,
+        used_versions,
+    };
+    resolve_deploy_version(context, flags)
+}
+
+/// Whether `candidate` is a real version bump past `baseline`. Uncomparable
+/// (non-semver) inputs default to `true` so we don't second-guess them.
+fn is_ahead(candidate: &str, baseline: &str) -> bool {
+    match (
+        parse_plain_version(candidate),
+        parse_plain_version(baseline),
+    ) {
+        (Some(c), Some(b)) => c > b,
+        _ => true,
     }
 }
 
@@ -154,10 +205,9 @@ fn prompt_for_version(
         if let Some(cv) = current {
             eprintln!("  ! version {cv} already deployed — auto-bumping to {suggested} (--yes)");
         }
-        // `suggested` is always unused, so no need to ask about overwriting.
+        // `suggested` is always unused, so nothing further to check.
         return Ok(VersionDecision {
             version: suggested.to_string(),
-            overwrite: false,
         });
     }
     let prompt = match current {
@@ -173,27 +223,16 @@ fn prompt_for_version(
         let input = input.trim().to_string();
 
         if is_used(&input, used_versions) {
-            let confirmed = Confirm::new()
-                .with_prompt(format!(
-                    "version {input} already exists in this agent's history — overwrite its \
-                     content anyway? (or choose No to enter a different version)"
-                ))
-                .default(false)
-                .interact()?;
-            if confirmed {
-                return Ok(VersionDecision {
-                    version: input,
-                    overwrite: true,
-                });
-            }
-            // Declined — ask again instead of failing.
+            // Versions are immutable — no overwrite option, just tell them
+            // and ask again.
+            println!(
+                "  ! version {input} already exists in this agent's history and versions are \
+                 immutable — pick a different version."
+            );
             continue;
         }
 
-        return Ok(VersionDecision {
-            version: input,
-            overwrite: false,
-        });
+        return Ok(VersionDecision { version: input });
     }
 }
 
@@ -222,6 +261,25 @@ mod tests {
 
     fn used(versions: &[&str]) -> Vec<String> {
         versions.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn is_ahead_true_for_a_real_bump() {
+        assert!(is_ahead("1.2.0", "1.1.0"));
+    }
+
+    #[test]
+    fn is_ahead_false_for_equal_or_behind() {
+        assert!(!is_ahead("1.0.0", "1.0.0"));
+        assert!(!is_ahead("0.1.0", "1.0.0"));
+        assert!(!is_ahead("0.9.9", "1.0.0"));
+    }
+
+    #[test]
+    fn is_ahead_true_when_either_side_is_not_plain_semver() {
+        // Can't compare -> don't second-guess an otherwise-valid card version.
+        assert!(is_ahead("1.0.0", "latest"));
+        assert!(is_ahead("latest", "1.0.0"));
     }
 
     #[test]
@@ -275,69 +333,85 @@ mod tests {
         }
     }
 
-    fn flags(version: Option<&str>, overwrite: bool, yes: bool) -> VersionFlags<'_> {
-        VersionFlags {
-            version,
-            overwrite,
-            yes,
-        }
+    fn flags(version: Option<&str>, yes: bool) -> VersionFlags<'_> {
+        VersionFlags { version, yes }
     }
 
     #[test]
     fn explicit_flag_wins_over_everything() {
         let d = resolve_deploy_version(
             context(Some("1.0.0"), Some("1.0.0"), &used(&[])),
-            flags(Some("9.9.9"), false, false),
+            flags(Some("9.9.9"), false),
         )
         .unwrap();
         assert_eq!(d.version, "9.9.9");
-        assert!(!d.overwrite);
     }
 
     #[test]
     fn explicit_flag_rejects_non_plain_semver() {
         let err = resolve_deploy_version(
             context(None, None, &used(&[])),
-            flags(Some("latest"), false, false),
+            flags(Some("latest"), false),
         )
         .unwrap_err();
         assert!(err.to_string().contains("expected x.y.z"));
     }
 
     #[test]
-    fn explicit_flag_rejects_a_reused_version_without_overwrite_flag() {
+    fn explicit_flag_rejects_a_reused_version_with_no_overwrite_option() {
         let history = used(&["1.0.0", "1.1.0"]);
-        let err = resolve_deploy_version(
-            context(None, None, &history),
-            flags(Some("1.0.0"), false, false),
-        )
-        .unwrap_err();
+        let err =
+            resolve_deploy_version(context(None, None, &history), flags(Some("1.0.0"), false))
+                .unwrap_err();
+        assert!(err.to_string().contains("immutable"));
         assert!(err.to_string().contains("nasiko rollback"));
-        assert!(err.to_string().contains("--overwrite"));
-    }
-
-    #[test]
-    fn explicit_flag_with_overwrite_flag_accepts_a_reused_version() {
-        let history = used(&["1.0.0", "1.1.0"]);
-        let d = resolve_deploy_version(
-            context(None, None, &history),
-            flags(Some("1.0.0"), true, false),
-        )
-        .unwrap();
-        assert_eq!(d.version, "1.0.0");
-        assert!(d.overwrite);
+        assert!(!err.to_string().contains("overwrite"));
     }
 
     #[test]
     fn new_card_version_is_trusted_without_prompting() {
-        // current_deployed_version differs from card_version -> no prompt path.
+        // current_deployed_version differs from card_version, but the card
+        // version is AHEAD of it (a real bump) -> no prompt path.
         let d = resolve_deploy_version(
             context(Some("1.2.0"), Some("1.1.0"), &used(&[])),
-            flags(None, false, false),
+            flags(None, false),
         )
         .unwrap();
         assert_eq!(d.version, "1.2.0");
-        assert!(!d.overwrite);
+    }
+
+    #[test]
+    fn stale_card_version_behind_deployed_is_not_trusted_and_suggests_next_from_deployed() {
+        // Card says 0.1.0 but platform is at 1.0.0 -> bump from 1.0.0, not the stale value.
+        let d = resolve_deploy_version(
+            context(Some("0.1.0"), Some("1.0.0"), &used(&[])),
+            flags(None, true),
+        )
+        .unwrap();
+        assert_eq!(d.version, "1.0.1");
+    }
+
+    #[test]
+    fn stale_card_version_non_interactive_without_yes_errors() {
+        let err = resolve_deploy_version(
+            context(Some("0.1.0"), Some("1.0.0"), &used(&[])),
+            flags(None, false),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("1.0.0"));
+        assert!(err.to_string().contains("--yes"));
+    }
+
+    #[test]
+    fn card_version_equal_to_a_lower_major_is_still_stale_not_ahead() {
+        // "0.9.9" < "1.0.0" numerically despite looking close — must not be
+        // trusted just because it differs from the deployed value.
+        let d = resolve_deploy_version(
+            context(Some("0.9.9"), Some("1.0.0"), &used(&[])),
+            flags(None, true),
+        )
+        .unwrap();
+        assert_eq!(d.version, "1.0.1");
     }
 
     #[test]
@@ -346,7 +420,7 @@ mod tests {
         let history = used(&["0.1.0", "0.1.1", "0.1.2", "0.1.3", "2.0.0"]);
         let err = resolve_deploy_version(
             context(Some("0.1.3"), Some("2.0.0"), &history),
-            flags(None, false, false),
+            flags(None, false),
         )
         .unwrap_err();
         assert!(err.to_string().contains("no usable"));
@@ -356,7 +430,7 @@ mod tests {
     fn non_plain_semver_card_version_is_treated_as_missing() {
         let err = resolve_deploy_version(
             context(Some("latest"), Some("1.0.0"), &used(&[])),
-            flags(None, false, false),
+            flags(None, false),
         )
         .unwrap_err();
         assert!(err.to_string().contains("no usable"));
@@ -364,11 +438,9 @@ mod tests {
 
     #[test]
     fn brand_new_agent_trusts_card_version() {
-        let d = resolve_deploy_version(
-            context(Some("0.1.0"), None, &used(&[])),
-            flags(None, false, false),
-        )
-        .unwrap();
+        let d =
+            resolve_deploy_version(context(Some("0.1.0"), None, &used(&[])), flags(None, false))
+                .unwrap();
         assert_eq!(d.version, "0.1.0");
     }
 
@@ -377,7 +449,7 @@ mod tests {
         // stdin in test runs is not a terminal, so this exercises the non-interactive branch.
         let err = resolve_deploy_version(
             context(Some("1.0.0"), Some("1.0.0"), &used(&[])),
-            flags(None, false, false),
+            flags(None, false),
         )
         .unwrap_err();
         assert!(err.to_string().contains("already deployed"));
@@ -387,11 +459,10 @@ mod tests {
     fn same_version_with_yes_auto_bumps_patch() {
         let d = resolve_deploy_version(
             context(Some("1.0.0"), Some("1.0.0"), &used(&[])),
-            flags(None, false, true),
+            flags(None, true),
         )
         .unwrap();
         assert_eq!(d.version, "1.0.1");
-        assert!(!d.overwrite);
     }
 
     #[test]
@@ -399,7 +470,7 @@ mod tests {
         let history = used(&["1.0.0", "1.0.1", "1.0.2"]);
         let d = resolve_deploy_version(
             context(Some("1.0.0"), Some("1.0.0"), &history),
-            flags(None, false, true),
+            flags(None, true),
         )
         .unwrap();
         assert_eq!(d.version, "1.0.3");
@@ -407,37 +478,30 @@ mod tests {
 
     #[test]
     fn missing_card_version_non_interactive_without_yes_errors() {
-        let err =
-            resolve_deploy_version(context(None, None, &used(&[])), flags(None, false, false))
-                .unwrap_err();
+        let err = resolve_deploy_version(context(None, None, &used(&[])), flags(None, false))
+            .unwrap_err();
         assert!(err.to_string().contains("no usable"));
     }
 
     #[test]
     fn missing_card_version_and_no_deployed_version_with_yes_uses_first_version() {
-        let d = resolve_deploy_version(context(None, None, &used(&[])), flags(None, false, true))
-            .unwrap();
+        let d = resolve_deploy_version(context(None, None, &used(&[])), flags(None, true)).unwrap();
         assert_eq!(d.version, FIRST_VERSION);
     }
 
     #[test]
     fn missing_card_version_with_deployed_version_and_yes_bumps_patch() {
-        let d = resolve_deploy_version(
-            context(None, Some("2.0.0"), &used(&[])),
-            flags(None, false, true),
-        )
-        .unwrap();
+        let d = resolve_deploy_version(context(None, Some("2.0.0"), &used(&[])), flags(None, true))
+            .unwrap();
         assert_eq!(d.version, "2.0.1");
     }
 
     #[test]
     fn missing_card_version_with_non_semver_deployed_version_falls_back_to_first_version() {
         // Can't patch-bump a garbage version like "bjjnjn" -> fall back instead.
-        let d = resolve_deploy_version(
-            context(None, Some("bjjnjn"), &used(&[])),
-            flags(None, false, true),
-        )
-        .unwrap();
+        let d =
+            resolve_deploy_version(context(None, Some("bjjnjn"), &used(&[])), flags(None, true))
+                .unwrap();
         assert_eq!(d.version, FIRST_VERSION);
     }
 }

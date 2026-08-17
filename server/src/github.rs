@@ -650,6 +650,10 @@ struct CloneBody {
     branch: Option<String>,
     /// Override agent name; defaults to the repo name portion of `repository_full_name`.
     agent_name: Option<String>,
+    /// User-chosen version overriding whatever the cloned source declares
+    /// (e.g. the UI's auto-suggested patch bump after a conflict).
+    #[serde(default)]
+    version_override: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -698,6 +702,16 @@ async fn github_clone(
         return (
             StatusCode::UNPROCESSABLE_ENTITY,
             format!("invalid request: {e}"),
+        )
+            .into_response();
+    }
+
+    if let Some(ref ver) = body.version_override
+        && crate::agents::versions::parse_plain_version(ver).is_none()
+    {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            format!("invalid version_override {ver}: must be in x.y.z format, e.g. 1.2.3"),
         )
             .into_response();
     }
@@ -782,6 +796,7 @@ async fn github_clone(
         image_tag,
         ports: vec![8000u16],
         env: HashMap::new(),
+        version_override: body.version_override.clone(),
     };
 
     let payload_value = match serde_json::to_value(&payload) {

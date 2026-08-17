@@ -239,6 +239,41 @@ pub(crate) async fn build_and_deploy(
         )
     })?;
 
+    // Reject a version already recorded in this agent's history instead of
+    // silently redeploying it — the same guard `agents/upload.rs` and
+    // `agents/update.rs` apply, now shared here via the same recorder so
+    // import/zip-upload agents get real rollback history too (they never
+    // wrote to `agent_versions` before this).
+    crate::agents::versions::record_version_change_in_tx(
+        &mut tx,
+        crate::agents::versions::VersionChange {
+            agent_id,
+            build_id: Some(build_id),
+            version: &meta.version,
+            image_tag: &image_tag,
+            changelog: None,
+            allow_overwrite: false,
+        },
+    )
+    .await
+    .map_err(|e| match e {
+        crate::agents::versions::VersionChangeError::VersionAlreadyExists(v) => (
+            StatusCode::CONFLICT,
+            format!("version {v} already exists in this agent's history — choose a new version"),
+        ),
+        crate::agents::versions::VersionChangeError::InvalidVersion(v) => (
+            StatusCode::BAD_REQUEST,
+            format!("version {v} must be in x.y.z format (e.g. 1.2.3)"),
+        ),
+        crate::agents::versions::VersionChangeError::Db(e) => {
+            tracing::error!(%e, %agent_id, "build_and_deploy: record version change");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal error".to_string(),
+            )
+        }
+    })?;
+
     tx.commit().await.map_err(|e| {
         tracing::error!(%e, %agent_id, %build_id, "build_and_deploy: commit tx");
         (
@@ -559,63 +594,12 @@ pub(crate) async fn import_github(
 
 #[derive(Deserialize, ToSchema)]
 pub(crate) struct RegistryImportRequest {
-    /// OCI reference: `"registry.host/owner/name[:tag]"`. The host must be
-    /// allowed: a built-in default, the settings-page registry URL, or
+    /// OCI reference: `"registry.host/owner/name[:tag]"`. The host must be in
     /// `REGISTRY_IMPORT_ALLOWED_HOSTS`.
     reference: String,
 }
 
 const SOURCE_MEDIA_TYPE: &str = "application/vnd.nasiko.agent.v1.tar+gzip";
-
-/// Registry hosts always allowed for import, independent of any env var or the
-/// settings-page registry — Nasiko's own registry works out of the box.
-const BUILTIN_ALLOWED_REGISTRY_HOSTS: &[&str] = &["registry.nasiko.dev"];
-
-/// Extract the bare host from a configured registry URL such as
-/// `https://registry.nasiko.dev` or `registry.nasiko.dev:5000/path`: scheme and
-/// path are stripped; any port is left for `validate_registry_host` to normalize.
-fn registry_url_host(url: &str) -> Option<String> {
-    let s = url.trim();
-    let s = s
-        .strip_prefix("https://")
-        .or_else(|| s.strip_prefix("http://"))
-        .unwrap_or(s);
-    let s = s.split('/').next().unwrap_or(s).trim();
-    if s.is_empty() {
-        None
-    } else {
-        Some(s.to_string())
-    }
-}
-
-/// The effective import allowlist: built-in defaults ∪ `REGISTRY_IMPORT_ALLOWED_HOSTS`
-/// ∪ the settings-page registry URL (read live from the DB, so saving it in the UI
-/// takes effect immediately with no restart and no env var required).
-async fn effective_allowed_hosts(state: &AppState) -> Vec<String> {
-    let mut allowed: Vec<String> = BUILTIN_ALLOWED_REGISTRY_HOSTS
-        .iter()
-        .map(|h| (*h).to_string())
-        .collect();
-    allowed.extend(state.config.registry_import_allowed_hosts.iter().cloned());
-
-    let configured: Option<String> = match sqlx::query_scalar::<_, Option<String>>(
-        "SELECT registry_url FROM settings LIMIT 1",
-    )
-    .fetch_optional(&state.db)
-    .await
-    {
-        Ok(Some(url)) => url,
-        Ok(None) => None,
-        Err(e) => {
-            tracing::warn!(%e, "effective_allowed_hosts: could not read settings.registry_url");
-            None
-        }
-    };
-    if let Some(host) = configured.as_deref().and_then(registry_url_host) {
-        allowed.push(host);
-    }
-    allowed
-}
 
 fn validate_registry_host(host: &str, allowed: &[String]) -> Result<(), (StatusCode, String)> {
     if allowed.is_empty() {
@@ -684,8 +668,9 @@ pub(crate) async fn import_registry(
         }
     };
 
-    let allowed_hosts = effective_allowed_hosts(&state).await;
-    if let Err((code, msg)) = validate_registry_host(host, &allowed_hosts) {
+    if let Err((code, msg)) =
+        validate_registry_host(host, &state.config.registry_import_allowed_hosts)
+    {
         return (code, msg).into_response();
     }
 
@@ -990,41 +975,7 @@ pub(crate) async fn import_registry(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        BUILTIN_ALLOWED_REGISTRY_HOSTS, find_owned_agent, read_agent_card, registry_url_host,
-        validate_registry_host,
-    };
-
-    #[test]
-    fn registry_url_host_strips_scheme_and_path() {
-        assert_eq!(
-            registry_url_host("https://registry.nasiko.dev"),
-            Some("registry.nasiko.dev".to_string())
-        );
-        assert_eq!(
-            registry_url_host("http://registry.nasiko.dev/nasiko/foo"),
-            Some("registry.nasiko.dev".to_string())
-        );
-        assert_eq!(
-            registry_url_host("registry.nasiko.dev:5000/foo"),
-            Some("registry.nasiko.dev:5000".to_string())
-        );
-        assert_eq!(registry_url_host("   "), None);
-        assert_eq!(registry_url_host(""), None);
-    }
-
-    #[test]
-    fn builtin_host_allowed_without_env_or_settings() {
-        // Empty env/settings allowlist, but the built-in default still authorizes
-        // Nasiko's own registry (port-normalized comparison).
-        let allowed: Vec<String> = BUILTIN_ALLOWED_REGISTRY_HOSTS
-            .iter()
-            .map(|h| (*h).to_string())
-            .collect();
-        assert!(validate_registry_host("registry.nasiko.dev", &allowed).is_ok());
-        assert!(validate_registry_host("registry.nasiko.dev:443", &allowed).is_ok());
-        assert!(validate_registry_host("evil.example.com", &allowed).is_err());
-    }
+    use super::{find_owned_agent, read_agent_card};
 
     /// `find_owned_agent` must never see another owner's agent, even when the
     /// name collides — otherwise `build_and_deploy`'s subsequent UPDATE would

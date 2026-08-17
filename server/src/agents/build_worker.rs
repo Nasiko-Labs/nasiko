@@ -394,6 +394,7 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
                 state.config.agent_image_registry.clone(),
                 state.config.agent_max_replicas,
                 state.config.agent_default_memory.clone(),
+                None,
             )
             .await;
         }
@@ -409,6 +410,7 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
             image_tag,
             ports,
             env,
+            version_override,
         } => {
             execute_github_clone_and_deploy(
                 state.clone(),
@@ -422,6 +424,7 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
                 image_tag,
                 ports,
                 env,
+                version_override,
             )
             .await;
         }

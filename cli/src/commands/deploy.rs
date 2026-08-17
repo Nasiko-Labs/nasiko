@@ -7,7 +7,9 @@ use anyhow::{Context, Result};
 use crate::api::{Client, ContainerStatus, DeploySpec};
 use crate::oci;
 use crate::util::parse_image_name_and_tag;
-use crate::version_prompt::{VersionContext, VersionFlags, resolve_deploy_version};
+use crate::version_prompt::{
+    VersionContext, VersionFlags, resolve_deploy_version, resolve_image_deploy_version,
+};
 
 const AGENT_FILE: &str = ".nasiko/agent.json";
 
@@ -44,13 +46,10 @@ pub fn deploy_with_version_flags(
 }
 
 /// Gets the currently-deployed version and full version history from an
-/// already-looked-up agent. Both come back empty for a brand-new agent.
-/// Shared by `deploy_from_directory` and `deploy_from_image`.
+/// already-looked-up agent. Empty for a brand-new agent.
 ///
-/// Propagates a history-fetch failure instead of treating it as "no
-/// history" — failing open there would let a duplicate/already-used version
-/// through the check in `resolve_deploy_version` and push/deploy over that
-/// version's content before the server gets a chance to reject the update.
+/// A history-fetch failure is propagated, not treated as "no history" —
+/// otherwise a reused version could slip past `resolve_deploy_version`.
 fn used_version_context<'a>(
     client: &Client,
     existing: Option<&'a (String, serde_json::Value)>,
@@ -181,11 +180,7 @@ fn deploy_from_directory(
                 .get("version")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            if decision.overwrite {
-                println!("  Overwriting: {version} (was: {current_version})");
-            } else {
-                println!("  Updating: {current_version} → {version}");
-            }
+            println!("  Updating: {current_version} → {version}");
             save_agent_id(&agent_file, &id, &agent_name)?;
 
             // Deploy the container BEFORE activating the new version in the
@@ -212,7 +207,6 @@ fn deploy_from_directory(
                 "description": card.get("description"),
                 "skills": card.get("skills"),
                 "capabilities": card.get("capabilities"),
-                "allow_overwrite": decision.overwrite,
             });
             let _: serde_json::Value = client.put_json(&format!("/agents/{id}"), &update)?;
             if let Err(e) = crate::util::sync_card_version(&card_path, &card, &version) {
@@ -275,6 +269,19 @@ fn deploy_from_image(
     writable_path: Option<&str>,
     client: &Client,
 ) -> Result<()> {
+    // A bare image name means Docker's implicit `:latest`, not a real
+    // choice — require an explicit tag so the deployed version always
+    // matches what `nasiko build` actually produced.
+    if !crate::util::image_has_explicit_tag(image) {
+        anyhow::bail!(
+            "deploy requires an explicit image:tag (e.g. {image}:1.0.1) — run `nasiko build` \
+             first, then deploy exactly the tag it printed."
+        );
+    }
+    if !oci::local_image_exists(image)? {
+        anyhow::bail!("no local image found for {image} — build it first with `nasiko build`.");
+    }
+
     let (image_name, image_tag_version) = parse_image_name_and_tag(image);
     let agent_name = name_override.map(String::from).unwrap_or(image_name);
     let repo = format!("nasiko/{agent_name}");
@@ -290,34 +297,32 @@ fn deploy_from_image(
     });
     let (current_deployed_version, used_versions) =
         used_version_context(client, existing.as_ref())?;
-    // Only trust the tag if the user actually wrote one (`image:tag`) — a
-    // bare `image` implicitly means Docker's "latest", not a real choice.
-    let card_version =
-        crate::util::image_has_explicit_tag(image).then_some(image_tag_version.as_str());
-    let context = VersionContext {
-        card_version,
+    let decision = resolve_image_deploy_version(
+        image,
+        &image_tag_version,
+        flags,
         current_deployed_version,
-        used_versions: &used_versions,
-    };
-    let decision = resolve_deploy_version(context, flags)?;
+        &used_versions,
+        "deploy",
+    )?;
     let version = decision.version;
 
     let image_ref = format!("{repo}:{version}");
 
     // Tag locally so Docker can find it by the canonical ref without a registry pull.
-    let _ = std::process::Command::new("docker")
+    let tag_status = std::process::Command::new(crate::util::container_bin())
         .args(["tag", image, &image_ref])
-        .status();
+        .status()
+        .context("failed to run container tag command — is the container runtime running?")?;
+    if !tag_status.success() {
+        anyhow::bail!("failed to tag {image} as {image_ref}");
+    }
 
     println!("Pushing {image} → {image_ref}...");
     oci::push_image(image, &repo, &version)?;
 
     if let Some((id, _)) = existing {
-        if decision.overwrite {
-            println!("  Overwriting agent: {agent_name} @ {version}");
-        } else {
-            println!("  Updating agent: {agent_name}");
-        }
+        println!("  Updating agent: {agent_name}");
 
         // Deploy the container BEFORE activating the new version in the
         // catalog — see the matching comment in `deploy_from_directory`.
@@ -336,7 +341,6 @@ fn deploy_from_image(
         let update = serde_json::json!({
             "version": version,
             "image": image_ref,
-            "allow_overwrite": decision.overwrite,
         });
         let _: serde_json::Value = client.put_json(&format!("/agents/{id}"), &update)?;
         println!("\n✓ Deployed {agent_name}:{version}");

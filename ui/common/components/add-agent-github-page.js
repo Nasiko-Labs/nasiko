@@ -269,13 +269,19 @@ class AddAgentGithubPage extends HTMLElement {
 
   async #doClone() {
     if (!this.#selectedRepo) return;
-    const btn = this.querySelector('.clone-btn');
-    btn.setAttribute('loading', '');
-    btn.textContent = 'Cloning and uploading...';
+    this.#clearVersionConflictWarning();
 
     const payload = { repository_full_name: this.#selectedRepo.full_name };
     if (this.#branch) payload.branch = this.#branch;
     if (this.#agentName) payload.agent_name = this.#agentName;
+
+    await this.#submitClone(payload);
+  }
+
+  async #submitClone(payload) {
+    const btn = this.querySelector('.clone-btn');
+    btn.setAttribute('loading', '');
+    btn.textContent = 'Cloning and uploading...';
 
     try {
       const res = await apiFetch('/github/clone', {
@@ -284,6 +290,17 @@ class AddAgentGithubPage extends HTMLElement {
         body: JSON.stringify(payload),
       });
       if (!res.ok) throw new Error(await res.text());
+      const body = await res.json();
+
+      // A version conflict is rejected fast (no Docker build yet), so a
+      // short poll here catches it before we navigate away. A real build
+      // takes much longer, so the normal case still redirects right below.
+      const conflict = body.upload_id ? await this.#waitForVersionConflict(body.upload_id) : null;
+      if (conflict) {
+        this.#showVersionConflictWarning(conflict, payload);
+        return;
+      }
+
       window.location.href = '/agents.html?view=your-agents';
     } catch (err) {
       btn.removeAttribute('loading');
@@ -291,6 +308,77 @@ class AddAgentGithubPage extends HTMLElement {
       const { showToast } = await import('/common/utils/toast.js');
       showToast(`Clone failed: ${err.message}`);
     }
+  }
+
+  /** Poll the upload's status briefly for a fast "version already exists" rejection. */
+  async #waitForVersionConflict(uploadId) {
+    const ATTEMPTS = 8;
+    const INTERVAL_MS = 700;
+    for (let i = 0; i < ATTEMPTS; i++) {
+      await new Promise((r) => setTimeout(r, INTERVAL_MS));
+      try {
+        const res = await apiFetch(`/agents/uploads/${encodeURIComponent(uploadId)}`);
+        if (!res.ok) continue;
+        const item = await res.json();
+        const detail = item.error_details?.[0];
+        if (detail?.startsWith('VERSION_CONFLICT:')) {
+          // Wire format: "VERSION_CONFLICT:<version>:<suggested>:<message>"
+          const rest = detail.slice('VERSION_CONFLICT:'.length);
+          const [version, suggested, ...msgParts] = rest.split(':');
+          return { version, suggested, message: msgParts.join(':').trim() };
+        }
+        // Resolved some other way (succeeded, or a real unrelated failure) —
+        // nothing to warn about, stop waiting so we don't delay the redirect.
+        if (item.status !== 'initiated' && item.status !== 'processing') return null;
+      } catch {
+        // Transient poll failure — keep trying for the remaining attempts.
+      }
+    }
+    return null;
+  }
+
+  #clearVersionConflictWarning() {
+    this.querySelector('.version-conflict-warning')?.remove();
+  }
+
+  #showVersionConflictWarning(conflict, payload) {
+    const btn = this.querySelector('.clone-btn');
+    btn.removeAttribute('loading');
+    btn.textContent = 'Clone and upload';
+
+    const stepThree = this.querySelector('.step-three');
+    this.#clearVersionConflictWarning();
+    const warn = document.createElement('div');
+    warn.className = 'version-conflict-warning';
+    warn.style.cssText =
+      'margin:8px 0;padding:10px 12px;border-radius:8px;background:var(--color-warning-bg,#3a2f0f);' +
+      'border:1px solid var(--color-warning-border,#8a6d1a);font-size:var(--font-size-sm,13px);';
+    const msg = document.createElement('p');
+    msg.style.cssText = 'margin:0 0 8px;';
+    msg.textContent = conflict.message;
+    warn.appendChild(msg);
+
+    const actions = document.createElement('div');
+    actions.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;';
+
+    // Versions are immutable, so there's no overwrite option — the only way
+    // forward is to deploy under a fresh, unused version.
+    const bumpBtn = document.createElement('app-button');
+    bumpBtn.setAttribute('variant', 'primary');
+    bumpBtn.setAttribute('size', 'xs');
+    bumpBtn.textContent = `Deploy as v${conflict.suggested}`;
+    bumpBtn.addEventListener(
+      'click',
+      () => {
+        this.#clearVersionConflictWarning();
+        this.#submitClone({ ...payload, version_override: conflict.suggested });
+      },
+      { once: true },
+    );
+    actions.appendChild(bumpBtn);
+
+    warn.appendChild(actions);
+    stepThree.insertBefore(warn, btn);
   }
 
   #renderRepos(repos) {

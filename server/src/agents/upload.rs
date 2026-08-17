@@ -227,6 +227,11 @@ pub enum BuildJobPayload {
         image_tag: String,
         ports: Vec<u16>,
         env: HashMap<String, String>,
+        /// User-chosen version overriding whatever the cloned source
+        /// declares (e.g. an auto-suggested patch bump after a conflict).
+        /// Versions are immutable, so there's no overwrite option.
+        #[serde(default)]
+        version_override: Option<String>,
     },
     /// MCP-server-upload build+deploy (POST /api/mcp/connectors/upload or
     /// /upload-github). `env` is encrypted (owner-scoped) at rest in this
@@ -852,6 +857,31 @@ async fn record_uploaded_version(
     .await;
 }
 
+/// Bumps `base`'s patch number until it finds a version not already used —
+/// server-side mirror of the CLI's `suggest_unused_version`.
+async fn suggest_next_version(db: &sqlx::PgPool, agent_id: Uuid, base: &str) -> String {
+    let used: Vec<String> =
+        sqlx::query_scalar("SELECT version FROM agent_versions WHERE agent_id = $1")
+            .bind(agent_id)
+            .fetch_all(db)
+            .await
+            .unwrap_or_default();
+
+    let bump = |v: &str| {
+        super::versions::parse_plain_version(v)
+            .map(|mut sv| {
+                sv.patch += 1;
+                sv.to_string()
+            })
+            .unwrap_or_else(|| "0.1.0".to_string())
+    };
+    let mut candidate = bump(base);
+    while used.iter().any(|u| u == &candidate) {
+        candidate = bump(&candidate);
+    }
+    candidate
+}
+
 // ─── Build-time OTel patching ────────────────────────────────────────────────
 
 /// Python bootstrap script injected as `_nasiko_otel_boot.py` and loaded via
@@ -1233,6 +1263,7 @@ pub async fn execute_clone_and_deploy(
     agent_image_registry: String,
     max_replicas: u32,
     default_memory: String,
+    version_override: Option<String>,
 ) {
     if let Some(key) = openai_api_key {
         env.entry("OPENAI_API_KEY".to_owned()).or_insert(key);
@@ -1263,9 +1294,26 @@ pub async fn execute_clone_and_deploy(
         // If a valid x.y.z version is found, update the image tag and DB records
         // so the clone path doesn't default everything to "latest".
         let image_tag = {
-            let detected = detect_version_from_dir(&tmp_dir);
+            // An explicit override (the UI's "deploy as vX.Y.Z" suggestion)
+            // takes precedence over whatever the source repo declares.
+            let detected = version_override.clone().or_else(|| detect_version_from_dir(&tmp_dir));
             if let Some(ref ver) = detected {
                 if super::versions::parse_plain_version(ver).is_some() {
+                    // Fail fast before building, and before touching
+                    // agents/agent_builds, if this version already exists.
+                    // Versions are immutable — no overwrite, ever.
+                    let version_already_used: bool = sqlx::query_scalar(
+                        "SELECT EXISTS(SELECT 1 FROM agent_versions WHERE agent_id = $1 AND version = $2)",
+                    )
+                    .bind(agent_id)
+                    .bind(ver)
+                    .fetch_one(&db)
+                    .await
+                    .unwrap_or(false);
+                    if version_already_used {
+                        return Err(format!("VERSION_CONFLICT:{ver}"));
+                    }
+
                     let new_tag = crate::agents::build_image_tag(
                         &agent_image_registry, &name, ver,
                     );
@@ -1422,18 +1470,53 @@ pub async fn execute_clone_and_deploy(
         }
         Err(e) => {
             set_build_status(&db, build_id, BuildStatus::Failed).await;
-            set_upload_status(
-                &db,
-                &upload_id,
-                &name,
-                owner_id,
-                "failed",
-                None,
-                Some("clone and deploy failed"),
-            )
-            .await;
-            super::utils::delete_agent_or_mark_failed(&db, agent_id).await;
-            tracing::error!(build_id = %build_id, %e, "clone-and-deploy failed");
+            if let Some(ver) = e.strip_prefix("VERSION_CONFLICT:") {
+                // Rejected before any build/deploy ran, so don't delete the
+                // agent or mark it failed — just restore its real status
+                // (the queuing handler already flipped it to "deploying").
+                if let Ok(live) = runtime
+                    .status(&nasiko_runtime::ContainerId::from_uuid(agent_id))
+                    .await
+                {
+                    let _ = sqlx::query(
+                        "UPDATE agents SET status = $2, updated_at = now() WHERE id = $1",
+                    )
+                    .bind(agent_id)
+                    .bind(live.state.to_string())
+                    .execute(&db)
+                    .await;
+                }
+                // Prefixed so the client can offer "deploy as vX" instead of
+                // a dead-end error. See `add-agent-github-page.js`.
+                let suggested = suggest_next_version(&db, agent_id, ver).await;
+                set_upload_status(
+                    &db,
+                    &upload_id,
+                    &name,
+                    owner_id,
+                    "failed",
+                    None,
+                    Some(&format!(
+                        "VERSION_CONFLICT:{ver}:{suggested}:{name} version {ver} already \
+                         exists and versions are immutable"
+                    )),
+                )
+                .await;
+                tracing::warn!(build_id = %build_id, %agent_id, version = %ver, "clone-and-deploy rejected: version already exists");
+            } else {
+                set_upload_status(
+                    &db,
+                    &upload_id,
+                    &name,
+                    owner_id,
+                    "failed",
+                    None,
+                    Some("clone and deploy failed"),
+                )
+                .await;
+                super::utils::delete_agent_or_mark_failed(&db, agent_id).await;
+                tracing::error!(build_id = %build_id, %e, "clone-and-deploy failed");
+            }
         }
     }
 }
@@ -1458,6 +1541,7 @@ pub async fn execute_github_clone_and_deploy(
     image_tag: String,
     ports: Vec<u16>,
     env: HashMap<String, String>,
+    version_override: Option<String>,
 ) {
     // GitHub service must be configured for cloning to work.
     let github_svc = match state.github_svc.as_ref() {
@@ -1583,6 +1667,7 @@ pub async fn execute_github_clone_and_deploy(
         state.config.agent_image_registry.clone(),
         state.config.agent_max_replicas,
         state.config.agent_default_memory.clone(),
+        version_override,
     )
     .await;
 }

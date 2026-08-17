@@ -908,12 +908,34 @@ impl Client {
         drop(spin);
 
         if failed {
+            if let Some(msg) = self.version_conflict_message(build_id) {
+                bail!("{msg}");
+            }
             bail!("build failed");
         }
         if !succeeded {
             bail!("build did not complete successfully");
         }
         Ok(())
+    }
+
+    /// Checks `/agents/uploads/{build_id}` for a `VERSION_CONFLICT:` error
+    /// detail and formats it into a helpful message, instead of the generic
+    /// "build failed" [`poll_build_status`] would otherwise print.
+    ///
+    /// Wire format: `VERSION_CONFLICT:<version>:<suggested>:<message>`.
+    fn version_conflict_message(&self, build_id: &str) -> Option<String> {
+        let item: serde_json::Value = self.get_json(&format!("/agents/uploads/{build_id}")).ok()?;
+        let detail = item.get("error_details")?.get(0)?.as_str()?;
+        let rest = detail.strip_prefix("VERSION_CONFLICT:")?;
+        let mut parts = rest.splitn(3, ':');
+        let _version = parts.next()?;
+        let suggested = parts.next()?;
+        let message = parts.next().unwrap_or("").trim();
+        Some(format!(
+            "Import failed: {message}.\n\nSuggested next version: {suggested}\n\n\
+             Update the version and import again."
+        ))
     }
 
     /// Upload a zip file to `POST /api/mcp/connectors/upload` and return the

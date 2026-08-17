@@ -1,5 +1,107 @@
 use super::*;
 
+// ─── resolve_image_deploy_version ────────────────────────────────────────────
+
+#[test]
+fn redeploying_the_currently_deployed_tag_is_a_clean_conflict_not_a_silent_rebump() {
+    let err = resolve_image_deploy_version(
+        "legal-agent:1.0.1",
+        "1.0.1",
+        VersionFlags::default(),
+        Some("1.0.1"),
+        &["1.0.0".to_string(), "1.0.1".to_string()],
+        "deploy",
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        err.contains("legal-agent:1.0.1 already exists"),
+        "error should name the exact artifact: {err}"
+    );
+    assert!(err.contains("immutable"));
+    assert!(err.contains("Suggested next version: 1.0.2"));
+    assert!(err.contains("nasiko build --version 1.0.2"));
+    assert!(err.contains("nasiko deploy legal-agent:1.0.2"));
+}
+
+#[test]
+fn explicit_image_tag_is_preserved_regardless_of_currently_deployed_version() {
+    let decision = resolve_image_deploy_version(
+        "legal-agent:1.0.1",
+        "1.0.1",
+        VersionFlags::default(),
+        Some("1.0.0"),
+        &["1.0.0".to_string()],
+        "deploy",
+    )
+    .unwrap();
+    assert_eq!(decision.version, "1.0.1");
+}
+
+#[test]
+fn explicit_image_tag_reusing_history_is_rejected_with_no_overwrite_option() {
+    let err = resolve_image_deploy_version(
+        "legal-agent:1.0.0",
+        "1.0.0",
+        VersionFlags::default(),
+        Some("1.0.0"),
+        &["1.0.0".to_string()],
+        "deploy",
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("already exists"));
+    assert!(err.to_string().contains("immutable"));
+    assert!(!err.to_string().contains("overwrite"));
+}
+
+#[test]
+fn push_conflict_message_uses_the_push_verb() {
+    let err = resolve_image_deploy_version(
+        "legal-agent:1.0.0",
+        "1.0.0",
+        VersionFlags::default(),
+        Some("1.0.0"),
+        &["1.0.0".to_string()],
+        "push",
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("nasiko push legal-agent:1.0.1"));
+}
+
+#[test]
+fn image_without_an_explicit_tag_still_falls_back_to_version_prompt_logic() {
+    // No `:tag` -> falls back to the normal suggest/prompt path.
+    let err = resolve_image_deploy_version(
+        "legal-agent",
+        "latest",
+        VersionFlags::default(),
+        Some("1.0.0"),
+        &["1.0.0".to_string()],
+        "deploy",
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("no usable"));
+}
+
+#[test]
+fn separate_version_flag_still_wins_over_the_image_tag() {
+    // --version beats the image ref's own tag.
+    let decision = resolve_image_deploy_version(
+        "legal-agent:1.0.1",
+        "1.0.1",
+        VersionFlags {
+            version: Some("9.9.9"),
+            ..Default::default()
+        },
+        Some("1.0.0"),
+        &["1.0.0".to_string()],
+        "deploy",
+    )
+    .unwrap();
+    assert_eq!(decision.version, "9.9.9");
+}
+
 // ─── used_version_context ────────────────────────────────────────────────────
 
 #[test]
