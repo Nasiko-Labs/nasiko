@@ -227,21 +227,6 @@ pub enum BuildJobPayload {
         image_tag: String,
         ports: Vec<u16>,
         env: HashMap<String, String>,
-        /// User-chosen version overriding whatever the cloned source
-        /// declares (e.g. an auto-suggested patch bump after a conflict).
-        /// Versions are immutable, so there's no overwrite option.
-        #[serde(default)]
-        version_override: Option<String>,
-        /// This agent's `version`/`image`/`status` before the queueing
-        /// handler optimistically overwrote them with a placeholder —
-        /// `None` for a brand-new agent. Restored verbatim if this clone is
-        /// rejected for a version conflict before any build/deploy runs.
-        #[serde(default)]
-        prior_version: Option<String>,
-        #[serde(default)]
-        prior_image: Option<String>,
-        #[serde(default)]
-        prior_status: Option<String>,
     },
     /// MCP-server-upload build+deploy (POST /api/mcp/connectors/upload or
     /// /upload-github). `env` is encrypted (owner-scoped) at rest in this
@@ -862,33 +847,9 @@ async fn record_uploaded_version(
         version: &version_tag,
         image_tag,
         changelog: None,
+        allow_overwrite: false,
     })
     .await;
-}
-
-/// Bumps `base`'s patch number until it finds a version not already used —
-/// server-side mirror of the CLI's `suggest_unused_version`.
-async fn suggest_next_version(db: &sqlx::PgPool, agent_id: Uuid, base: &str) -> String {
-    let used: Vec<String> =
-        sqlx::query_scalar("SELECT version FROM agent_versions WHERE agent_id = $1")
-            .bind(agent_id)
-            .fetch_all(db)
-            .await
-            .unwrap_or_default();
-
-    let bump = |v: &str| {
-        super::versions::parse_plain_version(v)
-            .map(|mut sv| {
-                sv.patch += 1;
-                sv.to_string()
-            })
-            .unwrap_or_else(|| "0.1.0".to_string())
-    };
-    let mut candidate = bump(base);
-    while used.iter().any(|u| u == &candidate) {
-        candidate = bump(&candidate);
-    }
-    candidate
 }
 
 // ─── Build-time OTel patching ────────────────────────────────────────────────
@@ -1250,37 +1211,6 @@ pub async fn execute_upload_and_deploy(
     }
 }
 
-/// Restores this agent to `prior_version`/`prior_image`/`prior_status` — what
-/// it was before the queueing handler optimistically overwrote it with a
-/// placeholder — for any rejection that happened before a build/deploy ever
-/// ran. A brand-new agent has nothing to restore to, so it's cleaned up like
-/// any other pre-build rejection instead.
-async fn restore_prior_state_or_clean_up(
-    db: &sqlx::PgPool,
-    agent_id: Uuid,
-    prior_version: &Option<String>,
-    prior_image: &Option<String>,
-    prior_status: &Option<String>,
-) {
-    match (prior_version, prior_status) {
-        (Some(pv), Some(ps)) => {
-            let _ = sqlx::query(
-                "UPDATE agents SET version = $2, image = $3, status = $4, \
-                 updated_at = now() WHERE id = $1",
-            )
-            .bind(agent_id)
-            .bind(pv)
-            .bind(prior_image)
-            .bind(ps)
-            .execute(db)
-            .await;
-        }
-        _ => {
-            super::utils::delete_agent_or_mark_failed(db, agent_id).await;
-        }
-    }
-}
-
 /// Execute the full clone-and-deploy pipeline: extract tar.gz, OTel patch, docker build, deploy.
 /// Called by the build worker for `BuildJobPayload::Clone` jobs.
 #[allow(clippy::too_many_arguments)]
@@ -1294,6 +1224,7 @@ pub async fn execute_clone_and_deploy(
     upload_id: String,
     name: String,
     tar_gz_path: PathBuf,
+    image_tag: String,
     ports: Vec<u16>,
     mut env: HashMap<String, String>,
     openai_api_key: Option<String>,
@@ -1302,15 +1233,6 @@ pub async fn execute_clone_and_deploy(
     agent_image_registry: String,
     max_replicas: u32,
     default_memory: String,
-    version_override: Option<String>,
-    // What this agent's `version`/`image`/`status` were before the queueing
-    // handler optimistically overwrote them with a placeholder — `None` for
-    // a brand-new agent with nothing to restore. Used to put the row back
-    // exactly as it was if this attempt is rejected for a version conflict
-    // before any build/deploy runs (see the `VERSION_CONFLICT` branch below).
-    prior_version: Option<String>,
-    prior_image: Option<String>,
-    prior_status: Option<String>,
 ) {
     if let Some(key) = openai_api_key {
         env.entry("OPENAI_API_KEY".to_owned()).or_insert(key);
@@ -1322,12 +1244,6 @@ pub async fn execute_clone_and_deploy(
     set_upload_status(&db, &upload_id, &name, owner_id, "initiated", None, None).await;
 
     let tmp_dir = std::env::temp_dir().join(format!("nasiko-clone-{build_id}"));
-
-    // Set once `reserve_version` below actually claims a version — lets the
-    // success/failure handling finalize or release that exact reservation
-    // without needing to thread the version string through every error
-    // variant.
-    let mut claimed_version: Option<String> = None;
 
     let result: Result<(DeploymentStatus, String), String> = async {
         // Read tar.gz bytes then extract on the blocking pool.
@@ -1347,66 +1263,38 @@ pub async fn execute_clone_and_deploy(
         // If a valid x.y.z version is found, update the image tag and DB records
         // so the clone path doesn't default everything to "latest".
         let image_tag = {
-            // An explicit override (the UI's "deploy as vX.Y.Z" suggestion)
-            // takes precedence over whatever the source repo declares.
-            let detected = version_override.clone().or_else(|| detect_version_from_dir(&tmp_dir));
-            // No default here (used to be the placeholder "latest", which
-            // broke version history) — the caller must end up with a real
-            // x.y.z version, whether the repo declares one or the UI's
-            // version-bump override supplied it.
-            let ver = match detected
-                .as_deref()
-                .filter(|v| super::versions::parse_plain_version(v).is_some())
-            {
-                Some(v) => v.to_string(),
-                None => {
-                    return Err(
-                        "no valid version found — add an x.y.z \"version\" field to \
-                         AgentCard.json (or pyproject.toml/Cargo.toml) before importing"
-                            .to_string(),
+            let detected = detect_version_from_dir(&tmp_dir);
+            if let Some(ref ver) = detected {
+                if super::versions::parse_plain_version(ver).is_some() {
+                    let new_tag = crate::agents::build_image_tag(
+                        &agent_image_registry, &name, ver,
                     );
+                    // Update agents.version + agent_builds.version_tag/image_reference
+                    // to reflect the real version instead of the placeholder.
+                    let _ = sqlx::query(
+                        "UPDATE agents SET version = $2, image = $3, updated_at = now() WHERE id = $1",
+                    )
+                    .bind(agent_id)
+                    .bind(ver)
+                    .bind(&new_tag)
+                    .execute(&db)
+                    .await;
+                    let _ = sqlx::query(
+                        "UPDATE agent_builds SET version_tag = $2, image_reference = $3 WHERE id = $1",
+                    )
+                    .bind(build_id)
+                    .bind(ver)
+                    .bind(&new_tag)
+                    .execute(&db)
+                    .await;
+                    tracing::info!(%build_id, %agent_id, version = %ver, "clone: detected version from source");
+                    new_tag
+                } else {
+                    image_tag
                 }
-            };
-
-            let new_tag = crate::agents::build_image_tag(&agent_image_registry, &name, &ver);
-
-            // Atomically claim this version before any build/deploy work
-            // starts, via the real `UNIQUE(agent_id, version)` constraint —
-            // two concurrent imports racing for the same version can no
-            // longer both build and deploy before either one notices; only
-            // one `reserve_version` call can win. Released on failure below
-            // (see the `Err(e)` match), or finalized into the real active
-            // record on success.
-            super::versions::reserve_version(&db, agent_id, build_id, &ver, &new_tag)
-                .await
-                .map_err(|e| match e {
-                    super::versions::VersionChangeError::VersionAlreadyExists(_) => {
-                        format!("VERSION_CONFLICT:{ver}")
-                    }
-                    e => format!("reserve version: {e}"),
-                })?;
-            claimed_version = Some(ver.clone());
-
-            // Update agents.version + agent_builds.version_tag/image_reference
-            // to reflect the real version instead of the placeholder.
-            let _ = sqlx::query(
-                "UPDATE agents SET version = $2, image = $3, updated_at = now() WHERE id = $1",
-            )
-            .bind(agent_id)
-            .bind(&ver)
-            .bind(&new_tag)
-            .execute(&db)
-            .await;
-            let _ = sqlx::query(
-                "UPDATE agent_builds SET version_tag = $2, image_reference = $3 WHERE id = $1",
-            )
-            .bind(build_id)
-            .bind(&ver)
-            .bind(&new_tag)
-            .execute(&db)
-            .await;
-            tracing::info!(%build_id, %agent_id, version = %ver, "clone: detected version from source");
-            new_tag
+            } else {
+                image_tag
+            }
         };
 
         let dockerfile_path = tmp_dir.join("Dockerfile");
@@ -1417,14 +1305,12 @@ pub async fn execute_clone_and_deploy(
         // OTel patch (same as upload path — see doc on `patch_otel_into_dockerfile`).
         patch_otel_into_dockerfile(&tmp_dir, &dockerfile_path);
 
-        // Build Docker image. Prefixed so the failure handler below can tell
-        // a real build was attempted here — everything before this point is
-        // a pre-build rejection instead (see the `Err(e)` match below).
+        // Build Docker image.
         let tar_bytes = build::tar_directory(&tmp_dir).map_err(|e| format!("tar source: {e}"))?;
         runtime
             .build(&tar_bytes, &image_tag)
             .await
-            .map_err(|e| format!("BUILD_FAILED:docker build: {e}"))?;
+            .map_err(|e| format!("docker build: {e}"))?;
 
         set_upload_status(
             &db,
@@ -1462,7 +1348,7 @@ pub async fn execute_clone_and_deploy(
         let deploy_status = runtime
             .deploy(&spec)
             .await
-            .map_err(|e| format!("BUILD_FAILED:deploy: {e}"))?;
+            .map_err(|e| format!("deploy: {e}"))?;
 
         set_upload_status(
             &db,
@@ -1486,7 +1372,7 @@ pub async fn execute_clone_and_deploy(
     }
 
     match result {
-        Ok((deploy_status, _final_image_tag)) => {
+        Ok((deploy_status, final_image_tag)) => {
             set_build_status(&db, build_id, BuildStatus::Success).await;
             set_upload_status(
                 &db,
@@ -1498,14 +1384,11 @@ pub async fn execute_clone_and_deploy(
                 None,
             )
             .await;
-            // The version was already atomically claimed by `reserve_version`
-            // before the build started — this just promotes that reservation
-            // into the real active record, archiving whatever was previously
-            // running (mirroring `update.rs`'s redeploy path). A genuinely
-            // first deploy has nothing to archive yet.
-            if let Some(ver) = &claimed_version {
-                super::versions::finalize_reserved_version_with_retry(&db, agent_id, ver).await;
-            }
+            // `upload` upserts by (owner_id, name) — a second `upload` against an
+            // already-deployed agent must land here too, which this activates and
+            // archives whatever was previously running for (mirroring `update.rs`'s
+            // redeploy path). A genuinely first upload has nothing to archive yet.
+            record_uploaded_version(&db, agent_id, build_id, &final_image_tag).await;
             let agent_url = crate::agents::resolve_agent_url(
                 &runtime,
                 &deploy_status,
@@ -1539,83 +1422,18 @@ pub async fn execute_clone_and_deploy(
         }
         Err(e) => {
             set_build_status(&db, build_id, BuildStatus::Failed).await;
-            // Free a version this attempt claimed via `reserve_version` but
-            // never finished deploying, so the same version can be retried.
-            // A no-op if nothing was ever claimed (e.g. rejected before a
-            // version was even determined).
-            if let Some(ver) = &claimed_version {
-                super::versions::release_reserved_version(&db, agent_id, ver).await;
-            }
-            if let Some(ver) = e.strip_prefix("VERSION_CONFLICT:") {
-                restore_prior_state_or_clean_up(
-                    &db,
-                    agent_id,
-                    &prior_version,
-                    &prior_image,
-                    &prior_status,
-                )
-                .await;
-                // Prefixed so the client can offer "deploy as vX" instead of
-                // a dead-end error. See `add-agent-github-page.js`.
-                let suggested = suggest_next_version(&db, agent_id, ver).await;
-                set_upload_status(
-                    &db,
-                    &upload_id,
-                    &name,
-                    owner_id,
-                    "failed",
-                    None,
-                    Some(&format!(
-                        "VERSION_CONFLICT:{ver}:{suggested}:{name} version {ver} already \
-                         exists and versions are immutable"
-                    )),
-                )
-                .await;
-                tracing::warn!(build_id = %build_id, %agent_id, version = %ver, "clone-and-deploy rejected: version already exists");
-            } else if let Some(reason) = e.strip_prefix("BUILD_FAILED:") {
-                // A real build/deploy was attempted and failed. Whether that
-                // means "clean up" or "restore" depends on whether *this
-                // import* created the agent — not on whether it has ever
-                // been built by our own build worker before, which is wrong
-                // for a CLI-deployed agent (never built that way, yet very
-                // much pre-existing). `prior_version`/`prior_status` already
-                // answer the right question: they're `Some` only if this
-                // agent existed before this import touched it.
-                set_upload_status(
-                    &db,
-                    &upload_id,
-                    &name,
-                    owner_id,
-                    "failed",
-                    None,
-                    Some("clone and deploy failed"),
-                )
-                .await;
-                restore_prior_state_or_clean_up(
-                    &db,
-                    agent_id,
-                    &prior_version,
-                    &prior_image,
-                    &prior_status,
-                )
-                .await;
-                tracing::error!(build_id = %build_id, %reason, "clone-and-deploy failed");
-            } else {
-                // Any other pre-build rejection (invalid/missing version, no
-                // Dockerfile, a history-check DB error, ...) — nothing was
-                // ever built or deployed, so restore exactly like a version
-                // conflict instead of wiping an existing agent.
-                restore_prior_state_or_clean_up(
-                    &db,
-                    agent_id,
-                    &prior_version,
-                    &prior_image,
-                    &prior_status,
-                )
-                .await;
-                set_upload_status(&db, &upload_id, &name, owner_id, "failed", None, Some(&e)).await;
-                tracing::warn!(build_id = %build_id, %agent_id, %e, "clone-and-deploy rejected before any build ran");
-            }
+            set_upload_status(
+                &db,
+                &upload_id,
+                &name,
+                owner_id,
+                "failed",
+                None,
+                Some("clone and deploy failed"),
+            )
+            .await;
+            super::utils::delete_agent_or_mark_failed(&db, agent_id).await;
+            tracing::error!(build_id = %build_id, %e, "clone-and-deploy failed");
         }
     }
 }
@@ -1637,12 +1455,9 @@ pub async fn execute_github_clone_and_deploy(
     name: String,
     repo_full_name: String,
     branch: String,
+    image_tag: String,
     ports: Vec<u16>,
     env: HashMap<String, String>,
-    version_override: Option<String>,
-    prior_version: Option<String>,
-    prior_image: Option<String>,
-    prior_status: Option<String>,
 ) {
     // GitHub service must be configured for cloning to work.
     let github_svc = match state.github_svc.as_ref() {
@@ -1759,6 +1574,7 @@ pub async fn execute_github_clone_and_deploy(
         upload_id,
         name,
         tar_gz_path,
+        image_tag,
         ports,
         platform_env,
         state.config.openai_api_key.clone(),
@@ -1767,10 +1583,6 @@ pub async fn execute_github_clone_and_deploy(
         state.config.agent_image_registry.clone(),
         state.config.agent_max_replicas,
         state.config.agent_default_memory.clone(),
-        version_override,
-        prior_version,
-        prior_image,
-        prior_status,
     )
     .await;
 }
@@ -2247,9 +2059,7 @@ pub(crate) async fn list_upload_agents(
                         agent_name: r.agent_name,
                         icon_url: r.icon_url,
                         upload_info: UploadInfoResponse {
-                            upload_type: r
-                                .metadata
-                                .get("upload_type")
+                            upload_type: r.metadata.get("upload_type")
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("zip")
                                 .to_string(),
@@ -2301,8 +2111,7 @@ mod otel_patch_tests {
         // `node:20-slim` matches neither "python" nor a Python toolchain, but it
         // does contain "slim" — the old check patched it and the injected `pip`
         // layer failed the build outright.
-        let original =
-            "FROM node:20-slim\nRUN apt-get install -y python3\nENTRYPOINT [\"./run.sh\"]\n";
+        let original = "FROM node:20-slim\nRUN apt-get install -y python3\nENTRYPOINT [\"./run.sh\"]\n";
 
         assert_eq!(
             patch(original, "node-slim"),

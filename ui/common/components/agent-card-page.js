@@ -18,7 +18,7 @@ const TABS = [
   { key: 'overview', label: 'Overview' },
   { key: 'access', label: 'Access & security', managed: true },
   { key: 'versions', label: 'Versions', managed: true },
-  { key: 'configure', label: 'Configure' },
+  { key: 'configure', label: 'Configure', managed: true },
   { key: 'settings', label: 'Settings', managed: true },
   { key: 'logs', label: 'Logs' },
 ];
@@ -124,7 +124,7 @@ class AgentCardPage extends HTMLElement {
         ${this.#overviewPanelHtml(a)}
         ${this.#canManage ? this.#accessPanelHtml() : ''}
         ${this.#canManage ? this.#versionsPanelHtml() : ''}
-        ${this.#configurePanelHtml(a)}
+        ${this.#canManage ? this.#configurePanelHtml(a) : ''}
         ${this.#canManage ? this.#settingsPanelHtml(a) : ''}
         ${this.#logsPanelHtml()}
       </div>
