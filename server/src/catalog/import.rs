@@ -239,42 +239,6 @@ pub(crate) async fn build_and_deploy(
         )
     })?;
 
-    // Reject a version already recorded in this agent's history instead of
-    // silently redeploying it — the same guard `agents/upload.rs` and
-    // `agents/update.rs` apply. This is only a fail-fast check, not the
-    // activation itself: recording the version as active happens further
-    // down, only after the build and deploy below actually succeed. Doing
-    // it here and committing would let a build/deploy failure leave a
-    // version marked "active" in history despite never actually running.
-    if crate::agents::versions::parse_plain_version(&meta.version).is_none() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            format!(
-                "version {} must be in x.y.z format (e.g. 1.2.3)",
-                meta.version
-            ),
-        ));
-    }
-    let version_already_used =
-        crate::agents::versions::version_exists(&mut *tx, agent_id, &meta.version)
-            .await
-            .map_err(|e| {
-                tracing::error!(%e, %agent_id, "build_and_deploy: check version history");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal error".to_string(),
-                )
-            })?;
-    if version_already_used {
-        return Err((
-            StatusCode::CONFLICT,
-            format!(
-                "version {} already exists in this agent's history — choose a new version",
-                meta.version
-            ),
-        ));
-    }
-
     tx.commit().await.map_err(|e| {
         tracing::error!(%e, %agent_id, %build_id, "build_and_deploy: commit tx");
         (
@@ -317,11 +281,7 @@ pub(crate) async fn build_and_deploy(
 
     // Deploy container — UUID-keyed (see build_agent_spec) so import re-targets the
     // existing workload on re-import and can't collide cross-team on the name.
-    // Seed from agent_env (per-agent secrets + platform OPENAI_*/PORT fallback) like
-    // every other deploy path (agents/upload.rs, deployments.rs::restart) — this path
-    // used to start from an empty map, so imported agents booted with no LLM env at
-    // all and failed on their first call with a 401.
-    let mut env_vars = state.agent_env(agent_id).await;
+    let mut env_vars = std::collections::HashMap::new();
     crate::llm_router::wiring::inject_agent_llm_env(
         &state.db,
         &mut env_vars,
@@ -332,7 +292,7 @@ pub(crate) async fn build_and_deploy(
     let mut spec = crate::agents::build_agent_spec(
         agent_id,
         &meta.name,
-        image_tag.clone(),
+        image_tag,
         vec![],
         env_vars,
         &state.config.agent_default_memory,
@@ -370,18 +330,6 @@ pub(crate) async fn build_and_deploy(
             .bind(agent_id)
             .bind(&agent_url)
             .execute(&state.db)
-            .await;
-            // Only now does the version actually become "active" in history —
-            // the build and deploy above both genuinely succeeded.
-            crate::agents::versions::record_version_change_with_retry(&state.db, || {
-                crate::agents::versions::VersionChange {
-                    agent_id,
-                    build_id: Some(build_id),
-                    version: &meta.version,
-                    image_tag: &image_tag,
-                    changelog: None,
-                }
-            })
             .await;
             Some(status.container_id.to_string())
         }
@@ -970,11 +918,7 @@ pub(crate) async fn import_registry(
         };
 
         // Deploy — UUID-keyed (see build_agent_spec).
-        // Seed from agent_env (per-agent secrets + platform OPENAI_*/PORT fallback) like
-        // every other deploy path (agents/upload.rs, deployments.rs::restart) — this path
-        // used to start from an empty map, so imported agents booted with no LLM env at
-        // all and failed on their first call with a 401.
-        let mut env_vars = state.agent_env(agent_id).await;
+        let mut env_vars = std::collections::HashMap::new();
         crate::llm_router::wiring::inject_agent_llm_env(
             &state.db,
             &mut env_vars,

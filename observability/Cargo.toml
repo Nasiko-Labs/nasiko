@@ -27,3 +27,4 @@ nasiko-runtime = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }
+uuid = { workspace = true }

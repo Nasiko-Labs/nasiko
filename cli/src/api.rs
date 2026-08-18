@@ -908,34 +908,12 @@ impl Client {
         drop(spin);
 
         if failed {
-            if let Some(msg) = self.version_conflict_message(build_id) {
-                bail!("{msg}");
-            }
             bail!("build failed");
         }
         if !succeeded {
             bail!("build did not complete successfully");
         }
         Ok(())
-    }
-
-    /// Checks `/agents/uploads/{build_id}` for a `VERSION_CONFLICT:` error
-    /// detail and formats it into a helpful message, instead of the generic
-    /// "build failed" [`poll_build_status`] would otherwise print.
-    ///
-    /// Wire format: `VERSION_CONFLICT:<version>:<suggested>:<message>`.
-    fn version_conflict_message(&self, build_id: &str) -> Option<String> {
-        let item: serde_json::Value = self.get_json(&format!("/agents/uploads/{build_id}")).ok()?;
-        let detail = item.get("error_details")?.get(0)?.as_str()?;
-        let rest = detail.strip_prefix("VERSION_CONFLICT:")?;
-        let mut parts = rest.splitn(3, ':');
-        let _version = parts.next()?;
-        let suggested = parts.next()?;
-        let message = parts.next().unwrap_or("").trim();
-        Some(format!(
-            "Import failed: {message}.\n\nSuggested next version: {suggested}\n\n\
-             Update the version and import again."
-        ))
     }
 
     /// Upload a zip file to `POST /api/mcp/connectors/upload` and return the
@@ -1266,20 +1244,6 @@ impl Client {
             .collect())
     }
 
-    /// The exact history status of one specific version ("pushed", "active",
-    /// "archived"), or `None` if this version has never been recorded at
-    /// all. Unlike [`Client::used_versions`], this does NOT exclude
-    /// `"pushed"` rows — `push` needs to see them to reject re-pushing an
-    /// already-pushed version instead of silently repointing its registry
-    /// tag.
-    pub fn version_status(&self, agent_id: &str, version: &str) -> Result<Option<String>> {
-        Ok(self
-            .version_history(agent_id)?
-            .into_iter()
-            .find(|v| v.version == version)
-            .map(|v| v.status))
-    }
-
     /// Looks up an agent by UUID or name. `None` if it doesn't exist yet.
     pub fn get_agent(&self, id_or_name: &str) -> Result<Option<serde_json::Value>> {
         Ok(self
@@ -1394,47 +1358,6 @@ mod tests {
             .create();
         let client = Client::for_test(&srv.url(), None);
         assert!(client.used_versions("a1").is_err());
-    }
-
-    // ─── version_status: sees "pushed" rows that used_versions hides ───────────
-
-    #[test]
-    fn version_status_finds_a_pushed_row() {
-        let mut srv = mockito::Server::new();
-        srv.mock("GET", "/api/agents/a1/versions")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(
-                r#"{"data": [
-                    {"version": "1.0.0", "status": "active", "is_active": true,
-                     "can_rollback": false, "created_at": "2024-01-01T00:00:00Z"},
-                    {"version": "2.0.0", "status": "pushed", "is_active": false,
-                     "can_rollback": false, "created_at": "2024-01-02T00:00:00Z"}
-                ]}"#,
-            )
-            .create();
-        let client = Client::for_test(&srv.url(), None);
-        assert_eq!(
-            client.version_status("a1", "2.0.0").unwrap(),
-            Some("pushed".to_string())
-        );
-    }
-
-    #[test]
-    fn version_status_is_none_for_an_unrecorded_version() {
-        let mut srv = mockito::Server::new();
-        srv.mock("GET", "/api/agents/a1/versions")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(
-                r#"{"data": [
-                    {"version": "1.0.0", "status": "active", "is_active": true,
-                     "can_rollback": false, "created_at": "2024-01-01T00:00:00Z"}
-                ]}"#,
-            )
-            .create();
-        let client = Client::for_test(&srv.url(), None);
-        assert_eq!(client.version_status("a1", "9.9.9").unwrap(), None);
     }
 
     #[test]
