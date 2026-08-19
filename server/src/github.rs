@@ -745,6 +745,26 @@ async fn github_clone(
         }
     };
 
+    // Snapshot whatever this agent was before the UPSERT below optimistically
+    // overwrites it with the "latest" placeholder — if the version this
+    // clone resolves to collides with history, `execute_github_clone_and_deploy`
+    // restores this snapshot instead of leaving the row pointing at the
+    // placeholder (or permanently stuck in "deploying").
+    let prior: Option<(String, Option<String>, String)> = sqlx::query_as(
+        "SELECT version, image, status FROM agents \
+         WHERE name = $1 AND owner_id = $2 AND deleted_at IS NULL",
+    )
+    .bind(&agent_name)
+    .bind(user_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .ok()
+    .flatten();
+    let (prior_version, prior_image, prior_status) = match prior {
+        Some((v, i, s)) => (Some(v), i, Some(s)),
+        None => (None, None, None),
+    };
+
     let agent_id = match sqlx::query_scalar::<_, Uuid>(
         "INSERT INTO agents (name, owner_id, version, image, status) \
          VALUES ($1, $2, $3, $4, 'deploying') \
@@ -797,6 +817,9 @@ async fn github_clone(
         ports: vec![8000u16],
         env: HashMap::new(),
         version_override: body.version_override.clone(),
+        prior_version,
+        prior_image,
+        prior_status,
     };
 
     let payload_value = match serde_json::to_value(&payload) {

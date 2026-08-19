@@ -31,7 +31,7 @@ pub fn build_with_version_flags(
     check_prebuilt_binaries_exist(&root)?;
 
     let resolved_tag = match tag {
-        Some(t) => t.to_string(),
+        Some(t) => resolve_explicit_tag(t)?,
         // `build` doesn't talk to the server, so it only checks AgentCard's
         // version — no "already deployed" version to compare against.
         None => default_tag(&root, flags)?,
@@ -169,6 +169,29 @@ fn resolve_build_tag(
     Ok(format!("{name}:{}", decision.version))
 }
 
+/// Validates an explicit `--tag name:version` against this agent's known
+/// history — without this, `nasiko build --tag agent:1.0.0` could build a
+/// version already used for this agent, bypassing the hard-collision error
+/// `build` otherwise guarantees for a card-resolved tag.
+fn resolve_explicit_tag(tag: &str) -> Result<String> {
+    if crate::util::image_has_explicit_tag(tag) {
+        let (name, version) = crate::util::parse_image_name_and_tag(tag);
+        let (_, used_versions) = existing_version_context(&name);
+        check_tag_not_reused(tag, &version, &used_versions)?;
+    }
+    Ok(tag.to_string())
+}
+
+fn check_tag_not_reused(tag: &str, version: &str, used_versions: &[String]) -> Result<()> {
+    if used_versions.iter().any(|u| u == version) {
+        bail!(
+            "{tag} already exists in this agent's history and versions are immutable — \
+             choose a different version (e.g. bump the patch number)."
+        );
+    }
+    Ok(())
+}
+
 fn existing_version_context(name: &str) -> (Option<String>, Vec<String>) {
     let Ok(client) = Client::from_active_cluster() else {
         return (None, Vec::new());
@@ -304,6 +327,24 @@ mod tests {
         )
         .unwrap();
         assert_eq!(tag, "legal-agent:1.2.0");
+    }
+
+    // ─── check_tag_not_reused ─────────────────────────────────────────────────
+
+    #[test]
+    fn explicit_tag_reusing_a_known_version_is_rejected() {
+        let err = check_tag_not_reused(
+            "legal-agent:1.0.0",
+            "1.0.0",
+            &["1.0.0".to_string(), "1.0.1".to_string()],
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("immutable"));
+    }
+
+    #[test]
+    fn explicit_tag_with_a_fresh_version_is_fine() {
+        assert!(check_tag_not_reused("legal-agent:2.0.0", "2.0.0", &["1.0.0".to_string()]).is_ok());
     }
 
     #[test]

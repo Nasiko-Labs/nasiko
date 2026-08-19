@@ -310,9 +310,16 @@ class AddAgentGithubPage extends HTMLElement {
     }
   }
 
-  /** Poll the upload's status briefly for a fast "version already exists" rejection. */
+  /**
+   * Poll the upload's status for a "version already exists" rejection before
+   * redirecting away. The countdown starts here, before the build worker has
+   * even cloned the repository, so it has to cover clone time too — not just
+   * the (fast) version check that follows it — or a slow clone means this
+   * gives up and redirects right as the real rejection would have landed,
+   * and the user never sees the "Deploy as vX" recovery action.
+   */
   async #waitForVersionConflict(uploadId) {
-    const ATTEMPTS = 8;
+    const ATTEMPTS = 40;
     const INTERVAL_MS = 700;
     for (let i = 0; i < ATTEMPTS; i++) {
       await new Promise((r) => setTimeout(r, INTERVAL_MS));

@@ -369,7 +369,7 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
             upload_id,
             name,
             tar_gz_path,
-            image_tag,
+            image_tag: _,
             ports,
             env,
         } => {
@@ -385,7 +385,6 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
                 upload_id,
                 name,
                 std::path::PathBuf::from(&tar_gz_path),
-                image_tag,
                 ports,
                 platform_env,
                 state.config.openai_api_key.clone(),
@@ -394,6 +393,12 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
                 state.config.agent_image_registry.clone(),
                 state.config.agent_max_replicas,
                 state.config.agent_default_memory.clone(),
+                None,
+                // This legacy job variant is never actually enqueued
+                // anymore (superseded by `GithubClone`), so there's no
+                // snapshot to restore on a version conflict.
+                None,
+                None,
                 None,
             )
             .await;
@@ -407,10 +412,13 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
             name,
             repo_full_name,
             branch,
-            image_tag,
+            image_tag: _,
             ports,
             env,
             version_override,
+            prior_version,
+            prior_image,
+            prior_status,
         } => {
             execute_github_clone_and_deploy(
                 state.clone(),
@@ -421,10 +429,12 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
                 name,
                 repo_full_name,
                 branch,
-                image_tag,
                 ports,
                 env,
                 version_override,
+                prior_version,
+                prior_image,
+                prior_status,
             )
             .await;
         }

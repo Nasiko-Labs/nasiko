@@ -608,9 +608,9 @@ async fn record_version_change_if_needed(
         None => (None, None),
     };
 
-    // Skip if the version hasn't changed — unless overwriting is allowed,
-    // which means "refresh this version's content in place".
-    if !body.allow_overwrite && current_version.as_deref() == Some(new_version.as_str()) {
+    // Skip if the version hasn't changed — versions are immutable, so
+    // there's no "refresh this version's content in place" path anymore.
+    if current_version.as_deref() == Some(new_version.as_str()) {
         return None;
     }
 
@@ -627,7 +627,6 @@ async fn record_version_change_if_needed(
         version: new_version,
         image_tag,
         changelog: None,
-        allow_overwrite: body.allow_overwrite,
     };
     // `nasiko deploy`/`update` activate the version (default); `nasiko push`
     // sets `activate_version: false` — it only registers an image, so it

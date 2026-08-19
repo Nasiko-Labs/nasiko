@@ -154,6 +154,15 @@ pub fn resolve_image_deploy_version(
         );
     }
     let explicit_tag = crate::util::image_has_explicit_tag(image).then_some(image_tag_version);
+    if let (Some(v), Some(t)) = (flags.version, explicit_tag)
+        && v != t
+    {
+        let (name, _) = crate::util::parse_image_name_and_tag(image);
+        bail!(
+            "{image} names version {t}, but --version {v} was also given — they must match. \
+             Drop --version, or {command} {name}:{v} instead."
+        );
+    }
     let flags = VersionFlags {
         version: flags.version.or(explicit_tag),
         ..flags
@@ -503,5 +512,55 @@ mod tests {
             resolve_deploy_version(context(None, Some("bjjnjn"), &used(&[])), flags(None, true))
                 .unwrap();
         assert_eq!(d.version, FIRST_VERSION);
+    }
+
+    // ─── resolve_image_deploy_version ────────────────────────────────────────
+
+    #[test]
+    fn image_tag_and_matching_version_flag_is_fine() {
+        let d = resolve_image_deploy_version(
+            "agent:1.0.1",
+            "1.0.1",
+            flags(Some("1.0.1"), false),
+            None,
+            &used(&[]),
+            "deploy",
+        )
+        .unwrap();
+        assert_eq!(d.version, "1.0.1");
+    }
+
+    #[test]
+    fn image_tag_and_mismatched_version_flag_is_rejected() {
+        // `nasiko deploy agent:1.0.1 --version 2.0.0` must not silently ship
+        // the bytes tagged 1.0.1 under the label 2.0.0 — that's exactly the
+        // artifact/version decoupling immutable versions are meant to prevent.
+        let err = resolve_image_deploy_version(
+            "agent:1.0.1",
+            "1.0.1",
+            flags(Some("2.0.0"), false),
+            None,
+            &used(&[]),
+            "deploy",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("1.0.1"));
+        assert!(err.to_string().contains("2.0.0"));
+        assert!(err.to_string().contains("must match"));
+    }
+
+    #[test]
+    fn bare_image_with_version_flag_uses_the_flag() {
+        // No explicit tag on the image -> nothing to conflict with.
+        let d = resolve_image_deploy_version(
+            "agent",
+            "latest",
+            flags(Some("2.0.0"), false),
+            None,
+            &used(&[]),
+            "deploy",
+        )
+        .unwrap();
+        assert_eq!(d.version, "2.0.0");
     }
 }

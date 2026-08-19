@@ -111,10 +111,6 @@ pub struct UpdateAgent {
     pub metadata: Option<serde_json::Value>,
     pub status: Option<String>,
     pub image: Option<String>,
-    /// If `true`, replace an already-used version instead of rejecting it.
-    /// Only set when the user explicitly confirms or passes `--overwrite`.
-    #[serde(default)]
-    pub allow_overwrite: bool,
     /// `true` (the default) for a real deploy — the new version becomes
     /// active, archiving whatever was running before. `nasiko push` sets
     /// this `false`: it only makes an image available in the registry

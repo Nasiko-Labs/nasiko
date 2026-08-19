@@ -85,9 +85,11 @@ fn image_without_an_explicit_tag_still_falls_back_to_version_prompt_logic() {
 }
 
 #[test]
-fn separate_version_flag_still_wins_over_the_image_tag() {
-    // --version beats the image ref's own tag.
-    let decision = resolve_image_deploy_version(
+fn mismatched_version_flag_and_image_tag_is_rejected() {
+    // A --version that disagrees with the image ref's own tag must be a hard
+    // error, not silently win — otherwise the bytes tagged 1.0.1 would ship
+    // under the label 9.9.9, decoupling the artifact from its version again.
+    let err = resolve_image_deploy_version(
         "legal-agent:1.0.1",
         "1.0.1",
         VersionFlags {
@@ -98,8 +100,8 @@ fn separate_version_flag_still_wins_over_the_image_tag() {
         &["1.0.0".to_string()],
         "deploy",
     )
-    .unwrap();
-    assert_eq!(decision.version, "9.9.9");
+    .unwrap_err();
+    assert!(err.to_string().contains("must match"));
 }
 
 // ─── used_version_context ────────────────────────────────────────────────────
