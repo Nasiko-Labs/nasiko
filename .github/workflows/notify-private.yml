@@ -3,6 +3,7 @@ name: Notify private repo
 on:
   pull_request:
     types: [opened, synchronize]
+    branches: [main]
   push:
     branches: [main]
 
