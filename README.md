@@ -657,5 +657,5 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md) for local setup, code conventions, and 
 **Apache-2.0** — see [`LICENSE`](LICENSE).
 
 <p align="center">
-  <sub>Built with love by the Nasiko team. Stars, issues, and PRs are always welcome.</sub>
+  <sub>Built with love by the Nasiko team. Stars, issues, and PRs are always welcome</sub>
 </p>
