@@ -1,8 +1,8 @@
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{StatusCode, header},
-    response::IntoResponse,
+    response::{Html, IntoResponse, Redirect},
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
@@ -34,6 +34,7 @@ pub fn non_login_public_router(login_limiter: crate::rate_limit::RateLimiter) ->
     Router::new()
         .merge(credential_routes)
         .route("/api/auth/tokens/validate", post(token_validate))
+        .route("/api/auth/sso/session", get(sso_session))
 }
 
 pub fn public_router(login_limiter: crate::rate_limit::RateLimiter) -> Router<AppState> {
@@ -156,6 +157,68 @@ async fn login(
             Json(serde_json::json!({"error": "invalid credentials"})),
         )
             .into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct SsoSessionQuery {
+    token: String,
+}
+
+/// Turns a session token carried in the URL into the `access_token` cookie the
+/// web UI actually authenticates with, then lands the browser on the app root.
+///
+/// Exists for SSO flows that authenticate a user out-of-band and then hand their
+/// *browser* to this control plane — marketplace SSO (`ee/tenant-do`) is the
+/// first: it logs the user in over the API, holds a real session token, and has
+/// nowhere to put it, because a cookie can only be set by a response from this
+/// origin. Before this endpoint it redirected to `/app/?token=…`, which only the
+/// Flutter client could read; the vanilla UI has no URL-token path at all and
+/// simply showed the login page.
+///
+/// Grants nothing the token doesn't already carry — anyone holding it can call
+/// the API directly with `Authorization: Bearer` — and it is validated exactly
+/// as any other request's would be, revocation included. It also *shortens* the
+/// token's exposure: the redirect leaves a clean `/` in the address bar and
+/// browser history instead of parking the token there.
+/// Hands off to `/` from a page on this origin instead of a `Location` header,
+/// because the session cookie is `SameSite=Strict` and `/` is page-gated.
+///
+/// An SSO arrival is the tail of a cross-site redirect chain (the marketplace,
+/// then the management plane, then here). Browsers withhold `Strict` cookies for
+/// every hop of such a chain, so a server redirect to `/` would arrive without
+/// the cookie just set, hit the page gate, and bounce to the login screen — the
+/// very failure this endpoint exists to fix. A navigation started by *this* page
+/// is same-site with no cross-site chain, so the cookie rides it.
+///
+/// (EE's OIDC callback redirects directly and is fine: there the control plane
+/// and dashboard share one registrable domain, so the chain is same-site. A
+/// tenant control plane on its own hostname has no such luxury.)
+const SSO_HANDOFF_HTML: &str = r#"<!doctype html>
+<meta charset="utf-8">
+<title>Signing in…</title>
+<meta http-equiv="refresh" content="0;url=/">
+<script>location.replace('/')</script>
+<p>Signing you in… <a href="/">continue</a></p>
+"#;
+
+async fn sso_session(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Query(query): Query<SsoSessionQuery>,
+) -> impl IntoResponse {
+    match crate::auth::middleware::validate_session_token(&state, &query.token).await {
+        Ok(_) => {
+            let cookie = set_token_cookie(&query.token, request_is_https(&headers));
+            ([(header::SET_COOKIE, cookie)], Html(SSO_HANDOFF_HTML)).into_response()
+        }
+        // Logged, because a silent bounce to the login page is indistinguishable
+        // from the SSO bug this endpoint fixes — the reason is the whole
+        // diagnostic value when an SSO login lands on /login.html.
+        Err((_, reason)) => {
+            tracing::warn!(reason, "SSO session handoff rejected");
+            Redirect::temporary("/login.html").into_response()
+        }
     }
 }
 

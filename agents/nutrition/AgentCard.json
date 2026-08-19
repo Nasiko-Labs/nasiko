@@ -1,5 +1,5 @@
 {
-  "name": "Nutrition Assistant",
+  "name": "nutrition_assistant",
   "description": "Look up nutrition facts, compare foods, and answer diet questions using USDA and Open Food Facts data",
   "version": "1.0.0",
   "protocolVersion": "0.2.9",

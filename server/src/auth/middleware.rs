@@ -143,8 +143,20 @@ pub async fn validate_bearer(
     let Some(token) = extract_token(headers) else {
         return Err((StatusCode::UNAUTHORIZED, "missing or invalid token"));
     };
+    validate_session_token(state, &token).await
+}
 
-    let identity = match state.auth.validate_token(&token).await {
+/// [`validate_bearer`] minus the header extraction, for the one caller that
+/// receives a session token somewhere other than a header: the marketplace SSO
+/// landing endpoint (`login::sso_session`), which is handed one in the URL.
+/// Split out rather than duplicated so both paths keep applying the same
+/// revocation and caller-still-exists rules — the exact drift `validate_bearer`
+/// was consolidated to prevent.
+pub async fn validate_session_token(
+    state: &AppState,
+    token: &str,
+) -> Result<Claims, (StatusCode, &'static str)> {
+    let identity = match state.auth.validate_token(token).await {
         Ok(id) => id,
         Err(_) => return Err((StatusCode::UNAUTHORIZED, "invalid token")),
     };
@@ -158,7 +170,7 @@ pub async fn validate_bearer(
     // sets a real UUID jti, so a signature-valid token with none is either a
     // legacy/malformed token or one crafted outside the normal issuance path;
     // either way it must not bypass revocation entirely.
-    let jti = nasiko_auth::jwt::extract_jti(&token).filter(|j| !j.is_empty());
+    let jti = nasiko_auth::jwt::extract_jti(token).filter(|j| !j.is_empty());
     let Some(jti) = jti else {
         return Err((StatusCode::UNAUTHORIZED, "token missing jti"));
     };
