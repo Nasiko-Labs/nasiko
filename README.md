@@ -534,7 +534,7 @@ docs/           Design docs (architecture, protocol, conventions)
 
 ## Troubleshooting
 
-### Quick fixes — one command
+### Quick fixes: one command
 
 | Problem | One command |
 |---|---|
