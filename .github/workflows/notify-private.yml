@@ -4,8 +4,6 @@ on:
   pull_request:
     types: [opened, synchronize]
     branches: [main]
-  push:
-    branches: [main]
 
 jobs:
   dispatch-pr:
@@ -28,24 +26,5 @@ jobs:
                 "title": "${{ github.event.pull_request.title }}",
                 "author": "${{ github.event.pull_request.user.login }}",
                 "pr_url": "${{ github.event.pull_request.html_url }}"
-              }
-            }'
-
-  dispatch-push:
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-    timeout-minutes: 1
-    steps:
-      - name: Trigger push import in private repo
-        run: |
-          curl -fsSL -X POST \
-            -H "Authorization: token ${{ secrets.PRIVATE_REPO_PAT }}" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/Nasiko-Labs/nasiko-cloud-rs/dispatches" \
-            -d '{
-              "event_type": "oss-push",
-              "client_payload": {
-                "head_sha": "${{ github.sha }}",
-                "ref": "${{ github.ref }}"
               }
             }'
