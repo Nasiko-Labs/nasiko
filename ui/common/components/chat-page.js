@@ -1,6 +1,7 @@
 import { apiFetch } from '/common/services/api.js';
 import "./voice-input.js";
 import "./agent-steps.js";
+import "./app-module-nav.js";
 import { icons } from '/common/utils/icons.js';
 import { renderMarkdown } from '/common/utils/markdown.js';
 import { readA2aStream, frameRenderer, nearBottom } from '/common/utils/a2a-stream.js';
@@ -36,6 +37,13 @@ class ChatPage extends HTMLElement {
 
     if (this.#agentId) document.title = `Nasiko — Chat with ${this.#agentLabel}`;
 
+    // chat.html is not in the nav, so the rail has no way to work out which
+    // module it belongs to — without this, opening a session leaves the rail
+    // with nothing selected. Same split as the module nav below: no agent_id
+    // means this is an orchestrator session.
+    document.querySelector("app-header")
+      ?.setAttribute("active-module", this.#agentId ? "agents" : "orchestrator");
+
     this.#render();
     this.#bindEvents();
 
@@ -65,6 +73,7 @@ class ChatPage extends HTMLElement {
     const agentCardUrl = this.#agentId ? `/agent-card.html?id=${encodeURIComponent(this.#agentId)}` : null;
 
     this.innerHTML = `
+      ${this.#agentId ? '' : '<app-module-nav module="orchestrator"></app-module-nav>'}
       <div class="chat-header">
         <div class="chat-header-avatar" aria-hidden="true">${initial}</div>
         <div class="chat-header-info">
