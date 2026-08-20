@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+redis
+slowapi
+httpx
+prometheus-client
