@@ -117,7 +117,7 @@ class AddAgentPage extends HTMLElement {
             <span class="setup-label">Setting up…</span>
           </div>
           <p class="setup-hint">Pulling the image and starting the container. This may take a few
-            minutes. You can close this dialog — it keeps running.</p>
+            minutes. You can close this dialog and it will continue running in the background.</p>
         </div>
         <div data-slot="footer">
           <button type="button" class="btn-outline" id="oci-cancel">Cancel</button>
