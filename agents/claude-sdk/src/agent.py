@@ -12,11 +12,12 @@ class SynthesizerAgent:
     SUPPORTED_CONTENT_TYPES = ["text", "text/plain"]
 
     def __init__(self):
-        self.client = anthropic.AsyncAnthropic(
-            base_url=os.getenv("ANTHROPIC_BASE_URL", "https://api.deepseek.com/anthropic"),
-            api_key=os.getenv("ANTHROPIC_API_KEY", os.getenv("DEEPSEEK_API_KEY")),
-        )
-        self.model = os.getenv("MODEL", "deepseek-v4-flash")
+        api_key = os.getenv("ANTHROPIC_API_KEY")
+        if not api_key:
+            raise ValueError("ANTHROPIC_API_KEY environment variable is required")
+
+        self.client = anthropic.AsyncAnthropic(api_key=api_key)
+        self.model = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5")
 
     async def stream(self, query: str, context_id: str) -> AsyncIterable[dict[str, Any]]:
         yield {
