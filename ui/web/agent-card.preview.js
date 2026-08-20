@@ -285,9 +285,17 @@ export default {
       await page.waitForSelector('.acp-stat-value', { timeout: 5000 });
     },
     "viewer": async (page) => {
-      // Non-manager: only Overview + Logs tabs, no topbar actions.
+      // Non-manager: Overview, Configure and Logs tabs, no topbar actions.
       await gotoAgent(page, 'a-viewer');
       await page.waitForSelector('.acp-stat-value', { timeout: 5000 });
+    },
+    // NAS-107: a shared/seed agent's Configure tab must reach MCP for a
+    // non-manager — MCP cards present, owner-only LLM router section absent.
+    "viewer-configure": async (page) => {
+      await gotoAgent(page, 'a-viewer');
+      await page.click('[data-tab="configure"]');
+      await page.waitForSelector('.acp-mcp-card', { timeout: 5000 });
+      if (await page.$('agent-llm-config')) throw new Error('LLM router shown to non-manager');
     },
     "json-view": async (page) => {
       await gotoAgent(page, 'a-001');

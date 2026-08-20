@@ -145,6 +145,9 @@ styles.replaceSync(`@keyframes ah-skel-pulse {
   /* Small screens: drop the history cluster, let search flex, keep menu */
   @media (max-width: 1023.98px) {
     .nav-cluster { display: none; }
+    /* Rail is hidden below 1024px, so its toggle would just duplicate the
+       mobile menu button. */
+    [data-rail-toggle] { display: none; }
     .search-field { width: auto; flex: 1; min-width: 0; }
     .search-field .kbd-hint { display: none; }
     .topbar-spacer { display: none; }
