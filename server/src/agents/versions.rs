@@ -310,6 +310,124 @@ pub async fn record_pushed_version_in_tx(
     Ok(())
 }
 
+/// Atomically claims `version` for this agent *before* any build/deploy work
+/// starts, via the real `UNIQUE(agent_id, version)` constraint — unlike
+/// [`version_exists`]'s fast-fail check, this is the actual guard: only one
+/// concurrent caller's `INSERT` can win it, so two importers racing for the
+/// same version can no longer both build and deploy a real running
+/// container before either one notices.
+///
+/// Recorded as `status = "building"` — not active, not rollback-eligible.
+/// Call [`finalize_reserved_version`] once the deploy actually succeeds, or
+/// [`release_reserved_version`] to free the slot after a failure so the same
+/// version can be retried.
+pub async fn reserve_version(
+    db: &PgPool,
+    agent_id: Uuid,
+    build_id: Uuid,
+    version: &str,
+    image_tag: &str,
+) -> Result<(), VersionChangeError> {
+    if parse_plain_version(version).is_none() {
+        return Err(VersionChangeError::InvalidVersion(version.to_string()));
+    }
+    sqlx::query(
+        "INSERT INTO agent_versions \
+           (agent_id, build_id, version, image_tag, is_active, can_rollback, status) \
+         VALUES ($1, $2, $3, $4, false, false, 'building')",
+    )
+    .bind(agent_id)
+    .bind(build_id)
+    .bind(version)
+    .bind(image_tag)
+    .execute(db)
+    .await
+    .map_err(|e| map_insert_error(e, version))?;
+    Ok(())
+}
+
+/// Turns a [`reserve_version`] placeholder into the real active version,
+/// once the deploy it was reserved for actually succeeded — archives
+/// whatever was active before and marks it rollback-eligible, the same as
+/// [`record_version_change_in_tx`], but updates the already-reserved row
+/// instead of inserting a new one.
+async fn finalize_reserved_version(
+    db: &PgPool,
+    agent_id: Uuid,
+    version: &str,
+) -> Result<(), sqlx::Error> {
+    let mut tx = db.begin().await?;
+
+    let prev_version: Option<String> = sqlx::query_scalar(
+        "SELECT version FROM agent_versions WHERE agent_id = $1 AND is_active = true",
+    )
+    .bind(agent_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "UPDATE agent_versions SET is_active = false, status = 'archived' \
+         WHERE agent_id = $1 AND is_active = true",
+    )
+    .bind(agent_id)
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "UPDATE agent_versions SET is_active = true, can_rollback = false, status = 'active', \
+         previous_version = $3, created_at = now() \
+         WHERE agent_id = $1 AND version = $2",
+    )
+    .bind(agent_id)
+    .bind(version)
+    .bind(&prev_version)
+    .execute(&mut *tx)
+    .await?;
+
+    if let Some(ref pv) = prev_version {
+        sqlx::query(
+            "UPDATE agent_versions SET can_rollback = true WHERE agent_id = $1 AND version = $2",
+        )
+        .bind(agent_id)
+        .bind(pv)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    tx.commit().await
+}
+
+/// [`finalize_reserved_version`], retried once on failure — mirrors
+/// [`record_version_change_with_retry`]'s resilience, since this runs after
+/// the deploy already succeeded and there's no error path left for the
+/// caller to react to.
+pub async fn finalize_reserved_version_with_retry(db: &PgPool, agent_id: Uuid, version: &str) {
+    if let Err(e) = finalize_reserved_version(db, agent_id, version).await {
+        tracing::error!(%e, %agent_id, %version, "finalize reserved version failed, retrying once");
+        if let Err(e) = finalize_reserved_version(db, agent_id, version).await {
+            tracing::error!(
+                %e, %agent_id, %version,
+                "finalize reserved version failed after retry — agent is running this \
+                 version but it is not marked active in history"
+            );
+        }
+    }
+}
+
+/// Releases a [`reserve_version`] placeholder after the build/deploy it was
+/// held for failed, freeing the version for a retry. Only ever deletes a
+/// still-`"building"` row for this exact version, so it's safe to call even
+/// if the reservation was already finalized.
+pub async fn release_reserved_version(db: &PgPool, agent_id: Uuid, version: &str) {
+    let _ = sqlx::query(
+        "DELETE FROM agent_versions WHERE agent_id = $1 AND version = $2 AND status = 'building'",
+    )
+    .bind(agent_id)
+    .bind(version)
+    .execute(db)
+    .await;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

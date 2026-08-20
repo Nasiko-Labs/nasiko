@@ -608,9 +608,31 @@ async fn record_version_change_if_needed(
         None => (None, None),
     };
 
-    // Skip if the version hasn't changed — versions are immutable, so
-    // there's no "refresh this version's content in place" path anymore.
+    // Same version, same (or no) image requested: a harmless metadata edit,
+    // nothing version-related to do.
+    //
+    // Same version but a *different* image is not harmless — the caller below
+    // still applies `image = COALESCE($13, image)` regardless of what we
+    // return here, so silently allowing this would let this version's actual
+    // content change while its label stays the same. Reject it instead of
+    // skipping, the same way any other reuse of this version is rejected.
     if current_version.as_deref() == Some(new_version.as_str()) {
+        let image_changed = match body.image.as_deref() {
+            Some(img) => Some(img) != current_image.as_deref(),
+            None => false,
+        };
+        if image_changed {
+            return Some(
+                (
+                    StatusCode::CONFLICT,
+                    format!(
+                        "version {new_version} already exists for this agent and versions are \
+                         immutable — its image cannot change without a new version"
+                    ),
+                )
+                    .into_response(),
+            );
+        }
         return None;
     }
 
