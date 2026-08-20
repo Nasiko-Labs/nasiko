@@ -1573,9 +1573,14 @@ pub async fn execute_clone_and_deploy(
                 .await;
                 tracing::warn!(build_id = %build_id, %agent_id, version = %ver, "clone-and-deploy rejected: version already exists");
             } else if let Some(reason) = e.strip_prefix("BUILD_FAILED:") {
-                // A real build/deploy was attempted and failed — this is the
-                // only case where wiping a brand-new agent (or marking an
-                // existing one failed) is appropriate.
+                // A real build/deploy was attempted and failed. Whether that
+                // means "clean up" or "restore" depends on whether *this
+                // import* created the agent — not on whether it has ever
+                // been built by our own build worker before, which is wrong
+                // for a CLI-deployed agent (never built that way, yet very
+                // much pre-existing). `prior_version`/`prior_status` already
+                // answer the right question: they're `Some` only if this
+                // agent existed before this import touched it.
                 set_upload_status(
                     &db,
                     &upload_id,
@@ -1586,7 +1591,14 @@ pub async fn execute_clone_and_deploy(
                     Some("clone and deploy failed"),
                 )
                 .await;
-                super::utils::delete_agent_or_mark_failed(&db, agent_id).await;
+                restore_prior_state_or_clean_up(
+                    &db,
+                    agent_id,
+                    &prior_version,
+                    &prior_image,
+                    &prior_status,
+                )
+                .await;
                 tracing::error!(build_id = %build_id, %reason, "clone-and-deploy failed");
             } else {
                 // Any other pre-build rejection (invalid/missing version, no

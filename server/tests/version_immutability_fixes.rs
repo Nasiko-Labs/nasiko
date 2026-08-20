@@ -189,6 +189,91 @@ async fn clone_pre_build_rejection_restores_existing_agent_instead_of_deleting()
 
 #[tokio::test]
 #[serial]
+async fn clone_genuine_deploy_failure_on_existing_agent_restores_instead_of_deleting() {
+    // The agent has no `agent_builds` history at all (a CLI-deployed agent),
+    // so the old "was this ever built by our own build worker?" check would
+    // have wrongly treated it as brand-new and deleted it. Whether *this*
+    // import created the agent is the right question, and `prior_version`
+    // already answers it — this must restore, not delete, even though a real
+    // build/deploy was genuinely attempted and genuinely failed.
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid: Uuid = admin["user_id"].as_str().unwrap().parse().unwrap();
+
+    let agent_id = Uuid::new_v4();
+    seed_agent(
+        &server,
+        agent_id,
+        uid,
+        "existing-cli-agent-deploy-fail",
+        "1.0.0",
+        "nasiko/existing:1.0.0",
+        "running",
+    )
+    .await;
+    sqlx::query(
+        "UPDATE agents SET version = 'latest', image = 'nasiko/existing:latest', \
+         status = 'deploying' WHERE id = $1",
+    )
+    .bind(agent_id)
+    .execute(&server.db)
+    .await
+    .unwrap();
+
+    server.runtime.set_fail_deploy(true);
+
+    let tar_gz = make_tar_gz(&[
+        ("AgentCard.json", br#"{"version": "2.0.0"}"#),
+        ("Dockerfile", b"FROM scratch"),
+    ]);
+    let tar_path = std::env::temp_dir().join(format!("test-clone-{}.tar.gz", Uuid::new_v4()));
+    std::fs::write(&tar_path, &tar_gz).unwrap();
+
+    let build_id = Uuid::new_v4();
+    seed_build(&server, build_id, agent_id, "2.0.0").await;
+    execute_clone_and_deploy(
+        server.runtime.clone() as Arc<dyn nasiko_runtime::ContainerRuntime>,
+        server.db.clone(),
+        reqwest::Client::new(),
+        build_id,
+        agent_id,
+        uid,
+        "upload-3".to_string(),
+        "existing-cli-agent-deploy-fail".to_string(),
+        tar_path,
+        vec![8000],
+        HashMap::new(),
+        None,
+        None,
+        "docker".to_string(),
+        String::new(),
+        1,
+        "512Mi".to_string(),
+        None,
+        Some("1.0.0".to_string()),
+        Some("nasiko/existing:1.0.0".to_string()),
+        Some("running".to_string()),
+    )
+    .await;
+
+    let row: (String, Option<String>, String) =
+        sqlx::query_as("SELECT version, image, status FROM agents WHERE id = $1")
+            .bind(agent_id)
+            .fetch_one(&server.db)
+            .await
+            .expect(
+                "agent should still exist after a genuine deploy failure, not be deleted \
+                 just because it lacks build-worker history",
+            );
+    assert_eq!(row.0, "1.0.0");
+    assert_eq!(row.1.as_deref(), Some("nasiko/existing:1.0.0"));
+    assert_eq!(row.2, "running");
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
 async fn clone_pre_build_rejection_on_brand_new_agent_still_cleans_up() {
     // A genuinely new agent (no prior state to restore to) must still be
     // cleaned up like any other failed first deploy — restoring "nothing" is
