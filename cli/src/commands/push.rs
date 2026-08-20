@@ -57,6 +57,7 @@ fn push_from_directory(
     };
     let decision = resolve_deploy_version(context, flags)?;
     let version = decision.version;
+    reject_if_already_pushed(client, &existing, &version, dir)?;
     let image_tag = format!("{agent_name}:{version}");
 
     // Build for linux/amd64 (the cluster's arch), not the host arch — an
@@ -111,6 +112,7 @@ fn push_from_image(
         "push",
     )?;
     let version = decision.version;
+    reject_if_already_pushed(client, &existing, &version, image)?;
 
     println!("Pushing {image} → {repo}:{version}...");
     oci::push_image(image, &repo, &version)?;
@@ -141,6 +143,38 @@ fn used_version_context(
         None => Vec::new(),
     };
     Ok((current_deployed_version, used_versions))
+}
+
+/// Bails if `version` already has ANY history row for this agent — pushed,
+/// active, or archived. `used_versions` (and therefore `resolve_*_version`)
+/// deliberately excludes `"pushed"` rows so a genuine first deploy can still
+/// claim a pushed-but-undeployed version — but that means it can't catch a
+/// *re-push* of that same version either. Checked here, before any
+/// build/upload happens, so a doomed push can't repoint the OCI tag first
+/// and fail after the damage is already done.
+fn reject_if_already_pushed(
+    client: &Client,
+    existing: &Option<(String, Option<String>)>,
+    version: &str,
+    deploy_target: &str,
+) -> Result<()> {
+    let Some((id, _)) = existing else {
+        return Ok(());
+    };
+    let Some(status) = client.version_status(id, version)? else {
+        return Ok(());
+    };
+    if status == "pushed" {
+        anyhow::bail!(
+            "version {version} has already been pushed for this agent — it's already in the \
+             registry, so there's nothing to push. Run `nasiko deploy {deploy_target}` to deploy \
+             it instead."
+        );
+    }
+    anyhow::bail!(
+        "version {version} already exists for this agent (status: {status}) and versions are \
+         immutable — choose a different version."
+    );
 }
 
 /// Looks up an existing agent's id and version by name. `Ok(None)` means it

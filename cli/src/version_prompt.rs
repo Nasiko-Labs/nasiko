@@ -76,8 +76,11 @@ pub fn resolve_deploy_version(
 
     let interactive = std::io::stdin().is_terminal();
     // A card version only counts if it's valid AND not already used before.
+    // Keep the raw value around too, so the interactive prompt can name the
+    // *specific* reason it was rejected instead of a generic catch-all.
+    let raw_card_version = card_version;
     let card_version =
-        card_version.filter(|v| parse_plain_version(v).is_some() && !is_used(v, used_versions));
+        raw_card_version.filter(|v| parse_plain_version(v).is_some() && !is_used(v, used_versions));
 
     match (card_version, current_deployed_version) {
         (None, deployed) => {
@@ -90,7 +93,16 @@ pub fn resolve_deploy_version(
                      AgentCard.json, or re-run with --yes to use the suggested {suggested}."
                 );
             }
-            prompt_for_version(None, &suggested, used_versions, flags.yes)
+            let lead_in = match raw_card_version {
+                None => "AgentCard.json has no \"version\" field set".to_string(),
+                Some(v) if parse_plain_version(v).is_none() => {
+                    format!("AgentCard.json's version ({v}) isn't a valid x.y.z version")
+                }
+                Some(v) => {
+                    format!("AgentCard.json's version ({v}) already exists in this agent's history")
+                }
+            };
+            prompt_for_version(&lead_in, &suggested, used_versions, flags.yes)
         }
         // Redeploying the same version that's already live — always ask
         // (or require --yes in CI) instead of silently reusing it.
@@ -103,7 +115,8 @@ pub fn resolve_deploy_version(
                      --yes to auto-bump to {suggested}."
                 );
             }
-            prompt_for_version(Some(cv), &suggested, used_versions, flags.yes)
+            let lead_in = format!("Version {cv} is already deployed");
+            prompt_for_version(&lead_in, &suggested, used_versions, flags.yes)
         }
         // Card version is unused but not ahead of what's deployed (e.g. a
         // stale AgentCard.json) — don't trust it, treat like no card version.
@@ -116,7 +129,8 @@ pub fn resolve_deploy_version(
                      --version, or re-run with --yes to use the suggested {suggested}."
                 );
             }
-            prompt_for_version(Some(dv), &suggested, used_versions, flags.yes)
+            let lead_in = format!("Version {dv} is already deployed");
+            prompt_for_version(&lead_in, &suggested, used_versions, flags.yes)
         }
         // A fresh version, ahead of (or with nothing yet) deployed — use it,
         // no prompt.
@@ -204,25 +218,24 @@ fn suggest_unused_version(base: Option<&str>, used_versions: &[String]) -> Strin
     candidate
 }
 
+/// `lead_in` names the *specific* reason a version needs picking (e.g.
+/// "Version 1.0.0 is already deployed", or "AgentCard.json's version (1.0.0)
+/// already exists in this agent's history") — never a generic catch-all, so
+/// the user isn't left guessing which of several possible causes applies.
 fn prompt_for_version(
-    current: Option<&str>,
+    lead_in: &str,
     suggested: &str,
     used_versions: &[String],
     assume_yes: bool,
 ) -> Result<VersionDecision> {
     if assume_yes {
-        if let Some(cv) = current {
-            eprintln!("  ! version {cv} already deployed — auto-bumping to {suggested} (--yes)");
-        }
+        eprintln!("  ! {lead_in} — auto-bumping to {suggested} (--yes)");
         // `suggested` is always unused, so nothing further to check.
         return Ok(VersionDecision {
             version: suggested.to_string(),
         });
     }
-    let prompt = match current {
-        Some(cv) => format!("Version {cv} is already deployed. Enter a new version"),
-        None => "No usable version set in AgentCard.json. Enter a version".to_string(),
-    };
+    let prompt = format!("{lead_in}. Enter a version");
     loop {
         let input: String = Input::new()
             .with_prompt(&prompt)

@@ -64,6 +64,23 @@ fn used_version_context<'a>(
     Ok((current_deployed_version, used_versions))
 }
 
+/// Whether `version` is already recorded with `status = "pushed"` for this
+/// agent — an image `nasiko push` made available in the registry but never
+/// deployed. When true, the artifact is already sitting in the registry
+/// under this exact tag, so deploy must promote it as-is instead of
+/// re-uploading: an OCI tag isn't content-addressed, so pushing again would
+/// silently repoint it if the local image has changed since the push.
+fn already_pushed(
+    client: &Client,
+    existing: Option<&(String, serde_json::Value)>,
+    version: &str,
+) -> Result<bool> {
+    let Some((id, _)) = existing else {
+        return Ok(false);
+    };
+    Ok(client.version_status(id, version)?.as_deref() == Some("pushed"))
+}
+
 /// Finds the existing agent for a directory deploy: first checks the local
 /// cache file, then falls back to looking it up by name (in case the agent
 /// was registered another way, e.g. `nasiko push`, and the cache is stale
@@ -161,18 +178,25 @@ fn deploy_from_directory(
     };
     let decision = resolve_deploy_version(context, flags)?;
     let version = decision.version;
-    let image_tag = format!("{agent_name}:{version}");
-
-    // Build for linux/amd64 (the cluster's arch), not the host arch — an
-    // Apple Silicon build here would CrashLoop with "exec format error".
-    super::build::build(dir, Some(&image_tag), Some("linux/amd64"))?;
-
-    // Push image to OCI
     let repo = format!("nasiko/{agent_name}");
-    println!("Pushing {image_tag} → {repo}:{version}...");
-    oci::push_image(&image_tag, &repo, &version)?;
-
     let image_ref = format!("{repo}:{version}");
+
+    if already_pushed(client, existing.as_ref(), &version)? {
+        println!(
+            "  Version {version} was already pushed — deploying the existing registry image \
+             without rebuilding."
+        );
+    } else {
+        let image_tag = format!("{agent_name}:{version}");
+
+        // Build for linux/amd64 (the cluster's arch), not the host arch — an
+        // Apple Silicon build here would CrashLoop with "exec format error".
+        super::build::build(dir, Some(&image_tag), Some("linux/amd64"))?;
+
+        // Push image to OCI
+        println!("Pushing {image_tag} → {repo}:{version}...");
+        oci::push_image(&image_tag, &repo, &version)?;
+    }
 
     let agent_id = match existing {
         Some((id, current)) => {
@@ -309,17 +333,24 @@ fn deploy_from_image(
 
     let image_ref = format!("{repo}:{version}");
 
-    // Tag locally so Docker can find it by the canonical ref without a registry pull.
-    let tag_status = std::process::Command::new(crate::util::container_bin())
-        .args(["tag", image, &image_ref])
-        .status()
-        .context("failed to run container tag command — is the container runtime running?")?;
-    if !tag_status.success() {
-        anyhow::bail!("failed to tag {image} as {image_ref}");
-    }
+    if already_pushed(client, existing.as_ref(), &version)? {
+        println!(
+            "  Version {version} was already pushed — deploying the existing registry image \
+             without re-pushing."
+        );
+    } else {
+        // Tag locally so Docker can find it by the canonical ref without a registry pull.
+        let tag_status = std::process::Command::new(crate::util::container_bin())
+            .args(["tag", image, &image_ref])
+            .status()
+            .context("failed to run container tag command — is the container runtime running?")?;
+        if !tag_status.success() {
+            anyhow::bail!("failed to tag {image} as {image_ref}");
+        }
 
-    println!("Pushing {image} → {image_ref}...");
-    oci::push_image(image, &repo, &version)?;
+        println!("Pushing {image} → {image_ref}...");
+        oci::push_image(image, &repo, &version)?;
+    }
 
     if let Some((id, _)) = existing {
         println!("  Updating agent: {agent_name}");

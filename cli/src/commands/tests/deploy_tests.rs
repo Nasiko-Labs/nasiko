@@ -182,3 +182,56 @@ fn used_version_context_propagates_history_fetch_failure() {
 
     assert!(used_version_context(&client, Some(&existing)).is_err());
 }
+
+// ─── already_pushed ───────────────────────────────────────────────────────────
+
+#[test]
+fn already_pushed_is_false_for_a_brand_new_agent() {
+    let srv = mockito::Server::new();
+    let client = Client::for_test(&srv.url(), None);
+    assert!(!already_pushed(&client, None, "1.0.0").unwrap());
+}
+
+#[test]
+fn already_pushed_is_true_for_a_pushed_row() {
+    let mut srv = mockito::Server::new();
+    srv.mock("GET", "/api/agents/agent-1/versions")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            r#"{"data": [
+                {"version": "2.0.0", "status": "pushed", "is_active": false,
+                 "can_rollback": false, "created_at": "2024-01-02T00:00:00Z"}
+            ]}"#,
+        )
+        .create();
+    let client = Client::for_test(&srv.url(), None);
+    let existing = (
+        "agent-1".to_string(),
+        serde_json::json!({"id": "agent-1", "version": "1.0.0"}),
+    );
+    assert!(already_pushed(&client, Some(&existing), "2.0.0").unwrap());
+}
+
+#[test]
+fn already_pushed_is_false_for_an_active_version() {
+    // Deploy must not treat an already-active version as "promote without
+    // rebuilding" — that path is only for a pushed-but-undeployed draft.
+    let mut srv = mockito::Server::new();
+    srv.mock("GET", "/api/agents/agent-1/versions")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            r#"{"data": [
+                {"version": "1.0.0", "status": "active", "is_active": true,
+                 "can_rollback": false, "created_at": "2024-01-01T00:00:00Z"}
+            ]}"#,
+        )
+        .create();
+    let client = Client::for_test(&srv.url(), None);
+    let existing = (
+        "agent-1".to_string(),
+        serde_json::json!({"id": "agent-1", "version": "1.0.0"}),
+    );
+    assert!(!already_pushed(&client, Some(&existing), "1.0.0").unwrap());
+}
