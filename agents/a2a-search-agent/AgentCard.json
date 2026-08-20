@@ -1,0 +1,76 @@
+{
+  "protocolVersion": "0.2.9",
+  "name": "Web Search Agent",
+  "description": "An intelligent research agent built with A2A SDK that can autonomously search the internet and read web pages to answer queries.",
+  "url": "http://localhost:5000/",
+  "preferredTransport": "JSONRPC",
+  "provider": {
+    "organization": "Nasiko AI Projects",
+    "url": "https://github.com/Nasiko-Labs/nasiko"
+  },
+  "iconUrl": "http://localhost:5000/icon.png",
+  "version": "1.0.0",
+  "documentationUrl": "http://localhost:5000/docs",
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": false,
+    "stateTransitionHistory": true,
+    "chat_agent": false
+  },
+  "securitySchemes": {},
+  "security": [],
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "skills": [
+    {
+      "id": "search-web",
+      "name": "Search Web",
+      "description": "Query DuckDuckGo to search the internet for a given term.",
+      "tags": [
+        "search",
+        "web",
+        "duckduckgo",
+        "internet"
+      ],
+      "examples": [
+        "Search the web for the latest news on AI",
+        "Who won the Superbowl in 2024?"
+      ],
+      "inputModes": [
+        "application/json",
+        "text/plain"
+      ],
+      "outputModes": [
+        "application/json"
+      ]
+    },
+    {
+      "id": "read-webpage",
+      "name": "Read Webpage",
+      "description": "Fetch and extract text content from a given URL.",
+      "tags": [
+        "scraping",
+        "url",
+        "web",
+        "content"
+      ],
+      "examples": [
+        "Read the content of this webpage: https://example.com",
+        "What does this article say?"
+      ],
+      "inputModes": [
+        "application/json",
+        "text/plain"
+      ],
+      "outputModes": [
+        "application/json"
+      ]
+    }
+  ],
+  "supportsAuthenticatedExtendedCard": false,
+  "signatures": []
+}
