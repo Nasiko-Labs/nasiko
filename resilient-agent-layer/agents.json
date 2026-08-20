@@ -1,0 +1,26 @@
+{
+  "agent-a": {
+    "base_url": "http://agent-a:8001",
+    "cache_ttl": 60,
+    "rate_limit_rps": 10,
+    "burst": 20,
+    "queue_max": 50,
+    "queue_timeout_ms": 5000
+  },
+  "agent-b": {
+    "base_url": "http://agent-b:8002",
+    "cache_ttl": 30,
+    "rate_limit_rps": 5,
+    "burst": 10,
+    "queue_max": 30,
+    "queue_timeout_ms": 8000
+  },
+  "agent-slow": {
+    "base_url": "http://agent-slow:8003",
+    "cache_ttl": 120,
+    "rate_limit_rps": 2,
+    "burst": 5,
+    "queue_max": 20,
+    "queue_timeout_ms": 15000
+  }
+}

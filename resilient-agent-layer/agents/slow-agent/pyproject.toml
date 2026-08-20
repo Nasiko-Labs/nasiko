@@ -1,0 +1,9 @@
+[project]
+name = "slow-agent"
+version = "0.1.0"
+description = "Slow Agent - responds in 1.5-4s"
+dependencies = [
+    "fastapi==0.115.5",
+    "uvicorn[standard]==0.32.1",
+    "pydantic==2.10.3"
+]
