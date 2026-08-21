@@ -239,6 +239,42 @@ pub(crate) async fn build_and_deploy(
         )
     })?;
 
+    // Reject a version already recorded in this agent's history instead of
+    // silently redeploying it — the same guard `agents/upload.rs` and
+    // `agents/update.rs` apply. This is only a fail-fast check, not the
+    // activation itself: recording the version as active happens further
+    // down, only after the build and deploy below actually succeed. Doing
+    // it here and committing would let a build/deploy failure leave a
+    // version marked "active" in history despite never actually running.
+    if crate::agents::versions::parse_plain_version(&meta.version).is_none() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "version {} must be in x.y.z format (e.g. 1.2.3)",
+                meta.version
+            ),
+        ));
+    }
+    let version_already_used =
+        crate::agents::versions::version_exists(&mut *tx, agent_id, &meta.version)
+            .await
+            .map_err(|e| {
+                tracing::error!(%e, %agent_id, "build_and_deploy: check version history");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal error".to_string(),
+                )
+            })?;
+    if version_already_used {
+        return Err((
+            StatusCode::CONFLICT,
+            format!(
+                "version {} already exists in this agent's history — choose a new version",
+                meta.version
+            ),
+        ));
+    }
+
     tx.commit().await.map_err(|e| {
         tracing::error!(%e, %agent_id, %build_id, "build_and_deploy: commit tx");
         (
@@ -296,7 +332,7 @@ pub(crate) async fn build_and_deploy(
     let mut spec = crate::agents::build_agent_spec(
         agent_id,
         &meta.name,
-        image_tag,
+        image_tag.clone(),
         vec![],
         env_vars,
         &state.config.agent_default_memory,
@@ -334,6 +370,18 @@ pub(crate) async fn build_and_deploy(
             .bind(agent_id)
             .bind(&agent_url)
             .execute(&state.db)
+            .await;
+            // Only now does the version actually become "active" in history —
+            // the build and deploy above both genuinely succeeded.
+            crate::agents::versions::record_version_change_with_retry(&state.db, || {
+                crate::agents::versions::VersionChange {
+                    agent_id,
+                    build_id: Some(build_id),
+                    version: &meta.version,
+                    image_tag: &image_tag,
+                    changelog: None,
+                }
+            })
             .await;
             Some(status.container_id.to_string())
         }
