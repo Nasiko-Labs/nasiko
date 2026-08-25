@@ -15,6 +15,43 @@ async fn init_admin(server: &common::TestServer) -> serde_json::Value {
         .unwrap()
 }
 
+// ─── /api/auth/github/status ───────────────────────────────────────────────
+
+/// The login page renders its GitHub button on this response alone, and calls
+/// it before anyone is signed in — so it must be reachable unauthenticated and
+/// must report the *backend's* view, not the page's intent. Deployments that
+/// never set `GITHUB_CLIENT_ID` used to draw a button that 503'd on click,
+/// which reads as an enabled login method to anyone auditing the page.
+#[tokio::test]
+#[serial]
+async fn test_github_login_status_is_public_and_reports_unconfigured() {
+    // The test config leaves github_client_id as None.
+    let server = common::TestServer::start().await;
+
+    let res = server
+        .client
+        .get(server.url("/api/auth/github/status"))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(res.status(), 200);
+    let body: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(body["configured"], false);
+
+    // The button's own route must agree, or the page and the backend drift:
+    // a `configured: true` that 503s is exactly the state this guards against.
+    let login = server
+        .client
+        .get(server.url("/api/auth/github/login-user"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(login.status(), 503);
+
+    server.cleanup().await;
+}
+
 // ─── /api/github/user ──────────────────────────────────────────────────────
 
 #[tokio::test]

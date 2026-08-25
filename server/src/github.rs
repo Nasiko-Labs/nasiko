@@ -28,6 +28,7 @@ pub fn public_router() -> Router<AppState> {
         // Unauthenticated SSO login: returns {"auth_url": "..."} so the client
         // can open GitHub consent in a new tab without holding a session token.
         .route("/api/auth/github/login-user", get(github_login_user))
+        .route("/api/auth/github/status", get(github_login_configured))
 }
 
 /// Protected routes — served under /api/v1 with require_auth middleware.
@@ -141,6 +142,17 @@ async fn github_login(State(state): State<AppState>, claims: Claims) -> impl Int
                 .into_response()
         }
     }
+}
+
+/// `GET /api/auth/github/status`  (public — no auth required)
+///
+/// Reports whether GitHub OAuth is configured at all, so the login page can
+/// hide a sign-in button whose route would only answer `503`. Without this the
+/// button renders on every deployment, including the ones that never set
+/// `GITHUB_CLIENT_ID` — it looks like an enabled login method to anyone
+/// auditing the page, and fails on click. Mirrors `/api/auth/oidc/status`.
+async fn github_login_configured(State(state): State<AppState>) -> impl IntoResponse {
+    Json(serde_json::json!({ "configured": state.github_svc.is_some() }))
 }
 
 /// `GET /api/v1/auth/github/login-user`  (public — no auth required)
@@ -650,6 +662,10 @@ struct CloneBody {
     branch: Option<String>,
     /// Override agent name; defaults to the repo name portion of `repository_full_name`.
     agent_name: Option<String>,
+    /// User-chosen version overriding whatever the cloned source declares
+    /// (e.g. the UI's auto-suggested patch bump after a conflict).
+    #[serde(default)]
+    version_override: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -702,6 +718,16 @@ async fn github_clone(
             .into_response();
     }
 
+    if let Some(ref ver) = body.version_override
+        && crate::agents::versions::parse_plain_version(ver).is_none()
+    {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            format!("invalid version_override {ver}: must be in x.y.z format, e.g. 1.2.3"),
+        )
+            .into_response();
+    }
+
     // Determine agent name: explicit override → repo name.
     let agent_name = body.agent_name.clone().unwrap_or_else(|| {
         body.repository_full_name
@@ -729,6 +755,26 @@ async fn github_clone(
             tracing::error!(%e, agent_name = %agent_name, "github_clone: begin transaction failed");
             return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
         }
+    };
+
+    // Snapshot whatever this agent was before the UPSERT below optimistically
+    // overwrites it with the "latest" placeholder — if the version this
+    // clone resolves to collides with history, `execute_github_clone_and_deploy`
+    // restores this snapshot instead of leaving the row pointing at the
+    // placeholder (or permanently stuck in "deploying").
+    let prior: Option<(String, Option<String>, String)> = sqlx::query_as(
+        "SELECT version, image, status FROM agents \
+         WHERE name = $1 AND owner_id = $2 AND deleted_at IS NULL",
+    )
+    .bind(&agent_name)
+    .bind(user_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .ok()
+    .flatten();
+    let (prior_version, prior_image, prior_status) = match prior {
+        Some((v, i, s)) => (Some(v), i, Some(s)),
+        None => (None, None, None),
     };
 
     let agent_id = match sqlx::query_scalar::<_, Uuid>(
@@ -782,6 +828,10 @@ async fn github_clone(
         image_tag,
         ports: vec![8000u16],
         env: HashMap::new(),
+        version_override: body.version_override.clone(),
+        prior_version,
+        prior_image,
+        prior_status,
     };
 
     let payload_value = match serde_json::to_value(&payload) {
