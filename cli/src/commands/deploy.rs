@@ -39,9 +39,27 @@ pub fn deploy_with_version_flags(
     let writable = writable || writable_path.is_some();
 
     if Path::new(image).join("AgentCard.json").exists() {
-        deploy_from_directory(image, name, port, &env, flags, writable, writable_path, &client)
+        deploy_from_directory(
+            image,
+            name,
+            port,
+            &env,
+            flags,
+            writable,
+            writable_path,
+            &client,
+        )
     } else {
-        deploy_from_image(image, name, port, &env, flags, writable, writable_path, &client)
+        deploy_from_image(
+            image,
+            name,
+            port,
+            &env,
+            flags,
+            writable,
+            writable_path,
+            &client,
+        )
     }
 }
 

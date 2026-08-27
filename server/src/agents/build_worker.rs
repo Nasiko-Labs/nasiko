@@ -375,6 +375,8 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
         } => {
             let mut platform_env = state.agent_env(agent_id).await;
             platform_env.extend(env);
+            // This legacy job variant is never actually enqueued anymore
+            // (superseded by `GithubClone`), kept for in-flight compat.
             execute_clone_and_deploy(
                 state.runtime.clone(),
                 state.db.clone(),
@@ -406,9 +408,13 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
             name,
             repo_full_name,
             branch,
-            image_tag,
+            image_tag: _,
             ports,
             env,
+            version_override,
+            prior_version,
+            prior_image,
+            prior_status,
         } => {
             execute_github_clone_and_deploy(
                 state.clone(),
@@ -419,9 +425,12 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
                 name,
                 repo_full_name,
                 branch,
-                image_tag,
                 ports,
                 env,
+                version_override,
+                prior_version,
+                prior_image,
+                prior_status,
             )
             .await;
         }

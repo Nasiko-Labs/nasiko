@@ -370,7 +370,10 @@ async fn reupload_without_writable_field_keeps_stored_writable() {
     assert_eq!(first["data"]["agent_id"], second["data"]["agent_id"]);
 
     let (writable, writable_path) = fetch_writable(agent_id).await.unwrap();
-    assert!(writable, "re-upload without the field must keep writable=true");
+    assert!(
+        writable,
+        "re-upload without the field must keep writable=true"
+    );
     assert_eq!(
         writable_path.as_deref(),
         Some("/app/data"),

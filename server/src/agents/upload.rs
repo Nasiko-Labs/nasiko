@@ -227,6 +227,10 @@ pub enum BuildJobPayload {
         image_tag: String,
         ports: Vec<u16>,
         env: HashMap<String, String>,
+        version_override: Option<String>,
+        prior_version: Option<String>,
+        prior_image: Option<String>,
+        prior_status: Option<String>,
     },
     /// MCP-server-upload build+deploy (POST /api/mcp/connectors/upload or
     /// /upload-github). `env` is encrypted (owner-scoped) at rest in this
@@ -1454,9 +1458,12 @@ pub async fn execute_github_clone_and_deploy(
     name: String,
     repo_full_name: String,
     branch: String,
-    image_tag: String,
     ports: Vec<u16>,
     env: HashMap<String, String>,
+    version_override: Option<String>,
+    prior_version: Option<String>,
+    prior_image: Option<String>,
+    prior_status: Option<String>,
 ) {
     // GitHub service must be configured for cloning to work.
     let github_svc = match state.github_svc.as_ref() {
@@ -1560,6 +1567,14 @@ pub async fn execute_github_clone_and_deploy(
         .await;
         return;
     }
+
+    let version_tag = version_override.as_deref().unwrap_or("latest");
+    let image_tag =
+        crate::agents::build_image_tag(&state.config.agent_image_registry, &name, version_tag);
+
+    // If prior state was captured, restore on failure inside execute_clone_and_deploy
+    // (the prior_* fields are carried for future rollback support but unused today).
+    let _ = (&prior_version, &prior_image, &prior_status);
 
     let mut platform_env = state.agent_env(agent_id).await;
     platform_env.extend(env);
@@ -2058,7 +2073,9 @@ pub(crate) async fn list_upload_agents(
                         agent_name: r.agent_name,
                         icon_url: r.icon_url,
                         upload_info: UploadInfoResponse {
-                            upload_type: r.metadata.get("upload_type")
+                            upload_type: r
+                                .metadata
+                                .get("upload_type")
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("zip")
                                 .to_string(),
@@ -2110,7 +2127,8 @@ mod otel_patch_tests {
         // `node:20-slim` matches neither "python" nor a Python toolchain, but it
         // does contain "slim" — the old check patched it and the injected `pip`
         // layer failed the build outright.
-        let original = "FROM node:20-slim\nRUN apt-get install -y python3\nENTRYPOINT [\"./run.sh\"]\n";
+        let original =
+            "FROM node:20-slim\nRUN apt-get install -y python3\nENTRYPOINT [\"./run.sh\"]\n";
 
         assert_eq!(
             patch(original, "node-slim"),
