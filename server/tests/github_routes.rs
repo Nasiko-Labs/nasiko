@@ -52,6 +52,54 @@ async fn test_github_login_status_is_public_and_reports_unconfigured() {
     server.cleanup().await;
 }
 
+/// The configured direction of the same contract: with OAuth credentials
+/// present the status endpoint must flip to `true` and the login route must
+/// serve an authorization URL. Without this case, a wiring regression that
+/// pins `configured` to `false` (button hidden on every deployment) would
+/// pass the unconfigured test above.
+#[tokio::test]
+#[serial]
+async fn test_github_login_status_reports_configured() {
+    // Fake credentials suffice: the status endpoint only reports whether the
+    // service was constructed, and the login route builds its authorize URL
+    // locally (no GitHub call). The callback URL is required — AppState
+    // panics if credentials are set without one.
+    let server = common::TestServer::start_with(|config| {
+        config.github_client_id = Some("test-client-id".into());
+        config.github_client_secret = Some("test-client-secret".into());
+        config.github_callback_url = Some("http://localhost:9090/api/auth/github/callback".into());
+    })
+    .await;
+
+    let res = server
+        .client
+        .get(server.url("/api/auth/github/status"))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(res.status(), 200);
+    let body: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(body["configured"], true);
+
+    // The login route must agree with the status it advertises.
+    let login = server
+        .client
+        .get(server.url("/api/auth/github/login-user"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(login.status(), 200);
+    let login_body: serde_json::Value = login.json().await.unwrap();
+    let auth_url = login_body["auth_url"].as_str().unwrap();
+    assert!(
+        auth_url.starts_with("https://github.com/login/oauth/authorize"),
+        "unexpected auth_url: {auth_url}"
+    );
+
+    server.cleanup().await;
+}
+
 // ─── /api/github/user ──────────────────────────────────────────────────────
 
 #[tokio::test]
