@@ -108,10 +108,6 @@ pub enum AgentOpsCommands {
         /// Non-interactive: auto-accept the suggested version instead of prompting
         #[arg(long, short = 'y')]
         yes: bool,
-        /// Explicit consent to replace an already-used version's content in place
-        /// (only takes effect together with --version; interactive runs are asked instead)
-        #[arg(long)]
-        overwrite: bool,
     },
     /// Push image to cluster OCI registry (without deploying)
     Push {
@@ -126,10 +122,6 @@ pub enum AgentOpsCommands {
         /// Non-interactive: auto-accept the suggested version instead of prompting
         #[arg(long, short = 'y')]
         yes: bool,
-        /// Explicit consent to replace an already-used version's content in place
-        /// (only takes effect together with --version; interactive runs are asked instead)
-        #[arg(long)]
-        overwrite: bool,
     },
     /// Upload source directory or .zip and let the server build + deploy (no local Docker needed)
     #[command(
@@ -905,7 +897,6 @@ pub fn dispatch_agent_dev(cmd: AgentDevCommands) -> Result<()> {
             platform.as_deref(),
             version_prompt::VersionFlags {
                 version: version.as_deref(),
-                overwrite: false,
                 yes,
             },
         ),
@@ -938,7 +929,6 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             writable_path,
             version,
             yes,
-            overwrite,
         } => commands::deploy::deploy_with_version_flags(
             &image,
             name.as_deref(),
@@ -947,7 +937,6 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             &env,
             version_prompt::VersionFlags {
                 version: version.as_deref(),
-                overwrite,
                 yes,
             },
             writable,
@@ -958,13 +947,11 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             name,
             version,
             yes,
-            overwrite,
         } => commands::push::push_with_version_flags(
             &image,
             name.as_deref(),
             version_prompt::VersionFlags {
                 version: version.as_deref(),
-                overwrite,
                 yes,
             },
         ),

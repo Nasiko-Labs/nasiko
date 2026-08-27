@@ -847,7 +847,6 @@ async fn record_uploaded_version(
         version: &version_tag,
         image_tag,
         changelog: None,
-        allow_overwrite: false,
     })
     .await;
 }

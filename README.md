@@ -548,6 +548,7 @@ docs/           Design docs (architecture, protocol, conventions)
 | Agent upload -> `500 agents_owner_id_fkey` | Log out and back in, or `docker compose down -v && docker compose up -d` then log in fresh |
 | Server can't reach Postgres | `docker compose up -d` and wait for `healthy` |
 | Agent `Name or service not known` (Linux Docker) | Recreate with `--add-host host.docker.internal:host-gateway` |
+| `SEED_TOOLKITS is set but COMPOSIO_API_KEY is not` at startup | Expected and harmless — `SEED_TOOLKITS` ships active by default in `.env.example`. Set `COMPOSIO_API_KEY` in `.env` to actually register Composio toolkits, or comment out `SEED_TOOLKITS` to silence the warning |
 
 ### Windows
 
