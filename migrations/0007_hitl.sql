@@ -17,9 +17,9 @@ CREATE TABLE hitl_requests (
 
   agent_id                 UUID NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
 
-  -- The user this execution/action is attributed to. NOT, by itself, the
-  -- authorization decision for every kind — see the HITL review notes on owner_user_id's
-  -- dual meaning (conversation owner vs. delegation subject).
+  -- The user this execution/action is attributed to, and the authorization decision for every
+  -- kind (including tool_approval, whose approver is the delegating user, not whoever manages
+  -- the agent — connector credentials are always the calling user's own).
   owner_user_id            UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   resolved_by              UUID REFERENCES users(id),
 
