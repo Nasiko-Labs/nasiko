@@ -593,7 +593,6 @@ pub async fn execute_agent_update(
                     version: &new_version,
                     image_tag: &image_tag,
                     changelog: changelog.as_deref(),
-                    allow_overwrite: false,
                 }
             })
             .await;
