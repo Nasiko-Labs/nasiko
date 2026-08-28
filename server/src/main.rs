@@ -15,6 +15,45 @@ struct OssAssets;
 #[prefix = "common/"]
 struct CommonAssets;
 
+/// `depends_on: condition: service_healthy` guarantees Postgres itself is
+/// ready, but the container's own DNS resolution can still have a brief
+/// post-start hiccup unrelated to Postgres's readiness — especially under
+/// alternative Docker backends (OrbStack, Colima) — surfacing as a
+/// "temporary failure in name resolution" rather than a connection refusal.
+/// Retrying here absorbs that instead of crashing the whole server on a
+/// transient blip.
+async fn connect_to_postgres_with_retry(database_url: &str) -> sqlx::PgPool {
+    const MAX_ATTEMPTS: u32 = 10;
+    const RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
+
+    let mut last_err = None;
+    for attempt in 1..=MAX_ATTEMPTS {
+        match sqlx::postgres::PgPoolOptions::new()
+            .max_connections(50)
+            .connect(database_url)
+            .await
+        {
+            Ok(pool) => return pool,
+            Err(e) => {
+                tracing::warn!(
+                    attempt,
+                    max_attempts = MAX_ATTEMPTS,
+                    error = %e,
+                    "failed to connect to postgres, retrying"
+                );
+                last_err = Some(e);
+                if attempt < MAX_ATTEMPTS {
+                    tokio::time::sleep(RETRY_DELAY).await;
+                }
+            }
+        }
+    }
+    panic!(
+        "failed to connect to postgres after {MAX_ATTEMPTS} attempts: {}",
+        last_err.expect("loop always sets last_err before exhausting attempts")
+    );
+}
+
 #[tokio::main]
 async fn main() {
     let _ = dotenvy::dotenv();
@@ -31,11 +70,7 @@ async fn main() {
     // default of 10 — load testing showed 10 saturates under a few hundred concurrent
     // requests (server CPU stays idle while sqlx's own acquire-timeout logs show
     // requests queuing tens of seconds for a connection).
-    let db = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(50)
-        .connect(&config.database_url)
-        .await
-        .expect("failed to connect to postgres");
+    let db = connect_to_postgres_with_retry(&config.database_url).await;
 
     let jwt_secret = std::env::var("JWT_SECRET").expect("JWT_SECRET must be set");
     let auth: Arc<dyn nasiko_auth::AuthService> =
