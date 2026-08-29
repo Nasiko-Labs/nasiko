@@ -4,7 +4,8 @@ edition.workspace = true
 version.workspace = true
 
 [dependencies]
-a2a = { git = "https://github.com/a2aproject/a2a-rs", package = "a2a-lf" }
+# Pinned by commit, not left floating — see the matching a2a entry in the root Cargo.toml for why.
+a2a = { git = "https://github.com/a2aproject/a2a-rs", rev = "3760e4969f6bf4850ac399735a9ba26e8cd77e84", package = "a2a-lf" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
