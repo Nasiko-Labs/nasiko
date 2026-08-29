@@ -9,12 +9,19 @@ CREATE TABLE hitl_requests (
                               ('direct_chat','agent_proxy','orchestrator','maf','mcp_tool')),
   status                   TEXT NOT NULL DEFAULT 'pending' CHECK (status IN
                               ('pending','resolved','rejected','expired','canceled')),
-  -- 'dispatching'/'dispatched' (push-delivery states) apply only to input_required/auth_required
-  -- resume, which isn't wired yet. tool_approval never uses this column meaningfully; it stays
-  -- 'not_started' and is claimed for a real dispatch attempt via resume_claimed_at below.
+  -- Delivery state of the human's decision to the paused execution. An attempt is in flight
+  -- when resume_claimed_at IS NOT NULL AND resume_status = 'not_started' (the lease lives
+  -- there, not here). completed = peer confirmed receipt; failed = attempts exhausted or
+  -- non-retryable; delivery_outcome_unknown = lease expired mid-attempt (set by the recovery
+  -- sweep, never auto-retried).
   resume_status            TEXT NOT NULL DEFAULT 'not_started' CHECK (resume_status IN
                               ('not_started','completed','failed','delivery_outcome_unknown')),
 
+  -- ON DELETE CASCADE is deliberate; agent foreign keys use mixed deletion policies
+  -- elsewhere (agent_builds cascades; chat_sessions uses SET NULL; session_traces uses
+  -- SET NULL plus a denormalised agent_name so listings survive agent deletion).
+  -- Agents are normally soft-deleted, so hard deletion and this cascade are rare;
+  -- HITL history is intentionally scoped to its agent.
   agent_id                 UUID NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
 
   -- The user this execution/action is attributed to, and the authorization decision for every
@@ -40,6 +47,14 @@ CREATE TABLE hitl_requests (
   arguments_hash           TEXT,
   consumed_at              TIMESTAMPTZ,                 -- kind=tool_approval only, one-time-use claim
 
+  -- Postgres treats NULLs as distinct in unique indexes, so uq_hitl_pending_per_tool_call below
+  -- enforces nothing if any of these three is NULL on a tool_approval row. This CHECK is the
+  -- backstop for that, independent of whatever the (not-yet-written) per-origin constructor does.
+  CONSTRAINT chk_hitl_tool_approval_identity CHECK (
+    kind <> 'tool_approval'
+    OR (connector_id IS NOT NULL AND tool_name IS NOT NULL AND context_id IS NOT NULL)
+  ),
+
   -- Split deliberately: question (write-once, at creation), human_response (written only
   -- by resolve()), resume_state (written only by the resume dispatcher, never API-exposed).
   question                 JSONB NOT NULL,
@@ -47,8 +62,12 @@ CREATE TABLE hitl_requests (
   resume_state              JSONB NOT NULL DEFAULT '{}',
 
   -- Delivery lease for the resume dispatcher (mirrors build_jobs.picked_at). NULL = unclaimed.
-  -- Claim: SET resume_claimed_at = now() WHERE resume_status = 'not_started' AND
-  -- (resume_claimed_at IS NULL OR resume_claimed_at < now() - interval '2 minutes').
+  -- Claim (atomic; the only mutual-exclusion mechanism):
+  --   UPDATE hitl_requests
+  --      SET resume_claimed_at = now(), resume_dispatch_attempts = resume_dispatch_attempts + 1
+  --    WHERE id = $1 AND status = 'resolved' AND resume_status = 'not_started'
+  --      AND (resume_claimed_at IS NULL OR resume_claimed_at < now() - interval '2 minutes')
+  --   RETURNING *;
   resume_claimed_at         TIMESTAMPTZ,
   resume_dispatch_attempts  INT NOT NULL DEFAULT 0,
   resume_last_error         TEXT,

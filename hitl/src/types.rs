@@ -73,11 +73,12 @@ db_enum!(HitlStatus {
     Canceled => "canceled",
 });
 
-// 'completed' replaces the earlier 'dispatched'/'dispatching' pair for this MVP slice: nothing
-// yet pushes a delivery through this column (tool_approval resumes via consumed_at, and the
-// input_required/auth_required push-dispatcher isn't wired up yet), so there's no push-in-flight
-// state to distinguish from push-confirmed. The claim lease lives in `resume_claimed_at` on
-// `HitlRequest` instead of being folded into this enum, mirroring `build_jobs.picked_at`.
+// Delivery state of the human's decision to the paused execution. In-flight is not a variant:
+// an attempt is underway when `HitlRequest::resume_claimed_at` is set while this is still
+// `NotStarted` (the lease lives on the row, mirroring `build_jobs.picked_at`).
+// `Completed` = peer confirmed receipt; `Failed` = attempts exhausted or non-retryable;
+// `DeliveryOutcomeUnknown` = lease expired mid-attempt, set by the recovery sweep, never
+// auto-retried.
 db_enum!(ResumeStatus {
     NotStarted => "not_started",
     Completed => "completed",
@@ -92,7 +93,7 @@ db_enum!(ResumeStatus {
 /// response. Deliberately not `Serialize`: this is a DB row mirror, not a wire type — an API
 /// handler must build its own response DTO rather than returning this directly, so `resume_state`
 /// can never leak by a stray `Json(row)`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct HitlRequest {
     pub id: Uuid,
 
@@ -236,17 +237,84 @@ mod tests {
         assert_matches_sql_check(&all, SQL_RESUME_STATUS_VALUES);
     }
 
+    fn assert_serde_agrees_with_as_str<T>(variants: &[T])
+    where
+        T: Serialize + for<'de> Deserialize<'de> + Copy + PartialEq + fmt::Debug + fmt::Display,
+    {
+        for &variant in variants {
+            let json = serde_json::to_string(&variant).unwrap();
+            assert_eq!(
+                json,
+                format!("\"{}\"", variant),
+                "serde output disagrees with Display/as_str()"
+            );
+            let back: T = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, variant);
+        }
+    }
+
     #[test]
     fn serde_round_trip_agrees_with_as_str() {
-        for kind in [
+        assert_serde_agrees_with_as_str(&[
             HitlKind::InputRequired,
             HitlKind::AuthRequired,
             HitlKind::ToolApproval,
+        ]);
+        assert_serde_agrees_with_as_str(&[
+            HitlOrigin::DirectChat,
+            HitlOrigin::AgentProxy,
+            HitlOrigin::Orchestrator,
+            HitlOrigin::Maf,
+            HitlOrigin::McpTool,
+        ]);
+        assert_serde_agrees_with_as_str(&[
+            HitlStatus::Pending,
+            HitlStatus::Resolved,
+            HitlStatus::Rejected,
+            HitlStatus::Expired,
+            HitlStatus::Canceled,
+        ]);
+        assert_serde_agrees_with_as_str(&[
+            ResumeStatus::NotStarted,
+            ResumeStatus::Completed,
+            ResumeStatus::Failed,
+            ResumeStatus::DeliveryOutcomeUnknown,
+        ]);
+    }
+
+    // Parses the value list out of `CHECK (<column> IN (...))` for one column, by name, out of
+    // the raw migration source. Anchoring on `CHECK (<column>` (not just `<column>`) and a `\b`
+    // after it is what keeps `status` from matching inside `resume_status`'s own CHECK block.
+    fn parse_check_values(migration: &str, column: &str) -> Vec<String> {
+        let pattern = format!(r"CHECK\s*\(\s*{column}\b\s+IN\s*\(([^)]*)\)");
+        let re = regex::Regex::new(&pattern).expect("pattern is a fixed, valid regex");
+        let captures = re.captures(migration).unwrap_or_else(|| {
+            panic!("no `CHECK ({column} IN (...))` block found in the migration")
+        });
+        captures[1]
+            .split(',')
+            .map(|v| v.trim().trim_matches('\'').to_string())
+            .collect()
+    }
+
+    #[test]
+    fn sql_check_values_match_the_migration_exactly() {
+        // Unlike assert_matches_sql_check (which only checks the hand-copied consts above
+        // against the enums), this parses each column's real CHECK (...) block out of the
+        // migration file and compares it against those consts value-for-value, in order — so
+        // the migration and the consts above can't silently drift apart in either direction.
+        let migration = include_str!("../../migrations/0007_hitl.sql");
+        for (column, expected) in [
+            ("kind", SQL_KIND_VALUES),
+            ("origin", SQL_ORIGIN_VALUES),
+            ("status", SQL_STATUS_VALUES),
+            ("resume_status", SQL_RESUME_STATUS_VALUES),
         ] {
-            let json = serde_json::to_string(&kind).unwrap();
-            assert_eq!(json, format!("\"{}\"", kind.as_str()));
-            let back: HitlKind = serde_json::from_str(&json).unwrap();
-            assert_eq!(back, kind);
+            let actual = parse_check_values(migration, column);
+            assert_eq!(
+                actual, expected,
+                "CHECK ({column} IN (...)) in the migration no longer matches SQL_*_VALUES above"
+            );
         }
     }
 
