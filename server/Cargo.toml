@@ -70,7 +70,7 @@ rand = { workspace = true }
 
 # OpenTelemetry
 opentelemetry = { version = "0.28", features = ["metrics"] }
-opentelemetry_sdk = { version = "0.28", features = ["rt-tokio", "metrics"] }
+opentelemetry_sdk = { version = "0.32", features = ["rt-tokio", "metrics"] }
 opentelemetry-otlp = { version = "0.28", default-features = false, features = ["grpc-tonic", "metrics", "trace"] }
 tracing-opentelemetry = "0.29"
 tonic = "0.12"
