@@ -729,7 +729,7 @@ Nasiko already probes and ACL-gates connectors. That is necessary and not the sa
       - name: Verify tool delivery attestation
         if: hashFiles('toa.json') != ''
         run: |
-          pip install "git+https://github.com/Carmel-Labs-Inc/toa.git@5a1bf1cf6a15a4864ea809fe7b2a073f2cef4e22#subdirectory=python"
+          pip install "git+https://github.com/Carmel-Labs-Inc/toa.git@99e2690fec24a5290d9542e58383a8bf753e8b74#subdirectory=python"
           toa-verify toa.json --require-emitter agentstatus --require-layer functional=pass --max-age 7d
 ```
 
