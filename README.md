@@ -636,6 +636,7 @@ docs/           Design docs (architecture, protocol, conventions)
 
 - **Official docs** — **[docs.nasiko.com](https://docs.nasiko.com)** — guides, API reference, and concepts
 - **Design docs** — [`docs/`](docs/): architecture, the A2A protocol, agent lifecycle, MCP Gateway internals, CLI design, networking
+- **Optional TOA gate** - [`docs/toa-optional-connector-gate.md`](docs/toa-optional-connector-gate.md): offline delivery-evidence verify before connector enable / promote (not on every `tools/call`)
 - **A2A protocol** — https://github.com/a2aproject/a2a-spec
 - **Rust toolchain** — https://rustup.rs
 - **Docker** — https://docs.docker.com/get-docker/
