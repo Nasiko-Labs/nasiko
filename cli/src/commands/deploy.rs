@@ -7,7 +7,9 @@ use anyhow::{Context, Result};
 use crate::api::{Client, ContainerStatus, DeploySpec};
 use crate::oci;
 use crate::util::parse_image_name_and_tag;
-use crate::version_prompt::{VersionContext, VersionFlags, resolve_deploy_version};
+use crate::version_prompt::{
+    VersionContext, VersionFlags, resolve_deploy_version, resolve_image_deploy_version,
+};
 
 const AGENT_FILE: &str = ".nasiko/agent.json";
 
@@ -37,9 +39,27 @@ pub fn deploy_with_version_flags(
     let writable = writable || writable_path.is_some();
 
     if Path::new(image).join("AgentCard.json").exists() {
-        deploy_from_directory(image, name, port, &env, flags, writable, writable_path, &client)
+        deploy_from_directory(
+            image,
+            name,
+            port,
+            &env,
+            flags,
+            writable,
+            writable_path,
+            &client,
+        )
     } else {
-        deploy_from_image(image, name, port, &env, flags, writable, writable_path, &client)
+        deploy_from_image(
+            image,
+            name,
+            port,
+            &env,
+            flags,
+            writable,
+            writable_path,
+            &client,
+        )
     }
 }
 
@@ -63,6 +83,28 @@ fn used_version_context<'a>(
         None => Vec::new(),
     };
     Ok((current_deployed_version, used_versions))
+}
+
+/// Whether `version` is already recorded with `status = "pushed"` for this
+/// agent — an image `nasiko push` made available in the registry but never
+/// deployed. When true, the artifact is already sitting in the registry
+/// under this exact tag, so deploy must promote it as-is instead of
+/// re-uploading: an OCI tag isn't content-addressed, so pushing again would
+/// silently repoint it if the local image has changed since the push.
+fn already_pushed(
+    client: &Client,
+    existing: Option<&(String, serde_json::Value)>,
+    version: &str,
+) -> Result<bool> {
+    let Some((id, _)) = existing else {
+        return Ok(false);
+    };
+    let status = client
+        .version_history(id)?
+        .into_iter()
+        .find(|v| v.version == version)
+        .map(|v| v.status);
+    Ok(status.as_deref() == Some("pushed"))
 }
 
 /// Finds the existing agent for a directory deploy: first checks the local
@@ -162,18 +204,25 @@ fn deploy_from_directory(
     };
     let decision = resolve_deploy_version(context, flags)?;
     let version = decision.version;
-    let image_tag = format!("{agent_name}:{version}");
-
-    // Build for linux/amd64 (the cluster's arch), not the host arch — an
-    // Apple Silicon build here would CrashLoop with "exec format error".
-    super::build::build(dir, Some(&image_tag), Some("linux/amd64"))?;
-
-    // Push image to OCI
     let repo = format!("nasiko/{agent_name}");
-    println!("Pushing {image_tag} → {repo}:{version}...");
-    oci::push_image(&image_tag, &repo, &version)?;
-
     let image_ref = format!("{repo}:{version}");
+
+    if already_pushed(client, existing.as_ref(), &version)? {
+        println!(
+            "  Version {version} was already pushed — deploying the existing registry image \
+             without rebuilding."
+        );
+    } else {
+        let image_tag = format!("{agent_name}:{version}");
+
+        // Build for linux/amd64 (the cluster's arch), not the host arch — an
+        // Apple Silicon build here would CrashLoop with "exec format error".
+        super::build::build(dir, Some(&image_tag), Some("linux/amd64"))?;
+
+        // Push image to OCI
+        println!("Pushing {image_tag} → {repo}:{version}...");
+        oci::push_image(&image_tag, &repo, &version)?;
+    }
 
     let agent_id = match existing {
         Some((id, current)) => {
@@ -181,11 +230,7 @@ fn deploy_from_directory(
                 .get("version")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            if decision.overwrite {
-                println!("  Overwriting: {version} (was: {current_version})");
-            } else {
-                println!("  Updating: {current_version} → {version}");
-            }
+            println!("  Updating: {current_version} → {version}");
             save_agent_id(&agent_file, &id, &agent_name)?;
 
             // Deploy the container BEFORE activating the new version in the
@@ -212,7 +257,6 @@ fn deploy_from_directory(
                 "description": card.get("description"),
                 "skills": card.get("skills"),
                 "capabilities": card.get("capabilities"),
-                "allow_overwrite": decision.overwrite,
             });
             let _: serde_json::Value = client.put_json(&format!("/agents/{id}"), &update)?;
             if let Err(e) = crate::util::sync_card_version(&card_path, &card, &version) {
@@ -290,34 +334,35 @@ fn deploy_from_image(
     });
     let (current_deployed_version, used_versions) =
         used_version_context(client, existing.as_ref())?;
-    // Only trust the tag if the user actually wrote one (`image:tag`) — a
-    // bare `image` implicitly means Docker's "latest", not a real choice.
-    let card_version =
-        crate::util::image_has_explicit_tag(image).then_some(image_tag_version.as_str());
-    let context = VersionContext {
-        card_version,
+    let decision = resolve_image_deploy_version(
+        image,
+        &image_tag_version,
+        flags,
         current_deployed_version,
-        used_versions: &used_versions,
-    };
-    let decision = resolve_deploy_version(context, flags)?;
+        &used_versions,
+        "deploy",
+    )?;
     let version = decision.version;
 
     let image_ref = format!("{repo}:{version}");
 
-    // Tag locally so Docker can find it by the canonical ref without a registry pull.
-    let _ = std::process::Command::new("docker")
-        .args(["tag", image, &image_ref])
-        .status();
+    if already_pushed(client, existing.as_ref(), &version)? {
+        println!(
+            "  Version {version} was already pushed — deploying the existing registry image \
+             without re-pushing."
+        );
+    } else {
+        // Tag locally so Docker can find it by the canonical ref without a registry pull.
+        let _ = std::process::Command::new("docker")
+            .args(["tag", image, &image_ref])
+            .status();
 
-    println!("Pushing {image} → {image_ref}...");
-    oci::push_image(image, &repo, &version)?;
+        println!("Pushing {image} → {image_ref}...");
+        oci::push_image(image, &repo, &version)?;
+    }
 
     if let Some((id, _)) = existing {
-        if decision.overwrite {
-            println!("  Overwriting agent: {agent_name} @ {version}");
-        } else {
-            println!("  Updating agent: {agent_name}");
-        }
+        println!("  Updating agent: {agent_name}");
 
         // Deploy the container BEFORE activating the new version in the
         // catalog — see the matching comment in `deploy_from_directory`.
@@ -336,7 +381,6 @@ fn deploy_from_image(
         let update = serde_json::json!({
             "version": version,
             "image": image_ref,
-            "allow_overwrite": decision.overwrite,
         });
         let _: serde_json::Value = client.put_json(&format!("/agents/{id}"), &update)?;
         println!("\n✓ Deployed {agent_name}:{version}");

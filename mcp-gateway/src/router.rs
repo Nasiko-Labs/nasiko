@@ -60,6 +60,7 @@ mod tests {
             url: url.into(),
             headers: HashMap::new(),
             transport: "streamable_http".into(),
+            trusted: false,
         }
     }
 

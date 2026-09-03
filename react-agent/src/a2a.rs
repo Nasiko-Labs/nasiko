@@ -208,7 +208,14 @@ impl A2aClient {
         );
 
         match self
-            .send_message_dialect(endpoint, message, &ctx, per_call_headers, Dialect::JsonRpc, extra_parts)
+            .send_message_dialect(
+                endpoint,
+                message,
+                &ctx,
+                per_call_headers,
+                Dialect::JsonRpc,
+                extra_parts,
+            )
             .await
         {
             Err(A2aClientError::A2aProtocol { code: -32601, .. }) => {
@@ -216,8 +223,15 @@ impl A2aClient {
                     endpoint,
                     "agent rejected JSON-RPC method (-32601); retrying with proto method name"
                 );
-                self.send_message_dialect(endpoint, message, &ctx, per_call_headers, Dialect::Proto, extra_parts)
-                    .await
+                self.send_message_dialect(
+                    endpoint,
+                    message,
+                    &ctx,
+                    per_call_headers,
+                    Dialect::Proto,
+                    extra_parts,
+                )
+                .await
             }
             other => other,
         }
@@ -602,7 +616,13 @@ mod tests {
     fn extra_file_parts_are_included_in_message() {
         let client = A2aClient::new();
         let file_part = serde_json::json!({"raw": "aGVsbG8=", "filename": "test.txt", "mediaType": "text/plain"});
-        let body = client.build_message_body(Dialect::JsonRpc, false, "analyze this", "ctx-1", &[file_part]);
+        let body = client.build_message_body(
+            Dialect::JsonRpc,
+            false,
+            "analyze this",
+            "ctx-1",
+            &[file_part],
+        );
         let parts = body["params"]["message"]["parts"].as_array().unwrap();
         assert_eq!(parts.len(), 2);
         assert_eq!(parts[0]["text"], "analyze this");

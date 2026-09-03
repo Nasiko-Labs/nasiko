@@ -33,6 +33,7 @@ tracing = { workspace = true }
 [dev-dependencies]
 anyhow = { workspace = true }
 tracing-subscriber = { workspace = true }
+mockito = { workspace = true }
 
 [[example]]
 name = "test_tools"

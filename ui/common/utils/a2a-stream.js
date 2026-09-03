@@ -40,23 +40,6 @@ function mergeProgress(accumulated, incoming) {
   return accumulated + incoming; // delta
 }
 
-// A2A's own spec uses lowercase task states ("working", "completed", "submitted",
-// "failed", "canceled" — see the A2A protocol's TaskState enum). Nasiko's own
-// synthesized frames (the trace_meta/usage_meta bookends the dispatch proxy
-// injects) use uppercase TASK_STATE_* instead. A directly-proxied agent's own
-// raw status-update frames come through in the spec's lowercase form untouched,
-// so both conventions have to be recognized here.
-const TASK_STATE_ALIASES = {
-  working: "TASK_STATE_WORKING",
-  completed: "TASK_STATE_COMPLETED",
-  failed: "TASK_STATE_FAILED",
-  canceled: "TASK_STATE_CANCELED",
-};
-
-function normalizeTaskState(state) {
-  return TASK_STATE_ALIASES[state] ?? state;
-}
-
 export async function readA2aStream(res, handlers = {}) {
   const out = {
     text: "",
@@ -117,7 +100,7 @@ export async function readA2aStream(res, handlers = {}) {
   };
 
   const handleStatusUpdate = (su) => {
-    const state = normalizeTaskState(su.status?.state);
+    const state = su.status?.state;
     const msg = su.status?.message;
     if (!msg || !msg.parts) return;
     const text = textOfParts(msg.parts);

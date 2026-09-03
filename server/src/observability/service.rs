@@ -307,6 +307,9 @@ pub struct SessionDetail {
     pub token_usage: TokenUsageSummary,
     pub cost_summary: FullCostSummary,
     pub latency_p50: Option<f64>,
+    /// The session page renders this KPI (`s.latency_p99`); it was silently
+    /// `0.0 s` for every session while the field didn't exist in the response.
+    pub latency_p99: Option<f64>,
     pub traces: Vec<TraceEntry>,
     pub pagination: Pagination,
 }
@@ -983,6 +986,7 @@ impl ObservabilityService {
                         },
                     },
                     latency_p50: details.latency_ms_p50,
+                    latency_p99: details.latency_ms_p99,
                     traces: trace_entries,
                     pagination: Pagination {
                         end_cursor,

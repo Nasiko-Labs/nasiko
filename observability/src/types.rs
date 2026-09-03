@@ -41,6 +41,7 @@ pub struct SessionDetails {
     pub output_tokens: u64,
     pub model_used: Option<String>,
     pub latency_ms_p50: Option<f64>,
+    pub latency_ms_p99: Option<f64>,
     pub cost: CostBreakdown,
 }
 

@@ -152,7 +152,10 @@ async fn discovery_issuer_mismatched_with_config_is_rejected() {
         .await;
 
     let client = OidcClient::new(test_config(issuer), reqwest::Client::new());
-    let err = client.authorization_url("s", "n", "c", None).await.unwrap_err();
+    let err = client
+        .authorization_url("s", "n", "c", None)
+        .await
+        .unwrap_err();
     assert!(
         err.to_string().contains("does not match configured"),
         "unexpected error: {err}"

@@ -43,6 +43,9 @@ pub struct FakeRuntime {
     /// Instances returned by `list_instances` — set via [`set_instances`] so
     /// hours-meter tests can script exactly what the reconciler observes.
     instances: std::sync::Mutex<Vec<InstanceInfo>>,
+    /// When set, `deploy` fails instead of succeeding — lets a test exercise
+    /// a genuine (post-build) deploy failure without a real runtime.
+    fail_deploy: std::sync::atomic::AtomicBool,
 }
 
 impl FakeRuntime {
@@ -50,6 +53,14 @@ impl FakeRuntime {
     #[allow(dead_code)]
     pub fn set_instances(&self, instances: Vec<InstanceInfo>) {
         *self.instances.lock().unwrap() = instances;
+    }
+
+    /// Make the next (and all subsequent) `deploy` calls fail instead of
+    /// succeeding.
+    #[allow(dead_code)]
+    pub fn set_fail_deploy(&self, fail: bool) {
+        self.fail_deploy
+            .store(fail, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -67,6 +78,11 @@ fn fake_status(container_id: &ContainerId) -> DeploymentStatus {
 #[async_trait]
 impl ContainerRuntime for FakeRuntime {
     async fn deploy(&self, spec: &DeploymentSpec) -> RuntimeResult<DeploymentStatus> {
+        if self.fail_deploy.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(nasiko_runtime::RuntimeError::BackendUnreachable(
+                "fake deploy failure (scripted by test)".into(),
+            ));
+        }
         let status = fake_status(&spec.container_id);
         self.containers
             .lock()
@@ -336,6 +352,8 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         loki_url: "http://localhost:3100".into(),
         observability_enabled: false,
         tenant_id: None,
+        model_pricing_sync_enabled: false,
+        model_pricing_sync_interval_secs: 86_400,
         flow_max_depth: 5,
         flow_max_fan_out: 20,
         flow_max_tokens: 100_000,

@@ -6,7 +6,9 @@ use anyhow::{Context, Result};
 use crate::api::Client;
 use crate::oci;
 use crate::util::parse_image_name_and_tag;
-use crate::version_prompt::{VersionContext, VersionFlags, resolve_deploy_version};
+use crate::version_prompt::{
+    VersionContext, VersionFlags, resolve_deploy_version, resolve_image_deploy_version,
+};
 
 /// Push an agent image to the cluster's OCI registry and register in catalog.
 /// Does NOT deploy a container.
@@ -55,6 +57,7 @@ fn push_from_directory(
     };
     let decision = resolve_deploy_version(context, flags)?;
     let version = decision.version;
+    reject_if_already_pushed(client, &existing, &version, dir)?;
     let image_tag = format!("{agent_name}:{version}");
 
     // Build for linux/amd64 (the cluster's arch), not the host arch — an
@@ -69,14 +72,7 @@ fn push_from_directory(
     let image_ref = format!("{repo}:{version}");
 
     // Register in catalog
-    register_agent(
-        client,
-        &agent_name,
-        &version,
-        &image_ref,
-        &card,
-        decision.overwrite,
-    )?;
+    register_agent(client, &agent_name, &version, &image_ref, &card)?;
 
     println!("\n✓ Pushed {agent_name}:{version} (image: {image_ref})");
     println!("  Deploy with: nasiko deploy {dir}");
@@ -89,23 +85,34 @@ fn push_from_image(
     flags: VersionFlags,
     client: &Client,
 ) -> Result<()> {
+    // Same guard as `deploy_from_image`: require an explicit tag, not
+    // Docker's implicit `:latest`.
+    if !crate::util::image_has_explicit_tag(image) {
+        anyhow::bail!(
+            "push requires an explicit image:tag (e.g. {image}:1.0.1) — run `nasiko build` \
+             first, then push exactly the tag it printed."
+        );
+    }
+    if !oci::local_image_exists(image)? {
+        anyhow::bail!("no local image found for {image} — build it first with `nasiko build`.");
+    }
+
     let (image_name, image_tag_version) = parse_image_name_and_tag(image);
     let agent_name = name_override.map(String::from).unwrap_or(image_name);
     let repo = format!("nasiko/{agent_name}");
 
     let existing = lookup_existing(client, &agent_name)?;
     let (current_deployed_version, used_versions) = used_version_context(client, &existing)?;
-    // Only trust the tag if the user actually wrote one (`image:tag`) — a
-    // bare `image` implicitly means Docker's "latest", not a real choice.
-    let card_version =
-        crate::util::image_has_explicit_tag(image).then_some(image_tag_version.as_str());
-    let context = VersionContext {
-        card_version,
-        current_deployed_version: current_deployed_version.as_deref(),
-        used_versions: &used_versions,
-    };
-    let decision = resolve_deploy_version(context, flags)?;
+    let decision = resolve_image_deploy_version(
+        image,
+        &image_tag_version,
+        flags,
+        current_deployed_version.as_deref(),
+        &used_versions,
+        "push",
+    )?;
     let version = decision.version;
+    reject_if_already_pushed(client, &existing, &version, image)?;
 
     println!("Pushing {image} → {repo}:{version}...");
     oci::push_image(image, &repo, &version)?;
@@ -114,14 +121,7 @@ fn push_from_image(
 
     // Register in catalog
     let card = serde_json::json!({});
-    register_agent(
-        client,
-        &agent_name,
-        &version,
-        &image_ref,
-        &card,
-        decision.overwrite,
-    )?;
+    register_agent(client, &agent_name, &version, &image_ref, &card)?;
 
     println!("\n✓ Pushed {agent_name}:{version} (image: {image_ref})");
     println!("  Deploy with: nasiko deploy {image}");
@@ -129,14 +129,10 @@ fn push_from_image(
 }
 
 /// Gets the currently-deployed version and full version history from
-/// [`lookup_existing`]'s result. Both come back empty for a brand-new
-/// agent. Shared by `push_from_directory` and `push_from_image`.
+/// [`lookup_existing`]'s result. Empty for a brand-new agent.
 ///
-/// Propagates a history-fetch failure instead of treating it as "no
-/// history" — failing open there would let a duplicate/already-used version
-/// through the check in `resolve_deploy_version` and overwrite that
-/// version's content in the registry before the server gets a chance to
-/// reject the catalog update.
+/// A history-fetch failure is propagated, not treated as "no history" —
+/// otherwise a reused version could slip past `resolve_deploy_version`.
 fn used_version_context(
     client: &Client,
     existing: &Option<(String, Option<String>)>,
@@ -149,11 +145,47 @@ fn used_version_context(
     Ok((current_deployed_version, used_versions))
 }
 
-/// Looks up an existing agent's id and version by name. `Ok(None)` if it
-/// doesn't exist yet (a real 404). A network/auth failure is propagated as
-/// `Err` instead of being treated as "new agent" — otherwise a transient
-/// lookup failure would push and register a fresh agent row on top of one
-/// that already exists, silently colliding with (or overwriting) its history.
+/// Bails if `version` already has ANY history row for this agent — pushed,
+/// active, or archived. `used_versions` (and therefore `resolve_*_version`)
+/// deliberately excludes `"pushed"` rows so a genuine first deploy can still
+/// claim a pushed-but-undeployed version — but that means it can't catch a
+/// *re-push* of that same version either. Checked here, before any
+/// build/upload happens, so a doomed push can't repoint the OCI tag first
+/// and fail after the damage is already done.
+fn reject_if_already_pushed(
+    client: &Client,
+    existing: &Option<(String, Option<String>)>,
+    version: &str,
+    deploy_target: &str,
+) -> Result<()> {
+    let Some((id, _)) = existing else {
+        return Ok(());
+    };
+    let history = client.version_history(id)?;
+    let Some(status) = history
+        .into_iter()
+        .find(|v| v.version == version)
+        .map(|v| v.status)
+    else {
+        return Ok(());
+    };
+    if status == "pushed" {
+        anyhow::bail!(
+            "version {version} has already been pushed for this agent — it's already in the \
+             registry, so there's nothing to push. Run `nasiko deploy {deploy_target}` to deploy \
+             it instead."
+        );
+    }
+    anyhow::bail!(
+        "version {version} already exists for this agent (status: {status}) and versions are \
+         immutable — choose a different version."
+    );
+}
+
+/// Looks up an existing agent's id and version by name. `Ok(None)` means it
+/// doesn't exist (a real 404) — a network/auth failure is a real `Err`, not
+/// treated as "new agent", so a transient failure can't register a
+/// duplicate agent.
 fn lookup_existing(client: &Client, name: &str) -> Result<Option<(String, Option<String>)>> {
     let Some(agent) = client.get_agent(name)? else {
         return Ok(None);
@@ -174,17 +206,12 @@ fn register_agent(
     version: &str,
     image_ref: &str,
     card: &serde_json::Value,
-    allow_overwrite: bool,
 ) -> Result<()> {
     // Update if the agent already exists (from a prior push/deploy), else create it.
     let existing = client.get_agent(name)?;
     if let Some(existing) = existing {
         let id = existing.get("id").and_then(|v| v.as_str()).unwrap_or("");
-        if allow_overwrite {
-            println!("  Overwriting pushed version in catalog: {name} @ {version}");
-        } else {
-            println!("  Registering pushed version in catalog: {name} @ {version} (not deployed)");
-        }
+        println!("  Registering pushed version in catalog: {name} @ {version} (not deployed)");
         // `push` never deploys — `activate_version: false` records this version
         // in history without marking it active or archiving whatever agent
         // version is actually still running (see
@@ -195,7 +222,6 @@ fn register_agent(
             "description": card.get("description"),
             "skills": card.get("skills"),
             "capabilities": card.get("capabilities"),
-            "allow_overwrite": allow_overwrite,
             "activate_version": false,
         });
         let _: serde_json::Value = client.put_json(&format!("/agents/{id}"), &update)?;

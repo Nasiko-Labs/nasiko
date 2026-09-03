@@ -92,3 +92,79 @@ fn used_version_context_propagates_history_fetch_failure() {
 
     assert!(used_version_context(&client, &existing).is_err());
 }
+
+// ─── reject_if_already_pushed ─────────────────────────────────────────────────
+
+#[test]
+fn reject_if_already_pushed_allows_a_brand_new_agent() {
+    let srv = mockito::Server::new();
+    let client = Client::for_test(&srv.url(), None);
+    assert!(reject_if_already_pushed(&client, &None, "1.0.0", "agent:1.0.0").is_ok());
+}
+
+#[test]
+fn reject_if_already_pushed_allows_an_unrecorded_version() {
+    let mut srv = mockito::Server::new();
+    srv.mock("GET", "/api/agents/agent-1/versions")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"data": []}"#)
+        .create();
+    let client = Client::for_test(&srv.url(), None);
+    let existing = Some(("agent-1".to_string(), Some("1.0.0".to_string())));
+
+    assert!(reject_if_already_pushed(&client, &existing, "2.0.0", "agent:2.0.0").is_ok());
+}
+
+#[test]
+fn reject_if_already_pushed_rejects_a_re_push_and_points_at_deploy() {
+    // The whole point: catch this before any build/upload happens, not after
+    // the OCI tag has already been repointed and the server 409s.
+    let mut srv = mockito::Server::new();
+    srv.mock("GET", "/api/agents/agent-1/versions")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            r#"{"data": [
+                {"version": "2.0.0", "status": "pushed", "is_active": false,
+                 "can_rollback": false, "created_at": "2024-01-02T00:00:00Z"}
+            ]}"#,
+        )
+        .create();
+    let client = Client::for_test(&srv.url(), None);
+    let existing = Some(("agent-1".to_string(), Some("1.0.0".to_string())));
+
+    let err = reject_if_already_pushed(&client, &existing, "2.0.0", "agent:2.0.0")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("already been pushed"),
+        "unexpected error: {err}"
+    );
+    assert!(
+        err.contains("nasiko deploy agent:2.0.0"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn reject_if_already_pushed_rejects_an_active_version_as_immutable() {
+    let mut srv = mockito::Server::new();
+    srv.mock("GET", "/api/agents/agent-1/versions")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            r#"{"data": [
+                {"version": "1.0.0", "status": "active", "is_active": true,
+                 "can_rollback": false, "created_at": "2024-01-01T00:00:00Z"}
+            ]}"#,
+        )
+        .create();
+    let client = Client::for_test(&srv.url(), None);
+    let existing = Some(("agent-1".to_string(), Some("1.0.0".to_string())));
+
+    let err = reject_if_already_pushed(&client, &existing, "1.0.0", "agent:1.0.0")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("immutable"), "unexpected error: {err}");
+}

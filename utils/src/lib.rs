@@ -1,4 +1,5 @@
 pub mod display;
+pub mod net;
 pub mod source_files;
 pub mod term;
 pub mod version;

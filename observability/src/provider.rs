@@ -469,7 +469,7 @@ impl ObservabilityProvider for TempoLokiProvider {
             });
         }
 
-        let (p50, _) = latency_percentiles(latencies);
+        let (p50, p99) = latency_percentiles(latencies);
         let cost = self
             .cost(model_used.as_deref(), total_input, total_output)
             .await;
@@ -481,6 +481,7 @@ impl ObservabilityProvider for TempoLokiProvider {
             output_tokens: total_output,
             model_used,
             latency_ms_p50: p50,
+            latency_ms_p99: p99,
             cost,
         })
     }
