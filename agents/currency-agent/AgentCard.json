@@ -1,48 +1,59 @@
 {
+  "protocolVersion": "1.0",
+  "name": "currency-agent",
+  "description": "Converts amounts between currencies. OpenAI parses the request; fixed USD-based rates compute the result.",
+  "supportedInterfaces": [
+    {
+      "url": "http://localhost:8000/",
+      "protocolBinding": "JSONRPC",
+      "protocolVersion": "1.0"
+    }
+  ],
+  "url": "http://localhost:8000/",
   "agentFramework": "starlette",
+  "preferredTransport": "JSONRPC",
+  "provider": {
+    "organization": "Nasiko",
+    "url": "https://nasiko.com"
+  },
+  "llm_provider": "openai",
+  "version": "1.0.0",
   "capabilities": {
-    "chat_agent": false,
+    "streaming": true,
     "pushNotifications": false,
     "stateTransitionHistory": true,
-    "streaming": true
+    "chat_agent": false
   },
+  "securitySchemes": {},
+  "security": [],
   "defaultInputModes": [
     "text/plain"
   ],
   "defaultOutputModes": [
     "text/plain"
   ],
-  "description": "The currency-agent converts amounts between different currencies using fixed exchange rates without relying on LLMs or external API calls.",
-  "framework": "starlette",
-  "llm_provider": null,
-  "name": "currency-agent",
-  "preferredTransport": "JSONRPC",
-  "protocolVersion": "0.2.9",
   "skills": [
     {
-      "description": "Converts an amount from one currency to another.",
-      "examples": [
-        "100 USD to EUR",
-        "50 GBP to INR",
-        "1000 JPY to USD"
-      ],
       "id": "convert-currency",
       "name": "Convert Currency",
+      "description": "Converts an amount from one currency to another.",
       "tags": [
         "finance",
         "conversion",
-        "utility"
+        "utility",
+        "openai"
+      ],
+      "examples": [
+        "100 USD to EUR",
+        "50 GBP to INR",
+        "How much is 1000 yen in dollars?"
+      ],
+      "inputModes": [
+        "text/plain"
+      ],
+      "outputModes": [
+        "text/plain"
       ]
     }
-  ],
-  "tags": [
-    "currency-conversion",
-    "finance",
-    "utility",
-    "python",
-    "starlette"
-  ],
-  "transport": "http",
-  "url": "http://localhost:8000/",
-  "version": "0.1.0"
+  ]
 }

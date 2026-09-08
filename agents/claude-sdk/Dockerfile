@@ -4,7 +4,7 @@ COPY src/ /app
 RUN pip install --no-cache-dir \
     "anthropic>=0.40.0" \
     "httpx>=0.27.0" \
-    "a2a-sdk[http-server]==0.3.26" \
+    "a2a-sdk[http-server]==1.1.2" \
     "python-dotenv>=1.0.0" \
     "uvicorn>=0.30.0" \
     "click>=8.0.0" \
