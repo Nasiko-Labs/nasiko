@@ -485,6 +485,26 @@ pull from the artifact registry.
 
 Run `nasiko --help` for the full, workflow-ordered command list.
 
+### Add live web search through MCP
+
+Parallel Search MCP is a free, no-account, no-API-key remote MCP endpoint for live web search and
+URL fetching. Register it with Nasiko's existing gateway:
+
+```sh
+nasiko mcp connector register parallel-search https://search.parallel.ai/mcp \
+  --display-name "Parallel Search" \
+  --description "Live web search and URL fetching"
+```
+
+The command prints a connector ID. Enable that connector for an agent:
+
+```sh
+nasiko mcp agent-tools enable <agent> <connector-id>
+```
+
+The agent can then use the connector's `web_search` and `web_fetch` tools through Nasiko's
+existing permission controls.
+
 ## Environment Variables
 
 Everything is env-driven through a single `Config` struct (`config/src/lib.rs`); required keys fail
