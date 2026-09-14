@@ -5,7 +5,7 @@ description = "Simulated A2A agent — randomized-latency lorem responses for co
 requires-python = ">=3.12"
 dependencies = [
     "a2a-sdk[http-server]==1.1.0",
-    "starlette==1.2.0",
+    "starlette==1.3.1",
     "uvicorn==0.48.0",
     "click==8.4.1",
     "opentelemetry-distro>=0.46b0",
