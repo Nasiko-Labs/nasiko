@@ -20,7 +20,7 @@ quick-xml = { version = "0.37", features = ["serialize"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 opentelemetry = { version = "0.28", features = ["metrics"] }
-opentelemetry_sdk = { version = "0.28", features = ["rt-tokio"] }
+opentelemetry_sdk = { version = "0.32", features = ["rt-tokio"] }
 opentelemetry-otlp = { version = "0.28", default-features = false, features = ["grpc-tonic", "trace"] }
 opentelemetry-semantic-conventions = "0.28"
 tracing-opentelemetry = "0.29"

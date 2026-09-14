@@ -76,7 +76,7 @@ redis = { version = "0.27", features = ["tokio-comp", "aio"] }
 rust_decimal = { version = "1.36", features = ["serde", "db-postgres"] }
 
 # ─── Auth ───────────────────────────────────────────────────────────────────
-jsonwebtoken = "9"
+jsonwebtoken = "10"
 bcrypt = "0.15"
 
 # ─── HTTP client ────────────────────────────────────────────────────────────
