@@ -22,6 +22,7 @@
 13. Composio Integration
 14. Observability & Usage Integration
 15. Extension Seams
+15a. Optional Tool Outcome Attestation (TOA) gate
 16. Configuration Reference
 17. API Surface
 18. Security Hardening Summary
@@ -75,6 +76,7 @@ Solving these per-agent does not scale, and it is a security liability — crede
 - This is not a general-purpose API gateway or reverse proxy — its scope is exclusively the MCP tool-calling surface.
 - It does not manage agent deployment, builds, or agent-to-agent orchestration; those are handled by other platform subsystems and are explicitly out of scope here.
 - It does not replace the platform's existing agent-to-agent access control (`agent_grants`/`agent_acl`) — it reuses that model's *shape* for a different resource, but does not touch or duplicate it.
+- It does not sign or verify tool-delivery attestations on every live `tools/call`. Optional [TOA](https://github.com/Carmel-Labs-Inc/toa) verify belongs at connector register / enable / promote time (CI or ops), not on the hot path. See §15a.
 
 ---
 
@@ -711,6 +713,29 @@ Following the platform's established pattern of trait-based extension points rat
 | Management-route access gate | Owner / public-grant / platform-admin checks |
 
 No new authentication scheme is introduced for management routes — they reuse the same access-control primitives the rest of the platform's resource-management routes already use. Extended behavior on these seams — including team- and department-scoped connector sharing — is available in the Nasiko enterprise edition.
+
+---
+
+## 15a. Optional Tool Outcome Attestation (TOA) gate
+
+Nasiko already probes and ACL-gates connectors. That is necessary and not the same as proving tool *delivery* quality from an outside probe.
+
+[TOA](https://github.com/Carmel-Labs-Inc/toa) (`toa/0.1`) is an Apache-2.0 signed JSON evidence format for MCP tool delivery (reach, invoke, functional, shape, and related layers). It is not a wire protocol. It is not meant to run on every live `tools/call`.
+
+**Suggested fit (optional, off by default):** before promoting or enabling a custom MCP connector for agents, ops or CI can require a recent attestation and run offline `toa-verify` with a pinned emitter public key. Any party can emit if they sign the schema. AgentStatus is one optional emitter. No AgentStatus account is required to verify.
+
+```yaml
+      # After connector probe / register checks in your pipeline.
+      - name: Verify tool delivery attestation
+        if: hashFiles('toa.json') != ''
+        run: |
+          pip install "git+https://github.com/Carmel-Labs-Inc/toa.git@99e2690fec24a5290d9542e58383a8bf753e8b74#subdirectory=python"
+          toa-verify toa.json --require-emitter agentstatus --require-layer functional=pass --max-age 7d
+```
+
+Copy-paste example: [`docs/toa-optional-connector-gate.md`](./toa-optional-connector-gate.md).
+
+This section documents an optional adjacent gate only. It does not change the gateway request path, SSRF rules, or ACL model.
 
 ---
 
