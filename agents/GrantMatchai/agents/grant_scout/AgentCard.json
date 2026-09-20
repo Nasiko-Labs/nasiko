@@ -1,0 +1,6 @@
+{
+  "name": "Grant Scout",
+  "version": "1.0.0",
+  "description": "Searches live databases for active grants matching keywords",
+  "entrypoint": "main.py"
+}

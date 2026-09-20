@@ -1,0 +1,6 @@
+{
+  "name": "Synthesis Agent",
+  "version": "1.0.0",
+  "description": "Merges findings into a unified grant match and strategy report using Groq 70B",
+  "entrypoint": "main.py"
+}
