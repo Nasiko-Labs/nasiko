@@ -305,3 +305,37 @@ async fn i6_revoked_session_cannot_invoke_proxy() {
 
     server.cleanup().await;
 }
+
+/// I12 / C5 — a caller who can reach the agent listen address must not gain
+/// Nasiko session authority. The stub answers without a platform JWT, and a
+/// forged Bearer does not change that. Loopback reachability is classified in
+/// `docs/chaos/FINDINGS.md`, not claimed as a VPC proof.
+#[tokio::test]
+#[serial]
+async fn i12_direct_agent_listen_ignores_platform_bearer() {
+    let stub_url = start_slow_stub(Duration::ZERO).await;
+    let client = reqwest::Client::new();
+
+    let open = client
+        .get(format!("{stub_url}/slow"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        open.status(),
+        200,
+        "agent listen address must not require a Nasiko session (I12)"
+    );
+
+    let spoofed = client
+        .get(format!("{stub_url}/slow"))
+        .bearer_auth("not-a-nasiko-session")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        spoofed.status(),
+        200,
+        "a platform Bearer must not become agent authority (I12)"
+    );
+}
