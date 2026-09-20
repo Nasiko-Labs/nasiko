@@ -27,7 +27,17 @@ use crate::mcp::ApiResponse;
 use crate::state::AppState;
 
 /// Outbound providers the LLM router can translate to — used to validate config writes.
-const SUPPORTED_PROVIDERS: [&str; 4] = ["openai", "anthropic", "gemini", "openrouter"];
+const SUPPORTED_PROVIDERS: [&str; 9] = [
+    "openai",
+    "anthropic",
+    "gemini",
+    "openrouter",
+    "groq",
+    "mistral",
+    "ollama",
+    "azure",
+    "nvidia",
+];
 
 /// The `llm_configs` columns returned to clients, assembled by Postgres into one JSON object.
 const CONFIG_JSON: &str = "json_build_object(\
@@ -771,6 +781,19 @@ mod tests {
             .is_ok()
         );
         assert!(validate("openai", Some("gpt-4o-mini"), &None, false).is_ok());
+        assert!(validate("groq", Some("openai/gpt-oss-20b"), &None, false).is_ok());
+        assert!(validate("mistral", Some("mistral-small-latest"), &None, false).is_ok());
+        assert!(validate("ollama", Some("llama3.2"), &None, false).is_ok());
+        assert!(validate("azure", Some("gpt-4o"), &None, false).is_ok());
+        assert!(
+            validate(
+                "nvidia",
+                Some("nvidia/mistral-nemo-minitron-8b-8k-instruct"),
+                &None,
+                false
+            )
+            .is_ok()
+        );
     }
 
     #[test]

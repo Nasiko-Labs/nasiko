@@ -87,13 +87,27 @@ impl LlmRouterCtx {
             platform_openai_api_key_set = !cfg.platform_openai_api_key.is_empty(),
             platform_anthropic_api_key_set = !cfg.platform_anthropic_api_key.is_empty(),
             platform_gemini_api_key_set = !cfg.platform_gemini_api_key.is_empty(),
+            platform_openrouter_api_key_set = !cfg.platform_openrouter_api_key.is_empty(),
+            platform_groq_api_key_set = !cfg.platform_groq_api_key.is_empty(),
+            platform_mistral_api_key_set = !cfg.platform_mistral_api_key.is_empty(),
+            platform_ollama_api_key_set = !cfg.platform_ollama_api_key.is_empty(),
+            platform_azure_openai_api_key_set = !cfg.platform_azure_openai_api_key.is_empty(),
+            platform_nvidia_api_key_set = !cfg.platform_nvidia_api_key.is_empty(),
             llm_config_cache_ttl_secs = cfg.llm_config_cache_ttl_secs,
             redis_url_set = !cfg.redis_url.is_empty(),
             router_decision_ttl_secs = cfg.router_decision_ttl_secs,
             openai_api_base = %cfg.openai_api_base,
             anthropic_api_base = %cfg.anthropic_api_base,
             gemini_api_base = %cfg.gemini_api_base,
+            openrouter_api_base = %cfg.openrouter_api_base,
+            groq_api_base = %cfg.groq_api_base,
+            mistral_api_base = %cfg.mistral_api_base,
+            ollama_api_base = %cfg.ollama_api_base,
+            azure_openai_api_base = %cfg.azure_openai_api_base,
+            azure_openai_api_version = %cfg.azure_openai_api_version,
+            nvidia_api_base = %cfg.nvidia_api_base,
             llm_gateway_base_url = %cfg.llm_gateway_base_url,
+            route_stub = cfg.route_stub,
             "llm-router: initializing with effective GatewayConfig"
         );
         log_seed_registry();
@@ -198,6 +212,8 @@ pub fn router(ctx: LlmRouterCtx) -> Router {
         )
         .route("/v1/embeddings", post(handlers::embeddings::embeddings))
         .route("/v1/models", get(handlers::models::models))
+        // DronaHQ contract: tier-hinted routing (platform keys, no agent JWT).
+        .route("/v1/route", post(handlers::route::route))
         .with_state(ctx)
 }
 

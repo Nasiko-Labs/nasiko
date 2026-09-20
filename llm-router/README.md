@@ -5,7 +5,8 @@ A provider-agnostic, OpenAI-compatible **egress proxy** for user-uploaded agents
 Agents are deployed pointed at this router (`OPENAI_BASE_URL`) with a Nasiko identity
 JWT as their `OPENAI_API_KEY` (not a real provider key). The router verifies the JWT,
 looks up the agent's provider/model/key in Postgres, decrypts the owner's real key,
-and forwards the call to OpenAI / Anthropic / Gemini — translating both directions so
+and forwards the call to OpenAI / Anthropic / Gemini / OpenRouter / Groq / Mistral /
+Ollama / Azure OpenAI / NVIDIA NIM — translating both directions so
 the agent never knows which provider answered. Provider + model are a **runtime config
 change** (one `agents.llm_config` update), with no agent redeploy.
 
@@ -34,12 +35,14 @@ is authoritative on every path (chat, stream, embeddings).
 | Route | Notes |
 |---|---|
 | `POST /v1/chat/completions` | OpenAI Chat Completions, streaming + non-streaming |
-| `POST /v1/embeddings` | OpenAI embeddings (OpenAI + Gemini; Anthropic 501) |
+| `POST /v1/embeddings` | OpenAI embeddings (OpenAI / Gemini / Mistral / Ollama / Azure; Anthropic / Groq 501) |
+| `POST /v1/route` | DronaHQ contract: tier hint → provider cascade (platform keys; no agent JWT) |
 | `GET /v1/models` | static provider/model catalog (public) |
 | `GET /v1/health` | liveness (`{"status":"ok"}`) |
 
-Errors are `{"detail": "<msg>"}` with the right status (401 auth / 400 client / 500
-internal / 502 upstream-after-fallbacks).
+Errors on the agent JWT surfaces are `{"detail": "<msg>"}` with the right status
+(401 auth / 400 client / 500 internal / 502 upstream-after-fallbacks).
+`/v1/route` uses `{ "error": { "code", "message", "provider?" } }` per the DronaHQ contract.
 
 ## Layout
 
@@ -52,9 +55,10 @@ src/
   resolver/     resolve() + TTL ConfigCache + RegistryStore (PgRegistry)
   ir/           canonical OpenAI-shaped IR (chat + embeddings), permissive/passthrough
   inbound/      InboundParser + OpenAiInbound (identity)
-  providers/    ProviderClient + openai / anthropic / gemini, sse, fallback
+  providers/    ProviderClient + openai / anthropic / gemini / openrouter / groq / mistral / ollama / azure / nvidia, sse, fallback
   usage.rs      token_usage writer (fire-and-forget; cost via DB trigger)
-  handlers/     chat / embeddings / models / health
+  handlers/     chat / embeddings / models / route / health
+  routing/      model router + DronaHQ `tier.rs` contract cascade
 examples/mint_token.rs   dev/test JWT minter
 ```
 
@@ -62,9 +66,14 @@ examples/mint_token.rs   dev/test JWT minter
 
 `AGENT_JWT_SECRET` (required; fail-closed if empty), `AGENT_JWT_ALGORITHM` (HS256),
 `DEFAULT_PROVIDER` (openai), `DEFAULT_MODEL` (gpt-4o-mini), `PLATFORM_OPENAI_API_KEY`,
-`LLM_CONFIG_CACHE_TTL` (30s), `{OPENAI,ANTHROPIC,GEMINI}_API_BASE` (test overrides).
-Reuses the platform's `SECRETS_ENCRYPTION_KEY` (per-user HKDF AES-256-GCM) and
-`DATABASE_URL`.
+`PLATFORM_ANTHROPIC_API_KEY`, `PLATFORM_GEMINI_API_KEY`, `PLATFORM_OPENROUTER_API_KEY`,
+`PLATFORM_GROQ_API_KEY` (also accepts bare `GROQ_API_KEY`), `PLATFORM_MISTRAL_API_KEY`,
+`PLATFORM_OLLAMA_API_KEY`, `PLATFORM_AZURE_OPENAI_API_KEY` / `AZURE_OPENAI_API_KEY`,
+`PLATFORM_NVIDIA_API_KEY` / `NVIDIA_API_KEY` (`nvapi-…`),
+`NASIKO_ROUTE_STUB=1` (optional; `/v1/route` returns contract-shaped stub replies),
+provider bases (`GROQ_API_BASE`, `MISTRAL_API_BASE`, `OLLAMA_API_BASE` default
+`http://127.0.0.1:11434/v1`, `AZURE_OPENAI_API_BASE` + `AZURE_OPENAI_API_VERSION`,
+`NVIDIA_API_BASE` default `https://integrate.api.nvidia.com/v1`), …
 
 Storage: `agents.llm_config` (JSONB; NULL → defaults), `user_secrets` (decrypt via
 `SecretsCrypto::try_for_user`), `token_usage` (written), `model_pricing` (cost trigger).

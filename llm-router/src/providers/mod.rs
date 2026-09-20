@@ -1,11 +1,3 @@
-//! Provider clients — the spokes of the hub.
-//!
-//! A [`ProviderClient`] takes the canonical IR + a [`ResolvedConfig`] and calls one
-//! provider, returning IR. Per-provider impls (OpenAI / Anthropic / Gemini) land in
-//! steps 4–6 and own the OpenAI⇄provider translation; the ordered fallback executor
-//! lands in step 8. Errors are [`ProviderError`] (carrying retryability) and convert
-//! to `GatewayError::Upstream` once fallbacks are exhausted.
-
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 
@@ -45,6 +37,27 @@ pub fn provider_for(
             cfg.openrouter_http_referer.clone(),
             cfg.openrouter_x_title.clone(),
         ))),
+        "groq" => Ok(Box::new(GroqProvider::new(
+            http.clone(),
+            cfg.groq_api_base.clone(),
+        ))),
+        "mistral" => Ok(Box::new(MistralProvider::new(
+            http.clone(),
+            cfg.mistral_api_base.clone(),
+        ))),
+        "ollama" => Ok(Box::new(OllamaProvider::new(
+            http.clone(),
+            cfg.ollama_api_base.clone(),
+        ))),
+        "azure" => Ok(Box::new(AzureOpenAiProvider::new(
+            http.clone(),
+            cfg.azure_openai_api_base.clone(),
+            cfg.azure_openai_api_version.clone(),
+        ))),
+        "nvidia" => Ok(Box::new(NvidiaProvider::new(
+            http.clone(),
+            cfg.nvidia_api_base.clone(),
+        ))),
         other => Err(GatewayError::Internal(format!(
             "provider '{other}' is not supported yet"
         ))),
@@ -52,14 +65,24 @@ pub fn provider_for(
 }
 
 pub mod anthropic;
+pub mod azure;
 pub mod fallback;
 pub mod gemini;
+pub mod groq;
+pub mod mistral;
+pub mod nvidia;
+pub mod ollama;
 pub mod openai;
 pub mod openrouter;
 pub(crate) mod sse;
 
 pub use anthropic::AnthropicProvider;
+pub use azure::AzureOpenAiProvider;
 pub use gemini::GeminiProvider;
+pub use groq::GroqProvider;
+pub use mistral::MistralProvider;
+pub use nvidia::NvidiaProvider;
+pub use ollama::OllamaProvider;
 pub use openai::OpenAiProvider;
 pub use openrouter::OpenRouterProvider;
 

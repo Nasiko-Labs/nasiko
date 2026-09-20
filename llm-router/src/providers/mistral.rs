@@ -1,41 +1,30 @@
-//! OpenRouter provider — wire-compatible with OpenAI's Chat Completions API, so this
-//! is ≈passthrough (same shape as [`super::openai::OpenAiProvider`]). The only
-//! OpenRouter-specific behavior is the optional `HTTP-Referer`/`X-Title` attribution
-//! headers (app ranking on openrouter.ai; harmless to omit) and the model id, which is
-//! a full `vendor/model` string (e.g. `anthropic/claude-sonnet-4.6`) rather than a bare
-//! provider-native id.
+//! Mistral provider — OpenAI Chat Completions–compatible wire format
+//! (`https://api.mistral.ai/v1`), so this is ≈passthrough like
+//! [`super::openai::OpenAiProvider`] / [`super::groq::GroqProvider`].
+//!
+//! Embeddings are supported via `/embeddings`. Model ids are Mistral's bare names
+//! (e.g. `mistral-small-latest`, `mistral-large-latest`).
 
 use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::BoxStream;
-use serde_json::json;
 
 use super::sse::sse_data_stream;
 use super::{ProviderClient, ProviderError};
 use crate::ir::{ChatChunk, ChatRequest, ChatResponse, EmbeddingsRequest, EmbeddingsResponse};
 use crate::resolver::ResolvedConfig;
 
-pub struct OpenRouterProvider {
+pub struct MistralProvider {
     http: reqwest::Client,
-    /// API base, e.g. `https://openrouter.ai/api/v1` (overridable for tests).
+    /// API base, e.g. `https://api.mistral.ai/v1` (overridable for tests).
     base: String,
-    /// Optional `HTTP-Referer` attribution header. Empty ⇒ omitted.
-    http_referer: String,
-    /// Optional `X-Title` attribution header. Empty ⇒ omitted.
-    x_title: String,
 }
 
-impl OpenRouterProvider {
-    pub fn new(http: reqwest::Client, base: String, http_referer: String, x_title: String) -> Self {
-        Self {
-            http,
-            base,
-            http_referer,
-            x_title,
-        }
+impl MistralProvider {
+    pub fn new(http: reqwest::Client, base: String) -> Self {
+        Self { http, base }
     }
 
-    /// 429 and 5xx are retryable (transient); other 4xx are request-shape errors.
     fn status_error(status: reqwest::StatusCode, body: String) -> ProviderError {
         ProviderError::Status {
             status: status.as_u16(),
@@ -45,29 +34,21 @@ impl OpenRouterProvider {
     }
 
     fn post(&self, path: &str, api_key: &str) -> reqwest::RequestBuilder {
-        let mut req = self
-            .http
+        self.http
             .post(format!("{}{path}", self.base))
-            .bearer_auth(api_key);
-        if !self.http_referer.is_empty() {
-            req = req.header("HTTP-Referer", &self.http_referer);
-        }
-        if !self.x_title.is_empty() {
-            req = req.header("X-Title", &self.x_title);
-        }
-        req
+            .bearer_auth(api_key)
     }
 }
 
 #[async_trait]
-impl ProviderClient for OpenRouterProvider {
+impl ProviderClient for MistralProvider {
     async fn chat(
         &self,
         req: &ChatRequest,
         cfg: &ResolvedConfig,
     ) -> Result<ChatResponse, ProviderError> {
         let mut out = req.clone();
-        out.model = Some(cfg.model.clone()); // C4: resolved model is authoritative
+        out.model = Some(cfg.model.clone());
         out.temperature = cfg.temperature.or(req.temperature);
         if let Some(mt) = cfg.max_tokens.or(req.max_tokens) {
             out.max_tokens = Some(mt);
@@ -91,7 +72,7 @@ impl ProviderClient for OpenRouterProvider {
             .json()
             .await
             .map_err(|e| ProviderError::Parse(e.to_string()))?;
-        parsed.model = cfg.model.clone(); // report the bare resolved model id
+        parsed.model = cfg.model.clone();
         Ok(parsed)
     }
 
@@ -107,10 +88,6 @@ impl ProviderClient for OpenRouterProvider {
             out.max_tokens = Some(mt);
         }
         out.stream = Some(true);
-        out.extra.insert(
-            "stream_options".to_string(),
-            json!({ "include_usage": true }),
-        );
 
         let resp = self
             .post("/chat/completions", &cfg.api_key)
@@ -176,10 +153,6 @@ impl ProviderClient for OpenRouterProvider {
         Ok(parsed)
     }
 
-    /// OpenRouter proxies many upstream vendors, so a rejected param can carry any of
-    /// their error shapes. We recognize OpenAI's own shape (passed through verbatim by
-    /// OpenRouter when the upstream is OpenAI-compatible) and otherwise decline —
-    /// unrecognized shapes are not safe to guess at.
     fn droppable_param(&self, err: &ProviderError) -> Option<String> {
         let ProviderError::Status {
             status, message, ..
@@ -192,16 +165,7 @@ impl ProviderClient for OpenRouterProvider {
         }
         let body: serde_json::Value = serde_json::from_str(message).ok()?;
         let error = body.get("error")?;
-        let code = error
-            .get("code")
-            .and_then(|c| c.as_str())
-            .unwrap_or_default();
         let param = error.get("param").and_then(|p| p.as_str())?;
-        let droppable = matches!(code, "unsupported_value" | "unsupported_parameter")
-            || (code == "invalid_value" && matches!(param, "max_tokens" | "max_completion_tokens"));
-        if !droppable {
-            return None;
-        }
         Some(param.to_string())
     }
 }
@@ -209,14 +173,15 @@ impl ProviderClient for OpenRouterProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::StreamExt;
     use serde_json::json;
 
     fn resolved(model: &str, temperature: Option<f64>) -> ResolvedConfig {
         ResolvedConfig {
-            provider: "openrouter".into(),
+            provider: "mistral".into(),
             model: model.into(),
-            litellm_model: format!("openrouter/{model}"),
-            api_key: "sk-or-test".into(),
+            litellm_model: format!("mistral/{model}"),
+            api_key: "mistral-test".into(),
             fallback_models: vec![],
             temperature,
             max_tokens: None,
@@ -230,24 +195,30 @@ mod tests {
         }
     }
 
-    fn provider(base: String) -> OpenRouterProvider {
-        OpenRouterProvider::new(reqwest::Client::new(), base, String::new(), String::new())
+    fn provider(base: String) -> MistralProvider {
+        MistralProvider::new(reqwest::Client::new(), base)
     }
 
     #[tokio::test]
-    async fn chat_overrides_model_and_reports_bare_vendor_model_string() {
+    async fn chat_overrides_model_and_reports_bare_id() {
         let mut server = mockito::Server::new_async().await;
         let provider_body = json!({
-            "id": "gen-1",
+            "id": "chatcmpl-mistral-1",
             "object": "chat.completion",
-            "model": "anthropic/claude-sonnet-4.6",
-            "choices": [{ "index": 0, "message": { "role": "assistant", "content": "hello" }, "finish_reason": "stop" }],
-            "usage": { "prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7 }
+            "model": "mistral-small-latest",
+            "choices": [{
+                "index": 0,
+                "message": { "role": "assistant", "content": "hello from mistral" },
+                "finish_reason": "stop"
+            }],
+            "usage": { "prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8 }
         });
         let m = server
             .mock("POST", "/chat/completions")
             .match_body(mockito::Matcher::PartialJson(json!({
-                "model": "anthropic/claude-sonnet-4.6", "temperature": 0.2, "stream": false
+                "model": "mistral-small-latest",
+                "temperature": 0.2,
+                "stream": false
             })))
             .with_status(200)
             .with_header("content-type", "application/json")
@@ -263,49 +234,79 @@ mod tests {
         }))
         .unwrap();
         let resp = provider
-            .chat(&req, &resolved("anthropic/claude-sonnet-4.6", Some(0.2)))
+            .chat(&req, &resolved("mistral-small-latest", Some(0.2)))
             .await
             .unwrap();
 
         m.assert_async().await;
-        assert_eq!(resp.model, "anthropic/claude-sonnet-4.6");
-        assert_eq!(resp.choices[0].message.text().as_deref(), Some("hello"));
-        assert_eq!(resp.usage.unwrap().total_tokens, Some(7));
+        assert_eq!(resp.model, "mistral-small-latest");
+        assert_eq!(
+            resp.choices[0].message.text().as_deref(),
+            Some("hello from mistral")
+        );
     }
 
     #[tokio::test]
-    async fn sends_attribution_headers_when_configured() {
+    async fn chat_stream_yields_delta_chunks() {
         let mut server = mockito::Server::new_async().await;
+        let sse = concat!(
+            "data: {\"id\":\"s1\",\"object\":\"chat.completion.chunk\",\"model\":\"mistral-small-latest\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hi\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"s1\",\"object\":\"chat.completion.chunk\",\"model\":\"mistral-small-latest\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: [DONE]\n\n",
+        );
         let m = server
             .mock("POST", "/chat/completions")
-            .match_header("http-referer", "https://nasiko.example")
-            .match_header("x-title", "Nasiko")
+            .match_body(mockito::Matcher::PartialJson(json!({ "stream": true })))
             .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(
-                json!({
-                    "id": "gen-1", "object": "chat.completion", "model": "openai/gpt-4o",
-                    "choices": [{ "index": 0, "message": { "role": "assistant", "content": "hi" }, "finish_reason": "stop" }]
-                })
-                .to_string(),
-            )
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse)
             .create_async()
             .await;
 
-        let provider = OpenRouterProvider::new(
-            reqwest::Client::new(),
-            server.url(),
-            "https://nasiko.example".into(),
-            "Nasiko".into(),
-        );
+        let provider = provider(server.url());
         let req: ChatRequest =
             serde_json::from_value(json!({ "messages": [{ "role": "user", "content": "hi" }] }))
                 .unwrap();
-        provider
-            .chat(&req, &resolved("openai/gpt-4o", None))
+        let mut stream = provider
+            .chat_stream(&req, &resolved("mistral-small-latest", None))
+            .await
+            .unwrap();
+
+        let first = stream.next().await.unwrap().unwrap();
+        assert_eq!(first.choices[0].delta.content.as_deref(), Some("Hi"));
+        assert!(stream.next().await.is_some());
+        assert!(stream.next().await.is_none());
+        m.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn embeddings_passthrough() {
+        let mut server = mockito::Server::new_async().await;
+        let body = json!({
+            "object": "list",
+            "data": [{ "object": "embedding", "index": 0, "embedding": [0.1, 0.2] }],
+            "model": "mistral-embed",
+            "usage": { "prompt_tokens": 2, "total_tokens": 2 }
+        });
+        let m = server
+            .mock("POST", "/embeddings")
+            .match_body(mockito::Matcher::PartialJson(json!({ "model": "mistral-embed" })))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body.to_string())
+            .create_async()
+            .await;
+
+        let provider = provider(server.url());
+        let req: EmbeddingsRequest =
+            serde_json::from_value(json!({ "model": "x", "input": "hi" })).unwrap();
+        let resp = provider
+            .embeddings(&req, &resolved("mistral-embed", None))
             .await
             .unwrap();
         m.assert_async().await;
+        assert_eq!(resp.model, "mistral-embed");
+        assert_eq!(resp.data.len(), 1);
     }
 
     #[tokio::test]
@@ -322,7 +323,7 @@ mod tests {
             serde_json::from_value(json!({ "messages": [{ "role": "user", "content": "hi" }] }))
                 .unwrap();
         let err = provider
-            .chat(&req, &resolved("openai/gpt-4o", None))
+            .chat(&req, &resolved("mistral-small-latest", None))
             .await
             .unwrap_err();
         assert!(matches!(
@@ -332,85 +333,5 @@ mod tests {
                 ..
             }
         ));
-    }
-
-    #[tokio::test]
-    async fn client_error_is_not_retryable() {
-        let mut server = mockito::Server::new_async().await;
-        server
-            .mock("POST", "/chat/completions")
-            .with_status(400)
-            .with_body("bad request")
-            .create_async()
-            .await;
-        let provider = provider(server.url());
-        let req: ChatRequest =
-            serde_json::from_value(json!({ "messages": [{ "role": "user", "content": "hi" }] }))
-                .unwrap();
-        let err = provider
-            .chat(&req, &resolved("openai/gpt-4o", None))
-            .await
-            .unwrap_err();
-        assert!(matches!(
-            err,
-            ProviderError::Status {
-                retryable: false,
-                status: 400,
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn droppable_param_extracts_offending_field() {
-        let provider = provider("http://x".into());
-        let unsupported = ProviderError::Status {
-            status: 400,
-            message: json!({
-                "error": { "message": "bad", "param": "temperature", "code": "unsupported_value" }
-            })
-            .to_string(),
-            retryable: false,
-        };
-        assert_eq!(
-            provider.droppable_param(&unsupported).as_deref(),
-            Some("temperature")
-        );
-        assert_eq!(
-            provider.droppable_param(&ProviderError::Transport("x".into())),
-            None
-        );
-    }
-
-    #[test]
-    fn droppable_param_accepts_invalid_value_only_for_max_tokens() {
-        let provider = provider("http://x".into());
-        let too_large = ProviderError::Status {
-            status: 400,
-            message: json!({
-                "error": {
-                    "message": "max_tokens is too large: 32000",
-                    "type": "invalid_request_error",
-                    "param": "max_tokens",
-                    "code": "invalid_value"
-                }
-            })
-            .to_string(),
-            retryable: false,
-        };
-        assert_eq!(
-            provider.droppable_param(&too_large).as_deref(),
-            Some("max_tokens")
-        );
-
-        let invalid_temperature = ProviderError::Status {
-            status: 400,
-            message: json!({
-                "error": {"code": "invalid_value", "param": "temperature"}
-            })
-            .to_string(),
-            retryable: false,
-        };
-        assert_eq!(provider.droppable_param(&invalid_temperature), None);
     }
 }

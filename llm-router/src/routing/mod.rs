@@ -21,12 +21,14 @@ pub mod cells;
 pub mod classifier;
 mod patterns;
 pub mod registry;
+pub mod tier;
 
 pub use boundary::{BoundarySignals, Mode, Phase};
 pub use cache::{CachedDecision, DecisionCache, NoopCache, RedisCache};
 pub use cells::{CellStore, InMemoryCellStore, PgCellStore};
 pub use classifier::{RequestType, Tier, classify, signal};
 pub use registry::{PgTierRegistry, StaticTierRegistry, TierRegistry};
+pub use tier::{ContractTier, TierCandidate, cascade_for, resolve_tier};
 
 /// Which precedence level produced a routing decision — emitted as a structured tag so we
 /// can see, per request, how the model was chosen.

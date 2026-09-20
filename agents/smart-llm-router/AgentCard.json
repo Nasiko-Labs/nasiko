@@ -1,0 +1,42 @@
+{
+  "protocolVersion": "0.2.9",
+  "name": "smart-llm-router",
+  "description": "Classifies a user prompt, picks the cheapest viable Nasiko tier (cheap/balanced/premium), calls POST /v1/route, and reports cost saved vs always-GPT-4o with session totals.",
+  "url": "http://localhost:8000/",
+  "agentFramework": "python",
+  "preferredTransport": "JSONRPC",
+  "provider": {
+    "organization": "Nasiko",
+    "url": "https://nasiko.com"
+  },
+  "version": "0.1.0",
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": false,
+    "stateTransitionHistory": false,
+    "chat_agent": true
+  },
+  "securitySchemes": {},
+  "security": [],
+  "defaultInputModes": ["text/plain"],
+  "defaultOutputModes": ["text/plain"],
+  "skills": [
+    {
+      "id": "smart-route",
+      "name": "Smart LLM routing",
+      "description": "Route each prompt to the cheapest viable model tier via Nasiko /v1/route and show savings vs GPT-4o.",
+      "tags": ["routing", "cost", "tier", "llm-router", "finops"],
+      "examples": [
+        "hi",
+        "Prove the Pythagorean theorem.",
+        "Translate 'good morning' to French"
+      ],
+      "inputModes": ["text/plain"],
+      "outputModes": ["text/plain"]
+    }
+  ],
+  "tags": ["routing", "cost", "nasiko", "dronahq-demo"],
+  "llm_provider": "openai",
+  "framework": "python",
+  "transport": "http"
+}

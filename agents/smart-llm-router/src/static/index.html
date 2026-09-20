@@ -1,0 +1,403 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Smart Router · Analytics</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --bg: #f2f2f4;
+      --card: #ffffff;
+      --ink: #1d1d1f;
+      --muted: #6e6e73;
+      --line: rgba(0,0,0,.1);
+      --blue: #0071e3;
+      --green: #248a3d;
+      --amber: #b25000;
+      --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+      --ease: cubic-bezier(.22,1,.36,1);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: var(--font);
+      color: var(--ink);
+      background:
+        radial-gradient(800px 400px at 80% -10%, rgba(0,113,227,.07), transparent 55%),
+        var(--bg);
+      -webkit-font-smoothing: antialiased;
+    }
+    .shell { width: min(1120px, calc(100% - 32px)); margin: 0 auto; padding: 28px 0 56px; }
+    header { margin-bottom: 22px; }
+    .eyebrow {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 5px 11px; border-radius: 999px; background: rgba(0,0,0,.05);
+      font-size: 12px; font-weight: 600; color: var(--muted);
+    }
+    .eyebrow::before {
+      content: ""; width: 7px; height: 7px; border-radius: 50%;
+      background: var(--green); box-shadow: 0 0 0 3px rgba(36,138,61,.2);
+    }
+    h1 {
+      margin: 10px 0 6px;
+      font-size: clamp(1.8rem, 4vw, 2.4rem);
+      letter-spacing: -.035em; font-weight: 700;
+    }
+    .lede { margin: 0; color: var(--muted); max-width: 40rem; line-height: 1.45; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 12px;
+      margin: 22px 0 16px;
+    }
+    @media (max-width: 860px) { .grid { grid-template-columns: 1fr 1fr; } }
+    .kpi {
+      background: var(--card); border: 1px solid var(--line);
+      border-radius: 18px; padding: 16px 18px;
+      box-shadow: 0 8px 28px rgba(0,0,0,.04);
+    }
+    .kpi .label { font-size: 12px; color: var(--muted); font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+    .kpi .value { margin-top: 6px; font-size: 1.65rem; font-weight: 700; letter-spacing: -.03em; font-variant-numeric: tabular-nums; }
+    .kpi .value.green { color: var(--green); }
+    .kpi .hint { margin-top: 4px; font-size: 12px; color: var(--muted); }
+    .charts {
+      display: grid;
+      grid-template-columns: 1.4fr 1fr;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    @media (max-width: 860px) { .charts { grid-template-columns: 1fr; } }
+    .card {
+      background: var(--card); border: 1px solid var(--line);
+      border-radius: 18px; padding: 16px 18px 10px;
+      box-shadow: 0 8px 28px rgba(0,0,0,.04);
+    }
+    .card h2 {
+      margin: 0 0 4px; font-size: 14px; font-weight: 650; letter-spacing: -.01em;
+    }
+    .card p.sub { margin: 0 0 12px; font-size: 12px; color: var(--muted); }
+    .chart-wrap { position: relative; height: 240px; }
+    .feed {
+      background: var(--card); border: 1px solid var(--line);
+      border-radius: 18px; padding: 16px 18px;
+      box-shadow: 0 8px 28px rgba(0,0,0,.04);
+    }
+    .feed h2 { margin: 0 0 12px; font-size: 14px; font-weight: 650; }
+    .feed-list { display: flex; flex-direction: column; gap: 10px; max-height: 360px; overflow: auto; }
+    .row {
+      display: grid; grid-template-columns: 1fr auto; gap: 8px 16px;
+      padding: 12px 14px; border-radius: 14px; background: rgba(0,0,0,.03);
+      animation: rise .4s var(--ease) both;
+    }
+    .row .prompt { font-weight: 600; letter-spacing: -.01em; }
+    .row .meta { font-size: 12px; color: var(--muted); }
+    .row .saved { font-weight: 700; color: var(--green); font-variant-numeric: tabular-nums; text-align: right; }
+    .row .costs { font-size: 12px; color: var(--muted); text-align: right; }
+    .empty { color: var(--muted); font-size: 14px; padding: 24px 8px; text-align: center; }
+    .pill {
+      display: inline-block; padding: 2px 8px; border-radius: 999px;
+      font-size: 11px; font-weight: 600; background: rgba(0,0,0,.06); color: var(--muted);
+    }
+    .pill.cheap { background: rgba(52,199,89,.15); color: var(--green); }
+    .pill.balanced { background: rgba(255,204,0,.2); color: var(--amber); }
+    .pill.premium { background: rgba(0,113,227,.12); color: var(--blue); }
+    @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <p class="eyebrow" id="liveBadge">Connecting…</p>
+      <h1>Routing analytics</h1>
+      <p class="lede">
+        Nasiko console stays a normal chat. This page receives every routed turn asynchronously —
+        what GPT‑4o would have cost, what you actually paid, and how much smart routing saved.
+      </p>
+    </header>
+
+    <section class="grid" aria-label="Summary">
+      <div class="kpi">
+        <div class="label">Saved vs GPT‑4o</div>
+        <div class="value green" id="kpiSaved">$0</div>
+        <div class="hint">Cumulative this process</div>
+      </div>
+      <div class="kpi">
+        <div class="label">Would have spent</div>
+        <div class="value" id="kpiBaseline">$0</div>
+        <div class="hint">If every turn used GPT‑4o</div>
+      </div>
+      <div class="kpi">
+        <div class="label">Actually spent</div>
+        <div class="value" id="kpiActual">$0</div>
+        <div class="hint">After smart tier routing</div>
+      </div>
+      <div class="kpi">
+        <div class="label">Avg save / call</div>
+        <div class="value" id="kpiAvg">—</div>
+        <div class="hint" id="kpiCalls">0 calls</div>
+      </div>
+    </section>
+
+    <section class="charts">
+      <div class="card">
+        <h2>Cumulative spend</h2>
+        <p class="sub">Running total: always GPT‑4o vs smart-routed actual</p>
+        <div class="chart-wrap"><canvas id="chartCumulative"></canvas></div>
+      </div>
+      <div class="card">
+        <h2>Tier mix</h2>
+        <p class="sub">Where prompts landed (cheap / balanced / premium)</p>
+        <div class="chart-wrap"><canvas id="chartTiers"></canvas></div>
+      </div>
+    </section>
+
+    <section class="card" style="margin-bottom:12px">
+      <h2>Per-call impact</h2>
+      <p class="sub">Each bar pair: GPT‑4o baseline (amber) vs routed cost (blue)</p>
+      <div class="chart-wrap" style="height:220px"><canvas id="chartPerCall"></canvas></div>
+    </section>
+
+    <section class="feed">
+      <h2>Live turns</h2>
+      <div class="feed-list" id="feed">
+        <div class="empty" id="empty">Waiting for Nasiko console chats with Smart LLM Router…</div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    const liveBadge = document.getElementById("liveBadge");
+    const feed = document.getElementById("feed");
+    const empty = document.getElementById("empty");
+    const seen = new Set();
+
+    let cumBaseline = 0;
+    let cumActual = 0;
+    let cumSaved = 0;
+    let calls = 0;
+
+    const labels = [];
+    const seriesBaseline = [];
+    const seriesActual = [];
+    const perCallLabels = [];
+    const perCallBaseline = [];
+    const perCallActual = [];
+    const tierCounts = { cheap: 0, balanced: 0, premium: 0 };
+
+    const tick = { color: "#86868b", font: { size: 11 } };
+    const grid = { color: "rgba(0,0,0,.06)" };
+
+    const chartCumulative = new Chart(document.getElementById("chartCumulative"), {
+      type: "line",
+      data: {
+        labels,
+        datasets: [
+          {
+            label: "Always GPT‑4o",
+            data: seriesBaseline,
+            borderColor: "#b25000",
+            backgroundColor: "rgba(178,80,0,.08)",
+            tension: 0.35,
+            fill: true,
+            pointRadius: 0,
+            borderWidth: 2,
+          },
+          {
+            label: "Smart routed",
+            data: seriesActual,
+            borderColor: "#0071e3",
+            backgroundColor: "rgba(0,113,227,.08)",
+            tension: 0.35,
+            fill: true,
+            pointRadius: 0,
+            borderWidth: 2,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { position: "bottom", labels: { boxWidth: 10, font: { size: 11 } } } },
+        scales: {
+          x: { ticks: tick, grid: { display: false } },
+          y: {
+            ticks: {
+              ...tick,
+              callback: (v) => "$" + Number(v).toFixed(4),
+            },
+            grid,
+          },
+        },
+      },
+    });
+
+    const chartTiers = new Chart(document.getElementById("chartTiers"), {
+      type: "doughnut",
+      data: {
+        labels: ["Cheap", "Balanced", "Premium"],
+        datasets: [{
+          data: [0, 0, 0],
+          backgroundColor: ["#34c759", "#ffcc00", "#0071e3"],
+          borderWidth: 0,
+        }],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { position: "bottom", labels: { boxWidth: 10, font: { size: 11 } } } },
+      },
+    });
+
+    const chartPerCall = new Chart(document.getElementById("chartPerCall"), {
+      type: "bar",
+      data: {
+        labels: perCallLabels,
+        datasets: [
+          {
+            label: "GPT‑4o baseline",
+            data: perCallBaseline,
+            backgroundColor: "rgba(178,80,0,.75)",
+            borderRadius: 6,
+          },
+          {
+            label: "Routed actual",
+            data: perCallActual,
+            backgroundColor: "rgba(0,113,227,.8)",
+            borderRadius: 6,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { position: "bottom", labels: { boxWidth: 10, font: { size: 11 } } } },
+        scales: {
+          x: { ticks: tick, grid: { display: false } },
+          y: {
+            ticks: { ...tick, callback: (v) => "$" + Number(v).toFixed(4) },
+            grid,
+          },
+        },
+      },
+    });
+
+    function money(n) {
+      const v = Number(n) || 0;
+      if (v === 0) return "$0";
+      if (v < 0.01) return "$" + v.toFixed(6);
+      return "$" + v.toFixed(4);
+    }
+
+    function updateKpis() {
+      document.getElementById("kpiSaved").textContent = money(cumSaved);
+      document.getElementById("kpiBaseline").textContent = money(cumBaseline);
+      document.getElementById("kpiActual").textContent = money(cumActual);
+      document.getElementById("kpiCalls").textContent = calls + (calls === 1 ? " call" : " calls");
+      document.getElementById("kpiAvg").textContent = calls ? money(cumSaved / calls) : "—";
+    }
+
+    function addFeedRow(ev) {
+      if (empty && empty.parentNode) empty.remove();
+      const row = document.createElement("div");
+      row.className = "row";
+      const left = document.createElement("div");
+      const prompt = document.createElement("div");
+      prompt.className = "prompt";
+      prompt.textContent = ev.prompt || "(empty)";
+      const meta = document.createElement("div");
+      meta.className = "meta";
+      const tier = ev.requested_tier || ev.tier_used || "";
+      meta.innerHTML =
+        `<span class="pill ${tier}">${tier || "—"}</span> ` +
+        `${ev.provider || "—"}/${ev.model || "—"} · ` +
+        `in ${ev.prompt_tokens ?? "—"} / out ${ev.completion_tokens ?? "—"} · ` +
+        `${ev.source || ""}`;
+      left.appendChild(prompt);
+      left.appendChild(meta);
+      const right = document.createElement("div");
+      const saved = document.createElement("div");
+      saved.className = "saved";
+      saved.textContent = ev.ok && ev.saved_usd != null ? "− " + money(ev.saved_usd) : "—";
+      const costs = document.createElement("div");
+      costs.className = "costs";
+      if (ev.ok) {
+        costs.textContent =
+          `GPT‑4o ${money(ev.baseline_usd)} → actual ${money(ev.cost_usd)}`;
+      } else {
+        costs.textContent = ev.error || "failed";
+      }
+      right.appendChild(saved);
+      right.appendChild(costs);
+      row.appendChild(left);
+      row.appendChild(right);
+      feed.prepend(row);
+    }
+
+    function ingest(ev) {
+      if (!ev || !ev.id || seen.has(ev.id)) return;
+      seen.add(ev.id);
+      addFeedRow(ev);
+      if (!ev.ok) return;
+
+      calls += 1;
+      const baseline = Number(ev.baseline_usd) || 0;
+      const actual = Number(ev.cost_usd) || 0;
+      const saved = Number(ev.saved_usd) || Math.max(0, baseline - actual);
+      cumBaseline += baseline;
+      cumActual += actual;
+      cumSaved += saved;
+      updateKpis();
+
+      const label = "#" + calls;
+      labels.push(label);
+      seriesBaseline.push(cumBaseline);
+      seriesActual.push(cumActual);
+      chartCumulative.update("none");
+
+      perCallLabels.push(label);
+      perCallBaseline.push(baseline);
+      perCallActual.push(actual);
+      if (perCallLabels.length > 24) {
+        perCallLabels.shift();
+        perCallBaseline.shift();
+        perCallActual.shift();
+      }
+      chartPerCall.update("none");
+
+      const t = ev.requested_tier || ev.tier_used;
+      if (t && tierCounts[t] != null) tierCounts[t] += 1;
+      chartTiers.data.datasets[0].data = [
+        tierCounts.cheap,
+        tierCounts.balanced,
+        tierCounts.premium,
+      ];
+      chartTiers.update("none");
+    }
+
+    function connect() {
+      const es = new EventSource("/api/events");
+      es.addEventListener("hello", () => {
+        liveBadge.textContent = "Live · listening for Nasiko console";
+      });
+      es.addEventListener("turn", (msg) => {
+        try { ingest(JSON.parse(msg.data)); } catch (_) {}
+      });
+      es.onerror = () => { liveBadge.textContent = "Reconnecting…"; };
+    }
+
+    // Hydrate from ring buffer first (covers turns that arrived before this tab opened
+    // and remote ingest that beat the SSE subscribe race). SSE dedupes via `seen`.
+    fetch("/api/stats")
+      .then((r) => r.json())
+      .then((data) => {
+        for (const ev of data.recent || []) ingest(ev);
+        liveBadge.textContent = "Live · listening for Nasiko console";
+      })
+      .catch(() => {
+        liveBadge.textContent = "Live · listening for Nasiko console";
+      })
+      .finally(connect);
+  </script>
+</body>
+</html>

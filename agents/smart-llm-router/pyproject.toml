@@ -1,0 +1,30 @@
+[project]
+name = "smart-llm-router-agent"
+version = "0.1.0"
+description = "Classifies prompts, picks a Nasiko /v1/route tier, and reports GPT-4o cost savings"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.27.0",
+    "a2a-sdk[http-server]==1.1.0",
+    "python-dotenv>=1.0.0",
+    "uvicorn>=0.30.0",
+    "click>=8.0.0",
+    "opentelemetry-api>=1.25.0",
+    "opentelemetry-sdk>=1.25.0",
+    "opentelemetry-distro>=0.46b0",
+    "opentelemetry-exporter-otlp>=1.25.0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.25.0",
+    "opentelemetry-instrumentation-httpx>=0.46b0",
+    "opentelemetry-instrumentation-starlette>=0.46b0",
+]
+
+[project.scripts]
+smart-llm-router = "src.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]

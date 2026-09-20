@@ -1,0 +1,596 @@
+//! `POST /v1/route` — DronaHQ contract (v1.0): tier hint → provider cascade → unified reply.
+//!
+//! Default path uses platform provider keys and the contract tier cascade (agnostic).
+//! When the caller presents an agent JWT and `agents.tier_cascade = false`, the handler
+//! instead resolves that agent's `llm_config` / BYOK provider (console-selected) and
+//! calls only that destination — so NVIDIA BYOK sticks.
+
+use std::time::Instant;
+
+use axum::Json;
+use axum::extract::State;
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::response::{IntoResponse, Response};
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value, json};
+use uuid::Uuid;
+
+use crate::LlmRouterCtx;
+use crate::auth::verify_agent_jwt;
+use crate::config::GatewayConfig;
+use crate::ir::{ChatRequest, Message};
+use crate::providers::{self, ProviderError};
+use crate::resolver::{PgRegistry, RequestHint, ResolvedConfig, resolve};
+use crate::routing::tier::{
+    ContractTier, TierCandidate, cascade_for, cheapest_candidate, estimate_prompt_tokens,
+    projected_completion_tokens, resolve_tier,
+};
+
+const CONTRACT_VERSION: &str = "1.0";
+
+const TASK_TYPES: &[&str] = &[
+    "summarize",
+    "translate",
+    "reason",
+    "code",
+    "chat",
+    "extract",
+];
+
+#[derive(Debug, Deserialize)]
+pub struct RouteBody {
+    pub task_type: Option<String>,
+    pub complexity: Option<i32>,
+    pub messages: Option<Vec<RouteMessage>>,
+    pub budget_tokens: Option<i64>,
+    #[serde(default = "default_allow_cache")]
+    pub allow_cache: bool,
+}
+
+fn default_allow_cache() -> bool {
+    true
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RouteMessage {
+    pub role: String,
+    #[serde(default)]
+    pub content: Option<Value>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RouteOk {
+    pub provider: String,
+    pub model: String,
+    pub content: String,
+    pub usage: RouteUsage,
+    pub cache_hit: bool,
+    pub tier_used: String,
+    pub latency_ms: u64,
+    pub trace_id: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RouteUsage {
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+    pub total_tokens: i64,
+    pub cost_usd: f64,
+}
+
+/// `POST /v1/route`
+pub async fn route(
+    State(ctx): State<LlmRouterCtx>,
+    headers: HeaderMap,
+    body: Json<Value>,
+) -> Response {
+    let started = Instant::now();
+    let trace_id = {
+        let full = Uuid::new_v4().simple().to_string();
+        full[..16].to_string()
+    };
+    let _session = headers
+        .get("x-session-id")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+
+    let parsed: RouteBody = match serde_json::from_value(body.0) {
+        Ok(b) => b,
+        Err(e) => {
+            return err_response(
+                StatusCode::BAD_REQUEST,
+                "bad_request",
+                &format!("invalid JSON body: {e}"),
+                None,
+            );
+        }
+    };
+
+    let task_type = parsed
+        .task_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if task_type.is_empty() || !TASK_TYPES.contains(&task_type.as_str()) {
+        return err_response(
+            StatusCode::BAD_REQUEST,
+            "bad_request",
+            &format!("task_type must be one of: {}", TASK_TYPES.join(", ")),
+            None,
+        );
+    }
+
+    let messages = match &parsed.messages {
+        Some(m) if !m.is_empty() => m,
+        _ => {
+            return err_response(
+                StatusCode::BAD_REQUEST,
+                "bad_request",
+                "messages must be a non-empty array",
+                None,
+            );
+        }
+    };
+
+    let ir_messages: Vec<Message> = messages
+        .iter()
+        .map(|m| Message {
+            role: m.role.clone(),
+            content: m.content.clone(),
+            name: None,
+            tool_call_id: None,
+            tool_calls: None,
+            extra: Map::new(),
+        })
+        .collect();
+
+    let prompt_tokens = estimate_prompt_tokens(&ir_messages);
+
+    if let Some(budget) = parsed.budget_tokens {
+        if budget < prompt_tokens {
+            return err_response(
+                StatusCode::BAD_REQUEST,
+                "budget_exceeded",
+                "budget_tokens smaller than estimated prompt",
+                None,
+            );
+        }
+        let proj_c = projected_completion_tokens(prompt_tokens, Some(budget));
+        let cheap = cheapest_candidate();
+        if budget < prompt_tokens + 1 {
+            return err_response(
+                StatusCode::BAD_REQUEST,
+                "budget_exceeded",
+                "even cheapest tier exceeds budget_tokens",
+                Some(cheap.provider),
+            );
+        }
+        let _ = (proj_c, cheap);
+    }
+
+    let header_tier = headers.get("x-nasiko-tier").and_then(|v| v.to_str().ok());
+    let mut tier = resolve_tier(header_tier, parsed.complexity, parsed.budget_tokens);
+
+    if matches!(task_type.as_str(), "reason" | "code") && tier == ContractTier::Cheap {
+        if parsed.complexity.unwrap_or(3) >= 4 {
+            tier = ContractTier::Balanced;
+        }
+    }
+
+    if ctx.cfg.route_stub {
+        return stub_ok(
+            &ir_messages,
+            tier,
+            prompt_tokens,
+            parsed.allow_cache,
+            started,
+            trace_id,
+        );
+    }
+
+    // Stick-to-selected-provider: agent JWT + agents.tier_cascade = false.
+    if let Some((agent_id, owner_id)) = optional_agent(&headers, &ctx.cfg) {
+        match agent_wants_cascade(&ctx.db, &agent_id).await {
+            Ok(false) => {
+                return route_selected_provider(
+                    &ctx,
+                    &agent_id,
+                    &owner_id,
+                    &ir_messages,
+                    tier,
+                    parsed.budget_tokens,
+                    prompt_tokens,
+                    started,
+                    trace_id,
+                )
+                .await;
+            }
+            Ok(true) => {
+                tracing::debug!(
+                    target: "nasiko::llm_router::route",
+                    %agent_id,
+                    "route: tier_cascade=true — using platform cascade"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "nasiko::llm_router::route",
+                    %agent_id,
+                    error = %e,
+                    "route: tier_cascade lookup failed — using platform cascade"
+                );
+            }
+        }
+    }
+
+    let cascade = cascade_for(tier);
+    let keyed: Vec<TierCandidate> = cascade
+        .iter()
+        .copied()
+        .filter(|c| has_platform_key(&ctx.cfg, c.provider))
+        .collect();
+
+    if keyed.is_empty() {
+        return err_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no_provider",
+            &format!("no platform key configured for tier '{tier}' cascade"),
+            None,
+        );
+    }
+
+    let max_tokens = parsed.budget_tokens.map(|b| (b - prompt_tokens).max(1));
+    let mut last_provider_err: Option<(String, ProviderError)> = None;
+
+    for candidate in &keyed {
+        let resolved = platform_resolved(candidate, &ctx.cfg, max_tokens);
+        let client = match providers::provider_for(candidate.provider, &ctx.http, &ctx.cfg) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(
+                    target: "nasiko::llm_router::route",
+                    provider = candidate.provider,
+                    error = %e,
+                    "route: failed to construct provider client; trying next"
+                );
+                continue;
+            }
+        };
+
+        let chat_req = ChatRequest {
+            model: Some(candidate.model.to_string()),
+            messages: ir_messages.clone(),
+            tools: None,
+            tool_choice: None,
+            temperature: None,
+            max_tokens,
+            stream: Some(false),
+            extra: Map::new(),
+        };
+
+        tracing::info!(
+            target: "nasiko::llm_router::route",
+            %trace_id,
+            tier = %tier,
+            provider = candidate.provider,
+            model = candidate.model,
+            task_type = %task_type,
+            allow_cache = parsed.allow_cache,
+            "route: attempting provider"
+        );
+
+        match client.chat(&chat_req, &resolved).await {
+            Ok(resp) => {
+                let content = resp
+                    .choices
+                    .first()
+                    .and_then(|c| c.message.text())
+                    .unwrap_or_default();
+                let usage = resp.usage.unwrap_or_default();
+                let p = usage.prompt_tokens.unwrap_or(prompt_tokens);
+                let c = usage.completion_tokens.unwrap_or(0);
+                let total = usage.total_tokens.unwrap_or(p + c);
+                let cost = round6(candidate.estimate_cost_usd(p, c));
+                let latency_ms = started.elapsed().as_millis() as u64;
+                let _ = parsed.allow_cache;
+                return ok_response(RouteOk {
+                    provider: candidate.provider.to_string(),
+                    model: candidate.model.to_string(),
+                    content,
+                    usage: RouteUsage {
+                        prompt_tokens: p,
+                        completion_tokens: c,
+                        total_tokens: total,
+                        cost_usd: cost,
+                    },
+                    cache_hit: false,
+                    tier_used: tier.as_str().to_string(),
+                    latency_ms,
+                    trace_id,
+                });
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "nasiko::llm_router::route",
+                    %trace_id,
+                    provider = candidate.provider,
+                    model = candidate.model,
+                    error = %e,
+                    "route: provider failed; considering cascade"
+                );
+                if let ProviderError::Status { status: 429, .. } = e {
+                    return err_response(
+                        StatusCode::TOO_MANY_REQUESTS,
+                        "rate_limited",
+                        &e.to_string(),
+                        Some(candidate.provider),
+                    );
+                }
+                last_provider_err = Some((candidate.provider.to_string(), e));
+            }
+        }
+    }
+
+    if let Some((provider, err)) = last_provider_err {
+        return err_response(
+            StatusCode::BAD_GATEWAY,
+            "provider_error",
+            &err.to_string(),
+            Some(&provider),
+        );
+    }
+
+    err_response(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "no_provider",
+        "no provider satisfied the tier cascade",
+        None,
+    )
+}
+
+fn optional_agent(headers: &HeaderMap, cfg: &GatewayConfig) -> Option<(String, String)> {
+    let authz = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok());
+    verify_agent_jwt(authz, cfg).ok()
+}
+
+async fn agent_wants_cascade(db: &sqlx::PgPool, agent_id: &str) -> Result<bool, sqlx::Error> {
+    let Ok(uuid) = Uuid::parse_str(agent_id) else {
+        return Ok(true);
+    };
+    let flag: Option<bool> =
+        sqlx::query_scalar("SELECT tier_cascade FROM agents WHERE id = $1 AND deleted_at IS NULL")
+            .bind(uuid)
+            .fetch_optional(db)
+            .await?;
+    Ok(flag.unwrap_or(true))
+}
+
+/// Honor the agent's console-selected provider/model (BYOK / llm_config / pin).
+async fn route_selected_provider(
+    ctx: &LlmRouterCtx,
+    agent_id: &str,
+    owner_id: &str,
+    ir_messages: &[Message],
+    tier: ContractTier,
+    budget_tokens: Option<i64>,
+    prompt_tokens: i64,
+    started: Instant,
+    trace_id: String,
+) -> Response {
+    let store = PgRegistry::new(ctx.db.clone());
+    let hint = RequestHint {
+        provider: None,
+        model: None,
+    };
+    let resolved = match resolve(&store, &ctx.cache, &ctx.cfg, agent_id, owner_id, hint).await {
+        Ok(r) => r,
+        Err(e) => {
+            return err_response(
+                StatusCode::BAD_GATEWAY,
+                "resolve_error",
+                &e.to_string(),
+                None,
+            );
+        }
+    };
+
+    tracing::info!(
+        target: "nasiko::llm_router::route",
+        %trace_id,
+        %agent_id,
+        provider = %resolved.provider,
+        model = %resolved.model,
+        "route: tier_cascade=false — using selected provider"
+    );
+
+    let max_tokens = budget_tokens
+        .map(|b| (b - prompt_tokens).max(1))
+        .or(resolved.max_tokens);
+
+    let client = match providers::provider_for(&resolved.provider, &ctx.http, &ctx.cfg) {
+        Ok(c) => c,
+        Err(e) => {
+            return err_response(
+                StatusCode::BAD_GATEWAY,
+                "provider_error",
+                &e.to_string(),
+                Some(&resolved.provider),
+            );
+        }
+    };
+
+    let chat_req = ChatRequest {
+        model: Some(resolved.model.clone()),
+        messages: ir_messages.to_vec(),
+        tools: None,
+        tool_choice: None,
+        temperature: resolved.temperature,
+        max_tokens,
+        stream: Some(false),
+        extra: Map::new(),
+    };
+
+    match client.chat(&chat_req, &resolved).await {
+        Ok(resp) => {
+            let content = resp
+                .choices
+                .first()
+                .and_then(|c| c.message.text())
+                .unwrap_or_default();
+            let usage = resp.usage.unwrap_or_default();
+            let p = usage.prompt_tokens.unwrap_or(prompt_tokens);
+            let c = usage.completion_tokens.unwrap_or(0);
+            let total = usage.total_tokens.unwrap_or(p + c);
+            let cost = estimate_cost_usd(&resolved.provider, &resolved.model, p, c);
+            ok_response(RouteOk {
+                provider: resolved.provider,
+                model: resolved.model,
+                content,
+                usage: RouteUsage {
+                    prompt_tokens: p,
+                    completion_tokens: c,
+                    total_tokens: total,
+                    cost_usd: cost,
+                },
+                cache_hit: false,
+                tier_used: format!("selected:{}", tier.as_str()),
+                latency_ms: started.elapsed().as_millis() as u64,
+                trace_id,
+            })
+        }
+        Err(e) => err_response(
+            StatusCode::BAD_GATEWAY,
+            "provider_error",
+            &e.to_string(),
+            Some(&resolved.provider),
+        ),
+    }
+}
+
+fn estimate_cost_usd(provider: &str, model: &str, prompt: i64, completion: i64) -> f64 {
+    for tier in [
+        ContractTier::Cheap,
+        ContractTier::Balanced,
+        ContractTier::Premium,
+    ] {
+        for cand in cascade_for(tier) {
+            if cand.provider == provider && cand.model == model {
+                return round6(cand.estimate_cost_usd(prompt, completion));
+            }
+        }
+    }
+    round6(((prompt as f64) * 0.00015 + (completion as f64) * 0.0006) / 1000.0)
+}
+
+fn has_platform_key(cfg: &GatewayConfig, provider: &str) -> bool {
+    !cfg.platform_key_for(provider).is_empty()
+}
+
+fn platform_resolved(
+    candidate: &TierCandidate,
+    cfg: &GatewayConfig,
+    max_tokens: Option<i64>,
+) -> ResolvedConfig {
+    let provider = candidate.provider.to_string();
+    let model = candidate.model.to_string();
+    ResolvedConfig {
+        litellm_model: format!("{provider}/{model}"),
+        provider,
+        model,
+        api_key: cfg.platform_key_for(candidate.provider).to_string(),
+        fallback_models: vec![],
+        temperature: None,
+        max_tokens,
+        has_llm_config: false,
+        pinned_model: None,
+        tier1_model: None,
+        tier2_model: None,
+        tier3_model: None,
+        platform_paid: true,
+        is_coding_agent: false,
+    }
+}
+
+fn round6(v: f64) -> f64 {
+    (v * 1_000_000.0).round() / 1_000_000.0
+}
+
+fn stub_ok(
+    messages: &[Message],
+    tier: ContractTier,
+    prompt_tokens: i64,
+    allow_cache: bool,
+    started: Instant,
+    trace_id: String,
+) -> Response {
+    let candidate = cascade_for(tier)
+        .first()
+        .copied()
+        .unwrap_or_else(cheapest_candidate);
+    let completion_tokens = 80 + (prompt_tokens % 50);
+    let cost = round6(candidate.estimate_cost_usd(prompt_tokens, completion_tokens));
+    let user = messages
+        .iter()
+        .rev()
+        .find(|m| m.role == "user")
+        .and_then(|m| m.text())
+        .unwrap_or_default();
+    let snippet: String = user.chars().take(80).collect();
+    ok_response(RouteOk {
+        provider: candidate.provider.to_string(),
+        model: candidate.model.to_string(),
+        content: format!(
+            "[STUB · {}/{}] Response to: {snippet}",
+            candidate.provider, candidate.model
+        ),
+        usage: RouteUsage {
+            prompt_tokens,
+            completion_tokens,
+            total_tokens: prompt_tokens + completion_tokens,
+            cost_usd: cost,
+        },
+        cache_hit: allow_cache && prompt_tokens % 20 == 0,
+        tier_used: tier.as_str().to_string(),
+        latency_ms: started.elapsed().as_millis() as u64,
+        trace_id,
+    })
+}
+
+fn ok_response(body: RouteOk) -> Response {
+    let mut res = (StatusCode::OK, Json(body)).into_response();
+    if let Ok(v) = HeaderValue::from_str(CONTRACT_VERSION) {
+        res.headers_mut().insert("x-contract-version", v);
+    }
+    res
+}
+
+fn err_response(status: StatusCode, code: &str, message: &str, provider: Option<&str>) -> Response {
+    let mut err = json!({
+        "code": code,
+        "message": message,
+    });
+    if let Some(p) = provider {
+        err["provider"] = json!(p);
+    }
+    let mut res = (status, Json(json!({ "error": err }))).into_response();
+    if let Ok(v) = HeaderValue::from_str(CONTRACT_VERSION) {
+        res.headers_mut().insert("x-contract-version", v);
+    }
+    res
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_empty_task_type_shape() {
+        let raw = json!({"messages":[{"role":"user","content":"hi"}]});
+        let parsed: RouteBody = serde_json::from_value(raw).unwrap();
+        assert!(parsed.task_type.is_none());
+    }
+}

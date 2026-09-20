@@ -111,6 +111,9 @@ pub(crate) struct LlmConfigResponse {
     inbound_format: String,
     /// Agent-level model pin, overriding the config's own `pinned_model`, or `null`.
     pinned_model: Option<String>,
+    /// When true (default), `POST /v1/route` uses the platform tier cascade.
+    /// When false, `/v1/route` honors this agent's llm_config / BYOK provider.
+    tier_cascade: bool,
 }
 
 /// `crate::mcp::ApiResponse` envelope around [`LlmConfigResponse`].
@@ -152,8 +155,9 @@ pub(crate) async fn get_llm_config(
         Err(resp) => return resp,
     };
 
-    let row: Option<(Option<Uuid>, String, Option<String>)> = sqlx::query_as(
-        "SELECT llm_config_id, inbound_format, pinned_model FROM agents WHERE id = $1 AND deleted_at IS NULL",
+    let row: Option<(Option<Uuid>, String, Option<String>, bool)> = sqlx::query_as(
+        "SELECT llm_config_id, inbound_format, pinned_model, tier_cascade \
+         FROM agents WHERE id = $1 AND deleted_at IS NULL",
     )
     .bind(agent_id)
     .fetch_optional(&state.db)
@@ -161,7 +165,7 @@ pub(crate) async fn get_llm_config(
     .ok()
     .flatten();
 
-    let Some((attached, inbound_format, agent_pin)) = row else {
+    let Some((attached, inbound_format, agent_pin, tier_cascade)) = row else {
         return (StatusCode::NOT_FOUND, "agent not found").into_response();
     };
     let (config, source) = resolve_agent_config(&state.db, attached, owner).await;
@@ -173,6 +177,7 @@ pub(crate) async fn get_llm_config(
             "source": source,
             "inbound_format": inbound_format,
             "pinned_model": agent_pin,
+            "tier_cascade": tier_cascade,
         }),
         "Agent LLM config retrieved successfully",
     )
@@ -209,6 +214,10 @@ pub struct AttachLlmConfigRequest {
     /// absent ⇒ leave unchanged; `null` ⇒ clear pin; string ⇒ set pin.
     #[serde(default, deserialize_with = "deserialize_present")]
     pub pinned_model: Option<Option<String>>,
+    /// Toggle platform tier cascade (`true`) vs stick to selected BYOK provider (`false`).
+    /// Absent ⇒ leave unchanged.
+    #[serde(default)]
+    pub tier_cascade: Option<bool>,
 }
 
 /// Response envelope for `PATCH /{id}/llm-config` — documents the shape of
@@ -221,6 +230,7 @@ pub(crate) struct LlmConfigUpdateResponse {
     source: String,
     /// Agent-level model pin after applying this update, or `null`.
     pinned_model: Option<String>,
+    tier_cascade: bool,
 }
 
 /// `crate::mcp::ApiResponse` envelope around [`LlmConfigUpdateResponse`].
@@ -371,15 +381,29 @@ pub(crate) async fn update_llm_config(
         }
     }
 
+    if let Some(cascade) = req.tier_cascade {
+        if let Err(e) = sqlx::query(
+            "UPDATE agents SET tier_cascade = $2, updated_at = now() WHERE id = $1",
+        )
+        .bind(agent_id)
+        .bind(cascade)
+        .execute(&state.db)
+        .await
+        {
+            return db_error("set tier_cascade", e);
+        }
+    }
+
     // Return the freshly resolved config so the caller sees the effect immediately.
-    let row: Option<(Option<Uuid>, Option<String>)> =
-        sqlx::query_as("SELECT llm_config_id, pinned_model FROM agents WHERE id = $1")
-            .bind(agent_id)
-            .fetch_optional(&state.db)
-            .await
-            .ok()
-            .flatten();
-    let (attached, agent_pin) = row.unwrap_or((None, None));
+    let row: Option<(Option<Uuid>, Option<String>, bool)> = sqlx::query_as(
+        "SELECT llm_config_id, pinned_model, tier_cascade FROM agents WHERE id = $1",
+    )
+    .bind(agent_id)
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten();
+    let (attached, agent_pin, tier_cascade) = row.unwrap_or((None, None, true));
     let (config, source) = resolve_agent_config(&state.db, attached, owner).await;
     ApiResponse::ok(
         json!({
@@ -388,6 +412,7 @@ pub(crate) async fn update_llm_config(
             "llm_config": config,
             "source": source,
             "pinned_model": agent_pin,
+            "tier_cascade": tier_cascade,
         }),
         "Agent LLM config updated successfully",
     )

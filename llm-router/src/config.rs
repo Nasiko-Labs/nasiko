@@ -30,6 +30,16 @@ pub struct GatewayConfig {
     pub platform_gemini_api_key: String,
     /// Platform-owned OpenRouter key, used for the `openrouter` provider.
     pub platform_openrouter_api_key: String,
+    /// Platform-owned Groq key, used for the `groq` provider.
+    pub platform_groq_api_key: String,
+    /// Platform-owned Mistral key, used for the `mistral` provider.
+    pub platform_mistral_api_key: String,
+    /// Optional Ollama key (usually unused; Ollama ignores auth). Empty is fine.
+    pub platform_ollama_api_key: String,
+    /// Platform-owned Azure OpenAI key (`api-key` header), used for the `azure` provider.
+    pub platform_azure_openai_api_key: String,
+    /// Platform-owned NVIDIA NIM key (`nvapi-…`), used for the `nvidia` provider.
+    pub platform_nvidia_api_key: String,
 
     /// TTL (seconds) for the in-process per-agent `llm_config` cache. Default 30.
     pub llm_config_cache_ttl_secs: u64,
@@ -48,6 +58,18 @@ pub struct GatewayConfig {
     pub anthropic_api_base: String,
     pub gemini_api_base: String,
     pub openrouter_api_base: String,
+    /// Groq OpenAI-compatible base (`https://api.groq.com/openai/v1`).
+    pub groq_api_base: String,
+    /// Mistral OpenAI-compatible base (`https://api.mistral.ai/v1`).
+    pub mistral_api_base: String,
+    /// Ollama OpenAI-compatible base (`http://127.0.0.1:11434/v1`).
+    pub ollama_api_base: String,
+    /// Azure OpenAI resource root (`https://{resource}.openai.azure.com`).
+    pub azure_openai_api_base: String,
+    /// Azure OpenAI `api-version` query param (default `2024-10-21`).
+    pub azure_openai_api_version: String,
+    /// NVIDIA NIM OpenAI-compatible base (`https://integrate.api.nvidia.com/v1`).
+    pub nvidia_api_base: String,
 
     /// Optional OpenRouter attribution headers (`HTTP-Referer` / `X-Title`) — affect
     /// openrouter.ai app rankings only, harmless to leave empty.
@@ -59,6 +81,11 @@ pub struct GatewayConfig {
     /// (the Pingora `/llm` strip route) when building the agent's `*_BASE_URL`. Empty ⇒
     /// the injector skips LLM wiring (fail closed — no broken base URL without a key).
     pub llm_gateway_base_url: String,
+
+    /// When true, `POST /v1/route` returns a contract-shaped stub reply without calling
+    /// upstream providers. For local/integration shape checks when platform keys are
+    /// missing or invalid. Set `NASIKO_ROUTE_STUB=1`.
+    pub route_stub: bool,
 }
 
 impl Default for GatewayConfig {
@@ -73,6 +100,11 @@ impl Default for GatewayConfig {
             platform_anthropic_api_key: String::new(),
             platform_gemini_api_key: String::new(),
             platform_openrouter_api_key: String::new(),
+            platform_groq_api_key: String::new(),
+            platform_mistral_api_key: String::new(),
+            platform_ollama_api_key: String::new(),
+            platform_azure_openai_api_key: String::new(),
+            platform_nvidia_api_key: String::new(),
             llm_config_cache_ttl_secs: 30,
             redis_url: String::new(),
             router_decision_ttl_secs: 3600,
@@ -80,9 +112,16 @@ impl Default for GatewayConfig {
             anthropic_api_base: "https://api.anthropic.com/v1".into(),
             gemini_api_base: "https://generativelanguage.googleapis.com/v1beta".into(),
             openrouter_api_base: "https://openrouter.ai/api/v1".into(),
+            groq_api_base: "https://api.groq.com/openai/v1".into(),
+            mistral_api_base: "https://api.mistral.ai/v1".into(),
+            ollama_api_base: "http://127.0.0.1:11434/v1".into(),
+            azure_openai_api_base: String::new(),
+            azure_openai_api_version: "2024-10-21".into(),
+            nvidia_api_base: "https://integrate.api.nvidia.com/v1".into(),
             openrouter_http_referer: String::new(),
             openrouter_x_title: String::new(),
             llm_gateway_base_url: String::new(),
+            route_stub: false,
         }
     }
 }
@@ -116,6 +155,30 @@ impl GatewayConfig {
                 &["PLATFORM_OPENROUTER_API_KEY", "OPENROUTER_API_KEY"],
                 &d.platform_openrouter_api_key,
             ),
+            platform_groq_api_key: env_first(
+                &["PLATFORM_GROQ_API_KEY", "GROQ_API_KEY"],
+                &d.platform_groq_api_key,
+            ),
+            platform_mistral_api_key: env_first(
+                &["PLATFORM_MISTRAL_API_KEY", "MISTRAL_API_KEY"],
+                &d.platform_mistral_api_key,
+            ),
+            platform_ollama_api_key: env_first(
+                &["PLATFORM_OLLAMA_API_KEY", "OLLAMA_API_KEY"],
+                &d.platform_ollama_api_key,
+            ),
+            platform_azure_openai_api_key: env_first(
+                &[
+                    "PLATFORM_AZURE_OPENAI_API_KEY",
+                    "AZURE_OPENAI_API_KEY",
+                    "AZURE_API_KEY",
+                ],
+                &d.platform_azure_openai_api_key,
+            ),
+            platform_nvidia_api_key: env_first(
+                &["PLATFORM_NVIDIA_API_KEY", "NVIDIA_API_KEY", "NGC_API_KEY"],
+                &d.platform_nvidia_api_key,
+            ),
             llm_config_cache_ttl_secs: std::env::var("LLM_CONFIG_CACHE_TTL")
                 .ok()
                 .and_then(|v| v.parse().ok())
@@ -129,9 +192,22 @@ impl GatewayConfig {
             anthropic_api_base: env_or("ANTHROPIC_API_BASE", &d.anthropic_api_base),
             gemini_api_base: env_or("GEMINI_API_BASE", &d.gemini_api_base),
             openrouter_api_base: env_or("OPENROUTER_API_BASE", &d.openrouter_api_base),
+            groq_api_base: env_or("GROQ_API_BASE", &d.groq_api_base),
+            mistral_api_base: env_or("MISTRAL_API_BASE", &d.mistral_api_base),
+            ollama_api_base: env_or("OLLAMA_API_BASE", &d.ollama_api_base),
+            azure_openai_api_base: env_first(
+                &["AZURE_OPENAI_API_BASE", "AZURE_API_BASE"],
+                &d.azure_openai_api_base,
+            ),
+            azure_openai_api_version: env_or(
+                "AZURE_OPENAI_API_VERSION",
+                &d.azure_openai_api_version,
+            ),
+            nvidia_api_base: env_or("NVIDIA_API_BASE", &d.nvidia_api_base),
             openrouter_http_referer: env_or("OPENROUTER_HTTP_REFERER", &d.openrouter_http_referer),
             openrouter_x_title: env_or("OPENROUTER_X_TITLE", &d.openrouter_x_title),
             llm_gateway_base_url: env_or("LLM_GATEWAY_BASE_URL", &d.llm_gateway_base_url),
+            route_stub: env_truthy("NASIKO_ROUTE_STUB"),
         }
     }
 
@@ -143,6 +219,11 @@ impl GatewayConfig {
             "anthropic" => &self.platform_anthropic_api_key,
             "gemini" => &self.platform_gemini_api_key,
             "openrouter" => &self.platform_openrouter_api_key,
+            "groq" => &self.platform_groq_api_key,
+            "mistral" => &self.platform_mistral_api_key,
+            "ollama" => &self.platform_ollama_api_key,
+            "azure" => &self.platform_azure_openai_api_key,
+            "nvidia" => &self.platform_nvidia_api_key,
             _ => &self.platform_openai_api_key,
         }
     }
@@ -150,6 +231,13 @@ impl GatewayConfig {
 
 fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
+}
+
+fn env_truthy(key: &str) -> bool {
+    matches!(
+        std::env::var(key).ok().as_deref().map(str::trim),
+        Some("1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON")
+    )
 }
 
 /// First non-empty env var among `keys`, else `default`. Lets a `PLATFORM_*` key take

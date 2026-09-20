@@ -5,7 +5,7 @@ version = 4
 [[package]]
 name = "a2a-lf"
 version = "0.3.0"
-source = "git+https://github.com/a2aproject/a2a-rs#3760e4969f6bf4850ac399735a9ba26e8cd77e84"
+source = "git+https://github.com/a2aproject/a2a-rs?rev=3760e4969f6bf4850ac399735a9ba26e8cd77e84#3760e4969f6bf4850ac399735a9ba26e8cd77e84"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -3410,6 +3410,7 @@ dependencies = [
  "tabled",
  "tar",
  "tempfile",
+ "toml_edit 0.25.13+spec-1.1.0",
  "ureq",
  "uuid",
  "which",
@@ -3517,6 +3518,18 @@ dependencies = [
  "tokio",
  "tower 0.5.3",
  "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "nasiko-hitl"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
  "uuid",
 ]
 
@@ -6296,6 +6309,7 @@ dependencies = [
  "indexmap 2.14.0",
  "toml_datetime 1.1.1+spec-1.1.0",
  "toml_parser",
+ "toml_writer",
  "winnow 1.0.4",
 ]
 
@@ -6307,6 +6321,12 @@ checksum = "1d38ac1cf9b95face32296c0a3ede1fdc270627c9d9c02a7274dd6d960dc4d56"
 dependencies = [
  "winnow 1.0.4",
 ]
+
+[[package]]
+name = "toml_writer"
+version = "1.1.2+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d56353a2a665ad0f41a421187180aab746c8c325620617ad883a99a1cbe66d2"
 
 [[package]]
 name = "tonic"

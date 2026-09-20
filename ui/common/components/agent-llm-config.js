@@ -4,9 +4,9 @@ import '/common/components/app-modal.js';
 import '/common/components/app-button.js';
 import { showToast } from '/common/utils/toast.js';
 
-// Agent LLM routing — summary card + model pin/revert UX.
+// Agent LLM routing — summary card + model pin/revert UX + smart tier cascade toggle.
 // Reads GET /api/agents/{id}/llm-config and GET /api/llm-router/providers.
-// Writes PATCH /api/agents/{id}/llm-config with { pinned_model }.
+// Writes PATCH /api/agents/{id}/llm-config with { pinned_model | llm_config_id | tier_cascade }.
 
 const styles = new CSSStyleSheet();
 styles.replaceSync(`@scope (agent-llm-config) {
@@ -82,6 +82,61 @@ styles.replaceSync(`@scope (agent-llm-config) {
     background: var(--bg-surface-hover);
   }
 
+  /* Tier cascade toggle */
+  .cascade-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-md);
+    border: 1px solid var(--color-border);
+    border-radius: var(--r-8);
+    background: var(--bg-surface);
+    padding: var(--space-sm) var(--space-md);
+    margin-bottom: var(--space-md);
+  }
+  .cascade-copy { flex: 1; min-width: 0; }
+  .cascade-title {
+    font-size: var(--font-size-sm);
+    font-weight: 600;
+    color: var(--color-text-main);
+    margin: 0 0 2px;
+  }
+  .cascade-hint {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+    margin: 0;
+    line-height: 1.35;
+  }
+  .toggle {
+    position: relative;
+    width: 44px;
+    height: 26px;
+    flex-shrink: 0;
+    border: none;
+    border-radius: 999px;
+    background: var(--bg-input);
+    cursor: pointer;
+    transition: background 0.15s;
+    padding: 0;
+  }
+  .toggle[aria-checked="true"] { background: var(--yellow-600, #ca8a04); }
+  .toggle:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--color-primary-ring);
+  }
+  .toggle-knob {
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: #fff;
+    transition: transform 0.15s;
+    box-shadow: 0 1px 2px rgba(0,0,0,.2);
+  }
+  .toggle[aria-checked="true"] .toggle-knob { transform: translateX(18px); }
+
   /* Modal form fields */
   .modal-desc {
     font-size: var(--font-size-sm);
@@ -129,6 +184,7 @@ class AgentLlmConfig extends HTMLElement {
   #pinnedModel = null;
   #providers = [];
   #configs = [];      // user's reusable configs from GET /api/llm-configs
+  #tierCascade = true; // platform /v1/route cascade vs stick to selected provider
   #busy = false;
 
   connectedCallback() {
@@ -161,6 +217,7 @@ class AgentLlmConfig extends HTMLElement {
     this.#config = payload?.llm_config || null;
     this.#configSource = payload?.source ?? 'none';
     this.#pinnedModel = payload?.pinned_model ?? null;
+    this.#tierCascade = payload?.tier_cascade !== false;
     this.#providers = providersRes?.data ?? [];
     this.#configs = configsRes?.data ?? (Array.isArray(configsRes) ? configsRes : []);
     this.#render();
@@ -202,9 +259,28 @@ class AgentLlmConfig extends HTMLElement {
       cardHtml = '';
     }
 
+    const cascadeOn = this.#tierCascade;
+    const cascadeHint = cascadeOn
+      ? 'On: /v1/route picks any cheap\tover\u2192premium provider with platform keys (ignores this agent\u2019s BYOK provider).'
+      : 'Off: /v1/route sticks to this agent\u2019s selected provider / BYOK (e.g. NVIDIA).';
+
     this.innerHTML = `
       <p class="subtitle">${subtitle}</p>
       ${cardHtml}
+      <div class="cascade-row">
+        <div class="cascade-copy">
+          <p class="cascade-title">Smart tier cascade</p>
+          <p class="cascade-hint">${cascadeHint}</p>
+        </div>
+        <button
+          type="button"
+          class="toggle"
+          role="switch"
+          aria-checked="${cascadeOn ? 'true' : 'false'}"
+          aria-label="Smart tier cascade"
+          data-action="cascade"
+        ><span class="toggle-knob"></span></button>
+      </div>
       <div class="actions">
         ${pinned ? `<button class="btn-revert" data-action="revert" type="button">Revert to default</button>` : ''}
         <button class="btn-override" data-action="override" type="button">${pinned ? 'Change model' : 'Override model'}</button>
@@ -213,6 +289,7 @@ class AgentLlmConfig extends HTMLElement {
 
     this.querySelector('[data-action="override"]')?.addEventListener('click', () => this.#openOverrideModal());
     this.querySelector('[data-action="revert"]')?.addEventListener('click', () => this.#revert());
+    this.querySelector('[data-action="cascade"]')?.addEventListener('click', () => this.#toggleCascade());
   }
 
   #summaryCard(rows) {
@@ -377,6 +454,28 @@ class AgentLlmConfig extends HTMLElement {
 
   async #revert() {
     await this.#setPinnedModel(null);
+  }
+
+  async #toggleCascade() {
+    if (this.#busy) return;
+    this.#busy = true;
+    const next = !this.#tierCascade;
+    try {
+      await fetchApi(`/agents/${this.#agentId}/llm-config`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tier_cascade: next }),
+      });
+      this.#tierCascade = next;
+      showToast(next
+        ? 'Smart tier cascade on — platform picks the cheapest viable provider'
+        : 'Cascade off — sticking to this agent’s selected provider');
+      this.#render();
+    } catch (e) {
+      showToast(`Failed: ${e.message}`);
+    } finally {
+      this.#busy = false;
+    }
   }
 
   async #attachConfig(configId) {
