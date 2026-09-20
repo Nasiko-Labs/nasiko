@@ -11,10 +11,12 @@ import { icons } from '/common/utils/icons.js';
 //                   GET/PATCH /api/agents/{id}/llm-config  { pinned_model }
 //
 //   workspace mode  (no agent-id)   — the orchestrator routes each message to an
-//                   agent it picks, so there is no single agent to pin. What governs
-//                   the choice is the workspace's default LLM configuration, so the
-//                   picker selects among those instead.
-//                   GET /api/llm-configs, POST /api/llm-configs/{id}/default
+//                   agent it picks, so there is no single agent to pin. The same
+//                   model list is offered; choosing one rewrites the workspace's
+//                   default configuration to that provider/model across all three
+//                   reasoning tiers (which is how these configs are already used —
+//                   "one model to every reasoning level").
+//                   GET/PATCH /api/llm-configs, /api/llm-configs/{id}
 //
 // Both write a *persisted* setting rather than overriding a single message. The LLM
 // router resolves provider/model server-side and discards any model the caller sends
@@ -133,10 +135,14 @@ class ChatModelPicker extends HTMLElement {
       this.#config = payload?.llm_config || null;
       this.#providers = providersRes?.data ?? [];
     } else {
-      const res = await fetchApi('/llm-configs').catch(() => ({ data: [] }));
-      this.#configs = res?.data ?? (Array.isArray(res) ? res : []);
+      const [cfgRes, providersRes] = await Promise.all([
+        fetchApi('/llm-configs').catch(() => ({ data: [] })),
+        fetchApi('/llm-router/providers').catch(() => ({ data: [] })),
+      ]);
+      this.#configs = cfgRes?.data ?? (Array.isArray(cfgRes) ? cfgRes : []);
+      this.#providers = providersRes?.data ?? [];
+      // With no configuration to rewrite there is nothing a choice could change.
       if (!this.#configs.length) {
-        // Nothing to choose between yet.
         this.replaceChildren();
         return;
       }
@@ -148,10 +154,11 @@ class ChatModelPicker extends HTMLElement {
 
   #currentLabel() {
     if (this.#mode === 'workspace') {
-      const def = this.#configs.find((c) => c.is_default);
-      if (!def) return 'Workspace default';
-      const provider = def.provider ? `${this.#cap(def.provider)} · ` : '';
-      return `${provider}${def.name || 'Default'}`;
+      const cfg = this.#targetConfig();
+      const model = cfg?.tier1_model || cfg?.model;
+      if (!model) return 'Default model';
+      const provider = cfg.provider ? `${this.#cap(cfg.provider)} · ` : '';
+      return `${provider}${model}`;
     }
     if (this.#pinnedModel) {
       const provider = this.#providerOf(this.#pinnedModel);
@@ -183,7 +190,7 @@ class ChatModelPicker extends HTMLElement {
     menu.className = 'menu hidden';
     menu.setAttribute('role', 'listbox');
     menu.setAttribute('aria-hidden', 'true');
-    menu.innerHTML = this.#mode === 'workspace' ? this.#workspaceMenuHtml() : this.#agentMenuHtml();
+    menu.innerHTML = this.#modelMenuHtml();
     this.appendChild(menu);
 
     const trigger = this.querySelector('.trigger');
@@ -207,19 +214,25 @@ class ChatModelPicker extends HTMLElement {
     document.addEventListener('click', this.#onDocClick);
   }
 
-  #agentMenuHtml() {
-    const pinned = this.#pinnedModel;
-    const revertLabel = this.#config
-      ? `Workspace configuration${this.#config.name ? ` (${this.#esc(this.#config.name)})` : ''}`
-      : 'Workspace default';
+  /// One menu for both modes: the catalog's providers and models. Agent mode adds
+  /// a lead option that clears the pin and hands resolution back to the config.
+  #modelMenuHtml() {
+    const current = this.#currentModel();
 
-    const revert = `<li class="opt revert" role="option" data-model=""
-        data-current="${pinned ? 'false' : 'true'}">${revertLabel}</li>`;
+    const revert = this.#mode === 'agent'
+      ? `<li class="opt revert" role="option" data-model=""
+            data-current="${this.#pinnedModel ? 'false' : 'true'}">${
+              this.#config
+                ? `Workspace configuration${this.#config.name ? ` (${this.#esc(this.#config.name)})` : ''}`
+                : 'Workspace default'
+            }</li>`
+      : '';
 
     const groups = this.#providers.map((p) => {
       const opts = (p.models || []).map((m) => `
         <li class="opt" role="option" data-model="${this.#esc(m.model)}"
-            data-current="${m.model === pinned ? 'true' : 'false'}"
+            data-provider="${this.#esc(p.provider)}"
+            data-current="${m.model === current ? 'true' : 'false'}"
             title="${this.#esc(m.model)}">${this.#esc(m.model)}</li>`).join('');
       return opts ? `<li class="group" role="presentation">${this.#esc(this.#cap(p.provider))}</li>${opts}` : '';
     }).join('');
@@ -227,15 +240,18 @@ class ChatModelPicker extends HTMLElement {
     return revert + groups;
   }
 
-  #workspaceMenuHtml() {
-    const header = '<li class="group" role="presentation">Workspace configuration</li>';
-    const opts = this.#configs.map((c) => {
-      const provider = c.provider ? `${this.#cap(c.provider)} · ` : '';
-      return `<li class="opt" role="option" data-config-id="${this.#esc(c.id)}"
-          data-current="${c.is_default ? 'true' : 'false'}"
-          title="${this.#esc(c.name || '')}">${this.#esc(provider)}${this.#esc(c.name || 'Untitled')}</li>`;
-    }).join('');
-    return header + opts;
+  /// The model currently in effect, whichever mode we are in.
+  #currentModel() {
+    if (this.#mode === 'agent') return this.#pinnedModel;
+    const cfg = this.#targetConfig();
+    return cfg?.tier1_model || cfg?.model || null;
+  }
+
+  /// The configuration a workspace-mode choice rewrites: the default if one is
+  /// marked, otherwise the only one there is.
+  #targetConfig() {
+    return this.#configs.find((c) => c.is_default)
+      ?? (this.#configs.length === 1 ? this.#configs[0] : null);
   }
 
   /* ── Selection ───────────────────────────────────────────────────────── */
@@ -245,16 +261,13 @@ class ChatModelPicker extends HTMLElement {
     if (!opt) return;
     this.#dd.close();
 
+    const model = opt.dataset.model || null;
+    if (model === this.#currentModel()) return; // no-op reselect
+
     if (this.#mode === 'workspace') {
-      const id = opt.dataset.configId;
-      const current = this.#configs.find((c) => c.is_default);
-      if (!id || current?.id === id) return;
-      this.#setDefaultConfig(id);
+      if (model) this.#setWorkspaceModel(model, opt.dataset.provider || null);
       return;
     }
-
-    const model = opt.dataset.model || null;
-    if (model === this.#pinnedModel) return; // no-op reselect
     this.#setPinnedModel(model);
   }
 
@@ -270,12 +283,22 @@ class ChatModelPicker extends HTMLElement {
     );
   }
 
-  async #setDefaultConfig(configId) {
-    const cfg = this.#configs.find((c) => c.id === configId);
+  /// Point the workspace configuration at one model. These configs map a single
+  /// model to every reasoning tier, so all three move together — matching how the
+  /// "Configure router" screen writes them.
+  async #setWorkspaceModel(model, provider) {
+    const cfg = this.#targetConfig();
+    if (!cfg) return;
+    const body = { tier1_model: model, tier2_model: model, tier3_model: model };
+    if (provider && provider !== cfg.provider) body.provider = provider;
     await this.#write(
-      () => fetchApi(`/llm-configs/${encodeURIComponent(configId)}/default`, { method: 'POST' }),
-      `Workspace default: ${cfg?.name || 'updated'}`,
-      { configId },
+      () => fetchApi(`/llm-configs/${encodeURIComponent(cfg.id)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      }),
+      `Switched to ${model}`,
+      { model, provider },
     );
   }
 
