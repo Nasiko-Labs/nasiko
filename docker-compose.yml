@@ -107,6 +107,11 @@ services:
       LLM_GATEWAY_BASE_URL: http://server:8080
       # Shared network so the server can reach agent containers by IP.
       DOCKER_AGENT_NETWORK: nasiko
+    # Lets the server reach host-run services (e.g. the Agent Honeypot MCP
+    # server on the host) via http://host.docker.internal:<port>. On Linux this
+    # mapping is not automatic, so it is declared explicitly.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
