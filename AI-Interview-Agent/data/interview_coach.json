@@ -1,0 +1,322 @@
+{
+  "candidates": [
+    {
+      "name": "Alex Rivera",
+      "email": "alex.rivera.dev@gmail.com",
+      "phone": "",
+      "location": "Austin, TX",
+      "resume_text": "Alex Rivera\nEmail: alex.rivera.dev@gmail.com\nLocation: Austin, TX\nJava Backend Developer with 4 years experience in Spring Boot, MySQL, Docker, AWS microservices. Built Employee Management System with JWT auth and payroll engine. Education: BS in CS from UT Austin 2023.",
+      "candidate_profile": {
+        "candidate": {
+          "name": "Alex Rivera",
+          "email": "alex.rivera.dev@gmail.com",
+          "phone": "",
+          "location": "Austin, TX"
+        },
+        "education": [
+          {
+            "degree": "BS in CS",
+            "university": "UT Austin",
+            "graduation_year": "2023",
+            "cgpa": ""
+          }
+        ],
+        "experience": [],
+        "skills": {
+          "languages": [
+            "Java"
+          ],
+          "backend": [
+            "Spring Boot"
+          ],
+          "frontend": [],
+          "databases": [
+            "MySQL"
+          ],
+          "cloud": [
+            "AWS"
+          ],
+          "devops": [
+            "Docker"
+          ],
+          "frameworks": [],
+          "testing": [],
+          "other": [
+            "Microservices"
+          ]
+        },
+        "projects": [
+          {
+            "name": "Employee Management System",
+            "description": "Built an Employee Management System with JWT authentication and a payroll engine.",
+            "technologies": [
+              "Spring Boot",
+              "MySQL"
+            ],
+            "candidate_contribution": "Built the Employee Management System, including JWT authentication and payroll engine.",
+            "technical_concepts": [
+              "JWT Authentication",
+              "Payroll Engine Design"
+            ],
+            "potential_interview_topics": [
+              "JWT Authentication flow",
+              "Spring Security implementation",
+              "Database schema for payroll",
+              "Microservices architecture for employee management"
+            ]
+          }
+        ],
+        "certifications": [],
+        "interview_topics": [
+          "Spring Boot",
+          "Microservices",
+          "JWT Authentication",
+          "MySQL",
+          "Docker",
+          "AWS"
+        ],
+        "seniority_estimate": "Mid-level (3-5 yrs)",
+        "resume_summary": "Java Backend Developer with 4 years of experience specializing in Spring Boot, MySQL, Docker, and AWS microservices. Demonstrated ability to build complex systems, including an Employee Management System featuring JWT authentication and a payroll engine.",
+        "ambiguities_flagged": [
+          "Specific companies, roles, and detailed responsibilities for the 4 years of experience are not provided.",
+          "The exact technologies used for 'payroll engine' are not specified beyond general backend skills."
+        ]
+      },
+      "id": "cand_1789887107030_n6wdw",
+      "created_at": "2026-09-20T06:51:47.030Z"
+    }
+  ],
+  "sessions": [
+    {
+      "candidate_id": "cand_1789887107030_n6wdw",
+      "target_role": "Java Backend Developer",
+      "difficulty": "medium",
+      "status": "in_progress",
+      "duration_minutes": 20,
+      "number_of_questions": 3,
+      "current_question_index": 1,
+      "id": "sess_1789887222366_xd02h",
+      "started_at": "2026-09-20T06:53:42.366Z"
+    },
+    {
+      "candidate_id": "cand_1789887107030_n6wdw",
+      "target_role": "Mid-level (3-5 yrs)",
+      "difficulty": "medium",
+      "status": "in_progress",
+      "duration_minutes": 30,
+      "number_of_questions": 5,
+      "current_question_index": 2,
+      "id": "sess_1789888575349_e51rh",
+      "started_at": "2026-09-20T07:16:15.349Z"
+    }
+  ],
+  "questions": [
+    {
+      "session_id": "sess_1789887222366_xd02h",
+      "question_id": "Q001",
+      "question": "In your 'Employee Management System' project, you mentioned implementing JWT Authentication. Could you describe your approach to designing and integrating JWT-based authentication and authorization within your Spring Boot application?",
+      "topic": "JWT Authentication",
+      "category": "Security / Spring Boot",
+      "difficulty": "medium",
+      "reason": "This is the opening question, grounded directly in the candidate's 'Employee Management System' project and their explicitly stated skill in 'JWT Authentication'. It assesses their practical application of a core backend security concept within a Spring Boot context, suitable for a mid-level developer.",
+      "expected_concepts": [
+        "JWT structure (header, payload, signature)",
+        "Token generation flow (login, token issuance)",
+        "Token validation process (on subsequent requests)",
+        "Spring Security integration (e.g., custom filters, authentication providers)",
+        "Stateless nature of JWTs vs. session-based authentication",
+        "Authorization using claims/roles within the JWT payload",
+        "Token storage considerations on the client-side"
+      ],
+      "question_order": 1,
+      "id": "q_1789887228180_fp4lv",
+      "created_at": "2026-09-20T06:53:48.180Z"
+    },
+    {
+      "session_id": "sess_1789888575349_e51rh",
+      "question_id": "Q001",
+      "question": "In your 'Employee Management System' project, you mentioned implementing JWT Authentication. Can you describe the architecture and key components you used to integrate JWT-based authentication and authorization within your Spring Boot application?",
+      "topic": "JWT Authentication",
+      "category": "Spring Boot / Security",
+      "difficulty": "medium",
+      "reason": "This is the opening question, grounded in the candidate's stated project experience and a specific technical concept (JWT Authentication) from their resume. It allows the candidate to elaborate on their practical application of Spring Boot and security principles.",
+      "expected_concepts": [
+        "JWT structure (Header, Payload, Signature)",
+        "Token generation process (e.g., upon successful login)",
+        "Token validation and parsing (e.g., using a filter)",
+        "Spring Security integration (e.g., custom filters, UserDetailsService, AuthenticationManager)",
+        "Stateless nature of JWTs vs. session-based authentication",
+        "Handling authorization roles/permissions with JWTs",
+        "Security considerations (e.g., token expiration, refresh tokens, secure storage)"
+      ],
+      "question_order": 1,
+      "id": "q_1789888580417_7lwb4",
+      "created_at": "2026-09-20T07:16:20.417Z"
+    },
+    {
+      "session_id": "sess_1789888575349_e51rh",
+      "question_id": "Q002",
+      "question": "In a Spring Boot microservices architecture, what are the common patterns and technologies you would consider for inter-service communication? Discuss the trade-offs and when you would choose one approach over another.",
+      "topic": "Inter-service Communication / Microservices",
+      "category": "Microservices",
+      "difficulty": "medium",
+      "reason": "The candidate has 'Microservices' and 'Spring Boot' listed as key skills. Following a solid answer on JWT authentication, this question pivots to a core architectural challenge in microservices, probing practical decision-making and trade-offs at a medium difficulty level.",
+      "expected_concepts": [
+        "Synchronous communication (e.g., REST/HTTP, gRPC)",
+        "Asynchronous communication (e.g., Message Queues like Kafka/RabbitMQ, Event-driven architecture)",
+        "Trade-offs (e.g., latency, coupling, scalability, reliability, data consistency)",
+        "Error handling patterns (e.g., retries, circuit breakers, idempotency)",
+        "Spring-specific clients (e.g., RestTemplate, WebClient, Feign Client)"
+      ],
+      "question_order": 2,
+      "id": "q_1789888604115_j287f",
+      "created_at": "2026-09-20T07:16:44.115Z"
+    }
+  ],
+  "answers": [
+    {
+      "question_id": "q_1789887228180_fp4lv",
+      "session_id": "sess_1789887222366_xd02h",
+      "answer": "In our Spring Boot microservice, we designed REST APIs with Spring Data JPA and MySQL. We configured HikariCP connection pooling and used JWT authentication in our custom OncePerRequestFilter.",
+      "id": "ans_1789887228208_scdmp",
+      "submitted_at": "2026-09-20T06:53:48.208Z"
+    },
+    {
+      "question_id": "q_1789888580417_7lwb4",
+      "session_id": "sess_1789888575349_e51rh",
+      "answer": "I created a JwtAuthenticationFilter extending OncePerRequestFilter that parses the Bearer token from the Authorization header, validates the signature using our secret key, extracts the username, loads user details from UserDetailsService, and sets the SecurityContext with UsernamePasswordAuthenticationToken.",
+      "id": "ans_1789888583015_7c4ry",
+      "submitted_at": "2026-09-20T07:16:23.015Z"
+    }
+  ],
+  "evaluations": [
+    {
+      "answer_id": "ans_1789887228208_scdmp",
+      "question_id": "q_1789887228180_fp4lv",
+      "session_id": "sess_1789887222366_xd02h",
+      "scores": {
+        "technical_correctness": 6,
+        "completeness": 1,
+        "depth": 1,
+        "problem_solving": 1,
+        "communication": 5,
+        "practical_understanding": 2,
+        "overall": 2
+      },
+      "strengths": [
+        "Correctly identified 'OncePerRequestFilter' as a valid and common integration point for JWT in Spring Security.",
+        "The answer was concise for the information provided."
+      ],
+      "weaknesses": [
+        "Provided significant irrelevant project context (Spring Data JPA, MySQL, HikariCP) instead of focusing on the JWT implementation.",
+        "Failed to describe the design and integration approach for JWT authentication and authorization in any detail.",
+        "Missed almost all fundamental concepts related to JWT structure, flow, validation, and authorization.",
+        "Did not explain *how* JWT authentication is handled within the 'OncePerRequestFilter', only that it was used there."
+      ],
+      "missing_concepts": [
+        "JWT structure (header, payload, signature)",
+        "Token generation flow (user login, credential validation, token creation, signing, issuance)",
+        "Token validation process (parsing, signature verification, expiration check, claim extraction)",
+        "Spring Security integration details (e.g., AuthenticationManager, AuthenticationProvider, SecurityContextHolder, UsernamePasswordAuthenticationToken)",
+        "Stateless nature of JWTs and its implications compared to session-based authentication",
+        "Authorization using claims/roles within the JWT payload",
+        "Token storage considerations on the client-side (e.g., localStorage, sessionStorage, cookies, security implications)",
+        "Refresh tokens for better security and user experience",
+        "Token revocation mechanisms (for logout, compromised tokens)",
+        "Error handling for invalid/expired tokens"
+      ],
+      "incorrect_concepts": [],
+      "feedback": "The candidate correctly identified 'OncePerRequestFilter' as a common integration point for JWT authentication in Spring Boot. However, the answer largely focused on general project technologies (Spring Boot, REST APIs, Spring Data JPA, MySQL, HikariCP) rather than detailing the design and integration of JWT. A comprehensive answer would have described the JWT structure, the token generation flow upon user login, the validation process for subsequent requests (including parsing, signature verification, expiration check, and claim extraction), how Spring Security's 'SecurityContextHolder' is populated, and how authorization is performed using roles/claims from the JWT payload. Additionally, discussing the stateless nature of JWTs, client-side storage considerations, and potential security implications (e.g., refresh tokens, token revocation) would demonstrate a much deeper understanding. The current answer is very high-level and lacks the technical depth expected for a mid-level engineer discussing a core security implementation.",
+      "recommended_followup_topics": [
+        "Detailed JWT lifecycle (generation, validation, authorization)",
+        "Spring Security filter chain and custom filter implementation for JWT",
+        "Security considerations for JWTs (storage, refresh tokens, revocation)"
+      ],
+      "id": "eval_1789887244197_u3tr3",
+      "created_at": "2026-09-20T06:54:04.197Z"
+    },
+    {
+      "answer_id": "ans_1789888583015_7c4ry",
+      "question_id": "q_1789888580417_7lwb4",
+      "session_id": "sess_1789888575349_e51rh",
+      "scores": {
+        "technical_correctness": 8,
+        "completeness": 6,
+        "depth": 6,
+        "problem_solving": 7,
+        "communication": 8.5,
+        "practical_understanding": 6,
+        "overall": 6.9
+      },
+      "strengths": [
+        "Clearly and concisely described the core functionality of a JWT validation filter.",
+        "Correctly identified key Spring Security components involved in the validation phase (OncePerRequestFilter, UserDetailsService, SecurityContext)."
+      ],
+      "weaknesses": [
+        "The answer is significantly incomplete, focusing only on the token validation aspect.",
+        "Did not address the token generation process, which is a crucial part of the overall JWT authentication architecture.",
+        "Omitted important security considerations like token expiration, refresh tokens, and secure key management.",
+        "Did not explicitly discuss how authorization roles are handled or the stateless nature of JWTs."
+      ],
+      "missing_concepts": [
+        "JWT structure (Header, Payload, Signature) details",
+        "Token generation process (e.g., upon successful login, role of AuthenticationManager, JwtProvider)",
+        "Stateless nature of JWTs vs. session-based authentication",
+        "Handling authorization roles/permissions with JWTs (how roles are stored in JWT and used for access control)",
+        "Security considerations (e.g., token expiration, refresh tokens, secure storage of secret key, token revocation)",
+        "Error handling for invalid/expired tokens"
+      ],
+      "incorrect_concepts": [],
+      "feedback": "The candidate provided a technically correct and concise description of the JWT token validation process within a Spring Boot application, correctly identifying the role of the `JwtAuthenticationFilter`, `UserDetailsService`, and `SecurityContext`. This demonstrates a solid understanding of how an incoming JWT is processed and authenticated. However, the answer is limited in scope. The question asked for the 'architecture and key components' of JWT-based authentication and authorization, which implies a broader discussion. Key missing components include the token generation process (e.g., after successful login, involving `AuthenticationManager` and a `JwtProvider`), the full JWT structure, how authorization roles are embedded and utilized, the stateless nature of JWTs, and critical security considerations such as token expiration, refresh token mechanisms, and secure storage of the secret key. For a mid-level engineer, a more comprehensive overview covering the entire lifecycle and security aspects would be expected.",
+      "recommended_followup_topics": [
+        "JWT token generation flow and associated Spring Security components (e.g., AuthenticationManager, custom JwtProvider)",
+        "JWT authorization strategies (e.g., using claims for roles, method-level security)",
+        "JWT security best practices (token expiration, refresh tokens, secure key management, token revocation)"
+      ],
+      "id": "eval_1789888595726_vxrif",
+      "created_at": "2026-09-20T07:16:35.726Z"
+    }
+  ],
+  "reports": [
+    {
+      "session_id": "sess_1789888575349_e51rh",
+      "overall_score": 6.9,
+      "technical_score": 6.5,
+      "communication_score": 8.5,
+      "problem_solving_score": 7,
+      "category_scores": {
+        "spring_boot": 6.9,
+        "security": 6.9
+      },
+      "strengths": [
+        "Clearly and concisely described the core functionality of a JWT validation filter.",
+        "Correctly identified key Spring Security components involved in the validation phase (OncePerRequestFilter, UserDetailsService, SecurityContext)."
+      ],
+      "weaknesses": [
+        "Lacked a comprehensive understanding of the full JWT authentication lifecycle, particularly token generation and advanced security considerations.",
+        "Did not address how authorization roles are handled or the stateless nature of JWTs."
+      ],
+      "topics_to_improve": [
+        "JWT structure (Header, Payload, Signature) details",
+        "Token generation process (e.g., upon successful login, role of AuthenticationManager, JwtProvider)",
+        "Stateless nature of JWTs vs. session-based authentication",
+        "Handling authorization roles/permissions with JWTs (how roles are stored in JWT and used for access control)",
+        "Security considerations (e.g., token expiration, refresh tokens, secure storage of secret key, token revocation)",
+        "Error handling for invalid/expired tokens"
+      ],
+      "interview_summary": "Alex Rivera demonstrated a foundational understanding of JWT token *validation* within a Spring Boot application, correctly identifying key Spring Security components like `JwtAuthenticationFilter`, `OncePerRequestFilter`, `UserDetailsService`, and `SecurityContext`. Communication was clear and concise on the aspects covered. However, the overall explanation lacked completeness and depth, focusing primarily on the validation phase.\nThe candidate did not address crucial parts of the JWT lifecycle, such as token generation, how authorization roles are handled, or critical security considerations like token expiration, refresh tokens, and secure key management. This indicates a practical but not fully comprehensive grasp of the entire JWT authentication architecture and its secure implementation for a mid-level role.",
+      "detailed_feedback": "**Technical Correctness & Depth:** Alex correctly described the core functionality of a JWT validation filter and its integration with Spring Security components. This shows a good grasp of the basic mechanics of token processing. However, the response was significantly incomplete, omitting details about the JWT structure itself (Header, Payload, Signature) and the crucial token generation process that precedes validation. The depth was limited to the 'how' of validation, without delving into the 'why' of statelessness or the 'what if' of security vulnerabilities.\n**Completeness & Practical Understanding:** The most significant area for improvement is the completeness of the solution. A mid-level candidate is expected to understand the full lifecycle of JWT authentication, including token creation upon successful login, the role of `AuthenticationManager`, and how claims (like roles) are embedded and later used for authorization. Critical security aspects such as token expiration, refresh token mechanisms, secure storage of the secret key, and token revocation strategies were entirely absent. This suggests a potential gap in designing and implementing a robust, production-ready JWT solution.\n**Communication:** Alex communicated clearly and concisely when describing the components and process they were familiar with. The explanation was easy to follow.\n**Problem Solving:** While not a direct problem-solving question, the ability to articulate a complete and secure architectural solution for JWT authentication is a key aspect of problem-solving. The incompleteness of the answer indicates a need to develop a more holistic approach to designing secure authentication systems.",
+      "recommended_focus_areas": [
+        "Comprehensive JWT lifecycle (token generation, validation, refresh, revocation)",
+        "JWT structure (Header, Payload, Signature) and their purpose",
+        "Handling authorization roles and permissions with JWTs",
+        "Advanced security considerations for JWTs (expiration, refresh tokens, secure key management, token revocation strategies)",
+        "Statelessness of JWTs and its architectural implications",
+        "Error handling for invalid/expired tokens in a production environment"
+      ],
+      "id": "rep_1789888668348_w1lg2",
+      "created_at": "2026-09-20T07:17:48.348Z"
+    }
+  ],
+  "plans": []
+}
