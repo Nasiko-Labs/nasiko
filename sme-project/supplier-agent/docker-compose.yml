@@ -1,0 +1,18 @@
+services:
+  supplier-agent:
+    build: .
+    container_name: supplier-agent
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL}
+      - MODEL=${MODEL}
+    ports:
+      - "10003:10003"
+    networks:
+      - agents-net
+    volumes:
+      - ./data:/app/data
+
+networks:
+  agents-net:
+    external: true

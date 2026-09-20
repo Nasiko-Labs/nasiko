@@ -1,0 +1,48 @@
+{
+  "agentFramework": "openai-agents",
+  "capabilities": {
+    "pushNotifications": false,
+    "stateTransitionHistory": false,
+    "streaming": false
+  },
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "description": "Analyzes product margins and sales trends to recommend data-driven pricing strategies.",
+  "name": "pricing-agent",
+  "preferredTransport": "JSONRPC",
+  "protocolVersion": "0.2.9",
+  "provider": {
+    "organization": "SME",
+    "url": "https://sme.local"
+  },
+  "security": [],
+  "securitySchemes": {},
+  "skills": [
+    {
+      "description": "Analyzes product margins and sales trends to recommend data-driven pricing strategies.",
+      "examples": [
+        "Should I increase the price of my top product?",
+        "What is the margin trend?"
+      ],
+      "id": "pricing_analysis",
+      "inputModes": [
+        "text/plain"
+      ],
+      "name": "Pricing Analysis",
+      "outputModes": [
+        "text/plain"
+      ],
+      "tags": [
+        "pricing",
+        "margins",
+        "sales"
+      ]
+    }
+  ],
+  "url": "http://localhost:10004/",
+  "version": "1.0.9"
+}

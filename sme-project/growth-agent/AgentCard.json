@@ -1,0 +1,48 @@
+{
+  "agentFramework": "openai-agents",
+  "capabilities": {
+    "pushNotifications": false,
+    "stateTransitionHistory": false,
+    "streaming": false
+  },
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "description": "Simulates what-if business scenarios projecting revenue and profit based on price and cost changes.",
+  "name": "growth-agent",
+  "preferredTransport": "JSONRPC",
+  "protocolVersion": "0.2.9",
+  "provider": {
+    "organization": "SME",
+    "url": "https://sme.local"
+  },
+  "security": [],
+  "securitySchemes": {},
+  "skills": [
+    {
+      "description": "Simulates what-if business scenarios projecting revenue and profit based on price and cost changes.",
+      "examples": [
+        "What happens if I increase prices by 5% and costs go up by 2%?"
+      ],
+      "id": "scenario_simulation",
+      "inputModes": [
+        "text/plain"
+      ],
+      "name": "Scenario Simulation",
+      "outputModes": [
+        "text/plain"
+      ],
+      "tags": [
+        "growth",
+        "scenario",
+        "what-if",
+        "simulator"
+      ]
+    }
+  ],
+  "url": "http://localhost:10005/",
+  "version": "1.0.9"
+}
