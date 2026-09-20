@@ -208,8 +208,20 @@ export async function evaluateSubmission({ idea, githubUrl }) {
   else improvements.push('Add CI (e.g. GitHub Actions)')
   if (filesReviewed.length >= 8) strengths.push(`Deep review of ${filesReviewed.length} source/docs files`)
   if (usedAnakin) strengths.push('Anakin deep repository surf')
-  while (strengths.length < 3) strengths.push('Public repository is reachable')
-  while (improvements.length < 3) improvements.push('Add architecture notes or demo assets')
+  while (strengths.length < 3) {
+    const pad = 'Public repository is reachable'
+    if (strengths.includes(pad)) break
+    strengths.push(pad)
+  }
+  const improvementPads = [
+    'Add architecture notes or demo assets',
+    'Add tests, demo link, or architecture notes',
+    'Document setup and run instructions',
+  ]
+  for (const pad of improvementPads) {
+    if (improvements.length >= 3) break
+    if (!improvements.includes(pad)) improvements.push(pad)
+  }
 
   return {
     assessedAt: new Date().toISOString(),
