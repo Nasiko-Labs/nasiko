@@ -880,6 +880,7 @@ fn make_registry_artifact() -> RegistryArtifact {
         name: "coding-agent".into(),
         version: "1.0.0".into(),
         artifact_type: "agent".into(),
+        format: "docker_image".into(),
         status: "published".into(),
         description: Some("A coding agent".into()),
         metadata: serde_json::Value::Null,
@@ -904,6 +905,7 @@ fn registry_artifact_round_trips() {
     assert_eq!(back.name, "coding-agent");
     assert_eq!(back.version, "1.0.0");
     assert_eq!(back.artifact_type, "agent");
+    assert_eq!(back.format, "docker_image");
     assert_eq!(back.status, "published");
     assert_eq!(back.tags, vec!["rust", "coding"]);
     assert_eq!(back.size_bytes, Some(1024));
@@ -947,6 +949,9 @@ fn registry_artifact_optional_fields_default_when_missing_from_json() {
     assert!(art.tags.is_empty());
     assert_eq!(art.framework, None);
     assert_eq!(art.score, None);
+    // Artifacts published before `format` existed carry no such key, and the
+    // doc comment on `default_format` promises they still read as `source`.
+    assert_eq!(art.format, "source");
 }
 
 #[test]
