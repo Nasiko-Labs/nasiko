@@ -126,7 +126,7 @@ fn normalize_provider(name: &str) -> &str {
 }
 
 /// Providers hidden from the catalog until their router integration is ready.
-const HIDDEN_PROVIDERS: &[&str] = &["groq", "deepseek"];
+const HIDDEN_PROVIDERS: &[&str] = &["groq"];
 
 fn group_by_provider(rows: Vec<PricingRow>) -> Vec<ProviderCatalog> {
     let mut out: Vec<ProviderCatalog> = Vec::new();

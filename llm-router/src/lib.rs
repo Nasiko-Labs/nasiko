@@ -87,12 +87,14 @@ impl LlmRouterCtx {
             platform_openai_api_key_set = !cfg.platform_openai_api_key.is_empty(),
             platform_anthropic_api_key_set = !cfg.platform_anthropic_api_key.is_empty(),
             platform_gemini_api_key_set = !cfg.platform_gemini_api_key.is_empty(),
+            platform_deepseek_api_key_set = !cfg.platform_deepseek_api_key.is_empty(),
             llm_config_cache_ttl_secs = cfg.llm_config_cache_ttl_secs,
             redis_url_set = !cfg.redis_url.is_empty(),
             router_decision_ttl_secs = cfg.router_decision_ttl_secs,
             openai_api_base = %cfg.openai_api_base,
             anthropic_api_base = %cfg.anthropic_api_base,
             gemini_api_base = %cfg.gemini_api_base,
+            deepseek_api_base = %cfg.deepseek_api_base,
             llm_gateway_base_url = %cfg.llm_gateway_base_url,
             "llm-router: initializing with effective GatewayConfig"
         );

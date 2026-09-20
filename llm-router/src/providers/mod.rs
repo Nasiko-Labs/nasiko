@@ -45,6 +45,10 @@ pub fn provider_for(
             cfg.openrouter_http_referer.clone(),
             cfg.openrouter_x_title.clone(),
         ))),
+        "deepseek" => Ok(Box::new(OpenAiProvider::new(
+            http.clone(),
+            cfg.deepseek_api_base.clone(),
+        ))),
         other => Err(GatewayError::Internal(format!(
             "provider '{other}' is not supported yet"
         ))),
