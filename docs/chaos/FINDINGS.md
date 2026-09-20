@@ -9,7 +9,7 @@ path, command, or short note — never tokens or secrets.
 | ID | Scenario | Invariants | Result | Evidence | Notes |
 |----|----------|------------|--------|----------|-------|
 | C1 | Kill agent mid-stream | I8, I11 | | | |
-| C2 | Upstream latency | I9 | | | |
+| C2 | Upstream latency | I9 | PASS | `server/tests/chaos_proxy.rs` `i9_slow_upstream_does_not_crash_proxy` | Stub sleeps 2s; proxy returns 200; `/health` stays 200. |
 | C3 | Partial / truncated response | I9 | | | |
 | C4 | Credential expiry or revocation mid-session | I6 | | | |
 | C5 | Direct access bypassing the proxy | I1, I12 | | | |
