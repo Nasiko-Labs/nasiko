@@ -1,0 +1,16 @@
+{
+  "name": "nova-crm",
+  "version": "1.0.0",
+  "description": "NOVA CRM - AI Sales Dialer",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently \"npm run server\" \"npm run client\"",
+    "client": "cd client && npm run dev",
+    "server": "cd server && npm run dev",
+    "seed": "cd server && npm run seed",
+    "install-all": "npm install && cd client && npm install && cd ../server && npm install"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.0"
+  }
+}
