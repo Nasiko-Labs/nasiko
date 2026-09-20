@@ -18,33 +18,58 @@ def test_extract_supplier_name():
 def test_format_response_success():
     data = {
         "supplier_name": "Acme",
-        "status": "CONSISTENT",
-        "evidence_urls": ["http://example.com"],
-        "conflicts": [],
-        "recommended_actions": ["Proceed with payment"],
-        "identity_ambiguity": False
+        "report": {
+            "summary": {
+                "summary_text": "Overall status is CONSISTENT."
+            },
+            "findings": [
+                {
+                    "field": "registration",
+                    "status": "CONSISTENT",
+                    "explanation": "The supplier name matches public records."
+                }
+            ],
+            "recommended_actions": ["Verify registration/GST details with the relevant official registry."]
+        },
+        "evidence": [
+            {
+                "source_url": "http://example.com"
+            }
+        ]
     }
     resp = format_response(data)
     assert "Supplier Verification Report: Acme" in resp
-    assert "**Status:** CONSISTENT" in resp
+    assert "Overall status is CONSISTENT." in resp
+    assert "**registration** (CONSISTENT): The supplier name matches public records." in resp
     assert "http://example.com" in resp
-    assert "Proceed with payment" in resp
-    assert "Identity Ambiguity" not in resp
-    assert "Conflicts" not in resp
+    assert "Verify registration/GST details with the relevant official registry." in resp
 
 def test_format_response_ambiguity_and_conflicts():
     data = {
         "supplier_name": "Acme",
-        "status": "MISMATCH",
-        "evidence_urls": ["http://example.com/1", "http://example.com/2"],
-        "conflicts": ["Address mismatch"],
-        "recommended_actions": ["Manual review required"],
-        "identity_ambiguity": True
+        "report": {
+            "summary": {
+                "summary_text": "Identity ambiguity detected. Conflicting records found."
+            },
+            "findings": [
+                {
+                    "field": "address",
+                    "status": "MISMATCH",
+                    "explanation": "Address mismatch across registries."
+                }
+            ],
+            "recommended_actions": ["Manual review required"]
+        },
+        "evidence": [
+            {"source_url": "http://example.com/1"},
+            {"source_url": "http://example.com/2"}
+        ]
     }
     resp = format_response(data)
-    assert "**Status:** MISMATCH" in resp
-    assert "Identity Ambiguity:" in resp
-    assert "Address mismatch" in resp
+    assert "Supplier Verification Report: Acme" in resp
+    assert "Identity ambiguity detected." in resp
+    assert "**address** (MISMATCH): Address mismatch across registries." in resp
+    assert "http://example.com/1" in resp
     assert "Manual review required" in resp
 
 @pytest.mark.asyncio
@@ -69,7 +94,18 @@ async def test_backend_call_success(monkeypatch):
     mock_response = MagicMock()
     mock_response.json.return_value = {
         "supplier_name": "TestCorp",
-        "status": "CONSISTENT"
+        "report": {
+            "summary": {
+                "summary_text": "All findings consistent"
+            },
+            "findings": [
+                {
+                    "field": "registration",
+                    "status": "CONSISTENT",
+                    "explanation": "Valid"
+                }
+            ]
+        }
     }
     mock_response.raise_for_status.return_value = None
     

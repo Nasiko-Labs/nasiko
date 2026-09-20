@@ -9,6 +9,6 @@ Supplier claim verification agent that researches public evidence and returns tr
 ## Execution
 
 ```sh
-export EVIDENCEBRIDGE_API_URL="http://localhost:8080/verify"
+export EVIDENCEBRIDGE_API_URL="https://<evidencebridge-backend>/api/v1/agent/verify-supplier"
 python main.py
 ```

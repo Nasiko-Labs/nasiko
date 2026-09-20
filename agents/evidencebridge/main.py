@@ -52,28 +52,35 @@ def extract_supplier_name(query: str) -> str | None:
 
 
 def format_response(data: dict) -> str:
-    name = data.get("supplier_name", "Unknown Supplier")
-    status = data.get("status", "NEEDS_VERIFICATION")
+    supplier_name = data.get("supplier_name", "Unknown Supplier")
     
-    evidence_urls = data.get("evidence_urls", [])
-    conflicts = data.get("conflicts", [])
-    recommendations = data.get("recommended_actions", [])
-    ambiguity = data.get("identity_ambiguity", False)
+    report = data.get("report", {})
+    summary = report.get("summary", {})
+    findings = report.get("findings", [])
+    recommendations = report.get("recommended_actions", [])
     
-    lines = [f"**Supplier Verification Report: {name}**", f"**Status:** {status}"]
+    evidence_urls = set()
+    for e in data.get("evidence", []):
+        if url := e.get("source_url"):
+            evidence_urls.add(url)
+            
+    lines = [f"**Supplier Verification Report: {supplier_name}**"]
     
-    if ambiguity:
-        lines.append("\n**Identity Ambiguity:** Multiple entities share this supplier name. Please verify the exact corporate entity.")
+    if summary_text := summary.get("summary_text"):
+        lines.append(f"\n**Summary:**\n{summary_text}")
         
+    if findings:
+        lines.append("\n**Findings:**")
+        for f in findings:
+            field = f.get("field", "Unknown")
+            status = f.get("status", "NEEDS_VERIFICATION")
+            explanation = f.get("explanation", "")
+            lines.append(f"- **{field}** ({status}): {explanation}")
+            
     if evidence_urls:
         lines.append("\n**Evidence / Source URLs:**")
-        for url in evidence_urls:
+        for url in sorted(evidence_urls):
             lines.append(f"- {url}")
-            
-    if conflicts:
-        lines.append("\n**Conflicts / Uncertainty:**")
-        for c in conflicts:
-            lines.append(f"- {c}")
             
     if recommendations:
         lines.append("\n**Recommended Verification Actions:**")
@@ -171,7 +178,7 @@ def main(host, port):
         name="EvidenceBridge",
         description="Supplier claim verification agent that researches public evidence and returns traceable verification findings before payment.",
         supported_interfaces=[
-            AgentInterface(protocol_binding="JSONRPC", url=f"http://{host}:{port}/"),
+            AgentInterface(protocol_binding="JSONRPC", protocol_version="1.0", url=f"http://{host}:{port}/"),
         ],
         version="1.0.0",
         default_input_modes=["text/plain"],

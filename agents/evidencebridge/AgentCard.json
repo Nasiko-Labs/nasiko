@@ -15,8 +15,6 @@
   "description": "Supplier claim verification agent that researches public evidence and returns traceable verification findings before payment.",
   "framework": "starlette",
   "name": "EvidenceBridge",
-  "preferredTransport": "JSONRPC",
-  "protocolVersion": "1.0.0",
   "skills": [
     {
       "description": "supplier verification, evidence research, claim comparison, procurement verification",
@@ -33,6 +31,13 @@
       ]
     }
   ],
+  "supportedInterfaces": [
+    {
+      "protocolBinding": "JSONRPC",
+      "protocolVersion": "1.0",
+      "url": "http://localhost:8000/"
+    }
+  ],
   "tags": [
     "supplier",
     "verification",
@@ -40,7 +45,5 @@
     "python",
     "http"
   ],
-  "transport": "http",
-  "url": "http://localhost:8000/",
   "version": "1.0.0"
 }
