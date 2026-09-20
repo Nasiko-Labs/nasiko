@@ -94,11 +94,30 @@ async def _error_response(error: CopilotError) -> JSONResponse:
     return JSONResponse({"detail": error.detail}, status_code=error.status_code)
 
 
+def _unauthorised(request: Request) -> JSONResponse | None:
+    """Gate the façade behind ``ADAPTER_API_KEY``, if one is set.
+
+    Once this agent sits behind a public tunnel, its four REST routes are the
+    only thing standing between "DronaHQ can call this" and "anyone who finds
+    the tunnel URL can list or decide a gate." Optional — unset, local
+    development is unaffected — but set it before leaving a tunnel running
+    unattended. Never checked on `/health`, so uptime probes stay simple.
+    """
+    required = os.getenv("ADAPTER_API_KEY")
+    if not required:
+        return None
+    if request.headers.get("api-key") != required:
+        return JSONResponse({"detail": "missing or wrong api-key header"}, status_code=401)
+    return None
+
+
 async def health(request: Request) -> JSONResponse:
     return JSONResponse({"status": "ok"})
 
 
 async def contribute_route(request: Request) -> JSONResponse:
+    if (denied := _unauthorised(request)) is not None:
+        return denied
     body = await request.json()
     try:
         result = await client.start_contribution(str(body["repo"]))
@@ -110,6 +129,8 @@ async def contribute_route(request: Request) -> JSONResponse:
 
 
 async def status_route(request: Request) -> JSONResponse:
+    if (denied := _unauthorised(request)) is not None:
+        return denied
     thread_id = request.query_params.get("thread_id", "")
     if not thread_id:
         return JSONResponse({"detail": "missing required query param: thread_id"}, status_code=422)
@@ -122,6 +143,8 @@ async def status_route(request: Request) -> JSONResponse:
 
 async def approvals_route(request: Request) -> JSONResponse:
     """The projection list (§2.5) — a bare JSON array, one entry per open gate."""
+    if (denied := _unauthorised(request)) is not None:
+        return denied
     try:
         rows = await client.list_approvals()
     except CopilotError as error:
@@ -130,6 +153,8 @@ async def approvals_route(request: Request) -> JSONResponse:
 
 
 async def approve_route(request: Request) -> JSONResponse:
+    if (denied := _unauthorised(request)) is not None:
+        return denied
     body = await request.json()
     try:
         result = await client.decide_approval(

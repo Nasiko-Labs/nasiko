@@ -67,6 +67,7 @@ docker compose up
 | `COPILOT_URL` | No | The copilot's own API, default `http://127.0.0.1:8000` |
 | `MISSION_CONTROL_URL` | No | Used to build each projection's `detail_url`, default `http://localhost:5173` |
 | `DRONAHQ_WEBHOOK_URL` / `DRONAHQ_API_KEY` | No | If set, a courtesy, fire-and-forget notification is posted here whenever a gate opens |
+| `ADAPTER_API_KEY` | No | If set, the four REST façade routes require it as an `api-key` header — set this before exposing the agent through a public tunnel |
 
 ## A2A endpoint
 
