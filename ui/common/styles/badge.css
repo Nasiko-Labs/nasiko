@@ -1,0 +1,69 @@
+/* Badge — inline status/label pill (NightOwl: strokeless tinted pills, r40) */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px var(--s-8);
+  border-radius: var(--r-40);
+  font-size: var(--font-size-xs);
+  font-weight: 500;
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+
+.badge--success {
+  color: var(--color-success);
+  background: var(--color-success-bg);
+}
+
+.badge--warning {
+  color: var(--color-warning);
+  background: var(--color-warning-bg);
+}
+
+.badge--error {
+  color: var(--color-error);
+  background: var(--color-error-bg);
+}
+
+.badge--info {
+  color: var(--color-info);
+  background: var(--color-info-bg);
+}
+
+.badge--neutral {
+  color: var(--color-neutral);
+  background: var(--color-neutral-bg);
+}
+
+.badge--muted {
+  color: var(--color-text-muted);
+  background: var(--color-bg-base);
+}
+
+/* Tag — the label pill that sits inside a card (skills, capabilities, versions).
+   Fill only, no stroke: three bordered pills inside a bordered card inside a
+   bordered button row was too many outlines, and --color-neutral-bg is already
+   one step off the card surface in both themes (sand-100 / neutral-800), so the
+   fill alone carries the pill. Padding absorbs the 1px the border used to add. */
+.tag {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-main);
+  background: var(--color-neutral-bg);
+  padding: 2px calc(var(--space-xs) + 1px);
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+}
+
+.tag--more {
+  color: var(--color-text-muted);
+}
+
+/* Optional leading status dot inside a .badge pill */
+.badge__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}

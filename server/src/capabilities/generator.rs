@@ -1,0 +1,449 @@
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+
+use crate::catalog::models::Skill;
+use nasiko_orchestrator::models::*;
+use nasiko_orchestrator::providers::{CompletionResult, LLMProvider, ProviderError};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GeneratedCard {
+    pub description: String,
+    pub skills: Vec<Skill>,
+    pub tags: Vec<String>,
+    pub capabilities: GeneratedCapabilities,
+    // Serialize-only rename: the LLM's raw JSON response uses snake_case for
+    // these two fields (unlike `GeneratedCapabilities`' fields, which it
+    // reliably produces in camelCase), so deserializing this struct from that
+    // response must still accept `default_input_modes`/`default_output_modes`.
+    // Only the *outgoing* card sent to the client needs the A2A-spec camelCase.
+    #[serde(rename(serialize = "defaultInputModes"))]
+    pub default_input_modes: Vec<String>,
+    #[serde(rename(serialize = "defaultOutputModes"))]
+    pub default_output_modes: Vec<String>,
+    /// Primary framework detected from imports/deps (fastapi, express, gin, axum, etc.), or null.
+    pub framework: Option<String>,
+    /// Communication transport inferred from route definitions and server setup.
+    pub transport: String,
+    /// LLM provider the agent wraps (openai, anthropic, groq, etc.), or null if not LLM-based.
+    pub llm_provider: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GeneratedCapabilities {
+    pub streaming: bool,
+    #[serde(rename = "pushNotifications")]
+    pub push_notifications: bool,
+    #[serde(rename = "stateTransitionHistory")]
+    pub state_transition_history: bool,
+    pub chat_agent: bool,
+}
+
+/// Expand shorthand MIME types to their canonical form, matching Python's
+/// `normalize_mime` (agentcard_generator/tools.py). Unknown values pass through.
+fn normalize_mime(mime_type: &str) -> String {
+    match mime_type {
+        "text" => "text/plain".to_string(),
+        "json" => "application/json".to_string(),
+        "image" => "image/png".to_string(),
+        other => other.to_string(),
+    }
+}
+
+pub struct CapabilityGenerator {
+    provider: LLMProvider,
+    model: String,
+}
+
+impl CapabilityGenerator {
+    pub fn new(provider: LLMProvider, model: String) -> Self {
+        Self { provider, model }
+    }
+
+    pub async fn generate(
+        &self,
+        source_code: &str,
+        agent_name: &str,
+        description: Option<&str>,
+    ) -> Result<(GeneratedCard, CompletionResult), GeneratorError> {
+        let system_prompt = self.build_system_prompt();
+        let user_prompt = self.build_user_prompt(source_code, agent_name, description);
+
+        let request = self.build_request(
+            system_prompt.clone(),
+            user_prompt.clone(),
+            ResponseFormat::JsonSchema {
+                json_schema: JsonSchema {
+                    name: "agent_card".to_string(),
+                    strict: Some(true),
+                    schema: Self::output_schema(),
+                },
+            },
+        );
+
+        let result = match self.provider.chat_completion(&request).await {
+            Ok(r) => r,
+            // Some OpenAI-compatible providers (e.g. DeepSeek) reject
+            // `json_schema` structured outputs. Retry once in plain
+            // `json_object` mode with the schema embedded in the prompt.
+            Err(e) if is_response_format_rejection(&e) => {
+                tracing::info!(
+                    "provider rejected json_schema response_format; retrying with json_object"
+                );
+                let prompt_with_schema = format!(
+                    "{system_prompt}\n\nRespond with a single JSON object (no prose, no \
+                     markdown fences) that conforms exactly to this JSON Schema:\n{}",
+                    Self::output_schema()
+                );
+                let request =
+                    self.build_request(prompt_with_schema, user_prompt, ResponseFormat::JsonObject);
+                self.provider.chat_completion(&request).await?
+            }
+            Err(e) => return Err(e.into()),
+        };
+
+        let mut card: GeneratedCard = serde_json::from_str(&result.content)
+            .map_err(|e| GeneratorError::ParseError(e.to_string()))?;
+
+        // Backfill defaults when the model omits modes, then normalize shorthand
+        // MIME types — mirrors Python's agentcard_generator `normalize_mime`.
+        if card.default_input_modes.is_empty() {
+            card.default_input_modes =
+                vec!["application/json".to_string(), "text/plain".to_string()];
+        }
+        if card.default_output_modes.is_empty() {
+            card.default_output_modes = vec!["application/json".to_string()];
+        }
+        card.default_input_modes = card
+            .default_input_modes
+            .iter()
+            .map(|m| normalize_mime(m))
+            .collect();
+        card.default_output_modes = card
+            .default_output_modes
+            .iter()
+            .map(|m| normalize_mime(m))
+            .collect();
+
+        Ok((card, result))
+    }
+
+    fn build_request(
+        &self,
+        system_prompt: String,
+        user_prompt: String,
+        response_format: ResponseFormat,
+    ) -> ChatCompletionRequest {
+        ChatCompletionRequest {
+            model: self.model.clone(),
+            messages: vec![
+                ChatMessage {
+                    role: "system".to_string(),
+                    content: Some(system_prompt),
+                },
+                ChatMessage {
+                    role: "user".to_string(),
+                    content: Some(user_prompt),
+                },
+            ],
+            stream: false,
+            temperature: Some(0.2),
+            max_tokens: Some(4000),
+            response_format: Some(response_format),
+            stream_options: None,
+        }
+    }
+
+    fn build_system_prompt(&self) -> String {
+        r#"You are an expert at analyzing agent source code and generating A2A-compatible agent cards.
+
+Given the source code of an agent (and optionally its dependency manifest), produce:
+1. A concise description of what the agent does (1-2 sentences)
+2. A list of skills the agent exposes — each skill is a discrete capability that can be invoked
+3. Tags for discovery (lowercase, hyphenated)
+4. Capabilities (boolean flags for protocol features)
+5. Input/output MIME types the agent handles
+6. Framework: the primary framework used to build the agent (fastapi, flask, django, express, nestjs, gin, axum, langchain, crewai, etc.) — null if not detectable from imports or deps
+7. Transport: how the agent communicates externally — one of "http", "websocket", "grpc", "stdio", or "unknown"
+8. LLM Provider: which LLM provider the agent directly wraps or calls (openai, anthropic, groq, ollama, huggingface, gemini, etc.) — null if the agent is not LLM-based
+
+Guidelines for skills:
+- Each skill should have a unique kebab-case id, a human-readable name, a description explaining what it does, relevant tags, and 1-2 example invocations (as plain text strings)
+- Extract skills from route handlers, tool definitions, function signatures, or method names
+- If the agent has a single main function, create one skill for it
+- Skills should be specific and actionable, not generic
+
+Guidelines for tags:
+- Use domain-specific tags (e.g., "code-review", "data-pipeline", "image-generation")
+- Include technology tags if relevant (e.g., "python", "kubernetes")
+- 3-8 tags total
+
+Guidelines for capabilities:
+- streaming: true if the agent supports streaming responses (SSE, WebSocket, async generators)
+- pushNotifications: true if the agent can send unsolicited notifications
+- stateTransitionHistory: true if the agent tracks and exposes task state changes
+- chat_agent: true if the agent maintains conversational context across messages
+
+Guidelines for framework detection:
+- Python: look for `from fastapi import`, `import flask`, `from django`, `import starlette`, `from langchain`, `import crewai`
+- JS/TS: look for `express`, `@nestjs`, `fastify`, `hono` in imports or package.json
+- Go: look for `gin`, `echo`, `fiber`, `chi` in import paths
+- Rust: look for `axum`, `actix`, `warp`, `rocket` in Cargo.toml
+- Use exact lowercase name: "fastapi", "flask", "express", "gin", "axum", "langchain", etc.
+
+Guidelines for transport detection:
+- "http": REST routes, HTTP handlers, ASGI/WSGI apps
+- "websocket": websocket handlers, socket.io, ws library
+- "grpc": grpc server definitions, proto imports
+- "stdio": stdin/stdout communication, subprocess-based agents
+- "unknown": cannot determine from available source"#.to_string()
+    }
+
+    fn build_user_prompt(
+        &self,
+        source_code: &str,
+        agent_name: &str,
+        description: Option<&str>,
+    ) -> String {
+        // Byte budget, not char budget — named accurately to avoid future confusion.
+        const MAX_SOURCE_BYTES: usize = 60_000;
+
+        // Separate dependency manifests from source code so the LLM sees them
+        // as distinct sections — manifests give strong framework/provider signal
+        // with low token cost and should not be crowded out by source.
+        let (manifests, source) = split_manifests(source_code);
+
+        let truncated = if source.len() > MAX_SOURCE_BYTES {
+            // floor_char_boundary ensures we never split a multi-byte UTF-8 codepoint.
+            // Without this, slicing at a byte offset inside a 2-4 byte char panics.
+            &source[..source.floor_char_boundary(MAX_SOURCE_BYTES)]
+        } else {
+            &source
+        };
+
+        let mut prompt = format!("Agent name: {agent_name}\n\n");
+
+        if let Some(desc) = description
+            && !desc.is_empty()
+        {
+            prompt.push_str(&format!(
+                "User-provided description hint (take this as the primary intent \
+                 behind the agent, and prefer it over any weaker signal from the \
+                 source code where the two might disagree): {desc}\n\n"
+            ));
+        }
+
+        if !manifests.is_empty() {
+            prompt.push_str("Dependency manifests (requirements.txt / package.json / Cargo.toml / go.mod / pyproject.toml):\n");
+            prompt.push_str("```\n");
+            // Cap manifests at 4KB — they're dense with signal but rarely need more.
+            let manifest_cap = 4_000;
+            if manifests.len() > manifest_cap {
+                prompt.push_str(&manifests[..manifest_cap]);
+                prompt.push_str("\n[... truncated]\n");
+            } else {
+                prompt.push_str(&manifests);
+            }
+            prompt.push_str("```\n\n");
+        }
+
+        prompt.push_str("Source code:\n```\n");
+        prompt.push_str(truncated);
+        prompt.push_str("\n```");
+        prompt
+    }
+
+    fn output_schema() -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "description": {
+                    "type": "string",
+                    "description": "1-2 sentence description of the agent"
+                },
+                "skills": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": { "type": "string", "description": "kebab-case unique identifier" },
+                            "name": { "type": "string", "description": "human-readable name" },
+                            "description": { "type": "string", "description": "what this skill does" },
+                            "tags": { "type": "array", "items": { "type": "string" } },
+                            "examples": { "type": "array", "items": { "type": "string" } }
+                        },
+                        "required": ["id", "name", "description", "tags", "examples"],
+                        "additionalProperties": false
+                    }
+                },
+                "tags": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                },
+                "capabilities": {
+                    "type": "object",
+                    "properties": {
+                        "streaming": { "type": "boolean" },
+                        "pushNotifications": { "type": "boolean" },
+                        "stateTransitionHistory": { "type": "boolean" },
+                        "chat_agent": { "type": "boolean" }
+                    },
+                    "required": ["streaming", "pushNotifications", "stateTransitionHistory", "chat_agent"],
+                    "additionalProperties": false
+                },
+                "default_input_modes": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                },
+                "default_output_modes": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                },
+                "framework": {
+                    "anyOf": [
+                        { "type": "string", "description": "e.g. fastapi, flask, express, gin, axum, langchain" },
+                        { "type": "null" }
+                    ]
+                },
+                "transport": {
+                    "type": "string",
+                    "enum": ["http", "websocket", "grpc", "stdio", "unknown"]
+                },
+                "llm_provider": {
+                    "anyOf": [
+                        { "type": "string", "description": "e.g. openai, anthropic, groq, ollama, gemini" },
+                        { "type": "null" }
+                    ]
+                }
+            },
+            "required": [
+                "description", "skills", "tags", "capabilities",
+                "default_input_modes", "default_output_modes",
+                "framework", "transport", "llm_provider"
+            ],
+            "additionalProperties": false
+        })
+    }
+}
+
+/// A 400 whose body blames `response_format` means the provider doesn't
+/// support `json_schema` structured outputs (DeepSeek: "This response_format
+/// type is unavailable now") — the retryable case, as opposed to a genuinely
+/// malformed request.
+fn is_response_format_rejection(e: &ProviderError) -> bool {
+    matches!(e, ProviderError::Api { status: 400, body } if body.contains("response_format"))
+}
+
+/// Split combined source text into (manifests, source_code).
+///
+/// Files named `requirements.txt`, `package.json`, `Cargo.toml`, `go.mod`,
+/// or `pyproject.toml` carry dense dependency signal.  Separating them lets
+/// the user prompt present them as a dedicated section before the source,
+/// improving framework and LLM-provider detection without wasting source quota.
+fn split_manifests(source_code: &str) -> (String, String) {
+    let manifest_names = [
+        "requirements.txt",
+        "package.json",
+        "cargo.toml",
+        "go.mod",
+        "pyproject.toml",
+        "package-lock.json",
+    ];
+
+    let mut manifests = String::new();
+    let mut source = String::new();
+    let mut current_header: Option<&str> = None;
+    let mut current_body = String::new();
+
+    for line in source_code.lines() {
+        if let Some(stripped) = line
+            .strip_prefix("--- ")
+            .and_then(|l| l.strip_suffix(" ---"))
+        {
+            // Flush previous section
+            if let Some(header) = current_header {
+                let lower = header.to_lowercase();
+                if manifest_names.iter().any(|m| lower.ends_with(m)) {
+                    manifests.push_str(&format!("--- {header} ---\n"));
+                    manifests.push_str(&current_body);
+                } else {
+                    source.push_str(&format!("--- {header} ---\n"));
+                    source.push_str(&current_body);
+                }
+            }
+            current_header = Some(stripped);
+            current_body = String::new();
+        } else {
+            current_body.push_str(line);
+            current_body.push('\n');
+        }
+    }
+
+    // Flush the last section
+    if let Some(header) = current_header {
+        let lower = header.to_lowercase();
+        if manifest_names.iter().any(|m| lower.ends_with(m)) {
+            manifests.push_str(&format!("--- {header} ---\n"));
+            manifests.push_str(&current_body);
+        } else {
+            source.push_str(&format!("--- {header} ---\n"));
+            source.push_str(&current_body);
+        }
+    } else {
+        // No section headers — treat the whole thing as source
+        source.push_str(source_code);
+    }
+
+    (manifests, source)
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum GeneratorError {
+    #[error("Provider error: {0}")]
+    Provider(#[from] ProviderError),
+    #[error("Failed to parse generated card: {0}")]
+    ParseError(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_response_format_rejection;
+    use super::normalize_mime;
+    use nasiko_orchestrator::providers::ProviderError;
+
+    #[test]
+    fn response_format_400_is_retryable() {
+        let e = ProviderError::Api {
+            status: 400,
+            body: r#"{"error":{"message":"This response_format type is unavailable now"}}"#.into(),
+        };
+        assert!(is_response_format_rejection(&e));
+    }
+
+    #[test]
+    fn other_errors_are_not_retryable() {
+        let bad_request = ProviderError::Api {
+            status: 400,
+            body: "missing field 'messages'".into(),
+        };
+        assert!(!is_response_format_rejection(&bad_request));
+        let auth = ProviderError::Api {
+            status: 401,
+            body: "response_format".into(),
+        };
+        assert!(!is_response_format_rejection(&auth));
+    }
+
+    #[test]
+    fn normalizes_shorthand_mime_types() {
+        assert_eq!(normalize_mime("text"), "text/plain");
+        assert_eq!(normalize_mime("json"), "application/json");
+        assert_eq!(normalize_mime("image"), "image/png");
+    }
+
+    #[test]
+    fn passes_through_full_mime_types() {
+        assert_eq!(normalize_mime("text/plain"), "text/plain");
+        assert_eq!(normalize_mime("application/json"), "application/json");
+        assert_eq!(normalize_mime("image/svg+xml"), "image/svg+xml");
+    }
+}

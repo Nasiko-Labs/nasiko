@@ -1,0 +1,170 @@
+/* NightOwl "Access Manager" table language. */
+@scope (teams-page) {
+  /* Host box — display, padding, the desktop card padding and (where the page
+     has one) the module-nav gutter: common/styles/page-layout.css. Linked, not
+     adopted, so it is already in effect at first paint. */
+
+  .page-head {
+    display: flex;
+    align-items: center;
+    gap: var(--space-md);
+    flex-wrap: wrap;
+    margin-bottom: var(--space-lg);
+  }
+  .count-chips {
+    display: flex;
+    align-items: center;
+    gap: var(--s-8);
+    flex-wrap: wrap;
+  }
+  .count-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s-4);
+    height: var(--control-h-sm);
+    padding: 0 var(--s-12);
+    border-radius: var(--r-40);
+    background: var(--bg-surface);
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+    white-space: nowrap;
+  }
+  .count-chip b {
+    font-family: var(--font-display);
+    font-weight: 500;
+    font-size: var(--font-size-sm);
+    color: var(--color-text-main);
+  }
+  .head-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--s-8);
+    margin-left: auto;
+  }
+
+  /* Table language: sand header band, hairline rows */
+  smart-table .scroll {
+    border: none;
+    border-radius: var(--r-8);
+    background: var(--color-bg-surface);
+  }
+  smart-table .thead { background: light-dark(var(--sand-100), var(--neutral-800)); }
+  smart-table .th {
+    border-bottom: none;
+    color: var(--sand-700);
+  }
+  smart-table .th:hover { background: var(--sand-200); }
+  smart-table .td { border-bottom: 1px solid var(--sand-100); }
+  smart-table input.search {
+    background: var(--bg-input);
+    border-color: transparent;
+  }
+
+  .tag-chip {
+    display: inline-flex;
+    align-items: center;
+    height: 22px;
+    padding: 0 var(--s-8);
+    border-radius: var(--r-4);
+    background: var(--bg-surface);
+    font-family: var(--font-display);
+    font-size: var(--font-size-xs);
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--color-text-main);
+  }
+
+  .cell-warn {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s-4);
+    color: var(--color-error);
+    font-size: var(--font-size-sm);
+  }
+  .cell-warn svg { flex-shrink: 0; }
+
+  .muted {
+    color: var(--color-text-muted);
+    font-style: italic;
+  }
+
+  /* Modal form — flat sand input wells */
+  .modal-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+  }
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .modal-form label {
+    font-size: var(--font-size-xs);
+    font-weight: 500;
+    color: var(--color-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+  .modal-form input, .modal-form select {
+    width: 100%;
+    padding: var(--space-xs) var(--space-sm);
+    border: 1px solid transparent;
+    border-radius: var(--r-8);
+    background-color: var(--bg-input);
+    color: var(--color-text-main);
+    font-size: var(--font-size-sm);
+    font-family: inherit;
+    appearance: none;
+    -webkit-appearance: none;
+    min-height: var(--control-h-lg);
+
+    &:focus {
+      outline: none;
+      border-color: var(--color-primary);
+      box-shadow: 0 0 0 2px var(--color-primary-ring);
+    }
+  }
+  .modal-form select {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+    padding-right: 28px;
+    cursor: pointer;
+  }
+  .form-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--space-sm);
+    margin-top: var(--space-sm);
+  }
+
+  /* ── Row actions (edit / delete) ───────────────────────────────────────── */
+  .row-actions {
+    display: inline-flex;
+    gap: var(--space-xs);
+    justify-content: flex-end;
+    width: 100%;
+  }
+  .row-btn {
+    min-height: var(--control-h-sm);
+    padding: 0 var(--space-sm);
+    border: 1px solid var(--color-border);
+    border-radius: var(--r-8);
+    background: transparent;
+    color: var(--color-text-main);
+    font-family: inherit;
+    font-size: var(--font-size-xs);
+    cursor: pointer;
+  }
+  .row-btn:hover { background: var(--bg-surface-hover); }
+  .row-btn:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
+  .row-btn--danger { color: var(--color-error); }
+  .row-btn--danger:hover { border-color: var(--color-error); }
+
+  .form-error {
+    color: var(--color-error);
+    font-size: var(--font-size-xs);
+  }
+}

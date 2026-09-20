@@ -1,0 +1,102 @@
+/* Settings — NightOwl: left section nav + grouped setting rows on the white
+   plane; sand input wells, hairline row separators, dark save button. */
+
+@scope (settings-page) {
+  /* Host box — display, padding, the desktop card padding and (where the page
+     has one) the module-nav gutter: common/styles/page-layout.css. Linked, not
+     adopted, so it is already in effect at first paint. */
+
+  /* ── Content ─────────────────────────────────────────────────────────── */
+  .content { min-width: 0; max-width: 960px; }
+
+  .panel-head { display: none; }
+  .panel-head.is-active { display: block; margin-bottom: var(--space-lg); }
+
+  .page-sub {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+    margin: var(--space-xs) 0 0;
+  }
+
+  .panel { display: none; }
+  .panel.is-active { display: block; animation: panel-in var(--transition-base); }
+  .panel-head.is-active { animation: panel-in var(--transition-base); }
+
+  @media (prefers-reduced-motion: reduce) {
+    .panel.is-active, .panel-head.is-active { animation: none; }
+  }
+
+  .setting-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(240px, 380px);
+    gap: var(--space-xl);
+    align-items: center;
+    padding: var(--space-md) 0;
+    border-top: 1px solid var(--color-border);
+
+    &:last-child { border-bottom: 1px solid var(--color-border); }
+  }
+
+  @media (max-width: 900px) {
+    .setting-row { grid-template-columns: 1fr; gap: var(--space-sm); }
+  }
+
+  .setting-info label {
+    display: block;
+    font-size: var(--font-size-sm);
+    font-weight: 500;
+    color: var(--color-text-main);
+  }
+
+  .setting-info .hint {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+    margin-top: var(--s-4);
+    max-width: 52ch;
+  }
+
+  .setting-control input,
+  .setting-control select {
+    width: 100%;
+    height: var(--control-h-lg);
+    padding: 0 var(--s-12);
+    border: none;
+    border-radius: var(--r-8);
+    background-color: var(--bg-input);
+    color: var(--color-text-main);
+    font-size: var(--font-size-sm);
+    font-family: inherit;
+
+    &::placeholder { color: var(--color-text-muted); }
+    &:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
+  }
+
+  .setting-control select { cursor: pointer; }
+
+  /* ── Save bar ────────────────────────────────────────────────────────── */
+  .save-bar {
+    display: flex;
+    justify-content: flex-end;
+    padding-top: var(--space-lg);
+  }
+
+  .save-btn {
+    display: inline-flex;
+    align-items: center;
+    height: var(--control-h-lg);
+    padding: 0 var(--space-lg);
+    background: light-dark(var(--sand-800), var(--neutral-100));
+    color: light-dark(var(--white), var(--neutral-900));
+    border: none;
+    border-radius: var(--r-10);
+    font-size: var(--font-size-sm);
+    font-weight: 500;
+    cursor: pointer;
+    transition: background var(--transition-fast);
+
+    &:hover { background: light-dark(var(--sand-700), var(--neutral-300)); }
+    &:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
+    &:disabled { opacity: 0.5; cursor: not-allowed; }
+    & svg { width: 20px; height: 20px; flex-shrink: 0; }
+  }
+}

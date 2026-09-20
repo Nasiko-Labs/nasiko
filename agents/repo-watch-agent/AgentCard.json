@@ -1,0 +1,118 @@
+{
+  "agentFramework": "axum",
+  "capabilities": {
+    "chat_agent": false,
+    "pushNotifications": true,
+    "stateTransitionHistory": false,
+    "streaming": false
+  },
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "description": "The Repo Watch Agent monitors GitHub repositories for activity, generating detailed reports on commits, pull requests, and risky changes, and can send these reports to Slack.",
+  "framework": "axum",
+  "llm_provider": "openai",
+  "name": "repo-watch-agent",
+  "preferredTransport": "JSONRPC",
+  "protocolVersion": "0.2.9",
+  "skills": [
+    {
+      "description": "List commits since a specified time for one or more GitHub repositories, providing details like hash, message, author, and date.",
+      "examples": [
+        "list_commits(['Nasiko-Labs/nasiko-cloud-rs'], '2023-10-01T00:00:00Z')",
+        "list_commits(['owner/repo1', 'owner/repo2'], '2023-09-30T12:00:00Z')"
+      ],
+      "id": "list-commits",
+      "name": "List Commits",
+      "tags": [
+        "github",
+        "commit",
+        "repository"
+      ]
+    },
+    {
+      "description": "Get the aggregated diff of files changed across all commits since a specified time for one or more repositories.",
+      "examples": [
+        "compare_diff(['Nasiko-Labs/nasiko-cloud-rs'], '2023-10-01T00:00:00Z')",
+        "compare_diff(['owner/repo1', 'owner/repo2'], '2023-09-30T12:00:00Z')"
+      ],
+      "id": "compare-diff",
+      "name": "Compare Diff",
+      "tags": [
+        "github",
+        "diff",
+        "repository"
+      ]
+    },
+    {
+      "description": "Search for pull requests with activity (opened, merged, or closed) since a specified time across one or more repositories.",
+      "examples": [
+        "search_prs(['Nasiko-Labs/nasiko-cloud-rs'], '2023-10-01T00:00:00Z')",
+        "search_prs(['owner/repo1', 'owner/repo2'], '2023-09-30T12:00:00Z')"
+      ],
+      "id": "search-prs",
+      "name": "Search Pull Requests",
+      "tags": [
+        "github",
+        "pull-request",
+        "repository"
+      ]
+    },
+    {
+      "description": "Retrieve detailed information about a specific commit in a GitHub repository, including its message, author, date, and changed files.",
+      "examples": [
+        "get_commit('Nasiko-Labs/nasiko-cloud-rs', 'commit_hash')",
+        "get_commit('owner/repo1', None)"
+      ],
+      "id": "get-commit",
+      "name": "Get Commit",
+      "tags": [
+        "github",
+        "commit",
+        "repository"
+      ]
+    },
+    {
+      "description": "Read the full contents of a specific file in a GitHub repository at a given commit reference, allowing for detailed analysis of changes.",
+      "examples": [
+        "read_file('Nasiko-Labs/nasiko-cloud-rs', 'path/to/file', 'commit_hash')",
+        "read_file('owner/repo1', 'path/to/file', 'branch_name')"
+      ],
+      "id": "read-file",
+      "name": "Read File",
+      "tags": [
+        "github",
+        "file",
+        "repository"
+      ]
+    },
+    {
+      "description": "Find files in a GitHub repository that reference a specific symbol, helping to identify impacted files due to changes.",
+      "examples": [
+        "find_references('Nasiko-Labs/nasiko-cloud-rs', 'symbol_name')",
+        "find_references('owner/repo1', 'function_name')"
+      ],
+      "id": "find-references",
+      "name": "Find References",
+      "tags": [
+        "github",
+        "symbol",
+        "repository"
+      ]
+    }
+  ],
+  "tags": [
+    "github",
+    "monitoring",
+    "slack",
+    "notifications",
+    "llm",
+    "reporting"
+  ],
+  "transport": "http",
+  "url": "http://localhost:8000/",
+  "version": "0.1.0"
+}

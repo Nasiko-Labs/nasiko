@@ -1,0 +1,508 @@
+//! Unified connect / disconnect + connection listing, and the Composio OAuth
+//! browser callback — pure logic behind `/api/mcp/connect*` and `/oauth/callback`.
+//!
+//! One entry point ([`connect_service`]) handles every connector: Composio
+//! (OAuth), custom bearer/basic/url_param (store credential), custom OAuth 2.1
+//! (return authorization_url), and no-auth (immediately connected).
+
+use std::collections::HashMap;
+
+use serde_json::{Value, json};
+use uuid::Uuid;
+
+use crate::error::{McpError, Result};
+use crate::oauth::CallbackOutcome;
+use crate::provider::normalize_connection_status;
+use crate::repo::{self, McpConnector};
+use crate::state::McpState;
+use crate::{credentials, oauth, session};
+
+/// Composio auto-expires an INITIATED connected-account link 10 minutes after
+/// it's issued (per Composio's docs). We treat a stored link as stale a little
+/// before that so we never hand back a link in the last few seconds of its life.
+const COMPOSIO_INITIATED_TTL_SECONDS: i64 = 9 * 60;
+
+/// Inputs for [`connect_service`] — one of `connector_id` / `service` / `url`.
+#[derive(Default)]
+pub struct ConnectInput {
+    /// An existing connector id.
+    pub connector_id: Option<Uuid>,
+    /// A service name — a Composio toolkit or one of the caller's custom connectors.
+    pub service: Option<String>,
+    /// A custom MCP server URL to auto-register (owned by the caller).
+    pub url: Option<String>,
+    pub credential_value: Option<String>,
+    pub redirect_url: Option<String>,
+}
+
+/// Outcome of [`connect_service`] for the server to shape into an HTTP response.
+pub enum ConnectOutcome {
+    Connected {
+        connector_id: Uuid,
+        name: String,
+    },
+    Initiated {
+        connector_id: Uuid,
+        name: String,
+        oauth_url: Option<String>,
+    },
+    OAuthRequired {
+        connector_id: Uuid,
+        name: String,
+        authorization_url: String,
+    },
+}
+
+/// `POST /api/mcp/connect` — connect any connector type.
+pub async fn connect_service(
+    state: &McpState,
+    user_id: Uuid,
+    input: ConnectInput,
+) -> Result<ConnectOutcome> {
+    let connector = resolve_target(state, user_id, &input).await?;
+
+    if !state
+        .authorizer
+        .can_access_connector(&state.db, user_id, connector.id)
+        .await?
+    {
+        return Err(McpError::Forbidden(
+            "you do not have access to this connector".into(),
+        ));
+    }
+
+    if connector.is_composio() {
+        let outcome =
+            composio_connect(state, user_id, &connector, input.redirect_url.as_deref()).await?;
+        if matches!(outcome, ConnectOutcome::Connected { .. }) {
+            grant_user_agents_access(&state.db, user_id, connector.id).await;
+        }
+        return Ok(outcome);
+    }
+
+    let outcome = match connector.auth_type.as_deref().unwrap_or("none") {
+        "none" => {
+            // Create the connection record so the connector shows up in the
+            // user's connected list and is included in agent tool aggregation.
+            repo::upsert_connection(&state.db, user_id, connector.id, "ACTIVE").await?;
+            session::invalidate_session_cache(state, user_id).await;
+            ConnectOutcome::Connected {
+                connector_id: connector.id,
+                name: connector.name,
+            }
+        }
+        "bearer" | "basic" | "url_param" => {
+            let value = input.credential_value.as_deref().ok_or_else(|| {
+                McpError::BadRequest(format!("'{}' requires credentials.value", connector.name))
+            })?;
+            credentials::register_credential(state, user_id, &connector, value).await?;
+            ConnectOutcome::Connected {
+                connector_id: connector.id,
+                name: connector.name,
+            }
+        }
+        "oauth2" => {
+            let url = oauth::begin_authorization(
+                state,
+                user_id,
+                connector.clone(),
+                input.redirect_url,
+                None,
+            )
+            .await?;
+            ConnectOutcome::OAuthRequired {
+                connector_id: connector.id,
+                name: connector.name,
+                authorization_url: url,
+            }
+        }
+        other => {
+            return Err(McpError::BadRequest(format!(
+                "unsupported auth_type '{other}'"
+            )));
+        }
+    };
+
+    // Auto-grant all the user's agents access to this connector on connect.
+    if let ConnectOutcome::Connected { connector_id, .. } = &outcome {
+        grant_user_agents_access(&state.db, user_id, *connector_id).await;
+    }
+
+    Ok(outcome)
+}
+
+/// Auto-grant all of `user_id`'s non-deleted agents access to `connector_id`.
+/// Best-effort: failures are logged, never block the connect response.
+///
+/// Preserves any existing enabled/tool_rules state per agent — this runs on
+/// every successful `connect` (including reconnecting/refreshing credentials
+/// on an already-connected connector), so it must not silently re-enable a
+/// connector someone disabled for one of their agents, or wipe block/ask
+/// rules they'd configured. Only a genuinely first-time grant (no existing
+/// row for that agent) gets the enabled-by-default, no-rules starting state.
+pub async fn grant_user_agents_access(db: &sqlx::PgPool, user_id: Uuid, connector_id: Uuid) {
+    let agent_ids: Vec<Uuid> = match sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM agents WHERE owner_id = $1 AND deleted_at IS NULL",
+    )
+    .bind(user_id)
+    .fetch_all(db)
+    .await
+    {
+        Ok(ids) => ids,
+        Err(e) => {
+            tracing::warn!(%user_id, %connector_id, %e, "failed to list agents for auto-grant");
+            return;
+        }
+    };
+    for agent_id in agent_ids {
+        let existing = repo::get_agent_connector_access_row(db, agent_id, connector_id)
+            .await
+            .ok()
+            .flatten();
+        let enabled = existing.as_ref().map(|r| r.enabled).unwrap_or(true);
+        let tool_rules = existing
+            .map(|r| r.tool_rules)
+            .unwrap_or_else(|| serde_json::json!([]));
+        if let Err(e) =
+            repo::upsert_agent_connector_access(db, agent_id, connector_id, enabled, &tool_rules)
+                .await
+        {
+            tracing::warn!(%agent_id, %connector_id, %e, "failed to auto-grant agent connector access");
+        }
+    }
+}
+
+/// Remove all of `user_id`'s agents' access rows for `connector_id` on disconnect.
+/// Best-effort: failures are logged, never block the disconnect response.
+async fn revoke_user_agents_access(db: &sqlx::PgPool, user_id: Uuid, connector_id: Uuid) {
+    let agent_ids: Vec<Uuid> = match sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM agents WHERE owner_id = $1 AND deleted_at IS NULL",
+    )
+    .bind(user_id)
+    .fetch_all(db)
+    .await
+    {
+        Ok(ids) => ids,
+        Err(e) => {
+            tracing::warn!(%user_id, %connector_id, %e, "failed to list agents for revoke");
+            return;
+        }
+    };
+    for agent_id in agent_ids {
+        if let Err(e) = repo::delete_agent_connector_access(db, agent_id, connector_id).await {
+            tracing::warn!(%agent_id, %connector_id, %e, "failed to revoke agent connector access");
+        }
+    }
+}
+
+/// Resolve the connector being connected: by id, by service name, or by an
+/// already-registered URL (never auto-registers — see the `url` branch).
+async fn resolve_target(
+    state: &McpState,
+    user_id: Uuid,
+    input: &ConnectInput,
+) -> Result<McpConnector> {
+    if let Some(id) = input.connector_id {
+        return repo::get_connector_by_id(&state.db, id)
+            .await?
+            .ok_or_else(|| McpError::NotFound(format!("connector '{id}' not found")));
+    }
+
+    if let Some(service) = input.service.as_deref().filter(|s| !s.is_empty()) {
+        let lower = service.to_lowercase();
+        if let Some(c) = repo::get_composio_connector_by_name(&state.db, &lower).await? {
+            return Ok(c);
+        }
+        if let Some(c) = repo::get_owned_connector_by_name(&state.db, user_id, service).await? {
+            return Ok(c);
+        }
+        // Fall through to the url branch if a url was also supplied.
+    }
+
+    if let Some(url) = input.url.as_deref() {
+        // `connect --url` only ever reuses a connector you already own at
+        // this URL (oldest one, if more than one was registered) — the same
+        // "get me using this" contract as the connector-id/service branches
+        // above. It never registers anything: that's a deliberate, explicit
+        // action (`connector register`), not an implicit side effect of
+        // trying to connect to something that isn't there yet.
+        return repo::get_owned_connector_by_url(&state.db, user_id, url)
+            .await?
+            .ok_or_else(|| {
+                McpError::NotFound(format!(
+                    "no connector registered at '{url}' — register one first: \
+                     nasiko mcp connector register <name> {url} --auth-type <none|bearer|basic|url_param|oauth2>"
+                ))
+            });
+    }
+
+    Err(McpError::BadRequest(
+        "one of 'connector_id', 'service', or 'url' is required".into(),
+    ))
+}
+
+/// Composio OAuth connect: reuse an active/pending connection or initiate a new one.
+async fn composio_connect(
+    state: &McpState,
+    user_id: Uuid,
+    connector: &McpConnector,
+    redirect_url: Option<&str>,
+) -> Result<ConnectOutcome> {
+    let auth_config_id = connector
+        .auth_config_id
+        .as_deref()
+        .ok_or_else(|| McpError::Internal("composio connector missing auth_config_id".into()))?;
+
+    if let Some(existing) = repo::get_user_connection(&state.db, user_id, connector.id).await? {
+        match existing.status.as_str() {
+            "ACTIVE" => {
+                return Ok(ConnectOutcome::Connected {
+                    connector_id: connector.id,
+                    name: connector.name.clone(),
+                });
+            }
+            "INITIATED" => {
+                // `updated_at` is bumped by `trg_mcp_user_connections_updated_at` on every
+                // re-initiation, so it tracks "when was this link last (re)issued" —
+                // unlike `created_at`, which stays pinned to the very first attempt.
+                let age_seconds = (chrono::Utc::now() - existing.updated_at).num_seconds();
+                if age_seconds < COMPOSIO_INITIATED_TTL_SECONDS {
+                    return Ok(ConnectOutcome::Initiated {
+                        connector_id: connector.id,
+                        name: connector.name.clone(),
+                        oauth_url: existing.oauth_url,
+                    });
+                }
+                // Stale: Composio has almost certainly expired this link on its side
+                // (10-minute auto-expiry). Fall through and mint a fresh one instead
+                // of handing back a link that will show "Invalid or expired link".
+                tracing::info!(
+                    %user_id,
+                    connector = %connector.name,
+                    age_seconds,
+                    "stale INITIATED composio connection — re-initiating"
+                );
+            }
+            _ => {}
+        }
+    }
+
+    let provider = state.providers.require_composio()?;
+    let callback_url = composio_callback_url(state, user_id, connector.id, redirect_url);
+    let initiated = provider
+        .initiate_connection(
+            &user_id.to_string(),
+            auth_config_id,
+            callback_url.as_deref(),
+        )
+        .await?;
+    let oauth_url = initiated
+        .redirect_url
+        .ok_or_else(|| McpError::Composio("Composio did not return an OAuth URL".into()))?;
+
+    let connection = repo::upsert_composio_connection(
+        &state.db,
+        user_id,
+        connector.id,
+        Some(&oauth_url),
+        callback_url.as_deref(),
+    )
+    .await?;
+
+    tracing::info!(%user_id, connector = %connector.name, "composio oauth initiated");
+    Ok(ConnectOutcome::Initiated {
+        connector_id: connector.id,
+        name: connector.name.clone(),
+        oauth_url: connection.oauth_url,
+    })
+}
+
+/// `GET /api/mcp/connections` — the caller's connections, syncing pending ones.
+pub async fn list_connections_view(state: &McpState, user_id: Uuid) -> Result<Value> {
+    // Map connector id → connector for names / auth_config_id.
+    let connectors: HashMap<Uuid, McpConnector> = state
+        .authorizer
+        .list_accessible_connectors(&state.db, user_id)
+        .await?
+        .into_iter()
+        .map(|c| (c.id, c))
+        .collect();
+
+    // Best-effort sync of pending composio connections.
+    if let Some(provider) = &state.providers.composio {
+        for conn in repo::list_user_connections(&state.db, user_id, None).await? {
+            if conn.status != "INITIATED" {
+                continue;
+            }
+            let Some(connector) = connectors.get(&conn.connector_id) else {
+                continue;
+            };
+            let Some(auth_config_id) = connector.auth_config_id.as_deref() else {
+                continue;
+            };
+            if let Ok(check) = provider
+                .check_connection_status(&user_id.to_string(), auth_config_id)
+                .await
+                && !matches!(check.status.as_str(), "NOT_FOUND" | "UNKNOWN")
+            {
+                let normalized = normalize_connection_status(&check.status);
+                if normalized != conn.status {
+                    let _ = repo::update_connection_status(&state.db, conn.id, normalized).await;
+                }
+                if let Some(account_id) = check.account_id.as_deref()
+                    && conn.connected_account_id.is_none()
+                {
+                    let _ =
+                        repo::update_connection_account_id(&state.db, conn.id, account_id).await;
+                }
+            }
+        }
+    }
+
+    let fresh = repo::list_user_connections(&state.db, user_id, None).await?;
+    let data: Vec<Value> = fresh
+        .iter()
+        .map(|c| {
+            let name = connectors.get(&c.connector_id).map(|k| k.name.clone());
+            json!({
+                "connector_id": c.connector_id,
+                "name": name,
+                "status": c.status,
+                "connected_account_id": c.connected_account_id,
+                "oauth_url": c.oauth_url,
+                "created_at": c.created_at,
+            })
+        })
+        .collect();
+    let total = data.len();
+    Ok(json!({ "connections": data, "total": total }))
+}
+
+/// Outcome of [`disconnect`].
+pub struct DisconnectOutcome {
+    pub message: String,
+    pub connector_id: Uuid,
+    pub composio_revoked: bool,
+}
+
+/// `DELETE /api/mcp/connections/{connector_id}` — disconnect the caller's connection.
+pub async fn disconnect(
+    state: &McpState,
+    user_id: Uuid,
+    connector_id: Uuid,
+) -> Result<DisconnectOutcome> {
+    let connection = repo::get_user_connection(&state.db, user_id, connector_id)
+        .await?
+        .ok_or_else(|| McpError::NotFound("no connection for this connector".into()))?;
+
+    // Best-effort Composio token revoke.
+    let mut composio_revoked = false;
+    if let (Some(provider), Some(account_id)) = (
+        &state.providers.composio,
+        connection.connected_account_id.as_deref(),
+    ) {
+        composio_revoked = provider
+            .revoke_connection(account_id)
+            .await
+            .unwrap_or(false);
+    }
+
+    repo::delete_user_connection(&state.db, user_id, connector_id).await?;
+    revoke_user_agents_access(&state.db, user_id, connector_id).await;
+    session::invalidate_session_cache(state, user_id).await;
+
+    tracing::info!(%user_id, %connector_id, composio_revoked, "disconnected connector");
+    Ok(DisconnectOutcome {
+        message: "Disconnected.".to_string(),
+        connector_id,
+        composio_revoked,
+    })
+}
+
+/// Build our `/oauth/callback` URL carrying the user + connector for verification.
+/// Prefers `composio_callback_base_url` (browser-reachable) over
+/// `gateway_public_url` (may be in-cluster only).
+fn composio_callback_url(
+    state: &McpState,
+    user_id: Uuid,
+    connector_id: Uuid,
+    success_url: Option<&str>,
+) -> Option<String> {
+    let base = state
+        .config
+        .composio_callback_base_url
+        .as_ref()
+        .or(state.config.gateway_public_url.as_ref())?;
+    let mut origin = reqwest::Url::parse(base).ok()?;
+    origin.set_path("/oauth/callback");
+    origin.set_query(None);
+    origin
+        .query_pairs_mut()
+        .append_pair("user_id", &user_id.to_string())
+        .append_pair("connector_id", &connector_id.to_string());
+    if let Some(s) = success_url {
+        origin.query_pairs_mut().append_pair("success_url", s);
+    }
+    Some(origin.to_string())
+}
+
+/// `GET /oauth/callback` core (Composio redirect target): verify ACTIVE, record
+/// the account id, invalidate the session cache, report where to redirect.
+pub async fn handle_composio_callback(
+    state: &McpState,
+    user_id: Option<Uuid>,
+    connector_id: Option<Uuid>,
+    success_url: Option<String>,
+) -> CallbackOutcome {
+    let (Some(user_id), Some(connector_id)) = (user_id, connector_id) else {
+        return CallbackOutcome::Message("Missing user_id or connector_id.".to_string());
+    };
+
+    let connection = match repo::get_user_connection(&state.db, user_id, connector_id).await {
+        Ok(Some(c)) if c.status != "EXPIRED" => c,
+        Ok(_) => {
+            return CallbackOutcome::Message(
+                "No pending connection for this connector.".to_string(),
+            );
+        }
+        Err(e) => return CallbackOutcome::Message(format!("Lookup failed: {e}")),
+    };
+
+    let connector = match repo::get_connector_by_id(&state.db, connector_id).await {
+        Ok(Some(c)) => c,
+        _ => return CallbackOutcome::Message("Connector not found.".to_string()),
+    };
+    let Some(auth_config_id) = connector.auth_config_id.as_deref() else {
+        return CallbackOutcome::Message("Connector is not a Composio connector.".to_string());
+    };
+    let Some(provider) = &state.providers.composio else {
+        return CallbackOutcome::Message("Composio is not configured.".to_string());
+    };
+
+    match provider
+        .check_connection_status(&user_id.to_string(), auth_config_id)
+        .await
+    {
+        Ok(check) if check.status.eq_ignore_ascii_case("ACTIVE") => {
+            let _ = repo::update_connection_status(&state.db, connection.id, "ACTIVE").await;
+            if let Some(account_id) = check.account_id.as_deref() {
+                let _ =
+                    repo::update_connection_account_id(&state.db, connection.id, account_id).await;
+            }
+            grant_user_agents_access(&state.db, user_id, connector_id).await;
+            session::invalidate_session_cache(state, user_id).await;
+            match success_url {
+                // Explicit success_url — redirect there (never off-origin).
+                Some(dest) => CallbackOutcome::Redirect(crate::net::safe_redirect(
+                    &dest,
+                    state.config.gateway_public_url.as_deref(),
+                )),
+                // No success_url (popup flow) — show a self-closing page.
+                None => CallbackOutcome::Message("Connected successfully".to_string()),
+            }
+        }
+        _ => CallbackOutcome::Message(
+            "Authorization is still finalizing — refresh in a moment.".to_string(),
+        ),
+    }
+}

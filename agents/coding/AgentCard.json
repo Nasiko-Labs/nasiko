@@ -1,0 +1,76 @@
+{
+  "agentFramework": "axum",
+  "capabilities": {
+    "chat_agent": true,
+    "pushNotifications": false,
+    "stateTransitionHistory": false,
+    "streaming": true
+  },
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "description": "The Coding Agent develops, tests, and refactors code inside a sandboxed workspace, utilizing a ReAct loop to interact with an OpenAI-compatible chat model.",
+  "framework": "axum",
+  "llm_provider": "openai",
+  "name": "coding",
+  "preferredTransport": "JSONRPC",
+  "protocolVersion": "0.2.9",
+  "skills": [
+    {
+      "description": "Read, write, and make targeted search/replace edits to source files",
+      "examples": [
+        "edit_file('src/lib.rs', 'search': 'oldFunction()', 'replace': 'newFunction()')",
+        "edit_file('src/main.rs', 'edits': [{'search': 'foo', 'replace': 'bar'}])"
+      ],
+      "id": "code-edit",
+      "name": "Code Editing",
+      "tags": [
+        "coding",
+        "edit",
+        "refactor"
+      ]
+    },
+    {
+      "description": "Run builds, linters, and the project's test suite, then iterate on failures",
+      "examples": [
+        "run_tests()",
+        "run_command('cargo build')"
+      ],
+      "id": "code-test",
+      "name": "Build & Test",
+      "tags": [
+        "coding",
+        "test",
+        "build"
+      ]
+    },
+    {
+      "description": "Search the codebase and apply structured multi-file refactors",
+      "examples": [
+        "search_code('functionName')",
+        "refactor_code('src/**/*.rs', 'oldFunction()', 'newFunction()')"
+      ],
+      "id": "code-refactor",
+      "name": "Refactoring",
+      "tags": [
+        "coding",
+        "refactor",
+        "search"
+      ]
+    }
+  ],
+  "tags": [
+    "coding",
+    "development",
+    "testing",
+    "refactoring",
+    "rust",
+    "sandbox"
+  ],
+  "transport": "http",
+  "url": "http://localhost:8000/",
+  "version": "0.1.0"
+}

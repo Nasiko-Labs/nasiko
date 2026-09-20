@@ -1,0 +1,94 @@
+[package]
+name = "nasiko-server"
+edition.workspace = true
+version.workspace = true
+# `src/bin/bench_seed.rs` is auto-discovered as a second binary, so
+# `cargo run -p nasiko-server` is ambiguous without naming the default.
+default-run = "nasiko-server"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "nasiko-server"
+path = "src/main.rs"
+
+[dependencies]
+dotenvy.workspace = true
+nasiko-agent-proxy.workspace = true
+nasiko-auth.workspace = true
+nasiko-flow.workspace = true
+nasiko-mcp-gateway.workspace = true
+nasiko-secrets.workspace = true
+nasiko-github = { workspace = true }
+nasiko-oidc = { workspace = true }
+nasiko-oci.workspace = true
+nasiko-runtime = { workspace = true, features = ["docker", "simulated"] }
+nasiko-react-agent.workspace = true
+nasiko-orchestrator.workspace = true
+nasiko-types.workspace = true
+nasiko-utils.workspace = true
+nasiko-config.workspace = true
+nasiko-observability.workspace = true
+nasiko-llm-router.workspace = true
+
+tokio = { workspace = true }
+axum = { workspace = true }
+tower-http = { workspace = true }
+utoipa = { workspace = true }
+utoipa-swagger-ui = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+redis = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+bytes = { workspace = true }
+async-stream = { workspace = true }
+futures = { workspace = true }
+reqwest = { workspace = true, features = ["json", "stream"] }
+rust_decimal = { workspace = true }
+zip = { workspace = true }
+semver = { workspace = true }
+flate2 = { workspace = true }
+tar = { workspace = true }
+aes-gcm = "0.10"
+hkdf = { workspace = true }
+sha2 = { workspace = true }
+base64 = { workspace = true }
+rust-embed = { workspace = true }
+mime_guess = { workspace = true }
+hex = { workspace = true }
+dashmap = { workspace = true }
+async-trait = { workspace = true }
+clap = { workspace = true }
+rand = { workspace = true }
+
+# OpenTelemetry
+opentelemetry = { version = "0.28", features = ["metrics"] }
+opentelemetry_sdk = { version = "0.28", features = ["rt-tokio", "metrics"] }
+opentelemetry-otlp = { version = "0.28", default-features = false, features = ["grpc-tonic", "metrics", "trace"] }
+tracing-opentelemetry = "0.29"
+tonic = "0.12"
+
+[dev-dependencies]
+serial_test = { workspace = true }
+reqwest = { workspace = true, features = ["multipart"] }
+uuid = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+jsonwebtoken = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+base64 = { workspace = true }
+mockito = { workspace = true }
+criterion = { workspace = true }
+nasiko-bench-support = { workspace = true }
+
+[[bench]]
+name = "control_plane"
+harness = false

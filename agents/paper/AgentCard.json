@@ -1,0 +1,50 @@
+{
+  "agentFramework": "axum",
+  "capabilities": {
+    "chat_agent": true,
+    "pushNotifications": false,
+    "stateTransitionHistory": false,
+    "streaming": true
+  },
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "description": "The Paper agent assists users in searching and analyzing academic papers from sources like arXiv and Semantic Scholar.",
+  "framework": "axum",
+  "llm_provider": "openai",
+  "name": "paper",
+  "preferredTransport": "JSONRPC",
+  "protocolVersion": "0.2.9",
+  "skills": [
+    {
+      "description": "Find and analyze academic papers on any topic",
+      "examples": [
+        "arxiv_search({\"query\": \"machine learning\", \"max_results\": 5})",
+        "semantic_scholar({\"query\": \"quantum computing\", \"limit\": 10})"
+      ],
+      "id": "paper-search",
+      "name": "Paper Search",
+      "tags": [
+        "research",
+        "papers",
+        "arxiv",
+        "science"
+      ]
+    }
+  ],
+  "tags": [
+    "research",
+    "papers",
+    "arxiv",
+    "semantic-scholar",
+    "science",
+    "academic",
+    "search"
+  ],
+  "transport": "http",
+  "url": "http://localhost:8000/",
+  "version": "0.1.0"
+}

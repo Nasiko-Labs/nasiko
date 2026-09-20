@@ -1,0 +1,85 @@
+# Nasiko Platform — Infrastructure
+#
+# Start:  just infra          (or: docker compose up -d)
+# Stop:   just infra-down     (or: docker compose down)
+# Logs:   just logs -f
+#
+# Not managed here: `nasiko-mcp-servers-net`, the isolated Docker network
+# uploaded MCP server containers deploy onto (docs/MCP_UPLOAD_PLAN_OSS.md
+# §4.3). It has no service to attach to in this file — the control-plane
+# server always runs natively (`cargo run`, not `docker compose up server`)
+# in every setup this repo supports today, so there is no "server" service to
+# join it to. The server creates the network itself, idempotently, at
+# startup (`DockerRuntime::ensure_network`, oss/server/src/runtime.rs) using
+# the Docker API directly. A dead top-level `networks:` entry here (unattached
+# to any service) would be silently dropped by `docker compose config` and
+# give no real visibility, so it's intentionally not declared in this file.
+
+services:
+  postgres:
+    image: docker.io/pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: nasiko
+      POSTGRES_PASSWORD: nasiko
+      POSTGRES_DB: nasiko_dev
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./init-databases.sql:/docker-entrypoint-initdb.d/create-extra-dbs.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nasiko -d nasiko_dev"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: docker.io/library/redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  rustfs:
+    image: docker.io/rustfs/rustfs:latest
+    command: server /data --address :9000
+    environment:
+      RUSTFS_ROOT_USER: nasiko
+      RUSTFS_ROOT_PASSWORD: nasiko123
+    ports:
+      - "9000:9000"
+    volumes:
+      - rustfs-data:/data
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.119.0
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./observability/config/otel-collector.yaml:/etc/otel-collector-config.yaml
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+    depends_on:
+      - tempo
+      - loki
+
+  tempo:
+    image: grafana/tempo:2.6.1
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./observability/config/tempo.yaml:/etc/tempo.yaml
+    ports:
+      - "3200:3200"   # Tempo HTTP query API
+
+  loki:
+    image: grafana/loki:3.3.2
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    ports:
+      - "3100:3100"   # Loki HTTP API
+
+volumes:
+  postgres-data:
+  rustfs-data:

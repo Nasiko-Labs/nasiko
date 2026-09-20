@@ -1,0 +1,35 @@
+{
+  "apiVersion": "nasiko.dev/v1",
+  "kind": "Skill",
+  "metadata": {
+    "name": "wikipedia-search",
+    "version": "1.0.0",
+    "description": "Search Wikipedia for a summary of any topic or concept",
+    "tags": ["search", "wikipedia", "knowledge", "reference"],
+    "author": "nasiko"
+  },
+  "interface": {
+    "function": "search_wikipedia",
+    "inputs": {
+      "type": "object",
+      "properties": {
+        "query": { "type": "string", "description": "Topic or concept to look up" }
+      },
+      "required": ["query"]
+    },
+    "output": { "type": "string", "description": "Wikipedia article title and summary extract" }
+  },
+  "runtime": {
+    "language": "python",
+    "entrypoint": "impl.py",
+    "dependencies": ["httpx>=0.27.0"],
+    "env_vars": []
+  },
+  "frameworks": {
+    "openai": { "decorator": "function_tool", "import_from": "agents" },
+    "claude-sdk": { "style": "tool_definition" },
+    "langgraph": { "decorator": "tool", "import_from": "langchain_core.tools" },
+    "crewai": { "decorator": "tool", "import_from": "crewai.tools" },
+    "a2a-go": { "style": "handler" }
+  }
+}

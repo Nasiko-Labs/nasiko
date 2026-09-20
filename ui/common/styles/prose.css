@@ -1,0 +1,46 @@
+.prose {
+  h1 {
+    font-size: var(--font-size-2xl);
+    font-weight: 700;
+  }
+
+  h2 {
+    font-size: var(--font-size-xl);
+    font-weight: 600;
+  }
+
+  h3 {
+    font-size: var(--font-size-lg);
+    font-weight: 600;
+  }
+
+  h4,
+  h5,
+  h6 {
+    font-size: var(--font-size-base);
+    font-weight: 600;
+  }
+
+  :is(h1, h2, h3, h4, h5, h6, p) {
+    margin: var(--space-sm) 0;
+  }
+
+  :is(ul, ol) {
+    margin: var(--space-sm) 0;
+    padding-left: var(--space-xl);
+  }
+
+  li {
+    margin: 0;
+  }
+
+  a {
+    text-decoration: underline;
+  }
+
+  blockquote {
+    margin: var(--space-sm) 0;
+    padding-left: var(--space-md);
+    border-left-width: 3px;
+  }
+}

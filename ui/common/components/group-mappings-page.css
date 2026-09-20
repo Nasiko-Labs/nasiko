@@ -1,0 +1,147 @@
+/* NightOwl "Access Manager" table language. */
+@scope (group-mappings-page) {
+  /* Host box — display, padding, the desktop card padding and (where the page
+     has one) the module-nav gutter: common/styles/page-layout.css. Linked, not
+     adopted, so it is already in effect at first paint. */
+
+    .page-head { margin-bottom: var(--space-lg); }
+  .page-sub {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+    margin: var(--space-xs) 0 0;
+    max-width: 72ch;
+  }
+
+  .page-header {
+    display: flex;
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: var(--s-8);
+    margin-bottom: var(--space-md);
+  }
+  .page-header > div:first-child { flex: 1 1 100%; min-width: 0; }
+  @media (min-width: 761px) {
+    .page-header > div:first-child { flex: 1 1 auto; }
+  }
+
+  /* Table language: sand header band, hairline rows */
+  smart-table .scroll {
+    border: none;
+    border-radius: var(--r-8);
+    background: var(--color-bg-surface);
+  }
+  smart-table .thead { background: light-dark(var(--sand-100), var(--neutral-800)); }
+  smart-table .th {
+    border-bottom: none;
+    color: var(--sand-700);
+  }
+  smart-table .th:hover { background: var(--sand-200); }
+  smart-table .td { border-bottom: 1px solid var(--sand-100); }
+
+  smart-table .td code {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    background: var(--bg-surface);
+    padding: 2px var(--s-8);
+    border-radius: var(--r-4);
+  }
+
+  .tag-chip {
+    display: inline-flex;
+    align-items: center;
+    height: 22px;
+    padding: 0 var(--s-8);
+    border-radius: var(--r-4);
+    background: var(--bg-surface);
+    font-family: var(--font-display);
+    font-size: var(--font-size-xs);
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--color-text-main);
+  }
+
+  /* Modal form — flat sand input wells */
+  .modal-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+  }
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .modal-form label {
+    font-size: var(--font-size-xs);
+    font-weight: 500;
+    color: var(--color-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+  .modal-form input, .modal-form select {
+    width: 100%;
+    padding: var(--space-xs) var(--space-sm);
+    border: 1px solid transparent;
+    border-radius: var(--r-8);
+    background-color: var(--bg-input);
+    color: var(--color-text-main);
+    font-size: var(--font-size-sm);
+    font-family: inherit;
+    min-height: var(--control-h-lg);
+
+    &:focus {
+      outline: none;
+      border-color: var(--color-primary);
+      box-shadow: 0 0 0 2px var(--color-primary-ring);
+    }
+  }
+  .modal-form select {
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+    padding-right: 28px;
+    cursor: pointer;
+  }
+  .hint {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+    margin: 0;
+  }
+  .form-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--space-sm);
+    margin-top: var(--space-sm);
+  }
+
+  .muted {
+    color: var(--color-text-muted);
+    font-style: italic;
+  }
+
+  .action-btn {
+    background: none;
+    border: none;
+    cursor: pointer;
+    min-width: var(--control-h-sm);
+    min-height: var(--control-h-sm);
+    padding: var(--space-xs);
+    border-radius: var(--r-4);
+    color: var(--color-text-muted);
+
+    &:hover {
+      background: var(--bg-surface-hover);
+      color: var(--color-text-main);
+    }
+  }
+  .action-btn--danger {
+    color: var(--color-error);
+    &:hover { background: color-mix(in srgb, var(--color-error) 10%, transparent); color: var(--color-error); }
+  }
+}
+
+/* Upgrade contract — reserve header + table footprint */
+

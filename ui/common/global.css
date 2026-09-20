@@ -1,0 +1,991 @@
+@layer base;
+
+/* Nasiko UI Design System fonts — vendored locally (see nasiko_ui Flutter package) */
+@font-face {
+  font-family: 'Chivo Mono';
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+  src: url('fonts/ChivoMono-Regular.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Chivo Mono';
+  font-weight: 500 700; /* 700 synthesized from Medium — no bold TTF shipped */
+  font-style: normal;
+  font-display: swap;
+  src: url('fonts/ChivoMono-Medium.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Inter';
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+  src: url('fonts/Inter-VariableFont_opsz.ttf') format('truetype-variations');
+}
+@font-face {
+  font-family: 'Inter';
+  font-weight: 100 900;
+  font-style: italic;
+  font-display: swap;
+  src: url('fonts/Inter-Italic-VariableFont_opsz.ttf') format('truetype-variations');
+}
+
+@layer base {
+
+/* 1. Design Tokens (The API)
+ *
+ * Source of truth: Nasiko UI Design System (yellow palette, ink neutrals,
+ * Chivo Mono display + Inter body). DS tokens (--bg-, --fg-, --border-,
+ * --s-, --r-) are canonical; the legacy --color- / --space- / --radius-
+ * names below are aliases kept so existing component CSS re-skins unchanged.
+ * Use DS names in new code.
+ *
+ * Theme: light-dark() follows the OS by default; an explicit
+ * [data-theme="light"|"dark"] on <html> pins it.
+ */
+:root {
+  color-scheme: light dark;
+
+  /* ==== Raw palette ==== */
+  --white: #FFFFFF;
+  --black: #000000;
+
+  /* Ink neutral ramp — same hue family as --shell-bg (#242628) at ~5%
+     saturation, NOT Tailwind Slate (~33% saturation on a blue hue). Dark
+     surfaces come from light-dark(sand-*, neutral-*), so the old Slate values
+     gave the whole dark theme a blue cast that clashed with the always-ink
+     chrome. Two deliberate relationships: --neutral-800 (#2B2D30, the dark
+     content surface) is slightly LIGHTER than the ink shell so the content
+     plane floats above the chrome exactly as the white plane does in light
+     theme, while --neutral-900 (#1A1C1E) is darker than the ink and serves as
+     the recessed card/well surface sitting inside that plane. */
+  --neutral-50:  #F7F8F9;
+  --neutral-100: #EEF0F2;
+  --neutral-200: #DFE2E5;
+  --neutral-300: #C3C7CB;
+  /* Lightened from #90949A: muted text on the dark plane measured 4.53:1
+     (AA with no headroom); this restores 5.24:1 at the same hue. */
+  --neutral-400: #9BA0A6;
+  --neutral-500: #6B6E72;
+  --neutral-600: #4F5255;
+  --neutral-700: #3A3D40;
+  --neutral-800: #2B2D30;
+  --neutral-900: #1A1C1E;
+
+  --yellow-50:  #FDF7E6;
+  --yellow-100: #FBF0CE;
+  --yellow-200: #F7E19C;
+  --yellow-300: #F2D16B;
+  --yellow-400: #EEC239;
+  --yellow-500: #EAB308;
+  --yellow-600: #BB8F06;
+  --yellow-700: #8C6B05;
+  --yellow-800: #695104;
+  --yellow-900: #463602;
+
+  /* Warm sand ramp — NightOwl neutral scale (fig-tokens); the content plane,
+     cards, inputs, and table chrome all read from this ramp */
+  --sand-50:  #F5F2EC;
+  --sand-100: #EDE7DC;
+  --sand-200: #E2DAD0;
+  --sand-300: #D4CCC0;
+  --sand-400: #C2BAB0;
+  --sand-500: #A89E94;
+  --sand-600: #8C8278;
+  --sand-700: #645C52;
+  --sand-800: #3A3430;
+  --sand-900: #242628;
+
+  /* Legacy warm cream canvas ramp — superseded by --sand-*, kept as aliases */
+  --cream-50:  var(--sand-50);
+  --cream-100: var(--sand-100);
+  --cream-200: var(--sand-200);
+  --cream-300: var(--sand-300);
+  --cream-400: var(--sand-400);
+
+  --orange-100: #FFEDD5; --orange-300: #FDBA74; --orange-400: #FB923C; --orange-600: #EA580C; --orange-900: #7C2D12;
+  --red-100:    #FEE2E2; --red-300:    #FCA5A5; --red-400:    #F87171; --red-600:    #DC2626; --red-900:    #7F1D1D;
+  --purple-400: #C084FC; --purple-500: #A855F7;
+  --blue-100:   #DBEAFE; --blue-300:   #93C5FD; --blue-400:   #60A5FA; --blue-600:   #2563EB; --blue-900:   #1E3A8A;
+  --teal-400:   #2DD4BF; --teal-500:   #14B8A6;
+  --green-100:  #DCFCE7; --green-300:  #86EFAC; --green-400:  #4ADE80; --green-600:  #16A34A; --green-900:  #14532D;
+
+  /* ==== NightOwl shell chrome (ink plane — not theme-switched) ==== */
+  --shell-bg:             #242628; /* flat ink: topbar + rail + backdrop */
+  --shell-control:        #3A3430; /* dark-chrome control fill (rest) */
+  --shell-control-hover:  #4A423C;
+  --shell-control-active: #242628;
+  --shell-fg:             #FFFFFF;
+  /* sand-500, not white@62%: the ink plane is warm (#242628 family), and a cool
+     grey glyph read as a different palette beside the gold selected state. */
+  --shell-fg-muted:       var(--sand-500);
+  --shell-selected:       var(--yellow-200); /* pale-gold selected fill #F7E19C */
+  --shell-topbar-height:  52px;
+  /* The rail is the 32px button column only. It floats inside --shell-gutter on
+     both sides, so the card's left edge lands at 12 + 32 + 12 = 56. */
+  --shell-gutter:         var(--s-12);
+  --shell-rail-width:     32px;
+  --shell-rail-expanded:  200px;
+  --shell-logo-glow:      drop-shadow(0 4px 16px rgba(247, 225, 156, 0.16));
+
+  /* ==== Control metrics (fig-tokens control-*) ==== */
+  --control-h-sm: 28px;
+  --control-h-md: 32px;
+  --control-h-lg: 36px;
+
+  /* ==== DS semantic tokens (theme-aware) ==== */
+  --bg-base:            light-dark(var(--white), var(--black));
+  --bg-group:           light-dark(var(--sand-50), var(--neutral-900));
+  --bg-surface:         light-dark(var(--sand-50), var(--neutral-800));
+  --bg-surface-hover:   light-dark(var(--sand-100), var(--neutral-700));
+  --bg-surface-active:  light-dark(var(--sand-200), var(--neutral-600));
+  --bg-overlay:         light-dark(rgba(100, 116, 139, 0.5), rgba(15, 23, 42, 0.6));
+  --bg-disabled:        light-dark(var(--sand-200), var(--neutral-700));
+
+  --bg-brand:           var(--yellow-600);
+  --bg-brand-hover:     light-dark(var(--yellow-800), var(--yellow-400));
+  --bg-brand-active:    var(--yellow-500);
+  --bg-brand-subtle:    light-dark(var(--yellow-200), var(--yellow-900));
+
+  --bg-secondary-brand:        light-dark(var(--yellow-100), var(--yellow-900));
+  --bg-secondary-brand-hover:  light-dark(var(--yellow-200), var(--yellow-800));
+  --bg-secondary-brand-active: light-dark(var(--yellow-100), var(--yellow-900));
+
+  --bg-success:         light-dark(var(--green-100), var(--green-900));
+  --bg-warning:         light-dark(var(--orange-100), var(--orange-900));
+  --bg-error:           light-dark(var(--red-100), var(--red-900));
+  --bg-information:     light-dark(var(--blue-100), var(--blue-900));
+
+  --fg-primary:         light-dark(var(--sand-900), var(--neutral-100));
+  --fg-secondary:       light-dark(var(--sand-700), var(--neutral-400));
+  --fg-disabled:        light-dark(var(--sand-500), var(--neutral-600));
+  --fg-on-action:       light-dark(var(--white), var(--neutral-900));
+
+  --fg-brand:           light-dark(var(--yellow-600), var(--yellow-400));
+  --fg-brand-hover:     light-dark(var(--yellow-800), var(--yellow-300));
+  --fg-brand-link:      var(--fg-brand);
+  --fg-brand-highlight: light-dark(var(--yellow-500), var(--yellow-400));
+
+  --fg-success:         light-dark(var(--green-600), var(--green-400));
+  --fg-warning:         light-dark(var(--orange-600), var(--orange-400));
+  --fg-error:           light-dark(var(--red-600), var(--red-400));
+  --fg-information:     light-dark(var(--blue-600), var(--blue-400));
+
+  --border-primary:     light-dark(var(--sand-200), var(--neutral-700));
+  --border-secondary:   var(--fg-brand);
+  --border-hover:       var(--fg-brand);
+  --border-success:     light-dark(var(--green-300), var(--green-600));
+  --border-error:       light-dark(var(--red-300), var(--red-600));
+  --border-warning:     light-dark(var(--orange-300), var(--orange-600));
+  --border-information: light-dark(var(--blue-300), var(--blue-600));
+  --border-disabled:    light-dark(var(--sand-200), var(--neutral-700));
+
+  /* ==== DS spacing / radius / border widths / icon sizes ==== */
+  --s-0: 0px; --s-2: 2px; --s-4: 4px; --s-8: 8px;
+  --s-12: 12px; --s-16: 16px; --s-20: 20px; --s-24: 24px;
+  --s-28: 28px; --s-36: 36px; --s-48: 48px; --s-52: 52px; --s-64: 64px; --s-80: 80px;
+
+  /* Standard content padding inside the white card (52 top, 64 sides/bottom) */
+  --card-content-pad: var(--s-52) var(--s-64) var(--s-64);
+
+  --r-0: 0px; --r-4: 4px; --r-6: 6px; --r-8: 8px;
+  --r-10: 10px; --r-12: 12px; --r-16: 16px; --r-40: 40px;
+
+  --bw-1: 1px; --bw-2: 2px;
+
+  --icon-xs: 16px; --icon-s: 20px; --icon-m: 24px; --icon-l: 28px;
+
+  /* ==== DS elevation (flat by default — borders carry depth) ==== */
+  --shadow-card-hover: 0 2px 16px rgba(0, 0, 0, 0.10);
+  --shadow-menu:       0 4px 16px rgba(0, 0, 0, 0.08);
+
+  /* ==== Legacy aliases → DS ==== */
+  --color-primary: var(--fg-brand);
+  --color-primary-hover: var(--fg-brand-hover);
+  --color-primary-muted: light-dark(color-mix(in srgb, var(--color-primary) 60%, white), color-mix(in srgb, var(--color-primary) 60%, black));
+  --color-primary-subtle: var(--bg-secondary-brand);
+  --color-primary-ring: color-mix(in srgb, var(--color-primary) 20%, transparent);
+  --color-on-primary: var(--fg-on-action);
+
+  --color-success: var(--fg-success);
+  --color-success-bg: var(--bg-success);
+  --color-success-border: var(--border-success);
+
+  --color-warning: var(--fg-warning);
+  --color-warning-bg: var(--bg-warning);
+  --color-warning-border: var(--border-warning);
+
+  --color-error: var(--fg-error);
+  --color-error-bg: var(--bg-error);
+  --color-error-border: var(--border-error);
+
+  --color-info: var(--fg-information);
+  --color-info-bg: var(--bg-information);
+  --color-info-border: var(--border-information);
+
+  --color-neutral: var(--fg-secondary);
+  --color-neutral-bg: light-dark(var(--sand-100), var(--neutral-800));
+  --color-neutral-border: var(--border-primary);
+
+  /* Page canvas / raised surfaces. NightOwl: flat ink shell backdrop (body
+     only — see --shell-bg) → white content card → sand wells on white.
+     --color-bg-base stays a LIGHT wash: table heads, code, hovers use it. */
+  --color-bg-base: light-dark(var(--sand-50), var(--neutral-900));
+  --color-bg-surface: light-dark(var(--white), var(--neutral-800));
+  /* Chrome sitting directly on the ink shell (rare — most chrome is the shell itself) */
+  --bg-canvas-card: light-dark(var(--shell-control), var(--neutral-800));
+  --border-canvas: light-dark(transparent, var(--neutral-700));
+  /* Inputs are flat sand wells on the white plane — no stroke */
+  --bg-input: light-dark(var(--sand-50), var(--neutral-900));
+  --color-text-main: var(--fg-primary);
+  --color-text-prose: light-dark(var(--neutral-600), var(--neutral-300));
+  --color-text-muted: var(--fg-secondary);
+  --color-border: var(--border-primary);
+
+  /* Spacing Scale - Fluid spacing (legacy; DS fixed scale is --s-*) */
+  --space-2xs: clamp(0.25rem, 0.5vw, 0.375rem);
+  --space-xs: clamp(0.375rem, 0.75vw, 0.5rem);
+  --space-sm: clamp(0.5rem, 1vw, 0.75rem);
+  --space-md: clamp(0.75rem, 1.5vw, 1rem);
+  --space-lg: clamp(1rem, 2vw, 1.5rem);
+  --space-xl: clamp(1.5rem, 2.5vw, 2rem);
+  --space-2xl: clamp(2rem, 4vw, 3rem);
+
+  /* Borders */
+  --radius-sm: var(--r-4);
+  --radius-md: var(--r-8);
+  --radius-lg: var(--r-12);
+
+  /* Shadows — DS is flat; keep the legacy ramp shallow.
+     light-dark() is a *color* function, so it wraps only the color — wrapping a
+     whole shadow value (as this ramp used to) is invalid and computes to `none`,
+     which silently dropped every shadow in the UI. Geometry is theme-independent. */
+  --shadow-sm: 0 1px 2px 0 light-dark(rgba(0, 0, 0, 0.04), rgba(0, 0, 0, 0.3));
+  --shadow-md: 0 4px 16px light-dark(rgba(0, 0, 0, 0.08), rgba(0, 0, 0, 0.4));
+  --shadow-lg: 0 2px 16px light-dark(rgba(0, 0, 0, 0.10), rgba(0, 0, 0, 0.5));
+  --shadow-xl: 0 8px 24px light-dark(rgba(0, 0, 0, 0.12), rgba(0, 0, 0, 0.5));
+
+  /* Typography - Fluid sizing with clamp() (DS sizes carry the same clamps
+     in Flutter: body 14–18, titles 36–44) */
+  --font-size-xs: clamp(0.7rem, 0.9vw, 0.75rem);
+  --font-size-sm: clamp(0.8rem, 1vw, 0.875rem);
+  --font-size-base: clamp(0.9rem, 1.2vw, 1rem);
+  --font-size-lg: clamp(1rem, 1.3vw, 1.125rem);
+  --font-size-xl: clamp(1.1rem, 1.5vw, 1.25rem);
+  --font-size-2xl: clamp(1.25rem, 2vw, 1.5rem);
+  --font-size-3xl: clamp(1.5rem, 2.5vw, 1.875rem);
+  --font-size-4xl: clamp(1.75rem, 3vw, 2.25rem);
+
+  /* Font stacks */
+  --font-display: 'Chivo Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-body: var(--font-sans);
+  --font-mono: 'Chivo Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+
+  /* Transitions */
+  --transition-fast: 150ms ease-in-out;
+  --transition-base: 200ms ease-in-out;
+  --transition-slow: 300ms ease-in-out;
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* Layout */
+  --app-header-height: var(--shell-topbar-height);
+  --app-sidebar-width-expanded: var(--shell-rail-expanded);
+  --app-sidebar-width-collapsed: var(--shell-rail-width);
+  --app-sidebar-width: var(--app-sidebar-width-collapsed);
+  --page-max-width: 90rem;
+}
+
+/* Explicit theme pin — wins over the OS preference */
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
+
+/* 2. Base Reset */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  scrollbar-gutter: stable;
+  -webkit-text-size-adjust: 100%;
+  overflow-x: clip;
+}
+
+body {
+  background-color: var(--shell-bg);
+  color: var(--color-text-main);
+  font-family: var(--font-sans);
+  line-height: 1.5;
+  font-size: var(--font-size-base);
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
+}
+
+/* Mobile (<1024px): no rail/card chrome — the content plane is the page
+   itself, so page components sit on the white surface directly. Desktop gets
+   the floating white card in the @media block below. */
+@media (max-width: 1023.98px) {
+  body:has(> app-header) > :not(app-header):not(app-loading-bar):not(app-nav-search):not(app-toast):not(div):not(dialog):not(kb-shortcut-manager):not(kb-command-palette) {
+    background: var(--color-bg-surface);
+    flex: 1;
+  }
+}
+
+main {
+  width: min(100% - 2 * var(--space-lg), var(--page-max-width));
+  margin: 0 auto;
+  padding: var(--space-md) 0;
+}
+
+/* Full-viewport app-shell layout — no centering, panes scroll independently */
+main.app-shell {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  height: calc(100dvh - var(--app-header-height));
+  overflow: hidden;
+}
+
+@media (min-width: 1024px) {
+  /* NightOwl shell: fixed 52px ink topbar + fixed left icon rail; the page
+     content is the white card floating on the ink backdrop. app-header
+     renders both bars; body padding carves out their space. */
+  body {
+    padding-top: var(--shell-topbar-height);
+    /* Gutter + rail: the rail is fixed at left:var(--shell-gutter), so the
+       content plane starts past both it and the gutter it floats in. */
+    padding-left: calc(var(--shell-gutter) + var(--app-sidebar-width));
+  }
+
+  body > main, .app-layout > main {
+    flex: 1;
+    min-width: 0;
+    width: auto;
+    max-width: var(--page-max-width);
+    margin-inline: auto;
+  }
+
+  body > :not(app-header):not(app-loading-bar):not(main) {
+    flex: 1;
+    min-width: 0;
+  }
+
+  body > main.app-shell, .app-layout > main.app-shell {
+    max-width: none;
+    margin: 0;
+    height: calc(100dvh - var(--shell-topbar-height));
+  }
+
+  main {
+    width: min(100% - 2 * var(--space-lg), var(--page-max-width));
+    margin: 0 auto;
+    padding: var(--space-md) 0;
+  }
+
+  main.app-shell {
+    height: 100dvh;
+  }
+
+  /* Content card — the page component floats as the single white r8 card on
+     the ink shell (floating chrome like toasts, dialogs, and the kb palette
+     are plain divs / dedicated tags and are opted out). */
+  body:has(> app-header) > :not(app-header):not(app-loading-bar):not(app-nav-search):not(app-toast):not(main):not(div):not(dialog):not(kb-shortcut-manager):not(kb-command-palette),
+  body:has(> app-header) > main {
+    background: var(--color-bg-surface);
+    border: none;
+    border-radius: var(--r-8);
+    /* Even frame on left/right/bottom. Left was 0, which put the card's two
+       left corners flush against the rail — the 8px radius cut notches of ink
+       out of the edge instead of reading as a floating panel. Top stays 0: the
+       card butts the topbar by design. */
+    margin: 0 var(--shell-gutter) var(--shell-gutter);
+    min-height: calc(100dvh - var(--shell-topbar-height) - var(--s-12));
+    box-shadow: 0 8px 16px rgba(100, 116, 139, 0.12);
+  }
+
+  /* <main> content pages keep their centered column inside the card */
+  body:has(> app-header) > main {
+    max-width: none;
+    padding: var(--card-content-pad);
+  }
+
+  body:has(> app-header) > main > * {
+    max-width: var(--page-max-width);
+    margin-inline: auto;
+  }
+
+  body:has(> app-header) > main.app-shell {
+    height: calc(100dvh - var(--shell-topbar-height) - var(--s-12));
+    padding: 0;
+  }
+
+  body:has(> app-header) > main.app-shell > * {
+    max-width: none;
+  }
+}
+
+/* Prevent media from overflowing their containers */
+img,
+picture,
+video,
+canvas,
+svg {
+  display: block;
+  max-width: 100%;
+}
+
+/* Inherit fonts for form controls */
+input,
+button,
+textarea,
+select {
+  font: inherit;
+}
+
+/* Opinionated resets for elements with notable browser defaults */
+figure {
+  margin: 0;
+}
+
+fieldset {
+  border: none;
+  min-width: 0;
+}
+
+legend {
+  padding: 0;
+}
+
+address {
+  font-style: inherit;
+}
+
+/* Ensure the hidden attribute works across all browsers */
+[hidden] {
+  display: none !important;
+}
+
+/* Accessibility utility — visually hidden but available to screen readers */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+/* h1 inside sectioning elements gets a reduced size in Chrome/Firefox;
+   keep it consistent with our type scale */
+:is(article, section, aside, nav) h1 {
+  font-size: var(--font-size-4xl);
+}
+
+/* 3. Typography — DS: titles are Chivo Mono medium; h3 down stays Inter */
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  margin-bottom: var(--space-md);
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--color-text-main);
+}
+
+h1,
+h2 {
+  font-family: var(--font-display);
+  font-weight: 500;
+  letter-spacing: 0.005em;
+}
+
+h3 {
+  font-weight: 700;
+}
+
+h1 {
+  font-size: var(--font-size-4xl);
+}
+
+h2 {
+  font-size: var(--font-size-3xl);
+}
+
+/* NightOwl page title — Chivo Mono 500 20/28 (+0.16px tracking). Lives here
+   (not styles/text.css) so it applies at first paint on pages that render
+   synchronously — the components.css @import chain arrives after paint. */
+.title-page {
+  font-family: var(--font-display);
+  font-size: 20px;
+  line-height: 28px;
+  font-weight: 500;
+  letter-spacing: 0.16px;
+  color: var(--color-text-main);
+  margin: 0;
+}
+
+h3 {
+  font-size: var(--font-size-2xl);
+}
+
+h4 {
+  font-size: var(--font-size-xl);
+}
+
+h5 {
+  font-size: var(--font-size-lg);
+}
+
+h6 {
+  font-size: var(--font-size-base);
+}
+
+/* Top-level page title inside <main> — use on the <h1> of content pages */
+.page-heading {
+  font-size: var(--font-size-3xl);
+  margin: 0 0 var(--space-lg);
+}
+
+p {
+  margin: 0 0 var(--space-md) 0;
+}
+
+/* DS micro-tell: captions are italic with tight tracking */
+caption,
+figcaption,
+.ts-caption {
+  font-style: italic;
+  font-size: var(--font-size-xs);
+  letter-spacing: -0.04em;
+  color: var(--color-text-muted);
+}
+
+a {
+  color: var(--color-primary);
+  text-decoration: none;
+}
+
+a:hover {
+  color: var(--color-primary-hover);
+}
+
+/* 4. Form Elements */
+label {
+  display: block;
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  margin-bottom: var(--space-xs);
+  color: var(--color-text-main);
+}
+
+:is(input[type="text"], input[type="email"], input[type="password"],
+  input[type="search"], input[type="url"], input[type="tel"],
+  input[type="number"], input[type="date"], input[type="time"],
+  input[type="datetime-local"], textarea, select) {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid transparent; /* NightOwl: inputs are flat sand wells */
+  border-radius: var(--r-8);
+  font-size: var(--font-size-base);
+  background: var(--bg-input);
+  color: var(--color-text-main);
+  line-height: 1.5;
+
+  &:focus {
+    outline: none;
+    border-color: var(--border-hover);
+    box-shadow: 0 0 0 2px var(--color-primary-ring);
+  }
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    background: var(--color-bg-base);
+  }
+}
+
+:is(input, textarea)::placeholder {
+  color: var(--color-text-muted);
+}
+
+textarea {
+  resize: vertical;
+  min-height: 80px;
+}
+
+/* Native selects: drop the OS chrome and draw the DS chevron — a stroked
+   caret matching icons.js, not a filled triangle. A url() SVG can't read
+   custom properties, so the stroke is baked per theme and re-declared for the
+   dark side below; `--fg-secondary` is #645C52 light / #9BA0A6 dark.
+   `:not([multiple])` also lifts specificity to (0,1,1) so the background-image
+   survives the `:is(input…, select)` rule's `background:` shorthand above. */
+select:not([multiple]) {
+  cursor: pointer;
+  appearance: none;
+  padding-right: 34px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23645C52' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-position: right 12px center;
+  background-size: 12px 12px;
+  background-repeat: no-repeat;
+
+  &:hover:not(:disabled) {
+    background-color: var(--bg-surface-hover);
+  }
+}
+
+/* Dark caret: system-dark unless light is pinned, plus explicitly pinned dark. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) select:not([multiple]) {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239BA0A6' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  }
+}
+:root[data-theme="dark"] select:not([multiple]) {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239BA0A6' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+}
+
+input[type="file"] {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-base);
+  background: var(--color-bg-surface);
+  color: var(--color-text-main);
+  cursor: pointer;
+
+  &:focus {
+    outline: none;
+    border-color: var(--border-hover);
+    box-shadow: 0 0 0 2px var(--color-primary-ring);
+  }
+
+  &::file-selector-button {
+    margin-right: var(--space-sm);
+    height: var(--control-h-sm);
+    padding: 0 var(--space-sm);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-bg-base);
+    color: var(--color-text-main);
+    font-size: var(--font-size-sm);
+    cursor: pointer;
+  }
+}
+
+/* Checkbox and Radio */
+input[type="checkbox"],
+input[type="radio"] {
+  width: auto;
+  margin-right: var(--space-xs);
+  cursor: pointer;
+}
+
+/* Range Slider */
+input[type="range"] {
+  width: 100%;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--color-border);
+  outline: none;
+  cursor: pointer;
+}
+
+/* Button bare reset — variants live in <app-button> or assets/styles/btn.css */
+button {
+  font: inherit;
+  cursor: pointer;
+  border: none;
+  background: none;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 5. Tables */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  border-spacing: 0;
+  margin: var(--space-md) 0;
+  background: var(--color-bg-surface);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+thead {
+  background: var(--color-bg-base);
+}
+
+th {
+  text-align: left;
+  padding: 12px 16px;
+  font-weight: 600;
+  font-size: var(--font-size-sm);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-muted);
+  border-bottom: 1px solid var(--color-border);
+}
+
+td {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+tbody tr:last-child td {
+  border-bottom: none;
+}
+
+tbody tr:hover {
+  background: var(--color-bg-base);
+}
+
+/* 6. Lists */
+ul,
+ol {
+  margin: 0 0 var(--space-md) 0;
+  padding-left: var(--space-lg);
+}
+
+ul ul,
+ol ol,
+ul ol,
+ol ul {
+  margin-bottom: 0;
+}
+
+li {
+  margin-bottom: var(--space-xs);
+}
+
+/* 7. Code */
+code,
+kbd,
+samp {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  background: var(--color-bg-base);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-main);
+}
+
+pre {
+  font-family: var(--font-mono);
+  background: var(--color-bg-base);
+  padding: var(--space-md);
+  border-radius: var(--radius-md);
+  overflow-x: auto;
+  margin: var(--space-md) 0;
+  border: 1px solid var(--color-border);
+}
+
+pre code {
+  background: none;
+  padding: 0;
+}
+
+/* 8. Blockquote */
+blockquote {
+  margin: var(--space-md) 0;
+  padding-left: var(--space-lg);
+  border-left: 4px solid var(--color-primary);
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
+/* 9. Horizontal Rule */
+hr {
+  border: none;
+  border-top: 1px solid var(--color-border);
+  margin: var(--space-lg) 0;
+}
+
+/* 10. Details/Summary */
+details {
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-md);
+  margin: var(--space-md) 0;
+}
+
+summary {
+  cursor: pointer;
+  font-weight: 600;
+  user-select: none;
+  list-style: none;
+}
+
+summary::-webkit-details-marker {
+  display: none;
+}
+
+summary::before {
+  content: '';
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  margin-right: var(--space-xs);
+  vertical-align: 1px;
+  flex-shrink: 0;
+}
+
+details[open] summary::before {
+  transform: rotate(45deg);
+  vertical-align: -1px;
+}
+
+details[open] {
+  padding-bottom: var(--space-md);
+}
+
+/* 12. Dialog */
+dialog {
+  border: none;
+  border-radius: var(--radius-lg);
+  padding: 0;
+  box-shadow: var(--shadow-xl);
+  background: var(--color-bg-surface);
+  color: var(--color-text-main);
+  max-width: 90vw;
+  max-height: 90vh;
+  margin: auto;
+}
+
+dialog::backdrop {
+  background-color: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(2px);
+}
+
+} /* end @layer base */
+
+/* ─── app-header pre-upgrade placeholder ─────────────────────────────────────
+   Shown instantly (pure CSS, no JS) while app-header.js is still loading.
+   Mirrors the real header's bar geometry so the page doesn't shift on upgrade.
+   Uses ::before (brand pill) + ::after (one nav-link skeleton) as the placeholder.
+──────────────────────────────────────────────────────────────────────────── */
+@keyframes app-header-skel-pulse {
+
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* ─── MPA View Transitions ───────────────────────────────────────────────────
+   Opt-in to cross-document view transitions, and freeze the shell so a
+   navigation never cross-fades the chrome.
+
+   These rules MUST live here, in a render-blocking stylesheet, not in
+   app-header.js's adopted sheet: the incoming document is snapshotted when it
+   is ready to render, and a deferred module has not run by then. Named there,
+   the outgoing page had an `app-header` group and the incoming page had none,
+   so the header cross-faded out to nothing and the root group cross-faded the
+   whole viewport — the "every click flickers the page" bug. The name is on the
+   pre-upgrade placeholder too, for the same reason.
+──────────────────────────────────────────────────────────────────────────── */
+@view-transition {
+  navigation: auto;
+}
+
+app-header,
+app-header:not(:defined) {
+  view-transition-name: app-header;
+}
+
+/* Frozen regardless of prefers-reduced-motion: the shell is the same shell on
+   both sides of the navigation, so there is nothing to animate between. */
+::view-transition-old(app-header),
+::view-transition-new(app-header) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+
+/* Shared micro-transition for tab/section panel switches — components apply
+   `animation: panel-in var(--transition-base)` to their active panel and gate
+   it on prefers-reduced-motion themselves. */
+@keyframes panel-in {
+  from { opacity: 0; translate: 0 4px; }
+  to   { opacity: 1; translate: 0 0; }
+}
+
+app-header:not(:defined) {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  padding: 0 var(--s-12);
+  height: var(--shell-topbar-height);
+  background: var(--shell-bg);
+  border-bottom: none;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  overflow: hidden;
+
+  &::before {
+    content: '';
+    display: block;
+    width: 36px;
+    height: 36px;
+    border-radius: var(--r-8);
+    background: var(--shell-control);
+    flex-shrink: 0;
+    animation: app-header-skel-pulse 1.4s ease-in-out infinite;
+  }
+
+  &::after {
+    content: '';
+    display: block;
+    margin-left: auto;
+    width: 140px;
+    height: 28px;
+    border-radius: var(--r-8);
+    background: var(--shell-control);
+    flex-shrink: 0;
+    animation: app-header-skel-pulse 1.4s ease-in-out infinite 0.2s;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+
+    &::before,
+    &::after {
+      animation: none;
+      opacity: 0.4;
+    }
+  }
+
+  @media (min-width: 1024px) {
+    /* Reserves the fixed topbar strip; the rail column is carved out by the
+       body padding, so no extra placeholder box is needed for it. */
+    position: fixed;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: var(--shell-topbar-height);
+  }
+}

@@ -1,0 +1,188 @@
+@scope (runtime-page) {
+  /* Host box — display, padding, the desktop card padding and (where the page
+     has one) the module-nav gutter: common/styles/page-layout.css. Linked, not
+     adopted, so it is already in effect at first paint. */
+
+    .page-head { margin-bottom: var(--space-lg); }
+  .page-sub {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+    margin: var(--space-xs) 0 0;
+    max-width: 72ch;
+  }
+
+  /* Table language: sand header band, hairline rows */
+  smart-table .scroll {
+    border: none;
+    border-radius: var(--r-8);
+    background: var(--color-bg-surface);
+  }
+  smart-table .thead { background: light-dark(var(--sand-100), var(--neutral-800)); }
+  smart-table .th {
+    border-bottom: none;
+    color: var(--sand-700);
+  }
+  smart-table .th:hover { background: var(--sand-200); }
+  smart-table .td { border-bottom: 1px solid var(--sand-100); }
+
+  .muted {
+    color: var(--color-text-muted);
+    font-style: italic;
+  }
+
+  .link-btn {
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    color: var(--color-primary);
+    font-size: inherit;
+    font-family: inherit;
+    font-weight: 500;
+
+    &:hover { text-decoration: underline; }
+  }
+
+  .action-btn {
+    background: none;
+    border: none;
+    cursor: pointer;
+    min-width: var(--control-h-sm);
+    min-height: var(--control-h-sm);
+    padding: var(--space-xs);
+    border-radius: var(--r-4);
+    color: var(--color-text-muted);
+
+    &:hover {
+      background: var(--bg-surface-hover);
+      color: var(--color-text-main);
+    }
+  }
+  .action-btn--danger {
+    color: var(--color-error);
+    &:hover { background: color-mix(in srgb, var(--color-error) 10%, transparent); color: var(--color-error); }
+  }
+
+  /* Subtle "in progress" pulse on the status dot for transitional statuses */
+  app-badge.is-progress::before {
+    animation: runtime-page-pulse 1.4s ease-in-out infinite;
+  }
+
+  .cluster-detail {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+  }
+
+  .error-banner {
+    border-radius: var(--r-8);
+    background: var(--color-error-bg);
+    color: var(--color-error);
+    padding: var(--space-sm) var(--space-md);
+    margin-bottom: var(--space-sm);
+
+    & strong { display: block; font-size: var(--font-size-sm); }
+    & pre {
+      margin: var(--space-xs) 0 0;
+      font-family: var(--font-mono);
+      font-size: var(--font-size-xs);
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+  }
+
+  .detail-error-text { color: var(--color-error); margin: 0; }
+
+  .summary-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: var(--space-sm);
+  }
+  /* Surface: common/styles/surface.css */
+  .summary-card {
+    padding: var(--space-sm) var(--space-md);
+    min-width: 0;
+  }
+  .summary-card-label {
+    font-size: var(--font-size-xs);
+    font-weight: 500;
+    color: var(--color-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .summary-card-value {
+    font-family: var(--font-display);
+    font-size: var(--font-size-sm);
+    font-weight: 500;
+    margin-top: var(--space-xs);
+    overflow-wrap: break-word;
+  }
+  .summary-card-value code {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+  }
+
+  .log-heading {
+    font-size: var(--font-size-sm);
+    font-weight: 600;
+    margin: var(--space-sm) 0 0;
+  }
+
+  .outputs-list {
+    margin: 0;
+    background: var(--bg-surface);
+    border-radius: var(--r-8);
+    overflow: hidden;
+  }
+  .outputs-item {
+    display: flex;
+    gap: var(--space-md);
+    padding: var(--space-xs) var(--space-md);
+    font-size: var(--font-size-xs);
+
+    &:not(:last-child) { border-bottom: 1px solid var(--sand-200); }
+    & dt {
+      flex: 0 0 30%;
+      color: var(--color-text-muted);
+      font-weight: 500;
+      overflow-wrap: break-word;
+      min-width: 0;
+    }
+    & dd {
+      margin: 0;
+      flex: 1;
+      min-width: 0;
+      & code {
+        font-family: var(--font-mono);
+        font-size: var(--font-size-xs);
+        overflow-wrap: break-word;
+        word-break: break-all;
+      }
+    }
+  }
+
+  /* Same terminal styling as build-detail-page's log viewer */
+  .log-viewer {
+    background: var(--sand-900);
+    color: var(--sand-50);
+    border: none;
+    border-radius: var(--r-8);
+    padding: var(--space-md);
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    line-height: 1.8;
+    min-height: 80px;
+    max-height: 280px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+  .log-line { display: block; }
+}
+
+/* Upgrade contract — reserve the clusters-table footprint */
+
+@keyframes runtime-page-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}

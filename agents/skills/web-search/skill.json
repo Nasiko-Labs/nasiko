@@ -1,0 +1,36 @@
+{
+  "apiVersion": "nasiko.dev/v1",
+  "kind": "Skill",
+  "metadata": {
+    "name": "web-search",
+    "version": "1.0.0",
+    "description": "Search the web for information on any topic using DuckDuckGo",
+    "tags": ["search", "web", "information-retrieval"],
+    "author": "nasiko"
+  },
+  "interface": {
+    "function": "web_search",
+    "inputs": {
+      "type": "object",
+      "properties": {
+        "query": { "type": "string", "description": "The search query" },
+        "max_results": { "type": "integer", "description": "Maximum number of results to return (1-10)", "default": 5 }
+      },
+      "required": ["query"]
+    },
+    "output": { "type": "string", "description": "Formatted search results as bullet points" }
+  },
+  "runtime": {
+    "language": "python",
+    "entrypoint": "impl.py",
+    "dependencies": ["httpx>=0.27.0"],
+    "env_vars": []
+  },
+  "frameworks": {
+    "openai": { "decorator": "function_tool", "import_from": "agents" },
+    "claude-sdk": { "style": "tool_definition" },
+    "langgraph": { "decorator": "tool", "import_from": "langchain_core.tools" },
+    "crewai": { "decorator": "tool", "import_from": "crewai.tools" },
+    "a2a-go": { "style": "handler" }
+  }
+}

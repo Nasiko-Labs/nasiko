@@ -1,0 +1,74 @@
+{
+  "agentFramework": "axum",
+  "capabilities": {
+    "chat_agent": true,
+    "pushNotifications": false,
+    "stateTransitionHistory": false,
+    "streaming": true
+  },
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "description": "The HR Agent assists with HR operations by providing information on public holidays, calculating working days, checking current time in various time zones, and retrieving country information.",
+  "framework": "axum",
+  "llm_provider": "openai",
+  "name": "hr-agent",
+  "preferredTransport": "JSONRPC",
+  "protocolVersion": "0.2.9",
+  "skills": [
+    {
+      "description": "Look up public holidays for any country and year",
+      "examples": [
+        "What are the public holidays in Germany for 2025?"
+      ],
+      "id": "holidays",
+      "name": "Public Holidays",
+      "tags": [
+        "hr",
+        "holidays",
+        "time-off"
+      ]
+    },
+    {
+      "description": "Calculate business days between dates, accounting for holidays",
+      "examples": [
+        "How many working days between Jan 1 and Mar 31 in the US?"
+      ],
+      "id": "working-days",
+      "name": "Working Days Calculator",
+      "tags": [
+        "hr",
+        "calendar",
+        "planning"
+      ]
+    },
+    {
+      "description": "Check current time in any timezone for scheduling across offices",
+      "examples": [
+        "What time is it in Tokyo right now?"
+      ],
+      "id": "world-clock",
+      "name": "World Clock",
+      "tags": [
+        "hr",
+        "timezone",
+        "scheduling"
+      ]
+    }
+  ],
+  "tags": [
+    "hr",
+    "time-management",
+    "calendar",
+    "public-holidays",
+    "working-days",
+    "timezone",
+    "country-info"
+  ],
+  "transport": "http",
+  "url": "http://localhost:8000/",
+  "version": "0.1.0"
+}

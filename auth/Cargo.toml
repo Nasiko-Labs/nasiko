@@ -1,0 +1,29 @@
+[package]
+name = "nasiko-auth"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+async-trait = { workspace = true }
+serde.workspace = true
+serde_json = { workspace = true }
+thiserror.workspace = true
+jsonwebtoken = { workspace = true }
+bcrypt = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+sha2 = { workspace = true }
+sqlx = { workspace = true }
+rand = { workspace = true }
+base64 = { workspace = true }
+# Needed for spawn_blocking (offloading bcrypt cost-12 off the async executor).
+tokio = { workspace = true, features = ["rt"] }
+
+[dev-dependencies]
+jsonwebtoken = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+base64 = { workspace = true }

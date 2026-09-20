@@ -1,0 +1,55 @@
+{
+  "protocolVersion": "0.2.9",
+  "name": "langgraph",
+  "description": "This sample demonstrates a currency conversion agent built with [LangGraph](https://langchain-ai.github.io/langgraph/) and exposed through the A2A protocol. It showcases conversational interactions with support for multi-turn dialogue and streaming responses.",
+  "url": "http://localhost:10000/",
+  "agentFramework": "langchain",
+  "preferredTransport": "JSONRPC",
+  "provider": {
+    "organization": "Nasiko AI Projects",
+    "url": "https://github.com/ashishsharma/nasiko"
+  },
+  "iconUrl": "http://localhost:10000/icon.png",
+  "version": "1.0.0",
+  "documentationUrl": "http://localhost:10000/docs",
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": true,
+    "stateTransitionHistory": true,
+    "chat_agent": false
+  },
+  "securitySchemes": {},
+  "security": [],
+  "defaultInputModes": [
+    "text/plain",
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain",
+    "text/plain"
+  ],
+  "skills": [
+    {
+      "id": "get-exchange-rate",
+      "name": "Get Exchange Rate",
+      "description": "Use this to get current exchange rate.",
+      "tags": [
+        "currency conversion",
+        "currency exchange"
+      ],
+      "examples": [
+        "What is the exchange rate between USD and EUR?"
+      ],
+      "inputModes": [
+        "text",
+        "text/plain"
+      ],
+      "outputModes": [
+        "text",
+        "text/plain"
+      ]
+    }
+  ],
+  "supportsAuthenticatedExtendedCard": false,
+  "signatures": []
+}

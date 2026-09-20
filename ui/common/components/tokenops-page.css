@@ -1,0 +1,251 @@
+/* TokenOps dashboard — NightOwl FinOps layout: KPI strips (divided columns,
+   Chivo Mono numbers), per-agent cost table with a sand header band, and the
+   token-usage strip. */
+
+@keyframes tokenops-skel-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+@media (prefers-reduced-motion: reduce) {
+  @keyframes tokenops-skel-pulse { from, to { opacity: 1; } }
+}
+
+@scope (tokenops-page) {
+  /* Host box (display + padding): common/styles/page-layout.css — linked, so
+     it is in effect at first paint. */
+
+  .page-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-md);
+    margin-bottom: var(--space-lg);
+  }
+
+  @media (max-width: 760px) {
+    .page-head { flex-direction: column; }
+  }
+
+  .page-sub {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+    margin: var(--space-xs) 0 0;
+  }
+
+  .head-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    flex-shrink: 0;
+  }
+
+  .head-actions select {
+    width: auto;
+    height: var(--control-h-lg);
+    padding: 0 30px 0 var(--s-12);
+    border: none;
+    border-radius: var(--r-8);
+    background-color: var(--bg-input);
+    color: var(--color-text-main);
+    font-size: var(--font-size-sm);
+    cursor: pointer;
+
+    &:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
+  }
+
+  .btn-dark {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-xs);
+    height: var(--control-h-lg);
+    padding: 0 var(--s-16);
+    border-radius: var(--r-10);
+    background: light-dark(var(--sand-800), var(--neutral-100));
+    color: light-dark(var(--white), var(--neutral-900));
+    font-size: var(--font-size-sm);
+    font-weight: 500;
+    cursor: pointer;
+
+    &:hover { background: light-dark(var(--sand-700), var(--neutral-300)); }
+    &:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
+    & svg { width: 20px; height: 20px; }
+  }
+
+  /* ── KPI strip: columns divided by hairlines, top+bottom rules ────────── */
+  .kpi-strip {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    border-block: 1px solid var(--color-border);
+    padding: var(--space-md) 0;
+    margin-bottom: var(--space-xl);
+  }
+
+  .kpi {
+    padding: 0 var(--space-lg);
+    border-left: 1px solid var(--color-border);
+    min-width: 0;
+
+    &:first-child { border-left: none; padding-left: 0; }
+  }
+
+  /* Mobile: 2×2 stat grid — hairline only between the two columns */
+  @media (max-width: 760px) {
+    .kpi-strip {
+      grid-template-columns: 1fr 1fr;
+      gap: var(--space-lg) 0;
+    }
+    .kpi { border-left: none; padding-left: 0; }
+    .kpi:nth-child(2n) {
+      border-left: 1px solid var(--color-border);
+      padding-left: var(--space-lg);
+    }
+  }
+
+  .kpi-label {
+    font-size: var(--font-size-sm);
+    font-weight: 500;
+    color: var(--color-text-muted);
+    margin-bottom: var(--space-sm);
+    white-space: nowrap;
+  }
+
+  .kpi-value {
+    font-family: var(--font-display);
+    font-size: 24px;
+    line-height: 30px;
+    font-weight: 500;
+    letter-spacing: 0.16px;
+    color: var(--color-text-main);
+  }
+
+  .kpi-sub {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+    margin-top: var(--space-xs);
+  }
+
+  .section-title {
+    font-size: var(--font-size-lg);
+    font-weight: 600;
+    font-family: var(--font-sans);
+    color: var(--color-text-main);
+    margin: 0 0 var(--space-md);
+  }
+
+  /* ── Toolbar: search + sort ───────────────────────────────────────────── */
+  .toolbar {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    margin-bottom: var(--space-md);
+  }
+
+  .search-wrap {
+    position: relative;
+    flex: 0 1 400px;
+
+    & svg {
+      position: absolute;
+      left: 12px;
+      top: 50%;
+      translate: 0 -50%;
+      width: 16px;
+      height: 16px;
+      color: var(--color-text-muted);
+      pointer-events: none;
+    }
+
+    & input {
+      width: 100%;
+      height: var(--control-h-md);
+      padding: 0 var(--s-12) 0 36px;
+      border: none;
+      border-radius: var(--r-8);
+      background: var(--bg-input);
+      color: var(--color-text-main);
+      font-size: var(--font-size-sm);
+
+      &::placeholder { color: var(--color-text-muted); }
+      &:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
+    }
+  }
+
+  .toolbar-spacer { flex: 1; }
+
+  .toolbar select {
+    width: auto;
+    height: var(--control-h-md);
+    padding: 0 30px 0 var(--s-12);
+    border: none;
+    border-radius: var(--r-8);
+    background-color: var(--bg-input);
+    color: var(--color-text-main);
+    font-size: var(--font-size-sm);
+    cursor: pointer;
+
+    &:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
+  }
+
+  /* ── Agent cost table ─────────────────────────────────────────────────── */
+  .cost-table-wrap {
+    border: 1px solid var(--color-border);
+    border-radius: var(--r-8);
+    overflow-x: auto;
+    margin-bottom: var(--space-xl);
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--font-size-sm);
+    margin: 0; /* the bordered .cost-table-wrap owns the spacing */
+  }
+
+  thead th {
+    text-align: left;
+    font-weight: 500;
+    text-transform: none;
+    letter-spacing: 0;
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+    background: var(--bg-input);
+    border-bottom: 1px solid var(--color-border);
+    padding: var(--space-sm) var(--space-md);
+    white-space: nowrap;
+  }
+
+  tbody td {
+    padding: var(--space-sm) var(--space-md);
+    border-bottom: 1px solid var(--color-border);
+    color: var(--color-text-main);
+    white-space: nowrap;
+  }
+
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: var(--bg-input); }
+
+  th.is-num { text-align: right; }
+  td.is-num {
+    text-align: right;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .agent-name { font-weight: 500; }
+
+  .empty-row td {
+    text-align: center;
+    color: var(--color-text-muted);
+    padding: var(--space-xl);
+  }
+
+  /* ── Skeleton loading ─────────────────────────────────────────────────── */
+  .skel-line {
+    border-radius: var(--radius-sm);
+    background: var(--color-border);
+    animation: tokenops-skel-pulse 1.5s ease-in-out infinite;
+  }
+  .skel-line--label { width: 60%; height: 0.8em; }
+  .skel-line--value { width: 40%; height: 1.5em; margin-top: var(--space-sm); }
+}

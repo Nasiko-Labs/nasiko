@@ -1,0 +1,49 @@
+{
+  "agentFramework": "fastapi",
+  "capabilities": {
+    "chat_agent": false,
+    "pushNotifications": false,
+    "stateTransitionHistory": false,
+    "streaming": true
+  },
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "description": "The Summarizer agent summarizes text into concise bullet points or paragraphs using AI, preserving key facts and details.",
+  "framework": "fastapi",
+  "llm_provider": "openai",
+  "name": "summarizer",
+  "preferredTransport": "JSONRPC",
+  "protocolVersion": "0.2.9",
+  "skills": [
+    {
+      "description": "Summarize any text into a concise form",
+      "examples": [
+        "Summarize this article: ...",
+        "Give me a TL;DR of the following",
+        "What are the key points of this text?"
+      ],
+      "id": "summarize",
+      "name": "Summarization",
+      "tags": [
+        "summarize",
+        "summary",
+        "text",
+        "tldr"
+      ]
+    }
+  ],
+  "tags": [
+    "text-summarization",
+    "openai",
+    "python",
+    "ai",
+    "natural-language-processing"
+  ],
+  "transport": "http",
+  "url": "http://localhost:8000/",
+  "version": "0.1.0"
+}

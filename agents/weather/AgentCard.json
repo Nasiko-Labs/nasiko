@@ -1,0 +1,76 @@
+{
+  "protocolVersion": "1.0",
+  "name": "weather",
+  "description": "Get current weather and 3-day forecasts for any city worldwide using Open-Meteo (no API key required)",
+  "supportedInterfaces": [
+    {
+      "url": "http://localhost:8000/a2a",
+      "protocolBinding": "JSONRPC",
+      "protocolVersion": "1.0"
+    }
+  ],
+  "url": "http://localhost:8000/a2a",
+  "agentFramework": "a2a-go",
+  "preferredTransport": "JSONRPC",
+  "provider": {
+    "organization": "Nasiko",
+    "url": "https://nasiko.com"
+  },
+  "version": "0.1.0",
+  "capabilities": {
+    "streaming": false,
+    "pushNotifications": false,
+    "stateTransitionHistory": false
+  },
+  "securitySchemes": {},
+  "security": [],
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "skills": [
+    {
+      "id": "current_weather",
+      "name": "Current Weather",
+      "description": "Get the current weather conditions for a city",
+      "tags": [
+        "weather",
+        "temperature",
+        "forecast"
+      ],
+      "examples": [
+        "Weather in Tokyo",
+        "Current temperature in London",
+        "What's the weather like in New York?"
+      ],
+      "inputModes": [
+        "text/plain"
+      ],
+      "outputModes": [
+        "text/plain"
+      ]
+    },
+    {
+      "id": "forecast",
+      "name": "3-Day Forecast",
+      "description": "Get a 3-day weather forecast for a city",
+      "tags": [
+        "weather",
+        "forecast",
+        "planning"
+      ],
+      "examples": [
+        "3 day forecast for Paris",
+        "Will it rain in Berlin tomorrow?"
+      ],
+      "inputModes": [
+        "text/plain"
+      ],
+      "outputModes": [
+        "text/plain"
+      ]
+    }
+  ]
+}

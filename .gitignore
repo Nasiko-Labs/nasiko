@@ -4,3 +4,25 @@ node_modules/
 dist/
 .DS_Store
 Thumbs.db
+
+# Other exclusions from remote merge
+target/
+.otel-build/
+*.pyc
+__pycache__/
+.env.*
+*.env.toml
+!.env.example
+.venv/
+*.egg-info/
+.terraform/
+terraform.tfstate*
+*.tfstate*
+uv.lock
+
+# IDE
+.idea/
+.vscode/settings.json
+*.swp
+*.swo
+.envrc

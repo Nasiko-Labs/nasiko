@@ -1,0 +1,17 @@
+[package]
+name = "nasiko-bench"
+edition.workspace = true
+version.workspace = true
+publish = false
+
+[[bin]]
+name = "nasiko-bench"
+path = "src/main.rs"
+
+[dependencies]
+goose = "0.18"
+nasiko-types = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rand = { workspace = true }

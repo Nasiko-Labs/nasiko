@@ -1,0 +1,15 @@
+services:
+  crewai:
+    build: .
+    container_name: crewai
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+    ports:
+      - "10001:10001"
+    networks:
+      - agents-net
+
+networks:
+  agents-net:
+    external: true

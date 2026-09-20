@@ -1,0 +1,15 @@
+[project]
+name = "doc-reader-agent"
+version = "1.0.0"
+description = "Document reader agent — accepts file uploads, extracts text, and answers questions about them"
+requires-python = ">=3.12"
+dependencies = [
+    "a2a-sdk[http-server]==1.1.0",
+    "starlette==1.2.0",
+    "uvicorn==0.48.0",
+    "click==8.4.1",
+    "openai==1.82.0",
+    "opentelemetry-sdk>=1.25.0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.25.0",
+    "opentelemetry-instrumentation-openai>=0.35.0b0",
+]

@@ -1,0 +1,52 @@
+{
+  "agentFramework": "starlette",
+  "capabilities": {
+    "chat_agent": true,
+    "pushNotifications": false,
+    "stateTransitionHistory": true,
+    "streaming": false
+  },
+  "defaultInputModes": [
+    "text/plain",
+    "application/octet-stream"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "description": "The doc-reader agent accepts file uploads, extracts text from various document formats, and provides answers to questions about the content.",
+  "framework": "starlette",
+  "llm_provider": "openai",
+  "name": "doc-reader",
+  "preferredTransport": "JSONRPC",
+  "protocolVersion": "0.2.9",
+  "skills": [
+    {
+      "description": "Upload a file and ask questions about it. Supports text, CSV, JSON, code, logs, and more.",
+      "examples": [
+        "Summarize this document",
+        "What are the key findings in this report?",
+        "Extract all email addresses from this file",
+        "Explain this code file"
+      ],
+      "id": "doc-reader",
+      "name": "Document Reader",
+      "tags": [
+        "documents",
+        "files",
+        "upload",
+        "summarize",
+        "analyze"
+      ]
+    }
+  ],
+  "tags": [
+    "document-reader",
+    "file-upload",
+    "text-extraction",
+    "openai",
+    "python"
+  ],
+  "transport": "http",
+  "url": "http://localhost:8000/",
+  "version": "0.1.0"
+}

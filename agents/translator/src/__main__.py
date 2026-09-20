@@ -1,0 +1,88 @@
+import logging
+import os
+
+from dotenv import load_dotenv
+
+load_dotenv()
+logging.basicConfig(level=logging.INFO)
+
+# Instrumentation must initialize before a2a-sdk (and anything it imports,
+# e.g. Starlette) is imported below: OTel's Starlette instrumentor patches by
+# rebinding `starlette.applications.Starlette` to an instrumented subclass, so
+# any module that already did `from starlette.applications import Starlette`
+# keeps its original, un-instrumented reference forever — no incoming
+# traceparent gets extracted, and every request starts an orphan root trace
+# instead of joining the platform's session trace.
+from telemetry import TraceparentMiddleware, init_telemetry
+
+init_telemetry(os.environ.get("OTEL_SERVICE_NAME", "translator"))
+
+import click
+import uvicorn
+from a2a.server.request_handlers import DefaultRequestHandler
+from a2a.server.routes import create_agent_card_routes, create_jsonrpc_routes
+from a2a.server.tasks import InMemoryTaskStore
+from a2a.types import AgentCapabilities, AgentCard, AgentInterface, AgentSkill
+from starlette.applications import Starlette
+
+from agent_executor import TranslatorExecutor
+
+logger = logging.getLogger(__name__)
+
+
+@click.command()
+@click.option("--host", default="0.0.0.0")
+@click.option("--port", default=int(os.environ.get("PORT", "8000")), type=int)
+def main(host: str, port: int):
+    if not os.getenv("OPENAI_API_KEY"):
+        logger.error("OPENAI_API_KEY is not set")
+        raise SystemExit(1)
+
+    agent_url = os.getenv("HOST_OVERRIDE", f"http://{host}:{port}/")
+
+    agent_card = AgentCard(
+        name="Translator Agent",
+        description="Translates text and web content between languages using AI",
+        supported_interfaces=[
+            AgentInterface(
+                protocol_binding="JSONRPC",
+                url=agent_url,
+            )
+        ],
+        version="1.0.0",
+        default_input_modes=["text/plain"],
+        default_output_modes=["text/plain"],
+        capabilities=AgentCapabilities(streaming=True),
+        skills=[
+            AgentSkill(
+                id="translate",
+                name="Translation",
+                description="Translate text or web page content between any languages",
+                tags=["translation", "language", "text", "url"],
+                examples=[
+                    "Translate 'Hello world' to Spanish",
+                    "What does this French website say in English?",
+                    "Detect the language of this text",
+                ],
+            )
+        ],
+    )
+
+    handler = DefaultRequestHandler(
+        agent_executor=TranslatorExecutor(),
+        task_store=InMemoryTaskStore(),
+        agent_card=agent_card,
+    )
+
+    routes = create_agent_card_routes(agent_card) + create_jsonrpc_routes(handler, rpc_url="/")
+    app = Starlette(routes=routes)
+    # Wrap with our ASGI middleware AFTER creating the Starlette app so it runs
+    # first and populates request_otel_context for each incoming HTTP request.
+    app = TraceparentMiddleware(app)
+
+    logger.info("Translator Agent listening on %s:%s", host, port)
+    uvicorn.run(app, host=host, port=port)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,63 @@
+@scope (connect-github) {
+  :scope { display: block; }
+  /* Surface: common/styles/surface.css */
+  .connect-card {
+    max-width: 480px;
+    margin: var(--space-xl) auto;
+    padding: var(--space-2xl);
+    text-align: center;
+  }
+  .connect-icon {
+    width: 56px;
+    height: 56px;
+    margin: 0 auto var(--space-lg);
+    border-radius: var(--r-8);
+    background: var(--bg-input);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .connect-icon svg { width: 28px; height: 28px; fill: var(--color-text-main); }
+  .connect-title {
+    font-family: var(--font-display);
+    font-size: 20px;
+    line-height: 28px;
+    font-weight: 500;
+    letter-spacing: 0.16px;
+    color: var(--color-text-main);
+    margin-bottom: var(--space-sm);
+  }
+  .connect-desc {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+    margin-bottom: var(--space-xl);
+    line-height: 1.6;
+  }
+  .connect-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-sm);
+    height: var(--control-h-lg);
+    padding: 0 var(--space-xl);
+    background: light-dark(var(--sand-800), var(--neutral-100));
+    color: light-dark(var(--white), var(--neutral-900));
+    font-weight: 500;
+    font-size: var(--font-size-sm);
+    border-radius: var(--r-10);
+    border: none;
+    cursor: pointer;
+    text-decoration: none;
+    transition: background var(--transition-fast);
+    & svg { width: 20px; height: 20px; flex-shrink: 0; }
+  }
+  .connect-btn:hover {
+    background: light-dark(var(--sand-700), var(--neutral-300));
+    color: light-dark(var(--white), var(--neutral-900));
+  }
+  .connect-btn svg { width: 20px; height: 20px; fill: currentColor; }
+  .connect-scopes {
+    margin-top: var(--space-lg);
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+  }
+}

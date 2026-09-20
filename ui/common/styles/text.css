@@ -1,0 +1,22 @@
+/* Uppercase section/column label */
+.label-muted {
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* NightOwl page title (.title-page) lives in global.css — it must be
+   present at FIRST PAINT. Rules arriving via this @import chain land after
+   synchronously-rendered pages paint their <h1>, which flashed (and froze,
+   in screenshot harnesses) the fallback sans style. */
+
+/* Inline section label — same as label-muted, semantic alias */
+.label-section {
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}

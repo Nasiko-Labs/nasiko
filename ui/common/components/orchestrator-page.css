@@ -1,0 +1,466 @@
+@keyframes orch-skel-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  @keyframes orch-skel-pulse {
+    from, to { opacity: 1; }
+  }
+}
+
+@scope (orchestrator-page) {
+  /* Host box (display + padding): common/styles/page-layout.css — linked, so
+     it is in effect at first paint. */
+
+  /* Unlike the other module-nav pages this host is a centered flex column, so
+     the mobile disclosure bar would shrink to its content instead of spanning
+     the page. Desktop needs nothing: there the nav is absolutely positioned
+     into the host's left padding gutter, outside this flex flow. */
+  @media (max-width: 1023.98px) {
+    app-module-nav { align-self: stretch; }
+  }
+  /* The compact `.has-response` top pad lives with the rest of this host's
+     padding in page-layout.css, keyed on the shell that now owns it. Declaring
+     it here too would be the two-copies problem that file warns about — and the
+     copy here was simply dead, since the padding is no longer on this element. */
+  .hero-icon {
+    width: 72px;
+    height: 72px;
+    /* Host is a fixed-height flex column, so height is the main axis: without
+       this the tile shrinks to its 24px icon. */
+    flex-shrink: 0;
+    border-radius: var(--r-12);
+    background: var(--color-bg-base);
+    color: var(--color-text-main);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  :scope.has-response .hero-icon { display: none; }
+  .title {
+    font-family: var(--font-display);
+    font-size: var(--font-size-2xl);
+    font-weight: 500;
+    letter-spacing: 0.16px;
+    color: var(--color-text-main);
+    margin-bottom: var(--space-xs);
+    text-align: center;
+    transition: font-size 0.3s, margin-bottom 0.3s;
+  }
+  .subtitle {
+    font-size: var(--font-size-base);
+    color: var(--color-text-muted);
+    margin: 0 0 var(--space-xl);
+    text-align: center;
+  }
+  :scope.has-response .title {
+    font-size: var(--font-size-lg);
+    margin-bottom: var(--space-sm);
+  }
+  :scope.has-response .subtitle { display: none; }
+  .input-wrap {
+    width: min(100%, var(--orch-column-w));
+    min-height: 88px;
+    flex-shrink: 0;
+    transition: margin-bottom 0.3s;
+    contain: layout style;
+    /* Stays put while the page scrolls under it. This is what lets the whole
+       page be one scroller (page-layout.css) instead of `.messages` being an
+       inner one — an inner scroller puts its scrollbar at the transcript
+       column's edge, not the page's. Inert until something actually overflows.
+
+       `bottom: 0` is the scrollport's *padding* box, which is also where the
+       shell clips its overflow — so the button row lands exactly on the last
+       visible pixel with nothing able to slide beneath it, and the shell's own
+       block padding still holds it off the card edge. Offsetting again here just
+       reopened a gap for the transcript to show through. `z-index` because
+       `contain` makes this its own stacking context — without it a message row
+       can paint through. */
+    position: sticky;
+    bottom: 0;
+    z-index: 1;
+    background: var(--color-bg-surface);
+  }
+  /* Transcript pinned to the top, composer to the bottom: the auto margin eats
+     whatever room is left over and collapses to 0 once the transcript overflows,
+     where `position: sticky` takes over. Doing this by growing `.messages`
+     instead is the flex sizing that file-wide comment warns about. */
+  :scope.has-response .input-wrap { margin-top: auto; }
+  .input-wrap voice-input:not(:defined) {
+    display: block;
+    height: 88px;
+  }
+  /* ── Messages area ───────────────────────────────────────────────────── */
+  /* Grows with its content; the page scrolls. No internal scroller and no flex
+     sizing at any width — every version of that squeezed the column into a box
+     the size of the viewport, which is how a long transcript, a long agent list
+     and a tall composer each ended up unreachable in turn. */
+  .messages {
+    width: min(100%, var(--orch-column-w));
+    padding: var(--space-md) var(--space-md) var(--space-md) 0;
+  }
+
+  /* Nothing above the fold shrinks: default flex shrink is proportional to base
+     size, so overflow got spread across the icon, the headings and the banner —
+     the banner squashed to a sliver and the composer still didn't fit. They keep
+     their intrinsic height and the page scrolls instead. */
+  @media (min-width: 1024px) {
+    .hero-icon,
+    .title,
+    .subtitle,
+    .recent-agents,
+    .wf-banner {
+      flex-shrink: 0;
+    }
+  }
+
+  .msg-row {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-xs);
+    margin-bottom: var(--space-md);
+    position: relative;
+    animation: msg-enter 0.25s ease-out;
+  }
+  .msg-row.is-user {
+    justify-content: flex-end;
+  }
+  .msg-row.is-assistant {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-xs);
+  }
+  .msg {
+    max-width: 85%;
+    padding: var(--space-sm) var(--space-md);
+    border-radius: var(--r-12);
+    font-size: var(--font-size-sm);
+    line-height: 1.6;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+  }
+  .msg.is-user {
+    background: var(--color-bg-base);
+    color: var(--color-text-main);
+    white-space: pre-wrap;
+  }
+  .msg.is-assistant {
+    background: transparent;
+    border: none;
+    padding: 0;
+    max-width: 100%;
+  }
+
+  .assistant-stream {
+    max-width: 100%;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+  }
+  .stream-content {
+    padding: 0;
+    background: transparent;
+    border: none;
+    display: none;
+  }
+  .stream-content.is-visible { display: block; }
+  .stream-content.is-progress {
+    color: var(--color-text-muted);
+  }
+
+  .msg-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    margin-top: var(--space-2xs);
+  }
+  button.msg-action-copy,
+  a.msg-action-trace {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-2xs);
+    height: 28px;
+    min-width: 28px;
+    padding: 0 var(--space-2xs);
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--color-text-muted);
+    font-size: var(--font-size-xs);
+    text-decoration: none;
+    cursor: pointer;
+
+    &:hover {
+      color: var(--color-text-main);
+      background: var(--bg-surface-hover);
+    }
+    &:focus-visible {
+      outline: none;
+      box-shadow: 0 0 0 2px var(--color-primary-ring);
+    }
+  }
+  a.msg-action-trace {
+    order: 99;
+    margin-left: auto;
+    color: var(--color-text-main);
+    font-weight: 500;
+  }
+
+  .typing-indicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: var(--space-sm) var(--space-xs);
+
+    & span {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--color-text-muted);
+      opacity: 0.4;
+      animation: orch-typing-bounce 1.2s ease-in-out infinite;
+
+      &:nth-child(2) { animation-delay: 0.15s; }
+      &:nth-child(3) { animation-delay: 0.3s; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      & span { animation: none; opacity: 0.6; }
+    }
+  }
+  .msg-actions .msg-usage {
+    font-size: var(--font-size-xs);
+    font-family: var(--font-mono);
+    color: var(--color-text-muted);
+    white-space: nowrap;
+    align-self: center;
+    padding: 0 var(--space-2xs);
+  }
+
+  /* ── Empty state (no running agents) — mirrors the workflows-page one ──── */
+  /* Drop the hero's top offset and let the auto margins centre the block in
+     what's left, so the module nav still sits at the top on mobile (where it
+     is in flow) instead of being centred along with the content. */
+  :scope.is-empty { padding-top: var(--space-md); }
+  /* No horizontal padding of its own: the shell's box (page-layout.css) is already
+     the space right of the nav gutter, so the auto margins centre this block on the
+     same line as the composer column and the skeleton. Padding here would stack on
+     top of that and push it right again. */
+  /* Title/sub typography and the sub's pull-up match workflows-page.css so the
+     two empty states read identically. */
+  .empty-title {
+    margin: 0;
+    font-family: var(--font-display);
+    font-size: 20px;
+    line-height: 28px;
+    font-weight: 500;
+    letter-spacing: 0.16px;
+    color: var(--color-text-main);
+  }
+  .empty-sub {
+    margin: calc(-1 * var(--space-sm)) 0 0;
+    max-width: 460px;
+    font-size: 13px;
+    line-height: 20px;
+    color: var(--color-text-muted);
+    text-wrap: pretty;
+  }
+  .empty-wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    margin: auto 0;
+    gap: var(--space-lg);
+    text-align: center;
+  }
+  .empty-pills {
+    display: flex;
+    align-items: center;
+    gap: var(--s-12);
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  .process-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s-8);
+    height: var(--control-h-sm);
+    padding: 0 var(--s-12);
+    border-radius: var(--r-40);
+    background: var(--color-bg-base);
+    font-size: var(--font-size-xs);
+    line-height: 16px;
+    color: var(--color-text-main);
+    white-space: nowrap;
+  }
+  .process-pill svg { color: var(--fg-brand); }
+  .empty-arrow { color: var(--color-text-muted); }
+  .empty-cta {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    min-height: var(--control-h-md);
+    padding: 0 var(--s-16);
+    border-radius: var(--r-8);
+    background: light-dark(var(--sand-800), var(--neutral-100));
+    color: light-dark(var(--white), var(--neutral-900));
+    font-size: 13px;
+    font-weight: 500;
+    text-decoration: none;
+    white-space: nowrap;
+    transition: background var(--transition-fast);
+  }
+  .empty-cta:hover { background: light-dark(var(--sand-700), var(--neutral-300)); }
+
+  .recent-agents {
+    width: min(100%, var(--orch-column-w));
+    margin-bottom: var(--space-md);
+  }
+  :scope.has-response .recent-agents { display: none; }
+  .recent-agents-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: var(--space-sm);
+  }
+  /* Surface + hover lift: common/styles/surface.css */
+  .agent-card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
+    padding: var(--space-md);
+    text-decoration: none;
+    color: var(--color-text-main);
+  }
+  .agent-card-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-sm);
+    min-width: 0;
+  }
+  .agent-card-go {
+    color: var(--color-text-muted);
+    display: flex;
+    flex-shrink: 0;
+  }
+  .agent-card-name {
+    font-size: var(--font-size-sm);
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .agent-card-desc {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+    line-height: 1.5;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .agent-card-skel {
+    /* Mirrors a rendered suggestion card (name row + two description lines)
+       so the grid doesn't grow when real cards replace the skeletons. */
+    height: 96px;
+    border-radius: var(--r-12);
+    background: var(--color-bg-base);
+    animation: orch-skel-pulse 1.5s ease-in-out infinite;
+  }
+
+  /* ── Create-workflow banner (mockup Route screen, bottom card) ─────────── */
+  .wf-banner {
+    display: flex;
+    align-items: center;
+    gap: var(--s-16);
+    width: min(100%, var(--orch-column-w));
+    margin-top: var(--space-xl);
+    padding: var(--s-20);
+    border-radius: var(--r-8);
+    background: var(--color-bg-base);
+    text-decoration: none;
+    transition: background var(--transition-fast);
+  }
+  .wf-banner:hover { background: var(--bg-surface-hover); }
+  :scope.has-response .wf-banner { display: none; }
+  .wf-banner-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    border-radius: var(--r-8);
+    background: light-dark(var(--white), var(--neutral-800));
+    color: var(--color-text-muted);
+    flex-shrink: 0;
+  }
+  .wf-banner-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1;
+    min-width: 0;
+  }
+  .wf-banner-title {
+    font-size: var(--font-size-sm);
+    font-weight: 500;
+    line-height: 20px;
+    color: var(--color-text-main);
+  }
+  .wf-banner-sub {
+    font-size: 13px;
+    line-height: 18px;
+    color: var(--color-text-muted);
+  }
+  /* Tertiary + stroke, not the secondary yellow-100 fill: yellow-100 on the
+     sand-50 banner is a 1.02:1 contrast ratio with no border, so the button had
+     essentially no edge and read as decoration. The stroke carries the shape at
+     rest; the yellow fill is demoted to the hover/press acknowledgement, which
+     the CTA previously had none of. */
+  .wf-banner-cta {
+    display: inline-flex;
+    align-items: center;
+    min-height: var(--control-h-sm);
+    padding: 0 var(--s-12);
+    border: 1px solid light-dark(var(--sand-300), var(--neutral-600));
+    border-radius: var(--r-8);
+    background: transparent;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--color-text-main);
+    white-space: nowrap;
+    flex-shrink: 0;
+    transition: background var(--transition-fast),
+      border-color var(--transition-fast);
+  }
+  .wf-banner:hover .wf-banner-cta {
+    background: light-dark(var(--yellow-100), var(--yellow-900));
+    border-color: light-dark(var(--yellow-200), var(--yellow-800));
+  }
+  .wf-banner:active .wf-banner-cta {
+    background: light-dark(var(--yellow-200), var(--yellow-800));
+  }
+  @media (max-width: 640px) {
+    .wf-banner { flex-wrap: wrap; }
+    .wf-banner-text { flex-basis: calc(100% - 56px); }
+  }
+}
+
+@keyframes orch-typing-bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+  30% { transform: translateY(-4px); opacity: 1; }
+}
+
+@keyframes msg-enter {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  @keyframes msg-enter {
+    from, to { opacity: 1; transform: none; }
+  }
+}

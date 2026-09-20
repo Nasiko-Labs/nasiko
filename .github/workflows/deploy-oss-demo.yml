@@ -1,0 +1,48 @@
+name: Deploy OSS demo (oss.nasiko.dev)
+
+# Redeploys the public end-user demo on every push to main: SSH into the demo
+# VM, pull latest main, rebuild the server image from source, and restart
+# just the `server` service via docker compose (matches how the demo was
+# stood up manually — it always builds from source, never a pre-built image).
+#
+# Requires repo secrets DEMO_SSH_PRIVATE_KEY and DEMO_HOST. The VM's
+# ~/nasiko/.env, Caddyfile, and docker-compose.override.yml (Caddy TLS front
+# end, OpenAI key, admin credentials) are already in place on the VM and are
+# never touched by this workflow — only the git checkout and the `server`
+# container are updated.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-oss-demo
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Configure deploy SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEMO_SSH_PRIVATE_KEY }}" > ~/.ssh/demo_deploy_key
+          chmod 600 ~/.ssh/demo_deploy_key
+          ssh-keyscan -H "${{ secrets.DEMO_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Pull latest main and rebuild the server
+        run: |
+          ssh -i ~/.ssh/demo_deploy_key sumitkumarmallick@${{ secrets.DEMO_HOST }} '
+            set -e
+            cd ~/nasiko
+            git fetch origin main
+            git reset --hard origin/main
+            docker compose up -d --build server
+          '
+
+      - name: Smoke test
+        run: |
+          sleep 5
+          curl -fsS "https://oss.nasiko.dev/health"

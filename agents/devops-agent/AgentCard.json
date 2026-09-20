@@ -1,0 +1,87 @@
+{
+  "agentFramework": "axum",
+  "capabilities": {
+    "chat_agent": true,
+    "pushNotifications": false,
+    "stateTransitionHistory": false,
+    "streaming": true
+  },
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "description": "The devops-agent assists with DevOps tasks by providing information about GitHub repositories, CI/CD workflows, Docker images, and relevant documentation through web searches.",
+  "framework": "axum",
+  "llm_provider": "openai",
+  "name": "devops-agent",
+  "preferredTransport": "JSONRPC",
+  "protocolVersion": "0.2.9",
+  "skills": [
+    {
+      "description": "Look up GitHub repo details, stars, forks, and recent activity",
+      "examples": [
+        "What's the status of the kubernetes/kubernetes repo?"
+      ],
+      "id": "github-repo-info",
+      "name": "GitHub Repository Info",
+      "tags": [
+        "devops",
+        "github",
+        "repositories"
+      ]
+    },
+    {
+      "description": "Check recent GitHub Actions workflow runs and their results",
+      "examples": [
+        "Show recent CI runs for tokio-rs/tokio"
+      ],
+      "id": "github-actions-runs",
+      "name": "CI/CD Status",
+      "tags": [
+        "devops",
+        "ci-cd",
+        "pipelines"
+      ]
+    },
+    {
+      "description": "Search Docker Hub for container images",
+      "examples": [
+        "Find official PostgreSQL images on Docker Hub"
+      ],
+      "id": "docker-hub-search",
+      "name": "Container Image Search",
+      "tags": [
+        "devops",
+        "docker",
+        "containers"
+      ]
+    },
+    {
+      "description": "Search the web for DevOps documentation, tutorials, and best practices",
+      "examples": [
+        "How do I set up GitHub Actions for Rust?"
+      ],
+      "id": "web-search",
+      "name": "Web Search",
+      "tags": [
+        "devops",
+        "documentation",
+        "search"
+      ]
+    }
+  ],
+  "tags": [
+    "devops",
+    "ci-cd",
+    "github",
+    "docker",
+    "web-search",
+    "monitoring",
+    "automation"
+  ],
+  "transport": "http",
+  "url": "http://localhost:8000/",
+  "version": "0.1.0"
+}

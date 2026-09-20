@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Nasiko</title>
+    <link rel="icon" type="image/svg+xml" href="/common/mark-nasiko.svg" />
+    <!-- Inline and synchronous on purpose. theme.js is a deferred ES module, so without this the
+         skeleton flashes the OS theme. The rail width is set here too as the fallback for browsers
+         without the `blocking` script attribute (Firefox), where app-header.js is still plain deferred
+         and an expanded rail would collapse and re-expand on every MPA navigation.
+         Must stay inline and non-module. -->
+    <script>try{var t=localStorage.getItem('app-theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t;if(localStorage.getItem('app-rail-expanded-v2')==='true')document.documentElement.style.setProperty('--app-sidebar-width','var(--app-sidebar-width-expanded)')}catch(e){}</script>
+    <link rel="stylesheet" href="/common/global.css" />
+    <link rel="stylesheet" href="/common/components.css" />
+    <!-- The sibling views' sheets. Linked here rather than left to their own
+         modules: a view has to be fully styled the instant the shell mounts it,
+         and those modules are only imported when the view is first opened, so a
+         sheet arriving with them would paint one unstyled frame. (sessions-page
+         is the inline default view and still adopts its own sheet, since its
+         module is loaded up front.) -->
+    <link rel="stylesheet" href="/common/components/flows-page.css" />
+    <link rel="stylesheet" href="/common/components/resources-page.css" />
+    <script type="module" src="/navigation.js"></script>
+    <!-- blocking=render: the shell has to be painted (and view-transition-named)
+         before the browser snapshots this document for the cross-document
+         transition. A plain deferred module runs after that snapshot, so the
+         incoming page was captured with an empty header and the whole shell
+         cross-faded on every navigation. -->
+    <script type="module" blocking="render" src="/common/components/app-header.js"></script>
+    <script type="module" src="/common/components/app-empty-state.js"></script>
+    <script type="module" src="/common/components/module-shell.js"></script>
+    <!-- Only the default view's module loads up front; module-shell imports the
+         others the first time the nested sidebar opens them. -->
+    <script type="module" src="/common/components/sessions-page.js"></script>
+  </head>
+  <body>
+    <app-header></app-header>
+    <module-shell module="observability" default-view="history">
+      <!-- Owned by the shell, not by any view: this is what makes switching
+           views inside the module leave the sidebar untouched. -->
+      <app-module-nav module="observability"></app-module-nav>
+      <sessions-page data-view="history" data-title="Execution history">
+      <!-- Pre-upgrade paint: real header and filter field (neither needs a
+           backend, and neither may move), shimmer only for the session rows.
+           The component replaces all of this on upgrade — see
+           common/styles/not-defined.css. -->
+      <!-- Stands in for the nav above, which has no footprint until it upgrades:
+           below 1024px that nav is a disclosure bar in normal flow, so without
+           this the whole header slides down when it arrives. -->
+      <div class="pre-modnav"></div>
+      <div class="pre-head pre-head--split" style="--pre-head-mb:var(--space-md);--pre-head-gap:var(--space-2xs);--pre-head-wrap:nowrap">
+        <div>
+          <h1 class="title-page">Execution history</h1>
+          <p>Review all queries across agents. Select a session to open its trace details.</p>
+        </div>
+        <div class="pre-head__actions">
+          <span class="pre-action pre-action--solid">New Chat</span>
+        </div>
+      </div>
+      <div class="pre-controls" style="--pre-controls-mb:var(--s-12)">
+        <div class="pre-search" style="--pre-search-max:none;--pre-search-pl:var(--space-xl)">
+          <span class="pre-search__icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="width:16px;height:16px;flex-shrink:0"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg></span>
+          <input class="pre-search__input" type="search" placeholder="Filter sessions..." aria-label="Filter sessions" />
+        </div>
+      </div>
+      <div class="pre-table pre-table--sand" style="--pre-cols:minmax(0,1fr) 110px 90px 110px 150px 120px;--pre-table-head-bg:light-dark(var(--sand-200), var(--neutral-800));--pre-table-rule:var(--color-border)">
+        <div class="pre-table__row pre-table__row--head" style="--pre-row-h:42px"></div>
+        <div class="pre-table__row" style="--pre-row-h:61px">
+          <div class="pre-td"><div class="pre-cell" style="width:30%;margin-bottom:6px"></div><div class="pre-cell" style="width:70%"></div></div>
+          <div class="pre-td"><div class="pre-cell" style="width:40%"></div></div>
+          <div class="pre-td"><div class="pre-cell" style="width:55%"></div></div>
+          <div class="pre-td"><div class="pre-cell" style="width:45%"></div></div>
+          <div class="pre-td"><div class="pre-cell" style="width:80%"></div></div>
+          <div class="pre-td"><div class="pre-cell" style="width:70%"></div></div>
+        </div>
+        <div class="pre-table__row" style="--pre-row-h:61px">
+          <div class="pre-td"><div class="pre-cell" style="width:30%;margin-bottom:6px"></div><div class="pre-cell" style="width:70%"></div></div>
+          <div class="pre-td"><div class="pre-cell" style="width:40%"></div></div>
+          <div class="pre-td"><div class="pre-cell" style="width:55%"></div></div>
+          <div class="pre-td"><div class="pre-cell" style="width:45%"></div></div>
+          <div class="pre-td"><div class="pre-cell" style="width:80%"></div></div>
+          <div class="pre-td"><div class="pre-cell" style="width:70%"></div></div>
+        </div>
+        <div class="pre-table__row" style="--pre-row-h:61px">
+          <div class="pre-td"><div class="pre-cell" style="width:30%;margin-bottom:6px"></div><div class="pre-cell" style="width:70%"></div></div>
+          <div class="pre-td"><div class="pre-cell" style="width:40%"></div></div>
+          <div class="pre-td"><div class="pre-cell" style="width:55%"></div></div>
+          <div class="pre-td"><div class="pre-cell" style="width:45%"></div></div>
+          <div class="pre-td"><div class="pre-cell" style="width:80%"></div></div>
+          <div class="pre-td"><div class="pre-cell" style="width:70%"></div></div>
+        </div>
+        <div class="pre-table__row" style="--pre-row-h:61px">
+          <div class="pre-td"><div class="pre-cell" style="width:30%;margin-bottom:6px"></div><div class="pre-cell" style="width:70%"></div></div>
+          <div class="pre-td"><div class="pre-cell" style="width:40%"></div></div>
+          <div class="pre-td"><div class="pre-cell" style="width:55%"></div></div>
+          <div class="pre-td"><div class="pre-cell" style="width:45%"></div></div>
+          <div class="pre-td"><div class="pre-cell" style="width:80%"></div></div>
+          <div class="pre-td"><div class="pre-cell" style="width:70%"></div></div>
+        </div>
+      </div>
+      </sessions-page>
+      <!-- Deferred views: a <template> keeps these elements un-upgraded, so
+           they run no code and issue no requests until first opened — which
+           matters here because Resources starts a 5s poll the moment it does. -->
+      <template data-view="flows" data-title="Flows"
+                data-module="/common/components/flows-page.js">
+        <flows-page></flows-page>
+      </template>
+      <template data-view="resources" data-title="Resources"
+                data-module="/common/components/resources-page.js">
+        <resources-page></resources-page>
+      </template>
+    </module-shell>
+  </body>
+</html>

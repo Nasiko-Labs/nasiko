@@ -1,0 +1,14 @@
+services:
+  google-adk:
+    build: .
+    container_name: google-adk
+    environment:
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+    ports:
+      - "10006:10006"
+    networks:
+      - agents-net
+
+networks:
+  agents-net:
+    external: true

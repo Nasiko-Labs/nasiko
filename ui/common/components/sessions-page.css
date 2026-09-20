@@ -1,0 +1,293 @@
+@keyframes skeleton-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+@scope (sessions-page) {
+  /* Host box — display, padding, the desktop card padding and (where the page
+     has one) the module-nav gutter: common/styles/page-layout.css. Linked, not
+     adopted, so it is already in effect at first paint. */
+
+  .sessions-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-md);
+    margin-bottom: var(--space-md);
+  }
+
+  .sessions-header-info {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
+  }
+
+  .sessions-subtitle {
+    margin: 0;
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+  }
+
+  .sessions-search-wrap {
+    position: relative;
+    margin-bottom: var(--s-12);
+  }
+
+  .sessions-search-icon {
+    position: absolute;
+    left: var(--space-sm);
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--color-text-muted);
+    pointer-events: none;
+    line-height: 1;
+  }
+
+  input.sessions-search {
+    width: 100%;
+    height: var(--control-h-lg);
+    padding: 0 var(--space-sm) 0 var(--space-xl);
+    border: 1px solid transparent;
+    border-radius: var(--r-8);
+    background: var(--bg-input);
+    font-size: var(--font-size-sm);
+    color: var(--color-text-main);
+
+    &:focus {
+      outline: none;
+      border-color: var(--color-primary);
+    }
+  }
+
+  /* Bordered container owns the outer radius and clips the header band, so
+     the table reads the same as TokenOps' rather than as a floating pill. */
+  .session-list {
+    display: block;
+    border: 1px solid var(--color-border);
+    border-radius: var(--r-8);
+    overflow-x: auto;
+    scrollbar-width: thin;
+  }
+  /* The empty/error state is a standalone card — no table chrome around it. */
+  .session-list:has(app-empty-state) {
+    border: none;
+    border-radius: 0;
+  }
+
+  @media (max-width: 760px) {
+    .sessions-table { min-width: 680px; }
+  }
+
+  /* ── Execution history table ─────────────────────────────────────────── */
+  .sessions-table {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+    font-size: var(--font-size-sm);
+    /* global.css gives every <table> `margin: var(--space-md) 0`, which stacked
+       another 16px under the filter's own 12px (and left 16px dangling below
+       the last row). The gap here is owned by .sessions-search-wrap. */
+    margin: 0;
+  }
+
+  /* Header band + row hairlines match tokenops-page.css; the container clips
+     the corners, so no per-cell radii here. */
+  .sessions-table th {
+    text-align: left;
+    font-size: var(--font-size-xs);
+    font-weight: 500;
+    text-transform: none;
+    letter-spacing: 0;
+    color: var(--color-text-muted);
+    background: var(--bg-input);
+    border-bottom: 1px solid var(--color-border);
+    padding: var(--space-sm) var(--space-md);
+    white-space: nowrap;
+  }
+
+  .sessions-table td {
+    padding: var(--space-sm) var(--space-md);
+    border-bottom: 1px solid var(--color-border);
+    vertical-align: middle;
+    /* Uniform rows. `.session-preview` only renders when the session has a
+       last_message, so without a floor the list alternated tall and short rows
+       depending on the data and read as broken rather than as a table. On a
+       table cell `height` behaves as a minimum, so a two-line row still grows. */
+    height: 56px;
+  }
+  .sessions-table tbody tr:last-child td { border-bottom: none; }
+
+  .sessions-table tbody tr {
+    cursor: pointer;
+
+    /* Full-bleed hover fill: the container clips it, so it lines up with the
+       header band instead of floating as a rounded pill inside the border. */
+    &:hover td { background: var(--bg-input); }
+    &:hover .session-delete { opacity: 1; }
+    &:focus-visible {
+      outline: none;
+      box-shadow: inset 0 0 0 2px var(--color-primary-ring);
+    }
+  }
+
+  .col-session { max-width: 380px; }
+  .col-num, .col-date {
+    color: var(--color-text-main);
+    white-space: nowrap;
+  }
+  .col-actions {
+    white-space: nowrap;
+    text-align: right;
+    width: 1%;
+  }
+
+  .session-agent {
+    font-size: var(--font-size-sm);
+    font-weight: 600;
+    color: var(--color-text-main);
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+  }
+
+  .session-msg-count {
+    font-size: var(--font-size-xs);
+    font-weight: 400;
+    color: var(--color-text-muted);
+  }
+
+  .session-preview {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+    margin-top: var(--space-2xs);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  button.session-traces {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    height: var(--control-h-sm);
+    padding: 0 var(--space-sm);
+    border: 1px solid transparent;
+    border-radius: var(--r-8);
+    background: var(--color-bg-base);
+    color: var(--color-text-main);
+    font-size: var(--font-size-xs);
+    font-weight: 600;
+    cursor: pointer;
+    line-height: 1;
+    transition: border-color 0.15s;
+
+    &:hover { border-color: var(--color-border); }
+
+    &:focus-visible {
+      outline: none;
+      box-shadow: 0 0 0 2px var(--color-primary-ring);
+    }
+  }
+
+  button.session-delete {
+    opacity: 0;
+    background: none;
+    border: none;
+    padding: 0;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    color: var(--color-text-muted);
+    line-height: 1;
+    width: var(--control-h-sm);
+    height: var(--control-h-sm);
+    display: inline-grid;
+    place-items: center;
+    vertical-align: middle;
+    margin-left: var(--space-2xs);
+
+    &:hover {
+      color: var(--color-error);
+      background: var(--color-error-bg);
+    }
+
+    &:focus-visible {
+      opacity: 1;
+      outline: none;
+      box-shadow: 0 0 0 2px var(--color-primary-ring);
+    }
+  }
+
+  /* ── Skeleton loading state ──────────────────────────────────────────── */
+  .sessions-table-skeleton {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--color-border);
+    border-radius: var(--r-8);
+    overflow: hidden;
+    animation: skeleton-pulse 1.5s ease-in-out infinite;
+
+    @media (prefers-reduced-motion: reduce) {
+      animation: none;
+      opacity: 0.6;
+    }
+  }
+
+  /* Mirrors the real header band (see .sessions-table th). */
+  .skeleton-line--head {
+    height: 42px;
+    width: 100%;
+    background: var(--bg-input);
+    border-bottom: 1px solid var(--color-border);
+    margin-bottom: 0;
+  }
+
+  .session-row-skeleton {
+    display: flex;
+    align-items: center;
+    gap: var(--space-md);
+    padding: var(--space-sm) var(--space-md);
+    min-height: 61px;
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .skeleton-info {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
+  }
+
+  .skeleton-line {
+    height: 12px;
+    border-radius: var(--radius-sm);
+    background: var(--color-bg-base);
+  }
+
+  .skeleton-line--short {
+    width: 30%;
+  }
+
+  .skeleton-line--long {
+    width: 70%;
+  }
+
+  .skeleton-line--time {
+    width: 90px;
+    flex-shrink: 0;
+  }
+
+  /* ── Pager ─────────────────────────────────────────────────────────────── */
+  .sessions-more {
+    display: flex;
+    align-items: center;
+    gap: var(--space-md);
+    justify-content: center;
+    margin-top: var(--space-md);
+
+    &[hidden] { display: none; }
+  }
+  .sessions-count {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+  }
+}

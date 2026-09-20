@@ -1,0 +1,45 @@
+/* Segmented radio control — NightOwl pill group: strokeless sand pills,
+   selected = sand-100 fill; the group carries no outer border */
+.seg-ctrl {
+  border: none; padding: 0; margin: 0;
+  display: flex; align-items: center; gap: var(--s-4);
+}
+
+.seg-ctrl legend {
+  padding: 0 var(--space-sm) 0 0;
+  font-size: var(--font-size-sm); color: var(--color-text-muted);
+  align-self: center;
+}
+
+.seg-ctrl label {
+  display: flex; align-items: center; gap: var(--space-xs);
+  margin: 0;
+  height: var(--control-h-sm);
+  padding: 0 var(--s-12);
+  font-size: 13px; font-weight: 500;
+  border: none; border-radius: var(--r-8); cursor: pointer;
+  color: var(--color-text-main); background: transparent;
+  transition: background var(--transition-fast), color var(--transition-fast);
+  white-space: nowrap;
+}
+
+.seg-ctrl label:hover { background: var(--bg-surface-hover); }
+
+.seg-ctrl input[type="radio"] { position: absolute; opacity: 0; width: 0; height: 0; }
+
+.seg-ctrl label:has(:checked) {
+  background: var(--bg-surface-active); color: var(--color-text-main);
+}
+
+.seg-ctrl label:has(:focus-visible) {
+  outline: 2px solid var(--color-primary); outline-offset: 1px;
+}
+
+/* Sliding pill indicator (tab-indicator.js) carries the selected fill;
+   labels stack above it so text stays readable */
+.seg-ctrl.has-tab-indicator label { position: relative; z-index: 1; }
+.seg-ctrl.has-tab-indicator label:has(:checked) { background: transparent; }
+.seg-ctrl .tab-indicator {
+  background: var(--bg-surface-active);
+  border-radius: var(--r-8);
+}
