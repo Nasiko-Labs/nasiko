@@ -5,6 +5,7 @@ import { readA2aStream, frameRenderer, nearBottom, scrollerFor, stickToBottom } 
 import { usageChipsHtml } from '/common/utils/usage-chips.js';
 import { transcribeBlob } from '/common/utils/voice-utils.js';
 import '/common/components/voice-input.js';
+import '/common/components/chat-model-picker.js';
 import '/common/components/agent-steps.js';
 
 window.transcribeAudio = transcribeBlob;
@@ -15,6 +16,19 @@ document.adoptedStyleSheets = [...document.adoptedStyleSheets, styles];
 class OrchestratorPage extends HTMLElement {
   #initialized = false;
   #sessionId = null;
+
+  /// Put the model picker inside the composer box, on the row `voice-input`
+  /// reserves for its buttons. This page has no single agent — the orchestrator
+  /// routes each task to agents it picks — so the picker runs in workspace mode
+  /// and selects the default LLM configuration instead of pinning one agent.
+  async #mountModelPicker() {
+    const voiceInput = this.querySelector('#voice-input');
+    if (!voiceInput) return;
+    await customElements.whenDefined('voice-input');
+    const slot = voiceInput.querySelector('#leadSlot');
+    if (!slot || slot.querySelector('chat-model-picker')) return;
+    slot.appendChild(document.createElement('chat-model-picker'));
+  }
 
   connectedCallback() {
     if (this.#initialized) return;
@@ -50,6 +64,7 @@ class OrchestratorPage extends HTMLElement {
     `;
 
     this.#loadRecentAgents();
+    this.#mountModelPicker();
 
     const voiceInput = this.querySelector('#voice-input');
     const messagesEl = this.querySelector('#messages');
