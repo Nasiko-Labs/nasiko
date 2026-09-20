@@ -69,7 +69,7 @@ class AffordAgent:
             api_key=os.getenv("OPENAI_API_KEY"),
             base_url=os.getenv("OPENAI_BASE_URL"),
         )
-        self._model_name = os.getenv("MODEL", "gemini-3.5-flash-lite")
+        self._model_name = os.getenv("MODEL", "gpt-4o-mini")
         model = OpenAIChatCompletionsModel(
             model=self._model_name,
             openai_client=self._client,
