@@ -13,9 +13,9 @@ path, command, or short note — never tokens or secrets.
 | C3 | Partial / truncated response | I9 | | | |
 | C4 | Credential expiry or revocation mid-session | I6 | | | |
 | C5 | Direct access bypassing the proxy | I1, I12 | | | |
-| C6 | ACL-denied invoke | I4 | | | |
+| C6 | ACL-denied invoke | I4 | PASS | `server/tests/agent_proxy_authz.rs` `proxy_rejects_non_owner_non_grantee_with_404` | Direct proxy returns 404; stub agent is not invoked. |
 | C7 | Saturate A2A rate limits | I7 | PASS | `server/tests/chaos_proxy.rs` `i7_a2a_dispatch_returns_429_after_burst` | 31st authenticated `POST /api/orchestrator/a2a` in 60s returns 429 with a visible body. |
-| C8 | Header leak / identity spoof | I2, I3 | | | Baseline: `server/tests/agent_proxy_authz.rs` |
+| C8 | Header leak / identity spoof | I2, I3 | PASS | `server/tests/agent_proxy_authz.rs` `proxy_strips_credentials_and_spoofed_identity_headers` | Agent echo has no `Authorization`/`Cookie`; spoofed `x-user-*` is not forwarded. |
 | C9 | FlowGuard cascade bounds | I10 | | | Optional |
 
 ## Vocabulary
