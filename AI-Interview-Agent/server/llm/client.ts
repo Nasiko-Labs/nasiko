@@ -6,7 +6,7 @@ export interface LLMResponse<T = any> {
   data: T;
   rawText: string;
   latencyMs: number;
-  provider: 'bedrock' | 'openai' | 'fallback';
+  provider: 'bedrock' | 'gemini' | 'openai' | 'fallback';
   model: string;
   estimatedTokens: {
     promptTokens: number;
@@ -16,13 +16,18 @@ export interface LLMResponse<T = any> {
 }
 
 export interface ProviderStatus {
-  activeProvider: 'bedrock' | 'openai' | 'fallback';
+  activeProvider: 'bedrock' | 'gemini' | 'openai' | 'fallback';
   activeModel: string;
   bedrock: {
     configured: boolean;
-    authType: 'api_key' | 'none';
+    authType: 'api_key' | 'iam_keys' | 'pre_signed_url' | 'none';
     region: string;
     modelId: string;
+    isPreSignedUrl: boolean;
+  };
+  gemini: {
+    configured: boolean;
+    models: string[];
   };
   openai: {
     configured: boolean;
@@ -34,7 +39,9 @@ class LLMClient {
   private genAI: GoogleGenAI | null = null;
   private bedrockClient: BedrockRuntimeClient | null = null;
   private bedrockAuthErrorUntil: number = 0;
-  // private candidateGeminiModels = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+  private usePreSignedUrl: boolean = false;
+  private preSignedUrl: string = '';
+  private candidateGeminiModels = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
   private candidateBedrockModels = [
     'amazon.nova-micro-v1:0',
     'amazon.nova-lite-v1:0',
@@ -48,50 +55,68 @@ class LLMClient {
 
   private initClients() {
     // 1. Initialize Gemini
-    // const geminiKey = process.env.GEMINI_API_KEY;
-    // if (geminiKey && geminiKey !== 'MY_GEMINI_API_KEY') {
-    //   try {
-    //     this.genAI = new GoogleGenAI({
-    //       apiKey: geminiKey,
-    //       httpOptions: {
-    //         headers: {
-    //           'User-Agent': 'aistudio-build',
-    //         },
-    //       },
-    //     });
-    //   } catch (err) {
-    //     console.warn('[LLMClient] Failed to initialize Google GenAI:', err);
-    //   }
-    // }
+    const geminiKey = process.env.GEMINI_API_KEY;
+    if (geminiKey && geminiKey !== 'MY_GEMINI_API_KEY') {
+      try {
+        this.genAI = new GoogleGenAI({
+          apiKey: geminiKey,
+          httpOptions: {
+            headers: {
+              'User-Agent': 'aistudio-build',
+            },
+          },
+        });
+      } catch (err) {
+        console.warn('[LLMClient] Failed to initialize Google GenAI:', err);
+      }
+    }
 
     // 2. Initialize Amazon Bedrock Client
     this.initBedrockClient();
   }
 
+  private isPreSignedUrl(key: string): boolean {
+    try {
+      const decoded = Buffer.from(key, 'base64').toString('utf-8');
+      return decoded.includes('bedrock.amazonaws.com') || decoded.includes('bedrock-runtime.');
+    } catch { return false; }
+  }
+
   private initBedrockClient() {
     const region = process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || 'us-east-1';
-    const bedrockApiKey =
-      process.env.BEDROCK_API_KEY;
-    // const accessKeyId = process.env.AWS_ACCESS_KEY_ID;
-    // const secretAccessKey = process.env.AWS_SECRET_ACCESS_KEY;
-    // const sessionToken = process.env.AWS_SESSION_TOKEN;
+    const bedrockApiKey = process.env.BEDROCK_API_KEY;
+    const accessKeyId = process.env.AWS_ACCESS_KEY_ID;
+    const secretAccessKey = process.env.AWS_SECRET_ACCESS_KEY;
+    const sessionToken = process.env.AWS_SESSION_TOKEN;
+
+    this.usePreSignedUrl = false;
+    this.preSignedUrl = '';
 
     try {
+      // Priority 1: Pre-signed URL (base64 encoded)
+      if (bedrockApiKey && bedrockApiKey.trim().length > 0 && this.isPreSignedUrl(bedrockApiKey)) {
+        this.preSignedUrl = Buffer.from(bedrockApiKey, 'base64').toString('utf-8');
+        this.usePreSignedUrl = true;
+        this.bedrockClient = null; // We'll use fetch directly
+        console.log(`[LLMClient] Amazon Bedrock initialized via pre-signed URL in region: ${region}`);
+        return;
+      }
+
+      // Priority 2: Standard API Key / Bearer Token
       if (bedrockApiKey && bedrockApiKey.trim().length > 0) {
-        // If provided as "ACCESS_KEY:SECRET_KEY"
-        // if (bedrockApiKey.includes(':') && !accessKeyId) {
-        //   const [keyId, secret] = bedrockApiKey.split(':');
-        //   this.bedrockClient = new BedrockRuntimeClient({
-        //     region,
-        //     maxAttempts: 1,
-        //     credentials: {
-        //       accessKeyId: keyId.trim(),
-        //       secretAccessKey: secret.trim(),
-        //     },
-        //   });
-        //   console.log(`[LLMClient] Amazon Bedrock initialized via composite API key credentials in region: ${region}`);
-        //   return;
-        // }
+        if (bedrockApiKey.includes(':') && !accessKeyId) {
+          const [keyId, secret] = bedrockApiKey.split(':');
+          this.bedrockClient = new BedrockRuntimeClient({
+            region,
+            maxAttempts: 1,
+            credentials: {
+              accessKeyId: keyId.trim(),
+              secretAccessKey: secret.trim(),
+            },
+          });
+          console.log(`[LLMClient] Amazon Bedrock initialized via composite API key credentials in region: ${region}`);
+          return;
+        }
 
         // Bearer Token mode
         this.bedrockClient = new BedrockRuntimeClient({
@@ -103,18 +128,19 @@ class LLMClient {
         return;
       }
 
-      // if (accessKeyId && secretAccessKey) {
-      //   this.bedrockClient = new BedrockRuntimeClient({
-      //     region,
-      //     maxAttempts: 1,
-      //     credentials: {
-      //       accessKeyId: accessKeyId.trim(),
-      //       secretAccessKey: secretAccessKey.trim(),
-      //       sessionToken: sessionToken ? sessionToken.trim() : undefined,
-      //     },
-      //   });
-      //   console.log(`[LLMClient] Amazon Bedrock initialized via standard AWS IAM credentials in region: ${region}`);
-      // }
+      // Priority 3: Standard AWS IAM credentials
+      if (accessKeyId && secretAccessKey) {
+        this.bedrockClient = new BedrockRuntimeClient({
+          region,
+          maxAttempts: 1,
+          credentials: {
+            accessKeyId: accessKeyId.trim(),
+            secretAccessKey: secretAccessKey.trim(),
+            sessionToken: sessionToken ? sessionToken.trim() : undefined,
+          },
+        });
+        console.log(`[LLMClient] Amazon Bedrock initialized via standard AWS IAM credentials in region: ${region}`);
+      }
     } catch (err: any) {
       console.warn('[LLMClient] Bedrock initialization error:', err?.message || err);
       this.bedrockClient = null;
@@ -122,32 +148,41 @@ class LLMClient {
   }
 
   getProviderStatus(): ProviderStatus {
-    const region = 'us-east-1';
-    const bedrockApiKey =
-      process.env.BEDROCK_API_KEY;
+    const region = process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || 'us-east-1';
+    const bedrockApiKey = process.env.BEDROCK_API_KEY;
+    const isPreSignedUrl = this.isPreSignedUrl(bedrockApiKey || '');
 
     const bedrockConfigured = Boolean(
-      (bedrockApiKey && bedrockApiKey.trim().length > 0)
+      (bedrockApiKey && bedrockApiKey.trim().length > 0) ||
+      (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY)
     );
 
-    const bedrockAuthType = bedrockApiKey
-      ? 'api_key'
-      :'none';
+    const bedrockAuthType = isPreSignedUrl
+      ? 'pre_signed_url'
+      : bedrockApiKey
+        ? 'api_key'
+        : process.env.AWS_ACCESS_KEY_ID
+          ? 'iam_keys'
+          : 'none';
+
+    const geminiConfigured = Boolean(
+      process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'MY_GEMINI_API_KEY'
+    );
+
+    const openaiConfigured = Boolean(process.env.OPENAI_API_KEY);
 
     const preferredBedrockModel =
       process.env.BEDROCK_MODEL_ID || 'amazon.nova-micro-v1:0';
 
-    // const geminiConfigured = Boolean(
-    //   process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'MY_GEMINI_API_KEY'
-    // );
-    const openaiConfigured = Boolean(process.env.OPENAI_API_KEY);
-
-    let activeProvider: 'bedrock' | 'openai' | 'fallback' = 'fallback';
+    let activeProvider: 'bedrock' | 'gemini' | 'openai' | 'fallback' = 'fallback';
     let activeModel = 'Heuristic Local Synthesis Engine';
 
     if (bedrockConfigured) {
       activeProvider = 'bedrock';
       activeModel = preferredBedrockModel;
+    } else if (geminiConfigured) {
+      activeProvider = 'gemini';
+      activeModel = 'gemini-2.5-flash';
     } else if (openaiConfigured) {
       activeProvider = 'openai';
       activeModel = 'gpt-4o-mini';
@@ -161,12 +196,17 @@ class LLMClient {
         authType: bedrockAuthType,
         region,
         modelId: preferredBedrockModel,
+        isPreSignedUrl,
+      },
+      gemini: {
+        configured: geminiConfigured,
+        models: this.candidateGeminiModels,
       },
       openai: {
         configured: openaiConfigured,
         model: 'gpt-4o-mini',
-      }
-    }
+      },
+    };
   }
 
   async generateStructuredJSON<T = any>(
@@ -176,21 +216,87 @@ class LLMClient {
   ): Promise<LLMResponse<T>> {
     const startTime = Date.now();
 
-    // 1. If Amazon Bedrock is configured, prioritize Bedrock
+    // 1. Pre-signed URL Bedrock (highest priority if configured)
+    if (this.usePreSignedUrl) {
+      try {
+        return await this.callBedrockViaPreSignedUrl<T>(systemInstruction, prompt, temperature, startTime);
+      } catch (err: any) {
+        console.warn('[LLMClient] Pre-signed URL Bedrock invocation error, falling back to SDK:', err?.message || err);
+        // Don't set auth error backoff for pre-signed URL, try SDK next
+      }
+    }
+
+    // 2. SDK Bedrock
     if (!this.bedrockClient) {
       this.initBedrockClient();
     }
 
     if (this.bedrockClient && Date.now() > this.bedrockAuthErrorUntil) {
       try {
-        const bedrockResult = await this.callBedrock<T>(systemInstruction, prompt, temperature, startTime);
-        return bedrockResult;
+        return await this.callBedrock<T>(systemInstruction, prompt, temperature, startTime);
       } catch (err: any) {
-        console.warn('[LLMClient] Amazon Bedrock invocation error, falling back to other providers:', err?.message || err);
+        console.warn('[LLMClient] Amazon Bedrock SDK invocation error, falling back to other providers:', err?.message || err);
       }
     }
 
-    // 3. Try OpenAI if configured
+    // 3. Try Gemini
+    if (this.genAI) {
+      for (const model of this.candidateGeminiModels) {
+        try {
+          const timeoutPromise = new Promise((_, reject) =>
+            setTimeout(() => reject(new Error(`Timeout after 12000ms with model ${model}`)), 12000)
+          );
+
+          const generatePromise = this.genAI.models.generateContent({
+            model,
+            contents: prompt,
+            config: {
+              systemInstruction,
+              temperature,
+              responseMimeType: 'application/json',
+            },
+          });
+
+          const response = (await Promise.race([generatePromise, timeoutPromise])) as any;
+
+          const rawText = response.text || '{}';
+          const latencyMs = Date.now() - startTime;
+          const parsed = this.cleanAndParseJSON<T>(rawText);
+
+          const promptTokens = Math.ceil((systemInstruction.length + prompt.length) / 4);
+          const completionTokens = Math.ceil(rawText.length / 4);
+
+          return {
+            data: parsed,
+            rawText,
+            latencyMs,
+            provider: 'gemini',
+            model,
+            estimatedTokens: {
+              promptTokens,
+              completionTokens,
+              totalTokens: promptTokens + completionTokens,
+            },
+          };
+        } catch (err: any) {
+          console.warn(`[LLMClient] Attempt with Gemini model ${model} encountered error:`, err?.message || err);
+          const msg = String(err?.message || '');
+          if (
+            msg.includes('API_KEY_INVALID') ||
+            msg.includes('PERMISSION_DENIED') ||
+            msg.includes('403') ||
+            msg.includes('401') ||
+            msg.includes('not found') ||
+            msg.includes('404')
+          ) {
+            console.warn('[LLMClient] Non-retryable error with Gemini. Skipping remaining candidate models.');
+            break;
+          }
+        }
+      }
+    }
+
+    // 4. Try OpenAI if configured
     if (process.env.OPENAI_API_KEY) {
       try {
         return await this.callOpenAI<T>(systemInstruction, prompt, temperature, startTime);
@@ -199,7 +305,7 @@ class LLMClient {
       }
     }
 
-    // 4. Resilient Heuristic Fallback (Guarantees zero crashes / continuous availability)
+    // 5. Resilient Heuristic Fallback (Guarantees zero crashes / continuous availability)
     console.info('[LLMClient] Applying resilient heuristic synthesis fallback for agent request.');
     const fallbackData = generateHeuristicFallback<T>(systemInstruction, prompt);
     const latencyMs = Date.now() - startTime;
@@ -213,6 +319,70 @@ class LLMClient {
         promptTokens: Math.ceil(prompt.length / 4),
         completionTokens: 250,
         totalTokens: Math.ceil(prompt.length / 4) + 250,
+      },
+    };
+  }
+
+  private async callBedrockViaPreSignedUrl<T>(
+    systemInstruction: string,
+    prompt: string,
+    temperature: number,
+    startTime: number
+  ): Promise<LLMResponse<T>> {
+    if (!this.preSignedUrl) {
+      throw new Error('Pre-signed URL not available');
+    }
+
+    // Amazon Nova format
+    const body = JSON.stringify({
+      inferenceConfig: {
+        maxTokens: 6000,
+        temperature,
+      },
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              text: `${systemInstruction}\n\n${prompt}`,
+            },
+          ],
+        },
+      ],
+    });
+
+    const response = await fetch(this.preSignedUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Bedrock pre-signed URL error (${response.status}): ${errorText}`);
+    }
+
+    const data = await response.json();
+    // Nova response format: { output: { message: { content: [{ text: "..." }] } } }
+    const rawText = data.output?.message?.content?.[0]?.text || '{}';
+    const latencyMs = Date.now() - startTime;
+    const parsed = this.cleanAndParseJSON<T>(rawText);
+
+    const promptTokens = Math.ceil((systemInstruction.length + prompt.length) / 4);
+    const completionTokens = Math.ceil(rawText.length / 4);
+
+    console.log(`[LLMClient] Successfully executed via Bedrock pre-signed URL in ${latencyMs}ms`);
+
+    return {
+      data: parsed,
+      rawText,
+      latencyMs,
+      provider: 'bedrock',
+      model: 'pre-signed-url',
+      estimatedTokens: {
+        promptTokens,
+        completionTokens,
+        totalTokens: promptTokens + completionTokens,
       },
     };
   }
@@ -267,7 +437,7 @@ class LLMClient {
           response.usage?.inputTokens || Math.ceil((systemInstruction.length + prompt.length) / 4);
         const completionTokens = response.usage?.outputTokens || Math.ceil(rawText.length / 4);
 
-        console.log(`[LLMClient] Successfully executed via Amazon Bedrock (${modelId}) in ${latencyMs}ms`);
+        console.log(`[LLMClient] Successfully executed via Amazon Bedrock SDK (${modelId}) in ${latencyMs}ms`);
 
         return {
           data: parsed,
