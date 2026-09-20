@@ -5,7 +5,8 @@ A provider-agnostic, OpenAI-compatible **egress proxy** for user-uploaded agents
 Agents are deployed pointed at this router (`OPENAI_BASE_URL`) with a Nasiko identity
 JWT as their `OPENAI_API_KEY` (not a real provider key). The router verifies the JWT,
 looks up the agent's provider/model/key in Postgres, decrypts the owner's real key,
-and forwards the call to OpenAI / Anthropic / Gemini — translating both directions so
+and forwards the call to OpenAI / Anthropic / Gemini / OpenRouter / Groq — translating
+both directions so
 the agent never knows which provider answered. Provider + model are a **runtime config
 change** (one `agents.llm_config` update), with no agent redeploy.
 
@@ -34,7 +35,7 @@ is authoritative on every path (chat, stream, embeddings).
 | Route | Notes |
 |---|---|
 | `POST /v1/chat/completions` | OpenAI Chat Completions, streaming + non-streaming |
-| `POST /v1/embeddings` | OpenAI embeddings (OpenAI + Gemini; Anthropic 501) |
+| `POST /v1/embeddings` | OpenAI embeddings (OpenAI + Gemini; Anthropic/Groq 501) |
 | `GET /v1/models` | static provider/model catalog (public) |
 | `GET /v1/health` | liveness (`{"status":"ok"}`) |
 
@@ -52,7 +53,8 @@ src/
   resolver/     resolve() + TTL ConfigCache + RegistryStore (PgRegistry)
   ir/           canonical OpenAI-shaped IR (chat + embeddings), permissive/passthrough
   inbound/      InboundParser + OpenAiInbound (identity)
-  providers/    ProviderClient + openai / anthropic / gemini, sse, fallback
+  providers/    ProviderClient + openai / anthropic / gemini / openrouter / groq,
+                sse, fallback
   usage.rs      token_usage writer (fire-and-forget; cost via DB trigger)
   handlers/     chat / embeddings / models / health
 examples/mint_token.rs   dev/test JWT minter
@@ -62,7 +64,8 @@ examples/mint_token.rs   dev/test JWT minter
 
 `AGENT_JWT_SECRET` (required; fail-closed if empty), `AGENT_JWT_ALGORITHM` (HS256),
 `DEFAULT_PROVIDER` (openai), `DEFAULT_MODEL` (gpt-4o-mini), `PLATFORM_OPENAI_API_KEY`,
-`LLM_CONFIG_CACHE_TTL` (30s), `{OPENAI,ANTHROPIC,GEMINI}_API_BASE` (test overrides).
+`LLM_CONFIG_CACHE_TTL` (30s), `{OPENAI,ANTHROPIC,GEMINI,OPENROUTER,GROQ}_API_BASE`
+(also the real upstream override, not just a test seam — see "Provider base URLs" below).
 Reuses the platform's `SECRETS_ENCRYPTION_KEY` (per-user HKDF AES-256-GCM) and
 `DATABASE_URL`.
 
@@ -101,3 +104,47 @@ Postgres not Mongo, AES-256-GCM (per-user HKDF) not Fernet, cost via the existin
 crate not a standalone container, hub-and-spoke IR + traits (multi-inbound-ready;
 v1 ships OpenAI inbound only). Full list in `.context/llm-gateway/RUST_PLAN_V1.md` §9.
 ```
+
+
+## Provider base URLs
+
+Each provider's upstream is overridable by env var, defaulting to the vendor's public
+endpoint:
+
+| Provider | Env var | Default |
+| --- | --- | --- |
+| OpenAI | `OPENAI_API_BASE` | `https://api.openai.com/v1` |
+| Anthropic | `ANTHROPIC_API_BASE` | `https://api.anthropic.com/v1` |
+| Gemini | `GEMINI_API_BASE` | `https://generativelanguage.googleapis.com/v1beta` |
+| OpenRouter | `OPENROUTER_API_BASE` | `https://openrouter.ai/api/v1` |
+| Groq | `GROQ_API_BASE` | `https://api.groq.com/openai/v1` |
+
+> **`OPENAI_API_BASE` is not `OPENAI_BASE_URL`.** They are different variables with
+> different jobs, and confusing them is the single most common misconfiguration here:
+>
+> - `OPENAI_BASE_URL` is injected **into agent containers** so agents call *this router*.
+> - `OPENAI_API_BASE` is the **router's own upstream** — the endpoint it calls on your
+>   behalf.
+>
+> Pointing `OPENAI_BASE_URL` at a non-OpenAI provider does nothing to the router: it
+> keeps its `api.openai.com` default and forwards your key there. The provider rejects
+> the unfamiliar key and the resulting error blames *your credential*, not the
+> misrouting — so the true cause is easy to miss. To use any OpenAI-compatible upstream
+> (Groq, Together, vLLM, LiteLLM, Bedrock's `/openai/v1`), set `OPENAI_API_BASE`.
+
+### Platform keys
+
+Each provider resolves its platform fallback key via `GatewayConfig::platform_key_for`,
+preferring `PLATFORM_<PROVIDER>_API_KEY` and falling back to `<PROVIDER>_API_KEY`:
+
+| Provider | Env vars (in order) |
+| --- | --- |
+| OpenAI | `PLATFORM_OPENAI_API_KEY`, `OPENAI_API_KEY` |
+| Anthropic | `PLATFORM_ANTHROPIC_API_KEY`, `ANTHROPIC_API_KEY` |
+| Gemini | `PLATFORM_GEMINI_API_KEY`, `GEMINI_API_KEY` |
+| OpenRouter | `PLATFORM_OPENROUTER_API_KEY`, `OPENROUTER_API_KEY` |
+| Groq | `PLATFORM_GROQ_API_KEY`, `GROQ_API_KEY` |
+
+> When adding a provider, add a `platform_key_for` match arm for it. The `_` fallback
+> arm returns the **OpenAI** key, so a provider without its own arm silently
+> authenticates with the wrong credential instead of failing with `NoApiKey`.

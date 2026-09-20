@@ -45,6 +45,10 @@ pub fn provider_for(
             cfg.openrouter_http_referer.clone(),
             cfg.openrouter_x_title.clone(),
         ))),
+        "groq" => Ok(Box::new(GroqProvider::new(
+            http.clone(),
+            cfg.groq_api_base.clone(),
+        ))),
         other => Err(GatewayError::Internal(format!(
             "provider '{other}' is not supported yet"
         ))),
@@ -54,12 +58,14 @@ pub fn provider_for(
 pub mod anthropic;
 pub mod fallback;
 pub mod gemini;
+pub mod groq;
 pub mod openai;
 pub mod openrouter;
 pub(crate) mod sse;
 
 pub use anthropic::AnthropicProvider;
 pub use gemini::GeminiProvider;
+pub use groq::GroqProvider;
 pub use openai::OpenAiProvider;
 pub use openrouter::OpenRouterProvider;
 
