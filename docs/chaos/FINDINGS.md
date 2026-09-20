@@ -14,7 +14,7 @@ path, command, or short note — never tokens or secrets.
 | C4 | Credential expiry or revocation mid-session | I6 | | | |
 | C5 | Direct access bypassing the proxy | I1, I12 | | | |
 | C6 | ACL-denied invoke | I4 | | | |
-| C7 | Saturate A2A rate limits | I7 | | | |
+| C7 | Saturate A2A rate limits | I7 | PASS | `server/tests/chaos_proxy.rs` `i7_a2a_dispatch_returns_429_after_burst` | 31st authenticated `POST /api/orchestrator/a2a` in 60s returns 429 with a visible body. |
 | C8 | Header leak / identity spoof | I2, I3 | | | Baseline: `server/tests/agent_proxy_authz.rs` |
 | C9 | FlowGuard cascade bounds | I10 | | | Optional |
 
