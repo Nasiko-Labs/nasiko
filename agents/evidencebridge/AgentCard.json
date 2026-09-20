@@ -1,0 +1,46 @@
+{
+  "agentFramework": "starlette",
+  "capabilities": {
+    "chat_agent": false,
+    "pushNotifications": false,
+    "stateTransitionHistory": false,
+    "streaming": true
+  },
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "description": "Supplier claim verification agent that researches public evidence and returns traceable verification findings before payment.",
+  "framework": "starlette",
+  "name": "EvidenceBridge",
+  "preferredTransport": "JSONRPC",
+  "protocolVersion": "1.0.0",
+  "skills": [
+    {
+      "description": "supplier verification, evidence research, claim comparison, procurement verification",
+      "examples": [
+        "Verify supplier Acme Technologies"
+      ],
+      "id": "verify_supplier",
+      "name": "Verify Supplier",
+      "tags": [
+        "verification",
+        "procurement",
+        "evidence",
+        "claims"
+      ]
+    }
+  ],
+  "tags": [
+    "supplier",
+    "verification",
+    "evidence",
+    "python",
+    "http"
+  ],
+  "transport": "http",
+  "url": "http://localhost:8000/",
+  "version": "1.0.0"
+}
