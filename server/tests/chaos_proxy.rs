@@ -255,3 +255,53 @@ async fn i9_truncated_upstream_does_not_hang_proxy() {
 
     server.cleanup().await;
 }
+
+/// I6 / C4 — after the session token is revoked, the same bearer must not
+/// invoke the proxy.
+#[tokio::test]
+#[serial]
+async fn i6_revoked_session_cannot_invoke_proxy() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let user_id: Uuid = admin["user_id"]
+        .as_str()
+        .expect("user_id")
+        .parse()
+        .expect("user_id uuid");
+    let token = admin["token"]
+        .as_str()
+        .expect("initialize-admin returns token");
+
+    let stub_url = start_slow_stub(Duration::ZERO).await;
+    let agent_id = seed_running_agent(&server, user_id, "chaos-c4-agent", &stub_url).await;
+
+    let before = server
+        .client
+        .get(server.url(&format!("/api/agents/{agent_id}/slow")))
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(before.status(), 200, "issued session must reach the agent");
+
+    sqlx::query("UPDATE auth_tokens SET revoked_at = now() WHERE user_id = $1")
+        .bind(user_id)
+        .execute(&server.db)
+        .await
+        .unwrap();
+
+    let after = server
+        .client
+        .get(server.url(&format!("/api/agents/{agent_id}/slow")))
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        after.status(),
+        401,
+        "revoked session must not invoke the proxy (I6)"
+    );
+
+    server.cleanup().await;
+}

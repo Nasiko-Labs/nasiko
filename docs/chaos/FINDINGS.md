@@ -11,7 +11,7 @@ path, command, or short note — never tokens or secrets.
 | C1 | Kill agent mid-stream | I8, I11 | | | |
 | C2 | Upstream latency | I9 | PASS | `server/tests/chaos_proxy.rs` `i9_slow_upstream_does_not_crash_proxy` | Stub sleeps 2s; proxy returns 200; `/health` stays 200. |
 | C3 | Partial / truncated response | I9 | PASS | `server/tests/chaos_proxy.rs` `i9_truncated_upstream_does_not_hang_proxy` | Stub closes after a partial HTTP body; proxy returns within 15s; `/health` stays 200. |
-| C4 | Credential expiry or revocation mid-session | I6 | | | |
+| C4 | Credential expiry or revocation mid-session | I6 | PASS | `server/tests/chaos_proxy.rs` `i6_revoked_session_cannot_invoke_proxy` | Issued session reaches the stub (200); after `auth_tokens.revoked_at` is set, the same bearer returns 401. |
 | C5 | Direct access bypassing the proxy | I1, I12 | | | |
 | C6 | ACL-denied invoke | I4 | PASS | `server/tests/agent_proxy_authz.rs` `proxy_rejects_non_owner_non_grantee_with_404` | Direct proxy returns 404; stub agent is not invoked. |
 | C7 | Saturate A2A rate limits | I7 | PASS | `server/tests/chaos_proxy.rs` `i7_a2a_dispatch_returns_429_after_burst` | 31st authenticated `POST /api/orchestrator/a2a` in 60s returns 429 with a visible body. |
