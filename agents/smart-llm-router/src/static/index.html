@@ -391,7 +391,9 @@
     }
 
     function connect() {
-      const es = new EventSource("/api/events");
+      const token = new URLSearchParams(location.search).get("token") || "";
+      const qs = token ? `?token=${encodeURIComponent(token)}` : "";
+      const es = new EventSource("/api/events" + qs);
       es.addEventListener("hello", () => {
         liveBadge.textContent = "Live · listening for Nasiko console";
       });
@@ -403,16 +405,27 @@
 
     // Hydrate from ring buffer first (covers turns that arrived before this tab opened
     // and remote ingest that beat the SSE subscribe race). SSE dedupes via `seen`.
-    fetch("/api/stats")
-      .then((r) => r.json())
-      .then((data) => {
-        for (const ev of data.recent || []) ingest(ev);
-        liveBadge.textContent = "Live · listening for Nasiko console";
-      })
-      .catch(() => {
-        liveBadge.textContent = "Live · listening for Nasiko console";
-      })
-      .finally(connect);
+    // When ANALYTICS_TOKEN is set, open the dashboard as /ui/?token=… so EventSource
+    // and fetch can authenticate (EventSource cannot set custom headers).
+    (function hydrateAndConnect() {
+      const token = new URLSearchParams(location.search).get("token") || "";
+      const qs = token ? `?token=${encodeURIComponent(token)}` : "";
+      fetch("/api/stats" + qs)
+        .then((r) => {
+          if (!r.ok) throw new Error("stats " + r.status);
+          return r.json();
+        })
+        .then((data) => {
+          for (const ev of data.recent || []) ingest(ev);
+          liveBadge.textContent = "Live · listening for Nasiko console";
+        })
+        .catch(() => {
+          liveBadge.textContent = token
+            ? "Auth failed — check ?token= matches ANALYTICS_TOKEN"
+            : "Live · listening for Nasiko console";
+        })
+        .finally(connect);
+    })();
   </script>
 </body>
 </html>

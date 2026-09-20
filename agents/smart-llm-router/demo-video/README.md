@@ -23,7 +23,12 @@ npm run render
 # → out/smart-llm-router-demo.mp4
 ```
 
-Requires Chrome/Chromium (Remotion bundles it on first render).
+Remotion uses its bundled Chromium by default. To point at a system Chrome:
+
+```bash
+CHROME_PATH="/path/to/chrome" npx remotion render src/index.ts Demo out/smart-llm-router-demo.mp4 \
+  --codec=h264 --browser-executable="$CHROME_PATH"
+```
 
 ## Shots used
 

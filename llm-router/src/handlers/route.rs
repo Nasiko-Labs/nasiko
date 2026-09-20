@@ -224,6 +224,7 @@ async fn route_after_budget(
             &ir_messages,
             tier,
             prompt_tokens,
+            max_tokens,
             parsed.allow_cache,
             started,
             trace_id,
@@ -475,7 +476,7 @@ async fn route_selected_provider(
         provider: None,
         model: None,
     };
-    let resolved = match resolve(&store, &ctx.cache, &ctx.cfg, agent_id, owner_id, hint).await {
+    let mut resolved = match resolve(&store, &ctx.cache, &ctx.cfg, agent_id, owner_id, hint).await {
         Ok(r) => r,
         Err(e) => {
             return err_response(
@@ -487,6 +488,19 @@ async fn route_selected_provider(
         }
     };
 
+    // Compliance lock: same as chat_core — pinned model wins, no silent fallbacks.
+    if let Some(pin) = resolved.pinned_model.clone() {
+        tracing::info!(
+            target: "nasiko::llm_router::route",
+            %agent_id,
+            pinned_model = %pin,
+            "route: agent is pinned — using pinned model"
+        );
+        resolved.litellm_model = format!("{}/{}", resolved.provider, pin);
+        resolved.model = pin;
+        resolved.fallback_models.clear();
+    }
+
     tracing::info!(
         target: "nasiko::llm_router::route",
         %trace_id,
@@ -497,7 +511,7 @@ async fn route_selected_provider(
     );
 
     let max_tokens = budget_tokens
-        .map(|b| (b - prompt_tokens).max(1))
+        .map(|b| projected_completion_tokens(prompt_tokens, Some(b)).max(1))
         .or(resolved.max_tokens);
 
     let client = match providers::provider_for(&resolved.provider, &ctx.http, &ctx.cfg) {
@@ -534,7 +548,14 @@ async fn route_selected_provider(
             let p = usage.prompt_tokens.unwrap_or(prompt_tokens);
             let c = usage.completion_tokens.unwrap_or(0);
             let total = usage.total_tokens.unwrap_or(p + c);
-            let cost = estimate_cost_usd(&resolved.provider, &resolved.model, p, c);
+            let cost = cost_usd_for(
+                &ctx.db,
+                &resolved.provider,
+                &resolved.model,
+                p,
+                c,
+            )
+            .await;
             ok_response(RouteOk {
                 provider: resolved.provider,
                 model: resolved.model,
@@ -573,6 +594,48 @@ fn estimate_cost_usd(provider: &str, model: &str, prompt: i64, completion: i64) 
         }
     }
     round6(((prompt as f64) * 0.00015 + (completion as f64) * 0.0006) / 1000.0)
+}
+
+/// Prefer live `model_pricing` rows (provider + model); fall back to the tier table /
+/// gpt-4o-mini-ish rates so BYOK models (e.g. NVIDIA at $0) report correctly.
+async fn cost_usd_for(
+    db: &sqlx::PgPool,
+    provider: &str,
+    model: &str,
+    prompt: i64,
+    completion: i64,
+) -> f64 {
+    #[derive(sqlx::FromRow)]
+    struct Row {
+        input_price_per_1m: f64,
+        output_price_per_1m: f64,
+    }
+
+    let row = sqlx::query_as::<_, Row>(
+        r#"SELECT input_price_per_1m::float8 AS input_price_per_1m,
+                  output_price_per_1m::float8 AS output_price_per_1m
+           FROM model_pricing
+           WHERE provider = $1
+             AND model = $2
+             AND effective_from <= now()
+             AND (effective_until IS NULL OR effective_until > now())
+           ORDER BY effective_from DESC
+           LIMIT 1"#,
+    )
+    .bind(provider)
+    .bind(model)
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten();
+
+    if let Some(row) = row {
+        return round6(
+            (prompt as f64) * row.input_price_per_1m / 1_000_000.0
+                + (completion as f64) * row.output_price_per_1m / 1_000_000.0,
+        );
+    }
+    estimate_cost_usd(provider, model, prompt, completion)
 }
 
 fn has_platform_key(cfg: &GatewayConfig, provider: &str) -> bool {
@@ -616,6 +679,7 @@ fn stub_ok(
     messages: &[Message],
     tier: ContractTier,
     prompt_tokens: i64,
+    max_completion: Option<i64>,
     allow_cache: bool,
     started: Instant,
     trace_id: String,
@@ -624,7 +688,11 @@ fn stub_ok(
         .first()
         .copied()
         .unwrap_or_else(cheapest_candidate);
-    let completion_tokens = 80 + (prompt_tokens % 50);
+    // Match live routing: never invent more completion tokens than the projected budget.
+    let mut completion_tokens = 80 + (prompt_tokens % 50);
+    if let Some(cap) = max_completion {
+        completion_tokens = completion_tokens.min(cap.max(1));
+    }
     let cost = round6(candidate.estimate_cost_usd(prompt_tokens, completion_tokens));
     let user = messages
         .iter()

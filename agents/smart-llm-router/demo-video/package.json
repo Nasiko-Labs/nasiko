@@ -5,7 +5,7 @@
   "scripts": {
     "start": "remotion studio",
     "build": "remotion bundle",
-    "render": "remotion render src/index.ts Demo out/smart-llm-router-demo.mp4 --codec=h264 --browser-executable=\"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome\""
+    "render": "remotion render src/index.ts Demo out/smart-llm-router-demo.mp4 --codec=h264"
   },
   "dependencies": {
     "@remotion/cli": "4.0.286",
