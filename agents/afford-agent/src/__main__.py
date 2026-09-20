@@ -51,7 +51,7 @@ def main(host, port):
         name="Affordability Check",
         description="Determines whether a purchase is affordable right now based on spending patterns and live pricing, with a natural-language explanation.",
         tags=["finance", "affordability", "budgeting"],
-        examples=["Can I afford a ₹45,000 laptop right now?", "Should I buy a ₹12,000 phone this month?"],
+        examples=["Can I afford a ₹45,000 laptop right now?", "Should I buy a ₹12,000 phone this month?", "Can I afford a Dell Inspiron 15 3530?"],
     )
     agent_url = os.getenv("HOST_OVERRIDE", f"http://{host}:{port}/")
     agent_card = AgentCard(

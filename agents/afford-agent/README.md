@@ -1,31 +1,19 @@
-# OpenAI Research Agent
+  # Afford Now: affordability-check A2A agent for Nasiko
 
-A Wikipedia research agent built with the OpenAI Agents SDK, exposing the A2A protocol.
+  Answers "Can I afford this purchase right now?"
 
-## What it does
+  ## How it works
+  1. **Price**: a price the user states, else an Anakin web search of INR listings (labeled mock if Anakin fails).
+  2. **Verdict**: a deterministic 90-day balance simulation with plan selection (`plan_selector.py`, `forecast_engine.py`), ported from an earlier tested project. The LLM never decides or calculates.
+  3. **Explanation**: the LLM writes the plain-language answer from the tool outputs only.
 
-Accepts a natural language question, searches Wikipedia for relevant information, and returns a concise answer.
+  ## On Nasiko
+  - A2A v1.0 agent deployed via the dashboard (Add Agent, Upload ZIP)
+  - LLM calls go through Nasiko's LLM Router; the agent holds only a short-lived token
+  - Anakin key stored as the encrypted per-agent secret `ANAKIN_API_KEY`
+  - Every request is traced in the dashboard
 
-## Quick start
-
-```bash
-cp .env.example .env
-# Fill in your API key
-python src/__main__.py
-```
-
-## Docker
-
-```bash
-docker compose up
-```
-
-## Environment variables
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| OPENAI_API_KEY | Yes | OpenAI API key |
-
-## A2A endpoint
-
-`http://localhost:10003/`
+  ## Limitations
+  - Fixed demo spending profile (`src/demo_state.py`), not real account data
+  - Picking the price among search results is LLM judgment; the verdict itself is deterministic
+  - Output is guidance, not a guarantee
