@@ -1,0 +1,75 @@
+{
+  "name": "bi-agent",
+  "description": "Analyzes business data, competitor info, pricing, and growth scenarios using DronaHQ and Anakin.io.",
+  "version": "1.0.2",
+  "supportedInterfaces": [
+    {
+      "url": "http://localhost:8000/a2a",
+      "protocolBinding": "JSONRPC",
+      "protocolVersion": "1.0"
+    }
+  ],
+  "capabilities": {
+    "streaming": false,
+    "pushNotifications": false
+  },
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "skills": [
+    {
+      "id": "competitor-intelligence",
+      "name": "Competitor Intelligence",
+      "description": "Analyzes competitor businesses, pricing, positioning, and market trends using real-time Anakin.io web research combined with internal data.",
+      "tags": [
+        "competitor",
+        "market",
+        "trends",
+        "research"
+      ],
+      "inputModes": [
+        "text/plain"
+      ],
+      "outputModes": [
+        "text/plain"
+      ]
+    },
+    {
+      "id": "pricing-advisor",
+      "name": "Pricing Advisor",
+      "description": "Analyzes current pricing vs costs, margins, sales performance, and competitor pricing to evaluate sustainability and impacts of price changes.",
+      "tags": [
+        "pricing",
+        "margins",
+        "finance",
+        "sales"
+      ],
+      "inputModes": [
+        "text/plain"
+      ],
+      "outputModes": [
+        "text/plain"
+      ]
+    },
+    {
+      "id": "growth-simulator",
+      "name": "Growth Simulator",
+      "description": "Simulates hypothetical business scenarios like price adjustments, cost reductions, and sales volume increases to estimate profit outcomes.",
+      "tags": [
+        "growth",
+        "simulation",
+        "strategy",
+        "scenarios"
+      ],
+      "inputModes": [
+        "text/plain"
+      ],
+      "outputModes": [
+        "text/plain"
+      ]
+    }
+  ]
+}
