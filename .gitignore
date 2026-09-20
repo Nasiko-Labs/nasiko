@@ -1,24 +1,23 @@
+node_modules/
+.env
+*.db
+dist/
+.DS_Store
+Thumbs.db
+
+# Other exclusions from remote merge
 target/
 .otel-build/
 *.pyc
 __pycache__/
-.env
 .env.*
 *.env.toml
 !.env.example
-# The Flutter app bundles its release dotenv file as a browser-served asset
-# (public URLs/tuning only — the import script scans it for credentials).
-# Deliberately NOT negating .env.* : the import script prunes non-release
-# flavors, and this makes an accidental re-import of one fail its ignore-check.
-!ee/ui/app/assets/.env
 .venv/
-node_modules/
 *.egg-info/
-dist/
 .terraform/
 terraform.tfstate*
 *.tfstate*
-.DS_Store
 uv.lock
 
 # IDE
@@ -27,15 +26,3 @@ uv.lock
 *.swp
 *.swo
 .envrc
-
-
-# Local MCP config — contains a registry credential, do not commit
-.mcp.json
-values.json
-
-# Local-only MCP planning/research docs — not pushed to remote
-/mcp_upload_flow_docs/
-/docs/MCP_GITHUB_IMPORT_UI_GAP_ANALYSIS.md
-/docs/MCP_SERVER_UPLOAD_EE_IMPLEMENTATION_PLAN.md
-/docs/MCP_UPLOAD_PLAN_OSS.md
-.preview-shots/
