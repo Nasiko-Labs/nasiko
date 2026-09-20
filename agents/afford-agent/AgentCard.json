@@ -1,0 +1,33 @@
+{
+  "protocolVersion": "1.0",
+  "name": "afford-agent",
+  "description": "Answers whether a user can afford a purchase right now, based on their spending profile and live product pricing.",
+  "url": "http://localhost:10003/",
+  "agentFramework": "openai-agents",
+  "preferredTransport": "JSONRPC",
+  "provider": {
+    "organization": "Nasiko",
+    "url": "https://nasiko.com"
+  },
+  "version": "1.0.0",
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": false,
+    "stateTransitionHistory": false
+  },
+  "securitySchemes": {},
+  "security": [],
+  "defaultInputModes": ["text/plain"],
+  "defaultOutputModes": ["text/plain"],
+  "skills": [
+    {
+      "id": "affordability_check",
+      "name": "Affordability Check",
+      "description": "Determines whether a purchase is affordable right now based on spending patterns and live pricing, with a natural-language explanation.",
+      "tags": ["finance", "affordability", "budgeting"],
+      "examples": ["Can I afford a ₹45,000 laptop right now?", "Should I buy a ₹12,000 phone this month?", "Can I afford a Dell Inspiron 15 3530?"],
+      "inputModes": ["text/plain"],
+      "outputModes": ["text/plain"]
+    }
+  ]
+}
