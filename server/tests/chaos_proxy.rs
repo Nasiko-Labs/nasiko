@@ -10,8 +10,10 @@
 
 mod common;
 
+use axum::{Json, Router, routing::get};
 use serde_json::json;
 use serial_test::serial;
+use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 fn a2a_stream_body(text: &str) -> serde_json::Value {
@@ -40,6 +42,50 @@ async fn init_admin(server: &common::TestServer) -> serde_json::Value {
         .json()
         .await
         .unwrap()
+}
+
+async fn seed_user(server: &common::TestServer, username: &str) -> Uuid {
+    sqlx::query_scalar::<_, Uuid>(
+        "INSERT INTO users (username, email, is_superuser) VALUES ($1, $2, false) RETURNING id",
+    )
+    .bind(username)
+    .bind(format!("{username}@test.local"))
+    .fetch_one(&server.db)
+    .await
+    .unwrap()
+}
+
+async fn seed_running_agent(
+    server: &common::TestServer,
+    owner_id: Uuid,
+    name: &str,
+    url: &str,
+) -> Uuid {
+    sqlx::query_scalar::<_, Uuid>(
+        "INSERT INTO agents (name, owner_id, image, status, url, is_public) VALUES ($1, $2, 'x:1.0.0', 'running', $3, false) RETURNING id",
+    )
+    .bind(name)
+    .bind(owner_id)
+    .bind(url)
+    .fetch_one(&server.db)
+    .await
+    .unwrap()
+}
+
+async fn start_slow_stub(delay: Duration) -> String {
+    let app = Router::new().route(
+        "/slow",
+        get(move || async move {
+            tokio::time::sleep(delay).await;
+            Json(json!({"ok": true}))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    format!("http://127.0.0.1:{port}")
 }
 
 /// I1 — Sole authenticated ingress: an unauthenticated call on the agent
@@ -108,6 +154,47 @@ async fn i7_a2a_dispatch_returns_429_after_burst() {
         saw_429,
         "expected HTTP 429 within 40 A2A dispatch calls (limit is 30/60s); statuses={statuses:?}"
     );
+
+    server.cleanup().await;
+}
+
+/// I9 / C2 — a slow upstream must not crash the control plane. The proxy
+/// waits and returns the stub body; `/health` still succeeds.
+#[tokio::test]
+#[serial]
+async fn i9_slow_upstream_does_not_crash_proxy() {
+    let server = common::TestServer::start().await;
+    let _ = init_admin(&server).await;
+    let owner_id = seed_user(&server, "chaos-c2-owner").await;
+    let stub_url = start_slow_stub(Duration::from_secs(2)).await;
+    let agent_id = seed_running_agent(&server, owner_id, "chaos-slow-agent", &stub_url).await;
+
+    let started = Instant::now();
+    let res = common::as_member(
+        server
+            .client
+            .get(server.url(&format!("/api/agents/{agent_id}/slow"))),
+        &owner_id.to_string(),
+        "chaos-c2-owner",
+    )
+    .send()
+    .await
+    .unwrap();
+    let elapsed = started.elapsed();
+
+    assert_eq!(res.status(), 200, "slow upstream must still complete (I9)");
+    assert!(
+        elapsed >= Duration::from_secs(2),
+        "proxy must wait for the delayed agent, elapsed={elapsed:?}"
+    );
+
+    let health = server
+        .client
+        .get(server.url("/health"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(health.status(), 200, "control plane must stay up (I9)");
 
     server.cleanup().await;
 }
