@@ -1,0 +1,16 @@
+{
+  "agentFramework":"starlette",
+  "capabilities":{"chat_agent":false,"pushNotifications":false,"stateTransitionHistory":false,"streaming":true},
+  "defaultInputModes":["text/plain"],
+  "defaultOutputModes":["text/plain"],
+  "description":"Sharpens Grower ideal customer profile and observable buying signals.",
+  "framework":"starlette",
+  "llm_provider":"openai",
+  "name":"grower-icp-agent",
+  "preferredTransport":"JSONRPC",
+  "protocolVersion":"1.0",
+  "skills":[{"id":"icp","name":"ICP Strategy","description":"Defines industries, size, geography, buyer roles and pains.","tags":["grower","gtm","icp"]}],
+  "transport":"http",
+  "url":"http://localhost:8002/",
+  "version":"1.0.0"
+}

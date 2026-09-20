@@ -1,0 +1,16 @@
+{
+  "agentFramework":"starlette",
+  "capabilities":{"chat_agent":false,"pushNotifications":false,"stateTransitionHistory":false,"streaming":true},
+  "defaultInputModes":["text/plain"],
+  "defaultOutputModes":["text/plain"],
+  "description":"Writes evidence-based personalized outbound email drafts.",
+  "framework":"starlette",
+  "llm_provider":"openai",
+  "name":"grower-outreach-agent",
+  "preferredTransport":"JSONRPC",
+  "protocolVersion":"1.0",
+  "skills":[{"id":"outreach","name":"Personalized Outreach","description":"Turns prospect evidence into email drafts.","tags":["grower","gtm","outreach"]}],
+  "transport":"http",
+  "url":"http://localhost:8004/",
+  "version":"1.0.0"
+}

@@ -1,0 +1,16 @@
+{
+  "agentFramework":"starlette",
+  "capabilities":{"chat_agent":false,"pushNotifications":false,"stateTransitionHistory":false,"streaming":true},
+  "defaultInputModes":["text/plain"],
+  "defaultOutputModes":["text/plain"],
+  "description":"Researches a business, market, competitors, customers and observable buying signals with Anakin.",
+  "framework":"starlette",
+  "llm_provider":"openai",
+  "name":"grower-research-agent",
+  "preferredTransport":"JSONRPC",
+  "protocolVersion":"1.0",
+  "skills":[{"id":"market-research","name":"Market Research","description":"Grounded GTM research from a website or business idea.","tags":["grower","gtm","research","anakin"]}],
+  "transport":"http",
+  "url":"http://localhost:8001/",
+  "version":"1.0.0"
+}
