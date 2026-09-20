@@ -1,5 +1,6 @@
 import { apiFetch } from '/common/services/api.js';
 import "./voice-input.js";
+import "./chat-model-picker.js";
 import "./agent-steps.js";
 import "./app-module-nav.js";
 import { icons } from '/common/utils/icons.js';
@@ -46,6 +47,7 @@ class ChatPage extends HTMLElement {
 
     this.#render();
     this.#bindEvents();
+    this.#mountModelPicker();
 
     if (this.#sessionId) {
       const messagesEl = this.querySelector("#messages");
@@ -145,6 +147,21 @@ class ChatPage extends HTMLElement {
         }
       });
     }
+  }
+
+  /// Put the model picker inside the composer box, on the row `voice-input`
+  /// reserves for its buttons. `voice-input` renders on upgrade, so wait for the
+  /// definition before querying its slot — otherwise the mount silently no-ops.
+  async #mountModelPicker() {
+    const chatInput = this.querySelector("#chat-input");
+    if (!chatInput) return;
+    await customElements.whenDefined("voice-input");
+    const slot = chatInput.querySelector("#leadSlot");
+    if (!slot || slot.querySelector("chat-model-picker")) return;
+    const picker = document.createElement("chat-model-picker");
+    // No agent id ⇒ orchestrator chat ⇒ the picker switches to workspace mode.
+    if (this.#agentId) picker.setAttribute("agent-id", this.#agentId);
+    slot.appendChild(picker);
   }
 
   #bindEvents() {

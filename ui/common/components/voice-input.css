@@ -223,4 +223,25 @@
       50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-primary) 10%, transparent); }
       100% { box-shadow: 0 0 0 0px color-mix(in srgb, var(--color-primary) 20%, transparent); }
     }
-  }
+  
+
+    /* Host-supplied controls pinned to the composer's bottom-left, sharing the
+       row already reserved by .input-area's padding-bottom. Empty by default,
+       so the attach button keeps its original position when unused. */
+    .lead-slot {
+      position: absolute;
+      bottom: var(--pad-y);
+      left: var(--pad-x);
+      display: flex;
+      align-items: center;
+      gap: var(--space-xs);
+      max-width: calc(100% - var(--pad-x) * 2 - var(--btn-size) * 3);
+    }
+    .lead-slot:empty { display: none; }
+
+    /* When the slot is in use, the attach button steps aside for it. */
+    .input-area:has(.lead-slot:not(:empty)) .attach-btn {
+      left: auto;
+      right: calc(var(--pad-x) + (var(--btn-size) + var(--space-sm)) * 2);
+    }
+}

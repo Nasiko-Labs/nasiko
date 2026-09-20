@@ -74,6 +74,11 @@ export class VoiceInputForm extends HTMLElement {
             placeholder="${placeholder}"
           ></textarea>
 
+          <!-- Mount point for controls that belong inside the composer box
+               (e.g. the chat model picker). Populated by the host page; empty
+               and zero-width when unused. -->
+          <div class="lead-slot" id="leadSlot"></div>
+
           <div class="timer" id="timer">
             <span style="color:var(--color-error); animation: pulse-scale 1s infinite;">●</span>
             <span id="timerText">0.0s</span>
