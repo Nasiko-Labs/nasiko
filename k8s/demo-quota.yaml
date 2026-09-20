@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: agent-demo-quota
+  namespace: nasiko-demo
+spec:
+  hard:
+    requests.cpu: "2"
+    requests.memory: 4Gi
+    limits.cpu: "4"
+    limits.memory: 6Gi
+    pods: "20"

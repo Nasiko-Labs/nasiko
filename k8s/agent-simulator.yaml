@@ -1,0 +1,27 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-simulator
+  namespace: nasiko-demo
+  labels:
+    app: agent-simulator
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app: agent-simulator
+  template:
+    metadata:
+      labels:
+        app: agent-simulator
+    spec:
+      containers:
+        - name: agent
+          image: nginx:alpine
+          resources:
+            requests:
+              memory: "100Mi"
+              cpu: "50m"
+            limits:
+              memory: "200Mi"
+              cpu: "250m"

@@ -1,0 +1,25 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: capacity-observer-cronjob
+  namespace: nasiko-demo
+spec:
+  schedule: "*/1 * * * *" # Runs every minute
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: default
+          restartPolicy: OnFailure
+          containers:
+            - name: capacity-observer
+              image: node:20-alpine
+              command: ["sh", "-c", "node /app/capacity-manager.js"]
+              volumeMounts:
+                - name: app-volume
+                  mountPath: /app
+          volumes:
+            - name: app-volume
+              configMap:
+                name: capacity-manager-config
