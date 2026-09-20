@@ -1,0 +1,108 @@
+{
+  "protocolVersion": "0.2.9",
+  "name": "oss-contribution-copilot",
+  "description": "Finds, claims, plans, implements and ships open-source contributions under human approval gates.",
+  "url": "http://localhost:10010/",
+  "agentFramework": "langgraph",
+  "preferredTransport": "JSONRPC",
+  "provider": {
+    "organization": "Nasiko",
+    "url": "https://nasiko.com"
+  },
+  "version": "1.0.0",
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": false,
+    "stateTransitionHistory": false
+  },
+  "securitySchemes": {},
+  "security": [],
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "skills": [
+    {
+      "id": "contribute",
+      "name": "Start Contribution",
+      "description": "Start a contribution against a named GitHub repository, subject to the copilot's writable-repo allow-list.",
+      "tags": [
+        "github",
+        "contribution",
+        "open-source"
+      ],
+      "examples": [
+        "contribute to Nasiko-Labs/nasiko",
+        "start a contribution against octocat/hello-world"
+      ],
+      "inputModes": [
+        "text/plain"
+      ],
+      "outputModes": [
+        "text/plain"
+      ]
+    },
+    {
+      "id": "contribution_status",
+      "name": "Contribution Status",
+      "description": "Report the current phase of a contribution thread and any gate pending on it.",
+      "tags": [
+        "github",
+        "status"
+      ],
+      "examples": [
+        "status of t_0d35861c6ea8",
+        "what is thread t_0d35861c6ea8 doing"
+      ],
+      "inputModes": [
+        "text/plain"
+      ],
+      "outputModes": [
+        "text/plain"
+      ]
+    },
+    {
+      "id": "list_approvals",
+      "name": "List Approvals",
+      "description": "List every open human-approval gate across all contribution threads.",
+      "tags": [
+        "github",
+        "approvals",
+        "gates"
+      ],
+      "examples": [
+        "list open approvals",
+        "what gates are pending"
+      ],
+      "inputModes": [
+        "text/plain"
+      ],
+      "outputModes": [
+        "text/plain"
+      ]
+    },
+    {
+      "id": "decide_approval",
+      "name": "Decide Approval",
+      "description": "Record a human decision on a named gate. This skill only forwards a human's decision — it never decides on its own.",
+      "tags": [
+        "github",
+        "approvals",
+        "gates",
+        "human-in-the-loop"
+      ],
+      "examples": [
+        "approve gate claim on t_0d35861c6ea8",
+        "reject the plan gate on t_0d35861c6ea8"
+      ],
+      "inputModes": [
+        "text/plain"
+      ],
+      "outputModes": [
+        "text/plain"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+services:
+  oss-contribution-copilot:
+    build: .
+    container_name: oss-contribution-copilot
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - COPILOT_URL=${COPILOT_URL:-http://host.docker.internal:8000}
+      - MISSION_CONTROL_URL=${MISSION_CONTROL_URL:-http://localhost:5173}
+      - DRONAHQ_WEBHOOK_URL=${DRONAHQ_WEBHOOK_URL:-}
+      - DRONAHQ_API_KEY=${DRONAHQ_API_KEY:-}
+    ports:
+      - "10010:10010"
+    networks:
+      - agents-net
+
+networks:
+  agents-net:
+    external: true
