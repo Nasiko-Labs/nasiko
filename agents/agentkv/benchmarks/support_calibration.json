@@ -1,0 +1,20 @@
+[
+  {
+    "id": "scan-already-done",
+    "kind": "support",
+    "repository": "northline",
+    "label": "shipping",
+    "goal": "The customer wants an address change, but the carrier already scanned the parcel this morning.",
+    "required_phrases": ["carrier scan", "address"],
+    "context": "# Northline fulfillment policy\n\n## Shipping\nOrders placed before 15:00 local warehouse time ship the same day. Standard ground delivery is 5 business days after shipment. Tracking is emailed when the carrier scans the parcel. Address changes are allowed only before the carrier scan.\n\n## Billing\nDuplicate card captures are reversed within 3 business days of the dispute ticket. Subscriptions may be cancelled any day; service continues through the paid period. Invoices are issued within 1 business day of a written request.\n\n## Access\nPassword resets go through the email link that expires in 30 minutes. Two-factor recovery requires the backup code printed at enrollment. Locked accounts reopen after a successful reset."
+  },
+  {
+    "id": "written-invoice",
+    "kind": "support",
+    "repository": "northline",
+    "label": "billing",
+    "goal": "A customer sent a written request for last month's invoice after paying the subscription.",
+    "required_phrases": ["invoice", "1 business day"],
+    "context": "# Northline fulfillment policy\n\n## Shipping\nOrders placed before 15:00 local warehouse time ship the same day. Standard ground delivery is 5 business days after shipment. Tracking is emailed when the carrier scans the parcel. Address changes are allowed only before the carrier scan.\n\n## Billing\nDuplicate card captures are reversed within 3 business days of the dispute ticket. Subscriptions may be cancelled any day; service continues through the paid period. Invoices are issued within 1 business day of a written request.\n\n## Access\nPassword resets go through the email link that expires in 30 minutes. Two-factor recovery requires the backup code printed at enrollment. Locked accounts reopen after a successful reset."
+  }
+]
