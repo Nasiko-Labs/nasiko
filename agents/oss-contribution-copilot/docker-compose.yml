@@ -1,0 +1,12 @@
+services:
+  oss-contribution-copilot:
+    build: .
+    container_name: oss-contribution-copilot
+    env_file: .env
+    ports:
+      - "8001:8000"
+    volumes:
+      - copilot-data:/data
+
+volumes:
+  copilot-data:
