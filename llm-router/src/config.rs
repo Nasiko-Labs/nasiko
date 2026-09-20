@@ -87,10 +87,20 @@ pub struct GatewayConfig {
     /// missing or invalid. Set `NASIKO_ROUTE_STUB=1`.
     pub route_stub: bool,
 
-    /// Optional shared secret for `POST /v1/route` when callers have no agent JWT.
-    /// Empty ⇒ open (local/dev). Set `NASIKO_ROUTE_TOKEN` in production so anonymous
-    /// clients cannot burn platform keys. Agent JWTs always satisfy the check.
+    /// Shared secret for `POST /v1/route` when callers have no agent JWT.
+    /// Required unless [`Self::route_stub`] or [`Self::route_allow_anon`] is set.
+    /// Agent JWTs always satisfy the check.
     pub route_token: String,
+
+    /// When true, `/v1/route` accepts unauthenticated callers (local demos only).
+    /// Set `NASIKO_ROUTE_ALLOW_ANON=1`. Prefer `NASIKO_ROUTE_TOKEN` in shared environments.
+    pub route_allow_anon: bool,
+
+    /// When true, Ollama may appear in `/v1/route` cascades. Off by default so a
+    /// missing local daemon never burns the shared HTTP client's timeout before
+    /// later cascade candidates. Enable with `NASIKO_OLLAMA=1`, a non-empty
+    /// `PLATFORM_OLLAMA_API_KEY` / `OLLAMA_API_KEY`, or by setting `OLLAMA_API_BASE`.
+    pub ollama_enabled: bool,
 }
 
 impl Default for GatewayConfig {
@@ -128,6 +138,8 @@ impl Default for GatewayConfig {
             llm_gateway_base_url: String::new(),
             route_stub: false,
             route_token: String::new(),
+            route_allow_anon: false,
+            ollama_enabled: false,
         }
     }
 }
@@ -137,6 +149,15 @@ impl GatewayConfig {
     /// per key.
     pub fn from_env() -> Self {
         let d = Self::default();
+        let platform_ollama_api_key = env_first(
+            &["PLATFORM_OLLAMA_API_KEY", "OLLAMA_API_KEY"],
+            &d.platform_ollama_api_key,
+        );
+        let ollama_enabled = env_truthy("NASIKO_OLLAMA")
+            || env_truthy("OLLAMA_ENABLED")
+            || !platform_ollama_api_key.is_empty()
+            || std::env::var("OLLAMA_API_BASE").is_ok();
+        let route_allow_anon = env_truthy("NASIKO_ROUTE_ALLOW_ANON");
         Self {
             agent_jwt_secret: env_or("AGENT_JWT_SECRET", &d.agent_jwt_secret),
             agent_jwt_algorithm: env_or("AGENT_JWT_ALGORITHM", &d.agent_jwt_algorithm),
@@ -169,10 +190,7 @@ impl GatewayConfig {
                 &["PLATFORM_MISTRAL_API_KEY", "MISTRAL_API_KEY"],
                 &d.platform_mistral_api_key,
             ),
-            platform_ollama_api_key: env_first(
-                &["PLATFORM_OLLAMA_API_KEY", "OLLAMA_API_KEY"],
-                &d.platform_ollama_api_key,
-            ),
+            platform_ollama_api_key,
             platform_azure_openai_api_key: env_first(
                 &[
                     "PLATFORM_AZURE_OPENAI_API_KEY",
@@ -215,6 +233,8 @@ impl GatewayConfig {
             llm_gateway_base_url: env_or("LLM_GATEWAY_BASE_URL", &d.llm_gateway_base_url),
             route_stub: env_truthy("NASIKO_ROUTE_STUB"),
             route_token: env_first(&["NASIKO_ROUTE_TOKEN"], &d.route_token),
+            route_allow_anon,
+            ollama_enabled,
         }
     }
 

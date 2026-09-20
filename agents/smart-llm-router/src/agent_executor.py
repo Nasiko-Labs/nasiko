@@ -13,7 +13,7 @@ from a2a.types import (
     TaskStatusUpdateEvent,
 )
 
-from agent import SmartLlmRouterAgent
+from .agent import SmartLlmRouterAgent
 
 logger = logging.getLogger(__name__)
 

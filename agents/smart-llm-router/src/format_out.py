@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from router_client import RouterError, RouterSuccess
+from .router_client import RouterError, RouterSuccess
 
 
 _GREETINGS = frozenset(

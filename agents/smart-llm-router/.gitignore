@@ -5,4 +5,6 @@ __pycache__/
 demo-screenshots/
 demo-video/node_modules/
 demo-video/out/
+demo-video-v2/node_modules/
+demo-video-v2/out/
 .env

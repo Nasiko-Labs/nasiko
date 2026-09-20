@@ -36,7 +36,7 @@ is authoritative on every path (chat, stream, embeddings).
 |---|---|
 | `POST /v1/chat/completions` | OpenAI Chat Completions, streaming + non-streaming |
 | `POST /v1/embeddings` | OpenAI embeddings (OpenAI / Gemini / Mistral / Ollama / Azure; Anthropic / Groq 501) |
-| `POST /v1/route` | DronaHQ contract: tier hint → provider cascade (platform keys; no agent JWT) |
+| `POST /v1/route` | DronaHQ contract: tier hint → provider cascade (platform keys). Auth: agent JWT **or** `NASIKO_ROUTE_TOKEN` (or `NASIKO_ROUTE_ALLOW_ANON=1` / stub). With agent JWT + `agents.tier_cascade=false`, uses the agent's selected llm_config / BYOK provider instead of the cascade. |
 | `GET /v1/models` | static provider/model catalog (public) |
 | `GET /v1/health` | liveness (`{"status":"ok"}`) |
 
@@ -71,6 +71,9 @@ examples/mint_token.rs   dev/test JWT minter
 `PLATFORM_OLLAMA_API_KEY`, `PLATFORM_AZURE_OPENAI_API_KEY` / `AZURE_OPENAI_API_KEY`,
 `PLATFORM_NVIDIA_API_KEY` / `NVIDIA_API_KEY` (`nvapi-…`),
 `NASIKO_ROUTE_STUB=1` (optional; `/v1/route` returns contract-shaped stub replies),
+`NASIKO_ROUTE_TOKEN` (required for non-stub `/v1/route` unless `NASIKO_ROUTE_ALLOW_ANON=1`
+or a valid agent JWT is presented), `NASIKO_OLLAMA=1` (opt-in Ollama in cascades;
+also enabled when `OLLAMA_API_BASE` / `PLATFORM_OLLAMA_API_KEY` is set),
 provider bases (`GROQ_API_BASE`, `MISTRAL_API_BASE`, `OLLAMA_API_BASE` default
 `http://127.0.0.1:11434/v1`, `AZURE_OPENAI_API_BASE` + `AZURE_OPENAI_API_VERSION`,
 `NVIDIA_API_BASE` default `https://integrate.api.nvidia.com/v1`), …

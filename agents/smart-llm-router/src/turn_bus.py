@@ -126,7 +126,7 @@ def publish_from_result(
     result: Any,
 ) -> TurnEvent:
     """Build a TurnEvent from a TurnResult and publish locally."""
-    from router_client import RouterError, RouterSuccess
+    from .router_client import RouterError, RouterSuccess
 
     router = result.router
     savings = result.savings

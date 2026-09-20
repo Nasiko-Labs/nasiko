@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Run the Smart LLM Router evaluation criteria against ROUTER_BASE_URL."""
+"""Run the Smart LLM Router evaluation criteria against ROUTER_BASE_URL.
+
+Prefer:  python -m src.eval_demo   (from agents/smart-llm-router with PYTHONPATH=.)
+Also:    python -m src.eval_demo   after `pip install -e .`
+"""
 
 from __future__ import annotations
 
@@ -7,20 +11,26 @@ import asyncio
 import os
 import sys
 import uuid
+from pathlib import Path
 
 from dotenv import load_dotenv
 
-# Allow `python src/eval_demo.py` from the agent root or src/.
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Allow `python src/eval_demo.py` by putting the agent root on sys.path and
+# re-executing as a package module (relative imports require a package context).
+if __package__ is None:
+    root = Path(__file__).resolve().parents[1]
+    sys.path.insert(0, str(root))
+    load_dotenv(override=True)
+    raise SystemExit(asyncio.run(__import__("src.eval_demo", fromlist=["main"]).main()))
 
 load_dotenv(override=True)
 
-from agent import SmartLlmRouterAgent  # noqa: E402
-from classify import parse_classifier_output  # noqa: E402
-from format_out import format_error  # noqa: E402
-from router_client import RouterError, RouterSuccess, router_base_url  # noqa: E402
-from session_store import STORE  # noqa: E402
-from tier import decide_tier  # noqa: E402
+from .agent import SmartLlmRouterAgent
+from .classify import parse_classifier_output
+from .format_out import format_error
+from .router_client import RouterError, RouterSuccess, router_base_url
+from .session_store import STORE
+from .tier import decide_tier
 
 
 def _ok(name: str, cond: bool, detail: str = "") -> bool:

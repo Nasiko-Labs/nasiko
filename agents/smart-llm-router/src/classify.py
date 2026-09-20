@@ -11,7 +11,7 @@ from typing import Any
 
 import httpx
 
-from tier import VALID_TASK_TYPES
+from .tier import VALID_TASK_TYPES
 
 logger = logging.getLogger(__name__)
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from session_store import STORE, SessionTotals
+from .session_store import STORE, SessionTotals
 
 
 @dataclass

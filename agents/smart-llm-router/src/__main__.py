@@ -1,24 +1,19 @@
 """Smart LLM Router entrypoint.
 
-Docker / `python src/__main__.py` and `pip install` both work: we put this
-directory on `sys.path` so sibling modules resolve as top-level imports.
+Run as a package module so relative imports resolve:
+  python -m src --host 0.0.0.0 --port 8000
+  smart-llm-router   # after pip install
 """
 
 from __future__ import annotations
 
 import logging
 import os
-import sys
 from pathlib import Path
-
-# After `pip install`, `src` is a package but siblings are not on sys.path.
-_SRC_DIR = Path(__file__).resolve().parent
-if str(_SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(_SRC_DIR))
 
 from dotenv import load_dotenv
 
-from telemetry import init_telemetry
+from .telemetry import init_telemetry
 
 load_dotenv(override=True)
 logging.basicConfig(level=logging.INFO)
@@ -40,10 +35,10 @@ from starlette.responses import FileResponse, JSONResponse, StreamingResponse
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from agent import SmartLlmRouterAgent
-from agent_executor import SmartLlmRouterAgentExecutor
-from router_client import RouterSuccess, router_base_url
-from turn_bus import BUS, publish_event_dict
+from .agent import SmartLlmRouterAgent
+from .agent_executor import SmartLlmRouterAgentExecutor
+from .router_client import RouterSuccess, router_base_url
+from .turn_bus import BUS, publish_event_dict
 
 logger = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -145,6 +140,8 @@ async def api_turn(request: Request) -> JSONResponse:
         body = await request.json()
     except Exception:
         return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "JSON object required"}, status_code=400)
     prompt = str(body.get("prompt") or "").strip()
     session_id = str(body.get("session_id") or "").strip() or None
     if not prompt:

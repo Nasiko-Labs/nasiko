@@ -417,6 +417,22 @@
         })
         .then((data) => {
           for (const ev of data.recent || []) ingest(ev);
+          // Authoritative process-wide totals (recent is only a ring-buffer window).
+          if (data.global_calls != null) calls = Number(data.global_calls) || 0;
+          if (data.global_saved_usd != null) cumSaved = Number(data.global_saved_usd) || 0;
+          const tc = data.tier_counts || {};
+          if (tc.cheap != null || tc.balanced != null || tc.premium != null) {
+            tierCounts.cheap = Number(tc.cheap) || 0;
+            tierCounts.balanced = Number(tc.balanced) || 0;
+            tierCounts.premium = Number(tc.premium) || 0;
+            chartTiers.data.datasets[0].data = [
+              tierCounts.cheap,
+              tierCounts.balanced,
+              tierCounts.premium,
+            ];
+            chartTiers.update("none");
+          }
+          updateKpis();
           liveBadge.textContent = "Live · listening for Nasiko console";
         })
         .catch(() => {

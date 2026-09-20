@@ -453,14 +453,23 @@ fn plan_config(
                 .or_else(|| c.tier1_model.clone())
                 .or_else(|| c.tier3_model.clone())
                 .unwrap_or_else(|| cfg.default_model.clone());
+            // Catalog ids may be stored as `provider/model` — prefer the embedded
+            // provider so Groq/OpenRouter catalog picks don't stick on the wrong upstream.
+            let (catalog_provider, catalog_model) = split_catalog_model(Some(fallback.as_str()));
+            let provider = catalog_provider
+                .map(str::to_string)
+                .unwrap_or(c.provider);
+            let model = catalog_model
+                .map(str::to_string)
+                .unwrap_or(fallback);
             // Agent-level pin overrides config-level pin.
             let config_pin = c
                 .pinned
-                .then(|| c.pinned_model.clone().unwrap_or_else(|| fallback.clone()));
+                .then(|| c.pinned_model.clone().unwrap_or_else(|| model.clone()));
             let pinned_model = agent_pinned_model.map(str::to_string).or(config_pin);
             ConfigPlan {
-                provider: c.provider,
-                model: fallback,
+                provider,
+                model,
                 fallback_models: c.fallback_models,
                 temperature: c.temperature,
                 max_tokens: c.max_tokens,
@@ -1028,5 +1037,102 @@ mod tests {
         assert_eq!(a.model, b.model);
         // Config is cached, so the cache should have an entry.
         assert!(cache.get(Uuid::parse_str(AGENT).unwrap()).is_some());
+    }
+
+    #[tokio::test]
+    async fn catalog_prefixed_model_overrides_surface_provider() {
+        let store = MockRegistry {
+            config: Some(None),
+            secret: None,
+            agent_pinned_model: None,
+            is_coding_agent: false,
+        };
+        let config = GatewayConfig {
+            platform_groq_api_key: "gsk".into(),
+            ..cfg("openai", "gpt-4o-mini", "platform-key")
+        };
+        let r = resolve(
+            &store,
+            &cache(),
+            &config,
+            AGENT,
+            OWNER,
+            RequestHint {
+                provider: Some("openai"),
+                model: Some("groq/llama-3.1-8b-instant"),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(r.provider, "groq");
+        assert_eq!(r.model, "llama-3.1-8b-instant");
+        assert_eq!(r.api_key, "gsk");
+    }
+
+    #[tokio::test]
+    async fn catalog_nested_groq_model_keeps_remainder() {
+        let store = MockRegistry {
+            config: Some(None),
+            secret: None,
+            agent_pinned_model: None,
+            is_coding_agent: false,
+        };
+        let config = GatewayConfig {
+            platform_groq_api_key: "gsk".into(),
+            ..cfg("openai", "gpt-4o-mini", "")
+        };
+        let r = resolve(
+            &store,
+            &cache(),
+            &config,
+            AGENT,
+            OWNER,
+            RequestHint {
+                provider: Some("openai"),
+                model: Some("groq/openai/gpt-oss-20b"),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(r.provider, "groq");
+        assert_eq!(r.model, "openai/gpt-oss-20b");
+        assert_eq!(r.api_key, "gsk");
+    }
+
+    #[tokio::test]
+    async fn ollama_allows_empty_platform_key() {
+        let store = MockRegistry {
+            config: Some(None),
+            secret: None,
+            agent_pinned_model: None,
+            is_coding_agent: false,
+        };
+        let config = GatewayConfig {
+            default_provider: "ollama".into(),
+            default_model: "llama3.2".into(),
+            ollama_enabled: true,
+            ..Default::default()
+        };
+        let r = resolve(
+            &store,
+            &cache(),
+            &config,
+            AGENT,
+            OWNER,
+            RequestHint::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(r.provider, "ollama");
+        assert_eq!(r.api_key, "");
+    }
+
+    #[test]
+    fn split_catalog_model_unit() {
+        assert_eq!(
+            split_catalog_model(Some("mistral/mistral-small-latest")),
+            (Some("mistral"), Some("mistral-small-latest"))
+        );
+        assert_eq!(split_catalog_model(Some("gpt-4o")), (None, Some("gpt-4o")));
     }
 }

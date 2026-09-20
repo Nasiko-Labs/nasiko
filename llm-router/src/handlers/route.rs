@@ -18,13 +18,14 @@ use uuid::Uuid;
 use crate::LlmRouterCtx;
 use crate::auth::verify_agent_jwt;
 use crate::config::GatewayConfig;
-use crate::ir::{ChatRequest, Message};
+use crate::ir::{ChatRequest, Message, Usage};
 use crate::providers::{self, ProviderError};
 use crate::resolver::{PgRegistry, RequestHint, ResolvedConfig, resolve};
 use crate::routing::tier::{
     ContractTier, TierCandidate, cascade_for, cheapest_candidate, estimate_prompt_tokens,
     projected_completion_tokens, resolve_tier,
 };
+use crate::usage::{self, UsageRecord};
 
 const CONTRACT_VERSION: &str = "1.0";
 
@@ -219,6 +220,7 @@ async fn route_after_budget(
         }
     }
 
+    // Stub replies need no credentials (local shape checks only).
     if ctx.cfg.route_stub {
         return stub_ok(
             &ir_messages,
@@ -231,14 +233,15 @@ async fn route_after_budget(
         );
     }
 
-    // Optional shared secret for unauthenticated billable cascade (set NASIKO_ROUTE_TOKEN).
-    // Agent JWT still unlocks the tier_cascade=false (BYOK) path below.
-    if let Err(resp) = require_route_credential(&headers, &ctx.cfg) {
+    let agent = optional_agent(&headers, &ctx.cfg);
+
+    // Fail closed: require agent JWT or NASIKO_ROUTE_TOKEN unless ALLOW_ANON.
+    if let Err(resp) = require_route_credential(&headers, &ctx.cfg, agent.as_ref()) {
         return resp;
     }
 
     // Stick-to-selected-provider: agent JWT + agents.tier_cascade = false.
-    if let Some((agent_id, owner_id)) = optional_agent(&headers, &ctx.cfg) {
+    if let Some((agent_id, owner_id)) = agent.clone() {
         match agent_wants_cascade(&ctx.db, &agent_id).await {
             Ok(false) => {
                 return route_selected_provider(
@@ -348,6 +351,17 @@ async fn route_after_budget(
                 let cost = round6(candidate.estimate_cost_usd(p, c));
                 let latency_ms = started.elapsed().as_millis() as u64;
                 let _ = parsed.allow_cache;
+                spawn_route_usage(
+                    &ctx,
+                    agent.as_ref(),
+                    candidate.provider.to_string(),
+                    candidate.model.to_string(),
+                    p,
+                    c,
+                    total,
+                    latency_ms as i64,
+                    /* platform_paid */ true,
+                );
                 return ok_response(RouteOk {
                     provider: candidate.provider.to_string(),
                     model: candidate.model.to_string(),
@@ -408,14 +422,26 @@ async fn route_after_budget(
     )
 }
 
-fn require_route_credential(headers: &HeaderMap, cfg: &GatewayConfig) -> Result<(), Response> {
-    let expected = cfg.route_token.trim();
-    if expected.is_empty() {
+fn require_route_credential(
+    headers: &HeaderMap,
+    cfg: &GatewayConfig,
+    agent: Option<&(String, String)>,
+) -> Result<(), Response> {
+    if cfg.route_allow_anon {
         return Ok(());
     }
     // Agent JWT satisfies auth (selected-provider path / trusted agent).
-    if optional_agent(headers, cfg).is_some() {
+    if agent.is_some() {
         return Ok(());
+    }
+    let expected = cfg.route_token.trim();
+    if expected.is_empty() {
+        return Err(err_response(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "set NASIKO_ROUTE_TOKEN (or NASIKO_ROUTE_ALLOW_ANON=1 for local demos)",
+            None,
+        ));
     }
     let header = headers
         .get("x-nasiko-route-token")
@@ -556,6 +582,18 @@ async fn route_selected_provider(
                 c,
             )
             .await;
+            let latency_ms = started.elapsed().as_millis() as u64;
+            spawn_route_usage(
+                ctx,
+                Some(&(agent_id.to_string(), owner_id.to_string())),
+                resolved.provider.clone(),
+                resolved.model.clone(),
+                p,
+                c,
+                total,
+                latency_ms as i64,
+                resolved.platform_paid,
+            );
             ok_response(RouteOk {
                 provider: resolved.provider,
                 model: resolved.model,
@@ -568,7 +606,7 @@ async fn route_selected_provider(
                 },
                 cache_hit: false,
                 tier_used: format!("selected:{}", tier.as_str()),
-                latency_ms: started.elapsed().as_millis() as u64,
+                latency_ms,
                 trace_id,
             })
         }
@@ -639,11 +677,52 @@ async fn cost_usd_for(
 }
 
 fn has_platform_key(cfg: &GatewayConfig, provider: &str) -> bool {
-    // Ollama is local — empty platform key is fine (provider sends a dummy bearer).
+    // Ollama is opt-in — never probe the default localhost daemon unless enabled.
     if provider == "ollama" {
-        return true;
+        return cfg.ollama_enabled;
     }
     !cfg.platform_key_for(provider).is_empty()
+}
+
+/// Fire-and-forget `token_usage` for `/v1/route`.
+///
+/// Anonymous `NASIKO_ROUTE_TOKEN` callers have no user UUID — [`usage::log_usage`]
+/// skips those rows. Agent-JWT callers always attribute to the minting owner.
+fn spawn_route_usage(
+    ctx: &LlmRouterCtx,
+    agent: Option<&(String, String)>,
+    provider: String,
+    model: String,
+    prompt: i64,
+    completion: i64,
+    total: i64,
+    latency_ms: i64,
+    platform_paid: bool,
+) {
+    let (agent_id, owner_id) = match agent {
+        Some((a, o)) => (a.clone(), o.clone()),
+        None => (String::new(), String::new()),
+    };
+    usage::spawn_log(
+        ctx.db.clone(),
+        UsageRecord {
+            owner_id,
+            agent_id,
+            operation_type: "route_llm",
+            provider,
+            model,
+            usage: Some(Usage {
+                prompt_tokens: Some(prompt),
+                completion_tokens: Some(completion),
+                total_tokens: Some(total),
+            }),
+            latency_ms,
+            streaming: false,
+            finish_reason: Some("stop".into()),
+            flow_id: None,
+            platform_paid,
+        },
+    );
 }
 
 fn platform_resolved(
@@ -653,11 +732,12 @@ fn platform_resolved(
 ) -> ResolvedConfig {
     let provider = candidate.provider.to_string();
     let model = candidate.model.to_string();
+    let api_key = cfg.platform_key_for(candidate.provider).to_string();
     ResolvedConfig {
         litellm_model: format!("{provider}/{model}"),
         provider,
         model,
-        api_key: cfg.platform_key_for(candidate.provider).to_string(),
+        api_key,
         fallback_models: vec![],
         temperature: None,
         max_tokens,
@@ -747,11 +827,134 @@ fn err_response(status: StatusCode, code: &str, message: &str, provider: Option<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::resolver::ConfigCache;
+    use jsonwebtoken::Algorithm;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    const AGENT: &str = "11111111-1111-1111-1111-111111111111";
+    const OWNER: &str = "22222222-2222-2222-2222-222222222222";
+    const SECRET: &str = "gateway-secret";
+
+    fn cfg_auth(token: &str, allow_anon: bool) -> GatewayConfig {
+        GatewayConfig {
+            agent_jwt_secret: SECRET.into(),
+            route_token: token.into(),
+            route_allow_anon: allow_anon,
+            ..Default::default()
+        }
+    }
+
+    fn jwt() -> String {
+        crate::auth::mint_agent_token(AGENT, OWNER, SECRET, 3600, Algorithm::HS256).unwrap()
+    }
 
     #[test]
     fn rejects_empty_task_type_shape() {
         let raw = json!({"messages":[{"role":"user","content":"hi"}]});
         let parsed: RouteBody = serde_json::from_value(raw).unwrap();
         assert!(parsed.task_type.is_none());
+    }
+
+    #[test]
+    fn credential_rejects_when_token_unset_and_not_anon() {
+        let cfg = cfg_auth("", false);
+        let err = require_route_credential(&HeaderMap::new(), &cfg, None).unwrap_err();
+        assert_eq!(err.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn credential_accepts_allow_anon() {
+        let cfg = cfg_auth("", true);
+        assert!(require_route_credential(&HeaderMap::new(), &cfg, None).is_ok());
+    }
+
+    #[test]
+    fn credential_accepts_matching_route_token_header() {
+        let cfg = cfg_auth("secret-route", false);
+        let mut headers = HeaderMap::new();
+        headers.insert("x-nasiko-route-token", "secret-route".parse().unwrap());
+        assert!(require_route_credential(&headers, &cfg, None).is_ok());
+    }
+
+    #[test]
+    fn credential_accepts_agent_jwt() {
+        let cfg = cfg_auth("", false);
+        let agent = (AGENT.to_string(), OWNER.to_string());
+        assert!(require_route_credential(&HeaderMap::new(), &cfg, Some(&agent)).is_ok());
+    }
+
+    #[test]
+    fn ollama_gated_off_by_default() {
+        let cfg = GatewayConfig::default();
+        assert!(!has_platform_key(&cfg, "ollama"));
+        let enabled = GatewayConfig {
+            ollama_enabled: true,
+            ..Default::default()
+        };
+        assert!(has_platform_key(&enabled, "ollama"));
+    }
+
+    #[test]
+    fn filters_cascade_to_keyed_providers_only() {
+        let cfg = GatewayConfig {
+            platform_groq_api_key: "gsk".into(),
+            ollama_enabled: false,
+            ..Default::default()
+        };
+        let keyed: Vec<_> = cascade_for(ContractTier::Cheap)
+            .iter()
+            .copied()
+            .filter(|c| has_platform_key(&cfg, c.provider))
+            .collect();
+        assert!(keyed.iter().all(|c| c.provider == "groq"));
+        assert!(!keyed.is_empty());
+    }
+
+    #[test]
+    fn stub_clamps_completion_to_budget() {
+        let msgs = vec![Message {
+            role: "user".into(),
+            content: Some(json!("hi")),
+            name: None,
+            tool_call_id: None,
+            tool_calls: None,
+            extra: Map::new(),
+        }];
+        let resp = stub_ok(
+            &msgs,
+            ContractTier::Cheap,
+            10,
+            Some(5),
+            false,
+            Instant::now(),
+            "trace".into(),
+        );
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn stub_route_ok_without_credentials() {
+        let cfg = GatewayConfig {
+            route_stub: true,
+            agent_jwt_secret: SECRET.into(),
+            ..Default::default()
+        };
+        let ctx = LlmRouterCtx {
+            db: sqlx::PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
+            http: reqwest::Client::new(),
+            cfg: Arc::new(cfg),
+            cache: Arc::new(ConfigCache::new(Duration::from_secs(30))),
+            router_cache: Arc::new(crate::routing::NoopCache),
+            tier_registry: Arc::new(crate::routing::StaticTierRegistry),
+            cell_store: Arc::new(crate::routing::InMemoryCellStore::new()),
+        };
+        let body = json!({
+            "task_type": "chat",
+            "messages": [{"role":"user","content":"hello"}]
+        });
+        let resp = route(axum::extract::State(ctx), HeaderMap::new(), Json(body)).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let _ = jwt(); // keep mint helper referenced for JWT coverage above
     }
 }

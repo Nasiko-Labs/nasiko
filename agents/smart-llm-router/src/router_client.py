@@ -67,6 +67,9 @@ async def call_router(
     agent_jwt = (os.getenv("OPENAI_API_KEY") or "").strip()
     if agent_jwt:
         headers["Authorization"] = f"Bearer {agent_jwt}"
+    route_token = (os.getenv("NASIKO_ROUTE_TOKEN") or "").strip()
+    if route_token:
+        headers["x-nasiko-route-token"] = route_token
     body = {
         "task_type": task_type,
         "complexity": complexity,
