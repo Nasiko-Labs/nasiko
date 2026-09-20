@@ -27,7 +27,8 @@ use crate::mcp::ApiResponse;
 use crate::state::AppState;
 
 /// Outbound providers the LLM router can translate to — used to validate config writes.
-const SUPPORTED_PROVIDERS: [&str; 4] = ["openai", "anthropic", "gemini", "openrouter"];
+const SUPPORTED_PROVIDERS: [&str; 5] =
+    ["openai", "anthropic", "gemini", "openrouter", "groq"];
 
 /// The `llm_configs` columns returned to clients, assembled by Postgres into one JSON object.
 const CONFIG_JSON: &str = "json_build_object(\
@@ -771,6 +772,20 @@ mod tests {
             .is_ok()
         );
         assert!(validate("openai", Some("gpt-4o-mini"), &None, false).is_ok());
+        assert!(validate("groq", Some("openai/gpt-oss-120b"), &None, false).is_ok());
+    }
+
+    /// Regression guard: every provider whose `model_pricing` rows are visible in
+    /// `GET /api/llm-router/providers` must be accepted here. When the two lists
+    /// drift, the UI offers a provider card whose config creation always 400s.
+    #[test]
+    fn every_catalog_provider_is_accepted() {
+        for provider in ["openai", "anthropic", "gemini", "openrouter", "groq"] {
+            assert!(
+                validate(provider, Some("some-model"), &None, false).is_ok(),
+                "catalog provider '{provider}' is rejected by validate()"
+            );
+        }
     }
 
     #[test]
