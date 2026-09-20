@@ -130,15 +130,42 @@ impl<R: ContainerRuntime, I: InstrumentationInjector> ContainerRuntime
 mod tests {
     use super::*;
     use crate::injector::AgentContext;
-    use nasiko_runtime::RuntimeState;
+    use nasiko_runtime::{RuntimeError, RuntimeState};
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, Ordering};
 
+    /// What the mock's `status()` should return.
+    ///
+    /// `status()` is the one `ContainerRuntime` method whose *failure* path matters to
+    /// callers — a missing container and a crashed one are different conditions, and
+    /// code that branches on them needs both reachable from a test. Modelling the
+    /// outcome as data (rather than a fixed `Ok`) keeps those paths deterministic
+    /// without a mocking framework.
+    #[derive(Clone)]
+    enum StatusBehavior {
+        /// Succeed, reporting this lifecycle state for the queried container.
+        State(RuntimeState),
+        /// Fail as if no container exists for the queried id.
+        NotFound,
+        /// Fail with a backend-internal error carrying this message.
+        Internal(String),
+    }
+
+    impl Default for StatusBehavior {
+        /// A healthy, running agent — the common case, so tests that do not care
+        /// about `status()` need not mention it.
+        fn default() -> Self {
+            Self::State(RuntimeState::Running)
+        }
+    }
+
     /// Inner runtime that records whether `refresh_secrets` reached it.
+    #[derive(Default)]
     struct RecordingRuntime {
         refreshed: Arc<AtomicBool>,
+        status: StatusBehavior,
     }
 
     #[async_trait]
@@ -162,8 +189,21 @@ mod tests {
         async fn restart(&self, _id: &ContainerId) -> Result<()> {
             Ok(())
         }
-        async fn status(&self, _id: &ContainerId) -> Result<DeploymentStatus> {
-            unimplemented!()
+        async fn status(&self, id: &ContainerId) -> Result<DeploymentStatus> {
+            match &self.status {
+                StatusBehavior::State(state) => Ok(DeploymentStatus {
+                    container_id: id.clone(),
+                    state: *state,
+                    // Only a running agent has a live replica; every other state
+                    // reports none, matching what a real backend surfaces.
+                    replicas_live: u32::from(*state == RuntimeState::Running),
+                    endpoint: None,
+                    message: None,
+                    restart_count: 0,
+                }),
+                StatusBehavior::NotFound => Err(RuntimeError::ContainerNotFound(id.clone())),
+                StatusBehavior::Internal(msg) => Err(RuntimeError::Internal(msg.clone())),
+            }
         }
         async fn list(&self) -> Result<Vec<DeploymentStatus>> {
             Ok(vec![])
@@ -241,6 +281,7 @@ mod tests {
         let rt = InstrumentedRuntime::new(
             RecordingRuntime {
                 refreshed: Arc::new(AtomicBool::new(false)),
+                ..Default::default()
             },
             CapturingInjector {
                 seen_tenant_id: seen.clone(),
@@ -264,6 +305,7 @@ mod tests {
         let rt = InstrumentedRuntime::new(
             RecordingRuntime {
                 refreshed: Arc::new(AtomicBool::new(false)),
+                ..Default::default()
             },
             CapturingInjector {
                 seen_tenant_id: seen.clone(),
@@ -288,6 +330,7 @@ mod tests {
         let rt = InstrumentedRuntime::new(
             RecordingRuntime {
                 refreshed: flag.clone(),
+                ..Default::default()
             },
             NoopInjector,
             "http://collector:4318".to_string(),
@@ -313,6 +356,7 @@ mod tests {
         let rt = InstrumentedRuntime::new(
             RecordingRuntime {
                 refreshed: Arc::new(AtomicBool::new(false)),
+                ..Default::default()
             },
             NoopInjector,
             "http://collector:4318".to_string(),
@@ -334,5 +378,88 @@ mod tests {
             }],
             "InstrumentedRuntime must forward list_instances to the inner runtime (RUN-1)"
         );
+    }
+
+    /// Build an `InstrumentedRuntime` wrapping a mock with the given status behavior.
+    fn rt_with_status(
+        status: StatusBehavior,
+    ) -> InstrumentedRuntime<RecordingRuntime, NoopInjector> {
+        InstrumentedRuntime::new(
+            RecordingRuntime {
+                status,
+                ..Default::default()
+            },
+            NoopInjector,
+            "http://collector:4318".to_string(),
+            "http/protobuf".to_string(),
+            false,
+            None,
+        )
+    }
+
+    /// Success path: `status()` reaches the inner runtime and its result is returned
+    /// unchanged. The decorator instruments `deploy()` only, so it must not reshape
+    /// status data on the way back out.
+    #[tokio::test]
+    async fn status_forwards_inner_success_unchanged() {
+        let rt = rt_with_status(StatusBehavior::State(RuntimeState::Running));
+        let got = rt
+            .status(&ContainerId::new("agent"))
+            .await
+            .expect("status should succeed");
+
+        assert_eq!(got.container_id, ContainerId::new("agent"));
+        assert_eq!(got.state, RuntimeState::Running);
+        assert_eq!(got.replicas_live, 1);
+        assert_eq!(got.restart_count, 0);
+    }
+
+    /// A non-running state is reported as-is, with no live replicas. Guards against a
+    /// mock that hard-codes `Running` and so cannot exercise unhealthy-agent branches.
+    #[tokio::test]
+    async fn status_reports_non_running_states_with_no_live_replicas() {
+        for state in [
+            RuntimeState::Pending,
+            RuntimeState::Crashed,
+            RuntimeState::Failed,
+            RuntimeState::Stopped,
+        ] {
+            let got = rt_with_status(StatusBehavior::State(state))
+                .status(&ContainerId::new("agent"))
+                .await
+                .expect("status should succeed");
+            assert_eq!(got.state, state, "state must round-trip unchanged");
+            assert_eq!(got.replicas_live, 0, "{state} must report no live replicas");
+        }
+    }
+
+    /// Failure path: a missing container surfaces as `ContainerNotFound`, not a panic.
+    /// This is the case the previous `unimplemented!()` made untestable.
+    #[tokio::test]
+    async fn status_propagates_container_not_found() {
+        let err = rt_with_status(StatusBehavior::NotFound)
+            .status(&ContainerId::new("ghost"))
+            .await
+            .expect_err("missing container must be an error");
+
+        match err {
+            RuntimeError::ContainerNotFound(id) => assert_eq!(id, ContainerId::new("ghost")),
+            other => panic!("expected ContainerNotFound, got {other:?}"),
+        }
+    }
+
+    /// Failure path: a backend fault propagates with its message intact, so callers
+    /// can log or surface the underlying reason.
+    #[tokio::test]
+    async fn status_propagates_backend_error_message() {
+        let err = rt_with_status(StatusBehavior::Internal("daemon unreachable".to_string()))
+            .status(&ContainerId::new("agent"))
+            .await
+            .expect_err("backend fault must be an error");
+
+        match err {
+            RuntimeError::Internal(msg) => assert_eq!(msg, "daemon unreachable"),
+            other => panic!("expected Internal, got {other:?}"),
+        }
     }
 }
