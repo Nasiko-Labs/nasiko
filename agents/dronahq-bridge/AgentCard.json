@@ -1,0 +1,42 @@
+{
+  "name": "DronaHQ SME Business Advisor",
+  "description": "An AI-powered business decision platform for SMEs providing business intelligence, financial analysis, competitor intelligence, pricing analysis, and growth simulation.",
+  "version": "1.0.0",
+  "supportedInterfaces": [
+    {
+      "url": "http://localhost:3000/a2a",
+      "protocolBinding": "JSONRPC",
+      "protocolVersion": "1.0"
+    }
+  ],
+  "capabilities": {
+    "streaming": false,
+    "pushNotifications": false
+  },
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "skills": [
+    {
+      "id": "sme-business-intelligence",
+      "name": "SME Business Intelligence",
+      "description": "Answers business, financial, competitor, pricing, and growth questions for SMEs.",
+      "tags": [
+        "finance",
+        "business",
+        "pricing",
+        "competitor",
+        "growth"
+      ],
+      "inputModes": [
+        "text/plain"
+      ],
+      "outputModes": [
+        "text/plain"
+      ]
+    }
+  ]
+}

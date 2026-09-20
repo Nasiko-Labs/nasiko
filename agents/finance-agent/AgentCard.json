@@ -1,10 +1,17 @@
 {
-  "agentFramework": "axum",
+  "name": "finance-agent",
+  "description": "Analyzes expenses, forecasts cash flow, and advises on SME financial compliance.",
+  "version": "1.0.1",
+  "supportedInterfaces": [
+    {
+      "url": "http://localhost:8000/a2a",
+      "protocolBinding": "JSONRPC",
+      "protocolVersion": "1.0"
+    }
+  ],
   "capabilities": {
-    "chat_agent": true,
-    "pushNotifications": false,
-    "stateTransitionHistory": false,
-    "streaming": true
+    "streaming": false,
+    "pushNotifications": false
   },
   "defaultInputModes": [
     "text/plain"
@@ -12,62 +19,54 @@
   "defaultOutputModes": [
     "text/plain"
   ],
-  "description": "The finance-agent provides real-time exchange rates for currencies and current prices for cryptocurrencies, along with market data analysis.",
-  "framework": "axum",
-  "llm_provider": "openai",
-  "name": "finance-agent",
-  "preferredTransport": "JSONRPC",
-  "protocolVersion": "0.2.9",
   "skills": [
     {
-      "description": "Look up current currency exchange rates for any base currency",
-      "examples": [
-        "What's the USD to EUR exchange rate?"
-      ],
-      "id": "exchange-rates",
-      "name": "Exchange Rates",
+      "id": "expense-tracking",
+      "name": "Expense & Bookkeeping Analysis",
+      "description": "Categorizes expenses, flags anomalies, and analyzes burn rate.",
       "tags": [
         "finance",
-        "forex",
-        "currency"
+        "bookkeeping",
+        "expenses"
+      ],
+      "inputModes": [
+        "text/plain"
+      ],
+      "outputModes": [
+        "text/plain"
       ]
     },
     {
-      "description": "Get real-time cryptocurrency prices and market data",
-      "examples": [
-        "What's the current price of Bitcoin?"
-      ],
-      "id": "crypto-prices",
-      "name": "Crypto Prices",
+      "id": "cashflow-forecaster",
+      "name": "Cashflow Forecaster",
+      "description": "Predicts upcoming cash flow shortages or surpluses based on historical revenue.",
       "tags": [
         "finance",
-        "crypto",
-        "bitcoin"
+        "cashflow",
+        "forecasting"
+      ],
+      "inputModes": [
+        "text/plain"
+      ],
+      "outputModes": [
+        "text/plain"
       ]
     },
     {
-      "description": "Get an overview of top cryptocurrencies by market cap",
-      "examples": [
-        "Show me the top 10 cryptos by market cap"
-      ],
-      "id": "market-overview",
-      "name": "Market Overview",
+      "id": "tax-compliance-advisor",
+      "name": "Tax & Compliance Advisor",
+      "description": "Analyzes current financials against basic SME compliance rules.",
       "tags": [
         "finance",
-        "market",
-        "overview"
+        "tax",
+        "compliance"
+      ],
+      "inputModes": [
+        "text/plain"
+      ],
+      "outputModes": [
+        "text/plain"
       ]
     }
-  ],
-  "tags": [
-    "finance",
-    "cryptocurrency",
-    "exchange-rates",
-    "market-data",
-    "real-time",
-    "api"
-  ],
-  "transport": "http",
-  "url": "http://localhost:8000/",
-  "version": "0.1.0"
+  ]
 }

@@ -1,0 +1,72 @@
+{
+  "name": "feedback-agent",
+  "description": "Analyzes customer feedback, predicts churn risk, and suggests product improvements.",
+  "version": "1.0.0",
+  "supportedInterfaces": [
+    {
+      "url": "http://localhost:8000/a2a",
+      "protocolBinding": "JSONRPC",
+      "protocolVersion": "1.0"
+    }
+  ],
+  "capabilities": {
+    "streaming": false,
+    "pushNotifications": false
+  },
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "skills": [
+    {
+      "id": "review-analyzer",
+      "name": "Review & Feedback Analyzer",
+      "description": "Extracts core complaints and praises from raw user feedback.",
+      "tags": [
+        "feedback",
+        "reviews",
+        "analysis"
+      ],
+      "inputModes": [
+        "text/plain"
+      ],
+      "outputModes": [
+        "text/plain"
+      ]
+    },
+    {
+      "id": "churn-risk-predictor",
+      "name": "Sentiment & Churn Risk Predictor",
+      "description": "Identifies users who are likely to churn based on negative patterns.",
+      "tags": [
+        "sentiment",
+        "churn",
+        "risk"
+      ],
+      "inputModes": [
+        "text/plain"
+      ],
+      "outputModes": [
+        "text/plain"
+      ]
+    },
+    {
+      "id": "product-improvement-advisor",
+      "name": "Product Improvement Advisor",
+      "description": "Recommends practical business/product changes based on aggregated pain points.",
+      "tags": [
+        "product",
+        "improvements",
+        "features"
+      ],
+      "inputModes": [
+        "text/plain"
+      ],
+      "outputModes": [
+        "text/plain"
+      ]
+    }
+  ]
+}
