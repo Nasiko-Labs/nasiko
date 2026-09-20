@@ -126,7 +126,13 @@ fn normalize_provider(name: &str) -> &str {
 }
 
 /// Providers hidden from the catalog until their router integration is ready.
-const HIDDEN_PROVIDERS: &[&str] = &["groq", "deepseek"];
+///
+/// `groq` has a `ProviderClient` (`llm-router/src/providers/groq.rs`), registered in
+/// `provider_for()` — its catalog rows are live. `deepseek` has no `ProviderClient`
+/// yet; its `model_pricing` rows exist for cost reference only and must stay hidden
+/// until a provider is implemented for it, or selecting it in the UI would 500 at
+/// call time with "provider 'deepseek' is not supported yet".
+const HIDDEN_PROVIDERS: &[&str] = &["deepseek"];
 
 fn group_by_provider(rows: Vec<PricingRow>) -> Vec<ProviderCatalog> {
     let mut out: Vec<ProviderCatalog> = Vec::new();

@@ -30,6 +30,7 @@ pub struct GatewayConfig {
     pub platform_gemini_api_key: String,
     /// Platform-owned OpenRouter key, used for the `openrouter` provider.
     pub platform_openrouter_api_key: String,
+    pub platform_groq_api_key: String,
 
     /// TTL (seconds) for the in-process per-agent `llm_config` cache. Default 30.
     pub llm_config_cache_ttl_secs: u64,
@@ -48,6 +49,7 @@ pub struct GatewayConfig {
     pub anthropic_api_base: String,
     pub gemini_api_base: String,
     pub openrouter_api_base: String,
+    pub groq_api_base: String,
 
     /// Optional OpenRouter attribution headers (`HTTP-Referer` / `X-Title`) — affect
     /// openrouter.ai app rankings only, harmless to leave empty.
@@ -73,6 +75,7 @@ impl Default for GatewayConfig {
             platform_anthropic_api_key: String::new(),
             platform_gemini_api_key: String::new(),
             platform_openrouter_api_key: String::new(),
+            platform_groq_api_key: String::new(),
             llm_config_cache_ttl_secs: 30,
             redis_url: String::new(),
             router_decision_ttl_secs: 3600,
@@ -80,6 +83,7 @@ impl Default for GatewayConfig {
             anthropic_api_base: "https://api.anthropic.com/v1".into(),
             gemini_api_base: "https://generativelanguage.googleapis.com/v1beta".into(),
             openrouter_api_base: "https://openrouter.ai/api/v1".into(),
+            groq_api_base: "https://api.groq.com/openai/v1".into(),
             openrouter_http_referer: String::new(),
             openrouter_x_title: String::new(),
             llm_gateway_base_url: String::new(),
@@ -116,6 +120,10 @@ impl GatewayConfig {
                 &["PLATFORM_OPENROUTER_API_KEY", "OPENROUTER_API_KEY"],
                 &d.platform_openrouter_api_key,
             ),
+            platform_groq_api_key: env_first(
+                &["PLATFORM_GROQ_API_KEY", "GROQ_API_KEY"],
+                &d.platform_groq_api_key,
+            ),
             llm_config_cache_ttl_secs: std::env::var("LLM_CONFIG_CACHE_TTL")
                 .ok()
                 .and_then(|v| v.parse().ok())
@@ -129,6 +137,7 @@ impl GatewayConfig {
             anthropic_api_base: env_or("ANTHROPIC_API_BASE", &d.anthropic_api_base),
             gemini_api_base: env_or("GEMINI_API_BASE", &d.gemini_api_base),
             openrouter_api_base: env_or("OPENROUTER_API_BASE", &d.openrouter_api_base),
+            groq_api_base: env_or("GROQ_API_BASE", &d.groq_api_base),
             openrouter_http_referer: env_or("OPENROUTER_HTTP_REFERER", &d.openrouter_http_referer),
             openrouter_x_title: env_or("OPENROUTER_X_TITLE", &d.openrouter_x_title),
             llm_gateway_base_url: env_or("LLM_GATEWAY_BASE_URL", &d.llm_gateway_base_url),
@@ -143,6 +152,7 @@ impl GatewayConfig {
             "anthropic" => &self.platform_anthropic_api_key,
             "gemini" => &self.platform_gemini_api_key,
             "openrouter" => &self.platform_openrouter_api_key,
+            "groq" => &self.platform_groq_api_key,
             _ => &self.platform_openai_api_key,
         }
     }
