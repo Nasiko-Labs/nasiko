@@ -45,6 +45,8 @@ pub struct StepResult {
     /// The actual prompt sent to the agent after placeholder substitution.
     pub prompt: String,
     pub extracted_info: Option<String>,
+    #[serde(default)]
+    pub raw_response: Option<String>,
     pub tokens_used: i64,
     pub latency_ms: i64,
     pub context: Option<String>,

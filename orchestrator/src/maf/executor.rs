@@ -110,6 +110,7 @@ pub async fn run_maf(
             }
         };
         let latency_ms = start.elapsed().as_millis() as i64;
+        step_results[i].raw_response = Some(raw_response.clone());
 
         // ── LLM call 3: extract relevant info from agent response ─────────────
         let (extracted, extract_tokens) = match extract_info(
@@ -195,6 +196,7 @@ fn pending_result(step: &MafStep) -> StepResult {
         to_extract: String::new(),
         prompt: String::new(),
         extracted_info: None,
+        raw_response: None,
         tokens_used: 0,
         latency_ms: 0,
         context: None,
@@ -384,7 +386,14 @@ async fn generate_step_prompt(
                   - Replace any placeholders (like <variable_name>) in the prompt template with \
                   actual data from the context.\n\
                   - Ensure the resulting prompt is clear and directly tells the agent what to do, \
-                  leveraging the history of the flow.\n\n\
+                  leveraging the history of the flow.\n\
+                  - For sequential workflows such as translation, rewriting, transformation, \
+                  and summarization, preserve and use the complete raw response from the \
+                  immediately preceding step when it is relevant.\n\
+                  - Never substitute an earlier step's output when the latest step's raw \
+                  response is available.\n\
+                  - Do not invent, paraphrase, or independently regenerate the source data \
+                  that must be passed between sequential steps.\n\n\
                   Output the result in the specified structured format.";
 
     // One-shot uses the verbose context format that build_context produces.
@@ -836,21 +845,28 @@ fn build_context(step_results: &[StepResult]) -> String {
     step_results
         .iter()
         .filter_map(|s| {
-            s.extracted_info.as_deref().map(|info| {
-                format!(
-                    "--- Step {} ({}) ---\n\
-                     Prompt Template: {}\n\
-                     User Prompt Sent: {}\n\
-                     Goal of Extraction: {}\n\
-                     Actual Extracted Information: {}",
-                    s.step_index + 1,
-                    s.agent_name,
-                    s.prompt_template,
-                    s.prompt,
-                    s.to_extract,
-                    info,
-                )
-            })
+            let extracted = s.extracted_info.as_deref().unwrap_or("");
+            let raw_response = s.raw_response.as_deref().unwrap_or("");
+
+            if extracted.is_empty() && raw_response.is_empty() {
+                return None;
+            }
+
+            Some(format!(
+                "--- Step {} ({}) ---\n\
+                 Prompt Template: {}\n\
+                 User Prompt Sent: {}\n\
+                 Goal of Extraction: {}\n\
+                 Raw Agent Response: {}\n\
+                 Actual Extracted Information: {}",
+                s.step_index + 1,
+                s.agent_name,
+                s.prompt_template,
+                s.prompt,
+                s.to_extract,
+                raw_response,
+                extracted,
+            ))
         })
         .collect::<Vec<_>>()
         .join("\n\n")
