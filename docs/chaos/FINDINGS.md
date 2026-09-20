@@ -8,7 +8,7 @@ path, command, or short note — never tokens or secrets.
 
 | ID | Scenario | Invariants | Result | Evidence | Notes |
 |----|----------|------------|--------|----------|-------|
-| C1 | Kill agent mid-stream | I8, I11 | | | |
+| C1 | Kill agent mid-stream | I8, I11 | ENVIRONMENT | `docker kill f557c072a338`; `docker ps` then showed no `nasiko-agent-*` | Container process died. The dashboard already showed a complete translation, so in-flight abort (I8) was not captured. Catalog still showed Active after the kill (I11: operator status lagged the runtime). Agent later restored with `docker start` on the same container. |
 | C2 | Upstream latency | I9 | PASS | `server/tests/chaos_proxy.rs` `i9_slow_upstream_does_not_crash_proxy` | Stub sleeps 2s; proxy returns 200; `/health` stays 200. |
 | C3 | Partial / truncated response | I9 | PASS | `server/tests/chaos_proxy.rs` `i9_truncated_upstream_does_not_hang_proxy` | Stub closes after a partial HTTP body; proxy returns within 15s; `/health` stays 200. |
 | C4 | Credential expiry or revocation mid-session | I6 | PASS | `server/tests/chaos_proxy.rs` `i6_revoked_session_cannot_invoke_proxy` | Issued session reaches the stub (200); after `auth_tokens.revoked_at` is set, the same bearer returns 401. |
