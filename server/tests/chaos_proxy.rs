@@ -14,6 +14,7 @@ use axum::{Json, Router, routing::get};
 use serde_json::json;
 use serial_test::serial;
 use std::time::{Duration, Instant};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use uuid::Uuid;
 
 fn a2a_stream_body(text: &str) -> serde_json::Value {
@@ -84,6 +85,25 @@ async fn start_slow_stub(delay: Duration) -> String {
     let port = listener.local_addr().unwrap().port();
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
+    });
+    format!("http://127.0.0.1:{port}")
+}
+
+/// Accepts one HTTP request, writes a truncated body, then closes the socket.
+async fn start_truncate_stub() -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                break;
+            };
+            let mut buf = vec![0u8; 2048];
+            let _ = stream.read(&mut buf).await;
+            let _ = stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 64\r\n\r\npartial")
+                .await;
+        }
     });
     format!("http://127.0.0.1:{port}")
 }
@@ -186,6 +206,43 @@ async fn i9_slow_upstream_does_not_crash_proxy() {
     assert!(
         elapsed >= Duration::from_secs(2),
         "proxy must wait for the delayed agent, elapsed={elapsed:?}"
+    );
+
+    let health = server
+        .client
+        .get(server.url("/health"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(health.status(), 200, "control plane must stay up (I9)");
+
+    server.cleanup().await;
+}
+
+/// I9 / C3 — a truncated upstream must not hang or crash the control plane.
+#[tokio::test]
+#[serial]
+async fn i9_truncated_upstream_does_not_hang_proxy() {
+    let server = common::TestServer::start().await;
+    let _ = init_admin(&server).await;
+    let owner_id = seed_user(&server, "chaos-c3-owner").await;
+    let stub_url = start_truncate_stub().await;
+    let agent_id = seed_running_agent(&server, owner_id, "chaos-trunc-agent", &stub_url).await;
+
+    let send = common::as_member(
+        server
+            .client
+            .get(server.url(&format!("/api/agents/{agent_id}/")))
+            .timeout(Duration::from_secs(10)),
+        &owner_id.to_string(),
+        "chaos-c3-owner",
+    )
+    .send();
+
+    let timed = tokio::time::timeout(Duration::from_secs(15), send).await;
+    assert!(
+        timed.is_ok(),
+        "proxy must not hang on a truncated upstream (I9)"
     );
 
     let health = server
