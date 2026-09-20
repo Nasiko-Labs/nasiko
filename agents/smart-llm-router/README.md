@@ -45,7 +45,7 @@ We are not “running DronaHQ inside Nasiko” — we share a frozen HTTP contra
 ## Quick start (against local Nasiko)
 
 Nasiko should be up on `:8080` (live keys with `NASIKO_ROUTE_TOKEN` / agent JWT,
-or `NASIKO_ROUTE_STUB=1` / `NASIKO_ROUTE_ALLOW_ANON=1` for local shape checks):
+or `NASIKO_ROUTE_STUB=1`):
 
 ```bash
 cd agents/smart-llm-router
@@ -53,15 +53,15 @@ python -m venv .venv && source .venv/bin/activate
 pip install -e .
 
 export ROUTER_BASE_URL=http://localhost:8080
-# Match server: NASIKO_ROUTE_TOKEN, or ALLOW_ANON / STUB for local demos
+# Match server NASIKO_ROUTE_TOKEN, or use NASIKO_ROUTE_STUB=1 for local demos
 export NASIKO_ROUTE_TOKEN=change-me
-python -m src.eval_demo
+python -m smart_llm_router.eval_demo
 ```
 
 A2A server for Nasiko console:
 
 ```bash
-python -m src --host 127.0.0.1 --port 8000
+python -m smart_llm_router --host 127.0.0.1 --port 8000
 # AgentCard:  http://127.0.0.1:8000/.well-known/agent-card.json
 # Optional demo UI only: http://127.0.0.1:8000/ui/
 nasiko chat http://127.0.0.1:8000 "hi"
@@ -88,5 +88,5 @@ nasiko chat http://127.0.0.1:8000 "hi"
 
 ## Evaluation
 
-`python -m src.eval_demo` checks trivial→cheap, proof→premium, fallback, errors,
+`python -m smart_llm_router.eval_demo` checks trivial→cheap, proof→premium, fallback, errors,
 session savings, and env-only base URL.

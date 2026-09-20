@@ -446,6 +446,9 @@ fn plan_config(
             // Configured agent: the config is authoritative — the request hint is ignored.
             // When `model` is None (user relies on tier routing), pick the first available
             // tier model as the Level 4/5 fallback so the router always has something.
+            // Do NOT split `provider/model` catalog ids here: attached configs (esp.
+            // OpenRouter) store upstream ids like `openai/gpt-4o` where the first
+            // segment is not the Nasiko provider.
             let fallback = c
                 .model
                 .clone()
@@ -453,23 +456,14 @@ fn plan_config(
                 .or_else(|| c.tier1_model.clone())
                 .or_else(|| c.tier3_model.clone())
                 .unwrap_or_else(|| cfg.default_model.clone());
-            // Catalog ids may be stored as `provider/model` — prefer the embedded
-            // provider so Groq/OpenRouter catalog picks don't stick on the wrong upstream.
-            let (catalog_provider, catalog_model) = split_catalog_model(Some(fallback.as_str()));
-            let provider = catalog_provider
-                .map(str::to_string)
-                .unwrap_or(c.provider);
-            let model = catalog_model
-                .map(str::to_string)
-                .unwrap_or(fallback);
             // Agent-level pin overrides config-level pin.
             let config_pin = c
                 .pinned
-                .then(|| c.pinned_model.clone().unwrap_or_else(|| model.clone()));
+                .then(|| c.pinned_model.clone().unwrap_or_else(|| fallback.clone()));
             let pinned_model = agent_pinned_model.map(str::to_string).or(config_pin);
             ConfigPlan {
-                provider,
-                model,
+                provider: c.provider,
+                model: fallback,
                 fallback_models: c.fallback_models,
                 temperature: c.temperature,
                 max_tokens: c.max_tokens,
@@ -570,12 +564,17 @@ async fn resolve_api_key(
 
 /// Pure: the platform-owned fallback key for `provider`, or the 400 when none is configured.
 fn platform_key(cfg: &GatewayConfig, provider: &str) -> Result<String, GatewayError> {
+    // Ollama accepts any bearer (or none); never require a platform key.
+    if provider == "ollama" {
+        let key = cfg.platform_key_for(provider);
+        return Ok(if key.is_empty() {
+            String::new()
+        } else {
+            key.to_string()
+        });
+    }
     let key = cfg.platform_key_for(provider);
     if key.is_empty() {
-        // Local Ollama needs no real key; the provider normalizes empty → "ollama".
-        if provider == "ollama" {
-            return Ok(String::new());
-        }
         Err(GatewayError::NoApiKey)
     } else {
         Ok(key.to_string())
@@ -1125,6 +1124,39 @@ mod tests {
         .unwrap();
         assert_eq!(r.provider, "ollama");
         assert_eq!(r.api_key, "");
+    }
+
+    #[tokio::test]
+    async fn attached_openrouter_model_keeps_slash_id() {
+        // OpenRouter stores upstream ids like `openai/gpt-4o`; must NOT re-split onto
+        // the openai provider when llm_config.provider is openrouter.
+        let store = MockRegistry {
+            config: Some(Some(llm_config(
+                "openrouter",
+                "openai/gpt-4o",
+                None,
+            ))),
+            secret: None,
+            agent_pinned_model: None,
+            is_coding_agent: false,
+        };
+        let config = GatewayConfig {
+            platform_openrouter_api_key: "or-key".into(),
+            ..Default::default()
+        };
+        let r = resolve(
+            &store,
+            &cache(),
+            &config,
+            AGENT,
+            OWNER,
+            RequestHint::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(r.provider, "openrouter");
+        assert_eq!(r.model, "openai/gpt-4o");
+        assert_eq!(r.api_key, "or-key");
     }
 
     #[test]

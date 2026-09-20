@@ -176,7 +176,7 @@ const PREMIUM: &[TierCandidate] = &[
 /// Resolve the effective tier from the header hint, complexity, and budget.
 ///
 /// - Missing/invalid header → `balanced`.
-/// - High complexity can escalate one step.
+/// - Complexity ≥4 escalates `cheap` → `balanced`; ≥5 also escalates `balanced` → `premium`.
 /// - Tight `budget_tokens` downshifts toward `cheap`.
 pub fn resolve_tier(
     header: Option<&str>,
@@ -188,10 +188,12 @@ pub fn resolve_tier(
         .unwrap_or(ContractTier::Balanced);
 
     if let Some(c) = complexity {
-        if c >= 5 && tier == ContractTier::Cheap {
+        // Step-wise escalation so cheap+5 ends at premium (cheap→balanced, then→premium).
+        if c >= 4 && tier == ContractTier::Cheap {
             tier = ContractTier::Balanced;
-        } else if c >= 4 && tier == ContractTier::Cheap {
-            tier = ContractTier::Balanced;
+        }
+        if c >= 5 && tier == ContractTier::Balanced {
+            tier = ContractTier::Premium;
         }
     }
 
@@ -245,6 +247,30 @@ mod tests {
     fn tight_budget_forces_cheap() {
         let t = resolve_tier(Some("premium"), Some(5), Some(500));
         assert_eq!(t, ContractTier::Cheap);
+    }
+
+    #[test]
+    fn complexity_5_escalates_balanced_to_premium() {
+        assert_eq!(
+            resolve_tier(Some("balanced"), Some(5), None),
+            ContractTier::Premium
+        );
+    }
+
+    #[test]
+    fn complexity_5_escalates_cheap_through_to_premium() {
+        assert_eq!(
+            resolve_tier(Some("cheap"), Some(5), None),
+            ContractTier::Premium
+        );
+    }
+
+    #[test]
+    fn complexity_4_escalates_cheap_to_balanced_only() {
+        assert_eq!(
+            resolve_tier(Some("cheap"), Some(4), None),
+            ContractTier::Balanced
+        );
     }
 
     #[test]

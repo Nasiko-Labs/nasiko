@@ -5,6 +5,10 @@
 //! instead resolves that agent's `llm_config` / BYOK provider (console-selected) and
 //! calls only that destination — so NVIDIA BYOK sticks.
 
+use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
 use axum::Json;
@@ -20,7 +24,7 @@ use crate::auth::verify_agent_jwt;
 use crate::config::GatewayConfig;
 use crate::ir::{ChatRequest, Message, Usage};
 use crate::providers::{self, ProviderError};
-use crate::resolver::{PgRegistry, RequestHint, ResolvedConfig, resolve};
+use crate::resolver::{PgRegistry, RegistryStore, RequestHint, ResolvedConfig, resolve};
 use crate::routing::tier::{
     ContractTier, TierCandidate, cascade_for, cheapest_candidate, estimate_prompt_tokens,
     projected_completion_tokens, resolve_tier,
@@ -38,6 +42,33 @@ const TASK_TYPES: &[&str] = &[
     "extract",
 ];
 
+/// Process-local reply cache for `allow_cache=true` (DronaHQ contract).
+#[derive(Clone)]
+struct CachedRoute {
+    provider: String,
+    model: String,
+    content: String,
+    usage: RouteUsage,
+    tier_used: String,
+}
+
+fn route_response_cache() -> &'static Mutex<HashMap<u64, CachedRoute>> {
+    static CACHE: OnceLock<Mutex<HashMap<u64, CachedRoute>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn route_cache_key(tier: ContractTier, messages: &[Message], task_type: &str) -> u64 {
+    let mut h = DefaultHasher::new();
+    tier.as_str().hash(&mut h);
+    task_type.hash(&mut h);
+    for m in messages {
+        m.role.hash(&mut h);
+        if let Some(t) = m.text() {
+            t.hash(&mut h);
+        }
+    }
+    h.finish()
+}
 #[derive(Debug, Deserialize)]
 pub struct RouteBody {
     pub task_type: Option<String>,
@@ -71,7 +102,7 @@ pub struct RouteOk {
     pub trace_id: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct RouteUsage {
     pub prompt_tokens: i64,
     pub completion_tokens: i64,
@@ -235,7 +266,7 @@ async fn route_after_budget(
 
     let agent = optional_agent(&headers, &ctx.cfg);
 
-    // Fail closed: require agent JWT or NASIKO_ROUTE_TOKEN unless ALLOW_ANON.
+    // Fail closed: require agent JWT or NASIKO_ROUTE_TOKEN (stub mode skips this).
     if let Err(resp) = require_route_credential(&headers, &ctx.cfg, agent.as_ref()) {
         return resp;
     }
@@ -265,13 +296,51 @@ async fn route_after_budget(
                 );
             }
             Err(e) => {
-                tracing::warn!(
+                // Fail closed: never silently burn platform keys when BYOK-off is set
+                // but the flag cannot be read (DB outage / missing migration).
+                tracing::error!(
                     target: "nasiko::llm_router::route",
                     %agent_id,
                     error = %e,
-                    "route: tier_cascade lookup failed — using platform cascade"
+                    "route: tier_cascade lookup failed — refusing cascade"
+                );
+                return err_response(
+                    StatusCode::BAD_GATEWAY,
+                    "cascade_lookup_failed",
+                    "could not read agents.tier_cascade; refusing to fall open to platform cascade",
+                    None,
                 );
             }
+        }
+    }
+
+    if parsed.allow_cache {
+        let key = route_cache_key(tier, &ir_messages, &task_type);
+        if let Ok(guard) = route_response_cache().lock()
+            && let Some(hit) = guard.get(&key).cloned()
+        {
+            let latency_ms = started.elapsed().as_millis() as u64;
+            spawn_route_usage(
+                &ctx,
+                agent.as_ref(),
+                hit.provider.clone(),
+                hit.model.clone(),
+                hit.usage.prompt_tokens,
+                hit.usage.completion_tokens,
+                hit.usage.total_tokens,
+                latency_ms as i64,
+                true,
+            );
+            return ok_response(RouteOk {
+                provider: hit.provider,
+                model: hit.model,
+                content: hit.content,
+                usage: hit.usage,
+                cache_hit: true,
+                tier_used: hit.tier_used,
+                latency_ms,
+                trace_id,
+            });
         }
     }
 
@@ -350,7 +419,30 @@ async fn route_after_budget(
                 let total = usage.total_tokens.unwrap_or(p + c);
                 let cost = round6(candidate.estimate_cost_usd(p, c));
                 let latency_ms = started.elapsed().as_millis() as u64;
-                let _ = parsed.allow_cache;
+                let usage = RouteUsage {
+                    prompt_tokens: p,
+                    completion_tokens: c,
+                    total_tokens: total,
+                    cost_usd: cost,
+                };
+                if parsed.allow_cache {
+                    let key = route_cache_key(tier, &ir_messages, &task_type);
+                    if let Ok(mut guard) = route_response_cache().lock() {
+                        if guard.len() >= 256 {
+                            guard.clear();
+                        }
+                        guard.insert(
+                            key,
+                            CachedRoute {
+                                provider: candidate.provider.to_string(),
+                                model: candidate.model.to_string(),
+                                content: content.clone(),
+                                usage: usage.clone(),
+                                tier_used: tier.as_str().to_string(),
+                            },
+                        );
+                    }
+                }
                 spawn_route_usage(
                     &ctx,
                     agent.as_ref(),
@@ -366,12 +458,7 @@ async fn route_after_budget(
                     provider: candidate.provider.to_string(),
                     model: candidate.model.to_string(),
                     content,
-                    usage: RouteUsage {
-                        prompt_tokens: p,
-                        completion_tokens: c,
-                        total_tokens: total,
-                        cost_usd: cost,
-                    },
+                    usage,
                     cache_hit: false,
                     tier_used: tier.as_str().to_string(),
                     latency_ms,
@@ -427,9 +514,6 @@ fn require_route_credential(
     cfg: &GatewayConfig,
     agent: Option<&(String, String)>,
 ) -> Result<(), Response> {
-    if cfg.route_allow_anon {
-        return Ok(());
-    }
     // Agent JWT satisfies auth (selected-provider path / trusted agent).
     if agent.is_some() {
         return Ok(());
@@ -439,7 +523,7 @@ fn require_route_credential(
         return Err(err_response(
             StatusCode::UNAUTHORIZED,
             "unauthorized",
-            "set NASIKO_ROUTE_TOKEN (or NASIKO_ROUTE_ALLOW_ANON=1 for local demos)",
+            "set NASIKO_ROUTE_TOKEN or present a valid agent JWT",
             None,
         ));
     }
@@ -498,11 +582,38 @@ async fn route_selected_provider(
     trace_id: String,
 ) -> Response {
     let store = PgRegistry::new(ctx.db.clone());
+    route_selected_provider_with_store(
+        ctx,
+        &store,
+        agent_id,
+        owner_id,
+        ir_messages,
+        tier,
+        budget_tokens,
+        prompt_tokens,
+        started,
+        trace_id,
+    )
+    .await
+}
+
+async fn route_selected_provider_with_store(
+    ctx: &LlmRouterCtx,
+    store: &dyn RegistryStore,
+    agent_id: &str,
+    owner_id: &str,
+    ir_messages: &[Message],
+    tier: ContractTier,
+    budget_tokens: Option<i64>,
+    prompt_tokens: i64,
+    started: Instant,
+    trace_id: String,
+) -> Response {
     let hint = RequestHint {
         provider: None,
         model: None,
     };
-    let mut resolved = match resolve(&store, &ctx.cache, &ctx.cfg, agent_id, owner_id, hint).await {
+    let mut resolved = match resolve(store, &ctx.cache, &ctx.cfg, agent_id, owner_id, hint).await {
         Ok(r) => r,
         Err(e) => {
             return err_response(
@@ -827,7 +938,8 @@ fn err_response(status: StatusCode, code: &str, message: &str, provider: Option<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::resolver::ConfigCache;
+    use crate::resolver::{AgentConfigResult, ConfigCache, LLMConfig};
+    use async_trait::async_trait;
     use jsonwebtoken::Algorithm;
     use std::sync::Arc;
     use std::time::Duration;
@@ -836,11 +948,10 @@ mod tests {
     const OWNER: &str = "22222222-2222-2222-2222-222222222222";
     const SECRET: &str = "gateway-secret";
 
-    fn cfg_auth(token: &str, allow_anon: bool) -> GatewayConfig {
+    fn cfg_auth(token: &str) -> GatewayConfig {
         GatewayConfig {
             agent_jwt_secret: SECRET.into(),
             route_token: token.into(),
-            route_allow_anon: allow_anon,
             ..Default::default()
         }
     }
@@ -857,21 +968,15 @@ mod tests {
     }
 
     #[test]
-    fn credential_rejects_when_token_unset_and_not_anon() {
-        let cfg = cfg_auth("", false);
+    fn credential_rejects_when_token_unset() {
+        let cfg = cfg_auth("");
         let err = require_route_credential(&HeaderMap::new(), &cfg, None).unwrap_err();
         assert_eq!(err.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[test]
-    fn credential_accepts_allow_anon() {
-        let cfg = cfg_auth("", true);
-        assert!(require_route_credential(&HeaderMap::new(), &cfg, None).is_ok());
-    }
-
-    #[test]
     fn credential_accepts_matching_route_token_header() {
-        let cfg = cfg_auth("secret-route", false);
+        let cfg = cfg_auth("secret-route");
         let mut headers = HeaderMap::new();
         headers.insert("x-nasiko-route-token", "secret-route".parse().unwrap());
         assert!(require_route_credential(&headers, &cfg, None).is_ok());
@@ -879,7 +984,7 @@ mod tests {
 
     #[test]
     fn credential_accepts_agent_jwt() {
-        let cfg = cfg_auth("", false);
+        let cfg = cfg_auth("");
         let agent = (AGENT.to_string(), OWNER.to_string());
         assert!(require_route_credential(&HeaderMap::new(), &cfg, Some(&agent)).is_ok());
     }
@@ -955,6 +1060,151 @@ mod tests {
         });
         let resp = route(axum::extract::State(ctx), HeaderMap::new(), Json(body)).await;
         assert_eq!(resp.status(), StatusCode::OK);
-        let _ = jwt(); // keep mint helper referenced for JWT coverage above
+        let _ = jwt();
+    }
+
+    #[tokio::test]
+    async fn live_route_rejects_unauthenticated() {
+        let cfg = GatewayConfig {
+            route_stub: false,
+            route_token: String::new(),
+            agent_jwt_secret: SECRET.into(),
+            platform_openai_api_key: "sk-test".into(),
+            ..Default::default()
+        };
+        let ctx = LlmRouterCtx {
+            db: sqlx::PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
+            http: reqwest::Client::new(),
+            cfg: Arc::new(cfg),
+            cache: Arc::new(ConfigCache::new(Duration::from_secs(30))),
+            router_cache: Arc::new(crate::routing::NoopCache),
+            tier_registry: Arc::new(crate::routing::StaticTierRegistry),
+            cell_store: Arc::new(crate::routing::InMemoryCellStore::new()),
+        };
+        let body = json!({
+            "task_type": "chat",
+            "messages": [{"role":"user","content":"hello"}]
+        });
+        let resp = route(axum::extract::State(ctx), HeaderMap::new(), Json(body)).await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    struct ByokStore {
+        config: LLMConfig,
+    }
+
+    #[async_trait]
+    impl RegistryStore for ByokStore {
+        async fn fetch_llm_config(
+            &self,
+            _: Uuid,
+        ) -> Result<Option<AgentConfigResult>, sqlx::Error> {
+            Ok(Some(AgentConfigResult {
+                config: Some(self.config.clone()),
+                agent_pinned_model: None,
+                is_coding_agent: false,
+            }))
+        }
+        async fn fetch_user_secret(&self, _: Uuid, _: &str) -> Result<Option<String>, sqlx::Error> {
+            Ok(None)
+        }
+    }
+
+    #[tokio::test]
+    async fn tier_cascade_false_uses_selected_byok_provider() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "id": "chatcmpl-x",
+                    "object": "chat.completion",
+                    "model": "gpt-4o-mini",
+                    "choices": [{
+                        "index": 0,
+                        "message": { "role": "assistant", "content": "byok-ok" },
+                        "finish_reason": "stop"
+                    }],
+                    "usage": {
+                        "prompt_tokens": 3,
+                        "completion_tokens": 2,
+                        "total_tokens": 5
+                    }
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+
+        let cfg = GatewayConfig {
+            agent_jwt_secret: SECRET.into(),
+            openai_api_base: server.url(),
+            platform_openai_api_key: "sk-platform".into(),
+            // Distinct groq key so cascade would prefer groq if wrongly taken.
+            platform_groq_api_key: "gsk-cascade".into(),
+            ..Default::default()
+        };
+        let ctx = LlmRouterCtx {
+            db: sqlx::PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
+            http: reqwest::Client::new(),
+            cfg: Arc::new(cfg),
+            cache: Arc::new(ConfigCache::new(Duration::from_secs(30))),
+            router_cache: Arc::new(crate::routing::NoopCache),
+            tier_registry: Arc::new(crate::routing::StaticTierRegistry),
+            cell_store: Arc::new(crate::routing::InMemoryCellStore::new()),
+        };
+        let store = ByokStore {
+            config: LLMConfig {
+                provider: "openai".into(),
+                model: Some("gpt-4o-mini".into()),
+                fallback_models: vec![],
+                temperature: None,
+                max_tokens: None,
+                api_key_secret_name: None,
+                pinned: false,
+                pinned_model: None,
+                tier1_model: None,
+                tier2_model: None,
+                tier3_model: None,
+            },
+        };
+        let msgs = vec![Message {
+            role: "user".into(),
+            content: Some(json!("hi")),
+            name: None,
+            tool_call_id: None,
+            tool_calls: None,
+            extra: Map::new(),
+        }];
+        let resp = route_selected_provider_with_store(
+            &ctx,
+            &store,
+            AGENT,
+            OWNER,
+            &msgs,
+            ContractTier::Cheap,
+            None,
+            4,
+            Instant::now(),
+            "tr".into(),
+        )
+        .await;
+        let status = resp.status();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "body={}",
+            String::from_utf8_lossy(&body)
+        );
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["provider"], "openai");
+        assert_eq!(v["model"], "gpt-4o-mini");
+        assert_eq!(v["content"], "byok-ok");
+        assert!(v["tier_used"].as_str().unwrap().starts_with("selected:"));
     }
 }

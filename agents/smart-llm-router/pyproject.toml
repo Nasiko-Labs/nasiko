@@ -19,7 +19,7 @@ dependencies = [
 ]
 
 [project.scripts]
-smart-llm-router = "src.__main__:main"
+smart-llm-router = "smart_llm_router.cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -27,8 +27,8 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["src*"]
+include = ["smart_llm_router*"]
 
 # Dashboard HTML must ship in wheels (non-editable installs).
 [tool.setuptools.package-data]
-src = ["static/*"]
+smart_llm_router = ["static/*"]

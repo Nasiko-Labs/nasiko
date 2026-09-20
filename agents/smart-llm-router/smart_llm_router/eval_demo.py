@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Run the Smart LLM Router evaluation criteria against ROUTER_BASE_URL.
 
-Prefer:  python -m src.eval_demo   (from agents/smart-llm-router with PYTHONPATH=.)
-Also:    python -m src.eval_demo   after `pip install -e .`
+Prefer:  python -m smart_llm_router.eval_demo   (from agents/smart-llm-router with PYTHONPATH=.)
+Also:    python -m smart_llm_router.eval_demo   after `pip install -e .`
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ if __package__ is None:
     root = Path(__file__).resolve().parents[1]
     sys.path.insert(0, str(root))
     load_dotenv(override=True)
-    raise SystemExit(asyncio.run(__import__("src.eval_demo", fromlist=["main"]).main()))
+    raise SystemExit(asyncio.run(__import__("smart_llm_router.eval_demo", fromlist=["main"]).main()))
 
 load_dotenv(override=True)
 

@@ -1,7 +1,7 @@
 """Smart LLM Router entrypoint.
 
 Run as a package module so relative imports resolve:
-  python -m src --host 0.0.0.0 --port 8000
+  python -m smart_llm_router --host 0.0.0.0 --port 8000
   smart-llm-router   # after pip install
 """
 
@@ -249,7 +249,7 @@ def main(host: str, port: int) -> None:
         Mount("/ui/assets", app=StaticFiles(directory=str(STATIC_DIR)), name="assets"),
     ]
     routes.extend(create_agent_card_routes(agent_card))
-    routes.extend(create_jsonrpc_routes(request_handler, rpc_url="/"))
+    routes.extend(create_jsonrpc_routes(request_handler, rpc_url("/")))
 
     app = Starlette(routes=routes)
     app.state.chat_agent = SmartLlmRouterAgent()

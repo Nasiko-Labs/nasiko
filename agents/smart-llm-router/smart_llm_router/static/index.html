@@ -344,25 +344,38 @@
       }
     }
 
-    function ingest(ev) {
+    function ingest(ev, opts) {
+      const kpis = !opts || opts.kpis !== false;
       if (!ev || !ev.id || seen.has(ev.id)) return;
       seen.add(ev.id);
       addFeedRow(ev);
       if (!ev.ok) return;
 
-      calls += 1;
       const baseline = Number(ev.baseline_usd) || 0;
       const actual = Number(ev.cost_usd) || 0;
       const saved = Number(ev.saved_usd) || Math.max(0, baseline - actual);
-      cumBaseline += baseline;
-      cumActual += actual;
-      cumSaved += saved;
-      updateKpis();
 
-      const label = "#" + calls;
+      if (kpis) {
+        calls += 1;
+        cumBaseline += baseline;
+        cumActual += actual;
+        cumSaved += saved;
+        updateKpis();
+
+        const t = ev.requested_tier || ev.tier_used;
+        if (t && tierCounts[t] != null) tierCounts[t] += 1;
+        chartTiers.data.datasets[0].data = [
+          tierCounts.cheap,
+          tierCounts.balanced,
+          tierCounts.premium,
+        ];
+        chartTiers.update("none");
+      }
+
+      const label = "#" + (kpis ? calls : (perCallLabels.length + 1));
       labels.push(label);
-      seriesBaseline.push(cumBaseline);
-      seriesActual.push(cumActual);
+      seriesBaseline.push(kpis ? cumBaseline : (seriesBaseline.at(-1) || 0) + baseline);
+      seriesActual.push(kpis ? cumActual : (seriesActual.at(-1) || 0) + actual);
       if (labels.length > 48) {
         labels.shift();
         seriesBaseline.shift();
@@ -379,15 +392,6 @@
         perCallActual.shift();
       }
       chartPerCall.update("none");
-
-      const t = ev.requested_tier || ev.tier_used;
-      if (t && tierCounts[t] != null) tierCounts[t] += 1;
-      chartTiers.data.datasets[0].data = [
-        tierCounts.cheap,
-        tierCounts.balanced,
-        tierCounts.premium,
-      ];
-      chartTiers.update("none");
     }
 
     function connect() {
@@ -416,22 +420,23 @@
           return r.json();
         })
         .then((data) => {
-          for (const ev of data.recent || []) ingest(ev);
-          // Authoritative process-wide totals (recent is only a ring-buffer window).
-          if (data.global_calls != null) calls = Number(data.global_calls) || 0;
-          if (data.global_saved_usd != null) cumSaved = Number(data.global_saved_usd) || 0;
+          // Feed + per-call chart from the recent window only (do not mix into KPIs).
+          for (const ev of data.recent || []) ingest(ev, { kpis: false });
+          // Authoritative process-wide KPIs / tier mix from the snapshot.
+          calls = Number(data.global_calls) || 0;
+          cumSaved = Number(data.global_saved_usd) || 0;
+          cumBaseline = Number(data.global_baseline_usd) || 0;
+          cumActual = Number(data.global_actual_usd) || 0;
           const tc = data.tier_counts || {};
-          if (tc.cheap != null || tc.balanced != null || tc.premium != null) {
-            tierCounts.cheap = Number(tc.cheap) || 0;
-            tierCounts.balanced = Number(tc.balanced) || 0;
-            tierCounts.premium = Number(tc.premium) || 0;
-            chartTiers.data.datasets[0].data = [
-              tierCounts.cheap,
-              tierCounts.balanced,
-              tierCounts.premium,
-            ];
-            chartTiers.update("none");
-          }
+          tierCounts.cheap = Number(tc.cheap) || 0;
+          tierCounts.balanced = Number(tc.balanced) || 0;
+          tierCounts.premium = Number(tc.premium) || 0;
+          chartTiers.data.datasets[0].data = [
+            tierCounts.cheap,
+            tierCounts.balanced,
+            tierCounts.premium,
+          ];
+          chartTiers.update("none");
           updateKpis();
           liveBadge.textContent = "Live · listening for Nasiko console";
         })

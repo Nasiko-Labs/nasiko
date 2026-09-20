@@ -63,6 +63,8 @@ class TurnBus:
         self._global_saved = 0.0
         self._global_calls = 0
         self._global_cache_hits = 0
+        self._global_baseline = 0.0
+        self._global_actual = 0.0
         self._tier_counts: dict[str, int] = {"cheap": 0, "balanced": 0, "premium": 0}
 
     def publish(self, event: TurnEvent) -> None:
@@ -72,6 +74,10 @@ class TurnBus:
                 self._global_calls += 1
                 if event.saved_usd:
                     self._global_saved += max(0.0, event.saved_usd)
+                if event.baseline_usd:
+                    self._global_baseline += max(0.0, event.baseline_usd)
+                if event.cost_usd:
+                    self._global_actual += max(0.0, event.cost_usd)
                 if event.cache_hit:
                     self._global_cache_hits += 1
                 tier = event.requested_tier or event.tier_used or ""
@@ -107,6 +113,8 @@ class TurnBus:
         with self._lock:
             return {
                 "global_saved_usd": self._global_saved,
+                "global_baseline_usd": self._global_baseline,
+                "global_actual_usd": self._global_actual,
                 "global_calls": self._global_calls,
                 "global_cache_hits": self._global_cache_hits,
                 "tier_counts": dict(self._tier_counts),
