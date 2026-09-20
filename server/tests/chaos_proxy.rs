@@ -108,6 +108,27 @@ async fn start_truncate_stub() -> String {
     format!("http://127.0.0.1:{port}")
 }
 
+/// Accepts one request, writes a partial SSE body, then holds the socket
+/// until the task is aborted (simulates agent process death mid-stream).
+async fn start_hold_open_stub() -> (String, tokio::task::JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let handle = tokio::spawn(async move {
+        let Ok((mut stream, _)) = listener.accept().await else {
+            return;
+        };
+        let mut buf = vec![0u8; 2048];
+        let _ = stream.read(&mut buf).await;
+        let _ = stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\n\r\ndata: {\"partial\":true}\n\n",
+            )
+            .await;
+        tokio::time::sleep(Duration::from_secs(120)).await;
+    });
+    (format!("http://127.0.0.1:{port}"), handle)
+}
+
 /// I1 — Sole authenticated ingress: an unauthenticated call on the agent
 /// API must not reach handler logic as an anonymous user.
 #[tokio::test]
@@ -302,6 +323,47 @@ async fn i6_revoked_session_cannot_invoke_proxy() {
         401,
         "revoked session must not invoke the proxy (I6)"
     );
+
+    server.cleanup().await;
+}
+
+/// I8 / C1 — if the upstream dies while a response is in flight, the proxy
+/// must not hang past the client timeout, and `/health` must still succeed.
+#[tokio::test]
+#[serial]
+async fn i8_upstream_death_does_not_hang_proxy() {
+    let server = common::TestServer::start().await;
+    let _ = init_admin(&server).await;
+    let owner_id = seed_user(&server, "chaos-c1-owner").await;
+    let (stub_url, stub) = start_hold_open_stub().await;
+    let agent_id = seed_running_agent(&server, owner_id, "chaos-die-agent", &stub_url).await;
+
+    let send = common::as_member(
+        server
+            .client
+            .get(server.url(&format!("/api/agents/{agent_id}/")))
+            .timeout(Duration::from_secs(10)),
+        &owner_id.to_string(),
+        "chaos-c1-owner",
+    )
+    .send();
+
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    stub.abort();
+
+    let timed = tokio::time::timeout(Duration::from_secs(15), send).await;
+    assert!(
+        timed.is_ok(),
+        "proxy must not hang after upstream death (I8)"
+    );
+
+    let health = server
+        .client
+        .get(server.url("/health"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(health.status(), 200, "control plane must stay up (I8)");
 
     server.cleanup().await;
 }
