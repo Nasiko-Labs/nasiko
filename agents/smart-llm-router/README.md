@@ -6,10 +6,11 @@ Silly queries should not burn GPT‑4o.
 
 This agent is the **brain** in front of Nasiko `POST /v1/route`. The Nasiko console
 talks to it over **A2A on `/`** (AgentCard + JSON-RPC) — same as any other deployed
-agent. Cost savings vs always-GPT‑4o are computed in the reply text / session store.
+agent. Console replies are **chat-only** — cost savings vs always-GPT‑4o live in the
+session store and the analytics dashboard, not in the message text.
 
 An optional **analytics dashboard** lives at `/ui/` only. It is **not** the Nasiko
-chat UI. Console replies are chat-only; metrics stream to `/ui/` over SSE.
+chat UI. Metrics stream to `/ui/` over SSE (or remote ingest).
 
 ## Architecture (who does what)
 
@@ -76,6 +77,7 @@ nasiko chat http://127.0.0.1:8000 "hi"
 | --- | --- | --- |
 | `ROUTER_BASE_URL` | `http://localhost:8080` | Nasiko or DronaHQ mock (`:8090`) |
 | `ANALYTICS_INGEST_URL` | — (Dockerfile: host `:8000`) | Deployed agent → host dashboard ingest |
+| `ANALYTICS_TOKEN` | — | Optional shared secret for `/api/*` analytics routes |
 | `CLASSIFIER_API_KEY` / `GROQ_API_KEY` | — | Optional; else heuristic (recommended) |
 | `CLASSIFIER_BASE_URL` | Groq when keyed | Classifier chat-completions base |
 | `CLASSIFIER_MODEL` | `llama-3.1-8b-instant` | Cheap classifier model |

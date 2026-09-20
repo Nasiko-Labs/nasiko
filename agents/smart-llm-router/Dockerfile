@@ -17,6 +17,7 @@ ENV PYTHONUNBUFFERED=1
 ENV OTEL_SERVICE_NAME=smart-llm-router-agent
 # Nasiko control plane on the compose network
 ENV ROUTER_BASE_URL=http://server:8080
-# Fan analytics out to the host dashboard (keep `python src/__main__.py` on :8000)
-ENV ANALYTICS_INGEST_URL=http://host.docker.internal:8000/api/ingest
-CMD ["python", "__main__.py", "--host", "0.0.0.0", "--port", "8000"]
+    # Fan analytics out to the host dashboard (keep `python src/__main__.py` on :8000)
+    # Set ANALYTICS_TOKEN on both sides in production.
+    ENV ANALYTICS_INGEST_URL=http://host.docker.internal:8000/api/ingest
+    CMD ["python", "__main__.py", "--host", "0.0.0.0", "--port", "8000"]

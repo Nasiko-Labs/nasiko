@@ -86,6 +86,11 @@ pub struct GatewayConfig {
     /// upstream providers. For local/integration shape checks when platform keys are
     /// missing or invalid. Set `NASIKO_ROUTE_STUB=1`.
     pub route_stub: bool,
+
+    /// Optional shared secret for `POST /v1/route` when callers have no agent JWT.
+    /// Empty ⇒ open (local/dev). Set `NASIKO_ROUTE_TOKEN` in production so anonymous
+    /// clients cannot burn platform keys. Agent JWTs always satisfy the check.
+    pub route_token: String,
 }
 
 impl Default for GatewayConfig {
@@ -122,6 +127,7 @@ impl Default for GatewayConfig {
             openrouter_x_title: String::new(),
             llm_gateway_base_url: String::new(),
             route_stub: false,
+            route_token: String::new(),
         }
     }
 }
@@ -208,6 +214,7 @@ impl GatewayConfig {
             openrouter_x_title: env_or("OPENROUTER_X_TITLE", &d.openrouter_x_title),
             llm_gateway_base_url: env_or("LLM_GATEWAY_BASE_URL", &d.llm_gateway_base_url),
             route_stub: env_truthy("NASIKO_ROUTE_STUB"),
+            route_token: env_first(&["NASIKO_ROUTE_TOKEN"], &d.route_token),
         }
     }
 

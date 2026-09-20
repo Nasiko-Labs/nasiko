@@ -3,4 +3,6 @@ __pycache__/
 *.pyc
 *.egg-info/
 demo-screenshots/
+demo-video/node_modules/
+demo-video/out/
 .env

@@ -102,6 +102,18 @@ const CHEAP: &[TierCandidate] = &[
         in_rate_per_1k: 0.00015,
         out_rate_per_1k: 0.0006,
     },
+    TierCandidate {
+        provider: "ollama",
+        model: "llama3.2",
+        in_rate_per_1k: 0.0,
+        out_rate_per_1k: 0.0,
+    },
+    TierCandidate {
+        provider: "azure",
+        model: "gpt-4o-mini",
+        in_rate_per_1k: 0.00015,
+        out_rate_per_1k: 0.0006,
+    },
     NVIDIA_FALLBACK,
 ];
 
@@ -123,6 +135,18 @@ const BALANCED: &[TierCandidate] = &[
         model: "gemini-2.0-flash",
         in_rate_per_1k: 0.0001,
         out_rate_per_1k: 0.0004,
+    },
+    TierCandidate {
+        provider: "azure",
+        model: "gpt-4o",
+        in_rate_per_1k: 0.0025,
+        out_rate_per_1k: 0.01,
+    },
+    TierCandidate {
+        provider: "ollama",
+        model: "mistral",
+        in_rate_per_1k: 0.0,
+        out_rate_per_1k: 0.0,
     },
     NVIDIA_FALLBACK,
 ];

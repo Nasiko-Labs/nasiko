@@ -28,3 +28,7 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["src*"]
+
+# Dashboard HTML must ship in wheels (non-editable installs).
+[tool.setuptools.package-data]
+src = ["static/*"]

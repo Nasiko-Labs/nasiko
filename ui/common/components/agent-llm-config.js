@@ -261,7 +261,7 @@ class AgentLlmConfig extends HTMLElement {
 
     const cascadeOn = this.#tierCascade;
     const cascadeHint = cascadeOn
-      ? 'On: /v1/route picks any cheap\tover\u2192premium provider with platform keys (ignores this agent\u2019s BYOK provider).'
+      ? 'On: /v1/route picks any cheap\u2192balanced\u2192premium provider with platform keys (ignores this agent\u2019s BYOK provider).'
       : 'Off: /v1/route sticks to this agent\u2019s selected provider / BYOK (e.g. NVIDIA).';
 
     this.innerHTML = `

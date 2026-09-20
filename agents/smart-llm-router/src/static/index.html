@@ -307,12 +307,18 @@
       prompt.textContent = ev.prompt || "(empty)";
       const meta = document.createElement("div");
       meta.className = "meta";
-      const tier = ev.requested_tier || ev.tier_used || "";
-      meta.innerHTML =
-        `<span class="pill ${tier}">${tier || "—"}</span> ` +
-        `${ev.provider || "—"}/${ev.model || "—"} · ` +
-        `in ${ev.prompt_tokens ?? "—"} / out ${ev.completion_tokens ?? "—"} · ` +
-        `${ev.source || ""}`;
+      const rawTier = String(ev.requested_tier || ev.tier_used || "");
+      const tierClass = ["cheap", "balanced", "premium"].includes(rawTier) ? rawTier : "";
+      const pill = document.createElement("span");
+      pill.className = "pill" + (tierClass ? " " + tierClass : "");
+      pill.textContent = rawTier || "—";
+      meta.appendChild(pill);
+      meta.appendChild(document.createTextNode(
+        " " +
+        (ev.provider || "—") + "/" + (ev.model || "—") + " · " +
+        "in " + (ev.prompt_tokens ?? "—") + " / out " + (ev.completion_tokens ?? "—") + " · " +
+        (ev.source || "")
+      ));
       left.appendChild(prompt);
       left.appendChild(meta);
       const right = document.createElement("div");
@@ -332,6 +338,10 @@
       row.appendChild(left);
       row.appendChild(right);
       feed.prepend(row);
+      // Cap rendered history so a long-lived tab does not grow forever.
+      while (feed.children.length > 40) {
+        feed.removeChild(feed.lastElementChild);
+      }
     }
 
     function ingest(ev) {
@@ -353,6 +363,11 @@
       labels.push(label);
       seriesBaseline.push(cumBaseline);
       seriesActual.push(cumActual);
+      if (labels.length > 48) {
+        labels.shift();
+        seriesBaseline.shift();
+        seriesActual.shift();
+      }
       chartCumulative.update("none");
 
       perCallLabels.push(label);

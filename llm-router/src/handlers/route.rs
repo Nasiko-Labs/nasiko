@@ -167,9 +167,49 @@ pub async fn route(
                 Some(cheap.provider),
             );
         }
-        let _ = (proj_c, cheap);
+        let _ = cheap;
+        // Carry the projected (capped) completion budget into provider calls.
+        let max_tokens = Some(proj_c.max(1));
+        return route_after_budget(
+            ctx,
+            headers,
+            parsed,
+            ir_messages,
+            prompt_tokens,
+            max_tokens,
+            task_type,
+            started,
+            trace_id,
+        )
+        .await;
     }
 
+    route_after_budget(
+        ctx,
+        headers,
+        parsed,
+        ir_messages,
+        prompt_tokens,
+        None,
+        task_type,
+        started,
+        trace_id,
+    )
+    .await
+}
+
+/// Shared body after budget validation (keeps max_tokens projection in one place).
+async fn route_after_budget(
+    ctx: LlmRouterCtx,
+    headers: HeaderMap,
+    parsed: RouteBody,
+    ir_messages: Vec<Message>,
+    prompt_tokens: i64,
+    max_tokens: Option<i64>,
+    task_type: String,
+    started: Instant,
+    trace_id: String,
+) -> Response {
     let header_tier = headers.get("x-nasiko-tier").and_then(|v| v.to_str().ok());
     let mut tier = resolve_tier(header_tier, parsed.complexity, parsed.budget_tokens);
 
@@ -188,6 +228,12 @@ pub async fn route(
             started,
             trace_id,
         );
+    }
+
+    // Optional shared secret for unauthenticated billable cascade (set NASIKO_ROUTE_TOKEN).
+    // Agent JWT still unlocks the tier_cascade=false (BYOK) path below.
+    if let Err(resp) = require_route_credential(&headers, &ctx.cfg) {
+        return resp;
     }
 
     // Stick-to-selected-provider: agent JWT + agents.tier_cascade = false.
@@ -241,8 +287,14 @@ pub async fn route(
         );
     }
 
-    let max_tokens = parsed.budget_tokens.map(|b| (b - prompt_tokens).max(1));
+    // Prefer projected completion budget when present; else derive from raw budget.
+    let max_tokens = max_tokens.or_else(|| {
+        parsed
+            .budget_tokens
+            .map(|b| projected_completion_tokens(prompt_tokens, Some(b)).max(1))
+    });
     let mut last_provider_err: Option<(String, ProviderError)> = None;
+    let mut saw_rate_limit = false;
 
     for candidate in &keyed {
         let resolved = platform_resolved(candidate, &ctx.cfg, max_tokens);
@@ -320,13 +372,8 @@ pub async fn route(
                     error = %e,
                     "route: provider failed; considering cascade"
                 );
-                if let ProviderError::Status { status: 429, .. } = e {
-                    return err_response(
-                        StatusCode::TOO_MANY_REQUESTS,
-                        "rate_limited",
-                        &e.to_string(),
-                        Some(candidate.provider),
-                    );
+                if let ProviderError::Status { status: 429, .. } = &e {
+                    saw_rate_limit = true;
                 }
                 last_provider_err = Some((candidate.provider.to_string(), e));
             }
@@ -334,6 +381,16 @@ pub async fn route(
     }
 
     if let Some((provider, err)) = last_provider_err {
+        if saw_rate_limit {
+            if let ProviderError::Status { status: 429, .. } = &err {
+                return err_response(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "rate_limited",
+                    &err.to_string(),
+                    Some(&provider),
+                );
+            }
+        }
         return err_response(
             StatusCode::BAD_GATEWAY,
             "provider_error",
@@ -348,6 +405,38 @@ pub async fn route(
         "no provider satisfied the tier cascade",
         None,
     )
+}
+
+fn require_route_credential(headers: &HeaderMap, cfg: &GatewayConfig) -> Result<(), Response> {
+    let expected = cfg.route_token.trim();
+    if expected.is_empty() {
+        return Ok(());
+    }
+    // Agent JWT satisfies auth (selected-provider path / trusted agent).
+    if optional_agent(headers, cfg).is_some() {
+        return Ok(());
+    }
+    let header = headers
+        .get("x-nasiko-route-token")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let auth = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let bearer = auth
+        .strip_prefix("Bearer ")
+        .or_else(|| auth.strip_prefix("bearer "))
+        .unwrap_or("");
+    if header == expected || bearer == expected {
+        return Ok(());
+    }
+    Err(err_response(
+        StatusCode::UNAUTHORIZED,
+        "unauthorized",
+        "NASIKO_ROUTE_TOKEN required (or a valid agent JWT)",
+        None,
+    ))
 }
 
 fn optional_agent(headers: &HeaderMap, cfg: &GatewayConfig) -> Option<(String, String)> {
@@ -487,6 +576,10 @@ fn estimate_cost_usd(provider: &str, model: &str, prompt: i64, completion: i64) 
 }
 
 fn has_platform_key(cfg: &GatewayConfig, provider: &str) -> bool {
+    // Ollama is local — empty platform key is fine (provider sends a dummy bearer).
+    if provider == "ollama" {
+        return true;
+    }
     !cfg.platform_key_for(provider).is_empty()
 }
 

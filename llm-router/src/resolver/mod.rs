@@ -475,24 +475,57 @@ fn plan_config(
         // from the request body), falling back to the platform defaults only per-field when
         // the request didn't supply one — DEFAULT_PROVIDER/DEFAULT_MODEL are the last-resort
         // safety net, not the first choice.
-        None => ConfigPlan {
-            provider: hint
-                .provider
-                .map(str::to_string)
-                .unwrap_or_else(|| cfg.default_provider.clone()),
-            model: hint
-                .model
-                .map(str::to_string)
-                .unwrap_or_else(|| cfg.default_model.clone()),
-            fallback_models: Vec::new(),
-            temperature: None,
-            max_tokens: None,
-            api_key_secret_name: None,
-            pinned_model: agent_pinned_model.map(str::to_string),
-            tier1_model: None,
-            tier2_model: None,
-            tier3_model: None,
-        },
+        // Catalog ids are `provider/model` (and for Groq sometimes `provider/org/model`);
+        // parse that so selecting a catalog entry routes to the right upstream.
+        None => {
+            let (hint_provider, hint_model) = split_catalog_model(hint.model);
+            ConfigPlan {
+                provider: hint_provider
+                    .or(hint.provider)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| cfg.default_provider.clone()),
+                model: hint_model
+                    .map(str::to_string)
+                    .or_else(|| hint.model.map(str::to_string))
+                    .unwrap_or_else(|| cfg.default_model.clone()),
+                fallback_models: Vec::new(),
+                temperature: None,
+                max_tokens: None,
+                api_key_secret_name: None,
+                pinned_model: agent_pinned_model.map(str::to_string),
+                tier1_model: None,
+                tier2_model: None,
+                tier3_model: None,
+            }
+        }
+    }
+}
+
+/// Known `/v1/models` providers. First path segment of a catalog id is the provider;
+/// the remainder is the upstream model id.
+const CATALOG_PROVIDERS: &[&str] = &[
+    "openai",
+    "anthropic",
+    "gemini",
+    "groq",
+    "mistral",
+    "ollama",
+    "azure",
+    "nvidia",
+    "openrouter",
+];
+
+fn split_catalog_model(raw: Option<&str>) -> (Option<&str>, Option<&str>) {
+    let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return (None, None);
+    };
+    let Some((head, rest)) = raw.split_once('/') else {
+        return (None, Some(raw));
+    };
+    if CATALOG_PROVIDERS.contains(&head) && !rest.is_empty() {
+        (Some(head), Some(rest))
+    } else {
+        (None, Some(raw))
     }
 }
 
@@ -530,6 +563,10 @@ async fn resolve_api_key(
 fn platform_key(cfg: &GatewayConfig, provider: &str) -> Result<String, GatewayError> {
     let key = cfg.platform_key_for(provider);
     if key.is_empty() {
+        // Local Ollama needs no real key; the provider normalizes empty → "ollama".
+        if provider == "ollama" {
+            return Ok(String::new());
+        }
         Err(GatewayError::NoApiKey)
     } else {
         Ok(key.to_string())

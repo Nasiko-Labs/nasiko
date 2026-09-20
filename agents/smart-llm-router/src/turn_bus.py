@@ -200,9 +200,13 @@ async def _forward_event(event: TurnEvent) -> None:
     url = _analytics_ingest_url()
     if not url:
         return
+    headers: dict[str, str] = {}
+    token = (os.environ.get("ANALYTICS_TOKEN") or os.environ.get("DASHBOARD_TOKEN") or "").strip()
+    if token:
+        headers["x-analytics-token"] = token
     try:
         async with httpx.AsyncClient(timeout=2.0) as client:
-            await client.post(url, json=event.to_dict())
+            await client.post(url, json=event.to_dict(), headers=headers)
     except Exception as e:
         logging.getLogger(__name__).debug("analytics ingest failed: %s", e)
 

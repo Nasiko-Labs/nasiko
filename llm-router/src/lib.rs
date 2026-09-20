@@ -212,7 +212,8 @@ pub fn router(ctx: LlmRouterCtx) -> Router {
         )
         .route("/v1/embeddings", post(handlers::embeddings::embeddings))
         .route("/v1/models", get(handlers::models::models))
-        // DronaHQ contract: tier-hinted routing (platform keys, no agent JWT).
+        // DronaHQ contract: tier-hinted routing (platform keys). Optional NASIKO_ROUTE_TOKEN
+        // for anonymous callers; agent JWT always accepted.
         .route("/v1/route", post(handlers::route::route))
         .with_state(ctx)
 }

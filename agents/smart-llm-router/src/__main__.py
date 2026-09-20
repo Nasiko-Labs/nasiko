@@ -1,6 +1,20 @@
+"""Smart LLM Router entrypoint.
+
+Docker / `python src/__main__.py` and `pip install` both work: we put this
+directory on `sys.path` so sibling modules resolve as top-level imports.
+"""
+
+from __future__ import annotations
+
 import logging
 import os
+import sys
 from pathlib import Path
+
+# After `pip install`, `src` is a package but siblings are not on sys.path.
+_SRC_DIR = Path(__file__).resolve().parent
+if str(_SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(_SRC_DIR))
 
 from dotenv import load_dotenv
 
@@ -44,17 +58,40 @@ CORS_ORIGINS = [
 ]
 
 
+def _dashboard_token() -> str:
+    """Shared secret for /api/stats|/api/events|/api/ingest|/api/turn when set."""
+    return (os.environ.get("ANALYTICS_TOKEN") or os.environ.get("DASHBOARD_TOKEN") or "").strip()
+
+
+def _require_dashboard_auth(request: Request) -> JSONResponse | None:
+    """When ANALYTICS_TOKEN is set, require matching Bearer / x-analytics-token / ?token=."""
+    expected = _dashboard_token()
+    if not expected:
+        return None
+    auth = (request.headers.get("authorization") or "").strip()
+    header = (request.headers.get("x-analytics-token") or "").strip()
+    query = (request.query_params.get("token") or "").strip()
+    bearer = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+    if header == expected or bearer == expected or query == expected:
+        return None
+    return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+
 async def ui_index(_request: Request) -> FileResponse:
     """Analytics dashboard — live stream of Nasiko console turns (SSE)."""
     return FileResponse(STATIC_DIR / "index.html")
 
 
-async def api_stats(_request: Request) -> JSONResponse:
+async def api_stats(request: Request) -> JSONResponse:
+    if denied := _require_dashboard_auth(request):
+        return denied
     return JSONResponse(BUS.snapshot())
 
 
 async def api_ingest(request: Request) -> JSONResponse:
     """Receive analytics from a deployed agent container (async fan-in)."""
+    if denied := _require_dashboard_auth(request):
+        return denied
     try:
         body = await request.json()
     except Exception:
@@ -67,8 +104,10 @@ async def api_ingest(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "id": event.id})
 
 
-async def api_events(_request: Request) -> StreamingResponse:
+async def api_events(request: Request):
     """Server-Sent Events: every console/UI turn after smart routing completes."""
+    if denied := _require_dashboard_auth(request):
+        return denied
     queue = BUS.subscribe()
 
     async def gen():
@@ -100,6 +139,8 @@ async def api_events(_request: Request) -> StreamingResponse:
 
 
 async def api_turn(request: Request) -> JSONResponse:
+    if denied := _require_dashboard_auth(request):
+        return denied
     try:
         body = await request.json()
     except Exception:
