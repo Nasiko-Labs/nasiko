@@ -371,6 +371,19 @@ mod tests {
         assert_eq!(attempts[0].provider, "anthropic");
     }
 
+    #[test]
+    fn parameter_retry_cannot_strip_parallel_tool_policy() {
+        let mut req: ChatRequest = serde_json::from_value(json!({
+            "messages": [{ "role": "user", "content": "hi" }],
+            "parallel_tool_calls": false
+        }))
+        .unwrap();
+        let mut resolved = primary("anthropic", vec![]);
+
+        assert!(!strip_param(&mut req, &mut resolved, "parallel_tool_calls"));
+        assert_eq!(req.parallel_tool_calls, Some(false));
+    }
+
     #[tokio::test]
     async fn primary_failure_falls_back_to_openai_and_reports_effective() {
         // Primary Anthropic returns 401 (bad key); fallback OpenAI succeeds.

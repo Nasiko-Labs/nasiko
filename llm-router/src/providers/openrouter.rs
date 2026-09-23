@@ -11,7 +11,7 @@ use futures::stream::BoxStream;
 use serde_json::json;
 
 use super::sse::sse_data_stream;
-use super::{ProviderClient, ProviderError};
+use super::{ProviderClient, ProviderError, tool_policy::validate_provider_tool_policy};
 use crate::ir::{ChatChunk, ChatRequest, ChatResponse, EmbeddingsRequest, EmbeddingsResponse};
 use crate::resolver::ResolvedConfig;
 
@@ -66,6 +66,7 @@ impl ProviderClient for OpenRouterProvider {
         req: &ChatRequest,
         cfg: &ResolvedConfig,
     ) -> Result<ChatResponse, ProviderError> {
+        validate_provider_tool_policy("openrouter", req)?;
         let mut out = req.clone();
         out.model = Some(cfg.model.clone()); // C4: resolved model is authoritative
         out.temperature = cfg.temperature.or(req.temperature);
@@ -100,6 +101,7 @@ impl ProviderClient for OpenRouterProvider {
         req: &ChatRequest,
         cfg: &ResolvedConfig,
     ) -> Result<BoxStream<'static, Result<ChatChunk, ProviderError>>, ProviderError> {
+        validate_provider_tool_policy("openrouter", req)?;
         let mut out = req.clone();
         out.model = Some(cfg.model.clone());
         out.temperature = cfg.temperature.or(req.temperature);
@@ -226,6 +228,7 @@ mod tests {
             tier2_model: None,
             tier3_model: None,
             platform_paid: true,
+            is_coding_agent: false,
         }
     }
 
