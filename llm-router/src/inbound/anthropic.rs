@@ -60,8 +60,18 @@ impl InboundParser for AnthropicInbound {
         if let Some(tools) = body.get("tools").and_then(Value::as_array) {
             oa["tools"] = json!(tools.iter().map(tool_from_anthropic).collect::<Vec<_>>());
         }
-        if let Some(tc) = body.get("tool_choice").and_then(tool_choice_from_anthropic) {
-            oa["tool_choice"] = tc;
+        if let Some(tc) = body.get("tool_choice") {
+            oa["tool_choice"] = tool_choice_from_anthropic(tc).map_err(|e| {
+                GatewayError::BadRequest(format!("invalid anthropic tool_choice: {e}"))
+            })?;
+            if let Some(disable_parallel) = tc.get("disable_parallel_tool_use") {
+                let Some(disable_parallel) = disable_parallel.as_bool() else {
+                    return Err(GatewayError::BadRequest(
+                        "invalid anthropic tool_choice: disable_parallel_tool_use must be a boolean".to_string(),
+                    ));
+                };
+                oa["parallel_tool_calls"] = json!(!disable_parallel);
+            }
         }
 
         serde_json::from_value(oa)
@@ -238,19 +248,28 @@ fn tool_from_anthropic(t: &Value) -> Value {
     if let Some(s) = t.get("input_schema") {
         function["parameters"] = s.clone();
     }
-    json!({ "type": "function", "function": function })
+    if let Some(strict) = t.get("strict") {
+        function["strict"] = strict.clone();
+    }
+    let mut tool = json!({ "type": "function", "function": function });
+    if let Some(allowed_callers) = t.get("allowed_callers") {
+        tool["allowed_callers"] = allowed_callers.clone();
+    }
+    tool
 }
 
 /// Anthropic `tool_choice` → OpenAI `tool_choice` (inverse of the outbound mapping).
-fn tool_choice_from_anthropic(v: &Value) -> Option<Value> {
+fn tool_choice_from_anthropic(v: &Value) -> Result<Value, String> {
     match v.get("type").and_then(Value::as_str) {
-        Some("auto") => Some(json!("auto")),
-        Some("any") => Some(json!("required")),
+        Some("auto") => Ok(json!("auto")),
+        Some("any") => Ok(json!("required")),
+        Some("none") => Ok(json!("none")),
         Some("tool") => v
             .get("name")
             .and_then(Value::as_str)
-            .map(|name| json!({ "type": "function", "function": { "name": name } })),
-        _ => None,
+            .map(|name| json!({ "type": "function", "function": { "name": name } }))
+            .ok_or_else(|| "tool choice requires a name".to_string()),
+        _ => Err("unsupported tool choice type".to_string()),
     }
 }
 
@@ -499,6 +518,45 @@ mod tests {
             "string"
         );
         assert_eq!(req.tool_choice, Some(json!("auto")));
+    }
+
+    #[test]
+    fn parse_preserves_none_parallel_strict_and_allowed_callers() {
+        let req = AnthropicInbound
+            .parse_chat(json!({
+                "messages": [{ "role": "user", "content": "hello" }],
+                "tools": [{
+                    "name": "run_task",
+                    "input_schema": { "type": "object" },
+                    "strict": true,
+                    "allowed_callers": ["direct"]
+                }],
+                "tool_choice": { "type": "none" }
+            }))
+            .unwrap();
+
+        assert_eq!(req.tool_choice, Some(json!("none")));
+        assert_eq!(req.parallel_tool_calls, None);
+        let tool = &req.tools.as_ref().unwrap()[0];
+        assert_eq!(tool.function.strict, Some(true));
+        assert_eq!(tool.extra["allowed_callers"], json!(["direct"]));
+
+        let req = AnthropicInbound
+            .parse_chat(json!({
+                "messages": [{ "role": "user", "content": "hello" }],
+                "tools": [{ "name": "run_task", "input_schema": { "type": "object" } }],
+                "tool_choice": {
+                    "type": "tool",
+                    "name": "run_task",
+                    "disable_parallel_tool_use": true
+                }
+            }))
+            .unwrap();
+        assert_eq!(
+            req.tool_choice,
+            Some(json!({ "type": "function", "function": { "name": "run_task" } }))
+        );
+        assert_eq!(req.parallel_tool_calls, Some(false));
     }
 
     #[test]

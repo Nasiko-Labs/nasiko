@@ -18,7 +18,13 @@ use futures::stream::BoxStream;
 use serde_json::{Map, Value, json};
 
 use super::sse::sse_data_stream;
-use super::{ProviderClient, ProviderError, delta_chunk, finish_chunk, now_unix, usage_chunk};
+use super::{
+    ProviderClient, ProviderError, delta_chunk, finish_chunk, now_unix,
+    tool_policy::{
+        AllowedToolsMode, ToolChoicePolicy, filtered_tools, validate_provider_tool_policy,
+    },
+    usage_chunk,
+};
 use crate::ir::{
     ChatChunk, ChatRequest, ChatResponse, Choice, Delta, EmbeddingsRequest, EmbeddingsResponse,
     FunctionCall, FunctionCallDelta, Message, ToolCall, ToolCallDelta, ToolDef, Usage,
@@ -48,7 +54,7 @@ impl ProviderClient for AnthropicProvider {
         req: &ChatRequest,
         cfg: &ResolvedConfig,
     ) -> Result<ChatResponse, ProviderError> {
-        let body = to_anthropic_request(req, cfg);
+        let body = to_anthropic_request(req, cfg)?;
 
         let resp = self
             .http
@@ -82,7 +88,7 @@ impl ProviderClient for AnthropicProvider {
         req: &ChatRequest,
         cfg: &ResolvedConfig,
     ) -> Result<BoxStream<'static, Result<ChatChunk, ProviderError>>, ProviderError> {
-        let mut body = to_anthropic_request(req, cfg);
+        let mut body = to_anthropic_request(req, cfg)?;
         body["stream"] = json!(true);
 
         let resp = self
@@ -270,7 +276,8 @@ impl ProviderClient for AnthropicProvider {
 
 // ── OpenAI → Anthropic (request) ─────────────────────────────────────────────
 
-fn to_anthropic_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Value {
+fn to_anthropic_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Result<Value, ProviderError> {
+    let tool_choice = validate_provider_tool_policy("anthropic", req)?;
     let mut system_parts: Vec<String> = Vec::new();
     let mut messages: Vec<Value> = Vec::new();
     let mut pending_tool_results: Vec<Value> = Vec::new();
@@ -319,15 +326,21 @@ fn to_anthropic_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Value {
         body["system"] = json!(system_parts.join("\n"));
     }
     if let Some(tools) = &req.tools {
-        let translated: Vec<Value> = tools.iter().map(tool_to_anthropic).collect();
+        let translated: Vec<Value> = filtered_tools(tools, tool_choice.as_ref())
+            .map(tool_to_anthropic)
+            .collect();
         if !translated.is_empty() {
             body["tools"] = json!(translated);
         }
     }
-    if let Some(choice) = req.tool_choice.as_ref().and_then(tool_choice_to_anthropic) {
+    if let Some(choice) = tool_choice_to_anthropic(
+        tool_choice.as_ref(),
+        req.parallel_tool_calls,
+        req.tools.as_ref().is_some_and(|tools| !tools.is_empty()),
+    ) {
         body["tool_choice"] = choice;
     }
-    body
+    Ok(body)
 }
 
 fn flush_tool_results(pending: &mut Vec<Value>, messages: &mut Vec<Value>) {
@@ -376,23 +389,40 @@ fn tool_to_anthropic(t: &ToolDef) -> Value {
     if let Some(desc) = &t.function.description {
         out["description"] = json!(desc);
     }
+    if let Some(strict) = t.function.strict {
+        out["strict"] = json!(strict);
+    }
+    if let Some(allowed_callers) = t.extra.get("allowed_callers") {
+        out["allowed_callers"] = allowed_callers.clone();
+    }
     out
 }
 
-fn tool_choice_to_anthropic(choice: &Value) -> Option<Value> {
-    match choice {
-        Value::String(s) => match s.as_str() {
-            "required" => Some(json!({ "type": "any" })),
-            "none" => None, // Anthropic has no "none"; omit
-            _ => Some(json!({ "type": "auto" })),
+fn tool_choice_to_anthropic(
+    policy: Option<&ToolChoicePolicy>,
+    parallel_tool_calls: Option<bool>,
+    has_tools: bool,
+) -> Option<Value> {
+    let mut choice = match policy {
+        Some(ToolChoicePolicy::Auto) => json!({ "type": "auto" }),
+        Some(ToolChoicePolicy::Required) => json!({ "type": "any" }),
+        Some(ToolChoicePolicy::None) => json!({ "type": "none" }),
+        Some(ToolChoicePolicy::Function(name)) => json!({ "type": "tool", "name": name }),
+        Some(ToolChoicePolicy::AllowedTools { names, .. }) if names.is_empty() => {
+            json!({ "type": "none" })
+        }
+        Some(ToolChoicePolicy::AllowedTools { mode, .. }) => match mode {
+            AllowedToolsMode::Auto => json!({ "type": "auto" }),
+            AllowedToolsMode::Required => json!({ "type": "any" }),
         },
-        Value::Object(o) => o
-            .get("function")
-            .and_then(|f| f.get("name"))
-            .and_then(Value::as_str)
-            .map(|name| json!({ "type": "tool", "name": name })),
-        _ => None,
+        None if parallel_tool_calls == Some(false) && has_tools => json!({ "type": "auto" }),
+        None => return None,
+    };
+
+    if parallel_tool_calls == Some(false) && choice["type"] != "none" {
+        choice["disable_parallel_tool_use"] = json!(true);
     }
+    Some(choice)
 }
 
 // ── Anthropic → OpenAI (response) ────────────────────────────────────────────
@@ -585,7 +615,7 @@ mod tests {
             }]
         }))
         .unwrap();
-        let body = to_anthropic_request(&req, &resolved());
+        let body = to_anthropic_request(&req, &resolved()).unwrap();
 
         assert_eq!(body["model"], "claude-3-5-sonnet-20241022");
         assert_eq!(body["max_tokens"], 4000); // from request (config didn't set it)
@@ -603,6 +633,51 @@ mod tests {
     }
 
     #[test]
+    fn none_tool_choice_reaches_anthropic_with_tools_still_declared() {
+        let req: ChatRequest = serde_json::from_value(json!({
+            "messages": [{ "role": "user", "content": "do not call tools" }],
+            "tool_choice": "none",
+            "tools": [
+                { "type": "function", "function": { "name": "tool_a", "parameters": { "type": "object" } } },
+                { "type": "function", "function": { "name": "tool_b", "parameters": { "type": "object" } } }
+            ]
+        }))
+        .unwrap();
+
+        let body = to_anthropic_request(&req, &resolved()).unwrap();
+        assert_eq!(body["tool_choice"], json!({ "type": "none" }));
+        assert_eq!(body["tools"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn allowed_tools_parallel_and_anthropic_tool_metadata_are_preserved() {
+        let req: ChatRequest = serde_json::from_value(json!({
+            "messages": [{ "role": "user", "content": "run the safe tool" }],
+            "parallel_tool_calls": false,
+            "tool_choice": {
+                "type": "allowed_tools",
+                "allowed_tools": {
+                    "mode": "auto",
+                    "tools": [{ "type": "function", "function": { "name": "safe_tool" } }]
+                }
+            },
+            "tools": [
+                { "type": "function", "function": { "name": "safe_tool", "strict": true, "parameters": { "type": "object" } }, "allowed_callers": ["direct"] },
+                { "type": "function", "function": { "name": "admin_tool", "parameters": { "type": "object" } } }
+            ]
+        }))
+        .unwrap();
+
+        let body = to_anthropic_request(&req, &resolved()).unwrap();
+        assert_eq!(body["tool_choice"]["type"], "auto");
+        assert_eq!(body["tool_choice"]["disable_parallel_tool_use"], true);
+        assert_eq!(body["tools"].as_array().unwrap().len(), 1);
+        assert_eq!(body["tools"][0]["name"], "safe_tool");
+        assert_eq!(body["tools"][0]["strict"], true);
+        assert_eq!(body["tools"][0]["allowed_callers"], json!(["direct"]));
+    }
+
+    #[test]
     fn drops_unsupported_openai_params() {
         // drop_params: OpenAI-only params (top_p, frequency_penalty, …) live in `extra`
         // and must NOT be forwarded to Anthropic — the translator only emits mapped fields.
@@ -614,7 +689,7 @@ mod tests {
             "logit_bias": { "50256": -100 }
         }))
         .unwrap();
-        let body = to_anthropic_request(&req, &resolved());
+        let body = to_anthropic_request(&req, &resolved()).unwrap();
         assert!(body.get("top_p").is_none());
         assert!(body.get("frequency_penalty").is_none());
         assert!(body.get("logit_bias").is_none());
@@ -625,7 +700,7 @@ mod tests {
         let req: ChatRequest =
             serde_json::from_value(json!({ "messages": [{ "role": "user", "content": "hi" }] }))
                 .unwrap();
-        let body = to_anthropic_request(&req, &resolved());
+        let body = to_anthropic_request(&req, &resolved()).unwrap();
         assert_eq!(body["max_tokens"], DEFAULT_MAX_TOKENS);
     }
 
@@ -644,7 +719,7 @@ mod tests {
             ]
         }))
         .unwrap();
-        let body = to_anthropic_request(&req, &resolved());
+        let body = to_anthropic_request(&req, &resolved()).unwrap();
         let msgs = body["messages"].as_array().unwrap();
         assert_eq!(msgs.len(), 3);
         // assistant turn carries a tool_use block with the parsed input object

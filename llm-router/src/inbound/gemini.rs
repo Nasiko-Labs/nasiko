@@ -122,6 +122,12 @@ impl InboundParser for GeminiInbound {
         }
 
         let mut oa = json!({ "messages": oa_messages });
+        let validated_function_calls = body
+            .get("toolConfig")
+            .and_then(|config| config.get("functionCallingConfig"))
+            .and_then(|config| config.get("mode"))
+            .and_then(Value::as_str)
+            == Some("VALIDATED");
         if let Some(tools) = body.get("tools").and_then(Value::as_array) {
             let mut decls: Vec<Value> = Vec::new();
             for t in tools {
@@ -138,6 +144,11 @@ impl InboundParser for GeminiInbound {
                     if let Some(p) = fd.get("parameters") {
                         function["parameters"] = p.clone();
                     }
+                    if validated_function_calls
+                        || fd.get("strict").and_then(Value::as_bool) == Some(true)
+                    {
+                        function["strict"] = json!(true);
+                    }
                     decls.push(json!({ "type": "function", "function": function }));
                 }
             }
@@ -145,8 +156,9 @@ impl InboundParser for GeminiInbound {
                 oa["tools"] = json!(decls);
             }
         }
-        if let Some(tc) = body.get("toolConfig").and_then(tool_choice_from_gemini) {
-            oa["tool_choice"] = tc;
+        if let Some(tc) = body.get("toolConfig") {
+            oa["tool_choice"] = tool_choice_from_gemini(tc)
+                .map_err(|e| GatewayError::BadRequest(format!("invalid Gemini toolConfig: {e}")))?;
         }
         if let Some(gc) = body.get("generationConfig") {
             if let Some(t) = gc.get("temperature") {
@@ -246,19 +258,54 @@ fn function_response_text(response: Option<&Value>) -> String {
 }
 
 /// Gemini `toolConfig` → OpenAI `tool_choice` (inverse of the outbound mapping).
-fn tool_choice_from_gemini(tool_config: &Value) -> Option<Value> {
-    let fcc = tool_config.get("functionCallingConfig")?;
-    match fcc.get("mode").and_then(Value::as_str).unwrap_or("AUTO") {
-        "ANY" => fcc
-            .get("allowedFunctionNames")
-            .and_then(Value::as_array)
-            .and_then(|names| names.first())
-            .and_then(Value::as_str)
-            .map(|name| json!({ "type": "function", "function": { "name": name } }))
-            .or_else(|| Some(json!("required"))),
-        "NONE" => Some(json!("none")),
-        _ => Some(json!("auto")),
+fn tool_choice_from_gemini(tool_config: &Value) -> Result<Value, String> {
+    let fcc = tool_config
+        .get("functionCallingConfig")
+        .ok_or_else(|| "functionCallingConfig is required".to_string())?;
+    let mode = fcc.get("mode").and_then(Value::as_str).unwrap_or("AUTO");
+    let allowed_names = match fcc.get("allowedFunctionNames") {
+        None => Vec::new(),
+        Some(value) => value
+            .as_array()
+            .ok_or_else(|| "allowedFunctionNames must be an array".to_string())?
+            .iter()
+            .map(|name| {
+                name.as_str()
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_string)
+                    .ok_or_else(|| {
+                        "allowedFunctionNames entries must be non-empty strings".to_string()
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+    };
+
+    match mode {
+        "AUTO" => Ok(allowed_tools_choice("auto", allowed_names)),
+        "ANY" => Ok(allowed_tools_choice("required", allowed_names)),
+        "VALIDATED" => Ok(allowed_tools_choice("auto", allowed_names)),
+        "NONE" => Ok(json!("none")),
+        _ => Err("unsupported function-calling mode".to_string()),
     }
+}
+
+fn allowed_tools_choice(mode: &str, names: Vec<String>) -> Value {
+    if names.is_empty() {
+        return match mode {
+            "required" => json!("required"),
+            _ => json!("auto"),
+        };
+    }
+    json!({
+        "type": "allowed_tools",
+        "allowed_tools": {
+            "mode": mode,
+            "tools": names.into_iter().map(|name| json!({
+                "type": "function",
+                "function": { "name": name }
+            })).collect::<Vec<_>>(),
+        },
+    })
 }
 
 /// OpenAI `finish_reason` → Gemini `finishReason`. Gemini reports `STOP` even when the
@@ -446,16 +493,58 @@ mod tests {
     }
 
     #[test]
-    fn parse_tool_choice_any_with_allowed_name() {
+    fn parse_tool_choice_preserves_all_allowed_names() {
         let req = GeminiInbound
             .parse_chat(json!({
                 "contents": [{ "role": "user", "parts": [{ "text": "x" }] }],
-                "toolConfig": { "functionCallingConfig": { "mode": "ANY", "allowedFunctionNames": ["f"] } }
+                "toolConfig": { "functionCallingConfig": { "mode": "ANY", "allowedFunctionNames": ["f", "g"] } }
             }))
             .unwrap();
         assert_eq!(
             req.tool_choice,
-            Some(json!({ "type": "function", "function": { "name": "f" } }))
+            Some(json!({
+                "type": "allowed_tools",
+                "allowed_tools": {
+                    "mode": "required",
+                    "tools": [
+                        { "type": "function", "function": { "name": "f" } },
+                        { "type": "function", "function": { "name": "g" } }
+                    ]
+                }
+            }))
+        );
+    }
+
+    #[test]
+    fn parse_tool_choice_none_and_validated_strict_tools() {
+        let none = GeminiInbound
+            .parse_chat(json!({
+                "contents": [{ "role": "user", "parts": [{ "text": "x" }] }],
+                "toolConfig": { "functionCallingConfig": { "mode": "NONE" } }
+            }))
+            .unwrap();
+        assert_eq!(none.tool_choice, Some(json!("none")));
+
+        let validated = GeminiInbound
+            .parse_chat(json!({
+                "contents": [{ "role": "user", "parts": [{ "text": "x" }] }],
+                "tools": [{ "functionDeclarations": [{ "name": "f", "parameters": { "type": "object" } }] }],
+                "toolConfig": { "functionCallingConfig": { "mode": "VALIDATED", "allowedFunctionNames": ["f"] } }
+            }))
+            .unwrap();
+        assert_eq!(
+            validated.tool_choice,
+            Some(json!({
+                "type": "allowed_tools",
+                "allowed_tools": {
+                    "mode": "auto",
+                    "tools": [{ "type": "function", "function": { "name": "f" } }]
+                }
+            }))
+        );
+        assert_eq!(
+            validated.tools.as_ref().unwrap()[0].function.strict,
+            Some(true)
         );
     }
 

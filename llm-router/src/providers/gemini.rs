@@ -20,7 +20,13 @@ use futures::stream::BoxStream;
 use serde_json::{Map, Value, json};
 
 use super::sse::sse_data_stream;
-use super::{ProviderClient, ProviderError, delta_chunk, finish_chunk, now_unix, usage_chunk};
+use super::{
+    ProviderClient, ProviderError, delta_chunk, finish_chunk, now_unix,
+    tool_policy::{
+        AllowedToolsMode, ToolChoicePolicy, filtered_tools, validate_provider_tool_policy,
+    },
+    usage_chunk,
+};
 use crate::ir::{
     ChatChunk, ChatRequest, ChatResponse, Choice, Delta, Embedding, EmbeddingsRequest,
     EmbeddingsResponse, FunctionCall, FunctionCallDelta, Message, ToolCall, ToolCallDelta, Usage,
@@ -46,7 +52,7 @@ impl ProviderClient for GeminiProvider {
         req: &ChatRequest,
         cfg: &ResolvedConfig,
     ) -> Result<ChatResponse, ProviderError> {
-        let body = to_gemini_request(req, cfg);
+        let body = to_gemini_request(req, cfg)?;
 
         let resp = self
             .http
@@ -82,7 +88,7 @@ impl ProviderClient for GeminiProvider {
         req: &ChatRequest,
         cfg: &ResolvedConfig,
     ) -> Result<BoxStream<'static, Result<ChatChunk, ProviderError>>, ProviderError> {
-        let body = to_gemini_request(req, cfg);
+        let body = to_gemini_request(req, cfg)?;
 
         let resp = self
             .http
@@ -277,7 +283,8 @@ impl ProviderClient for GeminiProvider {
 
 // ── OpenAI → Gemini (request) ────────────────────────────────────────────────
 
-fn to_gemini_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Value {
+fn to_gemini_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Result<Value, ProviderError> {
+    let tool_choice = validate_provider_tool_policy("gemini", req)?;
     let mut system_parts: Vec<String> = Vec::new();
     let mut contents: Vec<Value> = Vec::new();
     let mut id_to_name: HashMap<String, String> = HashMap::new();
@@ -326,7 +333,11 @@ fn to_gemini_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Value {
         body["systemInstruction"] = json!({ "parts": [{ "text": system_parts.join("\n") }] });
     }
     if let Some(tools) = &req.tools {
-        let decls: Vec<Value> = tools
+        let selected_tools: Vec<_> = filtered_tools(tools, tool_choice.as_ref()).collect();
+        let strict_tools = selected_tools
+            .iter()
+            .any(|tool| tool.function.strict == Some(true));
+        let decls: Vec<Value> = selected_tools
             .iter()
             .map(|t| {
                 let mut d = json!({ "name": t.function.name });
@@ -342,8 +353,10 @@ fn to_gemini_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Value {
         if !decls.is_empty() {
             body["tools"] = json!([{ "functionDeclarations": decls }]);
         }
-    }
-    if let Some(tool_config) = req.tool_choice.as_ref().and_then(tool_choice_to_gemini) {
+        if let Some(tool_config) = tool_choice_to_gemini(tool_choice.as_ref(), strict_tools) {
+            body["toolConfig"] = tool_config;
+        }
+    } else if let Some(tool_config) = tool_choice_to_gemini(tool_choice.as_ref(), false) {
         body["toolConfig"] = tool_config;
     }
 
@@ -357,7 +370,7 @@ fn to_gemini_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Value {
     if !gen_cfg.is_empty() {
         body["generationConfig"] = Value::Object(gen_cfg);
     }
-    body
+    Ok(body)
 }
 
 fn flush_fn_responses(pending: &mut Vec<Value>, contents: &mut Vec<Value>) {
@@ -386,25 +399,29 @@ fn assistant_to_gemini(m: &Message) -> Value {
     json!({ "role": "model", "parts": parts })
 }
 
-fn tool_choice_to_gemini(choice: &Value) -> Option<Value> {
-    match choice {
-        Value::String(s) => {
-            let mode = match s.as_str() {
-                "required" => "ANY",
-                "none" => "NONE",
-                _ => "AUTO",
-            };
-            Some(json!({ "functionCallingConfig": { "mode": mode } }))
-        }
-        Value::Object(o) => o
-            .get("function")
-            .and_then(|f| f.get("name"))
-            .and_then(Value::as_str)
-            .map(|name| {
-                json!({ "functionCallingConfig": { "mode": "ANY", "allowedFunctionNames": [name] } })
-            }),
-        _ => None,
+fn tool_choice_to_gemini(policy: Option<&ToolChoicePolicy>, strict_tools: bool) -> Option<Value> {
+    let (mode, allowed_names) = match policy {
+        Some(ToolChoicePolicy::Auto) => (if strict_tools { "VALIDATED" } else { "AUTO" }, None),
+        Some(ToolChoicePolicy::Required) => ("ANY", None),
+        Some(ToolChoicePolicy::None) => ("NONE", None),
+        Some(ToolChoicePolicy::Function(name)) => ("ANY", Some(vec![name.clone()])),
+        Some(ToolChoicePolicy::AllowedTools { names, .. }) if names.is_empty() => ("NONE", None),
+        Some(ToolChoicePolicy::AllowedTools { mode, names }) => match mode {
+            AllowedToolsMode::Auto => (
+                if strict_tools { "VALIDATED" } else { "AUTO" },
+                Some(names.clone()),
+            ),
+            AllowedToolsMode::Required => ("ANY", Some(names.clone())),
+        },
+        None if strict_tools => ("VALIDATED", None),
+        None => return None,
+    };
+
+    let mut config = json!({ "mode": mode });
+    if let Some(names) = allowed_names {
+        config["allowedFunctionNames"] = json!(names);
     }
+    Some(json!({ "functionCallingConfig": config }))
 }
 
 // ── Gemini → OpenAI (response) ───────────────────────────────────────────────
@@ -529,7 +546,7 @@ mod tests {
             }]
         }))
         .unwrap();
-        let body = to_gemini_request(&req, &resolved());
+        let body = to_gemini_request(&req, &resolved()).unwrap();
 
         assert_eq!(
             body["systemInstruction"]["parts"][0]["text"],
@@ -543,6 +560,77 @@ mod tests {
         assert_eq!(decl["parameters"]["properties"]["text"]["type"], "string");
         assert_eq!(body["generationConfig"]["temperature"], 0.1);
         assert_eq!(body["generationConfig"]["maxOutputTokens"], 4000);
+    }
+
+    #[test]
+    fn allowed_tools_filters_gemini_declarations_and_names() {
+        let req: ChatRequest = serde_json::from_value(json!({
+            "messages": [{ "role": "user", "content": "run the safe tool" }],
+            "tool_choice": {
+                "type": "allowed_tools",
+                "allowed_tools": {
+                    "mode": "auto",
+                    "tools": [{ "type": "function", "function": { "name": "safe_tool" } }]
+                }
+            },
+            "tools": [
+                { "type": "function", "function": { "name": "safe_tool", "parameters": { "type": "object" } } },
+                { "type": "function", "function": { "name": "admin_tool", "parameters": { "type": "object" } } }
+            ]
+        }))
+        .unwrap();
+
+        let body = to_gemini_request(&req, &resolved()).unwrap();
+        assert_eq!(
+            body["tools"][0]["functionDeclarations"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            body["tools"][0]["functionDeclarations"][0]["name"],
+            "safe_tool"
+        );
+        assert_eq!(body["toolConfig"]["functionCallingConfig"]["mode"], "AUTO");
+        assert_eq!(
+            body["toolConfig"]["functionCallingConfig"]["allowedFunctionNames"],
+            json!(["safe_tool"])
+        );
+    }
+
+    #[test]
+    fn rejects_gemini_requests_with_unenforceable_tool_restrictions() {
+        let parallel: ChatRequest = serde_json::from_value(json!({
+            "messages": [{ "role": "user", "content": "hi" }],
+            "parallel_tool_calls": false,
+            "tools": [{ "type": "function", "function": { "name": "f" } }]
+        }))
+        .unwrap();
+        assert!(matches!(
+            to_gemini_request(&parallel, &resolved()),
+            Err(ProviderError::InvalidRequest(_))
+        ));
+
+        let callers: ChatRequest = serde_json::from_value(json!({
+            "messages": [{ "role": "user", "content": "hi" }],
+            "tools": [{ "type": "function", "function": { "name": "f" }, "allowed_callers": ["direct"] }]
+        }))
+        .unwrap();
+        assert!(matches!(
+            to_gemini_request(&callers, &resolved()),
+            Err(ProviderError::InvalidRequest(_))
+        ));
+
+        let strict: ChatRequest = serde_json::from_value(json!({
+            "messages": [{ "role": "user", "content": "hi" }],
+            "tools": [{ "type": "function", "function": { "name": "f", "strict": true } }]
+        }))
+        .unwrap();
+        assert!(matches!(
+            to_gemini_request(&strict, &resolved()),
+            Err(ProviderError::InvalidRequest(_))
+        ));
     }
 
     #[test]
@@ -560,7 +648,7 @@ mod tests {
             ]
         }))
         .unwrap();
-        let body = to_gemini_request(&req, &resolved());
+        let body = to_gemini_request(&req, &resolved()).unwrap();
         let contents = body["contents"].as_array().unwrap();
         assert_eq!(contents.len(), 3);
         // assistant → model functionCall

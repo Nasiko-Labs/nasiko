@@ -29,6 +29,9 @@ pub struct ChatRequest {
     pub tools: Option<Vec<ToolDef>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<Value>,
+    /// Whether the provider may return multiple tool calls in one turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parallel_tool_calls: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -102,6 +105,9 @@ pub struct FunctionDef {
     /// JSON Schema for the tool's arguments.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parameters: Option<Value>,
+    /// Require the provider to validate calls against `parameters` when supported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strict: Option<bool>,
 }
 
 /// An assistant tool call (OpenAI shape). `function.arguments` is a JSON **string**.
@@ -231,10 +237,12 @@ mod tests {
                 "function": {
                     "name": "translate_text",
                     "description": "Translate text",
+                    "strict": true,
                     "parameters": { "type": "object", "properties": { "text": { "type": "string" } } }
                 }
             }],
             "tool_choice": "auto",
+            "parallel_tool_calls": false,
             "temperature": 0.1,
             "max_tokens": 4000,
             "top_p": 0.9,
@@ -247,6 +255,8 @@ mod tests {
             req.tools.as_ref().unwrap()[0].function.name,
             "translate_text"
         );
+        assert_eq!(req.tools.as_ref().unwrap()[0].function.strict, Some(true));
+        assert_eq!(req.parallel_tool_calls, Some(false));
         assert_eq!(req.temperature, Some(0.1));
         assert!(!req.is_streaming());
         // Unknown params land in `extra` and survive a round-trip.
@@ -254,6 +264,8 @@ mod tests {
         let back = serde_json::to_value(&req).unwrap();
         assert_eq!(back["top_p"], json!(0.9));
         assert_eq!(back["frequency_penalty"], json!(0.5));
+        assert_eq!(back["parallel_tool_calls"], false);
+        assert_eq!(back["tools"][0]["function"]["strict"], true);
     }
 
     #[test]

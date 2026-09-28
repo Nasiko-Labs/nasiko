@@ -57,6 +57,7 @@ pub mod gemini;
 pub mod openai;
 pub mod openrouter;
 pub(crate) mod sse;
+mod tool_policy;
 
 pub use anthropic::AnthropicProvider;
 pub use gemini::GeminiProvider;
@@ -126,6 +127,8 @@ pub(crate) fn usage_chunk(id: &str, model: &str, usage: Usage) -> ChatChunk {
 /// transport/5xx faults, never on 4xx request-shape errors.
 #[derive(Debug, thiserror::Error)]
 pub enum ProviderError {
+    #[error("invalid request: {0}")]
+    InvalidRequest(String),
     #[error("provider returned {status}: {message}")]
     Status {
         status: u16,
@@ -142,6 +145,7 @@ impl ProviderError {
     /// Whether this failure is worth retrying against a fallback model.
     pub fn retryable(&self) -> bool {
         match self {
+            ProviderError::InvalidRequest(_) => false,
             ProviderError::Status { retryable, .. } => *retryable,
             ProviderError::Transport(_) => true,
             ProviderError::Parse(_) => false,
@@ -151,7 +155,12 @@ impl ProviderError {
 
 impl From<ProviderError> for GatewayError {
     fn from(e: ProviderError) -> Self {
-        GatewayError::Upstream(e.to_string())
+        match e {
+            ProviderError::InvalidRequest(message) => {
+                GatewayError::BadRequest(format!("invalid chat request: {message}"))
+            }
+            other => GatewayError::Upstream(other.to_string()),
+        }
     }
 }
 
@@ -196,6 +205,7 @@ mod tests {
 
     #[test]
     fn retryability_rules() {
+        assert!(!ProviderError::InvalidRequest("unsupported".into()).retryable());
         assert!(ProviderError::Transport("timeout".into()).retryable());
         assert!(!ProviderError::Parse("bad json".into()).retryable());
         assert!(
@@ -221,5 +231,12 @@ mod tests {
         let g: GatewayError = ProviderError::Transport("boom".into()).into();
         assert!(matches!(g, GatewayError::Upstream(_)));
         assert_eq!(g.status(), axum::http::StatusCode::BAD_GATEWAY);
+    }
+
+    #[test]
+    fn converts_invalid_request_to_bad_request() {
+        let g: GatewayError = ProviderError::InvalidRequest("unsupported policy".into()).into();
+        assert!(matches!(g, GatewayError::BadRequest(_)));
+        assert_eq!(g.status(), axum::http::StatusCode::BAD_REQUEST);
     }
 }

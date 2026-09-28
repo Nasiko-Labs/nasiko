@@ -11,7 +11,7 @@ use futures::stream::BoxStream;
 use serde_json::json;
 
 use super::sse::sse_data_stream;
-use super::{ProviderClient, ProviderError};
+use super::{ProviderClient, ProviderError, tool_policy::validate_provider_tool_policy};
 use crate::ir::{ChatChunk, ChatRequest, ChatResponse, EmbeddingsRequest, EmbeddingsResponse};
 use crate::resolver::ResolvedConfig;
 
@@ -44,6 +44,7 @@ impl ProviderClient for OpenAiProvider {
         req: &ChatRequest,
         cfg: &ResolvedConfig,
     ) -> Result<ChatResponse, ProviderError> {
+        validate_provider_tool_policy("openai", req)?;
         let mut out = req.clone();
         out.model = Some(cfg.model.clone()); // C4: resolved model is authoritative
         out.temperature = cfg.temperature.or(req.temperature); // resolved wins when set
@@ -85,6 +86,7 @@ impl ProviderClient for OpenAiProvider {
         req: &ChatRequest,
         cfg: &ResolvedConfig,
     ) -> Result<BoxStream<'static, Result<ChatChunk, ProviderError>>, ProviderError> {
+        validate_provider_tool_policy("openai", req)?;
         let mut out = req.clone();
         out.model = Some(cfg.model.clone());
         out.temperature = cfg.temperature.or(req.temperature);
@@ -369,6 +371,42 @@ mod tests {
         assert_eq!(resp.choices[0].message.text().as_deref(), Some("hello"));
         assert_eq!(resp.choices[0].finish_reason.as_deref(), Some("stop"));
         assert_eq!(resp.usage.unwrap().total_tokens, Some(7));
+    }
+
+    #[tokio::test]
+    async fn chat_forwards_strict_tool_and_parallel_policy() {
+        let mut server = mockito::Server::new_async().await;
+        let m = server
+            .mock("POST", "/chat/completions")
+            .match_body(mockito::Matcher::PartialJson(json!({
+                "parallel_tool_calls": false,
+                "tool_choice": "none",
+                "tools": [{ "function": { "strict": true } }]
+            })))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(json!({
+                "id": "chatcmpl-1",
+                "object": "chat.completion",
+                "model": "gpt-4o-mini",
+                "choices": [{ "index": 0, "message": { "role": "assistant", "content": "ok" }, "finish_reason": "stop" }]
+            }).to_string())
+            .create_async()
+            .await;
+        let provider = OpenAiProvider::new(reqwest::Client::new(), server.url());
+        let req: ChatRequest = serde_json::from_value(json!({
+            "messages": [{ "role": "user", "content": "do not call tools" }],
+            "parallel_tool_calls": false,
+            "tool_choice": "none",
+            "tools": [{ "type": "function", "function": { "name": "f", "strict": true } }]
+        }))
+        .unwrap();
+
+        provider
+            .chat(&req, &resolved("gpt-4o-mini", None))
+            .await
+            .unwrap();
+        m.assert_async().await;
     }
 
     #[tokio::test]
