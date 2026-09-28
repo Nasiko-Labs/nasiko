@@ -97,10 +97,12 @@ impl InboundParser for GeminiInbound {
                 }
                 oa_messages.push(msg);
             } else {
-                // user turn: text parts and/or functionResponse parts.
-                let mut text = String::new();
+                // user turn: text parts, inlineData parts, and/or functionResponse parts.
+                let mut user_parts: Vec<Value> = Vec::new();
+                let mut had_fr = false;
                 for part in parts.into_iter().flatten() {
                     if let Some(fr) = part.get("functionResponse") {
+                        had_fr = true;
                         let name = fr.get("name").and_then(Value::as_str).unwrap_or_default();
                         let id = name_to_id
                             .get(name)
@@ -112,11 +114,65 @@ impl InboundParser for GeminiInbound {
                             "content": function_response_text(fr.get("response")),
                         }));
                     } else if let Some(t) = part.get("text").and_then(Value::as_str) {
-                        text.push_str(t);
+                        if !t.is_empty() {
+                            user_parts.push(json!({ "type": "text", "text": t }));
+                        }
+                    } else if let Some(inline) = part.get("inlineData") {
+                        let mime_type =
+                            inline
+                                .get("mimeType")
+                                .and_then(Value::as_str)
+                                .ok_or_else(|| {
+                                    GatewayError::BadRequest(
+                                        "inlineData missing mimeType".to_string(),
+                                    )
+                                })?;
+                        let data = inline.get("data").and_then(Value::as_str).ok_or_else(|| {
+                            GatewayError::BadRequest("inlineData missing data".to_string())
+                        })?;
+
+                        if mime_type.starts_with("image/") {
+                            user_parts.push(json!({
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": format!("data:{mime_type};base64,{data}")
+                                }
+                            }));
+                        } else if mime_type == "application/pdf" {
+                            user_parts.push(json!({
+                                "type": "file",
+                                "file": {
+                                    "file_data": format!("data:{mime_type};base64,{data}")
+                                }
+                            }));
+                        } else {
+                            return Err(GatewayError::BadRequest(format!(
+                                "unsupported inlineData mimeType: '{mime_type}'"
+                            )));
+                        }
+                    } else if part.get("fileData").is_some() {
+                        return Err(GatewayError::BadRequest(
+                            "unsupported content part type: 'fileData'".to_string(),
+                        ));
+                    } else {
+                        return Err(GatewayError::BadRequest(format!(
+                            "unsupported gemini content part: {part}"
+                        )));
                     }
                 }
-                if !text.is_empty() {
-                    oa_messages.push(json!({ "role": "user", "content": text }));
+                if !user_parts.is_empty() {
+                    let content = if user_parts.len() == 1
+                        && user_parts[0].get("type").and_then(Value::as_str) == Some("text")
+                    {
+                        user_parts[0]["text"].clone()
+                    } else {
+                        Value::Array(user_parts)
+                    };
+                    oa_messages.push(json!({ "role": "user", "content": content }));
+                } else if !had_fr {
+                    return Err(GatewayError::BadRequest(
+                        "user message cannot be empty".to_string(),
+                    ));
                 }
             }
         }
@@ -607,5 +663,85 @@ mod tests {
         let fc = &v["candidates"][0]["content"]["parts"][0]["functionCall"];
         assert_eq!(fc["name"], "translate_text");
         assert_eq!(fc["args"]["text"], "hi"); // reassembled from fragments
+    }
+
+    #[test]
+    fn parse_chat_with_inline_data_image() {
+        let req = GeminiInbound
+            .parse_chat(json!({
+                "contents": [{
+                    "role": "user",
+                    "parts": [
+                        { "text": "Describe image" },
+                        { "inlineData": { "mimeType": "image/jpeg", "data": "abc123base64" } }
+                    ]
+                }]
+            }))
+            .unwrap();
+
+        assert_eq!(req.messages.len(), 1);
+        let msg = &req.messages[0];
+        assert_eq!(msg.role, "user");
+        let content_parts = msg.content.as_ref().unwrap().as_array().unwrap();
+        assert_eq!(content_parts.len(), 2);
+        assert_eq!(content_parts[0]["type"], "text");
+        assert_eq!(content_parts[0]["text"], "Describe image");
+        assert_eq!(content_parts[1]["type"], "image_url");
+        assert_eq!(
+            content_parts[1]["image_url"]["url"],
+            "data:image/jpeg;base64,abc123base64"
+        );
+    }
+
+    #[test]
+    fn parse_chat_with_inline_data_pdf() {
+        let req = GeminiInbound
+            .parse_chat(json!({
+                "contents": [{
+                    "role": "user",
+                    "parts": [
+                        { "inlineData": { "mimeType": "application/pdf", "data": "JVBERi0xLjQK" } }
+                    ]
+                }]
+            }))
+            .unwrap();
+
+        assert_eq!(req.messages.len(), 1);
+        let msg = &req.messages[0];
+        assert_eq!(msg.role, "user");
+        let content_parts = msg.content.as_ref().unwrap().as_array().unwrap();
+        assert_eq!(content_parts.len(), 1);
+        assert_eq!(content_parts[0]["type"], "file");
+        assert_eq!(
+            content_parts[0]["file"]["file_data"],
+            "data:application/pdf;base64,JVBERi0xLjQK"
+        );
+    }
+
+    #[test]
+    fn parse_chat_with_unsupported_parts_rejected() {
+        // fileData not supported
+        let err = GeminiInbound
+            .parse_chat(json!({
+                "contents": [{
+                    "role": "user",
+                    "parts": [
+                        { "fileData": { "fileUri": "https://example.com/file.pdf", "mimeType": "application/pdf" } }
+                    ]
+                }]
+            }))
+            .unwrap_err();
+        assert!(matches!(err, GatewayError::BadRequest(_)));
+
+        // empty user message
+        let err_empty = GeminiInbound
+            .parse_chat(json!({
+                "contents": [{
+                    "role": "user",
+                    "parts": []
+                }]
+            }))
+            .unwrap_err();
+        assert!(matches!(err_empty, GatewayError::BadRequest(_)));
     }
 }

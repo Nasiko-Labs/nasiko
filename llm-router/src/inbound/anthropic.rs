@@ -44,7 +44,7 @@ impl InboundParser for AnthropicInbound {
             let content = m.get("content").unwrap_or(&Value::Null);
             match role {
                 "assistant" => oa_messages.push(assistant_from_anthropic(content)),
-                "user" => append_user_from_anthropic(content, &mut oa_messages),
+                "user" => append_user_from_anthropic(content, &mut oa_messages)?,
                 other => {
                     oa_messages.push(json!({ "role": other, "content": anthropic_text(content) }))
                 }
@@ -198,34 +198,166 @@ fn assistant_from_anthropic(content: &Value) -> Value {
     }
 }
 
-/// An Anthropic user turn → one or more OpenAI messages. `tool_result` blocks become
-/// `{role:"tool"}` messages (keyed by `tool_use_id`); text becomes a user message.
-fn append_user_from_anthropic(content: &Value, out: &mut Vec<Value>) {
-    match content {
-        Value::String(s) => out.push(json!({ "role": "user", "content": s })),
-        Value::Array(blocks) => {
-            let mut text = String::new();
-            for b in blocks {
-                match b.get("type").and_then(Value::as_str) {
-                    Some("text") => {
-                        text.push_str(b.get("text").and_then(Value::as_str).unwrap_or_default())
-                    }
-                    Some("tool_result") => {
-                        let result = b.get("content").map(anthropic_text).unwrap_or_default();
-                        out.push(json!({
-                            "role": "tool",
-                            "tool_call_id": b.get("tool_use_id").and_then(Value::as_str).unwrap_or_default(),
-                            "content": result,
-                        }));
-                    }
-                    _ => {}
-                }
-            }
-            if !text.is_empty() {
-                out.push(json!({ "role": "user", "content": text }));
+fn anthropic_block_to_oa_part(b: &Value) -> Result<Option<Value>, GatewayError> {
+    let block_type = b.get("type").and_then(Value::as_str).unwrap_or_default();
+    match block_type {
+        "text" => {
+            let t = b.get("text").and_then(Value::as_str).unwrap_or_default();
+            if t.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(json!({ "type": "text", "text": t })))
             }
         }
-        _ => {}
+        "image" => {
+            let source = b.get("source").ok_or_else(|| {
+                GatewayError::BadRequest("image block missing source".to_string())
+            })?;
+            let source_type = source
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let url = match source_type {
+                "base64" => {
+                    let media_type = source
+                        .get("media_type")
+                        .and_then(Value::as_str)
+                        .unwrap_or("image/jpeg");
+                    let data = source.get("data").and_then(Value::as_str).ok_or_else(|| {
+                        GatewayError::BadRequest("base64 image missing data".to_string())
+                    })?;
+                    format!("data:{media_type};base64,{data}")
+                }
+                "url" => {
+                    let url = source.get("url").and_then(Value::as_str).ok_or_else(|| {
+                        GatewayError::BadRequest("url image missing url".to_string())
+                    })?;
+                    url.to_string()
+                }
+                other => {
+                    return Err(GatewayError::BadRequest(format!(
+                        "unsupported image source type: '{other}'"
+                    )));
+                }
+            };
+            Ok(Some(json!({
+                "type": "image_url",
+                "image_url": { "url": url }
+            })))
+        }
+        "document" => {
+            let source = b.get("source").ok_or_else(|| {
+                GatewayError::BadRequest("document block missing source".to_string())
+            })?;
+            let source_type = source
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let file_data = match source_type {
+                "base64" => {
+                    let media_type = source
+                        .get("media_type")
+                        .and_then(Value::as_str)
+                        .unwrap_or("application/pdf");
+                    let data = source.get("data").and_then(Value::as_str).ok_or_else(|| {
+                        GatewayError::BadRequest("base64 document missing data".to_string())
+                    })?;
+                    format!("data:{media_type};base64,{data}")
+                }
+                "url" => {
+                    let url = source.get("url").and_then(Value::as_str).ok_or_else(|| {
+                        GatewayError::BadRequest("url document missing url".to_string())
+                    })?;
+                    url.to_string()
+                }
+                other => {
+                    return Err(GatewayError::BadRequest(format!(
+                        "unsupported document source type: '{other}'"
+                    )));
+                }
+            };
+            Ok(Some(json!({
+                "type": "file",
+                "file": { "file_data": file_data }
+            })))
+        }
+        "tool_result" => Ok(None),
+        other => Err(GatewayError::BadRequest(format!(
+            "unsupported content block type: '{other}'"
+        ))),
+    }
+}
+
+/// An Anthropic user turn → one or more OpenAI messages. `tool_result` blocks become
+/// `{role:"tool"}` messages (keyed by `tool_use_id`); text/multimodal parts become a user message.
+fn append_user_from_anthropic(content: &Value, out: &mut Vec<Value>) -> Result<(), GatewayError> {
+    match content {
+        Value::String(s) => {
+            if s.is_empty() {
+                return Err(GatewayError::BadRequest(
+                    "user message content cannot be empty".to_string(),
+                ));
+            }
+            out.push(json!({ "role": "user", "content": s }));
+            Ok(())
+        }
+        Value::Array(blocks) => {
+            let mut user_parts: Vec<Value> = Vec::new();
+            let mut had_tool_result = false;
+            for b in blocks {
+                if b.get("type").and_then(Value::as_str) == Some("tool_result") {
+                    had_tool_result = true;
+                    let id = b
+                        .get("tool_use_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    let tr_content = match b.get("content") {
+                        Some(Value::String(s)) => Value::String(s.clone()),
+                        Some(Value::Array(sub_blocks)) => {
+                            let mut sub_parts: Vec<Value> = Vec::new();
+                            for sb in sub_blocks {
+                                if let Some(part) = anthropic_block_to_oa_part(sb)? {
+                                    sub_parts.push(part);
+                                }
+                            }
+                            if sub_parts.len() == 1
+                                && sub_parts[0].get("type").and_then(Value::as_str) == Some("text")
+                            {
+                                sub_parts[0]["text"].clone()
+                            } else {
+                                Value::Array(sub_parts)
+                            }
+                        }
+                        _ => Value::String(String::new()),
+                    };
+                    out.push(json!({
+                        "role": "tool",
+                        "tool_call_id": id,
+                        "content": tr_content,
+                    }));
+                } else if let Some(part) = anthropic_block_to_oa_part(b)? {
+                    user_parts.push(part);
+                }
+            }
+            if !user_parts.is_empty() {
+                let content_val = if user_parts.len() == 1
+                    && user_parts[0].get("type").and_then(Value::as_str) == Some("text")
+                {
+                    user_parts[0]["text"].clone()
+                } else {
+                    Value::Array(user_parts)
+                };
+                out.push(json!({ "role": "user", "content": content_val }));
+            } else if !had_tool_result {
+                return Err(GatewayError::BadRequest(
+                    "user message content cannot be empty".to_string(),
+                ));
+            }
+            Ok(())
+        }
+        _ => Err(GatewayError::BadRequest(
+            "user message content cannot be empty".to_string(),
+        )),
     }
 }
 
@@ -719,5 +851,139 @@ mod tests {
         assert!(fin.contains("event: message_delta"));
         assert!(fin.contains("\"stop_reason\":\"tool_use\""));
         assert!(fin.contains("event: message_stop"));
+    }
+
+    #[test]
+    fn parse_chat_with_image_url_source() {
+        let req = AnthropicInbound
+            .parse_chat(json!({
+                "model": "claude-3-5-sonnet-20241022",
+                "max_tokens": 1024,
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        { "type": "text", "text": "What is this?" },
+                        { "type": "image", "source": { "type": "url", "url": "https://example.com/cat.png" } }
+                    ]
+                }]
+            }))
+            .unwrap();
+
+        assert_eq!(req.messages.len(), 1);
+        let msg = &req.messages[0];
+        let parts = msg.content.as_ref().unwrap().as_array().unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0]["type"], "text");
+        assert_eq!(parts[0]["text"], "What is this?");
+        assert_eq!(parts[1]["type"], "image_url");
+        assert_eq!(parts[1]["image_url"]["url"], "https://example.com/cat.png");
+    }
+
+    #[test]
+    fn parse_chat_with_image_base64_source() {
+        let req = AnthropicInbound
+            .parse_chat(json!({
+                "model": "claude-3-5-sonnet-20241022",
+                "max_tokens": 1024,
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo=" } }
+                    ]
+                }]
+            }))
+            .unwrap();
+
+        assert_eq!(req.messages.len(), 1);
+        let msg = &req.messages[0];
+        let parts = msg.content.as_ref().unwrap().as_array().unwrap();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0]["type"], "image_url");
+        assert_eq!(
+            parts[0]["image_url"]["url"],
+            "data:image/png;base64,iVBORw0KGgo="
+        );
+    }
+
+    #[test]
+    fn parse_chat_with_document_base64_source() {
+        let req = AnthropicInbound
+            .parse_chat(json!({
+                "model": "claude-3-5-sonnet-20241022",
+                "max_tokens": 1024,
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        { "type": "document", "source": { "type": "base64", "media_type": "application/pdf", "data": "JVBERi0xLjQK" } }
+                    ]
+                }]
+            }))
+            .unwrap();
+
+        assert_eq!(req.messages.len(), 1);
+        let msg = &req.messages[0];
+        let parts = msg.content.as_ref().unwrap().as_array().unwrap();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0]["type"], "file");
+        assert_eq!(
+            parts[0]["file"]["file_data"],
+            "data:application/pdf;base64,JVBERi0xLjQK"
+        );
+    }
+
+    #[test]
+    fn parse_chat_with_tool_result_carrying_image() {
+        let req = AnthropicInbound
+            .parse_chat(json!({
+                "model": "claude-3-5-sonnet-20241022",
+                "max_tokens": 1024,
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "toolu_chart_01",
+                            "content": [
+                                { "type": "text", "text": "Generated chart:" },
+                                { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo=" } }
+                            ]
+                        }
+                    ]
+                }]
+            }))
+            .unwrap();
+
+        assert_eq!(req.messages.len(), 1);
+        let msg = &req.messages[0];
+        assert_eq!(msg.role, "tool");
+        assert_eq!(msg.tool_call_id.as_deref(), Some("toolu_chart_01"));
+        let parts = msg.content.as_ref().unwrap().as_array().unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0]["type"], "text");
+        assert_eq!(parts[1]["type"], "image_url");
+    }
+
+    #[test]
+    fn parse_chat_empty_or_unsupported_part_rejected() {
+        // empty user message
+        let err = AnthropicInbound
+            .parse_chat(json!({
+                "model": "claude-3-5-sonnet-20241022",
+                "messages": [{ "role": "user", "content": "" }]
+            }))
+            .unwrap_err();
+        assert!(matches!(err, GatewayError::BadRequest(_)));
+
+        // unsupported block type
+        let err_block = AnthropicInbound
+            .parse_chat(json!({
+                "model": "claude-3-5-sonnet-20241022",
+                "messages": [{
+                    "role": "user",
+                    "content": [{ "type": "unknown_future_block", "foo": "bar" }]
+                }]
+            }))
+            .unwrap_err();
+        assert!(matches!(err_block, GatewayError::BadRequest(_)));
     }
 }

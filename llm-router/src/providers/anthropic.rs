@@ -48,7 +48,7 @@ impl ProviderClient for AnthropicProvider {
         req: &ChatRequest,
         cfg: &ResolvedConfig,
     ) -> Result<ChatResponse, ProviderError> {
-        let body = to_anthropic_request(req, cfg);
+        let body = to_anthropic_request(req, cfg)?;
 
         let resp = self
             .http
@@ -82,7 +82,7 @@ impl ProviderClient for AnthropicProvider {
         req: &ChatRequest,
         cfg: &ResolvedConfig,
     ) -> Result<BoxStream<'static, Result<ChatChunk, ProviderError>>, ProviderError> {
-        let mut body = to_anthropic_request(req, cfg);
+        let mut body = to_anthropic_request(req, cfg)?;
         body["stream"] = json!(true);
 
         let resp = self
@@ -270,7 +270,130 @@ impl ProviderClient for AnthropicProvider {
 
 // ── OpenAI → Anthropic (request) ─────────────────────────────────────────────
 
-fn to_anthropic_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Value {
+fn parse_data_url(url: &str) -> Option<(&str, &str)> {
+    let without_prefix = url.strip_prefix("data:")?;
+    let (header, data) = without_prefix.split_once(',')?;
+    let media_type = header.strip_suffix(";base64")?;
+    Some((media_type, data))
+}
+
+fn convert_openai_part_to_anthropic(p: &Value) -> Result<Value, ProviderError> {
+    let part_type = p.get("type").and_then(Value::as_str).unwrap_or_default();
+    match part_type {
+        "text" => {
+            let text = p.get("text").and_then(Value::as_str).unwrap_or_default();
+            Ok(json!({
+                "type": "text",
+                "text": text,
+            }))
+        }
+        "image_url" => {
+            let url = p
+                .get("image_url")
+                .and_then(|u| u.get("url"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| ProviderError::Status {
+                    status: 400,
+                    message: "image_url missing url".to_string(),
+                    retryable: false,
+                })?;
+            if url.starts_with("data:") {
+                let (mime, data) = parse_data_url(url).ok_or_else(|| ProviderError::Status {
+                    status: 400,
+                    message: "invalid base64 data URL in image_url".to_string(),
+                    retryable: false,
+                })?;
+                Ok(json!({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": mime,
+                        "data": data,
+                    }
+                }))
+            } else if url.starts_with("http://") || url.starts_with("https://") {
+                Ok(json!({
+                    "type": "image",
+                    "source": {
+                        "type": "url",
+                        "url": url,
+                    }
+                }))
+            } else {
+                Err(ProviderError::Status {
+                    status: 400,
+                    message: "unsupported image_url protocol (must be http(s) or base64 data URL)"
+                        .to_string(),
+                    retryable: false,
+                })
+            }
+        }
+        "file" => {
+            if let Some(file_data) = p
+                .get("file")
+                .and_then(|f| f.get("file_data"))
+                .and_then(Value::as_str)
+            {
+                if file_data.starts_with("data:") {
+                    let (mime, data) =
+                        parse_data_url(file_data).ok_or_else(|| ProviderError::Status {
+                            status: 400,
+                            message: "invalid base64 data URL in file_data".to_string(),
+                            retryable: false,
+                        })?;
+                    Ok(json!({
+                        "type": "document",
+                        "source": {
+                            "type": "base64",
+                            "media_type": mime,
+                            "data": data,
+                        }
+                    }))
+                } else if file_data.starts_with("http://") || file_data.starts_with("https://") {
+                    Ok(json!({
+                        "type": "document",
+                        "source": {
+                            "type": "url",
+                            "url": file_data,
+                        }
+                    }))
+                } else {
+                    Err(ProviderError::Status {
+                        status: 400,
+                        message:
+                            "unsupported file_data format (must be http(s) or base64 data URL)"
+                                .to_string(),
+                        retryable: false,
+                    })
+                }
+            } else if p.get("file").and_then(|f| f.get("file_id")).is_some() {
+                Err(ProviderError::Status {
+                    status: 400,
+                    message: "unsupported content part type: 'file.file_id'".to_string(),
+                    retryable: false,
+                })
+            } else {
+                Err(ProviderError::Status {
+                    status: 400,
+                    message: "file part missing file_data".to_string(),
+                    retryable: false,
+                })
+            }
+        }
+        "input_audio" => Err(ProviderError::Status {
+            status: 400,
+            message: "unsupported content part type: 'input_audio'".to_string(),
+            retryable: false,
+        }),
+        other => Err(ProviderError::Status {
+            status: 400,
+            message: format!("unsupported content part type: '{other}'"),
+            retryable: false,
+        }),
+    }
+}
+
+fn to_anthropic_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Result<Value, ProviderError> {
     let mut system_parts: Vec<String> = Vec::new();
     let mut messages: Vec<Value> = Vec::new();
     let mut pending_tool_results: Vec<Value> = Vec::new();
@@ -283,11 +406,21 @@ fn to_anthropic_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Value {
                 }
             }
             "tool" => {
-                // Accumulate consecutive tool results into one following user turn.
+                let content_val = match &m.content {
+                    Some(Value::String(s)) => Value::String(s.clone()),
+                    Some(Value::Array(oa_parts)) => {
+                        let mut a_blocks = Vec::new();
+                        for p in oa_parts {
+                            a_blocks.push(convert_openai_part_to_anthropic(p)?);
+                        }
+                        Value::Array(a_blocks)
+                    }
+                    _ => Value::String(String::new()),
+                };
                 pending_tool_results.push(json!({
                     "type": "tool_result",
                     "tool_use_id": m.tool_call_id.clone().unwrap_or_default(),
-                    "content": m.text().unwrap_or_default(),
+                    "content": content_val,
                 }));
             }
             "assistant" => {
@@ -295,9 +428,41 @@ fn to_anthropic_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Value {
                 messages.push(assistant_to_anthropic(m));
             }
             _ => {
-                // "user" (and any unexpected role) → a user text turn.
                 flush_tool_results(&mut pending_tool_results, &mut messages);
-                messages.push(json!({ "role": "user", "content": m.text().unwrap_or_default() }));
+                let content_val = match &m.content {
+                    Some(Value::String(s)) => {
+                        if s.is_empty() {
+                            return Err(ProviderError::Status {
+                                status: 400,
+                                message: "user message content cannot be empty".to_string(),
+                                retryable: false,
+                            });
+                        }
+                        Value::String(s.clone())
+                    }
+                    Some(Value::Array(oa_parts)) => {
+                        let mut a_blocks = Vec::new();
+                        for p in oa_parts {
+                            a_blocks.push(convert_openai_part_to_anthropic(p)?);
+                        }
+                        if a_blocks.is_empty() {
+                            return Err(ProviderError::Status {
+                                status: 400,
+                                message: "user message content cannot be empty".to_string(),
+                                retryable: false,
+                            });
+                        }
+                        Value::Array(a_blocks)
+                    }
+                    _ => {
+                        return Err(ProviderError::Status {
+                            status: 400,
+                            message: "user message content cannot be empty".to_string(),
+                            retryable: false,
+                        });
+                    }
+                };
+                messages.push(json!({ "role": "user", "content": content_val }));
             }
         }
     }
@@ -327,7 +492,7 @@ fn to_anthropic_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Value {
     if let Some(choice) = req.tool_choice.as_ref().and_then(tool_choice_to_anthropic) {
         body["tool_choice"] = choice;
     }
-    body
+    Ok(body)
 }
 
 fn flush_tool_results(pending: &mut Vec<Value>, messages: &mut Vec<Value>) {
@@ -585,7 +750,7 @@ mod tests {
             }]
         }))
         .unwrap();
-        let body = to_anthropic_request(&req, &resolved());
+        let body = to_anthropic_request(&req, &resolved()).unwrap();
 
         assert_eq!(body["model"], "claude-3-5-sonnet-20241022");
         assert_eq!(body["max_tokens"], 4000); // from request (config didn't set it)
@@ -614,7 +779,7 @@ mod tests {
             "logit_bias": { "50256": -100 }
         }))
         .unwrap();
-        let body = to_anthropic_request(&req, &resolved());
+        let body = to_anthropic_request(&req, &resolved()).unwrap();
         assert!(body.get("top_p").is_none());
         assert!(body.get("frequency_penalty").is_none());
         assert!(body.get("logit_bias").is_none());
@@ -625,7 +790,7 @@ mod tests {
         let req: ChatRequest =
             serde_json::from_value(json!({ "messages": [{ "role": "user", "content": "hi" }] }))
                 .unwrap();
-        let body = to_anthropic_request(&req, &resolved());
+        let body = to_anthropic_request(&req, &resolved()).unwrap();
         assert_eq!(body["max_tokens"], DEFAULT_MAX_TOKENS);
     }
 
@@ -644,7 +809,7 @@ mod tests {
             ]
         }))
         .unwrap();
-        let body = to_anthropic_request(&req, &resolved());
+        let body = to_anthropic_request(&req, &resolved()).unwrap();
         let msgs = body["messages"].as_array().unwrap();
         assert_eq!(msgs.len(), 3);
         // assistant turn carries a tool_use block with the parsed input object
@@ -854,5 +1019,171 @@ mod tests {
         assert_eq!(resp.model, "claude-3-5-sonnet-20241022");
         assert_eq!(resp.choices[0].message.text().as_deref(), Some("नमस्ते"));
         assert_eq!(resp.usage.unwrap().total_tokens, Some(13));
+    }
+
+    #[test]
+    fn to_anthropic_request_with_image_url() {
+        let req: ChatRequest = serde_json::from_value(json!({
+            "model": "claude-3-5-sonnet-20241022",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    { "type": "text", "text": "What is this image?" },
+                    { "type": "image_url", "image_url": { "url": "https://example.com/test.png" } }
+                ]
+            }]
+        }))
+        .unwrap();
+
+        let body = to_anthropic_request(&req, &resolved()).unwrap();
+        let msgs = body["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 1);
+        let blocks = msgs[0]["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0]["type"], "text");
+        assert_eq!(blocks[0]["text"], "What is this image?");
+        assert_eq!(blocks[1]["type"], "image");
+        assert_eq!(blocks[1]["source"]["type"], "url");
+        assert_eq!(blocks[1]["source"]["url"], "https://example.com/test.png");
+    }
+
+    #[test]
+    fn to_anthropic_request_with_image_data_url() {
+        let req: ChatRequest = serde_json::from_value(json!({
+            "model": "claude-3-5-sonnet-20241022",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    { "type": "image_url", "image_url": { "url": "data:image/png;base64,iVBORw0KGgo=" } }
+                ]
+            }]
+        })).unwrap();
+
+        let body = to_anthropic_request(&req, &resolved()).unwrap();
+        let msgs = body["messages"].as_array().unwrap();
+        let blocks = msgs[0]["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["type"], "image");
+        assert_eq!(blocks[0]["source"]["type"], "base64");
+        assert_eq!(blocks[0]["source"]["media_type"], "image/png");
+        assert_eq!(blocks[0]["source"]["data"], "iVBORw0KGgo=");
+    }
+
+    #[test]
+    fn to_anthropic_request_with_file_data_url() {
+        let req: ChatRequest = serde_json::from_value(json!({
+            "model": "claude-3-5-sonnet-20241022",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    { "type": "file", "file": { "file_data": "data:application/pdf;base64,JVBERi0xLjQK" } }
+                ]
+            }]
+        })).unwrap();
+
+        let body = to_anthropic_request(&req, &resolved()).unwrap();
+        let msgs = body["messages"].as_array().unwrap();
+        let blocks = msgs[0]["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["type"], "document");
+        assert_eq!(blocks[0]["source"]["type"], "base64");
+        assert_eq!(blocks[0]["source"]["media_type"], "application/pdf");
+        assert_eq!(blocks[0]["source"]["data"], "JVBERi0xLjQK");
+    }
+
+    #[test]
+    fn to_anthropic_request_with_unsupported_parts_rejected() {
+        // file.file_id not supported
+        let req_file_id: ChatRequest = serde_json::from_value(json!({
+            "model": "claude-3-5-sonnet-20241022",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    { "type": "file", "file": { "file_id": "file-123" } }
+                ]
+            }]
+        }))
+        .unwrap();
+        let err = to_anthropic_request(&req_file_id, &resolved()).unwrap_err();
+        match err {
+            ProviderError::Status {
+                status, message, ..
+            } => {
+                assert_eq!(status, 400);
+                assert!(message.contains("file.file_id"));
+            }
+            _ => panic!("Expected ProviderError::Status"),
+        }
+
+        // input_audio not supported
+        let req_audio: ChatRequest = serde_json::from_value(json!({
+            "model": "claude-3-5-sonnet-20241022",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    { "type": "input_audio", "input_audio": { "data": "abc" } }
+                ]
+            }]
+        }))
+        .unwrap();
+        let err = to_anthropic_request(&req_audio, &resolved()).unwrap_err();
+        match err {
+            ProviderError::Status {
+                status, message, ..
+            } => {
+                assert_eq!(status, 400);
+                assert!(message.contains("input_audio"));
+            }
+            _ => panic!("Expected ProviderError::Status"),
+        }
+
+        // Empty message content
+        let req_empty: ChatRequest = serde_json::from_value(json!({
+            "model": "claude-3-5-sonnet-20241022",
+            "messages": [{
+                "role": "user",
+                "content": []
+            }]
+        }))
+        .unwrap();
+        let err = to_anthropic_request(&req_empty, &resolved()).unwrap_err();
+        match err {
+            ProviderError::Status {
+                status, message, ..
+            } => {
+                assert_eq!(status, 400);
+                assert!(message.contains("empty"));
+            }
+            _ => panic!("Expected ProviderError::Status"),
+        }
+    }
+
+    #[test]
+    fn to_anthropic_request_tool_result_preserves_images() {
+        let req: ChatRequest = serde_json::from_value(json!({
+            "model": "claude-3-5-sonnet-20241022",
+            "messages": [
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_123",
+                    "content": [
+                        { "type": "text", "text": "Here is the chart:" },
+                        { "type": "image_url", "image_url": { "url": "data:image/png;base64,iVBORw0KGgo=" } }
+                    ]
+                }
+            ]
+        })).unwrap();
+
+        let body = to_anthropic_request(&req, &resolved()).unwrap();
+        let msgs = body["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0]["role"], "user");
+        let tr = &msgs[0]["content"][0];
+        assert_eq!(tr["type"], "tool_result");
+        assert_eq!(tr["tool_use_id"], "call_123");
+        let content_blocks = tr["content"].as_array().unwrap();
+        assert_eq!(content_blocks.len(), 2);
+        assert_eq!(content_blocks[0]["type"], "text");
+        assert_eq!(content_blocks[1]["type"], "image");
     }
 }

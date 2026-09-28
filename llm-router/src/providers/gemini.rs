@@ -46,7 +46,7 @@ impl ProviderClient for GeminiProvider {
         req: &ChatRequest,
         cfg: &ResolvedConfig,
     ) -> Result<ChatResponse, ProviderError> {
-        let body = to_gemini_request(req, cfg);
+        let body = to_gemini_request(req, cfg)?;
 
         let resp = self
             .http
@@ -82,7 +82,7 @@ impl ProviderClient for GeminiProvider {
         req: &ChatRequest,
         cfg: &ResolvedConfig,
     ) -> Result<BoxStream<'static, Result<ChatChunk, ProviderError>>, ProviderError> {
-        let body = to_gemini_request(req, cfg);
+        let body = to_gemini_request(req, cfg)?;
 
         let resp = self
             .http
@@ -277,7 +277,124 @@ impl ProviderClient for GeminiProvider {
 
 // ── OpenAI → Gemini (request) ────────────────────────────────────────────────
 
-fn to_gemini_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Value {
+fn parse_data_url(url: &str) -> Option<(&str, &str)> {
+    let rest = url.strip_prefix("data:")?;
+    let (meta, data) = rest.split_once(',')?;
+    let media_type = meta.strip_suffix(";base64")?;
+    Some((media_type, data))
+}
+
+fn convert_openai_part_to_gemini(p: &Value) -> Result<Value, ProviderError> {
+    let part_type = p.get("type").and_then(Value::as_str).unwrap_or_default();
+    match part_type {
+        "text" => {
+            let text = p.get("text").and_then(Value::as_str).unwrap_or_default();
+            Ok(json!({ "text": text }))
+        }
+        "image_url" => {
+            let url = p
+                .get("image_url")
+                .and_then(|iu| iu.get("url"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| ProviderError::Status {
+                    status: 400,
+                    message: "image_url part missing url".to_string(),
+                    retryable: false,
+                })?;
+            if url.starts_with("data:") {
+                let (mime, data) = parse_data_url(url).ok_or_else(|| ProviderError::Status {
+                    status: 400,
+                    message: "invalid base64 data URL in image_url".to_string(),
+                    retryable: false,
+                })?;
+                Ok(json!({
+                    "inlineData": {
+                        "mimeType": mime,
+                        "data": data,
+                    }
+                }))
+            } else {
+                Err(ProviderError::Status {
+                    status: 400,
+                    message: "unsupported content part type: 'image_url' with web URL (Gemini requires base64 data URL)".to_string(),
+                    retryable: false,
+                })
+            }
+        }
+        "file" => {
+            if let Some(file_data) = p
+                .get("file")
+                .and_then(|f| f.get("file_data"))
+                .and_then(Value::as_str)
+            {
+                if file_data.starts_with("data:") {
+                    let (mime, data) =
+                        parse_data_url(file_data).ok_or_else(|| ProviderError::Status {
+                            status: 400,
+                            message: "invalid base64 data URL in file_data".to_string(),
+                            retryable: false,
+                        })?;
+                    Ok(json!({
+                        "inlineData": {
+                            "mimeType": mime,
+                            "data": data,
+                        }
+                    }))
+                } else {
+                    Err(ProviderError::Status {
+                        status: 400,
+                        message: "unsupported file_data format (must be base64 data URL)"
+                            .to_string(),
+                        retryable: false,
+                    })
+                }
+            } else if p.get("file").and_then(|f| f.get("file_id")).is_some() {
+                Err(ProviderError::Status {
+                    status: 400,
+                    message: "unsupported content part type: 'file.file_id'".to_string(),
+                    retryable: false,
+                })
+            } else {
+                Err(ProviderError::Status {
+                    status: 400,
+                    message: "file part missing file_data".to_string(),
+                    retryable: false,
+                })
+            }
+        }
+        "input_audio" => {
+            let audio = p.get("input_audio").ok_or_else(|| ProviderError::Status {
+                status: 400,
+                message: "input_audio part missing data".to_string(),
+                retryable: false,
+            })?;
+            let data =
+                audio
+                    .get("data")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| ProviderError::Status {
+                        status: 400,
+                        message: "input_audio missing base64 data".to_string(),
+                        retryable: false,
+                    })?;
+            let format = audio.get("format").and_then(Value::as_str).unwrap_or("wav");
+            let mime = format!("audio/{format}");
+            Ok(json!({
+                "inlineData": {
+                    "mimeType": mime,
+                    "data": data,
+                }
+            }))
+        }
+        other => Err(ProviderError::Status {
+            status: 400,
+            message: format!("unsupported content part type: '{other}'"),
+            retryable: false,
+        }),
+    }
+}
+
+fn to_gemini_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Result<Value, ProviderError> {
     let mut system_parts: Vec<String> = Vec::new();
     let mut contents: Vec<Value> = Vec::new();
     let mut id_to_name: HashMap<String, String> = HashMap::new();
@@ -312,9 +429,42 @@ fn to_gemini_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Value {
             }
             _ => {
                 flush_fn_responses(&mut pending_fn_responses, &mut contents);
+                let parts = match &m.content {
+                    Some(Value::String(s)) => {
+                        if s.is_empty() {
+                            return Err(ProviderError::Status {
+                                status: 400,
+                                message: "user message content cannot be empty".to_string(),
+                                retryable: false,
+                            });
+                        }
+                        vec![json!({ "text": s })]
+                    }
+                    Some(Value::Array(oa_parts)) => {
+                        let mut g_parts = Vec::new();
+                        for p in oa_parts {
+                            g_parts.push(convert_openai_part_to_gemini(p)?);
+                        }
+                        if g_parts.is_empty() {
+                            return Err(ProviderError::Status {
+                                status: 400,
+                                message: "user message content cannot be empty".to_string(),
+                                retryable: false,
+                            });
+                        }
+                        g_parts
+                    }
+                    _ => {
+                        return Err(ProviderError::Status {
+                            status: 400,
+                            message: "user message content cannot be empty".to_string(),
+                            retryable: false,
+                        });
+                    }
+                };
                 contents.push(json!({
                     "role": "user",
-                    "parts": [{ "text": m.text().unwrap_or_default() }]
+                    "parts": parts,
                 }));
             }
         }
@@ -357,7 +507,7 @@ fn to_gemini_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Value {
     if !gen_cfg.is_empty() {
         body["generationConfig"] = Value::Object(gen_cfg);
     }
-    body
+    Ok(body)
 }
 
 fn flush_fn_responses(pending: &mut Vec<Value>, contents: &mut Vec<Value>) {
@@ -529,7 +679,7 @@ mod tests {
             }]
         }))
         .unwrap();
-        let body = to_gemini_request(&req, &resolved());
+        let body = to_gemini_request(&req, &resolved()).unwrap();
 
         assert_eq!(
             body["systemInstruction"]["parts"][0]["text"],
@@ -560,7 +710,7 @@ mod tests {
             ]
         }))
         .unwrap();
-        let body = to_gemini_request(&req, &resolved());
+        let body = to_gemini_request(&req, &resolved()).unwrap();
         let contents = body["contents"].as_array().unwrap();
         assert_eq!(contents.len(), 3);
         // assistant → model functionCall
@@ -795,5 +945,118 @@ mod tests {
         assert_eq!(resp.model, "gemini-1.5-pro");
         assert_eq!(resp.choices[0].message.text().as_deref(), Some("ok"));
         assert_eq!(resp.usage.unwrap().total_tokens, Some(4));
+    }
+
+    #[test]
+    fn to_gemini_request_with_image_data_url() {
+        let req: ChatRequest = serde_json::from_value(json!({
+            "model": "gemini-1.5-pro",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    { "type": "text", "text": "What is this image?" },
+                    { "type": "image_url", "image_url": { "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==" } }
+                ]
+            }]
+        })).unwrap();
+
+        let body = to_gemini_request(&req, &resolved()).unwrap();
+        let contents = body["contents"].as_array().unwrap();
+        assert_eq!(contents.len(), 1);
+        let parts = contents[0]["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0]["text"], "What is this image?");
+        assert_eq!(parts[1]["inlineData"]["mimeType"], "image/png");
+        assert_eq!(
+            parts[1]["inlineData"]["data"],
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+        );
+    }
+
+    #[test]
+    fn to_gemini_request_with_pdf_data_url() {
+        let req: ChatRequest = serde_json::from_value(json!({
+            "model": "gemini-1.5-pro",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    { "type": "file", "file": { "file_data": "data:application/pdf;base64,JVBERi0xLjQKJeLjz9MK" } }
+                ]
+            }]
+        })).unwrap();
+
+        let body = to_gemini_request(&req, &resolved()).unwrap();
+        let contents = body["contents"].as_array().unwrap();
+        let parts = contents[0]["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0]["inlineData"]["mimeType"], "application/pdf");
+        assert_eq!(parts[0]["inlineData"]["data"], "JVBERi0xLjQKJeLjz9MK");
+    }
+
+    #[test]
+    fn to_gemini_request_with_unsupported_parts_rejected() {
+        // Public web URL not allowed in Gemini inlineData
+        let req_url: ChatRequest = serde_json::from_value(json!({
+            "model": "gemini-1.5-pro",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    { "type": "image_url", "image_url": { "url": "https://example.com/test.png" } }
+                ]
+            }]
+        }))
+        .unwrap();
+        let err = to_gemini_request(&req_url, &resolved()).unwrap_err();
+        match err {
+            ProviderError::Status {
+                status, message, ..
+            } => {
+                assert_eq!(status, 400);
+                assert!(message.contains("URL") || message.contains("base64"));
+            }
+            _ => panic!("Expected ProviderError::Status"),
+        }
+
+        // file.file_id not supported
+        let req_file_id: ChatRequest = serde_json::from_value(json!({
+            "model": "gemini-1.5-pro",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    { "type": "file", "file": { "file_id": "file-123" } }
+                ]
+            }]
+        }))
+        .unwrap();
+        let err = to_gemini_request(&req_file_id, &resolved()).unwrap_err();
+        match err {
+            ProviderError::Status {
+                status, message, ..
+            } => {
+                assert_eq!(status, 400);
+                assert!(message.contains("file.file_id"));
+            }
+            _ => panic!("Expected ProviderError::Status"),
+        }
+
+        // Empty message content
+        let req_empty: ChatRequest = serde_json::from_value(json!({
+            "model": "gemini-1.5-pro",
+            "messages": [{
+                "role": "user",
+                "content": []
+            }]
+        }))
+        .unwrap();
+        let err = to_gemini_request(&req_empty, &resolved()).unwrap_err();
+        match err {
+            ProviderError::Status {
+                status, message, ..
+            } => {
+                assert_eq!(status, 400);
+                assert!(message.contains("empty"));
+            }
+            _ => panic!("Expected ProviderError::Status"),
+        }
     }
 }
