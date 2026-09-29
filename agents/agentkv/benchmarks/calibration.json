@@ -1,0 +1,6 @@
+[
+ {"id":"signum","repository":"calibration-numeric","goal":"Return -1, 0 or 1 according to the sign of a number.","context":"def signum(value):\n    return 1\n","tests":"assert signum(-2)==-1\nassert signum(0)==0\nassert signum(3)==1"},
+ {"id":"is_even","repository":"calibration-numeric","goal":"Return a boolean indicating whether an integer is even.","context":"def is_even(value):\n    return value % 2 == 1\n","tests":"assert is_even(0)\nassert is_even(-2)\nassert not is_even(3)"},
+ {"id":"safe_divide","repository":"calibration-numeric","goal":"Return a divided by b; return None when b is zero.","context":"def safe_divide(a,b):\n    return a/b\n","tests":"assert safe_divide(4,2)==2\nassert safe_divide(1,0) is None"},
+ {"id":"reverse_words","repository":"calibration-text","goal":"Reverse the order of whitespace-delimited words and join with single spaces.","context":"def reverse_words(text):\n    return text[::-1]\n","tests":"assert reverse_words(' one  two three ')== 'three two one'\nassert reverse_words('')==''"}
+]
