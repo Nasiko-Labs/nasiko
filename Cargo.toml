@@ -10,6 +10,7 @@ members = [
     "pricing",
     "runtime",
     "react-agent",
+    "acp-client",
     "orchestrator",
     "types",
     "utils",
@@ -151,6 +152,11 @@ async-trait = "0.1"
 # ─── Streaming ──────────────────────────────────────────────────────────────
 futures = "0.3"
 async-stream = "0.3"
+
+# ─── Agent Client Protocol (coding-agent transport) ─────────────────────────
+# Official Rust SDK for ACP (Agent Client Protocol). Pinned to the v1 schema;
+# `unstable_*` features are deliberately left off (see oss/acp-client).
+agent-client-protocol = "2.2.0"
 
 # ─── Common utilities ───────────────────────────────────────────────────────
 chrono = { version = "0.4", features = ["serde"] }

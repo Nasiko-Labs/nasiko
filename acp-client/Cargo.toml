@@ -1,0 +1,18 @@
+[package]
+name = "nasiko-acp-client"
+version.workspace = true
+edition.workspace = true
+
+# ACP (Agent Client Protocol) client: speaks JSON-RPC over stdio to a coding
+# agent (e.g. `opencode acp`), drives one turn at a time, and streams the
+# agent's updates back to the caller. Transport-agnostic — a spawned child
+# process (local) or a byte stream from a container attach both plug in.
+#
+# NAS-836. See docs/TECH-2026-004-acp-coding-agent.md §3.1/§3.4.
+
+[dependencies]
+agent-client-protocol = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
