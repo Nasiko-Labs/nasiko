@@ -54,12 +54,3 @@ _to_delete/
 # source, and it accumulates. To keep one durably, `git add -f` it or copy it
 # out; `--compare` takes any directory of .dsl files.
 ui/tests/fixtures/runs/
-
-# Local frontend workspace; integrate pages before deciding what to track.
-/prototype/
-
-# Private React/Next migration workspace; do not force-add before release approval.
-/react/
-
-# Local git worktrees (superpowers workflow)
-.worktrees/

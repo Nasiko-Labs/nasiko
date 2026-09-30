@@ -147,87 +147,7 @@ fn is_code(trimmed: &str) -> bool {
     let hits = KEYWORDS.iter().filter(|kw| trimmed.contains(**kw)).count();
     let structural =
         trimmed.contains('{') || trimmed.lines().filter(|l| l.starts_with("    ")).count() >= 3;
-    if hits >= 3 && structural {
-        return true;
-    }
-    starts_like_code(trimmed)
-}
-
-/// The shape of a file view rather than a keyword count: a real source file can use only one
-/// or two of [`is_code`]'s keywords (a Python module of imports and one `def`), and an agent's
-/// file view prefixes every line with a number that hides the indentation.
-fn starts_like_code(trimmed: &str) -> bool {
-    const LEADS: [&str; 30] = [
-        "def ",
-        "async def ",
-        "class ",
-        "import ",
-        "from ",
-        "return",
-        "if ",
-        "elif ",
-        "else",
-        "for ",
-        "while ",
-        "try",
-        "except",
-        "raise ",
-        "with ",
-        "fn ",
-        "pub ",
-        "let ",
-        "use ",
-        "impl ",
-        "struct ",
-        "func ",
-        "function ",
-        "const ",
-        "var ",
-        "public ",
-        "private ",
-        "#include",
-        "package ",
-        "@",
-    ];
-    let lines = crate::text::numbered_lines(trimmed);
-    let mut non_blank = 0usize;
-    let mut leads = 0usize;
-    let mut indented = 0usize;
-    let mut shaped = 0usize;
-    for (_, body) in &lines {
-        let stripped = body.trim_start();
-        if stripped.is_empty() {
-            continue;
-        }
-        non_blank += 1;
-        if stripped.len() < body.len() {
-            indented += 1;
-        }
-        if LEADS.iter().any(|kw| stripped.starts_with(kw)) {
-            leads += 1;
-        }
-        if is_code_shaped(stripped.trim_end()) {
-            shaped += 1;
-        }
-    }
-    // Keywords open only a minority of real lines (`x = f(y)` and `log.info(...)` open with an
-    // identifier), so the bulk test is line *shape*; one keyword-led line is still required.
-    non_blank >= 5
-        && leads >= 1
-        && shaped * 5 >= non_blank * 3
-        && (indented >= 3 || trimmed.contains('{'))
-}
-
-/// A line that reads as a statement, not a sentence: it closes a block or argument list, opens
-/// one, ends a statement, assigns, or is a comment/decorator. Prose lines end in `.`/`!`/`?` or
-/// a bare word, and essentially never assign with ` = `.
-fn is_code_shaped(line: &str) -> bool {
-    const ENDS: [char; 9] = [':', '{', '}', ';', '(', ')', ',', '[', ']'];
-    const STARTS: [&str; 8] = ["}", ")", "]", "#", "//", "/*", "*", "@"];
-    line.ends_with(ENDS)
-        || STARTS.iter().any(|s| line.starts_with(s))
-        || line.contains(" = ")
-        || line.contains(" => ")
+    hits >= 3 && structural
 }
 
 fn is_markup(trimmed: &str) -> bool {
@@ -320,41 +240,6 @@ mod tests {
     fn detects_code() {
         let s = "import os\nclass A:\n    def run(self):\n        return 1\nconst X = 2\n{";
         assert_eq!(detect(s), ContentType::Code);
-    }
-
-    fn few_keyword_python() -> &'static str {
-        "import logging\nfrom typing import Any\n\n\nasync def main() -> None:\n    \
-         logging.basicConfig(level=logging.INFO)\n    base = \"http://localhost\"\n    \
-         for i in range(3):\n        print(base, i)\n    return None\n"
-    }
-
-    #[test]
-    fn detects_code_that_uses_only_two_keywords() {
-        assert_eq!(detect(few_keyword_python()), ContentType::Code);
-    }
-
-    #[test]
-    fn detects_line_numbered_file_views_as_code() {
-        for format in ["{:05}| {}", "{:>6}\t{}", "{:>6}→{}"] {
-            let numbered: String = few_keyword_python()
-                .lines()
-                .enumerate()
-                .map(|(i, l)| match format {
-                    "{:05}| {}" => format!("{:05}| {l}\n", i + 1),
-                    "{:>6}\t{}" => format!("{:>6}\t{l}\n", i + 1),
-                    _ => format!("{:>6}→{l}\n", i + 1),
-                })
-                .collect();
-            assert_eq!(detect(&numbered), ContentType::Code, "{format}");
-        }
-    }
-
-    #[test]
-    fn prose_with_some_indentation_is_not_code() {
-        let s = "Release notes\n\nWe fixed several bugs this week.\n    Login is faster now.\n    \
-                 Search handles typos.\n    Exports no longer time out.\nThanks to everyone who \
-                 reported issues.\nMore next week.";
-        assert_eq!(detect(s), ContentType::Prose);
     }
 
     #[test]

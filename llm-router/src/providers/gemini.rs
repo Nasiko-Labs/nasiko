@@ -25,7 +25,7 @@ use crate::ir::{
     ChatChunk, ChatRequest, ChatResponse, Choice, Delta, Embedding, EmbeddingsRequest,
     EmbeddingsResponse, FunctionCall, FunctionCallDelta, Message, ToolCall, ToolCallDelta, Usage,
 };
-use crate::resolver::{ResolvedConfig, ResolvedEmbeddingConfig};
+use crate::resolver::ResolvedConfig;
 
 pub struct GeminiProvider {
     http: reqwest::Client,
@@ -234,7 +234,7 @@ impl ProviderClient for GeminiProvider {
     async fn embeddings(
         &self,
         req: &EmbeddingsRequest,
-        cfg: &ResolvedEmbeddingConfig,
+        cfg: &ResolvedConfig,
     ) -> Result<EmbeddingsResponse, ProviderError> {
         // OpenAI `input` (string | array) → one Gemini embed request per text.
         let inputs: Vec<String> = match &req.input {
@@ -926,13 +926,7 @@ mod tests {
         let provider = GeminiProvider::new(reqwest::Client::new(), server.url());
         let req: EmbeddingsRequest =
             serde_json::from_value(json!({ "model": "x", "input": ["a", "b"] })).unwrap();
-        let resp = provider
-            .embeddings(
-                &req,
-                &ResolvedEmbeddingConfig::for_test("gemini", "gemini-1.5-pro", "AIza-test"),
-            )
-            .await
-            .unwrap();
+        let resp = provider.embeddings(&req, &resolved()).await.unwrap();
         assert_eq!(resp.object, "list");
         assert_eq!(resp.model, "gemini-1.5-pro");
         assert_eq!(resp.data.len(), 2);

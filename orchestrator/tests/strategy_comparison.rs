@@ -164,8 +164,6 @@ async fn compare_strategies_on_one_session() {
                 &store,
                 QUERY,
                 &ContextTiers::default(),
-                // Measures selection alone; history compression would change the token counts.
-                false,
             )
             .await;
 

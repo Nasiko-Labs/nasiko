@@ -1,11 +1,10 @@
 pub mod acl;
 pub mod build_worker;
-pub mod deploy_env;
 pub mod deployments;
 pub mod grants;
 pub mod hours_meter;
 pub mod llm_config;
-pub mod reconcile;
+pub(crate) mod reconcile;
 pub mod update;
 pub mod upload;
 pub(crate) mod utils;
@@ -20,7 +19,6 @@ use nasiko_runtime::{
 };
 use uuid::Uuid;
 
-use crate::agent_scaling::ReplicaBounds;
 use crate::state::AppState;
 
 pub use upload::UploadAndDeployResponse;
@@ -63,44 +61,11 @@ pub(crate) const DEFAULT_AGENT_PORT: u16 = 8000;
 /// after the host and 404s at the Axum router level before any auth/handler
 /// logic runs (found live: BuildKit push to `.../v2/translator/blobs/uploads/`
 /// failed with a plain 404, not a 401/403).
-///
-/// The name segment goes through [`image_name_slug`]: an agent name is a
-/// display string that may legally carry uppercase or spaces, neither of which
-/// an OCI repository name admits.
 pub(crate) fn build_image_tag(registry: &str, name: &str, tag: &str) -> String {
-    let name = image_name_slug(name);
     if registry.is_empty() {
         format!("nasiko/{name}:{tag}")
     } else {
         format!("{registry}/nasiko/{name}:{tag}")
-    }
-}
-
-/// Lowercase a display name into an OCI-safe repository component.
-///
-/// An OCI repository name is `[a-z0-9]+([._-][a-z0-9]+)*` — no uppercase, no
-/// spaces — but an agent name is validated against the *tag* charset
-/// (`build::routes::validate_version_tag`), which permits both. An agent named
-/// "General-Assistant" therefore reached the builder as
-/// `nasiko/General-Assistant:1.0.0`, and docker rejected it ("repository name
-/// must be lowercase") *after* the agent/build/job rows had already committed —
-/// leaving the agent behind with nothing but a failed build.
-///
-/// Idempotent, and registry publishers apply the same rule before pushing, so a
-/// name survives publish → import unchanged and a re-import updates the existing
-/// agent instead of registering a second one under a differently-cased name.
-pub(crate) fn image_name_slug(name: &str) -> String {
-    let slug: String = name
-        .to_lowercase()
-        .replace(' ', "-")
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
-        .collect();
-    let slug = slug.trim_matches('-');
-    if slug.is_empty() {
-        "agent".to_string()
-    } else {
-        slug.to_string()
     }
 }
 
@@ -189,13 +154,6 @@ pub(crate) fn qualify_deploy_image(registry: &str, image: &str) -> String {
     }
 }
 
-/// Tells the agent which port to listen on (the Service targets the first port, and every
-/// in-tree agent honors `PORT`). An explicit `PORT` in `env` wins.
-pub(crate) fn set_port_env(env: &mut HashMap<String, String>, port: u16) {
-    env.entry("PORT".to_string())
-        .or_insert_with(|| port.to_string());
-}
-
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_agent_spec(
     agent_id: Uuid,
@@ -204,7 +162,7 @@ pub(crate) fn build_agent_spec(
     ports: Vec<u16>,
     mut env: HashMap<String, String>,
     default_memory: &str,
-    bounds: ReplicaBounds,
+    max_replicas: u32,
     writable: bool,
     writable_path: Option<String>,
     owner_id: Uuid,
@@ -214,22 +172,16 @@ pub(crate) fn build_agent_spec(
     } else {
         ports
     };
-    set_port_env(&mut env, ports[0]);
-    // A writable agent's files sit on one volume, whatever bounds the caller computed.
-    let bounds = if writable {
-        ReplicaBounds::SINGLE
-    } else {
-        bounds
-    };
+    env.entry("PORT".to_string())
+        .or_insert_with(|| ports[0].to_string());
     DeploymentSpec {
         container_id: ContainerId::from_uuid(agent_id),
         name: name.to_string(),
         image: image.into(),
         ports,
         env_vars: env,
-        min_replicas: bounds.min,
-        max_replicas: bounds.max,
-        replica_target: bounds.target,
+        min_replicas: 1,
+        max_replicas,
         // No per-agent override exists yet — every caller wants the
         // platform's configured default (AGENT_DEFAULT_MEMORY, see
         // Config::agent_default_memory's doc comment). cpu_milli is
@@ -293,7 +245,7 @@ mod spec_tests {
             vec![],
             HashMap::new(),
             "512Mi",
-            ReplicaBounds::SINGLE,
+            1,
             false,
             None,
             Uuid::nil(),
@@ -305,7 +257,7 @@ mod spec_tests {
             vec![],
             HashMap::new(),
             "512Mi",
-            ReplicaBounds::SINGLE,
+            1,
             false,
             None,
             Uuid::nil(),
@@ -332,7 +284,7 @@ mod spec_tests {
             vec![],
             HashMap::new(),
             "512Mi",
-            ReplicaBounds::SINGLE,
+            1,
             false,
             None,
             Uuid::nil(),
@@ -353,7 +305,7 @@ mod spec_tests {
             vec![9091],
             HashMap::new(),
             "512Mi",
-            ReplicaBounds::SINGLE,
+            1,
             false,
             None,
             Uuid::nil(),
@@ -373,7 +325,7 @@ mod spec_tests {
             vec![],
             env,
             "512Mi",
-            ReplicaBounds::SINGLE,
+            1,
             false,
             None,
             Uuid::nil(),
@@ -391,7 +343,7 @@ mod spec_tests {
             vec![9091],
             HashMap::new(),
             "512Mi",
-            ReplicaBounds::SINGLE,
+            1,
             false,
             None,
             Uuid::nil(),
@@ -409,7 +361,7 @@ mod spec_tests {
             vec![9091, 9092],
             HashMap::new(),
             "512Mi",
-            ReplicaBounds::SINGLE,
+            1,
             false,
             None,
             Uuid::nil(),
@@ -419,48 +371,25 @@ mod spec_tests {
     }
 
     #[test]
-    fn spec_replicas_come_from_the_bounds() {
-        let bounds = ReplicaBounds {
-            min: 2,
-            max: 5,
-            target: Some(6),
-        };
+    fn spec_max_replicas_comes_from_parameter() {
+        let id = Uuid::new_v4();
         let s = build_agent_spec(
-            Uuid::new_v4(),
+            id,
             "a",
             "img:1",
             vec![],
             HashMap::new(),
             "512Mi",
-            bounds,
+            5,
             false,
             None,
             Uuid::nil(),
         );
-        assert_eq!((s.min_replicas, s.max_replicas), (2, 5));
-        assert_eq!(s.replica_target, Some(6));
-    }
-
-    #[test]
-    fn a_writable_spec_runs_one_replica_whatever_the_bounds() {
-        let bounds = ReplicaBounds {
-            min: 2,
-            max: 5,
-            target: None,
-        };
-        let s = build_agent_spec(
-            Uuid::new_v4(),
-            "a",
-            "img:1",
-            vec![],
-            HashMap::new(),
-            "512Mi",
-            bounds,
-            true,
-            None,
-            Uuid::nil(),
+        assert_eq!(
+            s.max_replicas, 5,
+            "max_replicas must match the parameter, not be hardcoded"
         );
-        assert_eq!((s.min_replicas, s.max_replicas), (1, 1));
+        assert_eq!(s.min_replicas, 1);
     }
 
     #[test]
@@ -473,7 +402,7 @@ mod spec_tests {
             vec![],
             HashMap::new(),
             "2Gi",
-            ReplicaBounds::SINGLE,
+            1,
             false,
             None,
             Uuid::nil(),
@@ -526,51 +455,5 @@ mod spec_tests {
             build_image_tag("", "my-agent", "1.0.0"),
             "nasiko/my-agent:1.0.0"
         );
-    }
-
-    #[test]
-    fn build_image_tag_slugifies_the_name_segment() {
-        // Found live on POST /api/agents/upload: an agent named
-        // "General-Assistant" produced `nasiko/General-Assistant:<ver>`, and the
-        // docker build failed with "repository name must be lowercase" only
-        // after the agent/build/job rows had committed.
-        assert_eq!(
-            build_image_tag("", "General-Assistant", "1.0.0"),
-            "nasiko/general-assistant:1.0.0"
-        );
-        assert_eq!(
-            build_image_tag("registry.example.com", "Infrastructure Manager", "1.0.0"),
-            "registry.example.com/nasiko/infrastructure-manager:1.0.0"
-        );
-    }
-
-    #[test]
-    fn image_name_slug_yields_oci_safe_repository_components() {
-        assert_eq!(
-            image_name_slug("Infrastructure Manager"),
-            "infrastructure-manager"
-        );
-        assert_eq!(
-            image_name_slug("infrastructure_manager"),
-            "infrastructure_manager"
-        );
-        assert_eq!(image_name_slug("Code Reviewer 2.0"), "code-reviewer-20");
-    }
-
-    #[test]
-    fn image_name_slug_never_yields_an_empty_name() {
-        // An empty repo component is as invalid a reference as a spaced one.
-        assert_eq!(image_name_slug("---"), "agent");
-        assert_eq!(image_name_slug(""), "agent");
-    }
-
-    #[test]
-    fn image_name_slug_is_idempotent() {
-        // Publish slugifies before pushing, and update/rollback re-derive the
-        // tag from the stored name — every re-application must land on the same
-        // repository, or a second build pushes a second image.
-        let published = "infrastructure-manager";
-        assert_eq!(image_name_slug("Infrastructure Manager"), published);
-        assert_eq!(image_name_slug(published), published);
     }
 }

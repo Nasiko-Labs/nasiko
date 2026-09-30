@@ -19,22 +19,13 @@ use nasiko_runtime::{ContainerId, DeploymentStatus, RuntimeError, RuntimeState};
 /// The bounded slice of an `agents` row this pass actually needs — not the
 /// full `Agent` model (~30 columns), most of which are irrelevant here.
 #[derive(sqlx::FromRow)]
-pub struct ReconcilableAgent {
-    pub id: Uuid,
-    pub name: String,
+struct ReconcilableAgent {
+    id: Uuid,
+    name: String,
     image: Option<String>,
     owner_id: Uuid,
     writable: bool,
     writable_path: Option<String>,
-}
-
-pub async fn reconcilable_agents(db: &sqlx::PgPool) -> sqlx::Result<Vec<ReconcilableAgent>> {
-    sqlx::query_as::<_, ReconcilableAgent>(
-        "SELECT id, name, image, owner_id, writable, writable_path FROM agents \
-         WHERE status = 'running' AND deleted_at IS NULL AND image IS NOT NULL AND NOT is_internal",
-    )
-    .fetch_all(db)
-    .await
 }
 
 /// Runs once at startup (see `AppState::init`). Safe to call on every boot —
@@ -43,7 +34,13 @@ pub async fn reconcilable_agents(db: &sqlx::PgPool) -> sqlx::Result<Vec<Reconcil
 /// already pays the same per-agent cost for the (usually much smaller) seed
 /// list on every boot.
 pub async fn reconcile_agents_on_startup(state: &AppState) {
-    let agents = match reconcilable_agents(&state.db).await {
+    let agents = match sqlx::query_as::<_, ReconcilableAgent>(
+        "SELECT id, name, image, owner_id, writable, writable_path FROM agents \
+         WHERE status = 'running' AND deleted_at IS NULL AND image IS NOT NULL",
+    )
+    .fetch_all(&state.db)
+    .await
+    {
         Ok(rows) => rows,
         Err(e) => {
             warn!(error = %e, "agent reconciliation: failed to list running agents, skipping");
@@ -66,24 +63,15 @@ pub async fn reconcile_agents_on_startup(state: &AppState) {
             "agent reconciliation: no live workload for a DB-running agent, redeploying"
         );
 
-        // Read before the deploy env is built, as on every deploy path.
-        let scaling = state.agent_scaling.begin_deploy(agent.id).await;
-        let replica_bounds = match scaling.bounds().await {
-            Ok(bounds) => bounds,
-            Err(e) => {
-                warn!(agent_id = %agent.id, error = %e, "agent reconciliation: could not read replica bounds, not redeploying");
-                continue;
-            }
-        };
-        // Same env every other deploy path gets - a redeployed-but-recovered
-        // agent must behave identically to one that was deployed normally.
-        // The same image comes back, so a durable agent is durable again as it starts.
-        let env = crate::agents::deploy_env::build(
-            state,
+        let mut env = state.agent_env(agent.id).await;
+        // Same env-wiring every other deploy path applies (rollback, seed,
+        // upload) — a redeployed-but-recovered agent must behave identically
+        // to one that was deployed normally, not miss router wiring.
+        crate::llm_router::wiring::inject_agent_llm_env(
+            &state.db,
+            &mut env,
             agent.id,
-            agent.owner_id,
-            Default::default(),
-            crate::agents::deploy_env::StateModeOnDeploy::Keep,
+            Some(agent.owner_id),
         )
         .await;
 
@@ -96,7 +84,7 @@ pub async fn reconcile_agents_on_startup(state: &AppState) {
             vec![],
             env,
             &state.config.agent_default_memory,
-            replica_bounds,
+            state.config.agent_max_replicas,
             agent.writable,
             agent.writable_path.clone(),
             agent.owner_id,
@@ -110,7 +98,7 @@ pub async fn reconcile_agents_on_startup(state: &AppState) {
         )
         .await;
 
-        match scaling.deploy(&spec).await {
+        match state.runtime.deploy(&spec).await {
             Ok(deploy_status) => {
                 let agent_url = crate::agents::resolve_agent_url(
                     &state.runtime,

@@ -10,14 +10,6 @@ path = "src/lib.rs"
 name = "nasiko-server"
 path = "src/main.rs"
 
-[[bin]]
-name = "seed-finops-demo"
-path = "src/bin/seed_finops_demo.rs"
-
-[[bin]]
-name = "seed-fleet-demo"
-path = "src/bin/seed_fleet_demo.rs"
-
 [dependencies]
 dotenvy.workspace = true
 nasiko-coding-policy.workspace = true
@@ -32,8 +24,6 @@ nasiko-oci.workspace = true
 nasiko-pricing.workspace = true
 nasiko-runtime = { workspace = true, features = ["docker", "simulated"] }
 nasiko-react-agent.workspace = true
-# IP-3's turn-level savings row (src/telemetry/tool_result_savings.rs)
-nasiko-savings.workspace = true
 nasiko-compress.workspace = true
 nasiko-orchestrator.workspace = true
 nasiko-types.workspace = true
@@ -73,7 +63,6 @@ sha2 = { workspace = true }
 base64 = { workspace = true }
 rust-embed = { workspace = true }
 mime_guess = { workspace = true }
-percent-encoding = { workspace = true }
 hex = { workspace = true }
 dashmap = { workspace = true }
 async-trait = { workspace = true }

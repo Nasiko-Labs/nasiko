@@ -29,7 +29,7 @@ use crate::ir::{
     ChatChunk, ChatRequest, ChatResponse, Choice, Delta, EmbeddingsRequest, EmbeddingsResponse,
     FunctionCall, FunctionCallDelta, Message, ToolCall, ToolCallDelta, ToolDef, Usage,
 };
-use crate::resolver::{ResolvedConfig, ResolvedEmbeddingConfig};
+use crate::resolver::ResolvedConfig;
 
 use super::dialect::{bedrock_region, bedrock_region_prefix};
 
@@ -231,7 +231,7 @@ impl ProviderClient for BedrockConverseProvider {
     async fn embeddings(
         &self,
         _req: &EmbeddingsRequest,
-        _cfg: &ResolvedEmbeddingConfig,
+        _cfg: &ResolvedConfig,
     ) -> Result<EmbeddingsResponse, ProviderError> {
         Err(ProviderError::Status {
             status: 501,

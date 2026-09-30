@@ -387,7 +387,6 @@ fn record_usage(span: &tracing::Span, usage: &CallUsage) {
 mod tests {
     use super::*;
     use nasiko_llm_router::{
-        ResolvedEmbeddingConfig,
         ir::{ChatChunk, ChatResponse, EmbeddingsRequest, EmbeddingsResponse},
         providers::ProviderError,
     };
@@ -437,7 +436,7 @@ mod tests {
         async fn embeddings(
             &self,
             _: &EmbeddingsRequest,
-            _: &ResolvedEmbeddingConfig,
+            _: &ResolvedConfig,
         ) -> Result<EmbeddingsResponse, ProviderError> {
             unreachable!("completion adapter does not embed")
         }

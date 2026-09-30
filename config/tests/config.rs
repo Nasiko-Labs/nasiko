@@ -159,9 +159,6 @@ fn optional_fields_use_defaults_when_not_set() {
         "OCI_STORAGE_BUCKET",
         "AGENT_IMAGE_REGISTRY",
         "SEED_AGENTS",
-        "AGENT_REGISTRY_HOST",
-        "SEED_IMAGE_PLATFORM",
-        "AGENT_IMAGE_REGISTRY_PLACEHOLDER",
         "OPENAI_API_KEY",
         "OPENAI_BASE_URL",
         "OPENAI_MODEL",
@@ -187,7 +184,6 @@ fn optional_fields_use_defaults_when_not_set() {
         "ROUTER_SHORTLIST_SIZE",
         "EMBEDDING_MODEL",
         "ROUTER_AGENT_TIMEOUT_SECS",
-        "AGENT_CALL_TIMEOUT_SECS",
         "GITHUB_CALLBACK_URL",
         "DOCKER_AGENT_NETWORK",
         "OCI_REGISTRY_HOST",
@@ -239,13 +235,13 @@ fn optional_fields_use_defaults_when_not_set() {
     assert_eq!(cfg.flow_max_depth, 5);
     assert_eq!(cfg.flow_max_fan_out, 20);
     assert_eq!(cfg.flow_max_tokens, 100_000);
-    assert_eq!(cfg.flow_timeout_secs, 600);
+    assert_eq!(cfg.flow_timeout_secs, 120);
     assert_eq!(cfg.github_client_id, None);
     assert_eq!(cfg.github_client_secret, None);
     assert_eq!(cfg.router_shortlist_threshold, 15);
     assert_eq!(cfg.router_shortlist_size, 10);
     assert_eq!(cfg.embedding_model, "text-embedding-3-small");
-    assert_eq!(cfg.agent_call_timeout_secs, 600);
+    assert_eq!(cfg.router_agent_timeout_secs, 60);
     assert_eq!(cfg.github_callback_url, None);
     assert_eq!(cfg.docker_agent_network, None);
     assert_eq!(cfg.oci_registry_host, None);
@@ -371,70 +367,6 @@ fn build_concurrency_is_parsed_and_clamped() {
     unset_required_vars();
 }
 
-const AGENT_STATE_KEYS: [&str; 4] = [
-    "AGENT_STATE_TTL_DAYS",
-    "AGENT_STATE_MAX_BODY_BYTES",
-    "AGENT_STATE_RATE_LIMIT_PER_MINUTE",
-    "AGENT_STATE_LIST_BYTES_BUDGET",
-];
-
-#[test]
-#[serial]
-fn agent_state_limits_default_when_unset() {
-    set_required_vars();
-    unset_vars(&AGENT_STATE_KEYS);
-
-    let cfg = Config::from_env().unwrap();
-    assert_eq!(cfg.agent_state_ttl_days, 7);
-    assert_eq!(cfg.agent_state_max_body_bytes, 1_048_576);
-    assert_eq!(cfg.agent_state_rate_limit_per_minute, 1200);
-    assert_eq!(cfg.agent_state_list_bytes_budget, 8 * 1024 * 1024);
-
-    unset_required_vars();
-}
-
-#[test]
-#[serial]
-fn agent_state_limits_are_parsed_and_clamped() {
-    set_required_vars();
-    unset_vars(&AGENT_STATE_KEYS);
-
-    // A zero TTL would expire every row as it is written, and a zero limit would
-    // refuse every request, so both resolve to the smallest usable value.
-    for (env_value, expected_ttl_days) in [("30", 30), ("1", 1), ("0", 1), ("-3", 1), ("9999", 365)]
-    {
-        unsafe { std::env::set_var("AGENT_STATE_TTL_DAYS", env_value) };
-        let cfg = Config::from_env().unwrap();
-        assert_eq!(
-            cfg.agent_state_ttl_days, expected_ttl_days,
-            "AGENT_STATE_TTL_DAYS={env_value} should resolve to {expected_ttl_days}"
-        );
-    }
-
-    unsafe {
-        std::env::set_var("AGENT_STATE_MAX_BODY_BYTES", "0");
-        std::env::set_var("AGENT_STATE_RATE_LIMIT_PER_MINUTE", "0");
-        std::env::set_var("AGENT_STATE_LIST_BYTES_BUDGET", "0");
-    }
-    let cfg = Config::from_env().unwrap();
-    assert_eq!(cfg.agent_state_max_body_bytes, 1);
-    assert_eq!(cfg.agent_state_rate_limit_per_minute, 1);
-    assert_eq!(cfg.agent_state_list_bytes_budget, 1);
-
-    unsafe {
-        std::env::set_var("AGENT_STATE_MAX_BODY_BYTES", "2048");
-        std::env::set_var("AGENT_STATE_RATE_LIMIT_PER_MINUTE", "5");
-        std::env::set_var("AGENT_STATE_LIST_BYTES_BUDGET", "4096");
-    }
-    let cfg = Config::from_env().unwrap();
-    assert_eq!(cfg.agent_state_max_body_bytes, 2048);
-    assert_eq!(cfg.agent_state_rate_limit_per_minute, 5);
-    assert_eq!(cfg.agent_state_list_bytes_budget, 4096);
-
-    unset_vars(&AGENT_STATE_KEYS);
-    unset_required_vars();
-}
-
 #[test]
 #[serial]
 fn flow_max_depth_is_parsed_from_env() {
@@ -463,44 +395,13 @@ fn flow_max_tokens_is_parsed_from_env() {
 
 #[test]
 #[serial]
-fn agent_call_timeout_secs_is_parsed_from_env() {
+fn router_agent_timeout_secs_is_parsed_from_env() {
     set_required_vars();
-    unsafe { std::env::set_var("AGENT_CALL_TIMEOUT_SECS", "120") };
+    unsafe { std::env::set_var("ROUTER_AGENT_TIMEOUT_SECS", "120") };
 
     let cfg = Config::from_env().unwrap();
-    assert_eq!(cfg.agent_call_timeout_secs, 120);
+    assert_eq!(cfg.router_agent_timeout_secs, 120);
 
-    unsafe { std::env::remove_var("AGENT_CALL_TIMEOUT_SECS") };
-    unset_required_vars();
-}
-
-/// The pre-rename name still works: deployments that set it keep their value
-/// rather than silently reverting to the default.
-#[test]
-#[serial]
-fn agent_call_timeout_secs_falls_back_to_the_legacy_env_name() {
-    set_required_vars();
-    unsafe { std::env::set_var("ROUTER_AGENT_TIMEOUT_SECS", "90") };
-
-    let cfg = Config::from_env().unwrap();
-    assert_eq!(cfg.agent_call_timeout_secs, 90);
-
-    unsafe { std::env::remove_var("ROUTER_AGENT_TIMEOUT_SECS") };
-    unset_required_vars();
-}
-
-/// The new name wins when both are set.
-#[test]
-#[serial]
-fn agent_call_timeout_secs_prefers_the_current_env_name() {
-    set_required_vars();
-    unsafe { std::env::set_var("AGENT_CALL_TIMEOUT_SECS", "120") };
-    unsafe { std::env::set_var("ROUTER_AGENT_TIMEOUT_SECS", "90") };
-
-    let cfg = Config::from_env().unwrap();
-    assert_eq!(cfg.agent_call_timeout_secs, 120);
-
-    unsafe { std::env::remove_var("AGENT_CALL_TIMEOUT_SECS") };
     unsafe { std::env::remove_var("ROUTER_AGENT_TIMEOUT_SECS") };
     unset_required_vars();
 }
@@ -534,72 +435,6 @@ fn seed_agents_is_read_from_env() {
     );
 
     unsafe { std::env::remove_var("SEED_AGENTS") };
-    unset_required_vars();
-}
-
-#[test]
-#[serial]
-fn agent_registry_host_is_trimmed_and_blank_means_docker_hub() {
-    set_required_vars();
-    unsafe { std::env::set_var("AGENT_REGISTRY_HOST", " ghcr.io ") };
-    assert_eq!(
-        Config::from_env().unwrap().agent_registry_host,
-        Some("ghcr.io".to_string())
-    );
-
-    unsafe { std::env::set_var("AGENT_REGISTRY_HOST", "  ") };
-    assert_eq!(Config::from_env().unwrap().agent_registry_host, None);
-
-    unsafe { std::env::remove_var("AGENT_REGISTRY_HOST") };
-    unset_required_vars();
-}
-
-#[test]
-#[serial]
-fn agent_image_registry_placeholder_is_trimmed_and_blank_means_unset() {
-    set_required_vars();
-    assert_eq!(
-        Config::from_env().unwrap().agent_image_registry_placeholder,
-        None
-    );
-
-    unsafe {
-        std::env::set_var(
-            "AGENT_IMAGE_REGISTRY_PLACEHOLDER",
-            " nasiko.pending.nip.io ",
-        )
-    };
-    assert_eq!(
-        Config::from_env().unwrap().agent_image_registry_placeholder,
-        Some("nasiko.pending.nip.io".to_string())
-    );
-
-    unsafe { std::env::set_var("AGENT_IMAGE_REGISTRY_PLACEHOLDER", "  ") };
-    assert_eq!(
-        Config::from_env().unwrap().agent_image_registry_placeholder,
-        None
-    );
-
-    unsafe { std::env::remove_var("AGENT_IMAGE_REGISTRY_PLACEHOLDER") };
-    unset_required_vars();
-}
-
-#[test]
-#[serial]
-fn seed_image_platform_defaults_to_linux_amd64() {
-    set_required_vars();
-    assert_eq!(
-        Config::from_env().unwrap().seed_image_platform,
-        "linux/amd64"
-    );
-
-    unsafe { std::env::set_var("SEED_IMAGE_PLATFORM", "linux/arm64") };
-    assert_eq!(
-        Config::from_env().unwrap().seed_image_platform,
-        "linux/arm64"
-    );
-
-    unsafe { std::env::remove_var("SEED_IMAGE_PLATFORM") };
     unset_required_vars();
 }
 

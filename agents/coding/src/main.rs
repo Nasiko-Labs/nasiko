@@ -5,7 +5,6 @@ use a2a_server::*;
 use futures::stream::BoxStream;
 
 mod instructions;
-mod mcp;
 mod project;
 mod prompt_comments;
 mod sandbox;
@@ -23,12 +22,10 @@ struct CodingAgent {
     http: reqwest::Client,
     minimal_code: bool,
     self_review_enabled: bool,
-    /// MCP gateway client; `None` when the platform did not inject gateway env.
-    mcp: Option<Arc<mcp::McpClient>>,
 }
 
 impl CodingAgent {
-    fn new(mcp: Option<Arc<mcp::McpClient>>) -> Self {
+    fn new() -> Self {
         Self {
             base_url: std::env::var("OPENAI_BASE_URL")
                 .unwrap_or_else(|_| "https://api.openai.com/v1".into()),
@@ -40,7 +37,6 @@ impl CodingAgent {
             // secrets/env panel, then restart the agent to pick it up.
             minimal_code: nasiko_coding_policy::minimal_code_enabled(),
             self_review_enabled: nasiko_coding_policy::self_review_enabled(),
-            mcp,
         }
     }
 
@@ -202,13 +198,6 @@ impl AgentExecutor for CodingAgent {
             .and_then(|v| v.first())
             .and_then(|tp| telemetry::remote_context_from_traceparent(tp));
 
-        let traceparent = ctx
-            .service_params
-            .get("traceparent")
-            .and_then(|v| v.first())
-            .cloned()
-            .unwrap_or_default();
-
         let task_id = ctx.task_id.clone();
         let context_id = ctx.context_id.clone();
 
@@ -233,7 +222,6 @@ impl AgentExecutor for CodingAgent {
         let http = self.http.clone();
         let minimal_code = self.minimal_code;
         let self_review_enabled = self.self_review_enabled;
-        let mcp = self.mcp.clone();
 
         let stream = async_stream::stream! {
             tracing::info!(minimal_code, self_review_enabled, task_id = %task_id, "handling task");
@@ -253,11 +241,7 @@ impl AgentExecutor for CodingAgent {
             let feature_enabled = instructions::feature_state(workspace_instructions.as_ref())
                 == instructions::FeatureState::Enabled;
 
-            let agent = CodingAgent { model, api_key, base_url, http, minimal_code, self_review_enabled, mcp: mcp.clone() };
-            let mut mcp_session = match &mcp {
-                Some(client) => Some(mcp::McpSession::open(client.clone(), &traceparent).await),
-                None => None,
-            };
+            let agent = CodingAgent { model, api_key, base_url, http, minimal_code, self_review_enabled };
 
             // Prune stale instructions if opted in and the list has grown past threshold.
             if feature_enabled
@@ -270,7 +254,7 @@ impl AgentExecutor for CodingAgent {
                     serde_json::json!({"role": "system", "content": "You review instruction files for staleness. Respond with only a JSON array."}),
                     serde_json::json!({"role": "user", "content": prune_prompt}),
                 ];
-                if let Ok(resp) = agent.chat(&prune_messages, &[], remote_cx.as_ref()).await {
+                if let Ok(resp) = agent.chat(&prune_messages, &[]).await {
                     let answer = resp["choices"][0]["message"]["content"].as_str().unwrap_or("[]");
                     let indices = instructions::parse_prune_response(answer);
                     if !indices.is_empty() {
@@ -300,10 +284,7 @@ impl AgentExecutor for CodingAgent {
             }
 
             let mut messages = vec![
-                serde_json::json!({"role": "system", "content": match &mcp_session {
-                    Some(session) => format!("{system_prompt}{}", session.system_prompt_hint()),
-                    None => system_prompt.clone(),
-                }}),
+                serde_json::json!({"role": "system", "content": system_prompt}),
                 serde_json::json!({"role": "user", "content": user_text}),
             ];
 
@@ -311,11 +292,7 @@ impl AgentExecutor for CodingAgent {
             let mut wrote_code = false;
 
             for _ in 0..MAX_TURNS {
-                let mut round_defs = tool_defs.clone();
-                if let Some(session) = &mcp_session {
-                    round_defs.extend(session.tool_defs().iter().cloned());
-                }
-                let resp = match agent.chat(&messages, &round_defs, remote_cx.as_ref()).await {
+                let resp = match agent.chat(&messages, &tool_defs, remote_cx.as_ref()).await {
                     Ok(r) => r,
                     Err(e) => {
                         yield Ok(status_failed(&task_id, &context_id, &e));
@@ -338,9 +315,7 @@ impl AgentExecutor for CodingAgent {
                         let preview = extract_preview(name, args);
                         yield Ok(status_working(&task_id, &context_id, Some(&preview)));
 
-                        let result = if matches!(&mcp_session, Some(sess) if sess.handles(name)) {
-                            mcp_session.as_mut().unwrap().call_tool(name, args).await
-                        } else if name == "update_instructions" {
+                        let result = if name == "update_instructions" {
                             tools::execute_update_instructions(
                                 sandbox.as_ref(),
                                 args,
@@ -355,7 +330,7 @@ impl AgentExecutor for CodingAgent {
                                         serde_json::json!({"role": "system", "content": "You review instruction files for staleness. Respond with only a JSON array."}),
                                         serde_json::json!({"role": "user", "content": prune_prompt}),
                                     ];
-                                    match agent.chat(&prune_messages, &[], remote_cx.as_ref()).await {
+                                    match agent.chat(&prune_messages, &[]).await {
                                         Ok(resp) => {
                                             let answer = resp["choices"][0]["message"]["content"].as_str().unwrap_or("[]");
                                             let indices = instructions::parse_prune_response(answer);
@@ -469,11 +444,7 @@ async fn main() {
         .and_then(|p| p.parse().ok())
         .unwrap_or(8000);
 
-    let mcp = mcp::McpClient::from_env().map(Arc::new);
-    if let Some(client) = &mcp {
-        client.probe().await;
-    }
-    let agent = CodingAgent::new(mcp);
+    let agent = CodingAgent::new();
     // The only way to confirm which mode a running container is actually in: the
     // toggle (docs/CODING_AGENT_MINIMALISM.md) writes a secret, not a live value,
     // and takes effect only on the next restart — so state both flags plainly

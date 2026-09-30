@@ -316,13 +316,8 @@ async fn translated_call(
         is_coding_agent: false,
     };
 
-    let provider = provider_for(
-        &resolved.provider,
-        resolved.custom_endpoint.as_ref(),
-        http,
-        cfg,
-    )
-    .map_err(|e| format!("provider_for({}): {e}", backend.label()))?;
+    let provider = provider_for(&resolved, http, cfg)
+        .map_err(|e| format!("provider_for({}): {e}", backend.label()))?;
     let ir_resp = provider
         .chat(&ir_req, &resolved)
         .await

@@ -252,7 +252,7 @@ pub(crate) async fn register_coding_agent(
 /// resolves them per edition and hands back plain ids instead, which is what
 /// closes the gap this comment used to describe. OSS returns an empty list, so
 /// the extra disjunct never matches there.
-pub(crate) fn agent_access_predicate(user_bind: &str, org_bind: &str, table_ref: &str) -> String {
+fn agent_access_predicate(user_bind: &str, org_bind: &str, table_ref: &str) -> String {
     format!(
         r#"({user_bind}::uuid IS NULL
              OR {table_ref}.owner_id = {user_bind}
@@ -274,10 +274,7 @@ pub(crate) fn agent_access_predicate(user_bind: &str, org_bind: &str, table_ref:
 /// every call site passed `Some(user_id)` unconditionally, so an admin saw
 /// exactly what a `member` saw.
 #[allow(clippy::result_large_err)]
-pub(crate) async fn listing_scope(
-    state: &AppState,
-    claims: &Claims,
-) -> Result<ListingScope, Response> {
+async fn listing_scope(state: &AppState, claims: &Claims) -> Result<ListingScope, Response> {
     if claims.is_superuser {
         return Ok(ListingScope {
             user: None,
@@ -295,9 +292,9 @@ pub(crate) async fn listing_scope(
     })
 }
 
-pub(crate) struct ListingScope {
-    pub(crate) user: Option<Uuid>,
-    pub(crate) org_granted: Vec<String>,
+struct ListingScope {
+    user: Option<Uuid>,
+    org_granted: Vec<String>,
 }
 
 #[derive(Deserialize, IntoParams)]
@@ -423,15 +420,6 @@ pub(crate) async fn create(
         }
     }
     let skills = serde_json::to_value(&skills_vec).unwrap_or_default();
-    // The card decides whether this agent is offered the minimal-code ladder at all, so it may as
-    // well decide the starting position too: an agent registered with coding skills comes up with
-    // the ladder on. Reversible from the Settings switch, and scoped to *registration* on purpose —
-    // nothing here rewrites an existing agent, whose owner may have turned it off deliberately.
-    //
-    // `has_coding_skills` rather than a local predicate: the dispatch-time gate
-    // (`a2a_dispatch.rs`) calls the same function, and the two disagreeing is precisely the drift
-    // that produced the `/code/i`-vs-`ILIKE '%code%'` bug this helper was extracted to fix.
-    let minimal_code_enabled = super::models::has_coding_skills(&skills_vec);
     let meta = body.metadata.unwrap_or(serde_json::json!({}));
     let owner_id = match claims.user_uuid() {
         Ok(id) => id,
@@ -448,8 +436,8 @@ pub(crate) async fn create(
 
     let result = sqlx
         ::query_as::<_, Agent>(
-            r#"INSERT INTO agents (name, display_name, description, owner_id, url, icon_url, version, documentation_url, capabilities, skills, tags, metadata, image, minimal_code_enabled)
-           VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, '1.0.0'), $8, $9, $10, $11, $12, $13, $14)
+            r#"INSERT INTO agents (name, display_name, description, owner_id, url, icon_url, version, documentation_url, capabilities, skills, tags, metadata, image)
+           VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, '1.0.0'), $8, $9, $10, $11, $12, $13)
            RETURNING *"#
         )
         .bind(&body.name)
@@ -465,7 +453,6 @@ pub(crate) async fn create(
         .bind(&tags)
         .bind(meta)
         .bind(&body.image)
-        .bind(minimal_code_enabled)
         .fetch_one(&mut *tx).await;
 
     let agent = match result {
@@ -609,30 +596,20 @@ pub(crate) async fn list(
 /// harmless where a stale write would linger.
 async fn reconcile_running_status(state: &AppState, agents: &mut [Agent]) {
     for agent in agents.iter_mut() {
-        if let Some(live) = live_status(state, agent.id, &agent.status).await {
-            agent.status = live;
+        if agent.status != "running" {
+            continue;
+        }
+        let container_id = ContainerId::from_uuid(agent.id);
+        if let Ok(live) = state.runtime.status(&container_id).await {
+            use nasiko_runtime::RuntimeState;
+            if matches!(
+                live.state,
+                RuntimeState::Crashed | RuntimeState::Failed | RuntimeState::Stopped
+            ) {
+                agent.status = live.state.to_string();
+            }
         }
     }
-}
-
-/// The runtime's own word on a row that reads `running`, when it disagrees: `crashed`, `failed`
-/// or `stopped`. `None` keeps the stored status (not running, agreed, or the runtime didn't
-/// answer). The Overview's estate reads it too, so the map and the catalog never disagree.
-pub(crate) async fn live_status(state: &AppState, agent_id: Uuid, status: &str) -> Option<String> {
-    if status != "running" {
-        return None;
-    }
-    let live = state
-        .runtime
-        .status(&ContainerId::from_uuid(agent_id))
-        .await
-        .ok()?;
-    use nasiko_runtime::RuntimeState;
-    matches!(
-        live.state,
-        RuntimeState::Crashed | RuntimeState::Failed | RuntimeState::Stopped
-    )
-    .then(|| live.state.to_string())
 }
 
 #[derive(Serialize, ToSchema)]
@@ -1150,22 +1127,12 @@ pub(crate) async fn delete(
         }
     };
 
-    // Tombstone the agent's credentials - a destroyed agent's leaked env must not
-    // keep authenticating at /api/mcp or the agent state API. Best-effort: the soft
-    // delete above already stands (both lookups also refuse a deleted agent), and the
-    // gateway's flow-participant check still bounds any residual credential to flows
-    // actively routed here.
+    // Tombstone the agent's MCP gateway credential — a destroyed agent's leaked
+    // env must not keep authenticating at /api/mcp. Best-effort: the soft
+    // delete above already stands, and the gateway's flow-participant check
+    // still bounds any residual credential to flows actively routed here.
     if let Err(e) = nasiko_mcp_gateway::agent_tokens::revoke(&state.db, id).await {
         tracing::warn!(%e, %id, "delete agent: gateway token revoke failed");
-    }
-    if let Err(e) = nasiko_mcp_gateway::agent_tokens::revoke_scoped(
-        &state.db,
-        id,
-        nasiko_mcp_gateway::agent_tokens::TokenScope::State,
-    )
-    .await
-    {
-        tracing::warn!(%e, %id, "delete agent: state token revoke failed");
     }
 
     // Let enterprise-only, agent-keyed state clean itself up (e.g. a reserved name that has no

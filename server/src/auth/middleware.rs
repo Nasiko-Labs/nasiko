@@ -65,11 +65,10 @@ pub struct UiMount {
 }
 
 impl UiMount {
-    /// The React SPA at `/` — every edition serves it. `/login` is a router
-    /// path, not a document: the build emits one `index.html` for every route.
+    /// The vanilla-JS UI at `/` — every edition serves it.
     pub const ROOT: UiMount = UiMount {
         prefix: "/",
-        login_path: Some("/login"),
+        login_path: Some("/login.html"),
     };
 }
 
@@ -115,60 +114,15 @@ fn mount_for(mounts: &'static [UiMount], path: &str) -> UiMount {
         .unwrap_or(UiMount::ROOT)
 }
 
-/// Extensions a browser only ever requests as a subresource. A path ending in
-/// one of these is an asset; anything else is a page.
-///
-/// Listing them is the point. The rule this replaced asked whether the last
-/// segment contained a dot at all, which made every id with a dot in it an
-/// "asset" — see [`is_gated_page`]. `.html` is absent deliberately: a document
-/// is a page.
-const ASSET_EXTENSIONS: &[&str] = &[
-    "css",
-    "js",
-    "mjs",
-    "map",
-    "json",
-    "svg",
-    "png",
-    "jpg",
-    "jpeg",
-    "gif",
-    "webp",
-    "avif",
-    "ico",
-    "woff",
-    "woff2",
-    "ttf",
-    "otf",
-    "txt",
-    "xml",
-    "webmanifest",
-    "wasm",
-];
-
-/// A path is a gated page when it serves an HTML document.
-///
-/// This cannot key on "the last segment has no dot", the way it did while the
-/// UI was unbundled source. The React router owns routes whose final segment
-/// is a user-supplied id, and ids contain dots — `/agents/my.agent` is a page,
-/// and under the old rule it skipped the gate and rendered the shell to a
-/// signed-out visitor instead of redirecting to login. (The same heuristic in
-/// the static handler sent it to the 404 page; see `nasiko_server::spa`.)
-///
-/// So invert it: a request is an asset only if it is one the build actually
-/// emits. Anything else is a page, which is also the safe direction — a new
-/// asset path that is wrongly treated as a page costs one redirect, while a
-/// page wrongly treated as an asset silently bypasses the gate.
+/// A path is a gated page when it serves an HTML document: explicit `.html`
+/// paths and extensionless paths (`/`, `/app/`, unknown routes → 404 page).
 /// Login pages are exempted by [`login_redirect_target`], not here.
 fn is_gated_page(path: &str) -> bool {
-    if path.trim_start_matches('/').starts_with("assets/") {
-        return false;
+    if path.ends_with(".html") {
+        return true;
     }
     let last_segment = path.rsplit('/').next().unwrap_or("");
-    match last_segment.rsplit_once('.') {
-        Some((_, ext)) => !ASSET_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()),
-        None => true,
-    }
+    !last_segment.contains('.')
 }
 
 /// The bearer-token validation core of [`require_auth`], extracted so other
@@ -230,7 +184,7 @@ pub async fn validate_session_token(
     // `users` is a 500, and an insert into anything with a `user_id` foreign key
     // (chat_sessions) is a 500 too, so the app reads as broken rather than as
     // logged out. Rejecting here turns all of that into the one thing the
-    // frontend already knows how to handle — a 401 sends it to /login
+    // frontend already knows how to handle — a 401 sends it to /login.html
     // through the single funnel in common/services/api.js.
     //
     // `is_active` is deliberately NOT part of this: deactivating a user would
@@ -336,50 +290,36 @@ mod tests {
     ];
 
     #[test]
-    fn gates_html_documents_and_router_paths() {
+    fn gates_html_documents_and_extensionless_paths() {
         assert!(is_gated_page("/"));
         assert!(is_gated_page("/index.html"));
+        assert!(is_gated_page("/agents.html"));
         assert!(is_gated_page("/app/"));
         assert!(is_gated_page("/unknown-route"));
-        assert!(is_gated_page("/sessions/abc"));
-    }
-
-    /// The regression this rule exists for: a router path whose final segment
-    /// is a user-supplied id containing a dot. Under the old "any dot means
-    /// asset" rule these skipped the gate and rendered the shell to a
-    /// signed-out visitor.
-    #[test]
-    fn gates_router_paths_whose_ids_contain_dots() {
-        assert!(is_gated_page("/agents/my.agent"));
-        assert!(is_gated_page("/agents/v1.2.3"));
-        assert!(is_gated_page("/mcp/some.connector"));
     }
 
     #[test]
     fn passes_subresource_assets() {
-        assert!(!is_gated_page("/assets/index-a1b2c3.js"));
-        assert!(!is_gated_page("/assets/index-a1b2c3.css"));
-        assert!(!is_gated_page("/mark-nasiko.svg"));
-        assert!(!is_gated_page("/mockServiceWorker.js"));
-        assert!(!is_gated_page("/routes.json"));
-        assert!(!is_gated_page("/assets/hanken-grotesk-latin.woff2"));
+        assert!(!is_gated_page("/common/global.css"));
+        assert!(!is_gated_page("/navigation.js"));
+        assert!(!is_gated_page("/common/mark-nasiko.svg"));
+        assert!(!is_gated_page("/common/fonts/departure-mono.woff2"));
     }
 
     #[test]
-    fn root_mount_redirects_pages_to_the_login_route() {
-        assert_eq!(login_redirect_target(ROOT_ONLY, "/"), Some("/login"));
-        assert_eq!(login_redirect_target(ROOT_ONLY, "/agents"), Some("/login"));
+    fn root_mount_redirects_pages_to_vanilla_login() {
+        assert_eq!(login_redirect_target(ROOT_ONLY, "/"), Some("/login.html"));
         assert_eq!(
-            login_redirect_target(ROOT_ONLY, "/agents/my.agent"),
-            Some("/login")
+            login_redirect_target(ROOT_ONLY, "/agents.html"),
+            Some("/login.html")
         );
-        assert_eq!(login_redirect_target(ROOT_ONLY, "/login"), None);
-        assert_eq!(
-            login_redirect_target(ROOT_ONLY, "/assets/index-a1b2c3.css"),
-            None
-        );
+        assert_eq!(login_redirect_target(ROOT_ONLY, "/login.html"), None);
+        assert_eq!(login_redirect_target(ROOT_ONLY, "/common/global.css"), None);
         // Without an /app/ mount, its pages belong to the root mount.
-        assert_eq!(login_redirect_target(ROOT_ONLY, "/app/"), Some("/login"));
+        assert_eq!(
+            login_redirect_target(ROOT_ONLY, "/app/"),
+            Some("/login.html")
+        );
     }
 
     #[test]
@@ -395,8 +335,11 @@ mod tests {
             None
         );
         assert_eq!(login_redirect_target(WITH_APP, "/app/bundle.js"), None);
-        // Root-mount pages still go to the root mount's login route.
-        assert_eq!(login_redirect_target(WITH_APP, "/agents"), Some("/login"));
-        assert_eq!(login_redirect_target(WITH_APP, "/login"), None);
+        // Root-mount pages still go to the vanilla login.
+        assert_eq!(
+            login_redirect_target(WITH_APP, "/agents.html"),
+            Some("/login.html")
+        );
+        assert_eq!(login_redirect_target(WITH_APP, "/login.html"), None);
     }
 }

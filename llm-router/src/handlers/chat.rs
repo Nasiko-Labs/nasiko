@@ -39,9 +39,6 @@ pub(crate) struct RoutedRequest {
     pub resolved: crate::resolver::ResolvedConfig,
     pub flow_id: Option<String>,
     pub attribution_source: Option<routing::attribution::AttributionSource>,
-    /// What payload compression did to this request, for its usage rows. Set by the Responses
-    /// surface after routing; `chat_core` passes its own stats straight to its rows instead.
-    pub compression: crate::compress::Ledger,
 }
 
 /// Prompt-derived signals `resolve_routed_request` needs beyond the resolved config,
@@ -208,7 +205,6 @@ async fn chat_core(
         resolved,
         flow_id,
         attribution_source,
-        compression: _,
     } = routed;
 
     // ── compression seam ──────────────────────────────────────────────────────────────────
@@ -279,7 +275,7 @@ async fn chat_core(
     // ── brevity seam (IP-2) ───────────────────────────────────────────────────────────────
     // After compression, so the size floor is judged on the bytes actually being sent, and so a
     // compressed tool result cannot push a turn over the floor it would otherwise miss.
-    let brevity = crate::brevity::apply(&mut req, &ctx.cfg, &resolved, flow_id.as_deref());
+    let brevity = crate::brevity::apply(&mut req, &ctx.cfg, &resolved);
     let brevity_metadata = Some(crate::brevity::to_metadata(
         &brevity,
         crate::brevity::DIRECTIVE.len(),
@@ -291,28 +287,6 @@ async fn chat_core(
         skipped = ?brevity.err(),
         "brevity: directive decision"
     );
-
-    // ── compact tool schemas (opt-in, `TOKEN_COMPACT_TOOLS`) ──────────────────────────────
-    // After brevity and before `sent_bytes`, so the ledger measures the payload actually sent.
-    // Off (the default) or skipped, `req` is untouched and the reply is not inspected.
-    let compact = crate::compact_tools::apply(&mut req, &ctx.cfg, &resolved);
-    tracing::debug!(
-        target: "nasiko::llm_router::compact_tools",
-        %agent_id,
-        applied = compact.is_ok(),
-        skipped = compact.as_ref().err().map(|s| s.as_label()),
-        "compact_tools: decision"
-    );
-
-    // ── savings ledger inputs ─────────────────────────────────────────────────────────────
-    // Measured here, after both seams, because this is the payload the provider will actually
-    // bill for — which is what makes `sent_bytes / reported_input_tokens` a calibration rather
-    // than a guess (savings.rs). Only a reduction that really happened is credited: `applied` is
-    // already false for a dry run and for a pass that found nothing to shrink.
-    let sent_bytes = crate::brevity::estimated_bytes(&req);
-    let compress_bytes = compression
-        .applied
-        .then_some((compression.bytes_in, compression.bytes_out));
 
     tracing::info!(
         target: "nasiko::llm_router::chat",
@@ -380,58 +354,14 @@ async fn chat_core(
             platform_paid,
             compress_metadata: compression.to_metadata(),
             brevity_metadata: brevity_metadata.clone(),
-            compress_bytes,
-            request_bytes: Some(sent_bytes),
             span: llm_span.clone(),
         });
     }
 
     // Non-streaming: run with ordered fallbacks; usage records the effective provider/model.
-    let (mut resp, (mut provider, mut model)) =
-        fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
-            .instrument(llm_span.clone())
-            .await?;
-
-    // Compact calls → native `tool_calls`. A reply that does not decode is never guessed at:
-    // the failed attempt is billed as its own row and the original native request is re-sent.
-    if let Ok(compacted) = &compact
-        && let Err(e) = crate::compact_tools::decode_response(&mut resp, &compacted.tools)
-    {
-        tracing::warn!(
-            target: "nasiko::llm_router::compact_tools",
-            %agent_id,
-            error = e,
-            "compact_tools: reply did not decode; retrying with native tools"
-        );
-        usage::spawn_log(
-            ctx.db.clone(),
-            ctx.pricing.clone(),
-            UsageRecord {
-                owner_id: owner_id.clone(),
-                agent_id: agent_id.clone(),
-                operation_type: "direct_llm",
-                provider: provider.clone(),
-                model: model.clone(),
-                usage: resp.usage.clone(),
-                cached_tokens: None,
-                reasoning_tokens: None,
-                latency_ms: started.elapsed().as_millis() as i64,
-                streaming: false,
-                finish_reason: Some("compact_decode_error".into()),
-                flow_id: flow_id.clone(),
-                attribution_source,
-                platform_paid,
-                compress_metadata: compression.to_metadata(),
-                brevity_metadata: brevity_metadata.clone(),
-                compress_bytes,
-                request_bytes: Some(sent_bytes),
-            },
-        );
-        (resp, (provider, model)) =
-            fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &compacted.native)
-                .instrument(llm_span.clone())
-                .await?;
-    }
+    let (resp, (provider, model)) = fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
+        .instrument(llm_span.clone())
+        .await?;
     let latency_ms = started.elapsed().as_millis() as i64;
 
     // Record effective model and token usage on the server-side gen_ai span.
@@ -458,8 +388,6 @@ async fn chat_core(
             platform_paid,
             compress_metadata: compression.to_metadata(),
             brevity_metadata: brevity_metadata.clone(),
-            compress_bytes,
-            request_bytes: Some(sent_bytes),
         },
     );
 
@@ -484,8 +412,7 @@ pub(crate) async fn resolve_routed_request(
     // otherwise pins every request to Level 4 (the agent's configured `llm_config`) and
     // makes the prompt classifier (Level 3) unreachable. Derive signals from the transcript
     // itself instead for these agents.
-    let (boundary, flow_id, billed_user_id, attribution_source, query) = if resolved.is_coding_agent
-    {
+    let (boundary, flow_id, billed_user_id, attribution_source) = if resolved.is_coding_agent {
         (
             BoundarySignals::for_coding_agent(
                 &agent_id,
@@ -496,7 +423,6 @@ pub(crate) async fn resolve_routed_request(
             None,
             owner_id.clone(),
             None,
-            signals.query,
         )
     } else {
         let raw_traceparent = headers
@@ -525,11 +451,9 @@ pub(crate) async fn resolve_routed_request(
             Some(attribution.flow_id.clone()),
             billed_user_id,
             Some(attribution.source),
-            routing_query(attribution.user_message, signals.query),
         )
     };
-    let decision = routing::route_model_with(
-        ctx.classifier.as_ref(),
+    let decision = routing::route_model(
         ctx.router_cache.as_ref(),
         ctx.tier_registry.as_ref(),
         ctx.cell_store.as_ref(),
@@ -544,8 +468,7 @@ pub(crate) async fn resolve_routed_request(
             tier2_model: resolved.tier2_model.as_deref(),
             tier3_model: resolved.tier3_model.as_deref(),
             signals: &boundary,
-            query: query.as_deref(),
-            tier_seed: ctx.cfg.router_tier_seed,
+            query: signals.query.as_deref(),
         },
     )
     .await;
@@ -585,25 +508,7 @@ pub(crate) async fn resolve_routed_request(
         resolved,
         flow_id,
         attribution_source,
-        compression: crate::compress::Ledger::default(),
     })
-}
-
-/// The text the salience gate and classifier score for an in-flow call: the end user's
-/// message as the platform received it, when the flow recorded one, else the latest user
-/// turn parsed from the LLM request.
-///
-/// The recorded message is preferred because the request body is whatever the agent's
-/// framework built — a system prompt glued onto the user turn, retrieved context, packed
-/// history — and scoring that judges the framing, not what the user asked.
-fn routing_query(flow_message: Option<String>, transcript_query: Option<String>) -> Option<String> {
-    let flow_message = flow_message.filter(|m| !m.trim().is_empty());
-    tracing::info!(
-        target: "nasiko::llm_router::chat",
-        source = if flow_message.is_some() { "flow_user_message" } else { "llm_request" },
-        "chat_core: routing query source"
-    );
-    flow_message.or(transcript_query)
 }
 
 /// Derive the model-routing [`BoundarySignals`] from the attributed flow.
@@ -653,10 +558,6 @@ struct StreamChatArgs<'a> {
     /// all, so every trace-derived figure counted it as free.
     span: tracing::Span,
     brevity_metadata: Option<serde_json::Value>,
-    /// Savings-ledger inputs, threaded through to the `Drop` write for the same reason
-    /// `compress_metadata` is: on this path the `UsageRecord` is only built once the stream ends.
-    compress_bytes: Option<(usize, usize)>,
-    request_bytes: Option<usize>,
 }
 
 /// Stream provider chunks back as OpenAI SSE: `data: <chunk>\n\n` … `data: [DONE]\n\n`.
@@ -679,8 +580,6 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
         compress_metadata,
         span,
         brevity_metadata,
-        compress_bytes,
-        request_bytes,
     } = args;
     let state = Arc::new(Mutex::new(StreamState::default()));
     let guard = UsageGuard {
@@ -698,8 +597,6 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
         platform_paid,
         compress_metadata,
         brevity_metadata,
-        compress_bytes,
-        request_bytes,
     };
 
     let body_stream = async_stream::stream! {
@@ -769,9 +666,6 @@ struct UsageGuard {
     /// Taken in `drop`, which runs exactly once.
     compress_metadata: Option<serde_json::Value>,
     brevity_metadata: Option<serde_json::Value>,
-    /// `Copy`, so unlike the two above these are read rather than taken.
-    compress_bytes: Option<(usize, usize)>,
-    request_bytes: Option<usize>,
 }
 
 impl Drop for UsageGuard {
@@ -800,8 +694,6 @@ impl Drop for UsageGuard {
                 platform_paid: self.platform_paid,
                 compress_metadata,
                 brevity_metadata,
-                compress_bytes: self.compress_bytes,
-                request_bytes: self.request_bytes,
             },
         );
     }
@@ -938,10 +830,6 @@ mod tests {
                     finish_reason: None,
                 })),
                 flow_id: None,
-                // This test is about the span's lifetime, not the savings ledger: no compression
-                // ran, so there is nothing for the guard to credit.
-                compress_bytes: None,
-                request_bytes: None,
                 attribution_source: None,
                 platform_paid: true,
                 // This test covers span lifetime, not compression.
@@ -994,7 +882,6 @@ mod tests {
                 user_id: None,
                 context_id: Some("ses_test".into()),
                 mode: None,
-                user_message: None,
                 agent_is_participant: true,
             }))
         }
@@ -1002,11 +889,6 @@ mod tests {
             &self,
             _: &str,
         ) -> Result<Option<crate::resolver::CustomProvider>, sqlx::Error> {
-            Ok(None)
-        }
-        async fn fetch_org_embedding_default(
-            &self,
-        ) -> Result<Option<crate::resolver::OrgEmbeddingDefault>, sqlx::Error> {
             Ok(None)
         }
     }
@@ -1044,7 +926,6 @@ mod tests {
             tier_registry: Arc::new(NoTiers),
             cell_store: Arc::new(crate::routing::InMemoryCellStore::new()),
             salience_gate: Arc::new(crate::routing::AllowAllGate),
-            classifier: Arc::new(crate::routing::RegexClassifier),
             pricing: Arc::new(nasiko_pricing::PricingEngine::new(
                 PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
             )),
@@ -1081,10 +962,6 @@ mod tests {
             tier1_model: None,
             tier2_model: None,
             tier3_model: None,
-            embedding_provider: None,
-            embedding_model: None,
-            embedding_api_key_secret_name: None,
-            embedding_model_override: false,
         }
     }
 
@@ -1449,18 +1326,6 @@ mod tests {
     }
 
     #[test]
-    fn routing_query_prefers_the_flows_user_message() {
-        let wrapped = Some("You are a deployed AI agent...\n\nUser request:\nHi".to_string());
-        assert_eq!(
-            routing_query(Some("Hi".into()), wrapped.clone()).as_deref(),
-            Some("Hi")
-        );
-        // No recorded message (or a blank one) falls back to the request's own text.
-        assert_eq!(routing_query(None, wrapped.clone()), wrapped);
-        assert_eq!(routing_query(Some("  ".into()), wrapped.clone()), wrapped);
-    }
-
-    #[test]
     fn boundary_signals_in_flow_when_attributed() {
         let attribution = routing::attribution::FlowAttribution {
             flow_id: "f1".into(),
@@ -1468,7 +1333,6 @@ mod tests {
             context_id: Some("ses_1".into()),
             mode: routing::Mode::FreeFlowing,
             source: routing::attribution::AttributionSource::Traceparent,
-            user_message: None,
         };
         // The stable context_id keys the decision cache, not the per-turn flow id.
         let signals = boundary_signals_for(&attribution);
@@ -1531,10 +1395,6 @@ mod tests {
                 tier1_model: None,
                 tier2_model: None,
                 tier3_model: None,
-                embedding_provider: None,
-                embedding_model: None,
-                embedding_api_key_secret_name: None,
-                embedding_model_override: false,
             }),
             is_coding_agent: true,
         };
@@ -1580,10 +1440,6 @@ mod tests {
                 tier1_model: None,
                 tier2_model: None,
                 tier3_model: None,
-                embedding_provider: None,
-                embedding_model: None,
-                embedding_api_key_secret_name: None,
-                embedding_model_override: false,
             }),
             is_coding_agent: false,
             compress_enabled: false,
@@ -1630,10 +1486,6 @@ mod tests {
                 tier1_model: None,
                 tier2_model: None,
                 tier3_model: None,
-                embedding_provider: None,
-                embedding_model: None,
-                embedding_api_key_secret_name: None,
-                embedding_model_override: false,
             }),
             is_coding_agent: false,
             compress_enabled: false,
@@ -1650,168 +1502,5 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, GatewayError::BadRequest(_)));
-    }
-
-    // ── compact tool schemas: the opt-in flag reaches the wire, and off means untouched ────
-
-    fn weather_params() -> Value {
-        json!({"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]})
-    }
-
-    fn weather_request() -> Value {
-        json!({
-            "model": "gpt-4o",
-            "messages": [{ "role": "user", "content": "Weather in Pune?" }],
-            "tools": [{ "type": "function", "function": {
-                "name": "get_weather", "description": "Weather for a city.", "parameters": weather_params()
-            }}]
-        })
-    }
-
-    /// One request against a mock provider that answers with `replies` in order. Returns every
-    /// body the provider received and the client's response.
-    async fn compact_round(
-        flag: bool,
-        replies: Vec<Value>,
-        format: InboundFormat,
-        body: Value,
-    ) -> (Vec<Value>, Value) {
-        let seen = Arc::new(Mutex::new(Vec::<Value>::new()));
-        let capture = Arc::clone(&seen);
-        let mut server = mockito::Server::new_async().await;
-        let _mock = server
-            .mock("POST", "/chat/completions")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body_from_request(move |request| {
-                let mut seen = capture.lock().unwrap_or_else(|e| e.into_inner());
-                let body = request.body().map(Vec::as_slice).unwrap_or_default();
-                seen.push(serde_json::from_slice(body).unwrap_or(Value::Null));
-                let reply = &replies[(seen.len() - 1).min(replies.len() - 1)];
-                json!({
-                    "id": "chatcmpl-c", "object": "chat.completion", "model": "gpt-4o-mini",
-                    "choices": [{ "index": 0, "message": reply, "finish_reason": "stop" }],
-                    "usage": { "prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7 }
-                })
-                .to_string()
-                .into_bytes()
-            })
-            .create_async()
-            .await;
-
-        let mut ctx = ctx_with(server.url());
-        ctx.cfg = Arc::new(GatewayConfig {
-            compact_tools_enabled: flag,
-            ..(*ctx.cfg).clone()
-        });
-        let store = Store {
-            config: Some(openai_config()),
-            is_coding_agent: false,
-            compress_enabled: true,
-        };
-        let resp = chat_core(&ctx, &store, &auth_headers(&token()), body, format, None)
-            .await
-            .unwrap();
-        let out: Value = serde_json::from_str(&body_string(resp).await).unwrap();
-        let bodies = seen.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        (bodies, out)
-    }
-
-    const COMPACT_CALL: &str = r#"<<call get_weather {"city":"Pune"}>>"#;
-
-    #[tokio::test]
-    async fn compact_tools_off_sends_native_tools_and_leaves_the_reply_alone() {
-        let reply = json!({ "role": "assistant", "content": COMPACT_CALL });
-        let (bodies, out) =
-            compact_round(false, vec![reply], InboundFormat::OpenAi, weather_request()).await;
-        assert_eq!(bodies.len(), 1);
-        assert_eq!(
-            bodies[0]["tools"],
-            weather_request()["tools"],
-            "native tools changed"
-        );
-        assert!(
-            !bodies[0].to_string().contains("<<call"),
-            "compact instructions leaked"
-        );
-        // Off, the reply is not inspected: compact-looking text reaches the client verbatim.
-        assert_eq!(out["choices"][0]["message"]["content"], COMPACT_CALL);
-        assert!(out["choices"][0]["message"]["tool_calls"].is_null());
-    }
-
-    #[tokio::test]
-    async fn compact_tools_on_sends_signatures_and_returns_native_tool_calls() {
-        let reply = json!({ "role": "assistant", "content": COMPACT_CALL });
-        let (bodies, out) =
-            compact_round(true, vec![reply], InboundFormat::OpenAi, weather_request()).await;
-        assert_eq!(bodies.len(), 1);
-        assert!(bodies[0].get("tools").is_none(), "native tools still sent");
-        let messages = bodies[0]["messages"].as_array().unwrap();
-        let system = messages.last().unwrap();
-        assert_eq!(system["role"], "system");
-        assert!(
-            system["content"].as_str().unwrap().starts_with(
-                "get_weather(city:str) - Weather for a city.
-"
-            ),
-            "{system}"
-        );
-        let choice = &out["choices"][0];
-        assert_eq!(choice["finish_reason"], "tool_calls");
-        let call = &choice["message"]["tool_calls"][0];
-        assert_eq!(call["type"], "function");
-        assert_eq!(call["function"]["name"], "get_weather");
-        assert_eq!(call["function"]["arguments"], r#"{"city":"Pune"}"#);
-        assert!(call["id"].as_str().unwrap().starts_with("call_"));
-    }
-
-    #[tokio::test]
-    async fn compact_reply_that_does_not_decode_is_retried_with_native_tools() {
-        let bad =
-            json!({ "role": "assistant", "content": r#"<<call get_weather {"town":"Pune"}>>"# });
-        let native = json!({ "role": "assistant", "content": null, "tool_calls": [{
-            "id": "call_native", "type": "function",
-            "function": { "name": "get_weather", "arguments": "{\"city\":\"Pune\"}" }
-        }]});
-        let (bodies, out) = compact_round(
-            true,
-            vec![bad, native],
-            InboundFormat::OpenAi,
-            weather_request(),
-        )
-        .await;
-        assert_eq!(
-            bodies.len(),
-            2,
-            "expected one compact attempt and one native retry"
-        );
-        assert!(bodies[0].get("tools").is_none());
-        assert_eq!(bodies[1]["tools"], weather_request()["tools"]);
-        assert_eq!(
-            out["choices"][0]["message"]["tool_calls"][0]["id"],
-            "call_native"
-        );
-    }
-
-    #[tokio::test]
-    async fn anthropic_client_gets_tool_use_blocks_from_compact_calls() {
-        let body = json!({
-            "model": "claude-3-5-sonnet-20241022",
-            "max_tokens": 256,
-            "messages": [{ "role": "user", "content": "Weather in Pune?" }],
-            "tools": [{ "name": "get_weather", "description": "Weather for a city.", "input_schema": weather_params() }]
-        });
-        let reply = json!({ "role": "assistant", "content": COMPACT_CALL });
-        let (bodies, out) = compact_round(true, vec![reply], InboundFormat::Anthropic, body).await;
-        assert!(bodies[0].get("tools").is_none());
-        let block = out["content"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|b| b["type"] == "tool_use")
-            .unwrap_or_else(|| panic!("no tool_use block: {out}"));
-        assert_eq!(block["name"], "get_weather");
-        assert_eq!(block["input"], json!({"city": "Pune"}));
-        assert_eq!(out["stop_reason"], "tool_use");
     }
 }

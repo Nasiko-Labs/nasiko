@@ -111,7 +111,7 @@ async fn responses_core(
         is_tool_continuation: is_tool_continuation(body.get("input")),
         query,
     };
-    let mut routed = resolve_routed_request(
+    let routed = resolve_routed_request(
         ctx,
         store,
         headers,
@@ -124,7 +124,6 @@ async fn responses_core(
         signals,
     )
     .await?;
-    routed.compression = compress_input(ctx, &routed, &mut body).await;
     let attempts = fallback::build_attempts(&routed.resolved, &ctx.cfg);
     let native_primary = routed.resolved.provider == "openai";
     let mut translated = if native_primary {
@@ -220,66 +219,6 @@ async fn responses_core(
     })
 }
 
-/// The compression seam for this surface, as `chat_core`'s: after routing (the signals that pick
-/// the model were read from the uncompressed input), per agent (`compress_enabled`), on tool
-/// results only. Once, before any attempt, so the passthrough and the translated path (which
-/// parses this same body) send the same bytes. Originals are stored before the request carrying
-/// their markers goes out; only a flow-scoped request can be recovered.
-async fn compress_input(
-    ctx: &LlmRouterCtx,
-    routed: &RoutedRequest,
-    body: &mut Value,
-) -> crate::compress::Ledger {
-    let policy = crate::compress::policy_for(&ctx.cfg, &routed.resolved);
-    let recovery = ctx
-        .cfg
-        .compress_recovery_enabled
-        .then_some(crate::compress::Recovery {
-            min_bytes: ctx.cfg.compress_recovery_min_bytes,
-        });
-    let Some(input) = body.get_mut("input") else {
-        return crate::compress::Ledger::default();
-    };
-    let stats = crate::compress::apply_responses_input(input, &policy, recovery);
-    if stats.messages_touched > 0 {
-        tracing::debug!(
-            target: "nasiko::llm_router::compress",
-            agent_id = %routed.agent_id,
-            applied = stats.applied,
-            dry_run = stats.dry_run,
-            bytes_in = stats.bytes_in,
-            bytes_out = stats.bytes_out,
-            messages_touched = stats.messages_touched,
-            elapsed_us = stats.elapsed_us,
-            "compress: Responses tool outputs reduced"
-        );
-    }
-    if !stats.originals.is_empty() {
-        match (
-            routed.flow_id.as_deref(),
-            routed.owner_id.parse::<uuid::Uuid>(),
-        ) {
-            (Some(flow), Ok(owner)) => {
-                crate::recovery::persist(
-                    &ctx.db,
-                    &stats.originals,
-                    flow,
-                    owner,
-                    routed.agent_id.parse().ok(),
-                )
-                .await
-            }
-            _ => tracing::debug!(
-                target: "nasiko::llm_router::recovery",
-                agent_id = %routed.agent_id,
-                count = stats.originals.len(),
-                "recovery: request is not flow-scoped; originals not stored"
-            ),
-        }
-    }
-    stats.ledger()
-}
-
 fn is_retryable_transport_error(error: &reqwest::Error) -> bool {
     error.is_connect() || error.is_timeout()
 }
@@ -305,19 +244,13 @@ async fn translated_attempt(
         );
     }
     let mut guard = AttemptGuard::new(ctx, routed, attempt, started, parsed.stream);
-    let provider = provider_for(
-        &attempt.provider,
-        attempt.custom_endpoint.as_ref(),
-        &ctx.http,
-        &ctx.cfg,
-    )
-    .map_err(|error| {
+    let provider = provider_for(attempt, &ctx.http, &ctx.cfg).map_err(|error| {
         guard.fail("routing", &error);
         TranslatedAttemptError::Configuration(error)
     })?;
     let mut request = parsed.chat.clone();
     let mut config = attempt.clone();
-    let mut applied = Vec::new();
+    let mut dropped = Vec::new();
     loop {
         if parsed.stream {
             match provider.chat_stream(&request, &config).await {
@@ -332,12 +265,12 @@ async fn translated_attempt(
                     return Ok(response);
                 }
                 Err(error) => {
-                    if fallback::try_fix_param(
+                    if fallback::try_drop_param(
                         &*provider,
                         &error,
                         &mut request,
                         &mut config,
-                        &mut applied,
+                        &mut dropped,
                     ) {
                         continue;
                     }
@@ -379,12 +312,12 @@ async fn translated_attempt(
                     return Ok(mark_lossy(Json(value).into_response()));
                 }
                 Err(error) => {
-                    if fallback::try_fix_param(
+                    if fallback::try_drop_param(
                         &*provider,
                         &error,
                         &mut request,
                         &mut config,
-                        &mut applied,
+                        &mut dropped,
                     ) {
                         continue;
                     }
@@ -848,13 +781,10 @@ impl AttemptGuard {
                 flow_id: routed.flow_id.clone(),
                 attribution_source: routed.attribution_source,
                 platform_paid: attempt.platform_paid,
-                // Compressed once before any attempt (`compress_input`).
-                compress_metadata: routed.compression.metadata.clone(),
-                // /v1/responses does not share chat_core, so IP-2 never runs here (PRD §9).
+                // Never compressed: this surface does not go through `chat_core`.
+                compress_metadata: None,
+                // /v1/responses does not share chat_core, so IP-1/IP-2 never run here (PRD §9).
                 brevity_metadata: None,
-                compress_bytes: routed.compression.bytes,
-                // Unmeasured here: savings fall back to their fixed chars-per-token divisor.
-                request_bytes: None,
             }),
         }
     }
@@ -922,10 +852,9 @@ fn log_response_usage(
             flow_id: routed.flow_id,
             attribution_source: routed.attribution_source,
             platform_paid: attempt.platform_paid,
-            compress_metadata: routed.compression.metadata,
+            // Never compressed: this surface does not go through `chat_core`.
+            compress_metadata: None,
             brevity_metadata: None,
-            compress_bytes: routed.compression.bytes,
-            request_bytes: None,
         },
     );
 }
@@ -1077,10 +1006,6 @@ mod tests {
                     tier1_model: None,
                     tier2_model: None,
                     tier3_model: None,
-                    embedding_provider: None,
-                    embedding_model: None,
-                    embedding_api_key_secret_name: None,
-                    embedding_model_override: false,
                 }),
                 agent_pinned_model: None,
                 is_coding_agent: true,
@@ -1106,11 +1031,6 @@ mod tests {
         ) -> Result<Option<crate::resolver::CustomProvider>, sqlx::Error> {
             Ok(None)
         }
-        async fn fetch_org_embedding_default(
-            &self,
-        ) -> Result<Option<crate::resolver::OrgEmbeddingDefault>, sqlx::Error> {
-            Ok(None)
-        }
     }
 
     fn ctx(base: String) -> LlmRouterCtx {
@@ -1133,7 +1053,6 @@ mod tests {
             tier_registry: Arc::new(NoTiers),
             cell_store: Arc::new(crate::routing::InMemoryCellStore::new()),
             salience_gate: Arc::new(crate::routing::salience::AllowAllGate),
-            classifier: Arc::new(crate::routing::RegexClassifier),
             pricing: Arc::new(nasiko_pricing::PricingEngine::new(
                 PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
             )),
@@ -1573,7 +1492,6 @@ mod tests {
             resolved: attempt.clone(),
             flow_id: None,
             attribution_source: None,
-            compression: crate::compress::Ledger::default(),
         };
         let parsed = parse_request(&json!({"input":"hi"})).unwrap();
         let result = translated_attempt(&context, &routed, &attempt, &parsed, Instant::now()).await;
@@ -1958,7 +1876,6 @@ mod tests {
             },
             flow_id: None,
             attribution_source: None,
-            compression: crate::compress::Ledger::default(),
         };
         let mut guard =
             AttemptGuard::new(&context, &routed, &routed.resolved, Instant::now(), false);

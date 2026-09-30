@@ -295,8 +295,6 @@ async fn mean_recall(
             store,
             topic.query,
             &ContextTiers::default(),
-            // Measures recall of selection alone; compression would rewrite the gold text.
-            false,
         )
         .await;
 

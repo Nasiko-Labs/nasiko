@@ -8,7 +8,6 @@ members = [
     "secrets",
     "observability",
     "pricing",
-    "savings",
     "runtime",
     "react-agent",
     "orchestrator",
@@ -21,7 +20,6 @@ members = [
     "hitl",
     "agent-proxy",
     "llm-router",
-    "tool-compact",
     "mcp-gateway",
     "cli",
     "github",
@@ -39,7 +37,6 @@ nasiko-auth = { path = "auth" }
 nasiko-compress = { path = "compress" }
 nasiko-config = { path = "config" }
 nasiko-pricing = { path = "pricing" }
-nasiko-savings = { path = "savings" }
 nasiko-flow = { path = "flow" }
 nasiko-hitl = { path = "hitl" }
 nasiko-agent-proxy = { path = "agent-proxy" }
@@ -56,7 +53,6 @@ nasiko-server = { path = "server" }
 nasiko-coding-policy = { path = "coding-policy" }
 nasiko-oci = { path = "oci" }
 nasiko-llm-router = { path = "llm-router" }
-nasiko-tool-compact = { path = "tool-compact" }
 nasiko-bench-support = { path = "bench-support" }
 
 # ─── Testing ────────────────────────────────────────────────────────────────
@@ -74,8 +70,7 @@ utoipa-swagger-ui = { version = "9", features = ["axum"] }
 
 # ─── Serialization ──────────────────────────────────────────────────────────
 serde = { version = "1", features = ["derive"] }
-# `raw_value`: the agent state API stores and returns JSON bodies byte for byte, never re-encoded.
-serde_json = { version = "1", features = ["raw_value"] }
+serde_json = "1"
 
 # ─── Text / patterns ────────────────────────────────────────────────────────
 regex = "1"
@@ -119,11 +114,6 @@ tabled = "0.21"
 # directly here only for `oss/cli`'s own scoped SIGINT no-op guard (hitl.rs) — see its doc
 # comment for why dialoguer/console's own Ctrl+C handling can't be used for this instead.
 libc = "0.2"
-# Read-only access to coding agents' local history stores (OpenCode's opencode.db, Cursor's
-# state.vscdb) for `nasiko agents setup/import`. Pinned to 0.32 because it links the same
-# libsqlite3-sys (0.30) that sqlx's optional sqlite driver already puts in the lockfile — two
-# crates may not both link `sqlite3`.
-rusqlite = { version = "0.32", features = ["bundled"] }
 
 # ─── Observability ──────────────────────────────────────────────────────────
 tracing = "0.1"
@@ -173,7 +163,6 @@ dotenvy = "0.15"
 # ─── Embedding / registry ──────────────────────────────────────────────────
 rust-embed = { version = "8", features = ["mime-guess", "include-exclude", "interpolate-folder-path"] }
 mime_guess = "2"
-percent-encoding = "2"
 
 mockito = "1"
 

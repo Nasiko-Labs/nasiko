@@ -46,13 +46,7 @@ pub struct GatewayConfig {
     /// Max age of a `status='running'` flow for traceparent attribution — bounds
     /// orphaned flows (a direct-chat flow whose completion marking never ran stays
     /// 'running' but ages out of attribution, so its trace id stops authorizing
-    /// LLM calls).
-    ///
-    /// Must never be shorter than the platform's flow timeout, or an agent turn
-    /// still inside its budget loses the right to make LLM calls part-way
-    /// through and takes a 403 mid-answer. It therefore defaults to
-    /// `NASIKO_FLOW_TIMEOUT_SECS` and only falls back to a literal when that is
-    /// unset too; `LLM_ATTRIBUTION_WINDOW_SECS` still overrides both.
+    /// LLM calls). Default 300 (5 min).
     pub attribution_window_secs: u64,
 
     /// Interval between provider model-catalog syncs (`GET /models` →
@@ -65,14 +59,6 @@ pub struct GatewayConfig {
 
     /// Provider base URLs (overridable for tests / self-hosted gateways).
     pub openai_api_base: String,
-    /// Most function tools OpenAI's `/v1/chat/completions` accepts in one request; it
-    /// rejects a longer array outright (`array_above_max_length`), so an agent whose
-    /// tool set has grown past this — a coding client with several MCP servers
-    /// attached, say — fails every turn rather than degrading. Over the cap the
-    /// OpenAI spoke keeps the caller's own tools and fills the remainder with the MCP
-    /// tools most relevant to the turn. `0` disables the cap, for an
-    /// OpenAI-compatible endpoint that has none.
-    pub openai_max_tools: usize,
     pub anthropic_api_base: String,
     pub gemini_api_base: String,
     pub openrouter_api_base: String,
@@ -108,28 +94,6 @@ pub struct GatewayConfig {
     /// uncertain band in the gate's logs so its size can be measured before `low` is
     /// retuned. Default 0.80.
     pub salience_high_threshold: f64,
-
-    /// Request classifier backend: `regex` (default; no network, behaviour unchanged),
-    /// `local` (in-process linear model, embedded weights, no network) or `hosted`
-    /// (OpenAI-compatible endpoint, opt-in). Unknown values are treated as `regex`.
-    pub classifier_backend: String,
-    /// `local` only: weights JSON file to load instead of the embedded weights. Empty = embedded.
-    /// A file that cannot be loaded degrades to the regex classifier (logged), never an outage.
-    pub classifier_model_path: String,
-    /// `hosted` only: full chat-completions URL. Only this host receives the key.
-    pub classifier_endpoint: String,
-    /// `hosted` only: model id sent in the request.
-    pub classifier_model: String,
-    /// `hosted` only: bearer key for the endpoint. Never logged.
-    pub classifier_api_key: String,
-    /// Per-decision budget. Past it the router uses the regex answer and counts a fallback.
-    pub classifier_timeout_ms: u64,
-    /// Below this confidence the router uses the safe default (`general`). 0 disables.
-    pub classifier_min_confidence: f32,
-    /// Seed for Thompson tier sampling (`ROUTER_TIER_SEED`). Unset (default) = entropy, as
-    /// before. Set = the tier is a deterministic function of (seed, provider, query, request
-    /// type, learned cells), so identical inputs and state route identically.
-    pub router_tier_seed: Option<u64>,
 
     /// Fleet-wide kill switch for payload compression. Compression is opted into **per agent**
     /// (`agents.compress_enabled`); this only lets an operator stop all of it at once without
@@ -167,22 +131,6 @@ pub struct GatewayConfig {
     /// Raise it only if real traffic turns out to be dominated by very short replies (under
     /// ~250 output tokens), where the fixed cost stops being repaid.
     pub brevity_min_bytes: usize,
-    /// Percent of otherwise-eligible calls the directive is withheld from, to keep a control arm.
-    ///
-    /// This is a real, accepted cost: that slice forgoes the optimization. It buys the only
-    /// unbiased measurement of a layer whose saving cannot be subtracted, and it is bounded by
-    /// exactly the figure it exists to establish. `0` disables the holdout and leaves `apply`
-    /// byte-identical to a build without it.
-    pub brevity_holdout_pct: u8,
-
-    /// Replace native tool definitions with compact signatures and decode the model's compact
-    /// calls back into `tool_calls` (`nasiko-tool-compact`; non-streaming requests only).
-    ///
-    /// Defaults **off**, unlike the layers above: it changes what the model is asked to write, so
-    /// an operator opts in, and this flag alone turns it on (the per-agent `compress_enabled`
-    /// switch is not consulted). Off, requests and responses are byte-identical to a build
-    /// without it.
-    pub compact_tools_enabled: bool,
 
     /// Persist pre-compression originals so an agent can recover what was elided (IP-5).
     /// Defaults **on**; only ever writes a row when compression actually elided something, which
@@ -210,11 +158,10 @@ impl Default for GatewayConfig {
             llm_config_cache_ttl_secs: 30,
             redis_url: String::new(),
             router_decision_ttl_secs: 3600,
-            attribution_window_secs: 600,
+            attribution_window_secs: 300,
             model_catalog_sync_interval_secs: 86_400,
             pricing_sync_interval_secs: 86_400,
             openai_api_base: "https://api.openai.com/v1".into(),
-            openai_max_tools: 128,
             anthropic_api_base: "https://api.anthropic.com/v1".into(),
             gemini_api_base: "https://generativelanguage.googleapis.com/v1beta".into(),
             openrouter_api_base: "https://openrouter.ai/api/v1".into(),
@@ -225,14 +172,6 @@ impl Default for GatewayConfig {
             salience_weights_path: String::new(),
             salience_low_threshold: 0.20,
             salience_high_threshold: 0.80,
-            classifier_backend: "regex".into(),
-            classifier_model_path: String::new(),
-            classifier_endpoint: String::new(),
-            classifier_model: String::new(),
-            classifier_api_key: String::new(),
-            classifier_timeout_ms: 250,
-            classifier_min_confidence: 0.0,
-            router_tier_seed: None,
             compress_kill_switch: true,
             compress_min_bytes: 2048,
             compress_types: nasiko_compress::TypeMask::DEFAULT,
@@ -240,8 +179,6 @@ impl Default for GatewayConfig {
             compress_dry_run: false,
             brevity_enabled: true,
             brevity_min_bytes: 0,
-            brevity_holdout_pct: 5,
-            compact_tools_enabled: false,
             compress_recovery_enabled: true,
             compress_recovery_min_bytes: 8192,
             compress_recovery_ttl_secs: 86_400,
@@ -288,7 +225,6 @@ impl GatewayConfig {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(d.router_decision_ttl_secs),
             attribution_window_secs: std::env::var("LLM_ATTRIBUTION_WINDOW_SECS")
-                .or_else(|_| std::env::var("NASIKO_FLOW_TIMEOUT_SECS"))
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(d.attribution_window_secs),
@@ -304,7 +240,6 @@ impl GatewayConfig {
                 d.pricing_sync_interval_secs,
             ),
             openai_api_base: env_or("OPENAI_API_BASE", &d.openai_api_base),
-            openai_max_tools: env_parse_first(&["OPENAI_MAX_TOOLS"], d.openai_max_tools),
             anthropic_api_base: env_or("ANTHROPIC_API_BASE", &d.anthropic_api_base),
             gemini_api_base: env_or("GEMINI_API_BASE", &d.gemini_api_base),
             openrouter_api_base: env_or("OPENROUTER_API_BASE", &d.openrouter_api_base),
@@ -315,22 +250,6 @@ impl GatewayConfig {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(d.salience_gate_enabled),
-            classifier_backend: env_or("CLASSIFIER_BACKEND", &d.classifier_backend),
-            classifier_model_path: env_or("CLASSIFIER_MODEL_PATH", &d.classifier_model_path),
-            classifier_endpoint: env_or("CLASSIFIER_ENDPOINT", &d.classifier_endpoint),
-            classifier_model: env_or("CLASSIFIER_MODEL", &d.classifier_model),
-            classifier_api_key: env_or("CLASSIFIER_API_KEY", &d.classifier_api_key),
-            classifier_timeout_ms: env_parse_first(
-                &["CLASSIFIER_TIMEOUT_MS"],
-                d.classifier_timeout_ms,
-            ),
-            classifier_min_confidence: env_parse_first(
-                &["CLASSIFIER_MIN_CONFIDENCE"],
-                d.classifier_min_confidence,
-            ),
-            router_tier_seed: std::env::var("ROUTER_TIER_SEED")
-                .ok()
-                .and_then(|v| v.parse().ok()),
             salience_weights_path: env_or("SALIENCE_WEIGHTS_PATH", &d.salience_weights_path),
             salience_low_threshold: std::env::var("SALIENCE_LOW_THRESHOLD")
                 .ok()
@@ -357,12 +276,6 @@ impl GatewayConfig {
             compress_dry_run: env_flag("TOKEN_COMPRESS_DRY_RUN", false),
             brevity_enabled: env_flag("TOKEN_BREVITY", d.brevity_enabled),
             brevity_min_bytes: env_usize("TOKEN_BREVITY_MIN_BYTES", d.brevity_min_bytes),
-            brevity_holdout_pct: env_usize(
-                "TOKEN_BREVITY_HOLDOUT_PCT",
-                d.brevity_holdout_pct as usize,
-            )
-            .min(100) as u8,
-            compact_tools_enabled: env_flag("TOKEN_COMPACT_TOOLS", d.compact_tools_enabled),
             compress_recovery_enabled: env_flag(
                 "TOKEN_COMPRESS_RECOVERY",
                 d.compress_recovery_enabled,

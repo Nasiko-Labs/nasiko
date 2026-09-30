@@ -46,44 +46,11 @@ pub struct FakeRuntime {
     /// When set, `deploy` fails instead of succeeding — lets a test exercise
     /// a genuine (post-build) deploy failure without a real runtime.
     fail_deploy: std::sync::atomic::AtomicBool,
-    /// When set, `build` fails instead of succeeding - a failed image build, which must leave
-    /// the running agent untouched.
-    fail_build: std::sync::atomic::AtomicBool,
-    /// Every spec `deploy` accepted, in order - lets a test assert on the env a
-    /// deploy path actually handed the runtime.
-    deployed: std::sync::Mutex<Vec<DeploymentSpec>>,
-    /// When set, `status` reports a container that was never deployed (or was
-    /// destroyed) as not found, like a real runtime - what startup reconcile
-    /// keys on. Off by default: most tests expect everything to look running.
-    status_follows_deploys: std::sync::atomic::AtomicBool,
     /// Stands in for agents' persistent `/workspace`, keyed by
     /// `{subpath}/{rel_path}` so a test can prove the server scoped a read to
     /// the right agent rather than just echoing back what it asked for.
     workspace: std::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>,
-    /// What `supports_autoscaling` answers; off by default, like a runtime that
-    /// cannot autoscale.
-    autoscaling: std::sync::atomic::AtomicBool,
-    /// Every `apply_replica_bounds` call, in order: (container, min, max, target).
-    applied_bounds: std::sync::Mutex<Vec<AppliedBounds>>,
-    /// Every `deploy` call's replica bounds, in order: (container, min, max).
-    deployed_bounds: std::sync::Mutex<Vec<(ContainerId, u32, u32)>>,
-    /// When set, `build` waits for it to be notified before returning.
-    build_gate: std::sync::Mutex<Option<Arc<tokio::sync::Notify>>>,
-    /// How many `build` calls have started.
-    builds_started: std::sync::atomic::AtomicUsize,
-    /// What `restarts_in_place` answers; off by default, like a runtime whose restart does not
-    /// apply a changed env.
-    restarts_in_place: std::sync::atomic::AtomicBool,
-    /// When set, `status` reports this state instead of `Running`.
-    reported_state: std::sync::Mutex<Option<RuntimeState>>,
-    /// Every `restart` call, in order.
-    restarted: std::sync::Mutex<Vec<ContainerId>>,
-    /// Every `refresh_secrets` call, in order: the container and the env it was given.
-    refreshed: std::sync::Mutex<Vec<(ContainerId, std::collections::HashMap<String, String>)>>,
 }
-
-/// One `apply_replica_bounds` call: (container, min, max, target).
-pub type AppliedBounds = (ContainerId, u32, u32, Option<u32>);
 
 impl FakeRuntime {
     /// Replace the instance set the next `list_instances` call reports.
@@ -103,113 +70,12 @@ impl FakeRuntime {
             .insert(format!("{}/{rel_path}", workspace.subpath()), body.to_vec());
     }
 
-    /// The specs deployed so far, oldest first.
-    #[allow(dead_code)]
-    pub fn deployed_specs(&self) -> Vec<DeploymentSpec> {
-        self.deployed.lock().unwrap().clone()
-    }
-
-    /// The most recent spec deployed for `container_id`, if any.
-    #[allow(dead_code)]
-    pub fn last_spec_for(&self, container_id: &ContainerId) -> Option<DeploymentSpec> {
-        self.deployed
-            .lock()
-            .unwrap()
-            .iter()
-            .rev()
-            .find(|spec| &spec.container_id == container_id)
-            .cloned()
-    }
-
-    /// Make `status` answer from what was actually deployed.
-    #[allow(dead_code)]
-    pub fn set_status_follows_deploys(&self, follow: bool) {
-        self.status_follows_deploys
-            .store(follow, std::sync::atomic::Ordering::SeqCst);
-    }
-
     /// Make the next (and all subsequent) `deploy` calls fail instead of
     /// succeeding.
     #[allow(dead_code)]
     pub fn set_fail_deploy(&self, fail: bool) {
         self.fail_deploy
             .store(fail, std::sync::atomic::Ordering::SeqCst);
-    }
-
-    /// Make `build` calls fail instead of succeeding.
-    #[allow(dead_code)]
-    pub fn set_fail_build(&self, fail: bool) {
-        self.fail_build
-            .store(fail, std::sync::atomic::Ordering::SeqCst);
-    }
-
-    /// Make `supports_autoscaling` answer `supported`.
-    #[allow(dead_code)]
-    pub fn set_supports_autoscaling(&self, supported: bool) {
-        self.autoscaling
-            .store(supported, std::sync::atomic::Ordering::SeqCst);
-    }
-
-    /// The `apply_replica_bounds` calls made so far.
-    #[allow(dead_code)]
-    pub fn applied_bounds(&self) -> Vec<AppliedBounds> {
-        self.applied_bounds.lock().unwrap().clone()
-    }
-
-    /// Make `restarts_in_place` answer `in_place`.
-    #[allow(dead_code)]
-    pub fn set_restarts_in_place(&self, in_place: bool) {
-        self.restarts_in_place
-            .store(in_place, std::sync::atomic::Ordering::SeqCst);
-    }
-
-    /// Make `status` report `state` (the agent is stopped, crashed, ...) instead of `Running`.
-    #[allow(dead_code)]
-    pub fn set_reported_state(&self, state: RuntimeState) {
-        *self.reported_state.lock().unwrap() = Some(state);
-    }
-
-    /// The containers `restart` was called on so far.
-    #[allow(dead_code)]
-    pub fn restarted(&self) -> Vec<ContainerId> {
-        self.restarted.lock().unwrap().clone()
-    }
-
-    /// The env most recently given to `refresh_secrets` for `container_id`, if any.
-    #[allow(dead_code)]
-    pub fn last_refreshed_env(
-        &self,
-        container_id: &ContainerId,
-    ) -> Option<std::collections::HashMap<String, String>> {
-        self.refreshed
-            .lock()
-            .unwrap()
-            .iter()
-            .rev()
-            .find(|(id, _)| id == container_id)
-            .map(|(_, env)| env.clone())
-    }
-
-    /// The (container, min, max) of every `deploy` so far.
-    #[allow(dead_code)]
-    pub fn deployed_bounds(&self) -> Vec<(ContainerId, u32, u32)> {
-        self.deployed_bounds.lock().unwrap().clone()
-    }
-
-    /// Makes every later `build` wait until the returned gate is notified
-    /// (`notify_one` per build), so a test can act between a job's start and its deploy.
-    #[allow(dead_code)]
-    pub fn hold_builds(&self) -> Arc<tokio::sync::Notify> {
-        let gate = Arc::new(tokio::sync::Notify::new());
-        *self.build_gate.lock().unwrap() = Some(gate.clone());
-        gate
-    }
-
-    /// How many `build` calls have started, held or not.
-    #[allow(dead_code)]
-    pub fn builds_started(&self) -> usize {
-        self.builds_started
-            .load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 
@@ -233,12 +99,6 @@ impl ContainerRuntime for FakeRuntime {
             ));
         }
         let status = fake_status(&spec.container_id);
-        self.deployed.lock().unwrap().push(spec.clone());
-        self.deployed_bounds.lock().unwrap().push((
-            spec.container_id.clone(),
-            spec.min_replicas,
-            spec.max_replicas,
-        ));
         self.containers
             .lock()
             .unwrap()
@@ -255,25 +115,12 @@ impl ContainerRuntime for FakeRuntime {
         Ok(())
     }
 
-    async fn restart(&self, container_id: &ContainerId) -> RuntimeResult<()> {
-        self.restarted.lock().unwrap().push(container_id.clone());
+    async fn restart(&self, _container_id: &ContainerId) -> RuntimeResult<()> {
         Ok(())
     }
 
     async fn status(&self, container_id: &ContainerId) -> RuntimeResult<DeploymentStatus> {
-        let follows = self
-            .status_follows_deploys
-            .load(std::sync::atomic::Ordering::SeqCst);
-        if follows && !self.containers.lock().unwrap().contains_key(container_id) {
-            return Err(nasiko_runtime::RuntimeError::ContainerNotFound(
-                container_id.clone(),
-            ));
-        }
-        let mut status = fake_status(container_id);
-        if let Some(state) = *self.reported_state.lock().unwrap() {
-            status.state = state;
-        }
-        Ok(status)
+        Ok(fake_status(container_id))
     }
 
     async fn list(&self) -> RuntimeResult<Vec<DeploymentStatus>> {
@@ -299,54 +146,7 @@ impl ContainerRuntime for FakeRuntime {
     }
 
     async fn build(&self, _tar_context: &[u8], image_tag: &str) -> RuntimeResult<String> {
-        self.builds_started
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let gate = self.build_gate.lock().unwrap().clone();
-        if let Some(gate) = gate {
-            gate.notified().await;
-        }
-        if self.fail_build.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err(nasiko_runtime::RuntimeError::BackendUnreachable(
-                "fake build failure (scripted by test)".into(),
-            ));
-        }
         Ok(image_tag.to_owned())
-    }
-
-    async fn supports_autoscaling(&self) -> bool {
-        self.autoscaling.load(std::sync::atomic::Ordering::SeqCst)
-    }
-
-    async fn restarts_in_place(&self) -> bool {
-        self.restarts_in_place
-            .load(std::sync::atomic::Ordering::SeqCst)
-    }
-
-    async fn refresh_secrets(
-        &self,
-        container_id: &ContainerId,
-        _name: &str,
-        env_vars: std::collections::HashMap<String, String>,
-    ) -> RuntimeResult<()> {
-        self.refreshed
-            .lock()
-            .unwrap()
-            .push((container_id.clone(), env_vars));
-        Ok(())
-    }
-
-    async fn apply_replica_bounds(
-        &self,
-        container_id: &ContainerId,
-        min: u32,
-        max: u32,
-        target: Option<u32>,
-    ) -> RuntimeResult<()> {
-        self.applied_bounds
-            .lock()
-            .unwrap()
-            .push((container_id.clone(), min, max, target));
-        Ok(())
     }
 
     // Explicit impl (not the trait default) so tests fully control what the
@@ -414,20 +214,6 @@ pub struct TestServer {
     /// observations (`set_instances`) and drive the hours meter directly.
     #[allow(dead_code)]
     pub runtime: Arc<FakeRuntime>,
-    /// Clone of the running server's `AppState::flow_events` — lets a test
-    /// subscribe to a flow's `FlowEventBus` channel directly and assert on
-    /// what actually got published (or didn't), rather than only on the HTTP
-    /// response.
-    #[allow(dead_code)]
-    pub flow_events: nasiko_flow::FlowEventBus,
-    /// Clone of the running server's `AppState::genai_metrics`: lets a test read the
-    /// in-process per-agent in-flight count while a request is held open.
-    #[allow(dead_code)]
-    pub genai_metrics: nasiko_server::telemetry::genai::GenAiMetrics,
-    /// Clone of the running server's `AppState`, for tests that call a
-    /// background routine (seed, reconcile) directly instead of over HTTP.
-    #[allow(dead_code)]
-    pub state: AppState,
     db_name: String,
     admin_pool: PgPool,
 }
@@ -534,9 +320,6 @@ impl TestServer {
         );
         let state =
             AppState::from_config_with_db(config, auth, runtime, oci_storage, db.clone()).await;
-        let flow_events = state.flow_events.clone();
-        let genai_metrics = state.genai_metrics.clone();
-        let handle_state = state.clone();
 
         let app = nasiko_server::build_app(state, fallback);
 
@@ -544,9 +327,7 @@ impl TestServer {
         let port = listener.local_addr().unwrap().port();
 
         tokio::spawn(async move {
-            // As the server binary does, so per-address limits see the peer.
-            let service = app.into_make_service_with_connect_info::<std::net::SocketAddr>();
-            axum::serve(listener, service).await.unwrap();
+            axum::serve(listener, app).await.unwrap();
         });
 
         TestServer {
@@ -554,9 +335,6 @@ impl TestServer {
             client: reqwest::Client::new(),
             db: db.clone(),
             runtime: fake_handle,
-            flow_events,
-            genai_metrics,
-            state: handle_state,
             db_name,
             admin_pool: admin,
         }
@@ -583,7 +361,6 @@ impl TestServer {
         self.admin_pool.close().await;
     }
 
-    #[allow(dead_code)]
     pub fn url(&self, path: &str) -> String {
         format!("{}{}", self.base_url, path)
     }
@@ -618,23 +395,16 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         s3_access_key: "nasiko".into(),
         s3_secret_key: "nasiko123".into(),
         s3_region: "us-east-1".into(),
-        assessment_intake_url: None,
         secrets_encryption_key: "12345678901234567890123456789012".into(),
         oci_storage_bucket: "nasiko-test-artifacts".into(),
         agent_image_registry: String::new(),
         agent_registry_username: None,
         agent_registry_password: None,
-        agent_registry_host: None,
-        seed_image_platform: "linux/amd64".into(),
-        agent_image_registry_placeholder: None,
         build_push_token: String::new(),
-        injection_proxy_token: String::new(),
         seed_agents: None,
         openai_api_key: None,
         openai_base_url: None,
         openai_model: "gpt-4o".into(),
-        decomposer_api_url: None,
-        decomposer_api_key: None,
         router_model: "gpt-4o".into(),
         capability_generator_model: "gpt-4o".into(),
         mcp_description_model: "gpt-4o".into(),
@@ -647,12 +417,6 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         otel_collector_endpoint: "http://localhost:4318".into(),
         otel_capture_content: false,
         coding_agent_otlp_endpoint: None,
-        // Fixture turns are dated 2023, far outside Tempo's window; a test that
-        // exercises the age cutoff sets this back to the production default.
-        coding_agent_ingest: nasiko_config::CodingAgentIngestConfig {
-            tempo_max_age_secs: u64::MAX / 4,
-            ..Default::default()
-        },
         tempo_url: "http://localhost:3200".into(),
         loki_url: "http://localhost:3100".into(),
         observability_enabled: false,
@@ -670,22 +434,13 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         hitl_resume_lease_minutes: 2,
         hitl_resume_max_attempts: 3,
         hitl_resume_retry_delay_secs: 2,
-        hitl_lost_task_retries: 3,
-        agent_state_ttl_days: 7,
-        agent_state_max_body_bytes: 1_048_576,
-        agent_state_rate_limit_per_minute: 600,
-        agent_state_list_bytes_budget: 8 * 1024 * 1024,
         github_client_id: None,
         github_client_secret: None,
         router_shortlist_threshold: 15,
         router_shortlist_size: 10,
         embedding_model: "text-embedding-3-small".into(),
-        agent_call_timeout_secs: 600,
+        router_agent_timeout_secs: 60,
         pacms_history_pool_size: 150,
-        savings_factor_refresh_secs: 86_400,
-        savings_factor_min_samples: 1_600,
-        savings_factor_window_days: 30,
-        minimal_code_holdout_pct: 0, // no flow withheld, so the ladder is deterministic under test
         react_compress_enabled: false,
         react_compress_min_bytes: 2048,
         history_compress_enabled: false,
@@ -751,7 +506,6 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         mcp_perm_cache_ttl_seconds: 30,
         mcp_manifest_ttl_seconds: 300,
         mcp_upload_max_bytes: 50 * 1024 * 1024,
-        mcp_gateway_max_body_bytes: 8 * 1024 * 1024,
         mcp_upload_default_port: 8080,
         mcp_servers_network: "nasiko-mcp-servers-net".to_string(),
         mcp_upload_max_replicas: 1,
@@ -772,15 +526,6 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         allow_personal_emails: false,
         nasiko_bff_url: None,
         mcp_tool_search_meta_limit: 0,
-        mcp_gateway_instructions: String::new(),
-        // This literal is built directly, not through `Config::from_env` — so
-        // it bypasses that function's JWT_SECRET-derived fallback (which
-        // domain-separates with an `mcp-identity::` prefix; see
-        // `Config::from_env`'s own derivation in `nasiko-config`). Set directly to
-        // `TEST_JWT_SECRET`'s own value, unprefixed, so tests deriving the
-        // signing key for `identity::SignedIdentity::verify` have a fixed,
-        // known value to use (see `mcp_system_connector.rs`).
-        mcp_identity_signing_key: TEST_JWT_SECRET.to_string(),
     }
 }
 

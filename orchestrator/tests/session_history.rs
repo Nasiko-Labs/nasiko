@@ -12,7 +12,6 @@ fn make_history(pairs: &[(&str, &str)]) -> SessionHistory {
                 content: content.to_string(),
             })
             .collect(),
-        ..Default::default()
     }
 }
 

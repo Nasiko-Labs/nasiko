@@ -22,22 +22,11 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["full"] }
 tracing.workspace = true
 uuid = { workspace = true, features = ["v4", "serde"] }
-nasiko-agent-proxy.workspace = true
 nasiko-config.workspace = true
-nasiko-flow.workspace = true
 nasiko-types.workspace = true
+nasiko-observability.workspace = true
 nasiko-hitl.workspace = true
-# Derived `token_savings` rows, so /finops/savings and the Optimization page agree
-nasiko-savings.workspace = true
-# ToSchema on the wire-facing preference enums, so the server's OpenAPI registration (CX-1) for
-# `/api/me/context-strategy` and `/api/me/pacms-budget` doesn't need a server-side mirror type.
-utoipa = { workspace = true }
 
 [dev-dependencies]
 mockito.workspace = true
-# Test-only, and deliberately not a real dependency: the MAF tests assert against the ONE
-# implementation of the prefix join (`nasiko_react_agent::prefixed`) rather than a local copy of
-# it, which would keep passing if that join ever changed. A dev-dependency buys that without
-# putting a production edge between these two peer crates.
-nasiko-react-agent.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

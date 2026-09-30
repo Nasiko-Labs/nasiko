@@ -67,11 +67,6 @@ pub struct DockerRuntimeConfig {
     /// startup from server config — never logged, never echoed back in any
     /// API response.
     pub registry_password: Option<String>,
-    /// Bare host of the registry `registry_username`/`registry_password`
-    /// belong to (e.g. `ghcr.io`). `None` means Docker Hub. The credential is
-    /// only attached to pulls from this host — never to any other registry,
-    /// including the built-in one.
-    pub registry_credentials_host: Option<String>,
     /// Name of the single named Docker volume every `--writable` agent shares
     /// (each mounted at a different `volume-subpath`, keyed by `container_id` —
     /// see [`DeploymentSpec::writable`](crate::types::DeploymentSpec::writable)).
@@ -96,7 +91,6 @@ impl Default for DockerRuntimeConfig {
             registry_host: None,
             registry_username: None,
             registry_password: None,
-            registry_credentials_host: None,
             agent_memory_volume: "nasiko-agent-memory".to_owned(),
             agent_memory_init_image: "alpine:3.21".to_owned(),
         }
@@ -183,14 +177,6 @@ impl DockerRuntime {
         Some(DockerCredentials {
             username: Some(username),
             password: Some(password),
-            // Which registry the credential is for — `pull_image` only
-            // attaches it to pulls from this host.
-            serveraddress: Some(
-                self.config
-                    .registry_credentials_host
-                    .clone()
-                    .unwrap_or_else(|| DOCKER_HUB_HOST.to_owned()),
-            ),
             ..Default::default()
         })
     }
@@ -1248,13 +1234,10 @@ fn parse_workspace_listing(stdout: &str, dir: &str) -> Vec<WorkspaceEntry> {
 /// from `image_source` when one is wired, and a registry pull as the last
 /// resort.
 ///
-/// `force_pull` skips the cache check — the difference between "reuse
-/// whatever's cached" and "get what the tag currently points to right now,"
-/// which matters for a mutable tag like `:latest` that the daemon may have
-/// cached from a now-stale earlier pull. The image source still goes first:
-/// it serves the tag's current content (an embedded-registry image, e.g. a
-/// freshly mirrored seed), and a registry pull of such a ref would go to the
-/// wrong place.
+/// `force_pull` skips all of that and goes straight to the registry — the
+/// difference between "reuse whatever's cached" and "get what the tag
+/// currently points to right now," which matters for a mutable tag like
+/// `:latest` that the daemon may have cached from a now-stale earlier pull.
 async fn ensure_image_present(
     client: &Docker,
     image: &str,
@@ -1263,7 +1246,10 @@ async fn ensure_image_present(
     image_source: Option<&dyn ImageSource>,
     force_pull: bool,
 ) -> Result<()> {
-    if !force_pull && client.inspect_image(image).await.is_ok() {
+    if force_pull {
+        return pull_image(client, image, registry_host, registry_credentials).await;
+    }
+    if client.inspect_image(image).await.is_ok() {
         return Ok(());
     }
     if let Some(source) = image_source
@@ -1334,11 +1320,7 @@ async fn pull_image(
         from_image: pull_ref.as_str(),
         ..Default::default()
     };
-    // Never offer the configured credential to a registry it wasn't issued for.
-    let credentials = registry_credentials
-        .filter(|c| credentials_match(c.serveraddress.as_deref(), &pull_ref))
-        .cloned();
-    let mut stream = client.create_image(Some(opts), None, credentials);
+    let mut stream = client.create_image(Some(opts), None, registry_credentials.cloned());
     while let Some(res) = stream.next().await {
         if let Err(e) = res {
             return Err(RuntimeError::ImageNotFound(format!(
@@ -1383,32 +1365,6 @@ fn has_registry_host(image: &str) -> bool {
         Some((first, _)) => first == "localhost" || first.contains('.') || first.contains(':'),
         None => false,
     }
-}
-
-const DOCKER_HUB_HOST: &str = "docker.io";
-
-/// The registry host an image ref pulls from, with Docker Hub's aliases folded
-/// into one name.
-fn image_registry_host(image: &str) -> &str {
-    let host = match image.split_once('/') {
-        Some((first, _)) if has_registry_host(image) => first,
-        _ => DOCKER_HUB_HOST,
-    };
-    normalise_docker_hub(host)
-}
-
-fn normalise_docker_hub(host: &str) -> &str {
-    match host {
-        "" | "docker.io" | "index.docker.io" | "registry-1.docker.io" => DOCKER_HUB_HOST,
-        other => other,
-    }
-}
-
-/// Whether a credential issued for `credential_host` (`None` = Docker Hub)
-/// may be sent when pulling `image`.
-fn credentials_match(credential_host: Option<&str>, image: &str) -> bool {
-    normalise_docker_hub(credential_host.unwrap_or(DOCKER_HUB_HOST).trim())
-        == image_registry_host(image)
 }
 
 /// Split `repo:tag` on the tag separator; a `:` inside the last path segment
@@ -2112,7 +2068,6 @@ mod hardening_tests {
             image: "alpine:latest".to_owned(),
             min_replicas: 1,
             max_replicas: 1,
-            replica_target: None,
             env_vars: HashMap::new(),
             ports: vec![8080],
             resources: None,
@@ -2168,7 +2123,6 @@ mod writable_tests {
             image: "alpine:latest".to_owned(),
             min_replicas: 1,
             max_replicas: 1,
-            replica_target: None,
             env_vars: HashMap::new(),
             ports: vec![8080],
             resources: None,
@@ -2308,53 +2262,6 @@ mod writable_tests {
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
-
-#[cfg(test)]
-mod credential_scope_tests {
-    use super::credentials_match;
-
-    #[test]
-    fn credential_is_sent_only_to_its_own_registry() {
-        assert!(credentials_match(Some("ghcr.io"), "ghcr.io/org/agent:v1"));
-        assert!(!credentials_match(
-            Some("ghcr.io"),
-            "us-central1-docker.pkg.dev/p/r/agent:v1"
-        ));
-        assert!(!credentials_match(Some("ghcr.io"), "nasiko/agent:v1"));
-    }
-
-    #[test]
-    fn unset_credential_host_means_docker_hub_only() {
-        assert!(credentials_match(None, "nasiko/agent:v1"));
-        assert!(credentials_match(None, "docker.io/library/redis:7"));
-        assert!(credentials_match(
-            Some("index.docker.io"),
-            "akhilfolium/infra-agent"
-        ));
-        assert!(!credentials_match(None, "ghcr.io/org/agent:v1"));
-    }
-
-    #[test]
-    fn built_in_registry_never_receives_the_external_credential() {
-        assert!(!credentials_match(None, "localhost:8443/nasiko/agent:v1"));
-        assert!(!credentials_match(
-            Some("ghcr.io"),
-            "nasiko.1.2.3.4.nip.io/nasiko/agent:v1"
-        ));
-    }
-
-    #[test]
-    fn ported_registry_host_must_match_exactly() {
-        assert!(credentials_match(
-            Some("harbor.corp:5000"),
-            "harbor.corp:5000/team/agent:v1"
-        ));
-        assert!(!credentials_match(
-            Some("harbor.corp:5000"),
-            "harbor.corp:6000/team/agent:v1"
-        ));
-    }
-}
 
 #[cfg(test)]
 mod tests {
