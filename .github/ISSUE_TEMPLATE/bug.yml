@@ -1,0 +1,119 @@
+name: Bug report
+description: Report a reproducible problem in Nasiko.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Please complete all sections so maintainers can reproduce the issue.
+        Do not include secrets, API keys, tokens, or passwords. Redact them before submitting.
+  - type: input
+    id: version
+    attributes:
+      label: Nasiko version / commit
+      description: Release tag, `git rev-parse --short HEAD`, or Docker image tag.
+      placeholder: e.g. v1.0.0, commit abc1234, main @ 2026-09-30
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: OS
+      description: Operating system where the issue occurs.
+      options:
+        - Linux
+        - macOS
+        - Windows (WSL2)
+        - Windows (native)
+        - Other (specify in Additional context)
+    validations:
+      required: true
+  - type: dropdown
+    id: setup
+    attributes:
+      label: Setup path
+      description: How you run Nasiko (see README Quick Start and Path B).
+      multiple: false
+      options:
+        - Docker-only (docker compose up -d)
+        - Source / Rust (just run / just dev)
+        - CLI only
+        - Other (specify in Additional context)
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Minimal numbered steps, including commands run.
+      placeholder: |
+        1. cp .env.example .env (set ...)
+        2. docker compose up -d
+        3. nasiko ...
+        4. See error
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What you expected to happen.
+      placeholder: What should have happened?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What actually happened, including error messages.
+      placeholder: What happened instead? Paste error text.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Server logs, CLI output, or stack traces. Redact secrets.
+      placeholder: |
+        Paste `docker compose logs server`, `nasiko ... --help` output, or stack trace here.
+        ```text
+        ...
+        ```
+    validations:
+      required: false
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant configuration / environment (redacted)
+      description: Non-secret config that matters (e.g. env var names, compose overrides). Never paste secret values.
+      placeholder: |
+        e.g. RUST_LOG=info, AGENT_RUNTIME=docker, custom CORS / MCP settings.
+        Confirm .env is gitignored and no secret values are included.
+    validations:
+      required: false
+  - type: textarea
+    id: infra
+    attributes:
+      label: Database / Redis configuration where relevant (redacted)
+      description: Connection targets without credentials, only if the issue involves Postgres, Redis, or S3.
+      placeholder: |
+        e.g. DATABASE_URL host/port/db only, REDIS_URL host/port only, S3 bucket/region only. No passwords or keys.
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Rust version (`rustc --version`), Docker/Compose versions, screenshots, links.
+      placeholder: e.g. rustc 1.85.0, docker 25.x, compose v2.x
+    validations:
+      required: false
+  - type: checkboxes
+    id: redactions
+    attributes:
+      label: Checklist
+      options:
+        - label: I have redacted all secrets, keys, tokens, and personal data.
+          required: true
+        - label: I searched existing issues and discussions before opening this report.
+          required: false
