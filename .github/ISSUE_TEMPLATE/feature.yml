@@ -1,0 +1,49 @@
+name: Feature request
+description: Suggest an idea or enhancement for Nasiko.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting an improvement. Please describe the problem first, then the proposed change.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / use case
+      description: What problem does this solve and who benefits?
+      placeholder: As a ... I want ... so that ...
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Your preferred approach, including API, CLI, or UI changes if relevant.
+      placeholder: Describe the change, e.g. `nasiko ...`, REST endpoint, config option.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches you considered and why they are less suitable.
+      placeholder: Alternative 1 ...; Alternative 2 ...
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Links, related issues, docs, mockups, or relevant config.
+      placeholder: e.g. Related to #..., docs/A2A_PROTOCOL.md, screenshots.
+    validations:
+      required: false
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and discussions before opening this request.
+          required: false
+        - label: This request is limited to one focused enhancement.
+          required: false
