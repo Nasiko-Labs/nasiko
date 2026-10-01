@@ -129,25 +129,41 @@ pub async fn agent_proxy(
             nasiko_agent_proxy::ResolveError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
         })?;
 
-    let agent_base = match state
-        .runtime
-        .endpoint(&nasiko_runtime::ContainerId::from_uuid(agent_id))
+    // Coding agents have no HTTP endpoint — they're driven over a per-session
+    // stdio turn, not reverse-proxied — so resolve that discriminator first and
+    // skip the endpoint lookup for them. The shared session/flow setup below
+    // still runs, then the request is diverted to the coding-agent turn path just
+    // before the HTTP forward.
+    let coding_target = crate::coding::proxy::load_target(&state.db, agent_id)
         .await
-    {
-        Ok(live) => live.trim_end_matches('/').to_string(),
-        Err(e) => {
-            let Some(stored) = &agent.endpoint else {
-                tracing::error!(
+        .map_err(|e| {
+            tracing::error!(error = %e, %agent_id, "agent proxy: coding-agent lookup failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    let agent_base = if coding_target.is_some() {
+        String::new()
+    } else {
+        match state
+            .runtime
+            .endpoint(&nasiko_runtime::ContainerId::from_uuid(agent_id))
+            .await
+        {
+            Ok(live) => live.trim_end_matches('/').to_string(),
+            Err(e) => {
+                let Some(stored) = &agent.endpoint else {
+                    tracing::error!(
+                        error = %e, %agent_id,
+                        "agent proxy: live endpoint lookup failed and no stored agents.url to fall back to"
+                    );
+                    return Err(StatusCode::BAD_GATEWAY);
+                };
+                tracing::warn!(
                     error = %e, %agent_id,
-                    "agent proxy: live endpoint lookup failed and no stored agents.url to fall back to"
+                    "agent proxy: live endpoint lookup failed, falling back to stored agents.url"
                 );
-                return Err(StatusCode::BAD_GATEWAY);
-            };
-            tracing::warn!(
-                error = %e, %agent_id,
-                "agent proxy: live endpoint lookup failed, falling back to stored agents.url"
-            );
-            format!("http://{}:{}", stored.host, stored.port)
+                format!("http://{}:{}", stored.host, stored.port)
+            }
         }
     };
     // The forwarded path. A bare `/` (the chat call) must land on the agent's
@@ -273,6 +289,38 @@ pub async fn agent_proxy(
         // as the flows row so it is guaranteed present before the agent can
         // call back into the platform.
         crate::flows::record_participant(&state.db, &flow_ctx.flow_id, agent_id).await;
+    }
+
+    // Coding-agent branch: drive an ACP turn and translate its events into the
+    // standard message/stream SSE, instead of HTTP-forwarding. The shared setup
+    // above (ensure_chat_session, user-message persist, flow row + participant)
+    // already ran, so a coding-agent turn is attributed exactly like any other.
+    if let Some(target) = coding_target {
+        // A coding agent is driven only by chat turns. A non-message request
+        // (agent-card fetch, GetTask, …) has no turn to run and no HTTP container
+        // to serve it — not supported on this path yet.
+        let Some(info) = persist_info.as_ref() else {
+            return Err(StatusCode::NOT_IMPLEMENTED);
+        };
+        let context_id = info.session_id.clone();
+        let request = crate::coding::turn::CodingTurnRequest {
+            session_id: info.session_id.clone(),
+            spec: crate::coding::proxy::build_spec(agent_id, &target),
+            acp_command: state.config.coding_agent_command.clone(),
+            env: std::collections::HashMap::new(),
+            prompt: info.user_text.clone(),
+        };
+        let events = crate::coding::turn::run_turn(&state, request)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, %agent_id, "coding-agent turn failed to start");
+                match e {
+                    crate::coding::turn::CodingTurnError::Busy => StatusCode::CONFLICT,
+                    _ => StatusCode::BAD_GATEWAY,
+                }
+            })?;
+        let task_id = nasiko_types::a2a::new_task_id();
+        return Ok(crate::coding::sse::turn_to_sse(events, task_id, context_id));
     }
 
     // Explicit allowlist, not a denylist: the agent container is unvetted, so

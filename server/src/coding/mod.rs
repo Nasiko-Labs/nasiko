@@ -12,6 +12,8 @@ use std::time::Duration;
 use crate::state::AppState;
 
 pub mod lifecycle;
+pub mod proxy;
+pub mod sse;
 pub mod turn;
 
 /// How often the control plane re-reconciles coding-agent session rows against
