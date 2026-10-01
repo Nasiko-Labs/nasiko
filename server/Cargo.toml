@@ -36,6 +36,7 @@ nasiko-llm-router.workspace = true
 # types, and `tokio-util`'s compat shim bridges the runtime's tokio stdio halves
 # to the SDK's futures-io transport.
 nasiko-acp-client.workspace = true
+nasiko-session-token.workspace = true
 agent-client-protocol = { workspace = true }
 tokio-util = { workspace = true }
 

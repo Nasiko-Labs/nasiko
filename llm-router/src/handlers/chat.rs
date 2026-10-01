@@ -21,6 +21,10 @@ use tracing::Instrument;
 
 use futures::stream::BoxStream;
 
+use nasiko_session_token::{
+    SessionClaims, SessionTokenError, parse_algorithm, verify_session_token,
+};
+
 use crate::LlmRouterCtx;
 use crate::auth::verify_agent_jwt;
 use crate::error::GatewayError;
@@ -95,14 +99,92 @@ fn record_span_usage(span: &tracing::Span, usage: Option<&Usage>) {
     }
 }
 
-pub(crate) fn authenticate_request(
+/// Who is calling the router.
+pub(crate) enum AuthedCaller {
+    /// The deploy-time agent-identity token: `{agent_id, owner_id}`. Identity for
+    /// the actual turn is still inferred from the request's `traceparent`.
+    Agent { agent_id: String, owner_id: String },
+    /// A coding-agent session token (NAS-839): signed
+    /// `{agent_id, user_id, session_id, flow_id}`, so the user and flow are read
+    /// straight off the claims with no `traceparent` and no freshness window.
+    Session(SessionClaims),
+}
+
+/// Authenticate the caller, preferring a coding-agent session token and falling
+/// back to the agent-identity token.
+///
+/// A valid, non-revoked session token wins; anything that isn't one of our
+/// session tokens falls through to [`verify_agent_jwt`], so A2A agents are
+/// unaffected. Expiry and revocation are hard failures (fail closed).
+pub(crate) async fn authenticate_caller(
+    ctx: &LlmRouterCtx,
     headers: &HeaderMap,
-    cfg: &crate::config::GatewayConfig,
-) -> Result<(String, String), GatewayError> {
+) -> Result<AuthedCaller, GatewayError> {
     let authz = headers
         .get(AUTHORIZATION)
         .and_then(|value| value.to_str().ok());
-    verify_agent_jwt(authz, cfg)
+
+    if !ctx.cfg.agent_jwt_secret.is_empty()
+        && let Some(raw) = authz
+    {
+        let algorithm = parse_algorithm(&ctx.cfg.agent_jwt_algorithm);
+        match verify_session_token(raw, &ctx.cfg.agent_jwt_secret, algorithm) {
+            Ok(claims) => {
+                if is_session_token_revoked(&ctx.db, &claims.jti).await? {
+                    return Err(GatewayError::Forbidden("session token revoked".into()));
+                }
+                return Ok(AuthedCaller::Session(claims));
+            }
+            // Not one of ours → fall through to the agent-identity token.
+            Err(SessionTokenError::NotSessionToken) => {}
+            Err(SessionTokenError::Expired) => return Err(GatewayError::TokenExpired),
+            // SecretNotConfigured / MissingToken can't occur here (secret set,
+            // token present); fall back rather than hard-fail on anything else.
+            Err(_) => {}
+        }
+    }
+
+    let (agent_id, owner_id) = verify_agent_jwt(authz, &ctx.cfg)?;
+    Ok(AuthedCaller::Agent { agent_id, owner_id })
+}
+
+/// True if this session token's `jti` has been revoked. Fails closed (a store
+/// error denies the request) rather than letting a possibly-revoked token through.
+async fn is_session_token_revoked(db: &sqlx::PgPool, jti: &str) -> Result<bool, GatewayError> {
+    let found: Option<i32> =
+        sqlx::query_scalar("SELECT 1 FROM revoked_session_tokens WHERE jti = $1")
+            .bind(jti)
+            .fetch_optional(db)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "llm-router: revocation check failed — failing closed");
+                GatewayError::Forbidden("identity store unavailable".into())
+            })?;
+    Ok(found.is_some())
+}
+
+/// The owner of the agent a session token names — needed for config/secret
+/// resolution, which is keyed on the agent owner, not the (possibly different)
+/// session user the token bills.
+pub(crate) async fn lookup_agent_owner(
+    db: &sqlx::PgPool,
+    agent_id: &str,
+) -> Result<String, GatewayError> {
+    let id = uuid::Uuid::parse_str(agent_id)
+        .map_err(|_| GatewayError::Forbidden("session token agent_id is not a UUID".into()))?;
+    let owner: Option<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT owner_id FROM agents WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(id)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| {
+        tracing::error!(error = %e, "llm-router: agent owner lookup failed — failing closed");
+        GatewayError::Forbidden("identity store unavailable".into())
+    })?;
+    owner
+        .map(|u| u.to_string())
+        .ok_or_else(|| GatewayError::Forbidden("agent not found for session token".into()))
 }
 
 /// Axum handler for the OpenAI surface (`POST /v1/chat/completions`).
@@ -164,12 +246,23 @@ async fn chat_core(
     format: InboundFormat,
     force_stream: Option<bool>,
 ) -> Result<Response, GatewayError> {
-    let (agent_id, owner_id) = authenticate_request(headers, &ctx.cfg)?;
+    // A coding-agent session token carries the user + flow in signed claims; the
+    // agent-identity token does not, and still relies on the request traceparent.
+    let (agent_id, owner_id, session) = match authenticate_caller(ctx, headers).await? {
+        AuthedCaller::Agent { agent_id, owner_id } => (agent_id, owner_id, None),
+        AuthedCaller::Session(claims) => {
+            // Config/secrets resolve on the agent owner, which the token doesn't
+            // carry — look it up; the session user is only the billing subject.
+            let owner_id = lookup_agent_owner(&ctx.db, &claims.agent_id).await?;
+            (claims.agent_id.clone(), owner_id, Some(claims))
+        }
+    };
     tracing::info!(
         target: "nasiko::llm_router::chat",
         %agent_id, %owner_id, ?format,
+        session_bound = session.is_some(),
         has_traceparent = headers.get(TRACEPARENT_HEADER).is_some(),
-        "chat_core: request received (JWT verified)"
+        "chat_core: request received (credential verified)"
     );
 
     let inbound = inbound_for(format);
@@ -197,8 +290,10 @@ async fn chat_core(
         turn_ordinal: routing::user_turn_ordinal(&req.messages),
         is_tool_continuation: routing::is_tool_continuation(&req.messages),
     };
-    let routed =
-        resolve_routed_request(ctx, store, headers, agent_id, owner_id, hint, signals).await?;
+    let routed = resolve_routed_request(
+        ctx, store, headers, agent_id, owner_id, hint, signals, session,
+    )
+    .await?;
     let RoutedRequest {
         agent_id,
         owner_id,
@@ -394,6 +489,7 @@ async fn chat_core(
     Ok(Json(inbound.render_chat_response(resp)).into_response())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn resolve_routed_request(
     ctx: &LlmRouterCtx,
     store: &dyn RegistryStore,
@@ -402,6 +498,7 @@ pub(crate) async fn resolve_routed_request(
     owner_id: String,
     hint: RequestHint<'_>,
     signals: RequestSignals,
+    session: Option<SessionClaims>,
 ) -> Result<RoutedRequest, GatewayError> {
     let mut resolved = resolve(store, &ctx.cache, &ctx.cfg, &agent_id, &owner_id, hint).await?;
     // Model routing: the resolver fixed provider/key/params; routing may override only model.
@@ -412,7 +509,23 @@ pub(crate) async fn resolve_routed_request(
     // otherwise pins every request to Level 4 (the agent's configured `llm_config`) and
     // makes the prompt classifier (Level 3) unreachable. Derive signals from the transcript
     // itself instead for these agents.
-    let (boundary, flow_id, billed_user_id, attribution_source) = if resolved.is_coding_agent {
+    let (boundary, flow_id, billed_user_id, attribution_source) = if let Some(s) = session.as_ref()
+    {
+        // Session-bound coding agent: the signed token names the user and flow
+        // directly, so bill that user and carry that flow — no traceparent, no
+        // freshness window (a long turn is never rejected for age).
+        (
+            BoundarySignals::for_coding_agent(
+                &agent_id,
+                signals.turn_ordinal,
+                signals.query.as_deref(),
+                signals.is_tool_continuation,
+            ),
+            Some(s.flow_id.clone()),
+            s.user_id.clone(),
+            None,
+        )
+    } else if resolved.is_coding_agent {
         (
             BoundarySignals::for_coding_agent(
                 &agent_id,
@@ -1413,6 +1526,7 @@ mod tests {
                 turn_ordinal: 1,
                 is_tool_continuation: false,
             },
+            None,
         )
         .await
         .unwrap();
@@ -1459,6 +1573,7 @@ mod tests {
                 turn_ordinal: 1,
                 is_tool_continuation: false,
             },
+            None,
         )
         .await;
         let Err(error) = result else {

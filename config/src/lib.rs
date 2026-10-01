@@ -43,6 +43,12 @@ pub struct Config {
     /// `nasiko_oci::authz::Writer::BuildService`. Empty means not configured
     /// (fine for `AGENT_RUNTIME=local`, where no such build path exists).
     pub build_push_token: String,
+    /// Shared HMAC secret for the agent-identity / coding-agent session JWTs
+    /// (the same `AGENT_JWT_SECRET` the LLM router verifies with). Empty means
+    /// not configured; mint/verify fail closed in that case.
+    pub agent_jwt_secret: String,
+    /// Algorithm for the above (`HS256`/`HS384`/`HS512`); defaults to `HS256`.
+    pub agent_jwt_algorithm: String,
     pub seed_agents: Option<String>,
     pub openai_api_key: Option<String>,
     pub openai_base_url: Option<String>,
@@ -135,12 +141,6 @@ pub struct Config {
     /// `coding_agent_turn_lease_secs` so a live turn never lets its own lock
     /// lapse mid-turn.
     pub coding_agent_lease_heartbeat_secs: u64,
-    /// The command the control plane execs per session inside a coding-agent
-    /// container to launch the agent in ACP mode (space-separated in
-    /// `CODING_AGENT_COMMAND`, default `opencode acp`). One value for now since
-    /// OpenCode is the only supported ACP agent; a per-agent command can move to
-    /// the catalog row when more agent types are added.
-    pub coding_agent_command: Vec<String>,
     pub github_client_id: Option<String>,
     pub github_client_secret: Option<String>,
     /// Multi-tenant mode (per-CP): when on, this control plane runs behind the
@@ -404,6 +404,8 @@ impl Config {
                 .ok()
                 .filter(|s| !s.is_empty()),
             build_push_token: env_or("BUILD_PUSH_TOKEN", ""),
+            agent_jwt_secret: env_or("AGENT_JWT_SECRET", ""),
+            agent_jwt_algorithm: env_or("AGENT_JWT_ALGORITHM", "HS256"),
             seed_agents: std::env::var("SEED_AGENTS").ok(),
             openai_api_key: std::env::var("OPENAI_API_KEY").ok(),
             openai_base_url: std::env::var("OPENAI_BASE_URL").ok(),
@@ -472,11 +474,6 @@ impl Config {
             coding_agent_idle_ttl_secs: env_parse("CODING_AGENT_IDLE_TTL_SECS", 0),
             coding_agent_turn_lease_secs: env_parse("CODING_AGENT_TURN_LEASE_SECS", 60),
             coding_agent_lease_heartbeat_secs: env_parse("CODING_AGENT_LEASE_HEARTBEAT_SECS", 20),
-            coding_agent_command: std::env::var("CODING_AGENT_COMMAND")
-                .ok()
-                .map(|s| s.split_whitespace().map(str::to_owned).collect::<Vec<_>>())
-                .filter(|v| !v.is_empty())
-                .unwrap_or_else(|| vec!["opencode".to_owned(), "acp".to_owned()]),
             github_client_id: std::env::var("GITHUB_CLIENT_ID").ok(),
             github_client_secret: std::env::var("GITHUB_CLIENT_SECRET").ok(),
             multi_tenant_mode: std::env::var("MULTI_TENANT_MODE")

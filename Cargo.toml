@@ -11,6 +11,7 @@ members = [
     "runtime",
     "react-agent",
     "acp-client",
+    "session-token",
     "orchestrator",
     "types",
     "utils",
@@ -48,6 +49,7 @@ nasiko-observability = { path = "observability" }
 nasiko-runtime = { path = "runtime", default-features = false }
 nasiko-react-agent = { path = "react-agent" }
 nasiko-acp-client = { path = "acp-client" }
+nasiko-session-token = { path = "session-token" }
 nasiko-orchestrator = { path = "orchestrator" }
 nasiko-types = { path = "types" }
 nasiko-utils = { path = "utils" }

@@ -1,0 +1,18 @@
+[package]
+name = "nasiko-session-token"
+version.workspace = true
+edition.workspace = true
+
+# Shared session-bound token for ACP coding agents (NAS-839): the credential the
+# control plane mints at session open carrying {agent_id, user_id, session_id,
+# flow_id, jti}, verified identically by the MCP gateway and the LLM router.
+#
+# This crate is the crypto half only — mint, verify signature + expiry, extract
+# claims. The DB-side checks (jti revocation, flow-participant membership) stay
+# in the callers, so this crate has no database or config dependency.
+
+[dependencies]
+jsonwebtoken = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
