@@ -1,43 +1,45 @@
-# Nasiko Synthesizer Agent
+# Nasiko Doc Reader
 
-A streaming A2A agent built with the Anthropic Python SDK that turns raw research, notes, and
-analysis into polished reports. It can produce summaries, key findings, conclusions, and
-structured answers from information supplied in the prompt.
+A Python A2A agent that answers questions about uploaded files. It extracts file parts from the
+A2A message, decodes them as UTF-8 text, and asks OpenAI to answer against that content.
 
 Example requests:
 
 ```text
-Synthesize these research findings into a concise report.
-Turn these notes into an executive summary with key risks and recommendations.
-Compare the evidence from these sources and identify the strongest conclusions.
-Rewrite this analysis as a structured briefing for leadership.
+Summarize this document
+What are the key findings in this report?
+Extract all email addresses from this file
+Explain this code file
 ```
 
-The agent does not search external sources. It synthesizes the information supplied in the
-request, so callers should include the research or data that must appear in the report.
+Attach a text-ish file (plain text, CSV, JSON, code, or logs) and ask a question. With a file
+and no question, the agent summarizes. Without a file, it asks the caller to upload one.
+
+There is no PDF or DOCX parser. Binary bytes are decoded as UTF-8 with replacement characters,
+or labeled as binary. Files larger than 50,000 characters are truncated so the prompt stays
+within typical model limits.
 
 ## Architecture
 
-1. The A2A server receives a text prompt.
-2. `SynthesizerAgentExecutor` creates or resumes an in-memory A2A task.
-3. `SynthesizerAgent` sends the prompt to Anthropic's Messages API.
-4. Text tokens are emitted as A2A working-status updates.
-5. The complete report is returned as a text artifact.
+1. The A2A server receives a text prompt and optional file parts.
+2. `DocReaderExecutor` creates or resumes an in-memory A2A task.
+3. File bytes are decoded as UTF-8 and included in the system prompt.
+4. OpenAI answers the question (or summarizes when no question is given).
+5. The reply is returned as a text artifact.
 
-The implementation uses the official Anthropic Python SDK and defaults to Claude Sonnet 5.
+The implementation uses the official OpenAI Python SDK and defaults to `gpt-4o-mini`. Streaming
+is not advertised; the task completes after a single artifact.
 
 ## Project layout
 
 ```text
-claude-sdk/
+doc-reader/
 ├── AgentCard.json          # Nasiko deployment identity, capabilities, skills, and version
-├── Dockerfile              # Python 3.12 runtime image
+├── Dockerfile              # Python 3.13 runtime image
 ├── pyproject.toml          # Python project metadata and dependencies
 └── src/
-    ├── __main__.py         # A2A server and runtime Agent Card
-    ├── agent.py            # Streaming synthesis implementation
-    ├── agent_executor.py   # A2A task, status, and artifact handling
-    └── telemetry.py        # OpenTelemetry initialization
+    ├── __main__.py         # A2A server, file extraction, and OpenAI Q&A
+    └── telemetry.py        # OpenTelemetry initialization and traceparent middleware
 ```
 
 The Nasiko CLI manages validation, local execution, testing, deployment, and operations. The
@@ -47,11 +49,12 @@ Dockerfile defines the runtime, but developers do not need to invoke Docker or C
 
 The agent reads these environment variables:
 
-- `ANTHROPIC_API_KEY` is required for Anthropic API access.
-- `ANTHROPIC_MODEL` defaults to `claude-sonnet-5`.
+- `OPENAI_API_KEY` is required for OpenAI API access.
+- `OPENAI_MODEL` defaults to `gpt-4o-mini`. `MODEL` is accepted as an alias.
+- `OPENAI_BASE_URL` is optional and may point to any OpenAI-compatible `/chat/completions` endpoint.
 - `HOST_OVERRIDE` replaces the URL advertised by the runtime Agent Card when set.
 - `OTEL_EXPORTER_OTLP_ENDPOINT` enables OTLP trace and metric export.
-- `OTEL_SERVICE_NAME` defaults to `nasiko-agent`.
+- `OTEL_SERVICE_NAME` defaults to `doc-reader-agent`.
 
 The image listens on internal port `8000`. The Nasiko CLI maps or publishes this port through
 `nasiko run`, `nasiko deploy`, or `nasiko upload`.
@@ -62,8 +65,8 @@ secrets and observability settings when the container starts.
 For local testing, create an untracked `.env`:
 
 ```dotenv
-ANTHROPIC_API_KEY=replace-me
-ANTHROPIC_MODEL=claude-sonnet-5
+OPENAI_API_KEY=replace-me
+OPENAI_MODEL=gpt-4o-mini
 ```
 
 Do not commit real credentials.
@@ -72,7 +75,7 @@ Do not commit real credentials.
 
 - The `nasiko` CLI
 - Docker or Podman running as the container runtime used internally by the CLI
-- An Anthropic API key with available Claude quota
+- An OpenAI API key with available quota
 
 No local Python environment, `uv`, or manual container commands are required. The Nasiko CLI
 builds the Python runtime from the Dockerfile.
@@ -88,7 +91,7 @@ rather than `nasiko new`.
 From this directory:
 
 ```sh
-cd agents/claude-sdk
+cd agents/doc-reader
 nasiko validate .
 ```
 
@@ -111,15 +114,18 @@ required.
 In another terminal, test the agent through the Nasiko CLI:
 
 ```sh
-nasiko chat http://localhost:8000 \
-  "Synthesize these notes into an executive summary: revenue grew 18%, churn fell 4%, and support response time improved by 30%."
+nasiko chat http://localhost:8000 "Summarize this document"
 nasiko chat http://localhost:8000 --tui
 ```
+
+`nasiko chat` sends text. Without an attached file, the agent asks the caller to upload one.
+Attach files through the Nasiko chat UI after the agent is deployed, or through an A2A client
+that includes file parts on the message.
 
 For a build-only check:
 
 ```sh
-nasiko build . --tag synthesizer-agent:1.0.1
+nasiko build . --tag doc-reader:1.0.0
 ```
 
 `nasiko build` creates the image without starting the agent. Both commands manage the container
@@ -152,32 +158,32 @@ Store the provider credential as an encrypted Nasiko secret:
 
 ```sh
 # Vault scope: available to every agent you own
-nasiko secrets set ANTHROPIC_API_KEY replace-me
+nasiko secrets set OPENAI_API_KEY replace-me
 nasiko secrets ls
 
 # Agent scope: overrides the vault secret for this agent
-nasiko secrets set ANTHROPIC_API_KEY replace-me \
-  --agent synthesizer-agent
-nasiko secrets ls --agent synthesizer-agent
+nasiko secrets set OPENAI_API_KEY replace-me \
+  --agent doc-reader
+nasiko secrets ls --agent doc-reader
 ```
 
 Secret precedence is: inline `nasiko deploy -e` values, agent-specific secrets, then vault
 secrets. Updating a secret does not change a running container; recreate it with:
 
 ```sh
-nasiko restart synthesizer-agent
+nasiko restart doc-reader
 ```
 
 Remove a vault secret with `nasiko secrets rm <KEY>`. Add
-`--agent synthesizer-agent` when removing an agent-specific secret.
+`--agent doc-reader` when removing an agent-specific secret.
 
 #### Build and deploy
 
-From `agents/claude-sdk`:
+From `agents/doc-reader`:
 
 ```sh
 nasiko deploy . \
-  --name synthesizer-agent \
+  --name doc-reader \
   --port 8000
 ```
 
@@ -192,24 +198,14 @@ nasiko deploy . \
 Keep `.nasiko/` out of source control. The explicit deployment name matches the registry-safe
 name in `AgentCard.json`.
 
-If an earlier version is still deployed as `claude-sdk-research-agent`, remove that obsolete
-registration once before deploying the renamed agent:
-
-```sh
-nasiko rm --name claude-sdk-research-agent
-```
-
-The agent is stateless, so this does not remove application data. The next `nasiko deploy`
-creates or binds the `synthesizer-agent` registration.
-
 #### Server-side source build
 
 This Python project provides `src/__main__.py`, so it also supports Nasiko's source-upload flow:
 
 ```sh
 nasiko upload . \
-  --name synthesizer-agent \
-  --version 1.0.1 \
+  --name doc-reader \
+  --version 1.0.0 \
   --port 8000
 ```
 
@@ -224,31 +220,30 @@ Inspect and manage the deployment:
 ```sh
 nasiko ps
 nasiko ps --json
-nasiko logs synthesizer-agent
-nasiko logs synthesizer-agent -n 200
-nasiko logs synthesizer-agent -n 200 -f
-nasiko stop synthesizer-agent
-nasiko start synthesizer-agent
-nasiko restart synthesizer-agent
-nasiko scale synthesizer-agent 2
+nasiko logs doc-reader
+nasiko logs doc-reader -n 200
+nasiko logs doc-reader -n 200 -f
+nasiko stop doc-reader
+nasiko start doc-reader
+nasiko restart doc-reader
+nasiko scale doc-reader 2
 nasiko status
 ```
 
-Chat with the deployed agent:
+Chat with the deployed agent. Attach files in the Nasiko chat UI, or send a text prompt:
 
 ```sh
-nasiko chat synthesizer-agent \
-  "Turn these findings into a report with a summary, key findings, and conclusion."
+nasiko chat doc-reader "Summarize the uploaded document"
 ```
 
 List and resume control-plane sessions:
 
 ```sh
 nasiko sessions
-nasiko chat --agent synthesizer-agent --resume <session-id>
-nasiko chat --agent synthesizer-agent \
+nasiko chat --agent doc-reader --resume <session-id>
+nasiko chat --agent doc-reader \
   --session-id <session-id> \
-  "Rewrite the conclusion for an executive audience."
+  "What are the key findings?"
 ```
 
 Control-plane session IDs begin with `ses_` and must be resumed through the deployed agent, not
@@ -262,15 +257,15 @@ nasiko observe sessions
 nasiko observe session <session-id>
 ```
 
-The telemetry bootstrap joins Nasiko's incoming trace context and instruments the A2A server,
-HTTP client, and Anthropic SDK when the corresponding instrumentation packages are available.
-Nasiko injects the collector endpoint during deployment.
+The telemetry bootstrap joins Nasiko's incoming trace context. `TraceparentMiddleware` stores
+that context for the background executor task so OpenAI spans stay on the session trace. Nasiko
+injects the collector endpoint during deployment.
 
 Remove the deployment when it is no longer needed:
 
 ```sh
-nasiko rm --name synthesizer-agent
-nasiko rm --name synthesizer-agent -f
+nasiko rm --name doc-reader
+nasiko rm --name doc-reader -f
 ```
 
 `stop` preserves registration and configuration. `rm` terminates and deregisters the agent.
@@ -285,13 +280,15 @@ The version in `AgentCard.json` becomes the deployed image tag. For each release
 4. Validate and test locally.
 5. Redeploy the same agent name.
 
+`AgentCard.json`, `pyproject.toml`, and the runtime Agent Card in `src/__main__.py` all report
+`1.0.0`.
+
 ```sh
 nasiko validate .
 nasiko run . --port 8000
-nasiko chat http://localhost:8000 \
-  "Produce a short report from these test findings."
+nasiko chat http://localhost:8000 "Summarize this document"
 nasiko deploy . \
-  --name synthesizer-agent \
+  --name doc-reader \
   --port 8000
 ```
 
@@ -301,20 +298,20 @@ container to pick up changed secrets or environment variables; it does not rebui
 Roll back to the previous deployment or a specific version:
 
 ```sh
-nasiko rollback --name synthesizer-agent
-nasiko rollback --name synthesizer-agent --version 1.0.0
+nasiko rollback --name doc-reader
+nasiko rollback --name doc-reader --version 1.0.0
 ```
 
 ## Building a compatible Nasiko agent
 
-This project demonstrates the core contract for a streaming Python agent on Nasiko:
+This project demonstrates the core contract for a Python document agent on Nasiko:
 
 1. Provide a valid, registry-safe `AgentCard.json`.
 2. Provide a Dockerfile that creates a self-contained `linux/amd64` image.
 3. Bind to `0.0.0.0` and use the configured deployment port.
 4. Serve the standard Agent Card endpoint and an A2A JSON-RPC handler.
-5. Emit valid working status, artifact, and completed events when streaming is advertised.
-6. Read the Anthropic credential and Claude model name from environment variables.
+5. Accept file parts on the incoming message in addition to `text/plain`.
+6. Read the OpenAI credential and model name from environment variables.
 7. Initialize telemetry before importing instrumented server libraries.
 8. Treat `.nasiko/agent.json` as local deployment state rather than source.
 9. Keep project, runtime, and deployment metadata aligned.
@@ -323,21 +320,26 @@ This project demonstrates the core contract for a streaming Python agent on Nasi
 
 ### Provider requests fail with 401
 
-Verify `ANTHROPIC_API_KEY` is a valid Anthropic API key. After changing the Nasiko secret, run:
+Verify `OPENAI_API_KEY` is a valid OpenAI API key. After changing the Nasiko secret, run:
 
 ```sh
-nasiko restart synthesizer-agent
+nasiko restart doc-reader
 ```
 
-### Provider reports that the model is unavailable
+### The agent asks for a file even though one was provided
 
-Set `ANTHROPIC_MODEL` to a Claude model available to your Anthropic account.
+`nasiko chat` sends text only. Attach the file in the Nasiko chat UI, or use an A2A client that
+includes file parts (`application/octet-stream`) on the message.
 
-### Nasiko reports `-32601 Method not found`
+### PDF or Word files return garbled text
 
-The current agent uses `a2a-sdk==1.1.2` and A2A protocol 1.0. This error usually means the
-deployed container still uses the previous `0.3.26` image. Bump the release version if needed
-and run `nasiko deploy` again; `nasiko restart` does not rebuild the image.
+The agent does not parse office formats. Convert the document to plain text, CSV, JSON, or
+source code before uploading.
+
+### The answer ignores the end of a long file
+
+Content beyond 50,000 characters is truncated. Split the document or ask about a smaller
+excerpt.
 
 ### The Agent Card advertises the wrong URL
 
@@ -357,5 +359,5 @@ They satisfy Nasiko's Python source-upload validator.
 - [Running and chatting locally](https://docs.nasiko.com/adlc/build-run-test)
 - [Deploying and managing agents](https://docs.nasiko.com/adlc/deploy)
 - [Versions and lifecycle](https://docs.nasiko.com/adlc/versions-lifecycle)
-- [Anthropic Python SDK](https://github.com/anthropics/anthropic-sdk-python)
+- [OpenAI Python SDK](https://github.com/openai/openai-python)
 - [A2A protocol specification](https://github.com/a2aproject/a2a-spec)

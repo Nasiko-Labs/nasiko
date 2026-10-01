@@ -19,10 +19,11 @@ init_telemetry()
 
 import click
 import uvicorn
-from a2a.server.apps import A2AStarletteApplication
 from a2a.server.request_handlers import DefaultRequestHandler
+from a2a.server.routes import create_agent_card_routes, create_jsonrpc_routes
 from a2a.server.tasks import InMemoryTaskStore
-from a2a.types import AgentCapabilities, AgentCard, AgentSkill
+from a2a.types import AgentCapabilities, AgentCard, AgentInterface, AgentSkill
+from starlette.applications import Starlette
 from starlette.middleware.cors import CORSMiddleware
 
 from agent import SynthesizerAgent
@@ -32,27 +33,38 @@ logger = logging.getLogger(__name__)
 
 
 @click.command()
-@click.option("--host", default="localhost")
-@click.option("--port", default=8000)
+@click.option("--host", default="0.0.0.0")
+@click.option("--port", default=int(os.environ.get("PORT", "8000")), type=int)
 def main(host, port):
     """Starts the Synthesizer Agent server."""
+    if not os.getenv("ANTHROPIC_API_KEY"):
+        logger.error("ANTHROPIC_API_KEY is not set")
+        raise SystemExit(1)
+
     capabilities = AgentCapabilities(streaming=True)
     skill = AgentSkill(
         id="synthesize",
         name="Synthesize & Report",
-        description="Takes research data from multiple sources and produces polished, well-structured reports.",
-        tags=["synthesis", "writing", "reports", "analysis"],
+        description="Synthesizes research and data from multiple sources into polished, well-structured reports.",
+        tags=["synthesis", "writing", "reports", "analysis", "claude"],
         examples=[
             "Synthesize these research findings into a report",
             "Write an executive summary from this data",
+            "Compare these sources and identify the strongest conclusions",
         ],
     )
     agent_url = os.getenv("HOST_OVERRIDE", f"http://{host}:{port}/")
     agent_card = AgentCard(
-        name="Synthesizer Agent",
-        description="Takes raw research and data from other agents, produces clear structured reports with summaries, key findings, and conclusions.",
-        url=agent_url,
-        version="1.0.0",
+        name="synthesizer-agent",
+        description="Transforms raw research, notes, and analysis into polished reports with summaries, key findings, and conclusions using Claude.",
+        supported_interfaces=[
+            AgentInterface(
+                protocol_binding="JSONRPC",
+                protocol_version="1.0",
+                url=agent_url,
+            )
+        ],
+        version="1.0.1",
         default_input_modes=SynthesizerAgent.SUPPORTED_CONTENT_TYPES,
         default_output_modes=SynthesizerAgent.SUPPORTED_CONTENT_TYPES,
         capabilities=capabilities,
@@ -61,9 +73,13 @@ def main(host, port):
     request_handler = DefaultRequestHandler(
         agent_executor=SynthesizerAgentExecutor(),
         task_store=InMemoryTaskStore(),
+        agent_card=agent_card,
     )
-    server = A2AStarletteApplication(agent_card=agent_card, http_handler=request_handler)
-    app = server.build()
+    routes = create_agent_card_routes(agent_card) + create_jsonrpc_routes(
+        request_handler,
+        rpc_url="/",
+    )
+    app = Starlette(routes=routes)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
