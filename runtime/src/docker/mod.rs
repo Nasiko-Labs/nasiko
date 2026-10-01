@@ -1264,6 +1264,13 @@ impl AsyncRead for AttachStdout {
                 // A stderr chunk: the agent's own log output, NOT protocol. Send
                 // it to our logs and keep looping — never mix it into the stream
                 // the ACP client reads, or it would corrupt the JSON.
+                //
+                // Note: Docker drains stderr *inline* here (stdout and stderr
+                // share one demuxed stream, and the ACP client reads stdout
+                // continuously, which pumps it). The K8s backend instead drains
+                // stderr in a dedicated task — intentional: there the two are
+                // separate channels on a connection that must be kept alive
+                // independently. See `KubeRuntime::attach_stdio`.
                 Poll::Ready(Some(Ok(LogOutput::StdErr { message }))) => {
                     let text = String::from_utf8_lossy(&message);
                     let text = text.trim_end();

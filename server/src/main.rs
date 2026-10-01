@@ -1,22 +1,22 @@
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use axum::body::Body;
-use axum::http::Request;
-use axum::response::Response;
-use nasiko_server::spa::{self, Spa};
+use axum::http::{Request, StatusCode, header};
+use axum::response::{IntoResponse, Response};
 use nasiko_server::telemetry::{TelemetryConfig, init_telemetry};
 use rust_embed::Embed;
 
-// `NASIKO_UI` is resolved by build.rs — see the comment there for why this
-// path cannot be a literal (this crate sits at a different depth in the public
-// repo, where the `oss/` prefix is stripped).
-//
-// One folder, not an overlay chain: a Vite build is self-contained. It carries
-// `index.html`, the hashed `assets/`, and the `routes.json` / `csp.json`
-// sidecars that `nasiko_server::spa` reads at startup.
+// `NASIKO_UI` is resolved by build.rs — see the comment there for why these
+// paths cannot be literals (this crate sits at a different depth in the
+// public repo, where the `oss/` prefix is stripped).
 #[derive(Embed)]
-#[folder = "$NASIKO_UI/oss/dist/"]
+#[folder = "$NASIKO_UI/oss/"]
 struct OssAssets;
+
+#[derive(Embed)]
+#[folder = "$NASIKO_UI/common/"]
+#[prefix = "common/"]
+struct CommonAssets;
 
 /// `depends_on: condition: service_healthy` guarantees Postgres itself is
 /// ready, but the container's own DNS resolution can still have a brief
@@ -121,33 +121,98 @@ async fn main() {
         nasiko_server::state::AppState::from_config_with_db(config, auth, runtime, oci_storage, db)
             .await;
     state.init().await;
+    // Clear stale coding-agent session leases left by a prior crash, then keep
+    // reconciling session rows against live containers in the background.
+    nasiko_server::coding::spawn_reconciler(state.clone());
     let app = nasiko_server::build_app(state, static_handler);
 
     let listener = tokio::net::TcpListener::bind(&bind).await.unwrap();
     tracing::info!("nasiko-server (OSS) listening on {bind}");
-    // Peer addresses let per-address limits (the agent state API's) key on the real source.
-    let service = app.into_make_service_with_connect_info::<std::net::SocketAddr>();
-    axum::serve(listener, service).await.unwrap();
+    axum::serve(listener, app).await.unwrap();
 }
 
-/// The OSS shell loads the Reo analytics snippet, which injects a `<script>`
-/// pointing at this host. The hash of the inline loader itself comes from
-/// `csp.json`; the host it reaches for has to be named here.
-///
-/// `connect_src` names the host `reo.js` posts its events to
-/// (`/api/v1/ghost/event`), taken from a browser trace rather than a guess, as
-/// docs/designs/openruntime-embedding-recommendations.md asks. If Reo starts
-/// beaconing elsewhere, the console shows a `connect-src` violation naming it.
-const CSP_EXTRAS: spa::CspExtras = spa::CspExtras {
-    script_src: &["https://static.reo.dev"],
-    connect_src: &["https://api.reo.dev"],
-    img_src: &[],
+/// Short max-age lets repeat page loads skip the network entirely, while
+/// `must-revalidate` + the ETag bound staleness after a deploy to ~5 minutes
+/// instead of relying on users to hard-refresh (assets aren't content-hashed,
+/// so a stale cached JS/CSS file would silently run against a new backend).
+/// 5 min is safe at a once-a-day deploy cadence; revisit if deploys get more frequent.
+// Debug builds serve from disk (rust-embed), so nothing is cached there at all:
+// `just run` is for editing the frontend, and a UI change must show up on the
+// next reload with no hard-refresh and no stale module. `no-store` rather than
+// `no-cache` because the latter still stores and revalidates, which leaves room
+// for a stale ES module to be reused. Use `just run-prod` to exercise the
+// release headers below.
+const STATIC_CACHE_CONTROL: &str = if cfg!(debug_assertions) {
+    "no-store"
+} else {
+    "max-age=300, must-revalidate"
 };
 
-/// Release caches the parsed manifest here; debug re-reads it per request so a
-/// `just build-ui` is picked up without a restart. See `spa::serve`.
-static SPA: OnceLock<Spa> = OnceLock::new();
-
 async fn static_handler(req: Request<Body>) -> Response {
-    spa::serve::<OssAssets>(&req, &SPA, &CSP_EXTRAS)
+    let path = req.uri().path().trim_start_matches('/');
+    let path = if path.is_empty() { "index.html" } else { path };
+
+    if let Some(file) = OssAssets::get(path).or_else(|| CommonAssets::get(path)) {
+        let etag = format!("\"{}\"", hex::encode(file.metadata.sha256_hash()));
+        if req
+            .headers()
+            .get(header::IF_NONE_MATCH)
+            .and_then(|v| v.to_str().ok())
+            == Some(etag.as_str())
+        {
+            return (
+                StatusCode::NOT_MODIFIED,
+                [
+                    (header::CACHE_CONTROL, STATIC_CACHE_CONTROL.to_string()),
+                    (header::ETAG, etag),
+                ],
+            )
+                .into_response();
+        }
+
+        let mime = mime_guess::from_path(path).first_or_octet_stream();
+        return (
+            [
+                (header::CONTENT_TYPE, mime.as_ref().to_string()),
+                (header::CACHE_CONTROL, STATIC_CACHE_CONTROL.to_string()),
+                (header::ETAG, etag),
+            ],
+            file.data,
+        )
+            .into_response();
+    }
+
+    // SPA fallback: serve index.html for any path that isn't a real static
+    // file. The client-side router resolves the URL to the correct page
+    // component. Paths with file extensions (CSS, JS, images, fonts) are
+    // genuine 404s — they were requested as assets and should not get HTML.
+    if !path.contains('.')
+        && let Some(file) = OssAssets::get("index.html")
+    {
+        let etag = format!("\"{}\"", hex::encode(file.metadata.sha256_hash()));
+        return (
+            [
+                (header::CONTENT_TYPE, "text/html".to_string()),
+                // SPA shell must revalidate on every navigation so deploys
+                // take effect within one page load.
+                (header::CACHE_CONTROL, "no-cache".to_string()),
+                (header::ETAG, etag),
+            ],
+            file.data,
+        )
+            .into_response();
+    }
+
+    if let Some(file) = OssAssets::get("404.html") {
+        return (
+            StatusCode::NOT_FOUND,
+            [
+                (header::CONTENT_TYPE, "text/html".to_owned()),
+                (header::CACHE_CONTROL, "no-store".to_owned()),
+            ],
+            file.data,
+        )
+            .into_response();
+    }
+    (StatusCode::NOT_FOUND, [(header::CACHE_CONTROL, "no-store")]).into_response()
 }

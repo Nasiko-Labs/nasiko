@@ -86,9 +86,25 @@ impl SessionAttach {
 /// is diagnostics, not protocol, so it is **not** interleaved here — backends
 /// route it to their logs.
 ///
-/// Dropping the handle tears the stream down. Per the tech design (§9.3) a
-/// mid-turn drop is itself the turn's cancel signal; there is no separate
-/// close/cancel call on this type.
+/// # Trait family (bridging to the ACP SDK)
+///
+/// The halves are **tokio** `AsyncRead`/`AsyncWrite`. The `agent-client-protocol`
+/// SDK's transport (`ByteStreams`) speaks **futures-io**, so the layer that joins
+/// the two wraps each half with
+/// [`tokio_util::compat`](https://docs.rs/tokio-util/latest/tokio_util/compat/)
+/// (`.compat()` / `.compat_write()`) before `ByteStreams::new(...)`. That means
+/// adding `tokio-util` (feature `compat`) to the glue crate — it is deliberately
+/// *not* a dependency here, since this crate needs no conversion of its own.
+///
+/// # Dropping / process lifetime
+///
+/// Dropping the handle closes the pipe: `stdin` reaches EOF and the read half
+/// ends. A mid-turn drop is itself the turn's cancel signal, so there is no
+/// separate close/cancel call on this type. The runtime does **not** explicitly
+/// kill the exec'd process on drop — it relies on the agent exiting on stdin EOF
+/// (OpenCode does). Whether a dropped turn should *kill* the process or keep it
+/// warm for the next turn is a session-lifecycle decision owned by the caller,
+/// not this handle.
 pub struct StdioHandle {
     /// Write half — the agent process's stdin.
     pub stdin: Pin<Box<dyn AsyncWrite + Send>>,

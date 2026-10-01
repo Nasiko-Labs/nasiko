@@ -37,7 +37,6 @@ fn docker_runtime_config_custom_construction() {
         registry_host: Some("localhost:5000".to_owned()),
         registry_username: Some("registry-user".to_owned()),
         registry_password: Some("registry-pass".to_owned()),
-        registry_credentials_host: Some("ghcr.io".to_owned()),
         agent_memory_volume: "custom-memory-volume".to_owned(),
         agent_memory_init_image: "busybox:1.36".to_owned(),
     };
@@ -69,7 +68,6 @@ fn test_spec() -> DeploymentSpec {
         image: "alpine:latest".to_owned(),
         min_replicas: 1,
         max_replicas: 1,
-        replica_target: None,
         env_vars: HashMap::new(),
         ports: vec![8080],
         resources: Some(ResourceLimits {
@@ -230,7 +228,6 @@ async fn docker_runtime_deploy_and_destroy_alpine() {
         image: "alpine:latest".to_owned(),
         min_replicas: 1,
         max_replicas: 1,
-        replica_target: None,
         env_vars: {
             let mut m = HashMap::new();
             m.insert("TEST".to_owned(), "1".to_owned());
@@ -305,7 +302,6 @@ async fn docker_runtime_deploy_recreates_container_when_env_changes() {
         image: "alpine:latest".to_owned(),
         min_replicas: 1,
         max_replicas: 1,
-        replica_target: None,
         env_vars: HashMap::from([("SECRET".to_owned(), "v1".to_owned())]),
         ports: vec![9998],
         resources: None,
@@ -366,7 +362,6 @@ async fn docker_runtime_deploy_does_not_recreate_when_unchanged() {
         image: "alpine:latest".to_owned(),
         min_replicas: 1,
         max_replicas: 1,
-        replica_target: None,
         env_vars: HashMap::from([("SECRET".to_owned(), "v1".to_owned())]),
         ports: vec![9997],
         resources: None,
@@ -436,7 +431,6 @@ async fn docker_runtime_writable_persists_across_redeploy_and_is_private_per_age
             image: "redis:7-alpine".to_owned(),
             min_replicas: 1,
             max_replicas: 1,
-            replica_target: None,
             env_vars: HashMap::new(),
             ports: vec![port],
             resources: None,
@@ -519,7 +513,6 @@ async fn docker_runtime_reads_workspace_files_even_after_the_agent_is_gone() {
         image: "redis:7-alpine".to_owned(),
         min_replicas: 1,
         max_replicas: 1,
-        replica_target: None,
         env_vars: HashMap::new(),
         ports: vec![9994],
         resources: None,
@@ -642,7 +635,6 @@ async fn docker_runtime_workspace_read_refuses_symlink_escape() {
         image: "redis:7-alpine".to_owned(),
         min_replicas: 1,
         max_replicas: 1,
-        replica_target: None,
         env_vars: HashMap::new(),
         ports: vec![port],
         resources: None,
@@ -750,4 +742,95 @@ async fn docker_runtime_workspace_read_refuses_symlink_escape() {
         .destroy(&attacker_id)
         .await
         .expect("cleanup attacker");
+}
+
+// ─── coding-agent stdio attach (manual end-to-end check) ─────────────────────
+
+/// Hands-on proof of the coding-agent stdio attach, end to end, without a real
+/// ACP agent. It exercises the whole runtime path we added:
+///   1. deploy a **portless** coding-agent container (`nginx:alpine` is only a
+///      stand-in for "a container that stays alive" so we have something to exec
+///      a session process into),
+///   2. `attach_stdio()` to run `cat` as the per-session process — `cat` echoes
+///      whatever it receives, standing in for an agent that replies,
+///   3. write a line to the pipe's stdin and read the same line back from stdout,
+///   4. destroy.
+///
+/// Requires a running Docker daemon (and will pull `nginx:alpine` once). Run it:
+///   cargo test -p nasiko-runtime --test docker_runtime -- \
+///     --ignored coding_agent_attach_stdio_echo --nocapture
+#[tokio::test]
+#[ignore]
+async fn coding_agent_attach_stdio_echo() {
+    use nasiko_runtime::{ContainerRuntime, SessionAttach, WorkloadKind};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let runtime = DockerRuntime::new(DockerRuntimeConfig::default())
+        .await
+        .expect("Docker must be running");
+
+    let id = ContainerId::new("test-coding-agent-attach");
+
+    // A coding-agent workload: no inbound port (our new rule allows that).
+    let spec = DeploymentSpec {
+        container_id: id.clone(),
+        name: "test-coding-agent-attach".to_owned(),
+        image: "nginx:alpine".to_owned(), // just keeps PID 1 alive
+        min_replicas: 1,
+        max_replicas: 1,
+        env_vars: HashMap::new(),
+        ports: vec![], // portless — permitted for AcpCodingAgent
+        resources: None,
+        image_pull_secret_name: None,
+        image_pull_credential_seed: None,
+        harden: false,
+        network_override: None,
+        workload_kind: WorkloadKind::AcpCodingAgent,
+        writable: false,
+        writable_path: None,
+        owner_id: uuid::Uuid::nil(),
+        force_pull: false,
+    };
+
+    // Clean slate, then deploy the container.
+    let _ = runtime.destroy(&id).await;
+    runtime.deploy(&spec).await.expect("deploy should succeed");
+
+    // Open a per-session pipe. `cat` echoes stdin -> stdout, standing in for the
+    // agent's JSON-RPC replies.
+    let mut handle = runtime
+        .attach_stdio(
+            &id,
+            SessionAttach {
+                session_id: "session-one".to_owned(),
+                command: vec!["cat".to_owned()],
+                env: HashMap::new(),
+            },
+        )
+        .await
+        .expect("attach_stdio should succeed");
+
+    // Send a line in...
+    handle
+        .stdin
+        .write_all(b"hello over stdio\n")
+        .await
+        .expect("write to agent stdin");
+    handle.stdin.flush().await.expect("flush");
+
+    // ...and read it back out (with a timeout so a hang fails loudly).
+    let mut buf = [0u8; 64];
+    let n = tokio::time::timeout(Duration::from_secs(10), handle.stdout.read(&mut buf))
+        .await
+        .expect("read should not time out")
+        .expect("read from agent stdout");
+    let echoed = String::from_utf8_lossy(&buf[..n]);
+    assert!(
+        echoed.contains("hello over stdio"),
+        "expected the stand-in agent (cat) to echo our line, got: {echoed:?}"
+    );
+
+    // Cleanup: dropping the handle closes the pipe; then remove the container.
+    drop(handle);
+    runtime.destroy(&id).await.expect("destroy should succeed");
 }
