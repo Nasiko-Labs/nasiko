@@ -35,13 +35,19 @@ mod capability;
 mod connection;
 mod error;
 mod permission;
+mod telemetry;
 mod turn;
 
 pub use capability::{NegotiatedCapabilities, RequiredCapabilities};
 pub use connection::{AcpConnectConfig, AcpConnection, connect_local};
 pub use error::AcpError;
 pub use permission::PermissionPolicy;
+pub use telemetry::{TelemetryError, TurnTelemetry};
 pub use turn::{NewSessionParams, TurnEvent, TurnStream};
+
+// Re-exported so callers can set the capture policy and consume the built event
+// without a separate `nasiko-types` import.
+pub use nasiko_types::{CapturePolicy, CodingAgentEventV1};
 
 // Re-export the SDK types that appear in this crate's public API, so callers
 // don't need a direct dependency on `agent-client-protocol` to use them.

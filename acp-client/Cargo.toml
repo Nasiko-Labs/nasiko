@@ -16,3 +16,8 @@ tokio = { workspace = true }
 futures = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+
+# Telemetry: build the shared CodingAgentEventV1 from the ACP update stream.
+nasiko-types = { workspace = true }
+chrono = { workspace = true }
+serde_json = { workspace = true }

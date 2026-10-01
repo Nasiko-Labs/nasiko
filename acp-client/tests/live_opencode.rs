@@ -10,8 +10,9 @@
 //!
 //! Override the agent command with `NASIKO_ACP_CMD` (default `"opencode acp"`).
 
-use nasiko_acp_client::{AcpConnectConfig, NewSessionParams, PermissionPolicy, StopReason,
-    TurnEvent, connect_local};
+use nasiko_acp_client::{
+    AcpConnectConfig, NewSessionParams, PermissionPolicy, StopReason, TurnEvent, connect_local,
+};
 
 #[tokio::test]
 #[ignore = "requires an installed, authenticated `opencode` (ACP agent)"]
