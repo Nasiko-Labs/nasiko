@@ -204,7 +204,6 @@ fn minimal_spec() -> DeploymentSpec {
         image: "my-registry/agent:latest".to_owned(),
         min_replicas: 1,
         max_replicas: 3,
-        replica_target: None,
         env_vars: HashMap::new(),
         ports: vec![8080],
         resources: None,
@@ -245,7 +244,6 @@ fn deployment_spec_with_all_fields() {
         image: "harbor.example.io/agents/full-agent:v1.2.3".to_owned(),
         min_replicas: 2,
         max_replicas: 5,
-        replica_target: None,
         env_vars,
         ports: vec![8080, 9090],
         resources: Some(ResourceLimits {
@@ -295,6 +293,26 @@ fn deployment_spec_validate_port_zero_fails() {
     let mut spec = minimal_spec();
     spec.ports = vec![0];
     assert!(spec.validate().is_err());
+}
+
+#[test]
+fn coding_agent_may_have_no_ports() {
+    use nasiko_runtime::WorkloadKind;
+    // A coding agent is driven over stdio and exposes no inbound HTTP port, so
+    // an empty `ports` list is valid for it — unlike every other workload.
+    let mut spec = minimal_spec();
+    spec.workload_kind = WorkloadKind::AcpCodingAgent;
+    spec.ports = vec![];
+    assert!(
+        spec.validate().is_ok(),
+        "coding agent with no ports should validate"
+    );
+    // A declared port is still checked when present.
+    spec.ports = vec![0];
+    assert!(
+        spec.validate().is_err(),
+        "port 0 is invalid even for a coding agent"
+    );
 }
 
 #[test]

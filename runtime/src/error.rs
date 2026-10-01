@@ -29,6 +29,13 @@ pub enum RuntimeError {
     #[error("invalid deployment spec: {0}")]
     InvalidSpec(String),
 
+    /// The runtime does not support the requested capability — e.g. opening a
+    /// stdio attach on a backend that has no such mechanism. Distinct from
+    /// `Internal` so the caller can degrade cleanly (e.g. fall back to the hook
+    /// transport) rather than treating it as an unexpected failure.
+    #[error("unsupported operation: {0}")]
+    Unsupported(String),
+
     /// An unexpected error from the backend that does not fit a more specific variant.
     #[error("internal error: {0}")]
     Internal(String),

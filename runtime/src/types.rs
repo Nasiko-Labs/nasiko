@@ -238,12 +238,6 @@ pub struct DeploymentSpec {
     pub min_replicas: u32,
     /// Maximum replica count hint. Not enforced by this crate.
     pub max_replicas: u32,
-    /// Per-replica capacity target for a backend that autoscales: how many requests
-    /// one replica is expected to serve at once. `None` leaves it to the backend.
-    /// Only meaningful when `min_replicas < max_replicas`; ignored by backends that
-    /// do not autoscale.
-    #[serde(default)]
-    pub replica_target: Option<u32>,
     /// Environment variables injected into every container.
     pub env_vars: HashMap<String, String>,
     /// Container port(s). The first port is treated as the primary service port.
@@ -507,6 +501,23 @@ pub enum WorkloadKind {
     #[default]
     Agent,
     McpConnector,
+    /// An ACP (Agent Client Protocol) coding agent — e.g. OpenCode in `acp`
+    /// mode. Unlike `Agent`/`McpConnector`, it exposes **no inbound HTTP port**:
+    /// the control plane reaches it over a per-session stdio stream
+    /// ([`ContainerRuntime::attach_stdio`](crate::ContainerRuntime::attach_stdio)),
+    /// so [`DeploymentSpec::validate`] permits an empty `ports` list for this
+    /// kind. It still calls back out to the platform (MCP gateway + LLM router),
+    /// so `KubeRuntime` gives it the same A2A-hairpin egress an `Agent` gets.
+    AcpCodingAgent,
+}
+
+impl WorkloadKind {
+    /// Whether this workload serves inbound HTTP on a container port. Coding
+    /// agents do not — they are driven over stdio — so `deploy()` must not
+    /// require them to declare a port.
+    pub fn requires_inbound_port(&self) -> bool {
+        !matches!(self, WorkloadKind::AcpCodingAgent)
+    }
 }
 
 impl DeploymentSpec {
@@ -537,7 +548,10 @@ impl DeploymentSpec {
                 "image must not be empty".to_owned(),
             ));
         }
-        if self.ports.is_empty() {
+        // Coding agents are driven over stdio and expose no inbound HTTP port,
+        // so an empty `ports` list is valid for them; every other workload must
+        // declare at least one port (the primary service port).
+        if self.ports.is_empty() && self.workload_kind.requires_inbound_port() {
             return Err(RuntimeError::InvalidSpec(
                 "ports must not be empty".to_owned(),
             ));

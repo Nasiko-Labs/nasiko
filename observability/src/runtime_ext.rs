@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use nasiko_runtime::{
     ContainerId, ContainerRuntime, DeploymentSpec, DeploymentStatus, InstanceInfo, Result,
-    WorkspaceEntry, WorkspaceFile, WorkspaceRef,
+    SessionAttach, StdioHandle, WorkspaceEntry, WorkspaceFile, WorkspaceRef,
 };
 
 use crate::injector::{AgentContext, InstrumentationInjector};
@@ -95,6 +95,19 @@ impl<R: ContainerRuntime, I: InstrumentationInjector> ContainerRuntime
         self.inner.endpoint(container_id).await
     }
 
+    /// Forward the stdio attach to the inner runtime. MUST be overridden here —
+    /// the trait's default is `Unsupported`, so without this a coding-agent
+    /// attach would be rejected at the decorator and never reach the backend
+    /// that supports it (RUN-1). Injection does not apply: the stream carries
+    /// JSON-RPC, not a `DeploymentSpec`.
+    async fn attach_stdio(
+        &self,
+        container_id: &ContainerId,
+        attach: SessionAttach,
+    ) -> Result<StdioHandle> {
+        self.inner.attach_stdio(container_id, attach).await
+    }
+
     async fn logs(&self, container_id: &ContainerId, tail: u32) -> Result<Vec<String>> {
         self.inner.logs(container_id, tail).await
     }
@@ -103,31 +116,8 @@ impl<R: ContainerRuntime, I: InstrumentationInjector> ContainerRuntime
         self.inner.build(tar_context, image_tag).await
     }
 
-    /// Forward to the inner runtime. MUST be overridden here - the trait's default
-    /// is `false`, so without this an autoscaling backend would look unable to
-    /// scale and every agent would be pinned to one replica (RUN-1).
-    async fn supports_autoscaling(&self) -> bool {
-        self.inner.supports_autoscaling().await
-    }
-
-    /// Forward to the inner runtime. MUST be overridden here - the trait's default
-    /// is "unsupported", so without this no bounds change would ever reach the
-    /// backend (RUN-1).
-    async fn apply_replica_bounds(
-        &self,
-        id: &ContainerId,
-        min: u32,
-        max: u32,
-        target: Option<u32>,
-    ) -> Result<()> {
-        self.inner.apply_replica_bounds(id, min, max, target).await
-    }
-
-    /// Forward to the inner runtime. MUST be overridden here - the trait's default is
-    /// `false`, so without this a backend that rolls restarts in place would be
-    /// redeployed (destroyed and recreated) on every restart (RUN-1).
-    async fn restarts_in_place(&self) -> bool {
-        self.inner.restarts_in_place().await
+    async fn try_delete_autoscaler(&self, id: &ContainerId) -> Result<()> {
+        self.inner.try_delete_autoscaler(id).await
     }
 
     /// Inject, then forward. MUST be overridden here — the trait's default is a
@@ -251,21 +241,6 @@ mod tests {
             *self.refresh_env.lock().unwrap() = env;
             Ok(())
         }
-        async fn supports_autoscaling(&self) -> bool {
-            true
-        }
-        async fn restarts_in_place(&self) -> bool {
-            true
-        }
-        async fn apply_replica_bounds(
-            &self,
-            _id: &ContainerId,
-            _min: u32,
-            _max: u32,
-            _target: Option<u32>,
-        ) -> Result<()> {
-            Ok(())
-        }
         async fn list_instances(&self) -> Result<Vec<InstanceInfo>> {
             Ok(vec![InstanceInfo {
                 container_id: ContainerId::new("agent"),
@@ -318,7 +293,6 @@ mod tests {
             image: "example/agent:latest".to_string(),
             min_replicas: 1,
             max_replicas: 1,
-            replica_target: None,
             env_vars: HashMap::new(),
             ports: vec![8080],
             resources: None,
@@ -470,36 +444,6 @@ mod tests {
             false,
             None,
         )
-    }
-
-    /// RUN-1 regression guard: the trait's default is `false`, so only forwarding
-    /// reports the inner runtime's `true`.
-    #[tokio::test]
-    async fn supports_autoscaling_forwards_to_inner() {
-        assert!(
-            instrumented().supports_autoscaling().await,
-            "InstrumentedRuntime must forward supports_autoscaling (RUN-1)"
-        );
-    }
-
-    /// RUN-1 regression guard: the trait's default is `false`, so only forwarding
-    /// reports the inner runtime's `true`.
-    #[tokio::test]
-    async fn restarts_in_place_forwards_to_inner() {
-        assert!(
-            instrumented().restarts_in_place().await,
-            "InstrumentedRuntime must forward restarts_in_place (RUN-1)"
-        );
-    }
-
-    /// RUN-1 regression guard: the trait's default is an error, so merely
-    /// succeeding proves forwarding.
-    #[tokio::test]
-    async fn apply_replica_bounds_forwards_to_inner() {
-        instrumented()
-            .apply_replica_bounds(&ContainerId::new("agent"), 1, 3, Some(2))
-            .await
-            .expect("InstrumentedRuntime must forward apply_replica_bounds (RUN-1)");
     }
 
     /// RUN-1 regression guard: the decorator must forward `list_workspace`. The
