@@ -70,4 +70,21 @@ mod tests {
         assert!(err.is_incompatible());
         assert!(!AcpError::ConnectionClosed.is_incompatible());
     }
+
+    // A spawn failure (agent binary missing) must surface as `Transport` with the
+    // underlying cause, not a bare `ConnectionClosed`. Needs no real agent.
+    #[tokio::test]
+    async fn missing_agent_binary_is_transport_error() {
+        // Matched by arm (not `expect_err`) so we never need `AcpConnection: Debug`.
+        match connect_local(
+            "nasiko-acp-no-such-binary-xyzzy",
+            AcpConnectConfig::default(),
+        )
+        .await
+        {
+            Err(AcpError::Transport(_)) => {}
+            Err(other) => panic!("expected Transport, got {other:?}"),
+            Ok(_) => panic!("expected a transport failure, got a live connection"),
+        }
+    }
 }

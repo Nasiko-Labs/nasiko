@@ -12,6 +12,8 @@
 //! which keeps update routing simple: streamed `session/update` notifications
 //! are funneled through one channel and filtered by session id.
 
+use std::sync::{Arc, Mutex};
+
 use agent_client_protocol::component::ConnectTo;
 use agent_client_protocol::schema::v1::{
     ContentBlock, InitializeRequest, NewSessionRequest, PromptRequest, RequestPermissionRequest,
@@ -24,6 +26,11 @@ use crate::capability::{NegotiatedCapabilities, RequiredCapabilities, negotiate}
 use crate::error::AcpError;
 use crate::permission::PermissionPolicy;
 use crate::turn::{NewSessionParams, TurnEvent, TurnStream};
+
+/// Holds the readiness signal until exactly one side sends it: the connection
+/// task takes it to report `initialize`/negotiation, or — if the transport
+/// never spawns — the task's error arm takes it to report the transport error.
+type ReadySlot = Arc<Mutex<Option<oneshot::Sender<Result<NegotiatedCapabilities, AcpError>>>>>;
 
 /// Configuration for opening a connection.
 #[derive(Debug, Clone, Default)]
@@ -74,6 +81,10 @@ impl AcpConnection {
     {
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<Command>();
         let (ready_tx, ready_rx) = oneshot::channel::<Result<NegotiatedCapabilities, AcpError>>();
+        // Shared so the transport-error arm below can still report if the
+        // connection task fails before the handshake ever runs.
+        let ready_slot: ReadySlot = Arc::new(Mutex::new(Some(ready_tx)));
+        let ready_for_run = ready_slot.clone();
         // Every streamed notification from the agent lands on this channel; the
         // command loop routes it to the active turn.
         let (update_tx, update_rx) = mpsc::unbounded_channel::<SessionNotification>();
@@ -99,13 +110,20 @@ impl AcpConnection {
                     agent_client_protocol::on_receive_request!(),
                 )
                 .connect_with(transport, async move |conn: ConnectionTo<Agent>| {
-                    run_connection(conn, required, ready_tx, cmd_rx, update_rx).await;
+                    run_connection(conn, required, ready_for_run, cmd_rx, update_rx).await;
                     Ok(())
                 })
                 .await;
 
             if let Err(e) = result {
-                tracing::warn!(error = %e, "acp connection task ended with error");
+                // If the handshake never ran (spawn/attach failure), the slot
+                // still holds the sender — report the real transport cause so
+                // the caller sees it instead of a bare `ConnectionClosed`.
+                if let Some(tx) = ready_slot.lock().unwrap().take() {
+                    let _ = tx.send(Err(AcpError::Transport(e.to_string())));
+                } else {
+                    tracing::warn!(error = %e, "acp connection ended after handshake");
+                }
             }
         });
 
@@ -192,10 +210,14 @@ pub async fn connect_local(
 async fn run_connection(
     conn: ConnectionTo<Agent>,
     required: RequiredCapabilities,
-    ready_tx: oneshot::Sender<Result<NegotiatedCapabilities, AcpError>>,
+    ready_slot: ReadySlot,
     mut cmd_rx: mpsc::UnboundedReceiver<Command>,
     mut update_rx: mpsc::UnboundedReceiver<SessionNotification>,
 ) {
+    // Claim the readiness sender; from here on this task owns signaling, and the
+    // transport-error arm in `connect` finds the slot empty.
+    let ready = ready_slot.lock().unwrap().take();
+
     // Handshake.
     let init = match conn
         .send_request(InitializeRequest::new(required.protocol_version))
@@ -204,20 +226,26 @@ async fn run_connection(
     {
         Ok(init) => init,
         Err(e) => {
-            let _ = ready_tx.send(Err(AcpError::from(e)));
+            if let Some(tx) = ready {
+                let _ = tx.send(Err(AcpError::from(e)));
+            }
             return;
         }
     };
 
     match negotiate(&init, &required) {
         Ok(caps) => {
-            if ready_tx.send(Ok(caps)).is_err() {
+            if let Some(tx) = ready
+                && tx.send(Ok(caps)).is_err()
+            {
                 return; // caller gave up waiting
             }
         }
         Err(reason) => {
             tracing::warn!(%reason, "acp capability negotiation failed; caller should use hook path");
-            let _ = ready_tx.send(Err(AcpError::Incompatible(reason)));
+            if let Some(tx) = ready {
+                let _ = tx.send(Err(AcpError::Incompatible(reason)));
+            }
             return;
         }
     }
