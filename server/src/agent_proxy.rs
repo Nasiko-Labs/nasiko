@@ -357,6 +357,7 @@ pub async fn agent_proxy(
             spec: crate::coding::proxy::build_spec(agent_id, &target),
             acp_command: state.config.coding_agent_command.clone(),
             env,
+            user_id: claims.user_uuid().ok(),
             prompt: info.user_text.clone(),
             session_token,
         };

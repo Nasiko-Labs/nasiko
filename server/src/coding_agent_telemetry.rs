@@ -89,35 +89,43 @@ impl From<sqlx::Error> for ProcessError {
     }
 }
 
-/// Persist one coding-agent event in-process, with the exact validation,
-/// ownership check, dedup, and chat-turn handling as the batch HTTP ingest.
+/// Persist one telemetry event for a *container* ACP coding agent (NAS-841).
 ///
-/// The ACP session driver uses this to feed a turn straight into the pipeline,
-/// skipping the CLI queue and the HTTP hop — the OTLP outbox then exports the
-/// stored row unchanged. `user_id` is the owning user the control plane already
-/// holds for the session (it is never taken from the event). The returned
-/// [`CodingAgentEventResult`] mirrors one entry of the batch response
-/// (`Accepted` / `Duplicate` / `Rejected` with a reason); `Err` is an internal
-/// failure the caller should log and retry, never a rejected event.
-pub async fn persist_event(
-    state: &AppState,
+/// Unlike the CLI batch path ([`process_event`]), a container agent is already
+/// identified by its `agent_id` (so there is no `coding_agent_integration_id`
+/// lookup), and the turn's chat session + messages were already written by the
+/// agent proxy — so this only records the telemetry row the OTLP outbox exports,
+/// attached to the proxy's existing `session_id` (the A2A contextId). No chat
+/// session or message is written here, avoiding duplicates. Idempotent on
+/// `(user_id, event_id)`; failures are the caller's to log, never fatal to a turn.
+pub async fn persist_coding_turn_telemetry(
+    db: &sqlx::PgPool,
     user_id: Uuid,
+    agent_id: Uuid,
+    session_id: &str,
     event: &CodingAgentEventV1,
-) -> anyhow::Result<CodingAgentEventResult> {
-    let event_id = event.event_id.clone();
-    match process_event(state, user_id, event).await {
-        Ok(status) => Ok(CodingAgentEventResult {
-            event_id,
-            status,
-            error: None,
-        }),
-        Err(ProcessError::Rejected(error)) => Ok(CodingAgentEventResult {
-            event_id,
-            status: CodingAgentEventStatus::Rejected,
-            error: Some(error),
-        }),
-        Err(ProcessError::Internal(error)) => Err(error),
-    }
+) -> anyhow::Result<()> {
+    let payload = serde_json::to_value(event)?;
+    sqlx::query(
+        r#"INSERT INTO coding_agent_telemetry_events
+             (user_id, event_id, payload, agent_id, agent_name, source_agent_id,
+              session_id, source_session_id, turn_id, captured_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+           ON CONFLICT (user_id, event_id) DO NOTHING"#,
+    )
+    .bind(user_id)
+    .bind(&event.event_id)
+    .bind(&payload)
+    .bind(agent_id)
+    .bind(&event.source.agent_name)
+    .bind(&event.source.agent_id)
+    .bind(session_id)
+    .bind(&event.session.source_id)
+    .bind(&event.turn.id)
+    .bind(event.captured_at)
+    .execute(db)
+    .await?;
+    Ok(())
 }
 
 async fn process_event(

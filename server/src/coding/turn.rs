@@ -15,7 +15,11 @@ use std::time::Duration;
 
 use agent_client_protocol::ByteStreams;
 use agent_client_protocol::schema::v1::{HttpHeader, McpServer, McpServerHttp};
-use nasiko_acp_client::{AcpConnectConfig, AcpConnection, NewSessionParams, TurnEvent, TurnStream};
+use chrono::Utc;
+use nasiko_acp_client::{
+    AcpConnectConfig, AcpConnection, CapturePolicy, NewSessionParams, TurnEvent, TurnStream,
+    TurnTelemetry,
+};
 use nasiko_runtime::{ContainerId, DeploymentSpec, RuntimeState, SessionAttach};
 use tokio::sync::mpsc;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
@@ -40,6 +44,9 @@ pub struct CodingTurnRequest {
     /// that binds the agent's calls to this user and flow is delivered here
     /// (as the agent's LLM-router key), rather than baked into the image.
     pub env: std::collections::HashMap<String, String>,
+    /// The user the turn runs for, when known. Used to attribute the turn's
+    /// telemetry event; `None` skips telemetry (the turn still runs).
+    pub user_id: Option<uuid::Uuid>,
     /// The user's prompt for this turn.
     pub prompt: String,
     /// The session-bound token (NAS-839) for this turn, if the platform is
@@ -93,7 +100,7 @@ pub async fn run_turn(
 
     // Past this point a failure must release the lease, or the session would be
     // wedged until the lease lapses.
-    match start_turn(state, &req, &lease).await {
+    match start_turn(state, &req, &lease, &turn_id).await {
         Ok(rx) => Ok(rx),
         Err(e) => {
             let _ = lifecycle::release_turn(&state.db, &lease).await;
@@ -107,6 +114,7 @@ async fn start_turn(
     state: &AppState,
     req: &CodingTurnRequest,
     lease: &TurnLease,
+    turn_id: &str,
 ) -> Result<mpsc::UnboundedReceiver<TurnEvent>, CodingTurnError> {
     let container_id = req.spec.container_id.clone();
     let handle = container_id.as_str().to_owned();
@@ -156,6 +164,13 @@ async fn start_turn(
         .new_session(session_params(state, &req.session_token, cwd))
         .await?;
     lifecycle::record_acp_session(&state.db, &req.session_id, &acp_session.0).await?;
+
+    // Accumulate a telemetry event from the turn's updates (NAS-841), attributed
+    // to the user the proxy resolved. Metadata-only: the proxy already wrote the
+    // chat session + user message, so this records the tool/turn metadata the
+    // OTLP outbox exports without duplicating content.
+    let telemetry = build_turn_telemetry(req, turn_id, &req.spec.name, &acp_session.0);
+
     let turn = conn.prompt(acp_session, req.prompt.clone())?;
 
     // Drive the turn in the background: forward events to the caller, renew the
@@ -173,9 +188,46 @@ async fn start_turn(
         lease,
         lease_secs,
         heartbeat_secs,
+        telemetry,
     ));
 
     Ok(out_rx)
+}
+
+/// Per-turn telemetry accumulator plus the keys needed to persist it.
+struct TurnTelemetryCtx {
+    telemetry: TurnTelemetry,
+    user_id: uuid::Uuid,
+    agent_id: uuid::Uuid,
+    session_id: String,
+}
+
+/// Build the telemetry accumulator for a turn, or `None` when the user isn't
+/// known or the agent id can't be parsed (telemetry is best-effort, never a
+/// reason to fail a turn).
+fn build_turn_telemetry(
+    req: &CodingTurnRequest,
+    turn_id: &str,
+    agent_name: &str,
+    acp_session_id: &str,
+) -> Option<TurnTelemetryCtx> {
+    let user_id = req.user_id?;
+    let agent_id = uuid::Uuid::parse_str(req.spec.container_id.as_str()).ok()?;
+    let telemetry = TurnTelemetry::new(
+        agent_id.to_string(),
+        agent_name.to_owned(),
+        acp_session_id.to_owned(),
+        turn_id.to_owned(),
+        req.prompt.clone(),
+        CapturePolicy::MetadataOnly,
+        Utc::now(),
+    );
+    Some(TurnTelemetryCtx {
+        telemetry,
+        user_id,
+        agent_id,
+        session_id: req.session_id.clone(),
+    })
 }
 
 /// The background driver for one running turn.
@@ -188,6 +240,7 @@ async fn drive_turn(
     lease: TurnLease,
     lease_secs: i64,
     heartbeat_secs: u64,
+    mut telemetry: Option<TurnTelemetryCtx>,
 ) {
     let mut beat = tokio::time::interval(Duration::from_secs(heartbeat_secs));
     beat.tick().await; // the first tick fires immediately; skip it
@@ -196,6 +249,11 @@ async fn drive_turn(
         tokio::select! {
             event = turn.recv() => match event {
                 Some(ev) => {
+                    // Fold streamed updates into the telemetry event before
+                    // forwarding them on.
+                    if let (Some(ctx), TurnEvent::Update(update)) = (telemetry.as_mut(), &ev) {
+                        ctx.telemetry.observe(update, Utc::now());
+                    }
                     let terminal = ev.is_terminal();
                     // Stop if the caller hung up or the turn reached its end.
                     if out_tx.send(ev).is_err() || terminal {
@@ -211,6 +269,35 @@ async fn drive_turn(
                 if !matches!(lifecycle::heartbeat(&db, &lease, lease_secs).await, Ok(true)) {
                     break;
                 }
+            }
+        }
+    }
+
+    // Persist the turn's telemetry event (best-effort — a telemetry failure must
+    // never surface as a turn failure). A turn cut short still emits a partial.
+    if let Some(ctx) = telemetry {
+        let TurnTelemetryCtx {
+            telemetry,
+            user_id,
+            agent_id,
+            session_id,
+        } = ctx;
+        match telemetry.finish(Utc::now()) {
+            Ok(event) => {
+                if let Err(e) = crate::coding_agent_telemetry::persist_coding_turn_telemetry(
+                    &db,
+                    user_id,
+                    agent_id,
+                    &session_id,
+                    &event,
+                )
+                .await
+                {
+                    tracing::warn!(error = %e, %agent_id, "coding-agent: telemetry persist failed");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, %agent_id, "coding-agent: telemetry event invalid")
             }
         }
     }
