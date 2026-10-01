@@ -13,6 +13,12 @@ use uuid::Uuid;
 use crate::auth::Claims;
 use crate::state::AppState;
 
+/// TTL for a coding-agent session token. Comfortably longer than any single turn
+/// (a turn is bounded by the runtime's own deadline), since the token must stay
+/// valid for the whole turn's model and tool calls; a fresh one is minted each
+/// turn, and revocation covers early kill.
+const CODING_SESSION_TOKEN_TTL_SECS: u64 = 3600;
+
 /// Proxy agent requests: auth → flow guard → resolve endpoint → forward.
 ///
 /// Runs inside the `require_auth` middleware so Claims is always present.
@@ -303,12 +309,56 @@ pub async fn agent_proxy(
             return Err(StatusCode::NOT_IMPLEMENTED);
         };
         let context_id = info.session_id.clone();
+
+        // Mint the session-bound token (NAS-839): it binds this turn's calls to
+        // {agent, user, session, flow} using the *same* flow id the `flows` +
+        // `flow_participants` rows above were written under, so the gateway and
+        // router authorize off the signed claims instead of a traceparent. It is
+        // delivered to the agent's model calls via env and to its MCP calls via
+        // `session/new` (see `coding::turn::session_params`). Minting is
+        // best-effort: without it the agent's calls simply fall back to the
+        // traceparent path.
+        let mut env = std::collections::HashMap::new();
+        let mut session_token = None;
+        if !state.config.agent_jwt_secret.is_empty()
+            && let Ok(user_id) = claims.user_uuid()
+        {
+            let algorithm =
+                nasiko_session_token::parse_algorithm(&state.config.agent_jwt_algorithm);
+            let input = nasiko_session_token::SessionTokenInput {
+                agent_id: agent_id.to_string(),
+                user_id: user_id.to_string(),
+                session_id: context_id.clone(),
+                flow_id: flow_ctx.flow_id.clone(),
+            };
+            match nasiko_session_token::mint_session_token(
+                &input,
+                &state.config.agent_jwt_secret,
+                CODING_SESSION_TOKEN_TTL_SECS,
+                algorithm,
+            ) {
+                Ok(minted) => {
+                    // The agent's model calls read their router credential from
+                    // env; set the common provider keys so whichever the image
+                    // uses carries the session token.
+                    env.insert("OPENAI_API_KEY".to_string(), minted.token.clone());
+                    env.insert("ANTHROPIC_API_KEY".to_string(), minted.token.clone());
+                    env.insert("NASIKO_SESSION_TOKEN".to_string(), minted.token.clone());
+                    session_token = Some(minted.token);
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, %agent_id, "coding-agent: session token mint failed; proceeding without")
+                }
+            }
+        }
+
         let request = crate::coding::turn::CodingTurnRequest {
             session_id: info.session_id.clone(),
             spec: crate::coding::proxy::build_spec(agent_id, &target),
             acp_command: state.config.coding_agent_command.clone(),
-            env: std::collections::HashMap::new(),
+            env,
             prompt: info.user_text.clone(),
+            session_token,
         };
         let events = crate::coding::turn::run_turn(&state, request)
             .await

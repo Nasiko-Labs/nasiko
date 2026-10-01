@@ -14,6 +14,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use agent_client_protocol::ByteStreams;
+use agent_client_protocol::schema::v1::{HttpHeader, McpServer, McpServerHttp};
 use nasiko_acp_client::{AcpConnectConfig, AcpConnection, NewSessionParams, TurnEvent, TurnStream};
 use nasiko_runtime::{ContainerId, DeploymentSpec, RuntimeState, SessionAttach};
 use tokio::sync::mpsc;
@@ -36,11 +37,17 @@ pub struct CodingTurnRequest {
     /// The argv the container execs per session, e.g. `["opencode", "acp"]`.
     pub acp_command: Vec<String>,
     /// Per-session environment for the agent process. The session credential
-    /// that binds the agent's calls to this user and flow will be delivered
-    /// here, rather than baked into the image.
+    /// that binds the agent's calls to this user and flow is delivered here
+    /// (as the agent's LLM-router key), rather than baked into the image.
     pub env: std::collections::HashMap<String, String>,
     /// The user's prompt for this turn.
     pub prompt: String,
+    /// The session-bound token (NAS-839) for this turn, if the platform is
+    /// configured to mint one. When present it is handed to the agent as its MCP
+    /// gateway credential via `session/new`'s `mcpServers` (and to its model
+    /// calls via [`env`](Self::env)); the gateway and router verify it instead
+    /// of inferring identity from a `traceparent`.
+    pub session_token: Option<String>,
 }
 
 /// Why a turn could not be started.
@@ -145,7 +152,9 @@ async fn start_turn(
     // cold `session/load`, then send the prompt.
     let cwd =
         std::path::PathBuf::from(format!("{}/{}", DeploymentSpec::DEFAULT_WRITABLE_PATH, dir));
-    let acp_session = conn.new_session(NewSessionParams::new(cwd)).await?;
+    let acp_session = conn
+        .new_session(session_params(state, &req.session_token, cwd))
+        .await?;
     lifecycle::record_acp_session(&state.db, &req.session_id, &acp_session.0).await?;
     let turn = conn.prompt(acp_session, req.prompt.clone())?;
 
@@ -225,6 +234,33 @@ async fn wait_for_running(state: &AppState, id: &ContainerId) -> Result<(), Codi
             _ if tokio::time::Instant::now() >= deadline => return Err(CodingTurnError::NotReady),
             _ => tokio::time::sleep(READINESS_POLL).await,
         }
+    }
+}
+
+/// Build the `session/new` parameters, attaching the Nasiko MCP gateway as an
+/// HTTP MCP server when a session token and a gateway URL are both configured.
+///
+/// Per the ACP spec the agent uses each entry's `headers` to authenticate to the
+/// MCP server, so the session token rides `Authorization: Bearer …` there — the
+/// gateway verifies it exactly as it does for the agent's model calls (NAS-839).
+/// With no token or no gateway URL the session simply has no MCP servers.
+fn session_params(
+    state: &AppState,
+    session_token: &Option<String>,
+    cwd: std::path::PathBuf,
+) -> NewSessionParams {
+    let params = NewSessionParams::new(cwd);
+    match (
+        session_token,
+        state.config.mcp_gateway_public_url.as_deref(),
+    ) {
+        (Some(token), Some(gateway_url)) => params.with_mcp_servers(vec![McpServer::Http(
+            McpServerHttp::new("nasiko-gateway", gateway_url).headers(vec![HttpHeader::new(
+                "Authorization",
+                format!("Bearer {token}"),
+            )]),
+        )]),
+        _ => params,
     }
 }
 
