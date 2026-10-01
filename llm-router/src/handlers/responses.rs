@@ -250,7 +250,7 @@ async fn translated_attempt(
     })?;
     let mut request = parsed.chat.clone();
     let mut config = attempt.clone();
-    let mut dropped = Vec::new();
+    let mut applied = Vec::new();
     loop {
         if parsed.stream {
             match provider.chat_stream(&request, &config).await {
@@ -265,12 +265,12 @@ async fn translated_attempt(
                     return Ok(response);
                 }
                 Err(error) => {
-                    if fallback::try_drop_param(
+                    if fallback::try_fix_param(
                         &*provider,
                         &error,
                         &mut request,
                         &mut config,
-                        &mut dropped,
+                        &mut applied,
                     ) {
                         continue;
                     }
@@ -312,12 +312,12 @@ async fn translated_attempt(
                     return Ok(mark_lossy(Json(value).into_response()));
                 }
                 Err(error) => {
-                    if fallback::try_drop_param(
+                    if fallback::try_fix_param(
                         &*provider,
                         &error,
                         &mut request,
                         &mut config,
-                        &mut dropped,
+                        &mut applied,
                     ) {
                         continue;
                     }

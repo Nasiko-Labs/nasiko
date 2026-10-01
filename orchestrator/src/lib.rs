@@ -1,4 +1,3 @@
-pub mod agent_client;
 mod agent_registry;
 pub mod context_selection;
 pub mod engine;

@@ -439,7 +439,7 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         router_shortlist_threshold: 15,
         router_shortlist_size: 10,
         embedding_model: "text-embedding-3-small".into(),
-        router_agent_timeout_secs: 60,
+        agent_call_timeout_secs: 600,
         pacms_history_pool_size: 150,
         react_compress_enabled: false,
         react_compress_min_bytes: 2048,

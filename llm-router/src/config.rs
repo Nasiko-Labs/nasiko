@@ -46,7 +46,13 @@ pub struct GatewayConfig {
     /// Max age of a `status='running'` flow for traceparent attribution — bounds
     /// orphaned flows (a direct-chat flow whose completion marking never ran stays
     /// 'running' but ages out of attribution, so its trace id stops authorizing
-    /// LLM calls). Default 300 (5 min).
+    /// LLM calls).
+    ///
+    /// Must never be shorter than the platform's flow timeout, or an agent turn
+    /// still inside its budget loses the right to make LLM calls part-way
+    /// through and takes a 403 mid-answer. It therefore defaults to
+    /// `NASIKO_FLOW_TIMEOUT_SECS` and only falls back to a literal when that is
+    /// unset too; `LLM_ATTRIBUTION_WINDOW_SECS` still overrides both.
     pub attribution_window_secs: u64,
 
     /// Interval between provider model-catalog syncs (`GET /models` →
@@ -158,7 +164,7 @@ impl Default for GatewayConfig {
             llm_config_cache_ttl_secs: 30,
             redis_url: String::new(),
             router_decision_ttl_secs: 3600,
-            attribution_window_secs: 300,
+            attribution_window_secs: 600,
             model_catalog_sync_interval_secs: 86_400,
             pricing_sync_interval_secs: 86_400,
             openai_api_base: "https://api.openai.com/v1".into(),
@@ -225,6 +231,7 @@ impl GatewayConfig {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(d.router_decision_ttl_secs),
             attribution_window_secs: std::env::var("LLM_ATTRIBUTION_WINDOW_SECS")
+                .or_else(|_| std::env::var("NASIKO_FLOW_TIMEOUT_SECS"))
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(d.attribution_window_secs),

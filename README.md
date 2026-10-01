@@ -189,6 +189,10 @@ models and then the platform default; `list` shows `provider/?` for the unset va
 
 ### Server configuration
 
+Everything is env-driven. `server/.env.example` is the complete annotated
+reference — every variable the server reads, grouped, with its default; the root
+`.env.example` is the shorter docker-compose quick start. Two that are easy to
+miss:
 
 | Variable                     | Purpose                                                                                                                                                                                                                    |
 | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

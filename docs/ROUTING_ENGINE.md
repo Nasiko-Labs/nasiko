@@ -276,7 +276,7 @@ All values are set via environment variables and read through the `Config` struc
 | `EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model for Stages 1-2 |
 | `ROUTER_SHORTLIST_THRESHOLD` | `15` | Skip Stage 1 if fewer agents than this |
 | `ROUTER_SHORTLIST_SIZE` | `10` | Top-k returned from Stage 1 |
-| `ROUTER_AGENT_TIMEOUT_SECS` | `60` | Timeout for the proxied agent call |
+| `AGENT_CALL_TIMEOUT_SECS` | `600` | Budget for one agent hop — the A2A proxy, the orchestrator's streaming and non-streaming agent calls, and the MAF executor's. Accepts the former name `ROUTER_AGENT_TIMEOUT_SECS` as a fallback |
 | `OPENAI_API_KEY` | -- | Required for embeddings and LLM selection |
 | `OPENAI_BASE_URL` | OpenAI default | Base URL for embedding/LLM calls |
 

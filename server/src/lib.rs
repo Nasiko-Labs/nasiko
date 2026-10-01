@@ -163,10 +163,21 @@ where
             base_url: state.config.openai_base_url.clone(),
             model: state.config.openai_model.clone(),
         };
+        // The MAF worker's client makes nothing but agent A2A calls, so it
+        // carries the agent-call budget at the client level rather than
+        // repeating a per-request override at each of the executor's call
+        // sites. Its own pool, deliberately: a background worker's traffic
+        // profile has no business sharing the request path's.
+        let maf_client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(
+                state.config.agent_call_timeout_secs,
+            ))
+            .build()
+            .expect("failed to build MAF agent client");
         nasiko_orchestrator::maf::start_worker(
             state.db.clone(),
             state.redis.clone(),
-            state.http_client.clone(),
+            maf_client,
             state.observability.clone(),
             llm_config,
             state.hitl_store.clone(),
@@ -426,12 +437,34 @@ where
         // and log line. Redact that one route; everything else is unchanged.
         .layer(TraceLayer::new_for_http().make_span_with(
             |req: &axum::http::Request<axum::body::Body>| {
-                tracing::info_span!(
+                let span = tracing::info_span!(
                     "request",
                     method = %req.method(),
                     uri = %mcp::redact_credential_uri(req.uri()),
                     version = ?req.version(),
-                )
+                );
+                // Adopt the caller's W3C trace context when it sends one, so this
+                // server span joins the flow that triggered it rather than rooting
+                // a trace of its own. Callers without a `traceparent` (a browser
+                // hitting the UI or the API) are unaffected and still start a root.
+                //
+                // Agent→server hops depend on this. The LLM router's `gen_ai.chat`
+                // span records the *resolved* provider and model, which is the only
+                // place the truth appears when an agent's config re-routes it — the
+                // agent labels its own span with the model it asked for. Rooted in a
+                // separate trace, that span is unreachable from the session view and
+                // from the span→`trace_usage` materializer, so traces and FinOps both
+                // fall back to the requested model and price the wrong one.
+                if let Some(cx) = req
+                    .headers()
+                    .get("traceparent")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(telemetry::remote_context_from_traceparent)
+                {
+                    use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+                    span.set_parent(cx);
+                }
+                span
             },
         ))
 }

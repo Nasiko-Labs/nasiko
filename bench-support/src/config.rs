@@ -156,7 +156,7 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         context_k_medium: 5,
         context_k_high: 20,
         embedding_model: "mock-embedding".into(),
-        router_agent_timeout_secs: 60,
+        agent_call_timeout_secs: 600,
         github_callback_url: None,
         github_central_callback_url: None,
         docker_agent_network: None,

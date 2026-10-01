@@ -185,15 +185,6 @@ impl A2aClient {
     /// Build the JSON-RPC request body for `message/send`/`message/stream` (or
     /// their proto-named equivalents), injecting `request_metadata` into
     /// `params.metadata`.
-    ///
-    /// `extra_parts` are pre-built `Value`s taken as-is (file parts — their shape is the caller's
-    /// business, not this dialect's). `extra_text_parts` are raw strings this function tags
-    /// itself, via the SAME `dialect.text_part()` the primary message part uses — needed because a
-    /// caller building a text part ahead of time (as `context_part::append_context_part`'s callers
-    /// do for an already-serialized body) can't know here which dialect this specific attempt will
-    /// end up using: `send_message_with_headers`/`send_message_streaming` retry the same extra
-    /// content under BOTH dialects (JSON-RPC first, proto on `-32601`), so a part tagged once,
-    /// outside this function, would be wrong on whichever attempt didn't match it.
     fn build_message_body(
         &self,
         dialect: Dialect,
@@ -201,11 +192,9 @@ impl A2aClient {
         message: &str,
         ctx: &str,
         extra_parts: &[serde_json::Value],
-        extra_text_parts: &[String],
     ) -> serde_json::Value {
         let mut parts = vec![dialect.text_part(message)];
         parts.extend(extra_parts.iter().cloned());
-        parts.extend(extra_text_parts.iter().map(|t| dialect.text_part(t)));
 
         let mut body = serde_json::json!({
             "jsonrpc": "2.0",
@@ -245,7 +234,7 @@ impl A2aClient {
         message: &str,
         context_id: Option<&str>,
     ) -> Result<A2aResponse, A2aClientError> {
-        self.send_message_with_headers(endpoint, message, context_id, &[], &[], &[])
+        self.send_message_with_headers(endpoint, message, context_id, &[], &[])
             .await
             .map(|(_, response)| response)
     }
@@ -266,7 +255,6 @@ impl A2aClient {
         context_id: Option<&str>,
         per_call_headers: &[(String, String)],
         extra_parts: &[serde_json::Value],
-        extra_text_parts: &[String],
     ) -> Result<(String, A2aResponse), A2aClientError> {
         let ctx = context_id
             .map(|s| s.to_string())
@@ -288,7 +276,6 @@ impl A2aClient {
                 per_call_headers,
                 Dialect::JsonRpc,
                 extra_parts,
-                extra_text_parts,
             )
             .await
         {
@@ -304,7 +291,6 @@ impl A2aClient {
                     per_call_headers,
                     Dialect::Proto,
                     extra_parts,
-                    extra_text_parts,
                 )
                 .await
             }
@@ -313,7 +299,6 @@ impl A2aClient {
         result.map(|response| (ctx, response))
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn send_message_dialect(
         &self,
         endpoint: &str,
@@ -322,10 +307,8 @@ impl A2aClient {
         per_call_headers: &[(String, String)],
         dialect: Dialect,
         extra_parts: &[serde_json::Value],
-        extra_text_parts: &[String],
     ) -> Result<A2aResponse, A2aClientError> {
-        let mut body =
-            self.build_message_body(dialect, false, message, ctx, extra_parts, extra_text_parts);
+        let mut body = self.build_message_body(dialect, false, message, ctx, extra_parts);
 
         if let Some(ref metadata) = self.request_metadata
             && let Some(params) = body.get_mut("params")
@@ -383,7 +366,6 @@ impl A2aClient {
     /// tool result. Agents that answer with plain JSON instead of an event
     /// stream are handled transparently, so callers don't need a capability
     /// check first.
-    #[allow(clippy::too_many_arguments)]
     pub async fn send_message_streaming(
         &self,
         endpoint: &str,
@@ -392,7 +374,6 @@ impl A2aClient {
         progress: Option<tokio::sync::mpsc::Sender<AgentStreamEvent>>,
         per_call_headers: &[(String, String)],
         extra_parts: &[serde_json::Value],
-        extra_text_parts: &[String],
     ) -> Result<SendOutcome, A2aClientError> {
         let ctx = context_id
             .map(|s| s.to_string())
@@ -419,7 +400,6 @@ impl A2aClient {
                 per_call_headers,
                 Dialect::JsonRpc,
                 extra_parts,
-                extra_text_parts,
             )
             .await
         {
@@ -436,7 +416,6 @@ impl A2aClient {
                     per_call_headers,
                     Dialect::Proto,
                     extra_parts,
-                    extra_text_parts,
                 )
                 .await
             }
@@ -454,12 +433,10 @@ impl A2aClient {
         per_call_headers: &[(String, String)],
         dialect: Dialect,
         extra_parts: &[serde_json::Value],
-        extra_text_parts: &[String],
     ) -> Result<SendOutcome, A2aClientError> {
         use futures::StreamExt as _;
 
-        let mut body =
-            self.build_message_body(dialect, true, message, ctx, extra_parts, extra_text_parts);
+        let mut body = self.build_message_body(dialect, true, message, ctx, extra_parts);
 
         if let Some(ref metadata) = self.request_metadata
             && let Some(params) = body.get_mut("params")
@@ -693,10 +670,11 @@ impl A2aClient {
             .map(|s| s.to_string())
             .unwrap_or_else(|| Uuid::new_v4().to_string());
 
-        let mut body = self.build_message_body(Dialect::JsonRpc, true, message, &ctx, &[], &[]);
-        // On `params.message.metadata`, not `params.metadata` — a caller sets
-        // `request_metadata` to carry e.g. `{skill: ...}`, and the receiving
-        // agent's A2A server reads the skill id off the MESSAGE object it dispatches
+        let mut body = self.build_message_body(Dialect::JsonRpc, true, message, &ctx, &[]);
+        // On `params.message.metadata`, not `params.metadata` — this method's
+        // only real caller (weave_surface.rs) sets `request_metadata` to carry
+        // `{skill: "generate-ui", ...}`, and the receiving agent's A2A server
+        // reads the skill id off the MESSAGE object it dispatches
         // (`params.message.metadata.skill`), not off `params` itself.
         // `build_message_body`'s own `params.metadata` insertion above is a
         // separate, unrelated convention (e.g. traceparent forwarding for
@@ -885,37 +863,35 @@ mod tests {
     #[test]
     fn jsonrpc_dialect_uses_standard_method_role_and_typed_parts() {
         let client = A2aClient::new();
-        let body = client.build_message_body(Dialect::JsonRpc, false, "hi", "ctx-1", &[], &[]);
+        let body = client.build_message_body(Dialect::JsonRpc, false, "hi", "ctx-1", &[]);
         assert_eq!(body["method"], "message/send");
         assert_eq!(body["params"]["message"]["role"], "user");
         assert_eq!(body["params"]["message"]["parts"][0]["kind"], "text");
         assert_eq!(body["params"]["message"]["parts"][0]["text"], "hi");
         assert_eq!(body["params"]["message"]["contextId"], "ctx-1");
 
-        let stream = client.build_message_body(Dialect::JsonRpc, true, "hi", "ctx-1", &[], &[]);
+        let stream = client.build_message_body(Dialect::JsonRpc, true, "hi", "ctx-1", &[]);
         assert_eq!(stream["method"], "message/stream");
     }
 
     #[test]
     fn proto_dialect_uses_grpc_method_role_and_untyped_parts() {
         let client = A2aClient::new();
-        let body = client.build_message_body(Dialect::Proto, false, "hi", "ctx-1", &[], &[]);
+        let body = client.build_message_body(Dialect::Proto, false, "hi", "ctx-1", &[]);
         assert_eq!(body["method"], "SendMessage");
         assert_eq!(body["params"]["message"]["role"], "ROLE_USER");
-        // Proto parts carry no `kind` discriminator — this platform's real `a2a-lf` `Part` type
-        // has no such field at all, and a real agent's strict parser rejects one it doesn't
-        // expect (confirmed live against a real deployed agent).
+        // Proto parts carry no `kind` discriminator.
         assert!(body["params"]["message"]["parts"][0].get("kind").is_none());
         assert_eq!(body["params"]["message"]["parts"][0]["text"], "hi");
 
-        let stream = client.build_message_body(Dialect::Proto, true, "hi", "ctx-1", &[], &[]);
+        let stream = client.build_message_body(Dialect::Proto, true, "hi", "ctx-1", &[]);
         assert_eq!(stream["method"], "SendStreamingMessage");
     }
 
     #[test]
     fn request_metadata_is_injected_into_params() {
         let client = A2aClient::new().with_metadata(serde_json::json!({"traceparent": "abc"}));
-        let body = client.build_message_body(Dialect::JsonRpc, false, "hi", "ctx-1", &[], &[]);
+        let body = client.build_message_body(Dialect::JsonRpc, false, "hi", "ctx-1", &[]);
         assert_eq!(body["params"]["metadata"]["traceparent"], "abc");
     }
 
@@ -929,72 +905,12 @@ mod tests {
             "analyze this",
             "ctx-1",
             &[file_part],
-            &[],
         );
         let parts = body["params"]["message"]["parts"].as_array().unwrap();
         assert_eq!(parts.len(), 2);
         assert_eq!(parts[0]["text"], "analyze this");
         assert_eq!(parts[1]["raw"], "aGVsbG8=");
         assert_eq!(parts[1]["filename"], "test.txt");
-    }
-
-    /// The whole reason `extra_text_parts` is a separate parameter from `extra_parts`: the same
-    /// call is retried under BOTH dialects when an agent rejects the first one, and injected text
-    /// content has to be re-tagged for whichever dialect is actually being tried — a part tagged
-    /// once outside this function would be wrong on one of the two attempts.
-    #[test]
-    fn extra_text_parts_are_tagged_per_dialect_not_fixed() {
-        let client = A2aClient::new();
-        let jsonrpc = client.build_message_body(
-            Dialect::JsonRpc,
-            false,
-            "hi",
-            "ctx-1",
-            &[],
-            &["## Organization Policy\nrule".to_string()],
-        );
-        let jsonrpc_parts = jsonrpc["params"]["message"]["parts"].as_array().unwrap();
-        assert_eq!(jsonrpc_parts.len(), 2);
-        assert_eq!(jsonrpc_parts[1]["kind"], "text");
-        assert_eq!(jsonrpc_parts[1]["text"], "## Organization Policy\nrule");
-
-        let proto = client.build_message_body(
-            Dialect::Proto,
-            false,
-            "hi",
-            "ctx-1",
-            &[],
-            &["## Organization Policy\nrule".to_string()],
-        );
-        let proto_parts = proto["params"]["message"]["parts"].as_array().unwrap();
-        assert_eq!(proto_parts.len(), 2);
-        assert!(
-            proto_parts[1].get("kind").is_none(),
-            "proto dialect must never carry a kind field: {proto_parts:?}"
-        );
-        assert_eq!(proto_parts[1]["text"], "## Organization Policy\nrule");
-    }
-
-    /// File parts (`extra_parts`) and text parts (`extra_text_parts`) coexist without either
-    /// clobbering the other, in a stable order: primary message, then files, then text.
-    #[test]
-    fn file_parts_and_extra_text_parts_coexist() {
-        let client = A2aClient::new();
-        let file_part = serde_json::json!({"raw": "aGVsbG8=", "filename": "test.txt"});
-        let body = client.build_message_body(
-            Dialect::Proto,
-            false,
-            "hi",
-            "ctx-1",
-            &[file_part],
-            &["POLICY".to_string()],
-        );
-        let parts = body["params"]["message"]["parts"].as_array().unwrap();
-        assert_eq!(parts.len(), 3);
-        assert_eq!(parts[0]["text"], "hi");
-        assert_eq!(parts[1]["filename"], "test.txt");
-        assert_eq!(parts[2]["text"], "POLICY");
-        assert!(parts[2].get("kind").is_none());
     }
 
     #[test]
@@ -1244,7 +1160,7 @@ mod tests {
 
         let client = A2aClient::new();
         let result = client
-            .send_message_streaming(&server.url(), "hi", Some("sent-ctx"), None, &[], &[], &[])
+            .send_message_streaming(&server.url(), "hi", Some("sent-ctx"), None, &[], &[])
             .await;
 
         mock.assert_async().await;
@@ -1287,7 +1203,7 @@ mod tests {
 
         let client = A2aClient::new();
         let result = client
-            .send_message_streaming(&server.url(), "hi", Some("sent-ctx"), None, &[], &[], &[])
+            .send_message_streaming(&server.url(), "hi", Some("sent-ctx"), None, &[], &[])
             .await;
 
         mock.assert_async().await;

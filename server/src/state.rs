@@ -163,6 +163,11 @@ impl AppState {
 
         let resource_stats = crate::observability::resources::build_provider(&config, db.clone());
 
+        // Shared client for short, bounded calls: embeddings, registry probes,
+        // OAuth, provider requests. Agent hops are *not* short — every call site
+        // that forwards to an agent container overrides this per-request with
+        // `config.agent_call_timeout_secs` rather than raising the default here
+        // and handing every other caller a ten-minute hang.
         let http_client = reqwest::Client::builder()
             .pool_max_idle_per_host(20)
             .timeout(std::time::Duration::from_secs(60))
@@ -188,7 +193,11 @@ impl AppState {
             max_fan_out: config.flow_max_fan_out as u32,
             max_flow_tokens: config.flow_max_tokens as u64,
             flow_timeout_secs: config.flow_timeout_secs as u64,
-            flow_state_ttl_secs: 300,
+            // Derived, never a literal: the guard reads `started_at` out of the
+            // flow's Redis key, so a TTL shorter than the timeout would expire
+            // the state the timeout check depends on — the check would pass
+            // silently and the depth/fan-out counters would reset mid-flow.
+            flow_state_ttl_secs: nasiko_flow::state_ttl_for(config.flow_timeout_secs as u64),
         };
         let flow_guard = FlowGuard::new(redis.clone(), flow_config);
         let flow_events = FlowEventBus::new();

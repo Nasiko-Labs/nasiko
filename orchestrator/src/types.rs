@@ -11,15 +11,6 @@ pub struct AgentCard {
     pub skills: Vec<String>,
     pub tags: Vec<String>,
     pub url: Option<String>,
-    /// Persisted embedding of `name + description + tags`, loaded from
-    /// `agents.embedding`. `None` if never computed.
-    #[serde(default)]
-    pub embedding: Option<Vec<f32>>,
-    /// Hash of the text that produced `embedding` (see `vector_store::hash_prompt`),
-    /// loaded from `agents.embedding_content_hash`. Compared against a freshly
-    /// computed hash to detect a stale embedding.
-    #[serde(default)]
-    pub embedding_content_hash: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -49,14 +40,6 @@ pub struct RouteRequest {
     pub session_id: String,
     pub user_id: Uuid,
     pub file_parts: Vec<FilePart>,
-    /// Agent ids the caller reaches through an org-hierarchy grant (`org_unit`/`organization`),
-    /// as resolved by `AuthService::org_granted_agent_ids` — the same method
-    /// `oss/server/src/catalog/routes.rs::listing_scope` already uses to keep agent *listings* in
-    /// sync with `can_access_agent`. Always empty for direct callers (OSS has no `AuthService` in
-    /// `oss/orchestrator`, so it can't resolve this itself); `EeRoutingEngine` is the only writer,
-    /// filling it in from its own `Arc<dyn AuthService>` before delegating to the wrapped
-    /// `OssRoutingEngine`. See `agent_registry::get_agents_for_user`.
-    pub org_granted_agent_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
