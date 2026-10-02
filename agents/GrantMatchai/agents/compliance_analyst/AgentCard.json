@@ -1,0 +1,6 @@
+{
+  "name": "Compliance Analyst",
+  "version": "1.0.0",
+  "description": "Scrapes specific NOFO requirements and analyzes alignment",
+  "entrypoint": "main.py"
+}
