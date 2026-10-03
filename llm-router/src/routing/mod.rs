@@ -1456,6 +1456,90 @@ mod tests {
         assert_eq!(classifier.calls(), 0);
     }
 
+    /// One conversation through a real decision cache: `cold_start` classifies and pins,
+    /// `continue` turns reuse that model and tier without classifying again, and a `switch`
+    /// to another agent classifies once more without disturbing the first agent's pin.
+    #[tokio::test]
+    async fn conversation_lifecycle_classifies_only_at_boundaries_and_keeps_tier_sticky() {
+        let cache = cache::InMemoryDecisionCache::new(16, std::time::Duration::from_secs(60));
+        let cells = InMemoryCellStore::new();
+        let classifier = CountingClassifier::returning(writing_verdict(0.9));
+        fn route<'a>(
+            signals: &'a BoundarySignals,
+            agent_id: &'a str,
+            query: &'a str,
+        ) -> RouteInputs<'a> {
+            let mut i = inputs("anthropic", signals, None);
+            i.agent_id = agent_id;
+            i.query = Some(query);
+            i.tier_seed = Some(7);
+            i
+        }
+
+        let cold = signals(Some("conv-1"), Phase::ColdStart, Mode::FreeFlowing);
+        let first = route_model(
+            &cache,
+            &test_support::StubRegistry,
+            &cells,
+            &AllowAllGate,
+            &classifier,
+            &route(&cold, "agent-1", "draft the release notes for v2"),
+        )
+        .await;
+        assert_eq!(first.source, RouteSource::Classified);
+        assert!(first.tier.is_some());
+        assert_eq!(classifier.calls(), 1);
+
+        let cont = signals(Some("conv-1"), Phase::Continue, Mode::FreeFlowing);
+        for query in ["now design a sharded queue", "thanks, shorten it"] {
+            let d = route_model(
+                &cache,
+                &test_support::StubRegistry,
+                &cells,
+                &AllowAllGate,
+                &classifier,
+                &route(&cont, "agent-1", query),
+            )
+            .await;
+            assert_eq!(d.source, RouteSource::CacheHit);
+            assert_eq!(
+                (d.model.as_str(), d.tier),
+                (first.model.as_str(), first.tier)
+            );
+        }
+        assert_eq!(classifier.calls(), 1, "continue must not reclassify");
+
+        let switch = signals(Some("conv-1"), Phase::Switch, Mode::FreeFlowing);
+        let other = route_model(
+            &cache,
+            &test_support::StubRegistry,
+            &cells,
+            &AllowAllGate,
+            &classifier,
+            &route(&switch, "agent-2", "review this design doc"),
+        )
+        .await;
+        assert_eq!(other.source, RouteSource::Classified);
+        assert_eq!(
+            classifier.calls(),
+            2,
+            "switch to a new agent classifies once"
+        );
+
+        let back = route_model(
+            &cache,
+            &test_support::StubRegistry,
+            &cells,
+            &AllowAllGate,
+            &classifier,
+            &route(&cont, "agent-1", "one more tweak"),
+        )
+        .await;
+        assert_eq!(back.source, RouteSource::CacheHit);
+        assert_eq!((back.model, back.tier), (first.model, first.tier));
+        assert_eq!(classifier.calls(), 2);
+    }
+
     #[test]
     fn turn_anchor_treats_text_after_tool_result_as_part_of_the_loop() {
         let msg = |role: &str, content: &str| Message {

@@ -611,7 +611,14 @@ impl RequestClassifier for GuardedClassifier {
         match tokio::time::timeout(self.timeout, self.primary.classify(input)).await {
             Ok(Ok(c)) => Ok(c),
             Ok(Err(e)) => {
-                self.stats.fallback_error.fetch_add(1, Ordering::Relaxed);
+                // A backend can hit its own deadline (the hosted HTTP client shares this budget)
+                // just before ours fires; that is still a timeout, not an error.
+                let counter = if matches!(e, ClassifyError::Timeout(_)) {
+                    &self.stats.fallback_timeout
+                } else {
+                    &self.stats.fallback_error
+                };
+                counter.fetch_add(1, Ordering::Relaxed);
                 tracing::warn!(
                     target: "nasiko::llm_router::classifier",
                     backend = self.primary.name(),
@@ -1092,6 +1099,37 @@ mod tests {
             (1, 1, 0)
         );
         assert_eq!(guard.name(), "failing");
+    }
+
+    /// A backend that reports its own deadline expiring.
+    struct TimingOutClassifier;
+    #[async_trait::async_trait]
+    impl RequestClassifier for TimingOutClassifier {
+        fn name(&self) -> &str {
+            "timing-out"
+        }
+        async fn classify(&self, _: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+            Err(ClassifyError::Timeout(Duration::from_millis(20)))
+        }
+    }
+
+    #[test]
+    fn guarded_counts_a_backend_reported_timeout_as_a_timeout() {
+        let stats = Arc::new(ClassifierStats::default());
+        let guard = GuardedClassifier::new(
+            Arc::new(TimingOutClassifier),
+            Duration::from_secs(1),
+            stats.clone(),
+        );
+        let q = "hello there";
+        let got = block_on(guard.classify(&ClassifyInput {
+            query: q,
+            context: None,
+        }))
+        .expect("guard never errs");
+        assert_eq!(got, RegexClassifier::classify_sync(q));
+        let snap = stats.snapshot();
+        assert_eq!((snap.fallback_error, snap.fallback_timeout), (0, 1));
     }
 
     #[test]

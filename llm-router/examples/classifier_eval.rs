@@ -13,7 +13,8 @@
 //! `local`** (the router's default stays `regex`); `CLASSIFIER_BACKEND=regex` reproduces the
 //! baseline. Other knobs: `CLASSIFIER_MODEL_PATH`, `CLASSIFIER_ENDPOINT`, `CLASSIFIER_MODEL`,
 //! `CLASSIFIER_API_KEY`, `CLASSIFIER_TIMEOUT_MS` (see the llm-router README).
-//! `EVAL_VERBOSE=1` appends `backend`, `fallback` and `escalated` to each line.
+//! `EVAL_VERBOSE=1` appends `backend`, `fallback`, `escalated` and `escalation_failed` to each
+//! line.
 //!
 //! Each line: `{"id","request_type","complexity","confidence","latency_us"}`; confidence is
 //! rounded to 4 decimals so repeated runs diff cleanly. `latency_us` covers the classify call
@@ -96,6 +97,8 @@ async fn main() {
             line["backend"] = backend.clone().into();
             line["fallback"] = (after.fallbacks() > before.fallbacks()).into();
             line["escalated"] = (after.escalations > before.escalations).into();
+            line["escalation_failed"] =
+                (after.escalation_failures > before.escalation_failures).into();
         }
         writeln!(out, "{line}").expect("write OUT");
 
@@ -154,6 +157,21 @@ async fn main() {
         stats.escalations - warm.escalations,
         stats.escalation_failures - warm.escalation_failures
     );
+    if backend == "cascade" {
+        // A failed escalation keeps the local answer (it is not a regex fallback), so spell out
+        // where every case's answer came from. Only an escalation can outlast the guard, so
+        // regex answers come out of the escalated cases. Every case gets a line in OUT, so
+        // nothing is left unclassified.
+        let escalations = stats.escalations - warm.escalations;
+        let failed = stats.escalation_failures - warm.escalation_failures;
+        let regex = (stats.fallback_error - warm.fallback_error)
+            + (stats.fallback_timeout - warm.fallback_timeout);
+        eprintln!(
+            "  cascade answers: local={} hosted={} local-after-failed-escalation={failed} regex={regex} unclassified=0",
+            n as u64 - escalations,
+            escalations.saturating_sub(failed + regex),
+        );
+    }
     if labelled > 0 {
         eprintln!(
             "  informational (the scorer computes its own): type accuracy {}/{labelled}, complexity exact {}/{labelled}, within ±1 {}/{labelled}",
