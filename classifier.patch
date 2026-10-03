@@ -1,0 +1,1952 @@
+diff -ruN '--exclude=target' orig/nasiko-main/llm-router/CLASSIFIER.md clean/nasiko-main/llm-router/CLASSIFIER.md
+--- a/llm-router/CLASSIFIER.md	1970-01-01 00:00:00.000000000 +0000
++++ b/llm-router/CLASSIFIER.md	2026-10-03 07:12:31.937012236 +0000
+@@ -0,0 +1,32 @@
++# Request classifier (`[classifier]`)
++
++`routing::RequestClassifier` decides the `RequestType` used at Level 3 of `route_model`. The regex
++classifier stays the default; nothing needs a network unless you opt in.
++
++```
++classify(query, context?) -> { request_type, complexity 1-5, confidence 0-1 }
++```
++
++| env | default | meaning |
++|---|---|---|
++| `CLASSIFIER_BACKEND` | `regex` | `regex` \| `local` \| `hosted` (unknown -> regex) |
++| `CLASSIFIER_MODEL_PATH` | embedded | `local`: JSONL training set to train on instead |
++| `CLASSIFIER_ENDPOINT` | - | `hosted`: full chat-completions URL (only this host gets the key) |
++| `CLASSIFIER_MODEL` / `CLASSIFIER_API_KEY` | - | `hosted` |
++| `CLASSIFIER_TIMEOUT_MS` | 250 | per-decision budget; past it -> regex answer, counted |
++| `CLASSIFIER_MIN_CONFIDENCE` | 0 (off) | below it -> `general` (the safe default), counted |
++
++## Semantics
++* **Regex**: fixed `complexity=3`; `confidence=0.5` if a pattern matched else `0.25` (a vote count is not a probability).
++* **Local**: multinomial Naive Bayes (word unigrams/bigrams, 5-char stems, shape tokens, regex votes as features) trained at load from `data/classifier/train.jsonl`. Confidence = temperature-scaled posterior (T chosen by 5-fold CV on train only).
++* **Hosted**: OpenAI-compatible `/chat/completions`, temperature 0, one JSON object back; any invalid field is an error.
++* **Complexity**: `estimate_complexity`, a deterministic rubric (length, context size, sequencing, constraint/scale words).
++* **Failure**: backend `Err`/timeout -> regex answer (counted). **Low confidence** -> `general` (counted as fallback, not error).
++* **Sticky routing**: the classifier is only called where Level 3 already ran (fireable `cold_start`/`switch`, cache miss). `continue` steps and cache hits never call it. Tier selection is still Thompson sampling keyed on `(provider, tier, request_type)`; complexity does not enter the bandit key.
++* **Determinism**: regex and local are pure functions of the input.
++
++## Eval
++```
++EVAL_SET=llm-router/data/classifier/val_eval.json OUT=/tmp/out.jsonl \
++CLASSIFIER_BACKEND=local cargo run --release -p nasiko-llm-router --example classifier_eval
++```
+diff -ruN '--exclude=target' orig/nasiko-main/llm-router/data/classifier/LABELLING.md clean/nasiko-main/llm-router/data/classifier/LABELLING.md
+--- a/llm-router/data/classifier/LABELLING.md	1970-01-01 00:00:00.000000000 +0000
++++ b/llm-router/data/classifier/LABELLING.md	2026-10-03 07:12:31.937129408 +0000
+@@ -0,0 +1,37 @@
++# Classifier training data: labelling criteria
++
++`labelled.txt` is `request_type|complexity|query`, one hand-written query per line. `build_splits.py`
++turns it into `train.jsonl` (embedded in the binary), `val.jsonl` (held out, never used for tuning)
++and `val_eval.json` (same schema as the public `classifier-eval@v1` file).
++
++## request_type (decide by what the user wants *produced*)
++
++| label | the answer is mainly... |
++|---|---|
++| `code_generation` | new or modified code, scripts, queries, regexes, config/YAML |
++| `code_understanding` | an explanation, review, trace or debugging of code/errors the user already has |
++| `technical_design` | architecture, schema, tooling or technology trade-offs, plans |
++| `analytical_reasoning` | maths, estimation, business/data analysis or logic, no code needed |
++| `writing` | prose drafted, rewritten, summarised or translated |
++| `factual_lookup` | one short fact |
++| `general` | chit-chat, advice, brainstorming, anything else |
++
++Tie-break: the *final deliverable* wins ("explain this code and rewrite it" -> `code_generation`).
++
++## complexity rubric (1-5)
++
++1 trivial one-liner / single fact; 2 short single-step; 3 typical multi-sentence task;
++4 several requirements or needs domain depth; 5 many interacting constraints, multi-step or
++scale/robustness requirements.
++
++## Splits
++
++Near-duplicates (word-set Jaccard >= 0.6) are dropped before splitting. The split is stratified
++per class (every 4th row in FNV-1a hash order -> validation), with no RNG, so it is reproducible.
++Regenerate: `cd llm-router/data/classifier && python3 build_splits.py`.
++
++## Known weaknesses of this data
++
++148 rows, one author, mostly clean English. It has no noisy/padded, multi-intent or
++out-of-distribution rows, which is exactly what a private set will contain. Treat the held-out
++numbers as a smoke signal, not as evidence of generalisation.
+diff -ruN '--exclude=target' orig/nasiko-main/llm-router/data/classifier/build_splits.py clean/nasiko-main/llm-router/data/classifier/build_splits.py
+--- a/llm-router/data/classifier/build_splits.py	1970-01-01 00:00:00.000000000 +0000
++++ b/llm-router/data/classifier/build_splits.py	2026-10-03 07:12:31.937181620 +0000
+@@ -0,0 +1,52 @@
++#!/usr/bin/env python3
++"""Deterministically split labelled.txt into train.jsonl / val.jsonl.
++
++Format of labelled.txt: request_type|complexity|query   (see LABELLING.md)
++ * near-duplicates (word-set Jaccard >= 0.6 against any kept row) are dropped, so no
++   paraphrase of a validation row can sit in train;
++ * the split is stratified per class (every 4th row by FNV-1a hash order -> val), no RNG.
++"""
++import json, re, collections
++
++def fnv(s):
++    h = 0xcbf29ce484222325
++    for b in s.encode():
++        h = ((h ^ b) * 0x100000001b3) & 0xFFFFFFFFFFFFFFFF
++    return h
++
++def words(s):
++    return set(re.findall(r"[a-z0-9]+", s.lower()))
++
++rows, kept_words, dropped = [], [], 0
++for line in open("labelled.txt", encoding="utf-8"):
++    line = line.strip()
++    if not line:
++        continue
++    rt, cx, q = line.split("|", 2)
++    w = words(q)
++    if any(len(w & o) / max(1, len(w | o)) >= 0.6 for o in kept_words):
++        dropped += 1
++        continue
++    kept_words.append(w)
++    rows.append({"request_type": rt, "complexity": int(cx), "query": q})
++
++by = collections.defaultdict(list)
++for r in rows:
++    by[r["request_type"]].append(r)
++train, val = [], []
++for rt, rs in sorted(by.items()):
++    rs.sort(key=lambda r: fnv(r["query"]))
++    for i, r in enumerate(rs):
++        (val if i % 4 == 3 else train).append(r)
++for name, data in (("train.jsonl", train), ("val.jsonl", val)):
++    with open(name, "w", encoding="utf-8") as f:
++        for r in sorted(data, key=lambda r: fnv(r["query"])):
++            f.write(json.dumps(r, ensure_ascii=False) + "\n")
++print(f"train={len(train)} val={len(val)} near_duplicates_dropped={dropped}")
++
++# Eval-format copy of the held-out split (same schema as the public classifier-eval@v1 file).
++with open("val_eval.json", "w", encoding="utf-8") as f:
++    json.dump({"schema": "classifier-eval@v1-local-heldout", "examples": [
++        {"id": f"val-{i:02d}", "query": r["query"], "context": None,
++         "request_type": r["request_type"], "complexity": r["complexity"]}
++        for i, r in enumerate(sorted(val, key=lambda r: fnv(r["query"])))]}, f, ensure_ascii=False, indent=1)
+diff -ruN '--exclude=target' orig/nasiko-main/llm-router/data/classifier/labelled.txt clean/nasiko-main/llm-router/data/classifier/labelled.txt
+--- a/llm-router/data/classifier/labelled.txt	1970-01-01 00:00:00.000000000 +0000
++++ b/llm-router/data/classifier/labelled.txt	2026-10-03 07:12:31.937227277 +0000
+@@ -0,0 +1,148 @@
++code_generation|1|Fix the typo in this Python comment: `# retrun the value`
++code_generation|2|Write a bash one-liner that renames every .jpeg file in a folder to .jpg
++code_generation|2|give me a regex that matches ISO dates like 2024-03-09
++code_generation|2|Can you turn this for-loop into a list comprehension? total = []; for x in xs: total.append(x*2)
++code_generation|3|Implement a debounce function in TypeScript with a cancel method
++code_generation|3|I need a SQL query returning the top 5 customers by revenue per month from orders and customers tables
++code_generation|3|build me a small Flask endpoint that accepts a CSV upload and returns row counts
++code_generation|3|Add retry with exponential backoff to this fetch wrapper
++code_generation|4|Write a Rust async worker pool that processes jobs from an mpsc channel with graceful shutdown
++code_generation|4|Create a React hook that syncs state to localStorage and across browser tabs
++code_generation|4|Refactor this class to use dependency injection and add unit tests with pytest
++code_generation|5|Implement an LRU cache in Go that is thread safe, supports TTL eviction and exposes hit-rate metrics, with benchmarks
++code_generation|2|make a dockerfile for a node 20 express app
++code_generation|3|Script to bulk-resize all PNGs in a directory to 800px wide using Pillow
++code_generation|2|how do I write a function that reverses a linked list in java
++code_generation|3|Generate a GitHub Actions workflow that runs cargo test and clippy on every pull request
++code_generation|4|Write a parser for arithmetic expressions with precedence and parentheses, no libraries
++code_generation|1|python snippet to read a json file into a dict
++code_generation|3|Please convert this callback-style Node function to async/await and handle errors properly
++code_generation|2|Write a Kubernetes deployment yaml for nginx with 3 replicas and a readiness probe
++code_generation|4|Code a command-line todo app in Rust with clap, serde persistence and a --done flag
++code_generation|2|write a function to check if a string is a palindrome ignoring punctuation
++code_understanding|2|What does this line do? `x = [*map(int, input().split())]`
++code_understanding|3|Why am I getting "cannot borrow `self` as mutable more than once at a time" in this Rust method?
++code_understanding|2|Explain what a closure captures in this JavaScript snippet
++code_understanding|3|Can you review this function for bugs and edge cases?
++code_understanding|3|My React component re-renders on every keystroke, what is causing it? Here is the code
++code_understanding|4|Walk me through how this recursive descent parser handles operator precedence
++code_understanding|2|what is the time complexity of this nested loop
++code_understanding|3|Trace through this code and tell me what it prints for input 5
++code_understanding|4|This query takes 40 seconds. Explain why the planner picks a seq scan given this EXPLAIN output
++code_understanding|2|Why does `[] + {}` give "[object Object]" in JS?
++code_understanding|3|Explain the difference between what these two git commands do to my history
++code_understanding|2|What does this stack trace mean? NullPointerException at UserService.java:42
++code_understanding|4|Help me understand why this goroutine leaks, here's the full file
++code_understanding|3|Is there a race condition in this counter implementation?
++code_understanding|2|what's wrong with my for loop, it never terminates
++code_understanding|3|Explain how this decorator modifies the wrapped function's behaviour
++code_understanding|5|Audit this authentication middleware for security vulnerabilities and explain each finding and its exploit path
++code_understanding|2|summarize what this function does in one sentence
++code_understanding|3|why does my docker container exit immediately with code 137
++code_understanding|4|Read this diff and tell me whether it changes the public behaviour of the API
++code_understanding|2|what do the flags in this ffmpeg command mean
++technical_design|4|Design a rate limiter for a multi-region API gateway handling 50k requests per second
++technical_design|3|How should I structure the database schema for a multi-tenant SaaS app?
++technical_design|4|Compare event sourcing and CRUD for an order management system and recommend one
++technical_design|5|Propose an architecture for a real-time collaborative editor supporting offline edits and conflict resolution
++technical_design|3|Should I use Kafka or RabbitMQ for background job processing in a mid-size startup?
++technical_design|4|Plan a zero-downtime migration from a monolith to microservices
++technical_design|3|What's a good folder structure for a large Next.js project?
++technical_design|4|How would you design the caching layer for a read-heavy product catalog with frequent price changes?
++technical_design|3|Draft the REST API contract for a booking system with cancellations and waitlists
++technical_design|5|Architect a fault-tolerant ingestion pipeline for 1 TB of IoT telemetry per day with exactly-once semantics
++technical_design|2|monolith vs microservices for a team of three?
++technical_design|4|Design the data model and sharding strategy for a chat application with 10M users
++technical_design|3|How do I split this service into modules with clear boundaries?
++technical_design|4|What deployment topology would you use for a latency-sensitive ML inference service on Kubernetes?
++technical_design|3|Which authentication approach fits a mobile app plus a web dashboard: sessions, JWT or OAuth?
++technical_design|2|Is Postgres or MongoDB better for storing user profiles?
++technical_design|4|Outline a disaster recovery plan with RPO of 5 minutes for our primary database
++technical_design|3|Sketch the component diagram for an e-commerce checkout flow
++technical_design|5|Design an observability stack for 200 microservices including tracing, metrics, alert routing and cost controls
++technical_design|3|how to design idempotent webhooks for a payments integration
++technical_design|2|What queue should I put between my API and the email sender?
++analytical_reasoning|3|If a store offers 20% off then an extra 10% off the reduced price, what is the total discount?
++analytical_reasoning|4|Estimate how many piano tuners work in Chicago and show your reasoning
++analytical_reasoning|3|Why might our conversion rate drop after a redesign even though page speed improved? Think through possible causes
++analytical_reasoning|4|Given quarterly revenue of 1.2M, 1.4M, 1.1M and 1.9M, analyze the trend and flag anomalies
++analytical_reasoning|2|Which is the better deal: 12 oz for $3.60 or 20 oz for $5.50?
++analytical_reasoning|4|Evaluate the pros and cons of raising prices 15% for a subscription product with 8% monthly churn
++analytical_reasoning|5|Build a break-even model for opening a second coffee shop with these fixed and variable costs, and stress test the assumptions
++analytical_reasoning|3|Solve: a train leaves at 3pm at 60 mph, another at 4pm at 80 mph. When does the second catch up?
++analytical_reasoning|3|Is this argument valid? All managers attend meetings; Sam attends meetings; so Sam is a manager
++analytical_reasoning|4|What are the second-order effects of a sudden minimum wage increase on small businesses?
++analytical_reasoning|2|what is 15% of 240 plus 8
++analytical_reasoning|3|Compare these two job offers considering salary, equity, commute and growth
++analytical_reasoning|4|Interpret this A/B test: control 4.1% on 20k visitors, variant 4.5% on 20k. Is it significant?
++analytical_reasoning|5|Reason through the trade-offs of three market entry strategies under uncertain demand and rank them with justification
++analytical_reasoning|3|Why do experienced investors say diversification is the only free lunch? Break down the logic
++analytical_reasoning|2|how many minutes are in 3.5 days
++analytical_reasoning|4|Diagnose why our monthly active users plateaued, given retention fell in cohorts after March
++analytical_reasoning|3|If the probability of rain is 30% each day, what's the chance it rains at least once in 4 days?
++analytical_reasoning|4|Weigh the risks of expanding to Brazil versus Mexico first
++analytical_reasoning|3|What would happen to global shipping if the Suez canal closed for a month? Reason it out
++writing|2|Write a polite email asking my landlord to fix the heating
++writing|3|Draft a 200-word product description for a stainless steel water bottle
++writing|2|Rewrite this sentence to sound more professional: "hey, got your stuff, will send later"
++writing|4|Write a persuasive cover letter for a junior data analyst role at a healthcare company
++writing|3|Summarize the following article in three bullet points
++writing|2|Give me a catchy tagline for a bakery
++writing|4|Write a short story about a lighthouse keeper who finds a message in a bottle
++writing|3|Help me write a LinkedIn post announcing my new job
++writing|2|proofread this paragraph and fix grammar
++writing|3|Compose a toast for my sister's wedding, funny but heartfelt
++writing|4|Write a blog post on remote work productivity in a friendly, conversational tone
++writing|2|make this text shorter and punchier
++writing|3|Draft a resignation letter that keeps the door open
++writing|5|Write a 1500-word long-form essay on the ethics of automation with a clear thesis and counterarguments
++writing|2|translate this paragraph into formal English
++writing|3|Write release notes for version 2.4 based on these commit messages
++writing|2|suggest five subject lines for a newsletter about gardening
++writing|3|Write a haiku sequence about autumn rain
++writing|4|Write the opening scene of a mystery novel set in 1920s Cairo
++writing|3|Turn my bullet points into a polished project update for stakeholders
++writing|2|Say no to a meeting invite nicely
++factual_lookup|1|What is the capital of Australia?
++factual_lookup|1|Who wrote Pride and Prejudice?
++factual_lookup|1|When did the Berlin Wall fall?
++factual_lookup|1|what does HTTP status 418 mean
++factual_lookup|2|How many bones are in the adult human body?
++factual_lookup|1|Define photosynthesis
++factual_lookup|2|What is the boiling point of ethanol in Celsius?
++factual_lookup|1|Who is the current CEO of Microsoft?
++factual_lookup|2|What year was Python first released and who created it?
++factual_lookup|1|how tall is mount everest
++factual_lookup|2|What does the acronym GDPR stand for and when did it take effect?
++factual_lookup|1|largest planet in the solar system
++factual_lookup|2|Which country has the most time zones?
++factual_lookup|1|What's the default port for PostgreSQL?
++factual_lookup|2|Who won the Nobel Prize in Physics in 2015?
++factual_lookup|1|speed of light in km/s
++factual_lookup|2|What is the difference between a virus and a bacterium, briefly?
++factual_lookup|1|when is the next leap year
++factual_lookup|2|Name the longest river in Africa
++factual_lookup|1|what language is spoken in Brazil
++factual_lookup|2|Which RFC defines JSON Web Tokens?
++general|1|hello there
++general|1|thanks, that helped a lot
++general|2|I'm feeling a bit stuck today, any tips to get motivated?
++general|2|What should I cook for dinner tonight, I have eggs and rice
++general|2|Recommend a good sci-fi book
++general|3|Brainstorm names for my new puppy, a golden retriever
++general|2|can you help me plan a weekend trip to Lisbon?
++general|1|tell me a joke
++general|2|How do I get better at public speaking?
++general|3|Give me ideas for a 10-year-old's birthday party
++general|2|what's your favorite color
++general|3|Suggest a beginner workout routine for three days a week
++general|2|Any advice on learning guitar as an adult?
++general|1|are you there?
++general|3|Help me decide what to do this weekend
++general|2|How do I politely end a conversation with a talkative coworker?
++general|2|ok
++general|3|Can you be my accountability partner for a reading habit?
++general|2|what are some good podcasts about history
++general|3|I have two hours, how should I organise studying for my exam
++general|1|good morning
++general|2|how do I deal with a noisy neighbour
+diff -ruN '--exclude=target' orig/nasiko-main/llm-router/data/classifier/train.jsonl clean/nasiko-main/llm-router/data/classifier/train.jsonl
+--- a/llm-router/data/classifier/train.jsonl	1970-01-01 00:00:00.000000000 +0000
++++ b/llm-router/data/classifier/train.jsonl	2026-10-03 07:12:31.937278033 +0000
+@@ -0,0 +1,113 @@
++{"request_type": "technical_design", "complexity": 3, "query": "Sketch the component diagram for an e-commerce checkout flow"}
++{"request_type": "analytical_reasoning", "complexity": 2, "query": "Which is the better deal: 12 oz for $3.60 or 20 oz for $5.50?"}
++{"request_type": "technical_design", "complexity": 3, "query": "How do I split this service into modules with clear boundaries?"}
++{"request_type": "general", "complexity": 2, "query": "ok"}
++{"request_type": "code_generation", "complexity": 4, "query": "Write a Rust async worker pool that processes jobs from an mpsc channel with graceful shutdown"}
++{"request_type": "factual_lookup", "complexity": 1, "query": "When did the Berlin Wall fall?"}
++{"request_type": "analytical_reasoning", "complexity": 4, "query": "Given quarterly revenue of 1.2M, 1.4M, 1.1M and 1.9M, analyze the trend and flag anomalies"}
++{"request_type": "factual_lookup", "complexity": 2, "query": "Which RFC defines JSON Web Tokens?"}
++{"request_type": "writing", "complexity": 3, "query": "Draft a 200-word product description for a stainless steel water bottle"}
++{"request_type": "code_understanding", "complexity": 3, "query": "why does my docker container exit immediately with code 137"}
++{"request_type": "writing", "complexity": 2, "query": "proofread this paragraph and fix grammar"}
++{"request_type": "factual_lookup", "complexity": 2, "query": "Name the longest river in Africa"}
++{"request_type": "writing", "complexity": 5, "query": "Write a 1500-word long-form essay on the ethics of automation with a clear thesis and counterarguments"}
++{"request_type": "code_understanding", "complexity": 2, "query": "What does this stack trace mean? NullPointerException at UserService.java:42"}
++{"request_type": "factual_lookup", "complexity": 1, "query": "What's the default port for PostgreSQL?"}
++{"request_type": "technical_design", "complexity": 3, "query": "How should I structure the database schema for a multi-tenant SaaS app?"}
++{"request_type": "factual_lookup", "complexity": 1, "query": "largest planet in the solar system"}
++{"request_type": "general", "complexity": 2, "query": "can you help me plan a weekend trip to Lisbon?"}
++{"request_type": "general", "complexity": 2, "query": "Any advice on learning guitar as an adult?"}
++{"request_type": "writing", "complexity": 3, "query": "Turn my bullet points into a polished project update for stakeholders"}
++{"request_type": "factual_lookup", "complexity": 1, "query": "Who is the current CEO of Microsoft?"}
++{"request_type": "code_understanding", "complexity": 2, "query": "Why does `[] + {}` give \"[object Object]\" in JS?"}
++{"request_type": "code_generation", "complexity": 2, "query": "write a function to check if a string is a palindrome ignoring punctuation"}
++{"request_type": "code_generation", "complexity": 3, "query": "Add retry with exponential backoff to this fetch wrapper"}
++{"request_type": "analytical_reasoning", "complexity": 4, "query": "Diagnose why our monthly active users plateaued, given retention fell in cohorts after March"}
++{"request_type": "general", "complexity": 3, "query": "Help me decide what to do this weekend"}
++{"request_type": "writing", "complexity": 4, "query": "Write a persuasive cover letter for a junior data analyst role at a healthcare company"}
++{"request_type": "technical_design", "complexity": 5, "query": "Architect a fault-tolerant ingestion pipeline for 1 TB of IoT telemetry per day with exactly-once semantics"}
++{"request_type": "general", "complexity": 3, "query": "Suggest a beginner workout routine for three days a week"}
++{"request_type": "writing", "complexity": 4, "query": "Write a blog post on remote work productivity in a friendly, conversational tone"}
++{"request_type": "factual_lookup", "complexity": 1, "query": "Define photosynthesis"}
++{"request_type": "general", "complexity": 3, "query": "Brainstorm names for my new puppy, a golden retriever"}
++{"request_type": "analytical_reasoning", "complexity": 4, "query": "Interpret this A/B test: control 4.1% on 20k visitors, variant 4.5% on 20k. Is it significant?"}
++{"request_type": "writing", "complexity": 4, "query": "Write the opening scene of a mystery novel set in 1920s Cairo"}
++{"request_type": "writing", "complexity": 3, "query": "Summarize the following article in three bullet points"}
++{"request_type": "analytical_reasoning", "complexity": 3, "query": "Solve: a train leaves at 3pm at 60 mph, another at 4pm at 80 mph. When does the second catch up?"}
++{"request_type": "writing", "complexity": 3, "query": "Draft a resignation letter that keeps the door open"}
++{"request_type": "general", "complexity": 2, "query": "What should I cook for dinner tonight, I have eggs and rice"}
++{"request_type": "writing", "complexity": 3, "query": "Help me write a LinkedIn post announcing my new job"}
++{"request_type": "technical_design", "complexity": 5, "query": "Propose an architecture for a real-time collaborative editor supporting offline edits and conflict resolution"}
++{"request_type": "factual_lookup", "complexity": 2, "query": "Who won the Nobel Prize in Physics in 2015?"}
++{"request_type": "analytical_reasoning", "complexity": 5, "query": "Reason through the trade-offs of three market entry strategies under uncertain demand and rank them with justification"}
++{"request_type": "code_generation", "complexity": 2, "query": "make a dockerfile for a node 20 express app"}
++{"request_type": "general", "complexity": 2, "query": "what's your favorite color"}
++{"request_type": "technical_design", "complexity": 3, "query": "Draft the REST API contract for a booking system with cancellations and waitlists"}
++{"request_type": "code_generation", "complexity": 3, "query": "Please convert this callback-style Node function to async/await and handle errors properly"}
++{"request_type": "code_generation", "complexity": 4, "query": "Refactor this class to use dependency injection and add unit tests with pytest"}
++{"request_type": "code_understanding", "complexity": 3, "query": "Why am I getting \"cannot borrow `self` as mutable more than once at a time\" in this Rust method?"}
++{"request_type": "writing", "complexity": 2, "query": "Write a polite email asking my landlord to fix the heating"}
++{"request_type": "factual_lookup", "complexity": 2, "query": "What is the difference between a virus and a bacterium, briefly?"}
++{"request_type": "writing", "complexity": 2, "query": "Rewrite this sentence to sound more professional: \"hey, got your stuff, will send later\""}
++{"request_type": "code_understanding", "complexity": 5, "query": "Audit this authentication middleware for security vulnerabilities and explain each finding and its exploit path"}
++{"request_type": "general", "complexity": 2, "query": "Recommend a good sci-fi book"}
++{"request_type": "code_generation", "complexity": 3, "query": "Script to bulk-resize all PNGs in a directory to 800px wide using Pillow"}
++{"request_type": "code_understanding", "complexity": 2, "query": "what's wrong with my for loop, it never terminates"}
++{"request_type": "analytical_reasoning", "complexity": 3, "query": "If a store offers 20% off then an extra 10% off the reduced price, what is the total discount?"}
++{"request_type": "writing", "complexity": 2, "query": "translate this paragraph into formal English"}
++{"request_type": "general", "complexity": 2, "query": "I'm feeling a bit stuck today, any tips to get motivated?"}
++{"request_type": "general", "complexity": 2, "query": "How do I politely end a conversation with a talkative coworker?"}
++{"request_type": "code_understanding", "complexity": 2, "query": "Explain what a closure captures in this JavaScript snippet"}
++{"request_type": "technical_design", "complexity": 3, "query": "Which authentication approach fits a mobile app plus a web dashboard: sessions, JWT or OAuth?"}
++{"request_type": "analytical_reasoning", "complexity": 4, "query": "Evaluate the pros and cons of raising prices 15% for a subscription product with 8% monthly churn"}
++{"request_type": "writing", "complexity": 3, "query": "Write release notes for version 2.4 based on these commit messages"}
++{"request_type": "code_generation", "complexity": 3, "query": "Generate a GitHub Actions workflow that runs cargo test and clippy on every pull request"}
++{"request_type": "factual_lookup", "complexity": 2, "query": "What year was Python first released and who created it?"}
++{"request_type": "factual_lookup", "complexity": 1, "query": "what language is spoken in Brazil"}
++{"request_type": "code_understanding", "complexity": 3, "query": "My React component re-renders on every keystroke, what is causing it? Here is the code"}
++{"request_type": "technical_design", "complexity": 4, "query": "Design the data model and sharding strategy for a chat application with 10M users"}
++{"request_type": "code_generation", "complexity": 3, "query": "Implement a debounce function in TypeScript with a cancel method"}
++{"request_type": "code_understanding", "complexity": 3, "query": "Explain how this decorator modifies the wrapped function's behaviour"}
++{"request_type": "code_understanding", "complexity": 2, "query": "what do the flags in this ffmpeg command mean"}
++{"request_type": "code_generation", "complexity": 4, "query": "Code a command-line todo app in Rust with clap, serde persistence and a --done flag"}
++{"request_type": "general", "complexity": 2, "query": "how do I deal with a noisy neighbour"}
++{"request_type": "technical_design", "complexity": 2, "query": "monolith vs microservices for a team of three?"}
++{"request_type": "analytical_reasoning", "complexity": 4, "query": "Estimate how many piano tuners work in Chicago and show your reasoning"}
++{"request_type": "writing", "complexity": 4, "query": "Write a short story about a lighthouse keeper who finds a message in a bottle"}
++{"request_type": "factual_lookup", "complexity": 2, "query": "What does the acronym GDPR stand for and when did it take effect?"}
++{"request_type": "code_understanding", "complexity": 4, "query": "This query takes 40 seconds. Explain why the planner picks a seq scan given this EXPLAIN output"}
++{"request_type": "analytical_reasoning", "complexity": 3, "query": "Why might our conversion rate drop after a redesign even though page speed improved? Think through possible causes"}
++{"request_type": "analytical_reasoning", "complexity": 3, "query": "Compare these two job offers considering salary, equity, commute and growth"}
++{"request_type": "code_generation", "complexity": 2, "query": "how do I write a function that reverses a linked list in java"}
++{"request_type": "code_understanding", "complexity": 3, "query": "Is there a race condition in this counter implementation?"}
++{"request_type": "technical_design", "complexity": 2, "query": "What queue should I put between my API and the email sender?"}
++{"request_type": "technical_design", "complexity": 3, "query": "Should I use Kafka or RabbitMQ for background job processing in a mid-size startup?"}
++{"request_type": "code_generation", "complexity": 2, "query": "Write a bash one-liner that renames every .jpeg file in a folder to .jpg"}
++{"request_type": "technical_design", "complexity": 5, "query": "Design an observability stack for 200 microservices including tracing, metrics, alert routing and cost controls"}
++{"request_type": "code_generation", "complexity": 5, "query": "Implement an LRU cache in Go that is thread safe, supports TTL eviction and exposes hit-rate metrics, with benchmarks"}
++{"request_type": "technical_design", "complexity": 4, "query": "How would you design the caching layer for a read-heavy product catalog with frequent price changes?"}
++{"request_type": "factual_lookup", "complexity": 1, "query": "how tall is mount everest"}
++{"request_type": "analytical_reasoning", "complexity": 2, "query": "how many minutes are in 3.5 days"}
++{"request_type": "code_understanding", "complexity": 2, "query": "what is the time complexity of this nested loop"}
++{"request_type": "code_understanding", "complexity": 2, "query": "summarize what this function does in one sentence"}
++{"request_type": "technical_design", "complexity": 4, "query": "Plan a zero-downtime migration from a monolith to microservices"}
++{"request_type": "code_understanding", "complexity": 3, "query": "Can you review this function for bugs and edge cases?"}
++{"request_type": "code_generation", "complexity": 2, "query": "give me a regex that matches ISO dates like 2024-03-09"}
++{"request_type": "code_generation", "complexity": 2, "query": "Write a Kubernetes deployment yaml for nginx with 3 replicas and a readiness probe"}
++{"request_type": "general", "complexity": 1, "query": "are you there?"}
++{"request_type": "technical_design", "complexity": 3, "query": "how to design idempotent webhooks for a payments integration"}
++{"request_type": "general", "complexity": 1, "query": "hello there"}
++{"request_type": "factual_lookup", "complexity": 2, "query": "Which country has the most time zones?"}
++{"request_type": "general", "complexity": 2, "query": "what are some good podcasts about history"}
++{"request_type": "general", "complexity": 1, "query": "thanks, that helped a lot"}
++{"request_type": "code_generation", "complexity": 1, "query": "python snippet to read a json file into a dict"}
++{"request_type": "analytical_reasoning", "complexity": 3, "query": "Why do experienced investors say diversification is the only free lunch? Break down the logic"}
++{"request_type": "writing", "complexity": 3, "query": "Compose a toast for my sister's wedding, funny but heartfelt"}
++{"request_type": "factual_lookup", "complexity": 2, "query": "What is the boiling point of ethanol in Celsius?"}
++{"request_type": "code_generation", "complexity": 3, "query": "I need a SQL query returning the top 5 customers by revenue per month from orders and customers tables"}
++{"request_type": "analytical_reasoning", "complexity": 3, "query": "What would happen to global shipping if the Suez canal closed for a month? Reason it out"}
++{"request_type": "analytical_reasoning", "complexity": 5, "query": "Build a break-even model for opening a second coffee shop with these fixed and variable costs, and stress test the assumptions"}
++{"request_type": "code_understanding", "complexity": 2, "query": "What does this line do? `x = [*map(int, input().split())]`"}
++{"request_type": "technical_design", "complexity": 4, "query": "Compare event sourcing and CRUD for an order management system and recommend one"}
++{"request_type": "general", "complexity": 3, "query": "I have two hours, how should I organise studying for my exam"}
++{"request_type": "factual_lookup", "complexity": 1, "query": "what does HTTP status 418 mean"}
+diff -ruN '--exclude=target' orig/nasiko-main/llm-router/data/classifier/val.jsonl clean/nasiko-main/llm-router/data/classifier/val.jsonl
+--- a/llm-router/data/classifier/val.jsonl	1970-01-01 00:00:00.000000000 +0000
++++ b/llm-router/data/classifier/val.jsonl	2026-10-03 07:12:31.937325983 +0000
+@@ -0,0 +1,35 @@
++{"request_type": "factual_lookup", "complexity": 1, "query": "speed of light in km/s"}
++{"request_type": "writing", "complexity": 2, "query": "Give me a catchy tagline for a bakery"}
++{"request_type": "general", "complexity": 3, "query": "Can you be my accountability partner for a reading habit?"}
++{"request_type": "technical_design", "complexity": 4, "query": "Design a rate limiter for a multi-region API gateway handling 50k requests per second"}
++{"request_type": "code_understanding", "complexity": 4, "query": "Read this diff and tell me whether it changes the public behaviour of the API"}
++{"request_type": "analytical_reasoning", "complexity": 2, "query": "what is 15% of 240 plus 8"}
++{"request_type": "factual_lookup", "complexity": 1, "query": "Who wrote Pride and Prejudice?"}
++{"request_type": "writing", "complexity": 2, "query": "make this text shorter and punchier"}
++{"request_type": "code_generation", "complexity": 4, "query": "Write a parser for arithmetic expressions with precedence and parentheses, no libraries"}
++{"request_type": "general", "complexity": 1, "query": "tell me a joke"}
++{"request_type": "writing", "complexity": 2, "query": "Say no to a meeting invite nicely"}
++{"request_type": "analytical_reasoning", "complexity": 4, "query": "What are the second-order effects of a sudden minimum wage increase on small businesses?"}
++{"request_type": "code_generation", "complexity": 1, "query": "Fix the typo in this Python comment: `# retrun the value`"}
++{"request_type": "technical_design", "complexity": 4, "query": "What deployment topology would you use for a latency-sensitive ML inference service on Kubernetes?"}
++{"request_type": "general", "complexity": 1, "query": "good morning"}
++{"request_type": "writing", "complexity": 3, "query": "Write a haiku sequence about autumn rain"}
++{"request_type": "code_understanding", "complexity": 3, "query": "Explain the difference between what these two git commands do to my history"}
++{"request_type": "factual_lookup", "complexity": 1, "query": "What is the capital of Australia?"}
++{"request_type": "code_generation", "complexity": 4, "query": "Create a React hook that syncs state to localStorage and across browser tabs"}
++{"request_type": "code_understanding", "complexity": 3, "query": "Trace through this code and tell me what it prints for input 5"}
++{"request_type": "analytical_reasoning", "complexity": 4, "query": "Weigh the risks of expanding to Brazil versus Mexico first"}
++{"request_type": "technical_design", "complexity": 2, "query": "Is Postgres or MongoDB better for storing user profiles?"}
++{"request_type": "code_understanding", "complexity": 4, "query": "Help me understand why this goroutine leaks, here's the full file"}
++{"request_type": "code_generation", "complexity": 3, "query": "build me a small Flask endpoint that accepts a CSV upload and returns row counts"}
++{"request_type": "factual_lookup", "complexity": 2, "query": "How many bones are in the adult human body?"}
++{"request_type": "general", "complexity": 2, "query": "How do I get better at public speaking?"}
++{"request_type": "writing", "complexity": 2, "query": "suggest five subject lines for a newsletter about gardening"}
++{"request_type": "technical_design", "complexity": 4, "query": "Outline a disaster recovery plan with RPO of 5 minutes for our primary database"}
++{"request_type": "analytical_reasoning", "complexity": 3, "query": "If the probability of rain is 30% each day, what's the chance it rains at least once in 4 days?"}
++{"request_type": "code_understanding", "complexity": 4, "query": "Walk me through how this recursive descent parser handles operator precedence"}
++{"request_type": "technical_design", "complexity": 3, "query": "What's a good folder structure for a large Next.js project?"}
++{"request_type": "general", "complexity": 3, "query": "Give me ideas for a 10-year-old's birthday party"}
++{"request_type": "code_generation", "complexity": 2, "query": "Can you turn this for-loop into a list comprehension? total = []; for x in xs: total.append(x*2)"}
++{"request_type": "factual_lookup", "complexity": 1, "query": "when is the next leap year"}
++{"request_type": "analytical_reasoning", "complexity": 3, "query": "Is this argument valid? All managers attend meetings; Sam attends meetings; so Sam is a manager"}
+diff -ruN '--exclude=target' orig/nasiko-main/llm-router/data/classifier/val_eval.json clean/nasiko-main/llm-router/data/classifier/val_eval.json
+--- a/llm-router/data/classifier/val_eval.json	1970-01-01 00:00:00.000000000 +0000
++++ b/llm-router/data/classifier/val_eval.json	2026-10-03 07:12:31.937378463 +0000
+@@ -0,0 +1,250 @@
++{
++ "schema": "classifier-eval@v1-local-heldout",
++ "examples": [
++  {
++   "id": "val-00",
++   "query": "speed of light in km/s",
++   "context": null,
++   "request_type": "factual_lookup",
++   "complexity": 1
++  },
++  {
++   "id": "val-01",
++   "query": "Give me a catchy tagline for a bakery",
++   "context": null,
++   "request_type": "writing",
++   "complexity": 2
++  },
++  {
++   "id": "val-02",
++   "query": "Can you be my accountability partner for a reading habit?",
++   "context": null,
++   "request_type": "general",
++   "complexity": 3
++  },
++  {
++   "id": "val-03",
++   "query": "Design a rate limiter for a multi-region API gateway handling 50k requests per second",
++   "context": null,
++   "request_type": "technical_design",
++   "complexity": 4
++  },
++  {
++   "id": "val-04",
++   "query": "Read this diff and tell me whether it changes the public behaviour of the API",
++   "context": null,
++   "request_type": "code_understanding",
++   "complexity": 4
++  },
++  {
++   "id": "val-05",
++   "query": "what is 15% of 240 plus 8",
++   "context": null,
++   "request_type": "analytical_reasoning",
++   "complexity": 2
++  },
++  {
++   "id": "val-06",
++   "query": "Who wrote Pride and Prejudice?",
++   "context": null,
++   "request_type": "factual_lookup",
++   "complexity": 1
++  },
++  {
++   "id": "val-07",
++   "query": "make this text shorter and punchier",
++   "context": null,
++   "request_type": "writing",
++   "complexity": 2
++  },
++  {
++   "id": "val-08",
++   "query": "Write a parser for arithmetic expressions with precedence and parentheses, no libraries",
++   "context": null,
++   "request_type": "code_generation",
++   "complexity": 4
++  },
++  {
++   "id": "val-09",
++   "query": "tell me a joke",
++   "context": null,
++   "request_type": "general",
++   "complexity": 1
++  },
++  {
++   "id": "val-10",
++   "query": "Say no to a meeting invite nicely",
++   "context": null,
++   "request_type": "writing",
++   "complexity": 2
++  },
++  {
++   "id": "val-11",
++   "query": "What are the second-order effects of a sudden minimum wage increase on small businesses?",
++   "context": null,
++   "request_type": "analytical_reasoning",
++   "complexity": 4
++  },
++  {
++   "id": "val-12",
++   "query": "Fix the typo in this Python comment: `# retrun the value`",
++   "context": null,
++   "request_type": "code_generation",
++   "complexity": 1
++  },
++  {
++   "id": "val-13",
++   "query": "What deployment topology would you use for a latency-sensitive ML inference service on Kubernetes?",
++   "context": null,
++   "request_type": "technical_design",
++   "complexity": 4
++  },
++  {
++   "id": "val-14",
++   "query": "good morning",
++   "context": null,
++   "request_type": "general",
++   "complexity": 1
++  },
++  {
++   "id": "val-15",
++   "query": "Write a haiku sequence about autumn rain",
++   "context": null,
++   "request_type": "writing",
++   "complexity": 3
++  },
++  {
++   "id": "val-16",
++   "query": "Explain the difference between what these two git commands do to my history",
++   "context": null,
++   "request_type": "code_understanding",
++   "complexity": 3
++  },
++  {
++   "id": "val-17",
++   "query": "What is the capital of Australia?",
++   "context": null,
++   "request_type": "factual_lookup",
++   "complexity": 1
++  },
++  {
++   "id": "val-18",
++   "query": "Create a React hook that syncs state to localStorage and across browser tabs",
++   "context": null,
++   "request_type": "code_generation",
++   "complexity": 4
++  },
++  {
++   "id": "val-19",
++   "query": "Trace through this code and tell me what it prints for input 5",
++   "context": null,
++   "request_type": "code_understanding",
++   "complexity": 3
++  },
++  {
++   "id": "val-20",
++   "query": "Weigh the risks of expanding to Brazil versus Mexico first",
++   "context": null,
++   "request_type": "analytical_reasoning",
++   "complexity": 4
++  },
++  {
++   "id": "val-21",
++   "query": "Is Postgres or MongoDB better for storing user profiles?",
++   "context": null,
++   "request_type": "technical_design",
++   "complexity": 2
++  },
++  {
++   "id": "val-22",
++   "query": "Help me understand why this goroutine leaks, here's the full file",
++   "context": null,
++   "request_type": "code_understanding",
++   "complexity": 4
++  },
++  {
++   "id": "val-23",
++   "query": "build me a small Flask endpoint that accepts a CSV upload and returns row counts",
++   "context": null,
++   "request_type": "code_generation",
++   "complexity": 3
++  },
++  {
++   "id": "val-24",
++   "query": "How many bones are in the adult human body?",
++   "context": null,
++   "request_type": "factual_lookup",
++   "complexity": 2
++  },
++  {
++   "id": "val-25",
++   "query": "How do I get better at public speaking?",
++   "context": null,
++   "request_type": "general",
++   "complexity": 2
++  },
++  {
++   "id": "val-26",
++   "query": "suggest five subject lines for a newsletter about gardening",
++   "context": null,
++   "request_type": "writing",
++   "complexity": 2
++  },
++  {
++   "id": "val-27",
++   "query": "Outline a disaster recovery plan with RPO of 5 minutes for our primary database",
++   "context": null,
++   "request_type": "technical_design",
++   "complexity": 4
++  },
++  {
++   "id": "val-28",
++   "query": "If the probability of rain is 30% each day, what's the chance it rains at least once in 4 days?",
++   "context": null,
++   "request_type": "analytical_reasoning",
++   "complexity": 3
++  },
++  {
++   "id": "val-29",
++   "query": "Walk me through how this recursive descent parser handles operator precedence",
++   "context": null,
++   "request_type": "code_understanding",
++   "complexity": 4
++  },
++  {
++   "id": "val-30",
++   "query": "What's a good folder structure for a large Next.js project?",
++   "context": null,
++   "request_type": "technical_design",
++   "complexity": 3
++  },
++  {
++   "id": "val-31",
++   "query": "Give me ideas for a 10-year-old's birthday party",
++   "context": null,
++   "request_type": "general",
++   "complexity": 3
++  },
++  {
++   "id": "val-32",
++   "query": "Can you turn this for-loop into a list comprehension? total = []; for x in xs: total.append(x*2)",
++   "context": null,
++   "request_type": "code_generation",
++   "complexity": 2
++  },
++  {
++   "id": "val-33",
++   "query": "when is the next leap year",
++   "context": null,
++   "request_type": "factual_lookup",
++   "complexity": 1
++  },
++  {
++   "id": "val-34",
++   "query": "Is this argument valid? All managers attend meetings; Sam attends meetings; so Sam is a manager",
++   "context": null,
++   "request_type": "analytical_reasoning",
++   "complexity": 3
++  }
++ ]
++}
+\ No newline at end of file
+diff -ruN '--exclude=target' orig/nasiko-main/llm-router/examples/classifier_eval.rs clean/nasiko-main/llm-router/examples/classifier_eval.rs
+--- a/llm-router/examples/classifier_eval.rs	1970-01-01 00:00:00.000000000 +0000
++++ b/llm-router/examples/classifier_eval.rs	2026-10-03 07:12:31.937428222 +0000
+@@ -0,0 +1,106 @@
++//! Request-classifier evaluation harness.
++//!
++//! ```text
++//! EVAL_SET=/tmp/classifier-eval.json OUT=/tmp/classifier-out.jsonl \
++//!   cargo run --release -p nasiko-llm-router --example classifier_eval
++//! ```
++//!
++//! Reads `EVAL_SET` (`{"examples": [{"id", "query", "context"?, ...}]}`) and writes one JSONL line
++//! per case to `OUT`: `{"id","request_type","complexity","confidence","latency_us"}`.
++//!
++//! Backend selection uses the router's own configuration and builder
++//! ([`GatewayConfig::from_env`] + [`build_classifier`]), so this exercises the exact code path
++//! the router runs, including timeout, regex fallback and the low-confidence safe default:
++//!
++//! | env | meaning |
++//! |---|---|
++//! | `CLASSIFIER_BACKEND` | `regex` (default) \| `local` \| `hosted` |
++//! | `CLASSIFIER_MODEL_PATH` | `local`: JSONL training set instead of the embedded one |
++//! | `CLASSIFIER_ENDPOINT` / `CLASSIFIER_MODEL` / `CLASSIFIER_API_KEY` | `hosted` |
++//! | `CLASSIFIER_TIMEOUT_MS` | per-decision budget (default 250) |
++//! | `CLASSIFIER_MIN_CONFIDENCE` | below this, answer `general` (default 0 = off) |
++//!
++//! The model is built once before the loop; `latency_us` times only `classify`. A summary
++//! (p50/p95, fallback counts and, when the set carries labels, accuracy and ECE) goes to stderr.
++//! Exit code 0 means the eval ran.
++
++use std::io::Write;
++use std::time::Instant;
++
++use nasiko_llm_router::GatewayConfig;
++use nasiko_llm_router::build_classifier;
++use nasiko_llm_router::routing::{ClassifyInput, RequestClassifier};
++use serde_json::{Value, json};
++
++#[tokio::main]
++async fn main() -> Result<(), Box<dyn std::error::Error>> {
++    let eval_path = std::env::var("EVAL_SET").map_err(|_| "EVAL_SET is required")?;
++    let out_path = std::env::var("OUT").map_err(|_| "OUT is required")?;
++    let set: Value = serde_json::from_str(&std::fs::read_to_string(&eval_path)?)?;
++    let cases = set["examples"].as_array().ok_or("EVAL_SET needs an `examples` array")?;
++
++    let cfg = GatewayConfig::from_env();
++    // Load once, before timing anything.
++    let load_start = Instant::now();
++    let classifier = build_classifier(&cfg, reqwest::Client::new());
++    let load_ms = load_start.elapsed().as_secs_f64() * 1e3;
++
++    let mut out = std::io::BufWriter::new(std::fs::File::create(&out_path)?);
++    let mut lat: Vec<u128> = Vec::with_capacity(cases.len());
++    let (mut labelled, mut correct, mut fallbacks) = (0usize, 0usize, 0usize);
++    let mut bins = [(0usize, 0f64, 0usize); 10]; // (n, sum_conf, n_correct) for ECE
++
++    for (i, case) in cases.iter().enumerate() {
++        let id = case["id"].as_str().map(str::to_string).unwrap_or_else(|| format!("case-{i}"));
++        let query = case["query"].as_str().unwrap_or_default();
++        let context = case["context"].as_str();
++        let start = Instant::now();
++        let result = classifier.classify(&ClassifyInput { query, context }).await;
++        let us = start.elapsed().as_micros();
++        lat.push(us);
++        // The guard never returns Err; handle it anyway so the harness can't abort mid-run.
++        let c = match result {
++            Ok(c) => c,
++            Err(_) => {
++                fallbacks += 1;
++                nasiko_llm_router::routing::RegexClassifier
++                    .classify(&ClassifyInput { query, context })
++                    .await
++                    .expect("regex is infallible")
++            }
++        };
++        writeln!(
++            out,
++            "{}",
++            json!({
++                "id": id, "request_type": c.request_type.as_str(), "complexity": c.complexity,
++                "confidence": (c.confidence * 1e4).round() / 1e4, "latency_us": us as u64,
++            })
++        )?;
++        if let Some(label) = case["request_type"].as_str() {
++            labelled += 1;
++            let ok = label == c.request_type.as_str();
++            correct += ok as usize;
++            let b = ((c.confidence * 10.0) as usize).min(9);
++            bins[b].0 += 1;
++            bins[b].1 += c.confidence as f64;
++            bins[b].2 += ok as usize;
++        }
++    }
++    out.flush()?;
++
++    lat.sort_unstable();
++    let pct = |p: f64| lat.get(((lat.len() as f64 - 1.0) * p).round() as usize).copied().unwrap_or(0);
++    eprintln!("backend={} cases={} load_ms={load_ms:.2}", classifier.name(), cases.len());
++    eprintln!("latency_us p50={} p95={} max={}", pct(0.5), pct(0.95), lat.last().copied().unwrap_or(0));
++    eprintln!("harness_fallbacks={fallbacks} (guard fallbacks are counted inside the router build)");
++    if labelled > 0 {
++        let ece: f64 = bins
++            .iter()
++            .filter(|b| b.0 > 0)
++            .map(|b| (b.0 as f64 / labelled as f64) * ((b.1 / b.0 as f64) - (b.2 as f64 / b.0 as f64)).abs())
++            .sum();
++        eprintln!("labelled={labelled} accuracy={:.4} ece={ece:.4}", correct as f64 / labelled as f64);
++    }
++    Ok(())
++}
+diff -ruN '--exclude=target' orig/nasiko-main/llm-router/src/config.rs clean/nasiko-main/llm-router/src/config.rs
+--- a/llm-router/src/config.rs	2026-10-01 06:28:04.000000000 +0000
++++ b/llm-router/src/config.rs	2026-10-03 07:12:31.942433120 +0000
+@@ -101,6 +101,23 @@
+     /// retuned. Default 0.80.
+     pub salience_high_threshold: f64,
+ 
++    /// Request classifier backend: `regex` (default; no network, behaviour unchanged),
++    /// `local` (Naive Bayes trained at load, no network) or `hosted` (OpenAI-compatible
++    /// endpoint, opt-in). Unknown values are treated as `regex`.
++    pub classifier_backend: String,
++    /// `local` only: JSONL training set to use instead of the embedded one. Empty = embedded.
++    pub classifier_model_path: String,
++    /// `hosted` only: full chat-completions URL. Only this host receives the key.
++    pub classifier_endpoint: String,
++    /// `hosted` only: model id sent in the request.
++    pub classifier_model: String,
++    /// `hosted` only: bearer key for the endpoint. Never logged.
++    pub classifier_api_key: String,
++    /// Per-decision budget. Past it the router uses the regex answer and counts a fallback.
++    pub classifier_timeout_ms: u64,
++    /// Below this confidence the router uses the safe default (`general`). 0 disables.
++    pub classifier_min_confidence: f32,
++
+     /// Fleet-wide kill switch for payload compression. Compression is opted into **per agent**
+     /// (`agents.compress_enabled`); this only lets an operator stop all of it at once without
+     /// editing every agent's row. Default on, so a UI toggle takes effect without a deploy.
+@@ -178,6 +195,13 @@
+             salience_weights_path: String::new(),
+             salience_low_threshold: 0.20,
+             salience_high_threshold: 0.80,
++            classifier_backend: "regex".into(),
++            classifier_model_path: String::new(),
++            classifier_endpoint: String::new(),
++            classifier_model: String::new(),
++            classifier_api_key: String::new(),
++            classifier_timeout_ms: 250,
++            classifier_min_confidence: 0.0,
+             compress_kill_switch: true,
+             compress_min_bytes: 2048,
+             compress_types: nasiko_compress::TypeMask::DEFAULT,
+@@ -257,6 +281,16 @@
+                 .ok()
+                 .and_then(|v| v.parse().ok())
+                 .unwrap_or(d.salience_gate_enabled),
++            classifier_backend: env_or("CLASSIFIER_BACKEND", &d.classifier_backend),
++            classifier_model_path: env_or("CLASSIFIER_MODEL_PATH", &d.classifier_model_path),
++            classifier_endpoint: env_or("CLASSIFIER_ENDPOINT", &d.classifier_endpoint),
++            classifier_model: env_or("CLASSIFIER_MODEL", &d.classifier_model),
++            classifier_api_key: env_or("CLASSIFIER_API_KEY", &d.classifier_api_key),
++            classifier_timeout_ms: env_parse_first(&["CLASSIFIER_TIMEOUT_MS"], d.classifier_timeout_ms),
++            classifier_min_confidence: env_parse_first(
++                &["CLASSIFIER_MIN_CONFIDENCE"],
++                d.classifier_min_confidence,
++            ),
+             salience_weights_path: env_or("SALIENCE_WEIGHTS_PATH", &d.salience_weights_path),
+             salience_low_threshold: std::env::var("SALIENCE_LOW_THRESHOLD")
+                 .ok()
+diff -ruN '--exclude=target' orig/nasiko-main/llm-router/src/handlers/chat.rs clean/nasiko-main/llm-router/src/handlers/chat.rs
+--- a/llm-router/src/handlers/chat.rs	2026-10-01 06:28:04.000000000 +0000
++++ b/llm-router/src/handlers/chat.rs	2026-10-03 07:12:31.962136330 +0000
+@@ -453,7 +453,8 @@
+             Some(attribution.source),
+         )
+     };
+-    let decision = routing::route_model(
++    let decision = routing::route_model_with(
++        ctx.classifier.as_ref(),
+         ctx.router_cache.as_ref(),
+         ctx.tier_registry.as_ref(),
+         ctx.cell_store.as_ref(),
+@@ -926,6 +927,7 @@
+             tier_registry: Arc::new(NoTiers),
+             cell_store: Arc::new(crate::routing::InMemoryCellStore::new()),
+             salience_gate: Arc::new(crate::routing::AllowAllGate),
++            classifier: Arc::new(crate::routing::RegexClassifier),
+             pricing: Arc::new(nasiko_pricing::PricingEngine::new(
+                 PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
+             )),
+diff -ruN '--exclude=target' orig/nasiko-main/llm-router/src/handlers/embeddings.rs clean/nasiko-main/llm-router/src/handlers/embeddings.rs
+--- a/llm-router/src/handlers/embeddings.rs	2026-10-01 06:28:04.000000000 +0000
++++ b/llm-router/src/handlers/embeddings.rs	2026-10-03 07:12:31.965452491 +0000
+@@ -185,6 +185,7 @@
+             tier_registry: Arc::new(crate::routing::registry::test_support::StubRegistry),
+             cell_store: Arc::new(crate::routing::InMemoryCellStore::new()),
+             salience_gate: Arc::new(crate::routing::AllowAllGate),
++            classifier: Arc::new(crate::routing::RegexClassifier),
+             pricing: Arc::new(nasiko_pricing::PricingEngine::new(
+                 PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
+             )),
+diff -ruN '--exclude=target' orig/nasiko-main/llm-router/src/handlers/responses.rs clean/nasiko-main/llm-router/src/handlers/responses.rs
+--- a/llm-router/src/handlers/responses.rs	2026-10-01 06:28:04.000000000 +0000
++++ b/llm-router/src/handlers/responses.rs	2026-10-03 07:12:31.969194743 +0000
+@@ -1053,6 +1053,7 @@
+             tier_registry: Arc::new(NoTiers),
+             cell_store: Arc::new(crate::routing::InMemoryCellStore::new()),
+             salience_gate: Arc::new(crate::routing::salience::AllowAllGate),
++            classifier: Arc::new(crate::routing::RegexClassifier),
+             pricing: Arc::new(nasiko_pricing::PricingEngine::new(
+                 PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
+             )),
+diff -ruN '--exclude=target' orig/nasiko-main/llm-router/src/lib.rs clean/nasiko-main/llm-router/src/lib.rs
+--- a/llm-router/src/lib.rs	2026-10-01 06:28:04.000000000 +0000
++++ b/llm-router/src/lib.rs	2026-10-03 07:12:31.947142430 +0000
+@@ -81,6 +81,10 @@
+     /// classify + pin. [`ClassifierSalienceGate`] when `SALIENCE_GATE_ENABLED`; else [`AllowAllGate`]
+     /// (classify at every boundary, i.e. behaviour before the gate existed).
+     pub salience_gate: Arc<dyn SalienceGate>,
++    /// Request-type classifier used at Level 3 of routing. [`routing::RegexClassifier`] by
++    /// default (behaviour unchanged); `CLASSIFIER_BACKEND=local|hosted` swaps in a guarded model
++    /// backend that falls back to regex on any failure. See [`build_classifier`].
++    pub classifier: Arc<dyn routing::RequestClassifier>,
+     /// The platform's single cost engine. Every `token_usage` row is priced
+     /// through this — the DB trigger that used to do it returned NULL for any
+     /// model missing from `model_pricing`, which booked 92.8% of calls at $0.
+@@ -126,6 +130,7 @@
+         let router_cache = build_router_cache(&cfg);
+         let cfg = Arc::new(cfg);
+         let salience_gate = build_salience_gate(&cfg);
++        let classifier = build_classifier(&cfg, http.clone());
+         let pricing = Arc::new(PricingEngine::new(db.clone()));
+         Self {
+             db,
+@@ -136,11 +141,56 @@
+             tier_registry,
+             cell_store,
+             salience_gate,
++            classifier,
+             pricing,
+         }
+     }
+ }
+ 
++/// Build the request classifier from config. The only place backend selection happens, shared by
++/// the router and the `classifier_eval` example so both exercise the same path.
++///
++/// `regex` (default / unknown value) is returned bare so default behaviour is untouched; `local`
++/// and `hosted` are wrapped in a [`routing::GuardedClassifier`] (timeout, regex fallback,
++/// low-confidence safe default). A `local` training-set load failure or a `hosted` config with
++/// no endpoint degrades to regex with a warning, never an outage.
++pub fn build_classifier(cfg: &GatewayConfig, http: reqwest::Client) -> Arc<dyn routing::RequestClassifier> {
++    use routing::{GuardedClassifier, RegexClassifier, classifier_hosted::HostedClassifier, classifier_local::LocalClassifier};
++    let timeout = Duration::from_millis(cfg.classifier_timeout_ms.max(1));
++    let min_conf = cfg.classifier_min_confidence;
++    let inner: Arc<dyn routing::RequestClassifier> = match cfg.classifier_backend.as_str() {
++        "local" => {
++            let model = if cfg.classifier_model_path.is_empty() {
++                Ok(LocalClassifier::embedded())
++            } else {
++                std::fs::read_to_string(&cfg.classifier_model_path)
++                    .map_err(|e| e.to_string())
++                    .and_then(|s| LocalClassifier::from_jsonl(&s))
++            };
++            match model {
++                Ok(m) => Arc::new(m),
++                Err(e) => {
++                    tracing::warn!(target: "nasiko::llm_router::startup", error = %e, "classifier: local model load failed; using regex");
++                    return Arc::new(RegexClassifier);
++                }
++            }
++        }
++        "hosted" if !cfg.classifier_endpoint.is_empty() => Arc::new(HostedClassifier::new(
++            http,
++            cfg.classifier_endpoint.clone(),
++            cfg.classifier_model.clone(),
++            cfg.classifier_api_key.clone(),
++        )),
++        "hosted" => {
++            tracing::warn!(target: "nasiko::llm_router::startup", "classifier: hosted backend needs CLASSIFIER_ENDPOINT; using regex");
++            return Arc::new(RegexClassifier);
++        }
++        _ => return Arc::new(RegexClassifier),
++    };
++    tracing::info!(target: "nasiko::llm_router::startup", backend = inner.name(), timeout_ms = cfg.classifier_timeout_ms, min_confidence = min_conf, "llm-router: request classifier enabled");
++    Arc::new(GuardedClassifier::new(inner, timeout, min_conf))
++}
++
+ /// Build the Level 2.5 salience gate from config.
+ ///
+ /// [`AllowAllGate`] when `SALIENCE_GATE_ENABLED=false`; otherwise
+diff -ruN '--exclude=target' orig/nasiko-main/llm-router/src/routing/classifier.rs clean/nasiko-main/llm-router/src/routing/classifier.rs
+--- a/llm-router/src/routing/classifier.rs	2026-10-01 06:28:04.000000000 +0000
++++ b/llm-router/src/routing/classifier.rs	2026-10-03 07:12:39.198156485 +0000
+@@ -28,7 +28,11 @@
+ //! it an entropy RNG; tests inject a seeded one.
+ 
+ use std::collections::HashMap;
++use std::sync::Arc;
++use std::sync::atomic::{AtomicU64, Ordering};
++use std::time::Duration;
+ 
++use async_trait::async_trait;
+ use rand::Rng;
+ use rand_distr::{Beta, Distribution};
+ 
+@@ -309,7 +313,7 @@
+     rng: &mut R,
+ ) -> (Tier, RequestType) {
+     let request_type = classify_request_type(query);
+-    let tier = pick_model_thompson(cells, request_type, DEFAULT_W_QUALITY, DEFAULT_W_COST, rng);
++    let tier = classify_typed(request_type, cells, rng);
+     let preview: String = query.chars().take(120).collect();
+     tracing::info!(
+         target: "nasiko::llm_router::classifier",
+@@ -324,6 +328,240 @@
+     (tier, request_type)
+ }
+ 
++// --------------------------------------------------------------------------
++// 4. Pluggable request classifier — `RequestClassifier`
++// --------------------------------------------------------------------------
++//
++// `classify_request_type` answers from the query text alone with keyword votes. The trait below
++// is the seam that lets a different decision model (a local model or a hosted API) answer the
++// same question, with the regex as the default and as the fallback for every failure mode.
++//
++// ## Contract
++//
++// * **`request_type`** — the router's [`RequestType`]. Same label set as the regex.
++// * **`complexity`** — 1..=5 on a documented rubric ([`estimate_complexity`]). Reported with the
++//   decision; the tier bandit is still keyed on `(provider, tier, request_type)`, so complexity
++//   does not change tier selection today (no feedback simulation is needed).
++// * **`confidence`** — in `[0, 1]`: the backend's probability for the chosen `request_type`
++//   (local: temperature-scaled posterior; hosted: the model's self-report, clamped). Regex
++//   returns fixed values (see [`RegexClassifier`]) because a vote count is not a probability.
++//
++// ## Failure and low-confidence behaviour ([`GuardedClassifier`])
++//
++// * backend `Err` or timeout -> the regex answer, counted as a fallback;
++// * `confidence < min_confidence` -> the *safe default* `RequestType::General` (the router's
++//   neutral cell), counted as a low-confidence fallback — never a confident wrong guess.
++//
++// Determinism: the regex and local backends are pure functions of `(query, context)`.
++
++/// What the classifier is asked about. `context` is optional supporting text (e.g. the code or
++/// file the request refers to); the regex baseline ignores it, learned backends may use it.
++#[derive(Debug, Clone, Copy)]
++pub struct ClassifyInput<'a> {
++    pub query: &'a str,
++    pub context: Option<&'a str>,
++}
++
++/// A classifier verdict. See the module notes for the meaning of each field.
++#[derive(Debug, Clone, Copy, PartialEq)]
++pub struct Classification {
++    pub request_type: RequestType,
++    /// 1 (trivial) ..= 5 (multi-constraint / multi-step engineering or analysis).
++    pub complexity: u8,
++    /// Probability-like score in `[0, 1]` for `request_type`.
++    pub confidence: f32,
++}
++
++#[derive(Debug, thiserror::Error)]
++pub enum ClassifyError {
++    #[error("classifier backend failed: {0}")]
++    Backend(String),
++    #[error("classifier timed out")]
++    Timeout,
++    #[error("classifier returned invalid output: {0}")]
++    InvalidOutput(String),
++}
++
++/// A request-type decision model. Implementations must be cheap to call concurrently.
++#[async_trait]
++pub trait RequestClassifier: Send + Sync {
++    fn name(&self) -> &str;
++    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError>;
++}
++
++/// Fixed complexity the regex baseline reports (it cannot measure complexity).
++pub const REGEX_COMPLEXITY: u8 = 3;
++/// Fixed confidence when at least one category pattern matched.
++pub const REGEX_CONFIDENCE_MATCHED: f32 = 0.5;
++/// Fixed confidence when nothing matched and `General` is just the default.
++pub const REGEX_CONFIDENCE_DEFAULT: f32 = 0.25;
++
++/// The default classifier: [`classify_request_type`] unchanged. Complexity is fixed at
++/// [`REGEX_COMPLEXITY`]; confidence is [`REGEX_CONFIDENCE_MATCHED`] if any pattern matched, else
++/// [`REGEX_CONFIDENCE_DEFAULT`]. Infallible and never touches the network.
++#[derive(Debug, Default, Clone, Copy)]
++pub struct RegexClassifier;
++
++#[async_trait]
++impl RequestClassifier for RegexClassifier {
++    fn name(&self) -> &str {
++        "regex"
++    }
++    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
++        let request_type = classify_request_type(input.query);
++        let matched = request_type != RequestType::General
++            || CATEGORY_PATTERNS.iter().any(|(_, pats)| pats.iter().any(|p| p.is_match(input.query)));
++        Ok(Classification {
++            request_type,
++            complexity: REGEX_COMPLEXITY,
++            confidence: if matched { REGEX_CONFIDENCE_MATCHED } else { REGEX_CONFIDENCE_DEFAULT },
++        })
++    }
++}
++
++/// Complexity rubric (1..=5), a deterministic function of the text:
++///
++/// | points | signal |
++/// |---|---|
++/// | 0-3 | query length: <=8 words 0, <=25 words 1, <=60 words 2, longer 3 |
++/// | +1 | supporting context longer than 150 words, or any code fence |
++/// | +1 | two or more sequencing markers (first/then/finally/step/numbered list) |
++/// | +1 / +2 | one / two-or-more constraint or scale markers (must, without, at most, per second, multi-region, trade-off, thread-safe, ...) |
++///
++/// `complexity = 1 + points / 2`, clamped to 5 (0-1 pts -> 1, 2-3 -> 2, 4-5 -> 3, 6-7 -> 4, 8+ -> 5).
++pub fn estimate_complexity(query: &str, context: Option<&str>) -> u8 {
++    const SEQUENCING: [&str; 6] = ["first", "then", "finally", "step", "after that", "1."];
++    const CONSTRAINT: [&str; 22] = [
++        "must", "without", "at most", "at least", "exactly", "per second", "per day", "scale",
++        "distributed", "concurren", "thread", "secur", "trade-off", "tradeoff", "multi-region",
++        "benchmark", "fault", "latency", "throughput", "consisten", "sharding", "stress test",
++    ];
++    let q = query.to_lowercase();
++    let words = q.split_whitespace().count();
++    let mut points = match words {
++        0..=8 => 0,
++        9..=25 => 1,
++        26..=60 => 2,
++        _ => 3,
++    };
++    let ctx_words = context.map_or(0, |c| c.split_whitespace().count());
++    if ctx_words > 150 || q.contains("```") || context.is_some_and(|c| c.contains("```")) {
++        points += 1;
++    }
++    if SEQUENCING.iter().filter(|m| q.contains(**m)).count() >= 2 {
++        points += 1;
++    }
++    points += match CONSTRAINT.iter().filter(|m| q.contains(**m)).count() {
++        0 => 0,
++        1 => 1,
++        _ => 2,
++    };
++    (1 + points / 2).min(5) as u8
++}
++
++/// Counters for how often the guard had to step in. Cheap to read for metrics.
++#[derive(Debug, Default)]
++pub struct ClassifierStats {
++    calls: AtomicU64,
++    errors: AtomicU64,
++    timeouts: AtomicU64,
++    low_confidence: AtomicU64,
++}
++
++/// Point-in-time copy of [`ClassifierStats`].
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub struct StatsSnapshot {
++    pub calls: u64,
++    pub errors: u64,
++    pub timeouts: u64,
++    pub low_confidence: u64,
++}
++
++impl StatsSnapshot {
++    /// Fraction of calls that did not use the backend's own answer.
++    pub fn fallback_rate(&self) -> f64 {
++        if self.calls == 0 {
++            return 0.0;
++        }
++        (self.errors + self.timeouts + self.low_confidence) as f64 / self.calls as f64
++    }
++}
++
++impl ClassifierStats {
++    pub fn snapshot(&self) -> StatsSnapshot {
++        StatsSnapshot {
++            calls: self.calls.load(Ordering::Relaxed),
++            errors: self.errors.load(Ordering::Relaxed),
++            timeouts: self.timeouts.load(Ordering::Relaxed),
++            low_confidence: self.low_confidence.load(Ordering::Relaxed),
++        }
++    }
++}
++
++/// Wraps any backend with a timeout, regex fallback on failure, and the low-confidence safe
++/// default. This is what the router and `classifier_eval` both hold, so they exercise one path.
++pub struct GuardedClassifier {
++    inner: Arc<dyn RequestClassifier>,
++    timeout: Duration,
++    min_confidence: f32,
++    stats: ClassifierStats,
++}
++
++impl GuardedClassifier {
++    pub fn new(inner: Arc<dyn RequestClassifier>, timeout: Duration, min_confidence: f32) -> Self {
++        Self { inner, timeout, min_confidence: min_confidence.clamp(0.0, 1.0), stats: ClassifierStats::default() }
++    }
++    pub fn stats(&self) -> StatsSnapshot {
++        self.stats.snapshot()
++    }
++}
++
++#[async_trait]
++impl RequestClassifier for GuardedClassifier {
++    fn name(&self) -> &str {
++        self.inner.name()
++    }
++
++    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
++        self.stats.calls.fetch_add(1, Ordering::Relaxed);
++        let outcome = match tokio::time::timeout(self.timeout, self.inner.classify(input)).await {
++            Ok(r) => r,
++            Err(_) => {
++                self.stats.timeouts.fetch_add(1, Ordering::Relaxed);
++                Err(ClassifyError::Timeout)
++            }
++        };
++        match outcome {
++            Ok(c) if c.confidence.is_finite() && c.confidence >= self.min_confidence => Ok(c),
++            Ok(c) => {
++                self.stats.low_confidence.fetch_add(1, Ordering::Relaxed);
++                Ok(Classification { request_type: RequestType::General, ..c })
++            }
++            Err(e) => {
++                if !matches!(e, ClassifyError::Timeout) {
++                    self.stats.errors.fetch_add(1, Ordering::Relaxed);
++                }
++                tracing::warn!(
++                    target: "nasiko::llm_router::classifier",
++                    backend = %self.inner.name(), error = %e,
++                    "classifier backend failed; falling back to the regex classifier"
++                );
++                RegexClassifier.classify(input).await
++            }
++        }
++    }
++}
++
++/// [`classify`] with the request type already decided (by a [`RequestClassifier`]); only the
++/// tier is Thompson-sampled. `classify` is this plus the regex type.
++pub fn classify_typed<R: Rng + ?Sized>(
++    request_type: RequestType,
++    cells: &CellMap,
++    rng: &mut R,
++) -> Tier {
++    pick_model_thompson(cells, request_type, DEFAULT_W_QUALITY, DEFAULT_W_COST, rng)
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+@@ -531,4 +769,87 @@
+         assert_eq!(rt, RequestType::CodeGeneration);
+         assert!(matches!(tier, Tier::Tier1 | Tier::Tier2 | Tier::Tier3));
+     }
++
++    // --- RequestClassifier / GuardedClassifier ---
++
++    struct Scripted(Result<Classification, fn() -> ClassifyError>, Duration);
++    #[async_trait]
++    impl RequestClassifier for Scripted {
++        fn name(&self) -> &str {
++            "scripted"
++        }
++        async fn classify(&self, _: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
++            tokio::time::sleep(self.1).await;
++            self.0.map_err(|f| f())
++        }
++    }
++    fn verdict(rt: RequestType, confidence: f32) -> Classification {
++        Classification { request_type: rt, complexity: 4, confidence }
++    }
++    fn guard(inner: Scripted, min: f32) -> GuardedClassifier {
++        GuardedClassifier::new(Arc::new(inner), Duration::from_millis(50), min)
++    }
++    const Q: ClassifyInput<'static> = ClassifyInput { query: "write me a Python sort function", context: None };
++
++    #[tokio::test]
++    async fn regex_classifier_wraps_the_baseline_with_fixed_values() {
++        let c = RegexClassifier.classify(&Q).await.unwrap();
++        assert_eq!(c.request_type, classify_request_type(Q.query));
++        assert_eq!((c.complexity, c.confidence), (REGEX_COMPLEXITY, REGEX_CONFIDENCE_MATCHED));
++        let g = RegexClassifier.classify(&ClassifyInput { query: "hmm", context: None }).await.unwrap();
++        assert_eq!((g.request_type, g.confidence), (RequestType::General, REGEX_CONFIDENCE_DEFAULT));
++    }
++
++    #[tokio::test]
++    async fn guard_passes_a_confident_answer_through() {
++        let g = guard(Scripted(Ok(verdict(RequestType::Writing, 0.9)), Duration::ZERO), 0.4);
++        assert_eq!(g.classify(&Q).await.unwrap(), verdict(RequestType::Writing, 0.9));
++        assert_eq!(g.stats().fallback_rate(), 0.0);
++    }
++
++    #[tokio::test]
++    async fn guard_falls_back_to_regex_on_error_and_counts_it() {
++        let g = guard(Scripted(Err(|| ClassifyError::Backend("boom".into())), Duration::ZERO), 0.0);
++        let c = g.classify(&Q).await.unwrap();
++        assert_eq!(c.request_type, classify_request_type(Q.query));
++        let s = g.stats();
++        assert_eq!((s.calls, s.errors, s.timeouts), (1, 1, 0));
++    }
++
++    #[tokio::test]
++    async fn guard_falls_back_to_regex_on_timeout_and_counts_it() {
++        let g = guard(Scripted(Ok(verdict(RequestType::Writing, 0.99)), Duration::from_millis(500)), 0.0);
++        let c = g.classify(&Q).await.unwrap();
++        assert_eq!(c.request_type, classify_request_type(Q.query));
++        let s = g.stats();
++        assert_eq!((s.timeouts, s.errors), (1, 0));
++        assert_eq!(s.fallback_rate(), 1.0);
++    }
++
++    #[tokio::test]
++    async fn low_confidence_routes_to_the_safe_default_and_counts_as_fallback() {
++        let g = guard(Scripted(Ok(verdict(RequestType::CodeGeneration, 0.3)), Duration::ZERO), 0.5);
++        let c = g.classify(&Q).await.unwrap();
++        assert_eq!(c.request_type, RequestType::General);
++        assert_eq!(c.complexity, 4, "complexity is kept");
++        assert_eq!(g.stats().low_confidence, 1);
++    }
++
++    #[tokio::test]
++    async fn non_finite_confidence_is_treated_as_low() {
++        let g = guard(Scripted(Ok(verdict(RequestType::Writing, f32::NAN)), Duration::ZERO), 0.1);
++        assert_eq!(g.classify(&Q).await.unwrap().request_type, RequestType::General);
++    }
++
++    #[test]
++    fn complexity_rubric_is_bounded_and_monotonic() {
++        let trivial = estimate_complexity("fix typo", None);
++        let hard = estimate_complexity(
++            "First design a distributed rate limiter, then benchmark it, and it must be fault tolerant at 50k requests per second with strong consistency across regions, without a single point of failure",
++            Some(&"context ".repeat(200)),
++        );
++        assert_eq!(trivial, 1);
++        assert!(hard >= 4 && hard <= 5, "hard={hard}");
++        assert_eq!(estimate_complexity("same", None), estimate_complexity("same", None));
++    }
+ }
+diff -ruN '--exclude=target' orig/nasiko-main/llm-router/src/routing/classifier_hosted.rs clean/nasiko-main/llm-router/src/routing/classifier_hosted.rs
+--- a/llm-router/src/routing/classifier_hosted.rs	1970-01-01 00:00:00.000000000 +0000
++++ b/llm-router/src/routing/classifier_hosted.rs	2026-10-03 07:12:31.937478384 +0000
+@@ -0,0 +1,160 @@
++//! Hosted request-type classifier — asks an OpenAI-compatible `/chat/completions` endpoint to
++//! label the request. Opt-in only (`CLASSIFIER_BACKEND=hosted`); the default never touches the
++//! network.
++//!
++//! The model is told to answer with one JSON object. Anything else (HTTP error, bad JSON, an
++//! unknown label, out-of-range numbers) is a [`ClassifyError`], which [`GuardedClassifier`]
++//! turns into the regex answer. The request carries only the query (and optional context) —
++//! the API key is sent to the configured endpoint and nowhere else.
++//!
++//! [`GuardedClassifier`]: super::classifier::GuardedClassifier
++
++use async_trait::async_trait;
++use serde_json::{Value, json};
++
++use super::classifier::{
++    Classification, ClassifyError, ClassifyInput, RequestClassifier, RequestType,
++};
++
++const SYSTEM_PROMPT: &str = "You label user requests for an LLM router. Reply with ONE JSON \
++object and nothing else: {\"request_type\": one of [\"code_generation\", \"code_understanding\", \
++\"technical_design\", \"analytical_reasoning\", \"writing\", \"factual_lookup\", \"general\"], \
++\"complexity\": integer 1-5 (1 trivial, 5 multi-constraint or multi-step engineering/analysis), \
++\"confidence\": number 0-1 (your probability that request_type is correct)}. \
++code_generation = produce or modify code/scripts/queries/config; code_understanding = explain, \
++review or debug existing code/errors; technical_design = architecture, schema, tooling \
++trade-offs; analytical_reasoning = maths, estimation, data/decision analysis without code; \
++writing = draft/edit/summarize prose; factual_lookup = short factual question; general = \
++chit-chat, advice, brainstorming, anything else.";
++
++/// Cap on request text sent to the endpoint (chars) — bounds cost and latency.
++const MAX_QUERY_CHARS: usize = 2_000;
++const MAX_CONTEXT_CHARS: usize = 2_000;
++
++pub struct HostedClassifier {
++    http: reqwest::Client,
++    endpoint: String,
++    model: String,
++    api_key: String,
++}
++
++impl HostedClassifier {
++    /// `endpoint` is the full chat-completions URL. `api_key` may be empty (local gateways).
++    pub fn new(http: reqwest::Client, endpoint: String, model: String, api_key: String) -> Self {
++        Self { http, endpoint, model, api_key }
++    }
++}
++
++fn truncate(s: &str, max: usize) -> String {
++    s.chars().take(max).collect()
++}
++
++/// Parse the model's JSON answer into a [`Classification`], validating every field.
++pub(crate) fn parse_answer(content: &str) -> Result<Classification, ClassifyError> {
++    // Tolerate a fenced block or surrounding prose by taking the outermost braces.
++    let (start, end) = (content.find('{'), content.rfind('}'));
++    let json_str = match (start, end) {
++        (Some(s), Some(e)) if e > s => &content[s..=e],
++        _ => return Err(ClassifyError::InvalidOutput("no JSON object".into())),
++    };
++    let v: Value = serde_json::from_str(json_str)
++        .map_err(|e| ClassifyError::InvalidOutput(e.to_string()))?;
++    let rt = v["request_type"]
++        .as_str()
++        .and_then(RequestType::from_wire)
++        .ok_or_else(|| ClassifyError::InvalidOutput("unknown request_type".into()))?;
++    let complexity = v["complexity"]
++        .as_u64()
++        .filter(|c| (1..=5).contains(c))
++        .ok_or_else(|| ClassifyError::InvalidOutput("complexity must be 1-5".into()))? as u8;
++    let confidence = v["confidence"]
++        .as_f64()
++        .filter(|c| c.is_finite() && (0.0..=1.0).contains(c))
++        .ok_or_else(|| ClassifyError::InvalidOutput("confidence must be 0-1".into()))? as f32;
++    Ok(Classification { request_type: rt, complexity, confidence })
++}
++
++#[async_trait]
++impl RequestClassifier for HostedClassifier {
++    fn name(&self) -> &str {
++        "hosted"
++    }
++
++    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
++        let mut user = format!("Request:\n{}", truncate(input.query, MAX_QUERY_CHARS));
++        if let Some(ctx) = input.context {
++            user.push_str(&format!("\n\nContext:\n{}", truncate(ctx, MAX_CONTEXT_CHARS)));
++        }
++        let body = json!({
++            "model": self.model,
++            "temperature": 0,
++            "max_tokens": 80,
++            "messages": [
++                { "role": "system", "content": SYSTEM_PROMPT },
++                { "role": "user", "content": user },
++            ],
++        });
++        let mut req = self.http.post(&self.endpoint).json(&body);
++        if !self.api_key.is_empty() {
++            req = req.bearer_auth(&self.api_key);
++        }
++        let resp = req.send().await.map_err(|e| ClassifyError::Backend(e.to_string()))?;
++        if !resp.status().is_success() {
++            return Err(ClassifyError::Backend(format!("HTTP {}", resp.status())));
++        }
++        let v: Value = resp.json().await.map_err(|e| ClassifyError::Backend(e.to_string()))?;
++        let content = v["choices"][0]["message"]["content"]
++            .as_str()
++            .ok_or_else(|| ClassifyError::InvalidOutput("missing message content".into()))?;
++        parse_answer(content)
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn answer(content: &str) -> String {
++        json!({ "choices": [{ "message": { "role": "assistant", "content": content } }] }).to_string()
++    }
++
++    fn hosted(url: String) -> HostedClassifier {
++        HostedClassifier::new(reqwest::Client::new(), format!("{url}/chat/completions"), "m".into(), "k".into())
++    }
++
++    #[test]
++    fn parses_fenced_and_validates_ranges() {
++        let ok = parse_answer("```json\n{\"request_type\":\"writing\",\"complexity\":2,\"confidence\":0.9}\n```").unwrap();
++        assert_eq!(ok.request_type, RequestType::Writing);
++        assert!(parse_answer("{\"request_type\":\"writing\",\"complexity\":9,\"confidence\":0.9}").is_err());
++        assert!(parse_answer("{\"request_type\":\"writing\",\"complexity\":2,\"confidence\":1.5}").is_err());
++        assert!(parse_answer("{\"request_type\":\"poetry\",\"complexity\":2,\"confidence\":0.5}").is_err());
++        assert!(parse_answer("sorry, I cannot").is_err());
++    }
++
++    #[tokio::test]
++    async fn happy_path_sends_bearer_and_parses() {
++        let mut server = mockito::Server::new_async().await;
++        let m = server
++            .mock("POST", "/chat/completions")
++            .match_header("authorization", "Bearer k")
++            .with_status(200)
++            .with_body(answer("{\"request_type\":\"code_generation\",\"complexity\":3,\"confidence\":0.8}"))
++            .create_async()
++            .await;
++        let c = hosted(server.url())
++            .classify(&ClassifyInput { query: "write a parser", context: None })
++            .await
++            .unwrap();
++        assert_eq!(c, Classification { request_type: RequestType::CodeGeneration, complexity: 3, confidence: 0.8 });
++        m.assert_async().await;
++    }
++
++    #[tokio::test]
++    async fn http_error_and_garbage_are_errors() {
++        let mut server = mockito::Server::new_async().await;
++        let _e = server.mock("POST", "/chat/completions").with_status(500).create_async().await;
++        let err = hosted(server.url()).classify(&ClassifyInput { query: "x", context: None }).await;
++        assert!(matches!(err, Err(ClassifyError::Backend(_))));
++    }
++}
+diff -ruN '--exclude=target' orig/nasiko-main/llm-router/src/routing/classifier_local.rs clean/nasiko-main/llm-router/src/routing/classifier_local.rs
+--- a/llm-router/src/routing/classifier_local.rs	1970-01-01 00:00:00.000000000 +0000
++++ b/llm-router/src/routing/classifier_local.rs	2026-10-03 07:12:31.937524399 +0000
+@@ -0,0 +1,298 @@
++//! Local request-type classifier — a multinomial Naive Bayes over word unigrams/bigrams, 5-char stems, shape
++//! tokens and the regex category votes, trained **once at load** from labelled JSONL.
++//!
++//! * **No network, no model file, no new dependency.** The default training set
++//!   (`data/classifier/train.jsonl`) is embedded in the binary; `CLASSIFIER_MODEL_PATH` may point
++//!   at another JSONL (`{"request_type": ..., "query": ...}` per line) to train on instead.
++//! * **Deterministic.** Counting is order-independent and scoring iterates tokens in input order,
++//!   so identical `(query, context)` always yields identical output.
++//! * **Confidence** is the posterior of the winning class after length-normalised, temperature
++//!   scaled logits (`TEMPERATURE`, chosen by cross-validation on the training split only).
++//! * **Regex votes as features.** `rx_<type>` tokens carry the existing keyword classifier's
++//!   evidence, so the model starts from the baseline and corrects it rather than replacing it.
++
++use std::collections::HashMap;
++
++use async_trait::async_trait;
++use serde::Deserialize;
++
++use super::classifier::{
++    Classification, ClassifyError, ClassifyInput, RequestClassifier, RequestType,
++    estimate_complexity,
++};
++use super::patterns::CATEGORY_PATTERNS;
++
++const TRAIN_JSONL: &str = include_str!("../../data/classifier/train.jsonl");
++const CLASSES: [RequestType; 7] = [
++    RequestType::CodeGeneration,
++    RequestType::CodeUnderstanding,
++    RequestType::TechnicalDesign,
++    RequestType::AnalyticalReasoning,
++    RequestType::Writing,
++    RequestType::FactualLookup,
++    RequestType::General,
++];
++/// Laplace smoothing (1.0: the training set is small, so lean on the prior).
++const ALPHA: f64 = 1.0;
++/// Logit scaling: `logit / (sqrt(n_tokens) * TEMPERATURE)`. Raw NB posteriors are saturated for
++/// long inputs and wrong in the other direction after length normalisation; 0.25 was chosen by
++/// 5-fold cross-validation on the training split only (ECE ~0.08; the validation split was
++/// never used for tuning). See `calibration_cv_on_train_only`.
++const TEMPERATURE: f64 = 0.25;
++/// Logit scaling: `logit / (sqrt(n_tokens) * TEMPERATURE)`. Raw NB posteriors are saturated
++/// (~1.0) for long inputs; this brings confidence back to a usable, calibrated range.
++
++/// Context tokens count for less than query tokens.
++const CONTEXT_WEIGHT: f64 = 0.3;
++
++#[derive(Deserialize)]
++struct Row {
++    request_type: String,
++    query: String,
++}
++
++/// Trained model: per-class token log-likelihoods plus log priors.
++pub struct LocalClassifier {
++    /// token -> per-class log P(token | class)
++    loglik: HashMap<String, [f64; 7]>,
++    /// log P(token | class) for a token never seen in training (smoothed).
++    unseen: [f64; 7],
++    log_prior: [f64; 7],
++    examples: usize,
++}
++
++impl LocalClassifier {
++    /// Train on the embedded default set.
++    pub fn embedded() -> Self {
++        Self::from_jsonl(TRAIN_JSONL).expect("embedded classifier training set is valid")
++    }
++
++    /// Train on a JSONL string. Errors on a malformed line, an unknown label or an empty set.
++    pub fn from_jsonl(jsonl: &str) -> Result<Self, String> {
++        let mut counts: HashMap<String, [f64; 7]> = HashMap::new();
++        let mut class_tokens = [0f64; 7];
++        let mut class_docs = [0f64; 7];
++        let mut examples = 0usize;
++        for (i, line) in jsonl.lines().enumerate().filter(|(_, l)| !l.trim().is_empty()) {
++            let row: Row = serde_json::from_str(line).map_err(|e| format!("line {}: {e}", i + 1))?;
++            let rt = RequestType::from_wire(&row.request_type)
++                .ok_or_else(|| format!("line {}: unknown request_type {}", i + 1, row.request_type))?;
++            let c = CLASSES.iter().position(|x| *x == rt).expect("class listed");
++            class_docs[c] += 1.0;
++            examples += 1;
++            for (tok, _) in features(&row.query, None) {
++                counts.entry(tok).or_insert([0.0; 7])[c] += 1.0;
++                class_tokens[c] += 1.0;
++            }
++        }
++        if examples == 0 {
++            return Err("empty training set".into());
++        }
++        let vocab = counts.len() as f64;
++        let denom: Vec<f64> = class_tokens.iter().map(|t| t + ALPHA * (vocab + 1.0)).collect();
++        let mut unseen = [0.0; 7];
++        for c in 0..7 {
++            unseen[c] = (ALPHA / denom[c]).ln();
++        }
++        let loglik = counts
++            .into_iter()
++            .map(|(t, cs)| {
++                let mut ll = [0.0; 7];
++                for c in 0..7 {
++                    ll[c] = ((cs[c] + ALPHA) / denom[c]).ln();
++                }
++                (t, ll)
++            })
++            .collect();
++        let total: f64 = class_docs.iter().sum();
++        let mut log_prior = [0.0; 7];
++        for c in 0..7 {
++            log_prior[c] = ((class_docs[c] + 1.0) / (total + 7.0)).ln();
++        }
++        Ok(Self { loglik, unseen, log_prior, examples })
++    }
++
++    pub fn examples(&self) -> usize {
++        self.examples
++    }
++
++    /// Posterior over [`CLASSES`] (sums to 1).
++    fn posterior(&self, query: &str, context: Option<&str>) -> [f64; 7] {
++        let feats = features(query, context);
++        let mut logit = self.log_prior;
++        let mut n = 0.0;
++        for (tok, w) in &feats {
++            let ll = self.loglik.get(tok).unwrap_or(&self.unseen);
++            for c in 0..7 {
++                logit[c] += w * ll[c];
++            }
++            n += w;
++        }
++        let scale = 1.0 / (n.max(1.0).sqrt() * TEMPERATURE);
++        let max = logit.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
++        let mut p = [0.0; 7];
++        let mut z = 0.0;
++        for c in 0..7 {
++            p[c] = ((logit[c] - max) * scale).exp();
++            z += p[c];
++        }
++        for v in &mut p {
++            *v /= z;
++        }
++        p
++    }
++
++    /// Synchronous classify, shared by the trait impl and tests.
++    pub fn classify_sync(&self, query: &str, context: Option<&str>) -> Classification {
++        let p = self.posterior(query, context);
++        // First max wins on a tie -> deterministic.
++        let mut best = 0;
++        for c in 1..7 {
++            if p[c] > p[best] {
++                best = c;
++            }
++        }
++        Classification {
++            request_type: CLASSES[best],
++            complexity: estimate_complexity(query, context),
++            confidence: p[best] as f32,
++        }
++    }
++}
++
++#[async_trait]
++impl RequestClassifier for LocalClassifier {
++    fn name(&self) -> &str {
++        "local"
++    }
++    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
++        Ok(self.classify_sync(input.query, input.context))
++    }
++}
++
++/// Weighted feature tokens: query unigrams + bigrams (weight 1), context unigrams (weight
++/// [`CONTEXT_WEIGHT`], prefixed `c:`), shape tokens and regex category votes.
++fn features(query: &str, context: Option<&str>) -> Vec<(String, f64)> {
++    let lower = query.to_lowercase();
++    let words: Vec<&str> = lower
++        .split(|c: char| !c.is_alphanumeric())
++        .filter(|w| !w.is_empty())
++        .collect();
++    let mut out: Vec<(String, f64)> = Vec::with_capacity(words.len() * 2 + 8);
++    for w in &words {
++        out.push(((*w).to_string(), 1.0));
++        // Stem feature (5-char prefix) so paraphrases ("summarize"/"summary") share evidence.
++        if w.chars().count() > 5 {
++            out.push((format!("~{}", w.chars().take(5).collect::<String>()), 1.0));
++        }
++    }
++    for pair in words.windows(2) {
++        out.push((format!("{}_{}", pair[0], pair[1]), 1.0));
++    }
++    if let Some(ctx) = context {
++        for w in ctx.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).take(200) {
++            out.push((format!("c:{w}"), CONTEXT_WEIGHT));
++        }
++    }
++    let punct = query.chars().filter(|c| "{}();=<>[]`".contains(*c)).count();
++    if punct >= 2 || context.is_some_and(|c| c.contains("```")) {
++        out.push(("shape_code".into(), 1.0));
++    }
++    if query.contains('?') {
++        out.push(("shape_question".into(), 1.0));
++    }
++    out.push((
++        match words.len() {
++            0..=4 => "len_xs",
++            5..=12 => "len_s",
++            13..=30 => "len_m",
++            _ => "len_l",
++        }
++        .into(),
++        1.0,
++    ));
++    for (rt, pats) in CATEGORY_PATTERNS.iter() {
++        let hits = pats.iter().filter(|p| p.is_match(query)).count();
++        if hits > 0 {
++            out.push((format!("rx_{}", rt.as_str()), hits as f64));
++        }
++    }
++    out
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::routing::classifier::classify_request_type;
++
++    const VAL_JSONL: &str = include_str!("../../data/classifier/val.jsonl");
++
++    #[derive(Deserialize)]
++    struct ValRow {
++        request_type: String,
++        query: String,
++    }
++
++    fn val() -> Vec<(RequestType, String)> {
++        VAL_JSONL
++            .lines()
++            .map(|l| {
++                let r: ValRow = serde_json::from_str(l).unwrap();
++                (RequestType::from_wire(&r.request_type).unwrap(), r.query)
++            })
++            .collect()
++    }
++
++    #[test]
++    fn embedded_model_loads_and_is_deterministic() {
++        let m = LocalClassifier::embedded();
++        assert!(m.examples() > 100);
++        let a = m.classify_sync("Write a Rust function that parses CSV", None);
++        let b = LocalClassifier::embedded().classify_sync("Write a Rust function that parses CSV", None);
++        assert_eq!(a, b);
++        assert!((0.0..=1.0).contains(&a.confidence));
++        assert!((1..=5).contains(&a.complexity));
++    }
++
++    /// How `TEMPERATURE` was chosen: 5-fold cross-validation on the *training* split only (the
++    /// validation split is never used for tuning). Run with `--ignored --nocapture`.
++    #[test]
++    #[ignore = "calibration utility, not a regression test"]
++    fn calibration_cv_on_train_only() {
++        let lines: Vec<&str> = TRAIN_JSONL.lines().collect();
++        let (mut n, mut ok, mut bins) = (0usize, 0usize, [(0usize, 0f64, 0usize); 10]);
++        for fold in 0..5 {
++            let train: String = lines.iter().enumerate().filter(|(i, _)| i % 5 != fold).map(|(_, l)| format!("{l}\n")).collect();
++            let m = LocalClassifier::from_jsonl(&train).unwrap();
++            for l in lines.iter().enumerate().filter(|(i, _)| i % 5 == fold).map(|(_, l)| l) {
++                let r: ValRow = serde_json::from_str(l).unwrap();
++                let c = m.classify_sync(&r.query, None);
++                let good = c.request_type.as_str() == r.request_type;
++                let b = ((c.confidence * 10.0) as usize).min(9);
++                bins[b].0 += 1; bins[b].1 += c.confidence as f64; bins[b].2 += good as usize;
++                n += 1; ok += good as usize;
++            }
++        }
++        let ece: f64 = bins.iter().filter(|b| b.0 > 0).map(|b| (b.0 as f64 / n as f64) * ((b.1 / b.0 as f64) - (b.2 as f64 / b.0 as f64)).abs()).sum();
++        eprintln!("cv n={n} acc={:.3} ece={ece:.3}", ok as f64 / n as f64);
++    }
++
++    #[test]
++    fn rejects_bad_training_data() {
++        assert!(LocalClassifier::from_jsonl("").is_err());
++        assert!(LocalClassifier::from_jsonl("not json").is_err());
++        assert!(LocalClassifier::from_jsonl(r#"{"request_type":"nope","query":"x"}"#).is_err());
++    }
++
++    /// Held-out check: the local model must not be worse than the regex baseline on the
++    /// validation split it never trained on. (Measured numbers live in the docs.)
++    #[test]
++    fn local_beats_or_matches_regex_on_heldout_validation() {
++        let m = LocalClassifier::embedded();
++        let rows = val();
++        let local = rows.iter().filter(|(t, q)| m.classify_sync(q, None).request_type == *t).count();
++        let regex = rows.iter().filter(|(t, q)| classify_request_type(q) == *t).count();
++        eprintln!("heldout n={} local={local} regex={regex}", rows.len());
++        assert!(local >= regex, "local {local} < regex {regex}");
++    }
++}
+diff -ruN '--exclude=target' orig/nasiko-main/llm-router/src/routing/mod.rs clean/nasiko-main/llm-router/src/routing/mod.rs
+--- a/llm-router/src/routing/mod.rs	2026-10-01 06:28:04.000000000 +0000
++++ b/llm-router/src/routing/mod.rs	2026-10-03 07:12:31.953150534 +0000
+@@ -21,6 +21,8 @@
+ pub mod catalog;
+ pub mod cells;
+ pub mod classifier;
++pub mod classifier_hosted;
++pub mod classifier_local;
+ // The salience classifier itself — feature engine, weight loading, scoring, banding.
+ // Private to `routing`: only `salience.rs` (a sibling module) uses it directly, via
+ // `ClassifierSalienceGate`.
+@@ -33,7 +35,10 @@
+ pub use boundary::{BoundarySignals, Mode, Phase};
+ pub use cache::{CachedDecision, DecisionCache, NoopCache, RedisCache};
+ pub use cells::{CellStore, InMemoryCellStore, PgCellStore};
+-pub use classifier::{RequestType, Tier, classify, signal};
++pub use classifier::{
++    Classification, ClassifyError, ClassifyInput, GuardedClassifier, RegexClassifier,
++    RequestClassifier, RequestType, Tier, classify, signal,
++};
+ pub use registry::{PgTierRegistry, TierRegistry};
+ pub use salience::{AllowAllGate, ClassifierSalienceGate, SalienceGate};
+ 
+@@ -126,6 +131,21 @@
+     gate: &dyn SalienceGate,
+     inputs: &RouteInputs<'_>,
+ ) -> RouteDecision {
++    route_model_with(&RegexClassifier, cache, registry, cell_store, gate, inputs).await
++}
++
++/// [`route_model`] with an explicit [`RequestClassifier`] for the request-type decision at
++/// Level 3. The classifier runs only where Level 3 already ran (a fireable `cold_start` /
++/// `switch` boundary with a cache miss); `continue` tool-loop steps and cache hits never call
++/// it, so the selected tier stays sticky exactly as before.
++pub async fn route_model_with(
++    classifier: &dyn RequestClassifier,
++    cache: &dyn DecisionCache,
++    registry: &dyn TierRegistry,
++    cell_store: &dyn CellStore,
++    gate: &dyn SalienceGate,
++    inputs: &RouteInputs<'_>,
++) -> RouteDecision {
+     tracing::info!(
+         target: "nasiko::llm_router::routing",
+         agent_id = %inputs.agent_id,
+@@ -250,9 +270,19 @@
+             // (`ThreadRng`) is `!Send`, so it is scoped to drop before the next `.await` — the
+             // handler future must stay `Send`.
+             let learned = cell_store.load(inputs.provider).await;
+-            let (tier, request_type) = {
++            // The request type comes from the configured classifier (regex by default; a
++            // failing backend already degraded to regex inside `GuardedClassifier`). Only the
++            // tier is then Thompson-sampled, so provider-specific cost-aware mapping is intact.
++            let request_type = match classifier
++                .classify(&ClassifyInput { query, context: None })
++                .await
++            {
++                Ok(c) => c.request_type,
++                Err(_) => classifier::classify_request_type(query),
++            };
++            let tier = {
+                 let mut rng = rand::rng();
+-                classify(query, inputs.provider, &learned, &mut rng)
++                classifier::classify_typed(request_type, &learned, &mut rng)
+             };
+             // Per-config tier override takes priority over the global registry.
+             let config_override = match tier {
+@@ -600,6 +630,77 @@
+         assert_eq!(puts[0].2, d.model);
+     }
+ 
++    // -- request classifier seam (`route_model_with`) -------------------------------------
++
++    use std::sync::atomic::{AtomicUsize, Ordering};
++
++    /// Counts calls and answers a fixed type, or errors — to prove *when* the router asks.
++    struct CountingClassifier {
++        calls: AtomicUsize,
++        answer: Result<RequestType, ()>,
++    }
++    #[async_trait]
++    impl RequestClassifier for CountingClassifier {
++        fn name(&self) -> &str {
++            "counting"
++        }
++        async fn classify(&self, _: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
++            self.calls.fetch_add(1, Ordering::SeqCst);
++            match self.answer {
++                Ok(request_type) => Ok(Classification { request_type, complexity: 2, confidence: 0.9 }),
++                Err(()) => Err(ClassifyError::Backend("down".into())),
++            }
++        }
++    }
++    fn counting(answer: Result<RequestType, ()>) -> CountingClassifier {
++        CountingClassifier { calls: AtomicUsize::new(0), answer }
++    }
++
++    #[tokio::test]
++    async fn classifier_runs_once_at_cold_start_and_never_on_continue_or_cache_hit() {
++        let clf = counting(Ok(RequestType::Writing));
++        let cache = FakeCache::empty();
++        let cold = signals(Some("c1"), Phase::ColdStart, Mode::FreeFlowing);
++        let first = route_model_with(&clf, &cache, &test_support::StubRegistry, &InMemoryCellStore::new(), &AllowAllGate, &inputs("anthropic", &cold, None)).await;
++        assert_eq!(first.source, RouteSource::Classified);
++        assert_eq!(clf.calls.load(Ordering::SeqCst), 1);
++
++        // Tool-loop step: phase Continue is not a fireable boundary. With the decision cached
++        // from cold start the tier is sticky; with nothing cached it still must not classify.
++        let cont = signals(Some("c1"), Phase::Continue, Mode::FreeFlowing);
++        let cache_hit = FakeCache::with_hit(&first.model);
++        let sticky = route_model_with(&clf, &cache_hit, &test_support::StubRegistry, &InMemoryCellStore::new(), &AllowAllGate, &inputs("anthropic", &cont, None)).await;
++        assert_eq!((sticky.source, sticky.model.as_str()), (RouteSource::CacheHit, first.model.as_str()));
++        let uncached = route_model_with(&clf, &FakeCache::empty(), &test_support::StubRegistry, &InMemoryCellStore::new(), &AllowAllGate, &inputs("anthropic", &cont, None)).await;
++        assert_ne!(uncached.source, RouteSource::Classified);
++        assert_eq!(clf.calls.load(Ordering::SeqCst), 1, "continue must never classify");
++
++        // Even at a fireable boundary, a cache hit short-circuits before the classifier.
++        let again = route_model_with(&clf, &cache_hit, &test_support::StubRegistry, &InMemoryCellStore::new(), &AllowAllGate, &inputs("anthropic", &cold, None)).await;
++        assert_eq!(clf.calls.load(Ordering::SeqCst), 1, "cache hit must not classify");
++        assert_eq!(again.source, RouteSource::CacheHit);
++    }
++
++    #[tokio::test]
++    async fn failing_classifier_degrades_to_regex_and_still_routes() {
++        let clf = counting(Err(()));
++        let cache = FakeCache::empty();
++        let s = signals(Some("c2"), Phase::Switch, Mode::FreeFlowing);
++        let d = route_model_with(&clf, &cache, &test_support::StubRegistry, &InMemoryCellStore::new(), &AllowAllGate, &inputs("anthropic", &s, None)).await;
++        assert_eq!(d.source, RouteSource::Classified, "an Err must not become an outage");
++        assert_eq!(clf.calls.load(Ordering::SeqCst), 1);
++        assert_eq!(cache.puts.lock().unwrap().len(), 1);
++    }
++
++    #[tokio::test]
++    async fn pinned_flow_never_calls_the_classifier() {
++        let clf = counting(Ok(RequestType::General));
++        let s = signals(Some("c3"), Phase::Switch, Mode::FreeFlowing);
++        let d = route_model_with(&clf, &FakeCache::empty(), &test_support::StubRegistry, &InMemoryCellStore::new(), &AllowAllGate, &inputs("anthropic", &s, Some("pinned-model"))).await;
++        assert_eq!(d.model, "pinned-model");
++        assert_eq!(clf.calls.load(Ordering::SeqCst), 0);
++    }
++
+     #[tokio::test]
+     async fn level2_5_small_talk_serves_cheapest_config_model_and_does_not_cache() {
+         // Gate says non-substantive: a configured agent gets its cheapest model (registry
+        

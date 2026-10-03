@@ -1,0 +1,35 @@
+{"request_type": "factual_lookup", "complexity": 1, "query": "speed of light in km/s"}
+{"request_type": "writing", "complexity": 2, "query": "Give me a catchy tagline for a bakery"}
+{"request_type": "general", "complexity": 3, "query": "Can you be my accountability partner for a reading habit?"}
+{"request_type": "technical_design", "complexity": 4, "query": "Design a rate limiter for a multi-region API gateway handling 50k requests per second"}
+{"request_type": "code_understanding", "complexity": 4, "query": "Read this diff and tell me whether it changes the public behaviour of the API"}
+{"request_type": "analytical_reasoning", "complexity": 2, "query": "what is 15% of 240 plus 8"}
+{"request_type": "factual_lookup", "complexity": 1, "query": "Who wrote Pride and Prejudice?"}
+{"request_type": "writing", "complexity": 2, "query": "make this text shorter and punchier"}
+{"request_type": "code_generation", "complexity": 4, "query": "Write a parser for arithmetic expressions with precedence and parentheses, no libraries"}
+{"request_type": "general", "complexity": 1, "query": "tell me a joke"}
+{"request_type": "writing", "complexity": 2, "query": "Say no to a meeting invite nicely"}
+{"request_type": "analytical_reasoning", "complexity": 4, "query": "What are the second-order effects of a sudden minimum wage increase on small businesses?"}
+{"request_type": "code_generation", "complexity": 1, "query": "Fix the typo in this Python comment: `# retrun the value`"}
+{"request_type": "technical_design", "complexity": 4, "query": "What deployment topology would you use for a latency-sensitive ML inference service on Kubernetes?"}
+{"request_type": "general", "complexity": 1, "query": "good morning"}
+{"request_type": "writing", "complexity": 3, "query": "Write a haiku sequence about autumn rain"}
+{"request_type": "code_understanding", "complexity": 3, "query": "Explain the difference between what these two git commands do to my history"}
+{"request_type": "factual_lookup", "complexity": 1, "query": "What is the capital of Australia?"}
+{"request_type": "code_generation", "complexity": 4, "query": "Create a React hook that syncs state to localStorage and across browser tabs"}
+{"request_type": "code_understanding", "complexity": 3, "query": "Trace through this code and tell me what it prints for input 5"}
+{"request_type": "analytical_reasoning", "complexity": 4, "query": "Weigh the risks of expanding to Brazil versus Mexico first"}
+{"request_type": "technical_design", "complexity": 2, "query": "Is Postgres or MongoDB better for storing user profiles?"}
+{"request_type": "code_understanding", "complexity": 4, "query": "Help me understand why this goroutine leaks, here's the full file"}
+{"request_type": "code_generation", "complexity": 3, "query": "build me a small Flask endpoint that accepts a CSV upload and returns row counts"}
+{"request_type": "factual_lookup", "complexity": 2, "query": "How many bones are in the adult human body?"}
+{"request_type": "general", "complexity": 2, "query": "How do I get better at public speaking?"}
+{"request_type": "writing", "complexity": 2, "query": "suggest five subject lines for a newsletter about gardening"}
+{"request_type": "technical_design", "complexity": 4, "query": "Outline a disaster recovery plan with RPO of 5 minutes for our primary database"}
+{"request_type": "analytical_reasoning", "complexity": 3, "query": "If the probability of rain is 30% each day, what's the chance it rains at least once in 4 days?"}
+{"request_type": "code_understanding", "complexity": 4, "query": "Walk me through how this recursive descent parser handles operator precedence"}
+{"request_type": "technical_design", "complexity": 3, "query": "What's a good folder structure for a large Next.js project?"}
+{"request_type": "general", "complexity": 3, "query": "Give me ideas for a 10-year-old's birthday party"}
+{"request_type": "code_generation", "complexity": 2, "query": "Can you turn this for-loop into a list comprehension? total = []; for x in xs: total.append(x*2)"}
+{"request_type": "factual_lookup", "complexity": 1, "query": "when is the next leap year"}
+{"request_type": "analytical_reasoning", "complexity": 3, "query": "Is this argument valid? All managers attend meetings; Sam attends meetings; so Sam is a manager"}
