@@ -214,6 +214,7 @@ fn compress_str(
 /// Compacts tool schemas in a ChatRequest to sub-token micro-grammar.
 /// Injects compact definitions and call instructions into the system message,
 /// eliding verbose JSON Schema overhead and saving ~50% of prompt tokens.
+#[allow(dead_code)]
 pub(crate) fn apply_tool_compaction(
     req: &mut ChatRequest,
 ) -> Option<nasiko_tool_compact::CompactTools> {
@@ -260,6 +261,7 @@ pub(crate) fn apply_tool_compaction(
 
 /// Decodes compact tool call markers (e.g. `<<call name {...}>>`) from model completion output
 /// into standard OpenAI ToolCall IR structures, fail-closing on unknown or corrupt arguments.
+#[allow(dead_code)]
 pub(crate) fn restore_compact_tool_calls(
     response_text: &str,
     tools: &[crate::ir::chat::ToolDef],

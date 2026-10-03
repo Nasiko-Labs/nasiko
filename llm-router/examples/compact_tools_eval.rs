@@ -1,73 +1,48 @@
-//! Evaluation harness for Nasiko compact tool schemas.
-//! Runs offline deterministically or live against OpenAI-compatible proxy.
-//! Usage: EVAL_SET=/tmp/compact-tools-eval.json OUT=/tmp/out.jsonl cargo run --release -p nasiko-llm-router --example compact_tools_eval
+//! Official evaluation runner for nasiko-tool-compact.
+//! Reads an evaluation dataset from EVAL_SET (default: /tmp/compact-tools-eval.json)
+//! and emits streaming tool call outputs in JSONL format to OUT (default: /tmp/out.jsonl).
 
 use nasiko_tool_compact::{
-    decode_calls, encode_tools, StreamDecoder, ToolCompactError, ToolDef, FunctionDef,
+    compact_tools, StreamingToolCallDecoder,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
-use std::collections::HashMap;
 use std::env;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufReader, Write};
+use std::path::Path;
 
 #[derive(Debug, Deserialize)]
 struct EvalFile {
     #[serde(default)]
+    #[allow(dead_code)]
     schema_version: Option<String>,
     #[serde(default)]
-    tools: Vec<ToolDef>,
-    #[serde(default)]
-    cases: Vec<Case>,
+    encoder_cases: Vec<EncoderCase>,
     #[serde(default)]
     decoder_cases: Vec<DecoderCase>,
 }
 
 #[derive(Debug, Deserialize)]
-struct Case {
+struct EncoderCase {
     id: String,
-    tools: Vec<String>,
-    messages: Vec<Value>,
-    expected: Vec<ExpectedCall>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-struct ExpectedCall {
-    name: String,
-    arguments: Value,
+    tools: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
 struct DecoderCase {
     id: String,
-    #[serde(default)]
+    stream: Vec<String>,
+    #[allow(dead_code)]
     note: Option<String>,
-    #[serde(default)]
-    tools: Vec<String>,
-    chunks: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
-struct StandardCaseOutput {
+struct EvalOutputLine {
     id: String,
-    compact_request: Value,
-    compacted: bool,
-    rendered_calls: String,
-    roundtrip_calls: Vec<Value>,
-}
-
-#[derive(Debug, Serialize)]
-struct DecoderCaseOutput {
-    id: String,
-    decoded: DecodedResult,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(untagged)]
-enum DecodedResult {
-    Calls { calls: Vec<Value> },
-    Error { error: String },
+    #[serde(skip_serializing_if = "Option::is_none")]
+    compact_system_prompt: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<Vec<serde_json::Value>>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -78,181 +53,97 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Reading eval set from: {}", eval_set_path);
     println!("Writing JSONL outputs to: {}", out_path);
 
-    let eval_file = match File::open(&eval_set_path) {
-        Ok(file) => {
-            let reader = BufReader::new(file);
-            serde_json::from_reader::<_, EvalFile>(reader)?
-        }
-        Err(_) => {
-            eprintln!("Warning: {} not found. Generating default sample cases for local smoke test.", eval_set_path);
-            sample_eval_file()
-        }
+    let eval_file: EvalFile = if Path::new(&eval_set_path).exists() {
+        let file = File::open(&eval_set_path)?;
+        let reader = BufReader::new(file);
+        serde_json::from_reader(reader)?
+    } else {
+        println!("Warning: {} not found. Generating default sample cases for local smoke test.", eval_set_path);
+        generate_sample_eval_file()
     };
-
-    let tools_by_name: HashMap<String, ToolDef> = eval_file
-        .tools
-        .iter()
-        .map(|t| (t.function.name.clone(), t.clone()))
-        .collect();
 
     let mut out_file = File::create(&out_path)?;
 
-    // 1. Process Standard Evaluation Cases
-    for case in &eval_file.cases {
-        let active_tools: Vec<ToolDef> = case
-            .tools
-            .iter()
-            .filter_map(|name| tools_by_name.get(name).cloned())
-            .collect();
-
-        let compact = encode_tools(&active_tools)?;
-
-        // Render expected calls in compact syntax
-        let mut rendered_parts = Vec::new();
-        for exp in &case.expected {
-            rendered_parts.push(format!("<<call {} {}>>", exp.name, exp.arguments));
+    // 1. Process encoder cases
+    for case in eval_file.encoder_cases {
+        let mut functions = Vec::new();
+        for t in case.tools {
+            if let Some(f) = t.get("function") {
+                let func_def: nasiko_tool_compact::types::FunctionDef = serde_json::from_value(f.clone())?;
+                functions.push(func_def);
+            }
         }
-        let rendered_calls = rendered_parts.join("\n");
 
-        // Decode calls back to verify roundtrip fidelity
-        let roundtrip_calls = match decode_calls(&rendered_calls, &active_tools) {
-            Ok(calls) => calls
-                .into_iter()
-                .map(|c| {
-                    json!({
-                        "name": c.function.name,
-                        "arguments": serde_json::from_str::<Value>(&c.function.arguments).unwrap_or(Value::Null)
-                    })
-                })
-                .collect(),
-            Err(_) => Vec::new(),
+        let compact_repr = compact_tools(&functions);
+        let out_line = EvalOutputLine {
+            id: case.id,
+            compact_system_prompt: Some(compact_repr),
+            tool_calls: None,
         };
-
-        // Construct standard OpenAI-shaped request body
-        let mut messages = case.messages.clone();
-        messages.insert(
-            0,
-            json!({
-                "role": "system",
-                "content": format!(
-                    "Available tools:\n{}\n\n{}",
-                    compact.compact_definitions,
-                    compact.call_instructions
-                )
-            }),
-        );
-
-        let compact_request = json!({
-            "model": "gpt-4o",
-            "messages": messages,
-            "temperature": 0
-        });
-
-        let line = StandardCaseOutput {
-            id: case.id.clone(),
-            compact_request,
-            compacted: true,
-            rendered_calls,
-            roundtrip_calls,
-        };
-
-        writeln!(out_file, "{}", serde_json::to_string(&line)?)?;
+        writeln!(out_file, "{}", serde_json::to_string(&out_line)?)?;
     }
 
-    // 2. Process Decoder Stream Cases
-    for dcase in &eval_file.decoder_cases {
-        let active_tools: Vec<ToolDef> = dcase
-            .tools
-            .iter()
-            .filter_map(|name| tools_by_name.get(name).cloned())
-            .collect();
+    // 2. Process decoder cases
+    for case in eval_file.decoder_cases {
+        let mut decoder = StreamingToolCallDecoder::new();
+        let mut emitted_calls = Vec::new();
 
-        let mut decoder = StreamDecoder::new();
-        for chunk in &dcase.chunks {
-            decoder.feed(chunk);
+        for chunk in case.stream {
+            let calls = decoder.push_chunk(&chunk)?;
+            for call in calls {
+                emitted_calls.push(serde_json::json!({
+                    "id": call.id,
+                    "name": call.name,
+                    "arguments": call.arguments
+                }));
+            }
         }
 
-        let decoded = match decoder.finish(&active_tools) {
-            Ok(calls) => {
-                let formatted = calls
-                    .into_iter()
-                    .map(|c| {
-                        json!({
-                            "name": c.function.name,
-                            "arguments": serde_json::from_str::<Value>(&c.function.arguments).unwrap_or(Value::Null)
-                        })
-                    })
-                    .collect();
-                DecodedResult::Calls { calls: formatted }
-            }
-            Err(ToolCompactError::UnknownTool(_)) => DecodedResult::Error {
-                error: "unknown_tool".to_string(),
-            },
-            Err(ToolCompactError::InvalidArguments(_, _)) => DecodedResult::Error {
-                error: "invalid_arguments".to_string(),
-            },
-            Err(other) => DecodedResult::Error {
-                error: format!("{:?}", other),
-            },
+        let out_line = EvalOutputLine {
+            id: case.id,
+            compact_system_prompt: None,
+            tool_calls: Some(emitted_calls),
         };
-
-        let line = DecoderCaseOutput {
-            id: dcase.id.clone(),
-            decoded,
-        };
-
-        writeln!(out_file, "{}", serde_json::to_string(&line)?)?;
+        writeln!(out_file, "{}", serde_json::to_string(&out_line)?)?;
     }
 
     println!("Evaluation complete! Successfully generated {}", out_path);
     Ok(())
 }
 
-fn sample_eval_file() -> EvalFile {
+fn generate_sample_eval_file() -> EvalFile {
     EvalFile {
-        schema_version: Some("v1-sample".to_string()),
-        tools: vec![
-            ToolDef {
-                kind: "function".to_string(),
-                function: FunctionDef {
-                    name: "create_calendar_event".to_string(),
-                    description: Some("Create an event in the user's calendar.".to_string()),
-                    parameters: Some(json!({
-                        "type": "object",
-                        "properties": {
-                            "title": {"type": "string"},
-                            "start": {"type": "string", "format": "date-time"},
-                            "duration_min": {"type": "integer"},
-                            "attendees": {"type": "array", "items": {"type": "string"}},
-                            "visibility": {"type": "string", "enum": ["public", "private"]}
-                        },
-                        "required": ["title", "start"]
-                    })),
-                },
-                extra: serde_json::Map::new(),
-            },
+        schema_version: Some("v1".to_string()),
+        encoder_cases: vec![
+            EncoderCase {
+                id: "smoke_enc_1".to_string(),
+                tools: vec![
+                    serde_json::json!({
+                        "type": "function",
+                        "function": {
+                            "name": "lookup_user",
+                            "description": "Finds a user by ID",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "user_id": { "type": "string" }
+                                },
+                                "required": ["user_id"]
+                            }
+                        }
+                    })
+                ],
+            }
         ],
-        cases: vec![Case {
-            id: "ct-001".to_string(),
-            tools: vec!["create_calendar_event".to_string()],
-            messages: vec![json!({"role": "user", "content": "Book Monday 3pm"})],
-            expected: vec![ExpectedCall {
-                name: "create_calendar_event".to_string(),
-                arguments: json!({
-                    "title": "Design review",
-                    "start": "2026-10-05T15:00:00+05:30"
-                }),
-            }],
-        }],
-        decoder_cases: vec![DecoderCase {
-            id: "dc-002".to_string(),
-            note: Some("marker split across chunks".to_string()),
-            tools: vec!["create_calendar_event".to_string()],
-            chunks: vec![
-                "<<ca".to_string(),
-                "ll create_calendar_event {\"title\":\"Retro\",\"start\":\"2026-10-04T10:00:00+05:30\"}>".to_string(),
-                ">".to_string(),
-            ],
-        }],
+        decoder_cases: vec![
+            DecoderCase {
+                id: "smoke_dec_1".to_string(),
+                stream: vec![
+                    "<<call:lookup_user{\"user_".to_string(),
+                    "id\": \"usr_42\"}>>".to_string()
+                ],
+                note: None,
+            }
+        ],
     }
 }
