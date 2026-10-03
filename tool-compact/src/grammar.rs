@@ -127,8 +127,11 @@ impl Scanner {
         }
     }
 
-    /// Feed the next chunk. Returns the tokens completed by it, in order.
-    pub(crate) fn push(&mut self, chunk: &str) -> Result<Vec<Token>> {
+    /// Feed the next chunk, yielding tokens as they complete.
+    pub(crate) fn push_with<F>(&mut self, chunk: &str, mut on_token: F) -> Result<()>
+    where
+        F: FnMut(Token) -> Result<()>,
+    {
         if self.state == State::Failed {
             return Err(CompactError::InvalidSyntax(
                 "scanner already failed".to_string(),
@@ -140,9 +143,32 @@ impl Scanner {
                 self.state = State::Failed;
                 return Err(e);
             }
+            for token in out.drain(..) {
+                if let Err(e) = on_token(token) {
+                    self.state = State::Failed;
+                    return Err(e);
+                }
+            }
         }
         self.flush_text(&mut out);
-        Ok(out)
+        for token in out.drain(..) {
+            if let Err(e) = on_token(token) {
+                self.state = State::Failed;
+                return Err(e);
+            }
+        }
+        Ok(())
+    }
+
+    /// Feed the next chunk. Returns the tokens completed by it, in order.
+    #[allow(dead_code)]
+    pub(crate) fn push(&mut self, chunk: &str) -> Result<Vec<Token>> {
+        let mut tokens = Vec::new();
+        self.push_with(chunk, |t| {
+            tokens.push(t);
+            Ok(())
+        })?;
+        Ok(tokens)
     }
 
     /// Signal end of input. A partial opening marker is text; a started call is an error.
