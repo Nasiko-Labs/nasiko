@@ -28,6 +28,9 @@
 //! it an entropy RNG; tests inject a seeded one.
 
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use rand::Rng;
 use rand_distr::{Beta, Distribution};
@@ -88,6 +91,32 @@ impl RequestType {
             "general" => RequestType::General,
             _ => return None,
         })
+    }
+
+    /// Every request type in canonical order. This order is a contract shared by
+    /// [`regex_votes`], the local classifier's weights file (`classes`), and the hosted
+    /// classifier's label letters (A–G) — never reorder it without retraining.
+    pub const ALL: [RequestType; 7] = [
+        RequestType::CodeGeneration,
+        RequestType::CodeUnderstanding,
+        RequestType::TechnicalDesign,
+        RequestType::AnalyticalReasoning,
+        RequestType::Writing,
+        RequestType::FactualLookup,
+        RequestType::General,
+    ];
+
+    /// Position of `self` in [`RequestType::ALL`].
+    pub fn index(self) -> usize {
+        match self {
+            RequestType::CodeGeneration => 0,
+            RequestType::CodeUnderstanding => 1,
+            RequestType::TechnicalDesign => 2,
+            RequestType::AnalyticalReasoning => 3,
+            RequestType::Writing => 4,
+            RequestType::FactualLookup => 5,
+            RequestType::General => 6,
+        }
     }
 }
 
@@ -251,6 +280,38 @@ pub fn pick_model_thompson<R: Rng + ?Sized>(
     w_cost: f64,
     rng: &mut R,
 ) -> Tier {
+    pick_model_thompson_with_shift(
+        cells,
+        request_type,
+        w_quality,
+        w_cost,
+        [0.0; 3],
+        [true; 3],
+        rng,
+    )
+}
+
+/// [`pick_model_thompson`] with a per-tier additive shift of the cold-start prior
+/// (`[Tier1, Tier2, Tier3]`, the shifted prior clamped to `[0.05, 0.95]`) and an arm mask.
+///
+/// A Beta sample is drawn for **every** arm, masked or not, so the RNG stream is identical to
+/// the unshifted selection; masked arms are only skipped in the argmax. With a zero shift and
+/// every arm allowed this is bit-identical to [`pick_model_thompson`] (which delegates here).
+/// An all-`false` mask is ignored rather than leaving no arm to pick.
+pub fn pick_model_thompson_with_shift<R: Rng + ?Sized>(
+    cells: &CellMap,
+    request_type: RequestType,
+    w_quality: f64,
+    w_cost: f64,
+    prior_shift: [f64; 3],
+    allowed: [bool; 3],
+    rng: &mut R,
+) -> Tier {
+    let allowed = if allowed.iter().any(|a| *a) {
+        allowed
+    } else {
+        [true; 3]
+    };
     let lo = TIER_ARMS
         .iter()
         .map(|a| a.cost)
@@ -263,8 +324,10 @@ pub fn pick_model_thompson<R: Rng + ?Sized>(
 
     let mut best = TIER_ARMS[0].tier;
     let mut best_score = f64::NEG_INFINITY;
-    for arm in TIER_ARMS.iter() {
-        let prior = cold_start_prior(arm.quality_tier, arm.strengths, request_type);
+    for (i, arm) in TIER_ARMS.iter().enumerate() {
+        let prior = (cold_start_prior(arm.quality_tier, arm.strengths, request_type)
+            + prior_shift[i])
+            .clamp(0.05, 0.95);
         let (successes, failures) = match cells.get(&(arm.tier, request_type)) {
             Some(cell) => {
                 let s = cell.quality_mean * cell.samples as f64;
@@ -281,7 +344,7 @@ pub fn pick_model_thompson<R: Rng + ?Sized>(
             0.0
         };
         let score = w_quality * q + w_cost * (1.0 - norm_cost);
-        if score > best_score {
+        if allowed[i] && score > best_score {
             best_score = score;
             best = arm.tier;
         }
@@ -322,6 +385,317 @@ pub fn classify<R: Rng + ?Sized>(
         "classifier: classified query into request type and Thompson-sampled a model tier"
     );
     (tier, request_type)
+}
+
+// --------------------------------------------------------------------------
+// 5. Pluggable request classifier (Level 3 seam)
+// --------------------------------------------------------------------------
+
+/// Input to a [`RequestClassifier`].
+#[derive(Debug, Clone, Copy)]
+pub struct ClassifyInput<'a> {
+    /// The latest user message — what the request is asking for.
+    pub query: &'a str,
+    /// Optional bounded context: attached material (code, notes, logs) or recent
+    /// conversation. Backends may ignore it (the regex does).
+    pub context: Option<&'a str>,
+}
+
+/// A classifier's verdict on one request.
+///
+/// - `request_type`: one of the seven [`RequestType`]s — the label the bandit learns on.
+/// - `complexity`: 1–5 on the rubric *1 = trivial single operation; 2 = straightforward;
+///   3 = multi-step with limited constraints; 4 = substantial reasoning or design;
+///   5 = intricate cross-component reasoning and validation*.
+/// - `confidence`: a calibrated estimate of P(`request_type` is correct), in `[0, 1]`.
+///   It describes the type label only; complexity carries no confidence of its own.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Classification {
+    pub request_type: RequestType,
+    pub complexity: u8,
+    pub confidence: f32,
+}
+
+impl Classification {
+    /// Build a verdict, clamping `complexity` to `1..=5` and `confidence` to `[0, 1]`
+    /// (a NaN confidence becomes `0.0`), so no backend can hand the router an out-of-range
+    /// value.
+    pub fn new(request_type: RequestType, complexity: u8, confidence: f32) -> Self {
+        let confidence = if confidence.is_nan() {
+            0.0
+        } else {
+            confidence.clamp(0.0, 1.0)
+        };
+        Self {
+            request_type,
+            complexity: complexity.clamp(1, 5),
+            confidence,
+        }
+    }
+}
+
+/// Why a classifier could not produce a verdict. Every variant ends in the regex fallback
+/// (see [`GuardedClassifier`]); none ever fails a request.
+#[derive(Debug, thiserror::Error)]
+pub enum ClassifyError {
+    #[error("classifier timed out after {0:?}")]
+    Timeout(Duration),
+    /// Network failure, a non-success HTTP status, or a backend that is not configured.
+    #[error("classifier backend unavailable: {0}")]
+    Unavailable(String),
+    #[error("classifier response was not understood: {0}")]
+    InvalidResponse(String),
+    /// Model load or inference failure.
+    #[error("classifier model error: {0}")]
+    Model(String),
+}
+
+/// Decides a request's type, complexity and confidence at routing Level 3.
+///
+/// The router holds one behind `Arc<dyn RequestClassifier>`, built from config by
+/// `build_request_classifier`; `examples/classifier_eval.rs` builds it the same way, so the
+/// eval exercises the router's code path. Async because hosted backends make network calls.
+#[async_trait::async_trait]
+pub trait RequestClassifier: Send + Sync {
+    /// Short stable backend name for logs and the eval: `"regex"`, `"local"`, `"hosted"`, …
+    fn name(&self) -> &str;
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError>;
+}
+
+/// [`RegexClassifier`]'s fixed complexity. The regex carries no complexity signal, so it
+/// reports the rubric midpoint — which also makes complexity-aware tier routing an exact
+/// no-op on the regex path ([`select_tier`]).
+pub const REGEX_COMPLEXITY: u8 = 3;
+
+/// [`RegexClassifier`]'s confidence when at least one pattern fired: the regex's measured
+/// request-type accuracy on that case of our validation split, so it is calibrated in
+/// aggregate by construction.
+pub const REGEX_CONFIDENCE_MATCHED: f32 = 0.60;
+
+/// [`RegexClassifier`]'s confidence when no pattern fired and it defaulted to `General`:
+/// the regex's measured accuracy on that case of our validation split.
+pub const REGEX_CONFIDENCE_DEFAULTED: f32 = 0.15;
+
+/// Per-category regex vote counts, indexed by [`RequestType::ALL`] (`General` is always 0).
+/// The same votes [`classify_request_type`] counts; exposed so the local classifier can use
+/// them as features and the regex can report whether anything fired.
+pub(crate) fn regex_votes(text: &str) -> [u8; 7] {
+    let mut votes = [0u8; 7];
+    for (rt, pats) in CATEGORY_PATTERNS.iter() {
+        let n = pats.iter().filter(|p| p.is_match(text)).count();
+        votes[rt.index()] = u8::try_from(n).unwrap_or(u8::MAX);
+    }
+    votes
+}
+
+/// The existing regex vote counter behind the [`RequestClassifier`] trait — the default
+/// backend. Its request type is exactly [`classify_request_type`]'s; complexity is the fixed
+/// [`REGEX_COMPLEXITY`]; confidence is [`REGEX_CONFIDENCE_MATCHED`] or
+/// [`REGEX_CONFIDENCE_DEFAULTED`]. Context is ignored. Never fails, no network.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RegexClassifier;
+
+impl RegexClassifier {
+    /// The regex verdict with its fixed values. This is also *the* fallback every other path
+    /// uses (the guard, the router, the eval), so the regex's documented values live in one
+    /// place.
+    pub fn classify_sync(query: &str) -> Classification {
+        let fired = regex_votes(query).iter().any(|v| *v > 0);
+        let confidence = if fired {
+            REGEX_CONFIDENCE_MATCHED
+        } else {
+            REGEX_CONFIDENCE_DEFAULTED
+        };
+        Classification::new(classify_request_type(query), REGEX_COMPLEXITY, confidence)
+    }
+}
+
+#[async_trait::async_trait]
+impl RequestClassifier for RegexClassifier {
+    fn name(&self) -> &str {
+        "regex"
+    }
+
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+        Ok(Self::classify_sync(input.query))
+    }
+}
+
+/// Process-wide classifier counters, shared via `Arc` between the [`GuardedClassifier`] and
+/// any composite backend (a cascade counts its escalations here). Relaxed atomics: these are
+/// telemetry, not synchronization.
+#[derive(Debug, Default)]
+pub struct ClassifierStats {
+    pub calls: AtomicU64,
+    pub fallback_error: AtomicU64,
+    pub fallback_timeout: AtomicU64,
+    /// Set at build time when the configured backend could not be constructed.
+    pub fallback_load: AtomicU64,
+    pub escalations: AtomicU64,
+    pub escalation_failures: AtomicU64,
+}
+
+/// A point-in-time copy of [`ClassifierStats`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ClassifierStatsSnapshot {
+    pub calls: u64,
+    pub fallback_error: u64,
+    pub fallback_timeout: u64,
+    pub fallback_load: u64,
+    pub escalations: u64,
+    pub escalation_failures: u64,
+}
+
+impl ClassifierStatsSnapshot {
+    /// Every fallback to the regex, whatever the reason.
+    pub fn fallbacks(&self) -> u64 {
+        self.fallback_error + self.fallback_timeout + self.fallback_load
+    }
+}
+
+impl ClassifierStats {
+    pub fn snapshot(&self) -> ClassifierStatsSnapshot {
+        ClassifierStatsSnapshot {
+            calls: self.calls.load(Ordering::Relaxed),
+            fallback_error: self.fallback_error.load(Ordering::Relaxed),
+            fallback_timeout: self.fallback_timeout.load(Ordering::Relaxed),
+            fallback_load: self.fallback_load.load(Ordering::Relaxed),
+            escalations: self.escalations.load(Ordering::Relaxed),
+            escalation_failures: self.escalation_failures.load(Ordering::Relaxed),
+        }
+    }
+}
+
+/// Wraps the configured backend with a time budget and the regex fallback: on an `Err` or a
+/// timeout it logs why (never the query text), counts the fallback, and returns
+/// [`RegexClassifier::classify_sync`]. It therefore **never returns `Err`**.
+///
+/// `tokio::time::timeout` can only interrupt a future at an `.await`; it cannot pre-empt
+/// synchronous CPU work. The in-process local backend runs in microseconds and never
+/// yields, so for it the guard's value is the error fallback; the budget bounds async
+/// (network) backends.
+pub struct GuardedClassifier {
+    primary: Arc<dyn RequestClassifier>,
+    timeout: Duration,
+    stats: Arc<ClassifierStats>,
+}
+
+impl GuardedClassifier {
+    pub fn new(
+        primary: Arc<dyn RequestClassifier>,
+        timeout: Duration,
+        stats: Arc<ClassifierStats>,
+    ) -> Self {
+        Self {
+            primary,
+            timeout,
+            stats,
+        }
+    }
+
+    /// The shared counters (calls, fallbacks by reason, escalations).
+    pub fn stats(&self) -> &Arc<ClassifierStats> {
+        &self.stats
+    }
+}
+
+#[async_trait::async_trait]
+impl RequestClassifier for GuardedClassifier {
+    fn name(&self) -> &str {
+        self.primary.name()
+    }
+
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+        self.stats.calls.fetch_add(1, Ordering::Relaxed);
+        match tokio::time::timeout(self.timeout, self.primary.classify(input)).await {
+            Ok(Ok(c)) => Ok(c),
+            Ok(Err(e)) => {
+                self.stats.fallback_error.fetch_add(1, Ordering::Relaxed);
+                tracing::warn!(
+                    target: "nasiko::llm_router::classifier",
+                    backend = self.primary.name(),
+                    error = %e,
+                    query_chars = input.query.chars().count(),
+                    "request classifier failed; falling back to regex"
+                );
+                Ok(RegexClassifier::classify_sync(input.query))
+            }
+            Err(_) => {
+                self.stats.fallback_timeout.fetch_add(1, Ordering::Relaxed);
+                tracing::warn!(
+                    target: "nasiko::llm_router::classifier",
+                    backend = self.primary.name(),
+                    timeout_ms = self.timeout.as_millis() as u64,
+                    query_chars = input.query.chars().count(),
+                    "request classifier timed out; falling back to regex"
+                );
+                Ok(RegexClassifier::classify_sync(input.query))
+            }
+        }
+    }
+}
+
+/// Opt-in complexity-aware tier routing (`CLASSIFIER_COMPLEXITY_ROUTING`). [`Self::OFF`]
+/// makes [`select_tier`] identical to [`pick_model_thompson`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ComplexityRouting {
+    pub enabled: bool,
+    /// Minimum confidence for the hard guardrail (arm exclusion) to apply.
+    pub guard_confidence: f32,
+}
+
+impl ComplexityRouting {
+    pub const OFF: Self = Self {
+        enabled: false,
+        guard_confidence: 0.6,
+    };
+}
+
+/// Pick a tier for a classification: Thompson sampling over the `(tier, request_type)` cells,
+/// with an opt-in complexity prior shift and guardrail.
+///
+/// | complexity | prior shift T1 / T2 / T3 | guardrail (if `confidence ≥ guard_confidence`) |
+/// |---|---|---|
+/// | 1–2 | −0.10 / 0 / +0.15 | Tier 1 excluded |
+/// | 3 | 0 / 0 / 0 | none |
+/// | 4–5 | +0.15 / 0 / −0.15 | Tier 3 excluded |
+///
+/// Disabled, or at complexity 3 (always the case for the regex), this is exactly
+/// [`pick_model_thompson`]. The bandit key stays `(tier, request_type)`: keying learned cells
+/// on complexity would change the persisted `router_quality_cells` schema (a migration, out
+/// of scope), so complexity acts only as a cold-start prior and a constraint — learned cells
+/// still dominate as evidence accumulates.
+pub fn select_tier<R: Rng + ?Sized>(
+    cells: &CellMap,
+    c: &Classification,
+    cx: ComplexityRouting,
+    rng: &mut R,
+) -> Tier {
+    let (shift, guard) = match (cx.enabled, c.complexity) {
+        (false, _) | (true, 3) => ([0.0; 3], [true; 3]),
+        (true, 0..=2) => ([-0.10, 0.0, 0.15], [false, true, true]),
+        (true, _) => ([0.15, 0.0, -0.15], [true, true, false]),
+    };
+    let allowed = if cx.enabled && c.confidence >= cx.guard_confidence {
+        guard
+    } else {
+        [true; 3]
+    };
+    pick_model_thompson_with_shift(
+        cells,
+        c.request_type,
+        DEFAULT_W_QUALITY,
+        DEFAULT_W_COST,
+        shift,
+        allowed,
+        rng,
+    )
+}
+
+/// Round a probability to 4 decimal places — the precision every backend reports, so repeated
+/// runs diff cleanly.
+pub(crate) fn round_confidence(p: f64) -> f32 {
+    ((p * 1e4).round() / 1e4) as f32
 }
 
 #[cfg(test)]
@@ -530,5 +904,286 @@ mod tests {
         );
         assert_eq!(rt, RequestType::CodeGeneration);
         assert!(matches!(tier, Tier::Tier1 | Tier::Tier2 | Tier::Tier3));
+    }
+
+    // --- pluggable classifier (Level 3 seam) ---
+
+    /// Varied probes: the router_e2e and reference examples plus misses, empties and noise.
+    const CORPUS: [&str; 54] = [
+        "what is the capital of France?",
+        "hello there",
+        "build me a python script that parses CSV",
+        "how should I design this API?",
+        "write me a Python sort function",
+        "explain what this function does",
+        "calculate the probability that it rains tomorrow",
+        "draft an email to my team about the outage",
+        "fix this bug in the parser",
+        "refactor the module and add error handling",
+        "what does this function do",
+        "how does the code work",
+        "walk me through this code",
+        "what is this code doing",
+        "system design for a chat app",
+        "architecture review of our queue",
+        "design a schema for orders",
+        "what are the trade-offs of sharding",
+        "solve 12 * 7",
+        "prove that sqrt 2 is irrational",
+        "how many primes are there below 100",
+        "what's the average of 3, 4 and 5",
+        "compose a poem about autumn",
+        "rewrite this paragraph to be friendlier",
+        "make this sound more formal",
+        "write an article about rust",
+        "define entropy",
+        "who was Ada Lovelace",
+        "when is the next leap year",
+        "how many moons are there around Jupiter",
+        "Fix typo in this Python comment",
+        "What does Option::take() do in Rust?",
+        "Implement a parser for CSV",
+        "Summarize these release notes",
+        "",
+        "   ",
+        "\u{1F44D}",
+        "?!",
+        "explain why the cache is slow and how we should design the architecture",
+        "write a function, then explain how it works, then calculate its complexity",
+        "Hola, ¿puedes ayudarme?",
+        "thanks!",
+        "ok",
+        "implement an endpoint that returns the user profile",
+        "generate a class for the payment module",
+        "write the SQL to find duplicate rows",
+        "draft a blog post and compose an email",
+        "explain how the probability distribution is calculated",
+        "what is the result of 2+2",
+        "trade-off between architecture options for the api design",
+        "lol what",
+        "Please help me, I need to write a script",
+        "explain what happens when you prove a theorem",
+        "where were the 2012 olympics",
+    ];
+
+    fn block_on<F: std::future::Future>(f: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("runtime")
+            .block_on(f)
+    }
+
+    #[test]
+    fn regex_classifier_matches_classify_request_type_on_corpus() {
+        for q in CORPUS {
+            let got = block_on(RegexClassifier.classify(&ClassifyInput {
+                query: q,
+                context: Some("context is ignored by the regex"),
+            }))
+            .expect("regex never fails");
+            assert_eq!(got.request_type, classify_request_type(q), "query {q:?}");
+        }
+    }
+
+    #[test]
+    fn regex_votes_argmax_matches_classify_request_type() {
+        for q in CORPUS {
+            let votes = regex_votes(q);
+            let mut best = RequestType::General;
+            let mut best_votes = 0u8;
+            for rt in RequestType::ALL {
+                if votes[rt.index()] > best_votes {
+                    best_votes = votes[rt.index()];
+                    best = rt;
+                }
+            }
+            assert_eq!(votes[RequestType::General.index()], 0);
+            assert_eq!(best, classify_request_type(q), "query {q:?}");
+        }
+    }
+
+    #[test]
+    fn regex_classifier_reports_documented_fixed_complexity_and_confidence() {
+        let matched = RegexClassifier::classify_sync("draft an email to my team");
+        assert_eq!(matched.complexity, REGEX_COMPLEXITY);
+        assert_eq!(matched.confidence, REGEX_CONFIDENCE_MATCHED);
+        let defaulted = RegexClassifier::classify_sync("hello there");
+        assert_eq!(defaulted.request_type, RequestType::General);
+        assert_eq!(defaulted.complexity, REGEX_COMPLEXITY);
+        assert_eq!(defaulted.confidence, REGEX_CONFIDENCE_DEFAULTED);
+    }
+
+    #[test]
+    fn classification_new_clamps_out_of_range_and_nan() {
+        let rt = RequestType::Writing;
+        assert_eq!(Classification::new(rt, 0, 0.5).complexity, 1);
+        assert_eq!(Classification::new(rt, 9, 0.5).complexity, 5);
+        assert_eq!(Classification::new(rt, 3, -1.0).confidence, 0.0);
+        assert_eq!(Classification::new(rt, 3, 2.0).confidence, 1.0);
+        assert_eq!(Classification::new(rt, 3, f32::NAN).confidence, 0.0);
+        assert_eq!(Classification::new(rt, 4, 0.25).confidence, 0.25);
+    }
+
+    #[test]
+    fn request_type_all_order_matches_wire_names_and_index() {
+        let wire: Vec<&str> = RequestType::ALL.iter().map(|rt| rt.as_str()).collect();
+        assert_eq!(
+            wire,
+            [
+                "code_generation",
+                "code_understanding",
+                "technical_design",
+                "analytical_reasoning",
+                "writing",
+                "factual_lookup",
+                "general"
+            ]
+        );
+        for (i, rt) in RequestType::ALL.iter().enumerate() {
+            assert_eq!(rt.index(), i);
+        }
+    }
+
+    /// A backend that always fails.
+    struct FailingClassifier;
+    #[async_trait::async_trait]
+    impl RequestClassifier for FailingClassifier {
+        fn name(&self) -> &str {
+            "failing"
+        }
+        async fn classify(&self, _: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+            Err(ClassifyError::Model("boom".into()))
+        }
+    }
+
+    /// A backend slower than any test budget.
+    struct SlowClassifier;
+    #[async_trait::async_trait]
+    impl RequestClassifier for SlowClassifier {
+        fn name(&self) -> &str {
+            "slow"
+        }
+        async fn classify(&self, _: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            Ok(Classification::new(RequestType::Writing, 5, 1.0))
+        }
+    }
+
+    #[test]
+    fn guarded_falls_back_to_regex_on_backend_error_and_counts_it() {
+        let stats = Arc::new(ClassifierStats::default());
+        let guard = GuardedClassifier::new(
+            Arc::new(FailingClassifier),
+            Duration::from_secs(1),
+            stats.clone(),
+        );
+        let q = "draft an email to my team about the outage";
+        let got = block_on(guard.classify(&ClassifyInput {
+            query: q,
+            context: None,
+        }))
+        .expect("guard never errs");
+        assert_eq!(got, RegexClassifier::classify_sync(q));
+        let snap = stats.snapshot();
+        assert_eq!((snap.calls, snap.fallback_error, snap.fallback_timeout), (1, 1, 0));
+        assert_eq!(guard.name(), "failing");
+    }
+
+    #[test]
+    fn guarded_falls_back_to_regex_on_timeout_and_counts_it() {
+        let stats = Arc::new(ClassifierStats::default());
+        let guard = GuardedClassifier::new(
+            Arc::new(SlowClassifier),
+            Duration::from_millis(20),
+            stats.clone(),
+        );
+        let q = "hello there";
+        let got = block_on(guard.classify(&ClassifyInput {
+            query: q,
+            context: None,
+        }))
+        .expect("guard never errs");
+        assert_eq!(got, RegexClassifier::classify_sync(q));
+        let snap = stats.snapshot();
+        assert_eq!((snap.fallback_error, snap.fallback_timeout), (0, 1));
+        assert_eq!(snap.fallbacks(), 1);
+    }
+
+    // --- complexity-aware tier selection ---
+
+    fn tier_counts(c: Classification, cx: ComplexityRouting, seeds: u64) -> [usize; 3] {
+        let cells: CellMap = HashMap::new();
+        let mut counts = [0usize; 3];
+        for seed in 0..seeds {
+            let tier = select_tier(&cells, &c, cx, &mut StdRng::seed_from_u64(seed));
+            counts[match tier {
+                Tier::Tier1 => 0,
+                Tier::Tier2 => 1,
+                Tier::Tier3 => 2,
+            }] += 1;
+        }
+        counts
+    }
+
+    const ON: ComplexityRouting = ComplexityRouting {
+        enabled: true,
+        guard_confidence: 0.6,
+    };
+
+    #[test]
+    fn zero_shift_equals_pick_model_thompson_for_seeded_rng() {
+        let cells: CellMap = HashMap::new();
+        for rt in RequestType::ALL {
+            for seed in 0..500 {
+                let a = pick_model_thompson(
+                    &cells,
+                    rt,
+                    DEFAULT_W_QUALITY,
+                    DEFAULT_W_COST,
+                    &mut StdRng::seed_from_u64(seed),
+                );
+                for c in [1, 3, 5] {
+                    let off = select_tier(
+                        &cells,
+                        &Classification::new(rt, c, 0.9),
+                        ComplexityRouting::OFF,
+                        &mut StdRng::seed_from_u64(seed),
+                    );
+                    assert_eq!(a, off, "rt {rt:?} seed {seed} c {c}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn select_tier_with_neutral_complexity_equals_legacy_classify_tier() {
+        let cells: CellMap = HashMap::new();
+        for q in CORPUS {
+            for seed in 0..50 {
+                let (legacy, _) = classify(q, "openai", &cells, &mut StdRng::seed_from_u64(seed));
+                let c = RegexClassifier::classify_sync(q);
+                let new = select_tier(&cells, &c, ON, &mut StdRng::seed_from_u64(seed));
+                assert_eq!(legacy, new, "query {q:?} seed {seed}");
+            }
+        }
+    }
+
+    #[test]
+    fn confident_high_complexity_never_selects_tier3() {
+        let c = Classification::new(RequestType::TechnicalDesign, 5, 0.9);
+        assert_eq!(tier_counts(c, ON, 2000)[2], 0);
+    }
+
+    #[test]
+    fn confident_trivial_never_selects_tier1() {
+        let c = Classification::new(RequestType::CodeGeneration, 1, 0.9);
+        assert_eq!(tier_counts(c, ON, 2000)[0], 0);
+    }
+
+    #[test]
+    fn low_confidence_does_not_apply_guardrail() {
+        let c = Classification::new(RequestType::General, 5, 0.3);
+        assert!(tier_counts(c, ON, 2000)[2] > 0);
     }
 }

@@ -33,7 +33,11 @@ mod salience_classifier;
 pub use boundary::{BoundarySignals, Mode, Phase};
 pub use cache::{CachedDecision, DecisionCache, NoopCache, RedisCache};
 pub use cells::{CellStore, InMemoryCellStore, PgCellStore};
-pub use classifier::{RequestType, Tier, classify, classify_request_type, signal};
+pub use classifier::{
+    Classification, ClassifierStats, ClassifierStatsSnapshot, ClassifyError, ClassifyInput,
+    ComplexityRouting, GuardedClassifier, RegexClassifier, RequestClassifier, RequestType, Tier,
+    classify, classify_request_type, select_tier, signal,
+};
 pub use registry::{PgTierRegistry, TierRegistry};
 pub use salience::{AllowAllGate, ClassifierSalienceGate, SalienceGate};
 
