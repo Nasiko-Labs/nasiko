@@ -334,10 +334,34 @@ pub fn build_request_classifier(
     Arc::new(GuardedClassifier::new(primary, timeout, stats))
 }
 
-/// Choose the model-routing decision cache from config: a [`RedisCache`] when `REDIS_URL`
-/// is set (and opens), otherwise the fail-open [`NoopCache`]. A bad URL logs a warning and
-/// degrades to `NoopCache` rather than failing startup — the cache is never load-bearing.
+/// Choose the model-routing decision cache from config: [`build_shared_router_cache`], plus —
+/// when `ROUTER_DECISION_L1_CAPACITY > 0` — an in-process L1 in front of it, so a single
+/// instance keeps conversations sticky even without Redis. Capacity `0` (the default) returns
+/// the shared cache unchanged.
 fn build_router_cache(cfg: &GatewayConfig) -> Arc<dyn DecisionCache> {
+    let shared = build_shared_router_cache(cfg);
+    if cfg.router_decision_l1_capacity == 0 {
+        return shared;
+    }
+    tracing::info!(
+        target: "nasiko::llm_router::startup",
+        capacity = cfg.router_decision_l1_capacity,
+        ttl_secs = cfg.router_decision_ttl_secs,
+        "llm-router: in-process L1 decision cache enabled in front of the shared cache"
+    );
+    Arc::new(routing::TieredDecisionCache::new(
+        Arc::new(routing::InMemoryDecisionCache::new(
+            cfg.router_decision_l1_capacity,
+            Duration::from_secs(cfg.router_decision_ttl_secs),
+        )),
+        shared,
+    ))
+}
+
+/// The shared decision cache: a [`RedisCache`] when `REDIS_URL` is set (and opens), otherwise
+/// the fail-open [`NoopCache`]. A bad URL logs a warning and degrades to `NoopCache` rather
+/// than failing startup — the cache is never load-bearing.
+fn build_shared_router_cache(cfg: &GatewayConfig) -> Arc<dyn DecisionCache> {
     if cfg.redis_url.is_empty() {
         tracing::info!(
             target: "nasiko::llm_router::startup",
