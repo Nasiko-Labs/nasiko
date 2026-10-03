@@ -190,14 +190,17 @@ pub(crate) fn calls_from_text(text: &str, tools: &[ToolDef]) -> Result<Vec<ToolC
             break;
         };
         let after_marker = after_marker.to_string();
-        let (raw, consumed) = grammar::take_call(&after_marker)?;
-        calls.push(validate_call(raw, tools)?);
+        let (raw, consumed) = match grammar::take_call(&after_marker)? {
+            grammar::Taken::Incomplete => return Err(grammar::malformed("")),
+            grammar::Taken::Ready(raw, consumed) => (raw, consumed),
+        };
+        calls.push(accept_call(raw, tools)?);
         rest = after_marker.chars().skip(consumed).collect();
     }
     Ok(calls)
 }
 
-fn validate_call(raw: grammar::RawCall, tools: &[ToolDef]) -> Result<ToolCall, CompactError> {
+pub(crate) fn accept_call(raw: grammar::RawCall, tools: &[ToolDef]) -> Result<ToolCall, CompactError> {
     let Some(tool) = tools.iter().find(|tool| tool.name == raw.name) else {
         return Err(CompactError::UnknownTool { name: raw.name });
     };

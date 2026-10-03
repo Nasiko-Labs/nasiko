@@ -17,8 +17,14 @@ pub(crate) struct RawCall {
     pub arguments: String,
 }
 
+pub(crate) enum Taken {
+    Ready(RawCall, usize),
+    /// The marker has started and the closer has not arrived yet.
+    Incomplete,
+}
+
 /// One call, and how many chars of `after_marker` it consumed, including the closer.
-pub(crate) fn take_call(after_marker: &str) -> Result<(RawCall, usize), CompactError> {
+pub(crate) fn take_call(after_marker: &str) -> Result<Taken, CompactError> {
     let mut chars = after_marker.chars().peekable();
     let mut consumed = 0usize;
     let mut name = String::new();
@@ -45,7 +51,7 @@ pub(crate) fn take_call(after_marker: &str) -> Result<(RawCall, usize), CompactE
                 if !arguments.starts_with('{') {
                     return Err(malformed(&name));
                 }
-                return Ok((RawCall { name, arguments }, consumed));
+                return Ok(Taken::Ready(RawCall { name, arguments }, consumed));
             }
             Scan::Outside if ch == '"' => {
                 arguments.push(ch);
@@ -66,7 +72,7 @@ pub(crate) fn take_call(after_marker: &str) -> Result<(RawCall, usize), CompactE
             _ => arguments.push(ch),
         }
     }
-    Err(malformed(&name))
+    Ok(Taken::Incomplete)
 }
 
 pub(crate) fn malformed(name: &str) -> CompactError {

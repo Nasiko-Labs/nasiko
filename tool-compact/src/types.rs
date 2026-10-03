@@ -65,13 +65,6 @@ impl std::fmt::Display for ArgumentFault {
     }
 }
 
-pub(crate) fn not_built() -> CompactError {
-    CompactError::UnsupportedSchema {
-        name: "uninitialized".into(),
-        feature: "not built".into(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
