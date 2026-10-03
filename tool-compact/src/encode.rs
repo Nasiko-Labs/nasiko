@@ -3,8 +3,7 @@
 use crate::types::{CompactTools, EncodeError, ToolDef};
 use serde_json::Value;
 
-pub const DEFAULT_CALL_INSTRUCTIONS: &str =
-    "To call a tool, emit: <<call name {json args}>>\nIf no tool is needed, respond with standard text.";
+pub const DEFAULT_CALL_INSTRUCTIONS: &str = "Call tool: <<call name {json}>>";
 
 /// Encodes a list of tool definitions into the high-density TOON compact format.
 pub fn encode_tools(tools: &[ToolDef]) -> Result<CompactTools, EncodeError> {
@@ -79,7 +78,7 @@ fn encode_parameters(params: &Value) -> Result<String, EncodeError> {
         }
     }
 
-    Ok(param_parts.join(", "))
+    Ok(param_parts.join(","))
 }
 
 pub fn encode_type(prop_val: &Value) -> Result<String, EncodeError> {
@@ -179,7 +178,7 @@ mod tests {
         let compact = encode_tools(&[tool]).unwrap();
         assert_eq!(
             compact.definitions,
-            "create_calendar_event(title:str, start:datetime, attendees?:[str], duration_min?:int, visibility?:public|private) - Create an event in the user's calendar."
+            "create_calendar_event(title:str,start:datetime,attendees?:[str],duration_min?:int,visibility?:public|private) - Create an event in the user's calendar."
         );
     }
 }
