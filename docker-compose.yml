@@ -108,8 +108,10 @@ services:
       LLM_GATEWAY_BASE_URL: http://server:8080
       # Shared network so the server can reach agent containers by IP.
       DOCKER_AGENT_NETWORK: nasiko
+      ROUTER_MINILM_CACHE: /var/cache/nasiko/fastembed
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - minilm-cache:/var/cache/nasiko/fastembed
     depends_on:
       postgres:
         condition: service_healthy
@@ -127,3 +129,4 @@ networks:
 volumes:
   postgres-data:
   rustfs-data:
+  minilm-cache:

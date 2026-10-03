@@ -58,6 +58,7 @@ FROM debian:trixie-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
+        libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /nasiko-server /usr/local/bin/nasiko-server

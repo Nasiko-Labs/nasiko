@@ -35,6 +35,9 @@ regex = { workspace = true }
 rand = { workspace = true }
 rand_distr = { workspace = true }
 
+# ONNX MiniLM (all-MiniLM-L6-v2) for ROUTER_CLASSIFIER=minilm
+fastembed = { workspace = true }
+
 # Storage & outbound HTTP (the crate owns these via LlmRouterCtx — no nasiko-server dep)
 sqlx = { workspace = true }
 reqwest = { workspace = true, features = ["json", "stream"] }

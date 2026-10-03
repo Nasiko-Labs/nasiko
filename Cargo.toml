@@ -133,6 +133,9 @@ hex = "0.4"
 rand = "0.9"
 rand_distr = "0.5"
 
+# ONNX MiniLM for the LLM router Level-3 classifier (opt-in via ROUTER_CLASSIFIER)
+fastembed = "5"
+
 # ─── Temp filesystem ────────────────────────────────────────────────────────
 tempfile = "3"
 

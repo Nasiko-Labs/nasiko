@@ -49,7 +49,7 @@ pub use inject::{LlmInjectCtx, inject_llm_env};
 pub use resolver::{ConfigCache, ResolvedConfig};
 pub use routing::{
     AllowAllGate, CellStore, ClassifierSalienceGate, DecisionCache, InMemoryCellStore, NoopCache,
-    PgCellStore, PgTierRegistry, RedisCache, SalienceGate, TierRegistry,
+    OnnxMiniLm, PgCellStore, PgTierRegistry, RedisCache, SalienceGate, TierRegistry,
 };
 
 /// Shared context for the LLM router.
@@ -82,6 +82,9 @@ pub struct LlmRouterCtx {
     /// classify + pin. [`ClassifierSalienceGate`] when `SALIENCE_GATE_ENABLED`; else [`AllowAllGate`]
     /// (classify at every boundary, i.e. behaviour before the gate existed).
     pub salience_gate: Arc<dyn SalienceGate>,
+    /// ONNX MiniLM session for Level 3 when `ROUTER_CLASSIFIER=minilm`. `None` means
+    /// MiniLm requests fall back to regex.
+    pub request_type_encoder: Option<Arc<OnnxMiniLm>>,
     /// The platform's single cost engine. Every `token_usage` row is priced
     /// through this — the DB trigger that used to do it returned NULL for any
     /// model missing from `model_pricing`, which booked 92.8% of calls at $0.
@@ -128,6 +131,7 @@ impl LlmRouterCtx {
         let router_cache = build_router_cache(&cfg);
         let cfg = Arc::new(cfg);
         let salience_gate = build_salience_gate(&cfg);
+        let request_type_encoder = build_request_type_encoder(&cfg);
         let pricing = Arc::new(PricingEngine::new(db.clone()));
         Self {
             db,
@@ -138,6 +142,7 @@ impl LlmRouterCtx {
             tier_registry,
             cell_store,
             salience_gate,
+            request_type_encoder,
             pricing,
         }
     }
@@ -202,6 +207,37 @@ fn build_salience_gate(cfg: &Arc<GatewayConfig>) -> Arc<dyn SalienceGate> {
                 "llm-router: salience model failed to load; falling back to AllowAllGate (classify at every fireable boundary)"
             );
             Arc::new(AllowAllGate)
+        }
+    }
+}
+
+/// Load ONNX MiniLM when `ROUTER_CLASSIFIER=minilm`. A missing/corrupt cache or a
+/// download failure falls back to regex (encoder stays `None`).
+fn build_request_type_encoder(cfg: &GatewayConfig) -> Option<Arc<OnnxMiniLm>> {
+    if cfg.request_type_backend != crate::routing::RequestTypeBackend::MiniLm {
+        return None;
+    }
+    let cache = if cfg.minilm_cache_dir.is_empty() {
+        None
+    } else {
+        Some(std::path::PathBuf::from(&cfg.minilm_cache_dir))
+    };
+    match OnnxMiniLm::load(cache.as_deref()) {
+        Ok(model) => {
+            tracing::info!(
+                target: "nasiko::llm_router::startup",
+                cache = cfg.minilm_cache_dir.as_str(),
+                "llm-router: Level 3 MiniLM = ONNX all-MiniLM-L6-v2 (prototype cosine; Thompson + cost blend unchanged)"
+            );
+            Some(Arc::new(model))
+        }
+        Err(e) => {
+            tracing::warn!(
+                target: "nasiko::llm_router::startup",
+                error = %e,
+                "llm-router: ONNX MiniLM failed to load; Level 3 request-type falls back to regex"
+            );
+            None
         }
     }
 }

@@ -12,13 +12,14 @@
 //! (`classifier/{categories,signals}.rs`, `scoring.rs`) — see `THIRD_PARTY_LICENSES.md`
 //! (crate root) for the upstream MIT attribution this requires:
 //!
-//! 1. **Request type** — a regex vote-count classifier buckets the query into one of a
-//!    handful of [`RequestType`]s (code generation, factual lookup, …), defaulting to
-//!    `General`.
+//! 1. **Request type** — regex vote-count (default) or ONNX MiniLM buckets the query
+//!    into a [`RequestType`]. This step does **not** pick a model.
 //! 2. **Tier** — the three tiers are treated as bandit *arms*. [`pick_model_thompson`]
 //!    Thompson-samples a quality estimate per tier from a Beta posterior — seeded by a
 //!    cold-start prior (stronger/on-strength tiers start higher) and updated by learned
-//!    [`Cell`]s — then blends it with a normalized cost term and takes the argmax.
+//!    [`Cell`]s — then blends it with a normalized cost term (`DEFAULT_W_QUALITY` /
+//!    `DEFAULT_W_COST`) and takes the argmax. Same bandit whether request-type came
+//!    from regex or MiniLM.
 //!
 //! The learned [`Cell`]s come from real feedback: the router credits a tier's quality from
 //! the user's next-turn reaction ([`signal`]), persisted per provider by the
@@ -35,16 +36,20 @@ use rand_distr::{Beta, Distribution};
 use super::minilm;
 use super::patterns::{CATEGORY_PATTERNS, NEGATIVE_SIGNALS, POSITIVE_SIGNALS};
 
-/// Which Level-3 request-type classifier to run. Tier selection (Thompson sampling)
-/// is the same either way; only the bucket that keys the bandit cells changes.
+/// Which Level-3 request-type classifier to run. Tier selection (Thompson sampling
+/// + cost blend) is the same either way; only the bucket that keys the bandit cells
+/// changes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RequestTypeBackend {
     /// Regex vote-count (litellm Adaptive Router port). The default — no new
     /// behaviour unless an operator opts in.
     #[default]
     Regex,
-    /// 384-d hashing-trick + prototype cosine (MiniLM-width, no ONNX).
+    /// ONNX `all-MiniLM-L6-v2` + prototype cosine. Falls back to regex if the
+    /// session was not loaded at startup.
     MiniLm,
+    /// 384-d hashing-trick + prototype cosine (no ONNX).
+    Hash,
 }
 
 impl RequestTypeBackend {
@@ -52,7 +57,8 @@ impl RequestTypeBackend {
     /// so a typo never takes the router offline.
     pub fn parse(s: &str) -> Self {
         match s.trim().to_ascii_lowercase().as_str() {
-            "minilm" | "mini-lm" | "semantic" => Self::MiniLm,
+            "minilm" | "mini-lm" | "onnx" | "semantic" => Self::MiniLm,
+            "hash" | "hashing" => Self::Hash,
             _ => Self::Regex,
         }
     }
@@ -61,6 +67,7 @@ impl RequestTypeBackend {
         match self {
             Self::Regex => "regex",
             Self::MiniLm => "minilm",
+            Self::Hash => "hash",
         }
     }
 }
@@ -195,13 +202,24 @@ const TIER_ARMS: [TierArm; 3] = [
 /// patterns wins, ties broken by declaration order, defaulting to `General`. Port of
 /// `categories.rs::classify`.
 pub fn classify_request_type(text: &str) -> RequestType {
-    classify_request_type_with(text, RequestTypeBackend::Regex)
+    classify_request_type_with(text, RequestTypeBackend::Regex, None)
 }
 
 /// Bucket a query using the chosen [`RequestTypeBackend`].
-pub fn classify_request_type_with(text: &str, backend: RequestTypeBackend) -> RequestType {
+///
+/// `onnx` is required for [`RequestTypeBackend::MiniLm`]; if it is missing the
+/// call falls back to regex so a failed model load cannot skip classification.
+pub fn classify_request_type_with(
+    text: &str,
+    backend: RequestTypeBackend,
+    onnx: Option<&minilm::OnnxMiniLm>,
+) -> RequestType {
     match backend {
-        RequestTypeBackend::MiniLm => minilm::classify_request_type(text),
+        RequestTypeBackend::MiniLm => match onnx {
+            Some(model) => model.classify(text),
+            None => classify_request_type_regex(text),
+        },
+        RequestTypeBackend::Hash => minilm::hash_classify(text),
         RequestTypeBackend::Regex => classify_request_type_regex(text),
     }
 }
@@ -345,15 +363,17 @@ pub fn pick_model_thompson<R: Rng + ?Sized>(
 ///
 /// `cells` are the provider's learned quality estimates (empty ⇒ pure cold-start priors);
 /// `rng` drives Thompson exploration (entropy in production, seeded in tests).
-/// `backend` selects the request-type classifier (`regex` or `minilm`).
+/// `backend` selects the request-type classifier (`regex`, `minilm`, or `hash`).
+/// `onnx` is the loaded MiniLM session when `backend` is MiniLm.
 pub fn classify<R: Rng + ?Sized>(
     query: &str,
     provider: &str,
     cells: &CellMap,
     rng: &mut R,
     backend: RequestTypeBackend,
+    onnx: Option<&minilm::OnnxMiniLm>,
 ) -> (Tier, RequestType) {
-    let request_type = classify_request_type_with(query, backend);
+    let request_type = classify_request_type_with(query, backend, onnx);
     let tier = pick_model_thompson(cells, request_type, DEFAULT_W_QUALITY, DEFAULT_W_COST, rng);
     let preview: String = query.chars().take(120).collect();
     tracing::info!(
@@ -442,6 +462,11 @@ mod tests {
             RequestTypeBackend::parse("semantic"),
             RequestTypeBackend::MiniLm
         );
+        assert_eq!(
+            RequestTypeBackend::parse("onnx"),
+            RequestTypeBackend::MiniLm
+        );
+        assert_eq!(RequestTypeBackend::parse("hash"), RequestTypeBackend::Hash);
         assert_eq!(RequestTypeBackend::parse("regex"), RequestTypeBackend::Regex);
         assert_eq!(RequestTypeBackend::parse(""), RequestTypeBackend::Regex);
         assert_eq!(
@@ -451,11 +476,24 @@ mod tests {
     }
 
     #[test]
-    fn minilm_backend_classifies_code_generation() {
+    fn hash_backend_classifies_code_generation() {
         assert_eq!(
             classify_request_type_with(
                 "write me a Python sort function",
-                RequestTypeBackend::MiniLm
+                RequestTypeBackend::Hash,
+                None
+            ),
+            RequestType::CodeGeneration
+        );
+    }
+
+    #[test]
+    fn minilm_without_session_falls_back_to_regex() {
+        assert_eq!(
+            classify_request_type_with(
+                "write me a Python sort function",
+                RequestTypeBackend::MiniLm,
+                None
             ),
             RequestType::CodeGeneration
         );
@@ -607,6 +645,7 @@ mod tests {
             &cells,
             &mut rng,
             RequestTypeBackend::Regex,
+            None,
         );
         assert_eq!(rt, RequestType::CodeGeneration);
         assert!(matches!(tier, Tier::Tier1 | Tier::Tier2 | Tier::Tier3));

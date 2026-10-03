@@ -35,6 +35,7 @@ pub use boundary::{BoundarySignals, Mode, Phase};
 pub use cache::{CachedDecision, DecisionCache, NoopCache, RedisCache};
 pub use cells::{CellStore, InMemoryCellStore, PgCellStore};
 pub use classifier::{RequestType, RequestTypeBackend, Tier, classify, signal};
+pub use minilm::OnnxMiniLm;
 pub use registry::{PgTierRegistry, TierRegistry};
 pub use salience::{AllowAllGate, ClassifierSalienceGate, SalienceGate};
 
@@ -85,8 +86,10 @@ pub struct RouteInputs<'a> {
     /// The query to classify (latest user message text). `None` disables classification.
     pub query: Option<&'a str>,
     /// Level 3 request-type backend. Default is the regex vote-count classifier;
-    /// `MiniLm` is the 384-d hashing-trick prototype matcher (`ROUTER_CLASSIFIER=minilm`).
+    /// `MiniLm` is ONNX all-MiniLM-L6-v2 (`ROUTER_CLASSIFIER=minilm`).
     pub request_type_backend: RequestTypeBackend,
+    /// Loaded ONNX MiniLM session. `None` unless startup succeeded with `minilm`.
+    pub request_type_encoder: Option<&'a minilm::OnnxMiniLm>,
 }
 
 /// The outcome of routing: the model to call and how it was chosen.
@@ -262,6 +265,7 @@ pub async fn route_model(
                     &learned,
                     &mut rng,
                     inputs.request_type_backend,
+                    inputs.request_type_encoder,
                 )
             };
             // Per-config tier override takes priority over the global registry.
@@ -543,6 +547,7 @@ mod tests {
             signals,
             query: Some("hello"),
             request_type_backend: RequestTypeBackend::Regex,
+            request_type_encoder: None,
         }
     }
 

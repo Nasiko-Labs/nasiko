@@ -484,6 +484,7 @@ pub(crate) async fn resolve_routed_request(
             signals: &boundary,
             query: signals.query.as_deref(),
             request_type_backend: ctx.cfg.request_type_backend,
+            request_type_encoder: ctx.request_type_encoder.as_deref(),
         },
     )
     .await;
@@ -958,6 +959,7 @@ mod tests {
             tier_registry: Arc::new(NoTiers),
             cell_store: Arc::new(crate::routing::InMemoryCellStore::new()),
             salience_gate: Arc::new(crate::routing::AllowAllGate),
+            request_type_encoder: None,
             pricing: Arc::new(nasiko_pricing::PricingEngine::new(
                 PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
             )),
