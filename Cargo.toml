@@ -4,6 +4,7 @@ members = [
     # ─── OSS crates ─────────────────────────────────────────────────────────
     "auth",
     "compress",
+    "tool-compact",
     "config",
     "secrets",
     "observability",
@@ -36,6 +37,7 @@ version = "0.1.0"
 # ─── Internal OSS crates ────────────────────────────────────────────────────
 nasiko-auth = { path = "auth" }
 nasiko-compress = { path = "compress" }
+nasiko-tool-compact = { path = "tool-compact" }
 nasiko-config = { path = "config" }
 nasiko-pricing = { path = "pricing" }
 nasiko-savings = { path = "savings" }
@@ -59,6 +61,7 @@ nasiko-bench-support = { path = "bench-support" }
 
 # ─── Testing ────────────────────────────────────────────────────────────────
 serial_test = "3"
+tiktoken-rs = "=0.12.1"
 
 # ─── Async runtime & web ────────────────────────────────────────────────────
 tokio = { version = "1", features = ["full"] }

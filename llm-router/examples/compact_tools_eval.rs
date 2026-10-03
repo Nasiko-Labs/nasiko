@@ -1,0 +1,248 @@
+//! P1 evaluator: EVAL_SET=input.json OUT=output.jsonl cargo run --release
+//! -p nasiko-llm-router --example compact_tools_eval. Offline unless BOTH
+//! PROVIDER_BASE_URL and MODEL are explicitly configured. ToolScope is never used.
+
+#[path = "compact_tools/dataset.rs"]
+mod dataset;
+#[path = "compact_tools/live.rs"]
+mod live;
+#[path = "compact_tools/request.rs"]
+mod request;
+
+use anyhow::{Context, Result};
+use dataset::{Case, Dataset};
+use nasiko_tool_compact::{
+    CompactError, StreamDecoder, ToolCall, ToolDef, decode_calls, render_calls,
+};
+use serde_json::{Value, json};
+use std::{
+    fs::File,
+    io::{BufWriter, Write},
+};
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let input = std::env::var("EVAL_SET").context("EVAL_SET must name the dataset")?;
+    let output = std::env::var("OUT").context("OUT must name the JSONL output")?;
+    let dataset: Dataset =
+        serde_json::from_reader(File::open(input)?).context("invalid evaluator dataset")?;
+    let lookup = dataset.lookup()?;
+    let live = live::LiveConfig::from_env()?;
+    let mut writer = BufWriter::new(File::create(output)?);
+    for case in &dataset.cases {
+        let tools = dataset::resolve(&lookup, &case.tools)?;
+        let (body, compacted) = request::build(case, &tools)?;
+        let (rendered, roundtrip) = expected_roundtrip(&case.expected, &tools);
+        let mut record = json!({"id":case.id,"compact_request":body,"compacted":compacted,"rendered_calls":rendered,"roundtrip_calls":roundtrip});
+        if let Some(live) = &live {
+            let (sent, raw, calls) = live.evaluate(body, compacted, &tools).await?;
+            record["compact_request"] = sent;
+            record["raw_output"] = raw;
+            record["live_calls"] = calls;
+        }
+        write_record(&mut writer, &record)?;
+    }
+    for case in &dataset.decoder_cases {
+        let tools = dataset::resolve(&lookup, &case.tools)?;
+        let decoded = decode_chunks(&case.chunks, &tools);
+        write_record(&mut writer, &json!({"id":case.id,"decoded":decoded}))?;
+    }
+    writer.flush()?;
+    Ok(())
+}
+
+fn write_record(writer: &mut impl Write, record: &Value) -> Result<()> {
+    serde_json::to_writer(&mut *writer, record)?;
+    writer.write_all(b"\n")?;
+    Ok(())
+}
+
+fn call_result(result: nasiko_tool_compact::Result<Vec<ToolCall>>) -> Value {
+    match result {
+        Ok(calls) => json!(calls),
+        Err(error) => json!({"error":error_label(&error)}),
+    }
+}
+
+// Native fallback can retain names that the compact call grammar cannot render.
+// Record that failure per case rather than abandoning the remaining dataset.
+fn expected_roundtrip(calls: &[ToolCall], tools: &[ToolDef]) -> (String, Value) {
+    match render_calls(calls) {
+        Ok(rendered) => {
+            let decoded = call_result(decode_calls(&rendered, tools));
+            (rendered, decoded)
+        }
+        Err(error) => (String::new(), call_result(Err(error))),
+    }
+}
+
+fn error_label(error: &CompactError) -> &'static str {
+    match error {
+        CompactError::UnknownTool(_) => "unknown_tool",
+        _ => "invalid_arguments",
+    }
+}
+
+fn decode_chunks(chunks: &[String], tools: &[ToolDef]) -> Value {
+    let result = (|| {
+        let mut decoder = StreamDecoder::new(tools)?;
+        for chunk in chunks {
+            decoder.push(chunk)?;
+        }
+        decoder.finish()
+    })();
+    match result {
+        Ok(calls) => json!({"calls":calls}),
+        Err(error) => json!({"error":error_label(&error)}),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn case() -> Case {
+        serde_json::from_value(json!({"id":"unseen","tools":["work"],"messages":[{"role":"system","content":"Original"},{"role":"user","content":"Do work"}],"expected":[]})).unwrap()
+    }
+    fn tools() -> Vec<ToolDef> {
+        serde_json::from_value(json!([{"type":"function","function":{"name":"work","parameters":{"type":"object","required":["x"],"properties":{"x":{"type":"integer"}}}}}])).unwrap()
+    }
+
+    #[test]
+    fn native_identifier_fallback_still_produces_a_case_result() {
+        let mut tools = tools();
+        tools[0].function.name = "1_ping".into();
+        let calls = vec![ToolCall {
+            name: "1_ping".into(),
+            arguments: json!({"x":1}),
+        }];
+        let (body, compacted) = request::build(&case(), &tools).unwrap();
+        assert!(!compacted);
+        assert_eq!(body["tools"][0]["function"]["name"], "1_ping");
+        assert_eq!(
+            expected_roundtrip(&calls, &tools),
+            (String::new(), json!({"error":"invalid_arguments"}))
+        );
+    }
+
+    #[test]
+    fn preserves_messages_and_uses_whole_request_native_fallback() {
+        let case = case();
+        let tools = tools();
+        let (compact, enabled) = request::build(&case, &tools).unwrap();
+        assert!(enabled);
+        assert!(compact.get("tools").is_none());
+        assert_eq!(compact["messages"][0], case.messages[0]);
+        assert_eq!(compact["messages"][2], case.messages[1]);
+        let mut unsupported = tools;
+        unsupported[0].function.parameters.as_mut().unwrap()["oneOf"] = json!([]);
+        let (native, enabled) = request::build(&case, &unsupported).unwrap();
+        assert!(!enabled);
+        assert_eq!(native["tools"], serde_json::to_value(unsupported).unwrap());
+        assert_eq!(native["messages"], json!(case.messages));
+    }
+
+    #[test]
+    fn decoder_cases_are_streamed_and_fail_atomically() {
+        assert_eq!(
+            decode_chunks(
+                &["<<ca".into(), "ll work {\"x\":1}>".into(), ">".into()],
+                &tools()
+            ),
+            json!({"calls":[{"name":"work","arguments":{"x":1}}]})
+        );
+        assert_eq!(
+            decode_chunks(
+                &[
+                    "<<call work {\"x\":1}>>".into(),
+                    "<<call missing {}>>".into()
+                ],
+                &tools()
+            ),
+            json!({"error":"unknown_tool"})
+        );
+        assert_eq!(
+            decode_chunks(&["<<call work {}>>".into()], &tools()),
+            json!({"error":"invalid_arguments"})
+        );
+    }
+
+    #[test]
+    fn forced_choice_and_tool_history_use_native_tools() {
+        let mut case = case();
+        case.extra.insert(
+            "tool_choice".into(),
+            json!({"type":"function","function":{"name":"work"}}),
+        );
+        assert!(!request::build(&case, &tools()).unwrap().1);
+        case.extra.clear();
+        case.extra
+            .insert("parallel_tool_calls".into(), json!(false));
+        assert!(!request::build(&case, &tools()).unwrap().1);
+        case.extra.clear();
+        case.messages
+            .push(json!({"role":"tool","content":"done","tool_call_id":"existing"}));
+        assert!(!request::build(&case, &tools()).unwrap().1);
+    }
+
+    #[test]
+    fn equivalent_complete_requests_preserve_case_options() {
+        let mut case = case();
+        case.extra = serde_json::from_value(json!({
+            "tool_choice":"auto", "max_tokens":321, "top_p":0.75,
+            "parallel_tool_calls":true
+        }))
+        .unwrap();
+        let native = request::native(&case, &tools());
+        let (compact, enabled) = request::build(&case, &tools()).unwrap();
+        assert!(enabled);
+        for key in ["max_tokens", "top_p"] {
+            assert_eq!(native[key], case.extra[key]);
+            assert_eq!(compact[key], native[key]);
+        }
+        assert_eq!(native["tool_choice"], "auto");
+        assert_eq!(native["parallel_tool_calls"], true);
+        for (key, value) in [
+            ("tool_choice", json!("required")),
+            ("parallel_tool_calls", json!(false)),
+            ("response_format", json!({"type":"json_object"})),
+        ] {
+            case.extra.insert(key.into(), value.clone());
+            let native = request::native(&case, &tools());
+            let (fallback, enabled) = request::build(&case, &tools()).unwrap();
+            assert!(!enabled);
+            assert_eq!(fallback, native);
+            assert_eq!(native[key], value);
+            case.extra.remove(key);
+        }
+    }
+
+    #[test]
+    fn notation_legend_follows_nested_schema_semantics_not_description_text() {
+        let mut tools = tools();
+        tools[0].function.description = Some("? ! = are description text".into());
+        let (body, _) = request::build(&case(), &tools).unwrap();
+        let prompt = body["messages"][1]["content"].as_str().unwrap();
+        assert!(!prompt.contains("? optional"));
+        assert!(!prompt.contains("! no extra keys"));
+        assert!(!prompt.contains("= enum"));
+        assert!(!prompt.contains("(text) description"));
+        assert!(prompt.contains("Today:2026-10-02 Asia/Kolkata."));
+        assert_eq!(prompt.matches("<<call TOOL_NAME JSON_OBJECT>>").count(), 1);
+        tools[0].function.parameters = Some(json!({
+            "type":"object","required":["x"],"properties":{"x":{"type":"array",
+                "items":{"type":"object","additionalProperties":false,
+                    "properties":{"mode":{"type":"string","enum":["a","b"],"description":"Choose mode"}}}}}
+        }));
+        let (body, _) = request::build(&case(), &tools).unwrap();
+        let prompt = body["messages"][1]["content"].as_str().unwrap();
+        for legend in [
+            "? optional",
+            "! no extra keys",
+            "= enum",
+            "(text) description",
+        ] {
+            assert!(prompt.contains(legend));
+        }
+    }
+}
