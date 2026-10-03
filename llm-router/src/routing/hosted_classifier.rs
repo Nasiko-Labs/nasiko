@@ -83,7 +83,10 @@ impl RequestClassifier for HostedClassifier {
         let body = json!({
             "model": self.model,
             "temperature": 0,
-            "max_tokens": 64,
+            // Enough headroom for reasoning-style models (e.g. gpt-oss), whose chain of
+            // thought consumes the budget before the JSON verdict; 64 truncated those and
+            // yielded a null `content`. Still a hard cap — a verdict is a few dozen tokens.
+            "max_tokens": 512,
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user},
