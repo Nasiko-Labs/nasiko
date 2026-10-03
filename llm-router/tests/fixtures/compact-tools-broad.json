@@ -1,0 +1,659 @@
+{
+  "schema_version": "compact-tools-eval-v1",
+  "purpose": "Author-written broader validation set, separate from organizer data. Developed locally; not a held-out benchmark.",
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "calculate_cart",
+        "description": "Calculate the total for an explicitly supplied shopping cart.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "items": {
+              "type": "array",
+              "description": "Line items with product identifier, quantity, and unit price.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "sku": {
+                    "type": "string",
+                    "description": "Exact product identifier"
+                  },
+                  "quantity": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Number of units"
+                  },
+                  "unit_price": {
+                    "type": "number",
+                    "minimum": 0,
+                    "description": "Price of one unit"
+                  }
+                },
+                "required": [
+                  "sku",
+                  "quantity",
+                  "unit_price"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "currency": {
+              "type": "string",
+              "enum": [
+                "INR",
+                "USD",
+                "EUR"
+              ],
+              "description": "Currency of the supplied prices"
+            }
+          },
+          "required": [
+            "items",
+            "currency"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "echo_text",
+        "description": "Echo the exact supplied text without changing any characters.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string",
+              "description": "Exact text to echo, including quotes and markers"
+            }
+          },
+          "required": [
+            "text"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "search_documents",
+        "description": "Search existing documents; does not create or modify them.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "Exact search query"
+            },
+            "filters": {
+              "type": "object",
+              "properties": {
+                "tags": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "uniqueItems": true
+                },
+                "visibility": {
+                  "type": "string",
+                  "enum": [
+                    "public",
+                    "private"
+                  ]
+                }
+              },
+              "required": [
+                "tags",
+                "visibility"
+              ],
+              "additionalProperties": false
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 20,
+              "description": "Result count only when specified"
+            }
+          },
+          "required": [
+            "query"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "configure_alert",
+        "description": "Set an alert with an explicitly supplied threshold and enabled state.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "threshold": {
+              "type": "number",
+              "minimum": 0
+            },
+            "enabled": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "name",
+            "threshold",
+            "enabled"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "reset_preference",
+        "description": "Clear one preference by setting its value to null.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "value": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "key",
+            "value"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "archive_record",
+        "description": "Archive an existing record by its exact record_id; ask for the ID if missing.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "record_id": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "record_id"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "lookup_reference",
+        "description": "Look up a reference whose ID begins with R- and digits.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "reference": {
+              "type": "string",
+              "pattern": "^R-[0-9]+$"
+            }
+          },
+          "required": [
+            "reference"
+          ],
+          "additionalProperties": false
+        }
+      }
+    }
+  ],
+  "cases": [
+    {
+      "id": "broad-001",
+      "tools": [
+        "calculate_cart",
+        "echo_text"
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "content": "Calculate my cart in EUR: sku café has quantity 3 and unit_price 2.5."
+        }
+      ],
+      "expected": [
+        {
+          "name": "calculate_cart",
+          "arguments": {
+            "currency": "EUR",
+            "items": [
+              {
+                "sku": "café",
+                "quantity": 3,
+                "unit_price": 2.5
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "broad-002",
+      "tools": [
+        "echo_text"
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "content": "Echo exactly this text: 中文 >> \"quoted\" \\ path."
+        }
+      ],
+      "expected": [
+        {
+          "name": "echo_text",
+          "arguments": {
+            "text": "中文 >> \"quoted\" \\ path."
+          }
+        }
+      ]
+    },
+    {
+      "id": "broad-003",
+      "tools": [
+        "echo_text"
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "content": "First echo exactly \"alpha\". Then separately echo exactly \"beta\"."
+        }
+      ],
+      "expected": [
+        {
+          "name": "echo_text",
+          "arguments": {
+            "text": "alpha"
+          }
+        },
+        {
+          "name": "echo_text",
+          "arguments": {
+            "text": "beta"
+          }
+        }
+      ]
+    },
+    {
+      "id": "broad-004",
+      "tools": [
+        "search_documents",
+        "archive_record"
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "content": "Search documents for exactly \"launch checklist\" with tags [\"ops\", \"release\"], visibility private, and limit 4."
+        }
+      ],
+      "expected": [
+        {
+          "name": "search_documents",
+          "arguments": {
+            "query": "launch checklist",
+            "filters": {
+              "tags": [
+                "ops",
+                "release"
+              ],
+              "visibility": "private"
+            },
+            "limit": 4
+          }
+        }
+      ]
+    },
+    {
+      "id": "broad-005",
+      "tools": [
+        "configure_alert"
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "content": "Set alert named cpu with threshold 82.5 and enabled false."
+        }
+      ],
+      "expected": [
+        {
+          "name": "configure_alert",
+          "arguments": {
+            "name": "cpu",
+            "threshold": 82.5,
+            "enabled": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "broad-006",
+      "tools": [
+        "reset_preference"
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "content": "Clear preference timezone by setting its value to null."
+        }
+      ],
+      "expected": [
+        {
+          "name": "reset_preference",
+          "arguments": {
+            "key": "timezone",
+            "value": null
+          }
+        }
+      ]
+    },
+    {
+      "id": "broad-007",
+      "tools": [
+        "configure_alert",
+        "search_documents"
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "content": "Set alert disk with threshold 90 and enabled true, then search documents for exactly \"disk maintenance\"."
+        }
+      ],
+      "expected": [
+        {
+          "name": "configure_alert",
+          "arguments": {
+            "name": "disk",
+            "threshold": 90,
+            "enabled": true
+          }
+        },
+        {
+          "name": "search_documents",
+          "arguments": {
+            "query": "disk maintenance"
+          }
+        }
+      ]
+    },
+    {
+      "id": "broad-008",
+      "tools": [
+        "search_documents",
+        "configure_alert"
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "content": "What is the capital of France?"
+        }
+      ],
+      "expected": []
+    },
+    {
+      "id": "broad-009",
+      "tools": [
+        "search_documents",
+        "echo_text"
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "content": "Delete all saved documents."
+        }
+      ],
+      "expected": []
+    },
+    {
+      "id": "broad-010",
+      "tools": [
+        "calculate_cart"
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "content": "Calculate my cart in USD: sku mug has quantity 1 and unit_price 7."
+        }
+      ],
+      "expected": [
+        {
+          "name": "calculate_cart",
+          "arguments": {
+            "currency": "USD",
+            "items": [
+              {
+                "sku": "mug",
+                "quantity": 1,
+                "unit_price": 7
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "broad-011",
+      "tools": [
+        "archive_record",
+        "search_documents"
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "content": "Archive record R-27."
+        }
+      ],
+      "expected": [
+        {
+          "name": "archive_record",
+          "arguments": {
+            "record_id": "R-27"
+          }
+        }
+      ]
+    },
+    {
+      "id": "broad-012",
+      "tools": [
+        "archive_record"
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "content": "Archive the record. I have not supplied its ID; ask me for it."
+        }
+      ],
+      "expected": []
+    },
+    {
+      "id": "broad-013",
+      "tools": [
+        "lookup_reference"
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "content": "Look up reference R-27."
+        }
+      ],
+      "expected": [
+        {
+          "name": "lookup_reference",
+          "arguments": {
+            "reference": "R-27"
+          }
+        }
+      ]
+    }
+  ],
+  "decoder_cases": [
+    {
+      "id": "broad-dc-001",
+      "tools": [
+        "configure_alert"
+      ],
+      "chunks": [
+        "<<ca",
+        "ll configure_alert {\"name\":\"cpu\",\"threshold\":82.5,\"enabled\":false}",
+        ">",
+        ">"
+      ],
+      "expected": {
+        "calls": [
+          {
+            "name": "configure_alert",
+            "arguments": {
+              "name": "cpu",
+              "threshold": 82.5,
+              "enabled": false
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "broad-dc-002",
+      "tools": [
+        "configure_alert"
+      ],
+      "chunks": [
+        "<<call configure_alert {\"name\":\"cpu\",\"threshold\":82.5,\"enabled\":\"false\"}>>"
+      ],
+      "expected": {
+        "error": "invalid_arguments"
+      }
+    },
+    {
+      "id": "broad-dc-003",
+      "tools": [
+        "search_documents"
+      ],
+      "chunks": [
+        "<<call search_documents {\"query\":\"x\",\"filters\":{\"tags\":[\"ops\",\"ops\"],\"visibility\":\"private\"}}>>"
+      ],
+      "expected": {
+        "error": "invalid_arguments"
+      }
+    },
+    {
+      "id": "broad-dc-004",
+      "tools": [
+        "reset_preference"
+      ],
+      "chunks": [
+        "<<call reset_preference {\"key\":\"timezone\",\"value\":null}>>"
+      ],
+      "expected": {
+        "calls": [
+          {
+            "name": "reset_preference",
+            "arguments": {
+              "key": "timezone",
+              "value": null
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "broad-dc-005",
+      "tools": [
+        "configure_alert"
+      ],
+      "chunks": [
+        "<<call configure_alert {\"name\":\"cpu\",\"threshold\":2,\"enabled\":true}>> <<call configure_alert {\"name\":\"cpu\",\"threshold\":-1,\"enabled\":true}>>"
+      ],
+      "expected": {
+        "error": "invalid_arguments"
+      }
+    },
+    {
+      "id": "broad-dc-006",
+      "tools": [
+        "configure_alert"
+      ],
+      "chunks": [
+        "[TO",
+        "OL_CALLS]configure_alert",
+        "{\"name\":\"cpu\",\"threshold\":82.5,\"enabled\":false}"
+      ],
+      "expected": {
+        "calls": [
+          {
+            "name": "configure_alert",
+            "arguments": {
+              "name": "cpu",
+              "threshold": 82.5,
+              "enabled": false
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "broad-dc-007",
+      "tools": [
+        "reset_preference"
+      ],
+      "chunks": [
+        "[TOOL_CALLS]reset_preference(",
+        "{\"key\":\"timezone\",\"value\":null}",
+        ")"
+      ],
+      "expected": {
+        "calls": [
+          {
+            "name": "reset_preference",
+            "arguments": {
+              "key": "timezone",
+              "value": null
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "broad-dc-008",
+      "tools": [
+        "configure_alert"
+      ],
+      "chunks": [
+        "[TOOL_CALLS]remove_all{}"
+      ],
+      "expected": {
+        "error": "unknown_tool"
+      }
+    },
+    {
+      "id": "broad-dc-009",
+      "tools": [
+        "configure_alert"
+      ],
+      "chunks": [
+        "[TOOL_CALLS]configure_alert{\"name\":\"cpu\",\"threshold\":82.5,\"enabled\":\"false\"}"
+      ],
+      "expected": {
+        "error": "invalid_arguments"
+      }
+    }
+  ]
+}

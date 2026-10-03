@@ -172,6 +172,7 @@ async fn chat_core(
         "chat_core: request received (JWT verified)"
     );
 
+    let compact_wire_supported = crate::compact_tools::wire_supported(&body);
     let inbound = inbound_for(format);
     let mut req = inbound.parse_chat(body)?;
     if let Some(stream) = force_stream {
@@ -293,6 +294,24 @@ async fn chat_core(
     // bill for — which is what makes `sent_bytes / reported_input_tokens` a calibration rather
     // than a guess (savings.rs). Only a reduction that really happened is credited: `applied` is
     // already false for a dry run and for a pass that found nothing to shrink.
+    // Compact tool definitions after the existing optimization seams. Initially
+    // only OpenAI non-streaming calls without fallback chains are supported.
+    let compact_enabled = ctx.cfg.compact_tools_enabled
+        && compact_wire_supported
+        && format == InboundFormat::OpenAi
+        && resolved.provider == "openai"
+        && resolved.fallback_models.is_empty();
+    let compact_session = crate::compact_tools::prepare_request(&mut req, compact_enabled);
+    if ctx.cfg.compact_tools_enabled {
+        match &compact_session {
+            Ok(session) => tracing::debug!(
+                bytes_before = session.bytes_before,
+                bytes_after = session.bytes_after,
+                "compact tools applied"
+            ),
+            Err(reason) => tracing::debug!(reason = reason.as_str(), "compact tools bypassed"),
+        }
+    }
     let sent_bytes = crate::brevity::estimated_bytes(&req);
     let compress_bytes = compression
         .applied
@@ -371,9 +390,10 @@ async fn chat_core(
     }
 
     // Non-streaming: run with ordered fallbacks; usage records the effective provider/model.
-    let (resp, (provider, model)) = fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
-        .instrument(llm_span.clone())
-        .await?;
+    let (mut resp, (provider, model)) =
+        fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
+            .instrument(llm_span.clone())
+            .await?;
     let latency_ms = started.elapsed().as_millis() as i64;
 
     // Record effective model and token usage on the server-side gen_ai span.
@@ -405,6 +425,13 @@ async fn chat_core(
         },
     );
 
+    // Log real provider usage even if the output codec rejects the response.
+    if let Ok(session) = compact_session {
+        session.restore(&mut resp).map_err(|error| {
+            tracing::warn!(code = error.code(), "compact tool output rejected");
+            GatewayError::Upstream(format!("compact tool output rejected: {}", error.code()))
+        })?;
+    }
     Ok(Json(inbound.render_chat_response(resp)).into_response())
 }
 
@@ -975,6 +1002,121 @@ mod tests {
 
     fn token() -> String {
         crate::auth::mint_agent_token(AGENT, OWNER, SECRET, 3600, Algorithm::HS256).unwrap()
+    }
+
+    async fn compact_provider_case(
+        enabled: bool,
+        invalid: bool,
+        strict: bool,
+    ) -> (Value, Result<Value, GatewayError>) {
+        let dataset: Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/compact-tools-eval.json"))
+                .unwrap();
+        let mut body = json!({
+            "model":"gpt-4o-mini",
+            "messages":[{"role":"user","content":"Book a review Monday at 3pm IST"}],
+            "tools":dataset["tools"]
+        });
+        if strict {
+            body["tools"][0]["function"]["strict"] = json!(true);
+        }
+        let seen = Arc::new(Mutex::new(Value::Null));
+        let capture = Arc::clone(&seen);
+        let mut server = mockito::Server::new_async().await;
+        let mock = server.mock("POST", "/chat/completions")
+            .with_status(200).with_header("content-type", "application/json")
+            .with_body_from_request(move |request| {
+                *capture.lock().unwrap() = serde_json::from_slice(request.body().unwrap()).unwrap();
+                let text = if invalid { "<<call delete_everything {}>>" }
+                    else { r#"<<call create_calendar_event {"title":"Review","start":"2026-10-05T15:00:00+05:30"}>>"# };
+                json!({"id":"test","model":"gpt-4o-mini","choices":[{
+                    "index":0,"message":{"role":"assistant","content":text},"finish_reason":"stop"
+                }],"usage":{"prompt_tokens":100,"completion_tokens":30,"total_tokens":130}})
+                    .to_string().into_bytes()
+            }).create_async().await;
+        let mut ctx = ctx_with(server.url());
+        Arc::make_mut(&mut ctx.cfg).compact_tools_enabled = enabled;
+        let store = Store {
+            config: None,
+            is_coding_agent: false,
+            compress_enabled: false,
+        };
+        let result = chat_core(
+            &ctx,
+            &store,
+            &auth_headers(&token()),
+            body,
+            InboundFormat::OpenAi,
+            None,
+        )
+        .await;
+        mock.assert_async().await;
+        let result = match result {
+            Ok(response) => Ok(serde_json::from_slice(
+                &axum::body::to_bytes(response.into_body(), 1024 * 1024)
+                    .await
+                    .unwrap(),
+            )
+            .unwrap()),
+            Err(error) => Err(error),
+        };
+        let captured = seen.lock().unwrap().clone();
+        (captured, result)
+    }
+
+    #[tokio::test]
+    async fn compact_seam_reaches_provider_and_restores_real_client_protocol() {
+        let (sent, result) = compact_provider_case(true, false, false).await;
+        assert!(sent.get("tools").is_none());
+        assert!(sent["messages"].as_array().unwrap().iter().any(|m| {
+            m["role"] == "system"
+                && m["content"]
+                    .as_str()
+                    .is_some_and(|s| s.contains("<<call NAME"))
+        }));
+        let response = result.unwrap();
+        assert_eq!(response["choices"][0]["finish_reason"], "tool_calls");
+        assert_eq!(
+            response["choices"][0]["message"]["tool_calls"][0]["function"]["name"],
+            "create_calendar_event"
+        );
+        assert_eq!(response["usage"]["total_tokens"], 130);
+        assert!(response["choices"][0]["message"].get("content").is_none());
+    }
+
+    #[tokio::test]
+    async fn compact_seam_is_off_by_default_and_passes_text_through() {
+        let (sent, result) = compact_provider_case(false, false, false).await;
+        assert!(sent["tools"].is_array());
+        assert_eq!(sent["messages"].as_array().unwrap().len(), 1);
+        let response = result.unwrap();
+        assert!(
+            response["choices"][0]["message"]
+                .get("tool_calls")
+                .is_none()
+        );
+        assert!(
+            response["choices"][0]["message"]["content"]
+                .as_str()
+                .unwrap()
+                .starts_with("<<call")
+        );
+    }
+
+    #[tokio::test]
+    async fn compact_seam_rejects_unknown_calls_instead_of_guessing() {
+        let (_, result) = compact_provider_case(true, true, false).await;
+        assert!(
+            matches!(result, Err(GatewayError::Upstream(detail)) if detail.contains("unknown_tool"))
+        );
+    }
+
+    #[tokio::test]
+    async fn compact_seam_bypasses_unknown_function_fields_before_ir_parse() {
+        let (sent, result) = compact_provider_case(true, false, true).await;
+        assert!(sent["tools"].is_array());
+        assert_eq!(sent["messages"].as_array().unwrap().len(), 1);
+        assert!(result.is_ok());
     }
 
     /// An llm_config pinning the destination to OpenAI `gpt-4o-mini` — used by the format-

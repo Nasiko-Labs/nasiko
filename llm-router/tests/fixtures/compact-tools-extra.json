@@ -1,0 +1,72 @@
+{
+  "schema_version": "compact-tools-eval-v1",
+  "purpose": "Author-written supplementary cases; report separately from organizer data.",
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "calculate_cart",
+        "description": "Calculate the total for an explicitly supplied shopping cart.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "items": {
+              "type": "array",
+              "description": "Line items with product identifier, quantity, and unit price.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "sku": {"type": "string", "description": "Exact product identifier"},
+                  "quantity": {"type": "integer", "minimum": 1, "description": "Number of units"},
+                  "unit_price": {"type": "number", "minimum": 0, "description": "Price of one unit"}
+                },
+                "required": ["sku", "quantity", "unit_price"],
+                "additionalProperties": false
+              }
+            },
+            "currency": {"type": "string", "enum": ["INR", "USD", "EUR"], "description": "Currency of the supplied prices"}
+          },
+          "required": ["items", "currency"],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "echo_text",
+        "description": "Echo the exact supplied text without changing any characters.",
+        "parameters": {
+          "type": "object",
+          "properties": {"text": {"type": "string", "description": "Exact text to echo, including quotes and markers"}},
+          "required": ["text"],
+          "additionalProperties": false
+        }
+      }
+    }
+  ],
+  "cases": [
+    {
+      "id": "extra-001", "tools": ["calculate_cart", "echo_text"],
+      "messages": [{"role": "user", "content": "Calculate my cart in INR: sku pen has quantity 2 and unit_price 12.5; sku book has quantity 1 and unit_price 100."}],
+      "expected": [{"name": "calculate_cart", "arguments": {"items": [{"sku": "pen", "quantity": 2, "unit_price": 12.5}, {"sku": "book", "quantity": 1, "unit_price": 100}], "currency": "INR"}}]
+    },
+    {
+      "id": "extra-002", "tools": ["calculate_cart", "echo_text"],
+      "messages": [{"role": "user", "content": "Echo exactly this text: a >> b, \"quoted\", \\ path."}],
+      "expected": [{"name": "echo_text", "arguments": {"text": "a >> b, \"quoted\", \\ path."}}]
+    },
+    {
+      "id": "extra-003", "tools": ["calculate_cart", "echo_text"],
+      "messages": [{"role": "user", "content": "Delete all saved orders."}],
+      "expected": []
+    }
+  ],
+  "decoder_cases": [
+    {
+      "id": "extra-dc-001", "tools": ["calculate_cart"],
+      "chunks": ["<<call calculate_cart {\"items\":[{\"sku\":\"pen\",\"quantity\":0,\"unit_price\":12.5}],\"currency\":\"INR\"}>>"],
+      "expected": {"error": "invalid_arguments"}
+    }
+  ]
+}
