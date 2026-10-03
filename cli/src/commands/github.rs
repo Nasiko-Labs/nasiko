@@ -46,6 +46,22 @@ fn repo_name(name: &str, full_name: &Option<String>) -> String {
     full_name.as_deref().unwrap_or(name).to_string()
 }
 
+/// Pull the repo array out of a `/github/repositories` body. The server answers
+/// `{"repositories": [...], "total": N}` with no `ApiResponse` envelope
+/// (`server/src/github.rs`). `data` and a bare array are legacy tolerance
+/// carried over unchanged from the two ladders this replaces; no server in this
+/// repo emits either, so neither is a contract.
+fn parse_repo_list(raw: serde_json::Value) -> Result<Vec<GithubRepo>> {
+    let repos = match raw {
+        serde_json::Value::Object(mut body) => {
+            let list = body.remove("repositories").or_else(|| body.remove("data"));
+            list.unwrap_or(serde_json::Value::Object(body))
+        }
+        bare_array => bare_array,
+    };
+    Ok(serde_json::from_value(repos)?)
+}
+
 pub fn status() -> Result<()> {
     let client = Client::from_active_cluster()?;
     let s: GithubStatus = client.get_json("/auth/github/token")?;
@@ -73,15 +89,7 @@ pub fn repos() -> Result<()> {
         println!("No repositories found. Run `nasiko github connect` first.");
         return Ok(());
     };
-    let repos: Vec<GithubRepo> = if let Some(arr) = raw.as_array() {
-        serde_json::from_value(serde_json::Value::Array(arr.clone()))?
-    } else if let Some(repos) = raw.get("repositories") {
-        serde_json::from_value(repos.clone())?
-    } else if let Some(data) = raw.get("data") {
-        serde_json::from_value(data.clone())?
-    } else {
-        serde_json::from_value(raw)?
-    };
+    let repos = parse_repo_list(raw)?;
 
     if repos.is_empty() {
         println!("No repositories found. Run `nasiko github connect` first.");
@@ -123,13 +131,7 @@ pub fn clone(repo: Option<&str>, branch: Option<&str>) -> Result<()> {
         r.to_string()
     } else {
         let raw: serde_json::Value = client.get_json("/github/repositories")?;
-        let repos: Vec<GithubRepo> = if let Some(arr) = raw.as_array() {
-            serde_json::from_value(serde_json::Value::Array(arr.clone()))?
-        } else if let Some(data) = raw.get("data") {
-            serde_json::from_value(data.clone())?
-        } else {
-            serde_json::from_value(raw)?
-        };
+        let repos = parse_repo_list(raw)?;
 
         if repos.is_empty() {
             println!("No GitHub repositories found. Run `nasiko github connect` first.");
@@ -173,4 +175,27 @@ pub fn clone(repo: Option<&str>, branch: Option<&str>) -> Result<()> {
     }
     println!("\nDeployed: {}", agent_name);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_repo_list;
+    use serde_json::json;
+
+    #[test]
+    fn parses_the_shape_the_server_sends() {
+        let raw = json!({
+            "repositories": [
+                {"name": "nasiko", "full_name": "Nasiko-Labs/nasiko", "private": false},
+                {"name": "scratch", "full_name": "acme/scratch", "private": true}
+            ],
+            "total": 2
+        });
+
+        let repos = parse_repo_list(raw).unwrap();
+
+        assert_eq!(repos.len(), 2);
+        assert_eq!(repos[0].full_name.as_deref(), Some("Nasiko-Labs/nasiko"));
+        assert!(repos[1].private);
+    }
 }
