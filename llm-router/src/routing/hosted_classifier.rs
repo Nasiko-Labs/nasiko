@@ -67,23 +67,36 @@ fn parse_result(raw: &str) -> Option<Classification> {
 
 fn bounded_context(user_context: &[String]) -> Vec<String> {
     let mut remaining = MAX_CONTEXT_CHARS;
-    user_context.iter().rev().take(MAX_CONTEXT_MESSAGES)
+    user_context
+        .iter()
+        .rev()
+        .take(MAX_CONTEXT_MESSAGES)
         .filter_map(|item| {
             let bounded: String = item.chars().take(remaining).collect();
             remaining = remaining.saturating_sub(bounded.chars().count());
             (!bounded.is_empty()).then_some(bounded)
         })
-        .collect::<Vec<_>>().into_iter().rev().collect()
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect()
 }
 
 pub fn regex_fallback(query: &str) -> Classification {
     let request_type = classify_request_type(query);
     let complexity = match request_type {
-        RequestType::CodeGeneration | RequestType::TechnicalDesign | RequestType::AnalyticalReasoning => 3,
+        RequestType::CodeGeneration
+        | RequestType::TechnicalDesign
+        | RequestType::AnalyticalReasoning => 3,
         RequestType::CodeUnderstanding | RequestType::Writing => 2,
         RequestType::FactualLookup | RequestType::General => 1,
     };
-    Classification { request_type, complexity, confidence: 0.0, hosted: false }
+    Classification {
+        request_type,
+        complexity,
+        confidence: 0.0,
+        hosted: false,
+    }
 }
 
 /// The hosted classifier receives user text only. Context is newest-first bounded by both
@@ -99,18 +112,22 @@ pub async fn classify(query: &str, user_context: &[String]) -> Classification {
 
     let base = std::env::var("NASIKO_CLASSIFIER_BASE_URL")
         .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
-    let model = std::env::var("NASIKO_CLASSIFIER_MODEL")
-        .unwrap_or_else(|_| "gpt-4o-mini".to_string());
+    let model =
+        std::env::var("NASIKO_CLASSIFIER_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string());
     let query: String = query.chars().take(MAX_QUERY_CHARS).collect();
     let context = bounded_context(user_context);
     let prompt = format!(
         "Classify the user's current request. Use prior user messages only as context. Return only JSON with request_type (one of code_generation, code_understanding, technical_design, analytical_reasoning, writing, factual_lookup, general), complexity (integer 1 simple to 3 complex), and confidence (number 0 to 1).\nContext: {}\nCurrent request: {}",
-        context.join("\n"), query
+        context.join("\n"),
+        query
     );
     let endpoint = format!("{}/chat/completions", base.trim_end_matches('/'));
     let Ok(client) = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(3))
-        .build() else { return fallback };
+        .build()
+    else {
+        return fallback;
+    };
     let response = client
         .post(endpoint)
         .bearer_auth(api_key)
@@ -121,10 +138,18 @@ pub async fn classify(query: &str, user_context: &[String]) -> Classification {
         }))
         .send()
         .await;
-    let Ok(response) = response else { return fallback };
-    if !response.status().is_success() { return fallback; }
-    let Ok(completion) = response.json::<Completion>().await else { return fallback };
-    completion.choices.first()
+    let Ok(response) = response else {
+        return fallback;
+    };
+    if !response.status().is_success() {
+        return fallback;
+    }
+    let Ok(completion) = response.json::<Completion>().await else {
+        return fallback;
+    };
+    completion
+        .choices
+        .first()
         .and_then(|choice| parse_result(&choice.message.content))
         .unwrap_or(fallback)
 }
@@ -136,16 +161,49 @@ mod tests {
     #[test]
     fn rejects_malformed_unknown_and_low_confidence_results() {
         assert!(parse_result("not json").is_none());
-        assert!(parse_result(r#"{"request_type":"unknown","complexity":2,"confidence":0.9}"#).is_none());
-        assert!(parse_result(r#"{"request_type":"general","complexity":2,"confidence":0.2}"#).is_none());
-        assert!(parse_result(r#"{"request_type":"general","complexity":4,"confidence":0.9}"#).is_none());
+        assert!(
+            parse_result(r#"{"request_type":"unknown","complexity":2,"confidence":0.9}"#).is_none()
+        );
+        assert!(
+            parse_result(r#"{"request_type":"general","complexity":2,"confidence":0.2}"#).is_none()
+        );
+        assert!(
+            parse_result(r#"{"request_type":"general","complexity":4,"confidence":0.9}"#).is_none()
+        );
     }
 
     #[test]
     fn complexity_maps_to_model_strength() {
-        assert_eq!(Classification { request_type: RequestType::General, complexity: 1, confidence: 1.0, hosted: true }.tier(), Tier::Tier3);
-        assert_eq!(Classification { request_type: RequestType::General, complexity: 2, confidence: 1.0, hosted: true }.tier(), Tier::Tier2);
-        assert_eq!(Classification { request_type: RequestType::General, complexity: 3, confidence: 1.0, hosted: true }.tier(), Tier::Tier1);
+        assert_eq!(
+            Classification {
+                request_type: RequestType::General,
+                complexity: 1,
+                confidence: 1.0,
+                hosted: true
+            }
+            .tier(),
+            Tier::Tier3
+        );
+        assert_eq!(
+            Classification {
+                request_type: RequestType::General,
+                complexity: 2,
+                confidence: 1.0,
+                hosted: true
+            }
+            .tier(),
+            Tier::Tier2
+        );
+        assert_eq!(
+            Classification {
+                request_type: RequestType::General,
+                complexity: 3,
+                confidence: 1.0,
+                hosted: true
+            }
+            .tier(),
+            Tier::Tier1
+        );
     }
 
     #[test]
@@ -161,7 +219,9 @@ mod tests {
 
     #[test]
     fn context_is_limited_by_message_count_and_total_characters() {
-        let context: Vec<String> = (0..10).map(|n| format!("{n}:{}", "x".repeat(1_500))).collect();
+        let context: Vec<String> = (0..10)
+            .map(|n| format!("{n}:{}", "x".repeat(1_500)))
+            .collect();
         let bounded = bounded_context(&context);
         assert!(bounded.len() <= MAX_CONTEXT_MESSAGES);
         assert!(bounded.iter().map(|s| s.chars().count()).sum::<usize>() <= MAX_CONTEXT_CHARS);

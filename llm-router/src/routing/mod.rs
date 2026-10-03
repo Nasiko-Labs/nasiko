@@ -23,8 +23,8 @@ pub mod classifier;
 // The salience classifier itself — feature engine, weight loading, scoring, banding.
 // Private to `routing`: only `salience.rs` (a sibling module) uses it directly, via
 // `ClassifierSalienceGate`.
-mod patterns;
 pub mod hosted_classifier;
+mod patterns;
 pub mod pricing_sync;
 pub mod registry;
 pub mod salience;
@@ -448,8 +448,11 @@ pub fn latest_user_query(messages: &[crate::ir::Message]) -> Option<String> {
 /// Context passed to hosted classification. Only user messages are included; assistant and
 /// tool messages may contain generated or untrusted output and are deliberately excluded.
 pub fn classifier_user_context(messages: &[crate::ir::Message]) -> Vec<String> {
-    let mut context: Vec<String> = messages.iter().filter(|m| m.role == "user")
-        .filter_map(crate::ir::Message::text).collect();
+    let mut context: Vec<String> = messages
+        .iter()
+        .filter(|m| m.role == "user")
+        .filter_map(crate::ir::Message::text)
+        .collect();
     context.pop(); // current turn is supplied separately as `query`
     context
 }
@@ -875,7 +878,10 @@ mod tests {
             msg("tool", "sensitive tool output"),
             msg("user", "current request"),
         ];
-        assert_eq!(classifier_user_context(&messages), vec!["prior request".to_string()]);
+        assert_eq!(
+            classifier_user_context(&messages),
+            vec!["prior request".to_string()]
+        );
     }
 
     #[test]

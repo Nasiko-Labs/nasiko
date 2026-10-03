@@ -876,7 +876,10 @@ fn latest_user_text(input: Option<&Value>) -> Option<String> {
 }
 
 fn user_texts(input: Option<&Value>) -> Vec<String> {
-    let mut texts: Vec<String> = input.and_then(Value::as_array).into_iter().flatten()
+    let mut texts: Vec<String> = input
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
         .filter(|item| item.get("role").and_then(Value::as_str) == Some("user"))
         .filter_map(|item| item.get("content").and_then(content_text))
         .collect();
