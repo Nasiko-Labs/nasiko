@@ -1,0 +1,10 @@
+{"id":"pub-01","request_type":"code_generation","complexity":1,"confidence":0.95,"latency_us":420}
+{"id":"pub-02","request_type":"general","complexity":1,"confidence":0.85,"latency_us":310}
+{"id":"pub-03","request_type":"general","complexity":1,"confidence":0.85,"latency_us":310}
+{"id":"pub-04","request_type":"general","complexity":1,"confidence":0.85,"latency_us":310}
+{"id":"pub-05","request_type":"technical_design","complexity":4,"confidence":0.91,"latency_us":750}
+{"id":"pub-06","request_type":"general","complexity":1,"confidence":0.85,"latency_us":310}
+{"id":"pub-07","request_type":"general","complexity":1,"confidence":0.85,"latency_us":310}
+{"id":"pub-08","request_type":"technical_design","complexity":4,"confidence":0.91,"latency_us":750}
+{"id":"pub-09","request_type":"general","complexity":1,"confidence":0.85,"latency_us":310}
+{"id":"pub-10","request_type":"technical_design","complexity":4,"confidence":0.91,"latency_us":750}
