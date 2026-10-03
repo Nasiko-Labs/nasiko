@@ -23,6 +23,6 @@ Status is `Not started`, `In progress`, or `Done`. Update this file when a task 
 | T17 | Compact and decode OpenAI non-streaming requests | [lld/17-openai-non-streaming.md](lld/17-openai-non-streaming.md) | Done |
 | T18 | Bypass compaction when it is not safe | [lld/18-bypass.md](lld/18-bypass.md) | Done |
 | T19 | Run the crate from `just test-unit` | [lld/19-workspace-test-entry.md](lld/19-workspace-test-entry.md) | Done |
-| T20 | Write the pull request | [lld/20-pull-request-text.md](lld/20-pull-request-text.md) | Not started |
+| T20 | Write the pull request | [lld/20-pull-request-text.md](lld/20-pull-request-text.md) | Done |
 
 Shared fixtures and the grammar: [lld/00-shared.md](lld/00-shared.md).
