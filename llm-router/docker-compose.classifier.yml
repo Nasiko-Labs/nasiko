@@ -1,0 +1,35 @@
+# Optional local overlay: docker compose -f docker-compose.yml -f llm-router/docker-compose.classifier.yml up
+services:
+  server:
+    environment:
+      REQUEST_CLASSIFIER_BACKEND: llmrouter_knn
+      REQUEST_CLASSIFIER_ENDPOINT: http://request-classifier:8001/classify
+      REQUEST_CLASSIFIER_TIMEOUT_MS: ${REQUEST_CLASSIFIER_TIMEOUT_MS:-250}
+      REQUEST_CLASSIFIER_MIN_CONFIDENCE: ${REQUEST_CLASSIFIER_MIN_CONFIDENCE:-0.85}
+      REQUEST_CLASSIFIER_SEED: ${REQUEST_CLASSIFIER_SEED:-42}
+    depends_on:
+      request-classifier:
+        condition: service_healthy
+
+  request-classifier:
+    build:
+      context: ./llm-router
+      dockerfile: classifier_service/Dockerfile
+    environment:
+      CLASSIFIER_MODEL_PATH: /models/request_classifier.joblib
+      HF_HOME: /models/huggingface
+    volumes:
+      - ./llm-router/artifacts:/models:ro
+    expose:
+      - "8001"
+    networks:
+      - nasiko
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+networks:
+  nasiko:
+    name: nasiko

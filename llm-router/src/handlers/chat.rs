@@ -7,7 +7,7 @@
 //! the whole path is testable without a database.
 
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use axum::Json;
 use axum::body::Body;
@@ -467,12 +467,7 @@ pub(crate) async fn resolve_routed_request(
             Some(attribution.source),
         )
     };
-    let decision = routing::route_model(
-        ctx.router_cache.as_ref(),
-        ctx.tier_registry.as_ref(),
-        ctx.cell_store.as_ref(),
-        ctx.salience_gate.as_ref(),
-        &RouteInputs {
+    let route_inputs = RouteInputs {
             agent_id: &agent_id,
             provider: &resolved.provider,
             fallback_model: &resolved.model,
@@ -483,9 +478,30 @@ pub(crate) async fn resolve_routed_request(
             tier3_model: resolved.tier3_model.as_deref(),
             signals: &boundary,
             query: signals.query.as_deref(),
-        },
-    )
-    .await;
+        };
+    let decision = if ctx.request_classifier.name() == "regex" {
+        routing::route_model(
+            ctx.router_cache.as_ref(),
+            ctx.tier_registry.as_ref(),
+            ctx.cell_store.as_ref(),
+            ctx.salience_gate.as_ref(),
+            &route_inputs,
+        )
+        .await
+    } else {
+        routing::route_model_with_classifier(
+            ctx.router_cache.as_ref(),
+            ctx.tier_registry.as_ref(),
+            ctx.cell_store.as_ref(),
+            ctx.salience_gate.as_ref(),
+            ctx.request_classifier.as_ref(),
+            Duration::from_millis(ctx.cfg.request_classifier_timeout_ms),
+            ctx.cfg.request_classifier_min_confidence,
+            ctx.cfg.request_classifier_seed,
+            &route_inputs,
+        )
+        .await
+    };
     tracing::info!(
         target: "nasiko::llm_router::chat",
         %agent_id,
@@ -957,6 +973,7 @@ mod tests {
             tier_registry: Arc::new(NoTiers),
             cell_store: Arc::new(crate::routing::InMemoryCellStore::new()),
             salience_gate: Arc::new(crate::routing::AllowAllGate),
+            request_classifier: Arc::new(crate::routing::request_classifier::RegexRequestClassifier),
             pricing: Arc::new(nasiko_pricing::PricingEngine::new(
                 PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
             )),
@@ -1179,6 +1196,101 @@ mod tests {
         assert_eq!(v["model"], "gpt-4o");
         assert_eq!(v["choices"][0]["message"]["content"], "hello");
         assert_eq!(v["usage"]["total_tokens"], 7);
+    }
+
+    #[tokio::test]
+    async fn knn_http_classifier_routes_real_prompt_to_mocked_provider_tier() {
+        let query = "Implement a Python function that parses a CSV and returns the top 5 rows.";
+
+        let mut classifier_server = mockito::Server::new_async().await;
+        let classifier_mock = classifier_server
+            .mock("POST", "/classify")
+            .match_body(mockito::Matcher::PartialJson(json!({ "query": query })))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "request_type": "code_generation",
+                    "complexity": 4,
+                    "confidence": 0.95
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+
+        let provider_request = Arc::new(Mutex::new(serde_json::Value::Null));
+        let captured_request = Arc::clone(&provider_request);
+        let mut provider_server = mockito::Server::new_async().await;
+        let provider_mock = provider_server
+            .mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body_from_request(move |request| {
+                let body = request.body().map(Vec::as_slice).unwrap_or_default();
+                *captured_request.lock().unwrap_or_else(|e| e.into_inner()) =
+                    serde_json::from_slice(body).unwrap_or(serde_json::Value::Null);
+                json!({
+                    "id": "chatcmpl-mock",
+                    "object": "chat.completion",
+                    "model": "gpt-4o",
+                    "choices": [{
+                        "index": 0,
+                        "message": { "role": "assistant", "content": "Here is the CSV parser." },
+                        "finish_reason": "stop"
+                    }],
+                    "usage": { "prompt_tokens": 18, "completion_tokens": 12, "total_tokens": 30 }
+                })
+                .to_string()
+                .into_bytes()
+            })
+            .create_async()
+            .await;
+
+        let mut ctx = ctx_with(provider_server.url());
+        ctx.request_classifier = Arc::new(crate::routing::request_classifier::HttpRequestClassifier::new(
+            reqwest::Client::new(),
+            format!("{}/classify", classifier_server.url()),
+        ));
+
+        let mut config = openai_config();
+        config.tier1_model = Some("gpt-4o".into());
+        config.tier2_model = Some("gpt-4o-mini".into());
+        config.tier3_model = Some("gpt-4o-nano".into());
+        let store = Store {
+            config: Some(config),
+            is_coding_agent: false,
+            compress_enabled: false,
+        };
+        let body = json!({
+            "model": "gpt-4o-mini",
+            "messages": [{ "role": "user", "content": query }]
+        });
+
+        let response = chat_core(
+            &ctx,
+            &store,
+            &auth_headers(&token()),
+            body,
+            InboundFormat::OpenAi,
+            None,
+        )
+        .await
+        .unwrap();
+        let response: serde_json::Value =
+            serde_json::from_str(&body_string(response).await).unwrap();
+        let sent = provider_request.lock().unwrap().clone();
+
+        assert_eq!(sent["messages"][0]["content"], query);
+        assert!(
+            ["gpt-4o", "gpt-4o-mini", "gpt-4o-nano"].contains(&sent["model"].as_str().unwrap()),
+            "router should send one of the configured tier models, got {}",
+            sent["model"]
+        );
+        assert_eq!(response["model"], sent["model"]);
+        assert_eq!(response["choices"][0]["message"]["content"], "Here is the CSV parser.");
+        classifier_mock.assert_async().await;
+        provider_mock.assert_async().await;
     }
 
     #[tokio::test]

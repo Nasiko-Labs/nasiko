@@ -15,12 +15,18 @@
 //! from the user's next turn ([`classifier::signal`]) is folded back into those cells, so the
 //! router learns which tier suffices for which kind of query. See [`route_model`].
 
+use std::time::Duration;
+
+use rand::{SeedableRng, rngs::StdRng};
+use classifier::CellMap;
+
 pub mod attribution;
 pub mod boundary;
 pub mod cache;
 pub mod catalog;
 pub mod cells;
 pub mod classifier;
+pub mod request_classifier;
 // The salience classifier itself — feature engine, weight loading, scoring, banding.
 // Private to `routing`: only `salience.rs` (a sibling module) uses it directly, via
 // `ClassifierSalienceGate`.
@@ -33,7 +39,9 @@ mod salience_classifier;
 pub use boundary::{BoundarySignals, Mode, Phase};
 pub use cache::{CachedDecision, DecisionCache, NoopCache, RedisCache};
 pub use cells::{CellStore, InMemoryCellStore, PgCellStore};
-pub use classifier::{RequestType, Tier, classify, classify_request_type, signal};
+pub use classifier::{
+    RequestType, Tier, classify, classify_request_type, classify_with_request_type, signal,
+};
 pub use registry::{PgTierRegistry, TierRegistry};
 pub use salience::{AllowAllGate, ClassifierSalienceGate, SalienceGate};
 
@@ -124,6 +132,41 @@ pub async fn route_model(
     registry: &dyn TierRegistry,
     cell_store: &dyn CellStore,
     gate: &dyn SalienceGate,
+    inputs: &RouteInputs<'_>,
+) -> RouteDecision {
+    route_model_internal(cache, registry, cell_store, gate, None, inputs).await
+}
+
+/// Route with an opt-in classifier backend. It is queried only after the existing pin,
+/// cache, salience, and safe-boundary checks have passed.
+pub async fn route_model_with_classifier(
+    cache: &dyn DecisionCache,
+    registry: &dyn TierRegistry,
+    cell_store: &dyn CellStore,
+    gate: &dyn SalienceGate,
+    classifier: &dyn request_classifier::RequestClassifier,
+    timeout: Duration,
+    min_confidence: f32,
+    seed: u64,
+    inputs: &RouteInputs<'_>,
+) -> RouteDecision {
+    route_model_internal(
+        cache,
+        registry,
+        cell_store,
+        gate,
+        Some((classifier, timeout, min_confidence, seed)),
+        inputs,
+    )
+    .await
+}
+
+async fn route_model_internal(
+    cache: &dyn DecisionCache,
+    registry: &dyn TierRegistry,
+    cell_store: &dyn CellStore,
+    gate: &dyn SalienceGate,
+    alternate: Option<(&dyn request_classifier::RequestClassifier, Duration, f32, u64)>,
     inputs: &RouteInputs<'_>,
 ) -> RouteDecision {
     tracing::info!(
@@ -250,7 +293,41 @@ pub async fn route_model(
             // (`ThreadRng`) is `!Send`, so it is scoped to drop before the next `.await` — the
             // handler future must stay `Send`.
             let learned = cell_store.load(inputs.provider).await;
-            let (tier, request_type) = {
+            let (tier, request_type) = if let Some((backend, timeout, min_confidence, seed)) = alternate {
+                let class_input = request_classifier::ClassifyInput {
+                    query,
+                    context: None,
+                };
+                let (classification, did_fallback) = request_classifier::classify_with_fallback(
+                    backend,
+                    &class_input,
+                    timeout,
+                    min_confidence,
+                )
+                .await;
+                if did_fallback {
+                    tracing::warn!(
+                        target: "nasiko::llm_router::classifier",
+                        backend = backend.name(),
+                        "request classifier failed, returned invalid output, timed out, or fell below confidence threshold; used regex fallback"
+                    );
+                }
+                let mut rng = StdRng::seed_from_u64(deterministic_route_seed(
+                    seed,
+                    inputs.provider,
+                    query,
+                    classification.request_type,
+                    &learned,
+                ));
+                classify_with_request_type(
+                    query,
+                    inputs.provider,
+                    &learned,
+                    classification.request_type,
+                    &mut rng,
+                )
+            } else {
+                // Preserve the legacy stochastic route exactly when opt-in is disabled.
                 let mut rng = rand::rng();
                 classify(query, inputs.provider, &learned, &mut rng)
             };
@@ -349,6 +426,47 @@ pub async fn route_model(
         tier: None,
         source,
     }
+}
+
+/// Stable seed for the opt-in Thompson sampler. Cell state is fed in a fixed order rather
+/// than iterating the hash map, so identical provider/query/cells produce the same draws.
+fn deterministic_route_seed(
+    configured_seed: u64,
+    provider: &str,
+    query: &str,
+    request_type: RequestType,
+    cells: &CellMap,
+) -> u64 {
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = 0xcbf2_9ce4_8422_2325 ^ configured_seed;
+    let mut feed = |bytes: &[u8]| {
+        for byte in bytes {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(PRIME);
+        }
+    };
+    feed(provider.as_bytes());
+    feed(query.as_bytes());
+    feed(request_type.as_str().as_bytes());
+    for tier in [Tier::Tier1, Tier::Tier2, Tier::Tier3] {
+        for kind in [
+            RequestType::CodeGeneration,
+            RequestType::CodeUnderstanding,
+            RequestType::TechnicalDesign,
+            RequestType::AnalyticalReasoning,
+            RequestType::Writing,
+            RequestType::FactualLookup,
+            RequestType::General,
+        ] {
+            if let Some(cell) = cells.get(&(tier, kind)) {
+                feed(&[tier.as_level() as u8]);
+                feed(kind.as_str().as_bytes());
+                feed(&cell.quality_mean.to_bits().to_le_bytes());
+                feed(&cell.samples.to_le_bytes());
+            }
+        }
+    }
+    hash
 }
 
 /// Credit the current turn's feedback to a prior decision, if there is any to credit.
@@ -460,7 +578,41 @@ mod tests {
     use crate::routing::registry::test_support;
     use async_trait::async_trait;
     use serde_json::{Map, Value};
-    use std::sync::Mutex;
+    use std::sync::{Mutex, atomic::{AtomicUsize, Ordering}};
+
+    struct CountingClassifier(AtomicUsize);
+    #[async_trait]
+    impl request_classifier::RequestClassifier for CountingClassifier {
+        fn name(&self) -> &str { "test" }
+        async fn classify(&self, _input: &request_classifier::ClassifyInput<'_>) -> Result<request_classifier::Classification, request_classifier::ClassifyError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(request_classifier::Classification { request_type: RequestType::Writing, complexity: 2, confidence: 0.9 })
+        }
+    }
+
+    #[tokio::test]
+    async fn opted_in_classifier_is_not_called_on_continue_turns() {
+        let classifier = CountingClassifier(AtomicUsize::new(0));
+        let cache = FakeCache::with_hit("sticky-model");
+        let s = signals(Some("c1"), Phase::Continue, Mode::FreeFlowing);
+        let decision = route_model_with_classifier(&cache, &test_support::StubRegistry, &InMemoryCellStore::new(), &AllowAllGate, &classifier, Duration::from_millis(10), 0.6, 42, &inputs("anthropic", &s, None)).await;
+        assert_eq!(decision.source, RouteSource::CacheHit);
+        assert_eq!(decision.model, "sticky-model");
+        assert_eq!(classifier.0.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn deterministic_seed_ignores_cell_map_insertion_order() {
+        let a = CellMap::from([
+            ((Tier::Tier1, RequestType::Writing), classifier::Cell { quality_mean: 0.8, samples: 11 }),
+            ((Tier::Tier3, RequestType::General), classifier::Cell { quality_mean: 0.4, samples: 3 }),
+        ]);
+        let b = CellMap::from([
+            ((Tier::Tier3, RequestType::General), classifier::Cell { quality_mean: 0.4, samples: 3 }),
+            ((Tier::Tier1, RequestType::Writing), classifier::Cell { quality_mean: 0.8, samples: 11 }),
+        ]);
+        assert_eq!(deterministic_route_seed(42, "openai", "write this", RequestType::Writing, &a), deterministic_route_seed(42, "openai", "write this", RequestType::Writing, &b));
+    }
 
     /// A cache seeded with one hit and recording every `put`, to prove read/write levels.
     struct FakeCache {

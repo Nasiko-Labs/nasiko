@@ -188,6 +188,7 @@ mod tests {
             tier_registry: Arc::new(crate::routing::registry::test_support::StubRegistry),
             cell_store: Arc::new(crate::routing::InMemoryCellStore::new()),
             salience_gate: Arc::new(crate::routing::AllowAllGate),
+            request_classifier: Arc::new(crate::routing::request_classifier::RegexRequestClassifier),
             pricing: Arc::new(nasiko_pricing::PricingEngine::new(
                 PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
             )),

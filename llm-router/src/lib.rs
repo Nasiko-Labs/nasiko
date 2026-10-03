@@ -51,6 +51,7 @@ pub use routing::{
     AllowAllGate, CellStore, ClassifierSalienceGate, DecisionCache, InMemoryCellStore, NoopCache,
     PgCellStore, PgTierRegistry, RedisCache, SalienceGate, TierRegistry,
 };
+use routing::request_classifier::{RequestClassifier, configured_request_classifier};
 
 /// Shared context for the LLM router.
 ///
@@ -82,6 +83,8 @@ pub struct LlmRouterCtx {
     /// classify + pin. [`ClassifierSalienceGate`] when `SALIENCE_GATE_ENABLED`; else [`AllowAllGate`]
     /// (classify at every boundary, i.e. behaviour before the gate existed).
     pub salience_gate: Arc<dyn SalienceGate>,
+    /// Request type/complexity classifier used only on safe routing boundaries.
+    pub request_classifier: Arc<dyn RequestClassifier>,
     /// The platform's single cost engine. Every `token_usage` row is priced
     /// through this — the DB trigger that used to do it returned NULL for any
     /// model missing from `model_pricing`, which booked 92.8% of calls at $0.
@@ -127,6 +130,15 @@ impl LlmRouterCtx {
         let router_cache = build_router_cache(&cfg);
         let cfg = Arc::new(cfg);
         let salience_gate = build_salience_gate(&cfg);
+        let request_classifier = configured_request_classifier(&cfg, http.clone());
+        tracing::info!(
+            target: "nasiko::llm_router::startup",
+            backend = request_classifier.name(),
+            endpoint = %cfg.request_classifier_endpoint,
+            timeout_ms = cfg.request_classifier_timeout_ms,
+            minimum_confidence = cfg.request_classifier_min_confidence,
+            "llm-router: request classifier configured"
+        );
         let pricing = Arc::new(PricingEngine::new(db.clone()));
         Self {
             db,
@@ -137,6 +149,7 @@ impl LlmRouterCtx {
             tier_registry,
             cell_store,
             salience_gate,
+            request_classifier,
             pricing,
         }
     }

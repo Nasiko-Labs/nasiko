@@ -101,6 +101,18 @@ pub struct GatewayConfig {
     /// retuned. Default 0.80.
     pub salience_high_threshold: f64,
 
+    /// Request-type classifier backend. `regex` preserves the legacy default; `llmrouter_knn`
+    /// opts into the local Python sidecar.
+    pub request_classifier_backend: String,
+    /// Private sidecar `/classify` URL. Used only with `llmrouter_knn`.
+    pub request_classifier_endpoint: String,
+    /// Maximum time to wait for a classification before falling back to regex.
+    pub request_classifier_timeout_ms: u64,
+    /// Below this confidence, the router uses the regex baseline.
+    pub request_classifier_min_confidence: f32,
+    /// Stable seed for tier selection when the KNN backend is enabled.
+    pub request_classifier_seed: u64,
+
     /// Fleet-wide kill switch for payload compression. Compression is opted into **per agent**
     /// (`agents.compress_enabled`); this only lets an operator stop all of it at once without
     /// editing every agent's row. Default on, so a UI toggle takes effect without a deploy.
@@ -185,6 +197,11 @@ impl Default for GatewayConfig {
             salience_weights_path: String::new(),
             salience_low_threshold: 0.20,
             salience_high_threshold: 0.80,
+            request_classifier_backend: "regex".into(),
+            request_classifier_endpoint: "http://request-classifier:8001/classify".into(),
+            request_classifier_timeout_ms: 250,
+            request_classifier_min_confidence: 0.85,
+            request_classifier_seed: 42,
             compress_kill_switch: true,
             compress_min_bytes: 2048,
             compress_types: nasiko_compress::TypeMask::DEFAULT,
@@ -274,6 +291,30 @@ impl GatewayConfig {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(d.salience_high_threshold),
+            request_classifier_backend: env_or(
+                "REQUEST_CLASSIFIER_BACKEND",
+                &d.request_classifier_backend,
+            ),
+            request_classifier_endpoint: env_or(
+                "REQUEST_CLASSIFIER_ENDPOINT",
+                &d.request_classifier_endpoint,
+            ),
+            request_classifier_timeout_ms: std::env::var("REQUEST_CLASSIFIER_TIMEOUT_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .filter(|v| *v > 0)
+                .unwrap_or(d.request_classifier_timeout_ms),
+            request_classifier_min_confidence: std::env::var(
+                "REQUEST_CLASSIFIER_MIN_CONFIDENCE",
+            )
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|v: &f32| v.is_finite() && (0.0..=1.0).contains(v))
+            .unwrap_or(d.request_classifier_min_confidence),
+            request_classifier_seed: std::env::var("REQUEST_CLASSIFIER_SEED")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(d.request_classifier_seed),
             compress_kill_switch: env_flag("TOKEN_COMPRESS_ENABLED", true),
             compress_min_bytes: env_usize("TOKEN_COMPRESS_MIN_BYTES", 2048),
             // A bad label must not silently widen or narrow what gets rewritten, so an
@@ -408,6 +449,13 @@ fn env_first(keys: &[&str], default: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn request_classifier_defaults_to_regex_and_high_confidence_threshold() {
+        let cfg = GatewayConfig::default();
+        assert_eq!(cfg.request_classifier_backend, "regex");
+        assert_eq!(cfg.request_classifier_min_confidence, 0.85);
+    }
 
     #[test]
     fn platform_key_for_built_ins() {
