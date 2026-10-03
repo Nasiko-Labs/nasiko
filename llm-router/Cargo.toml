@@ -13,6 +13,7 @@ name = "llm-router"
 path = "src/bin/llm-router.rs"
 
 [dependencies]
+nasiko-tool-compact = { path = "../tool-compact" }
 # Internal — AES-GCM (per-user HKDF) decrypt of user_secrets via try_for_user
 nasiko-secrets.workspace = true
 nasiko-pricing.workspace = true
@@ -58,6 +59,8 @@ chrono = { workspace = true }
 tracing = { workspace = true }
 # Used only by the standalone `llm-router` binary for log output.
 tracing-subscriber = { workspace = true }
+tiktoken-rs = "0.5"
+ureq = { version = "2.12.1", features = ["json"] }
 
 [dev-dependencies]
 tokio = { workspace = true }
