@@ -288,6 +288,11 @@ async fn chat_core(
         "brevity: directive decision"
     );
 
+    // ── compact-tools seam ───────────────────────────────────────────────────────────────
+    let compact_tools_ctx = crate::compact_tools::apply_egress(&mut req, &ctx.cfg)
+        .ok()
+        .flatten();
+
     // ── savings ledger inputs ─────────────────────────────────────────────────────────────
     // Measured here, after both seams, because this is the payload the provider will actually
     // bill for — which is what makes `sent_bytes / reported_input_tokens` a calibration rather
@@ -367,13 +372,18 @@ async fn chat_core(
             compress_bytes,
             request_bytes: Some(sent_bytes),
             span: llm_span.clone(),
+            compact_tools_ctx,
         });
     }
 
     // Non-streaming: run with ordered fallbacks; usage records the effective provider/model.
-    let (resp, (provider, model)) = fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
-        .instrument(llm_span.clone())
-        .await?;
+    let (mut resp, (provider, model)) =
+        fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
+            .instrument(llm_span.clone())
+            .await?;
+    if let Some(ref cctx) = compact_tools_ctx {
+        crate::compact_tools::apply_ingress(&mut resp, cctx)?;
+    }
     let latency_ms = started.elapsed().as_millis() as i64;
 
     // Record effective model and token usage on the server-side gen_ai span.
@@ -576,6 +586,7 @@ struct StreamChatArgs<'a> {
     /// `compress_metadata` is: on this path the `UsageRecord` is only built once the stream ends.
     compress_bytes: Option<(usize, usize)>,
     request_bytes: Option<usize>,
+    compact_tools_ctx: Option<crate::compact_tools::CompactToolsContext>,
 }
 
 /// Stream provider chunks back as OpenAI SSE: `data: <chunk>\n\n` … `data: [DONE]\n\n`.
@@ -600,6 +611,7 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
         brevity_metadata,
         compress_bytes,
         request_bytes,
+        compact_tools_ctx,
     } = args;
     let state = Arc::new(Mutex::new(StreamState::default()));
     let guard = UsageGuard {
@@ -629,6 +641,9 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
         let _guard = guard;
         let mut renderer = renderer;
         futures::pin_mut!(provider_stream);
+        let mut compact_decoder = compact_tools_ctx.map(|c| nasiko_tool_compact::StreamDecoder::new(c.original_tools));
+        let mut call_counter = 0usize;
+
         while let Some(item) = provider_stream.next().await {
             match item {
                 Ok(mut chunk) => {
@@ -642,8 +657,48 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
                             st.finish_reason = Some(fr);
                         }
                     }
-                    for frame in renderer.render(chunk) {
-                        yield Ok::<String, std::io::Error>(frame);
+                    if let Some(ref mut dec) = compact_decoder {
+                        let text = chunk.choices.first().and_then(|c| c.delta.content.as_deref()).unwrap_or("");
+                        let events = dec.push(text);
+                        for ev in events {
+                            match ev {
+                                nasiko_tool_compact::StreamEvent::Text(t) => {
+                                    let mut text_chunk = chunk.clone();
+                                    if let Some(choice) = text_chunk.choices.first_mut() {
+                                        choice.delta.content = Some(t);
+                                        choice.delta.tool_calls = None;
+                                    }
+                                    for frame in renderer.render(text_chunk) {
+                                        yield Ok::<String, std::io::Error>(frame);
+                                    }
+                                }
+                                nasiko_tool_compact::StreamEvent::Call(call) => {
+                                    let mut call_chunk = chunk.clone();
+                                    if let Some(choice) = call_chunk.choices.first_mut() {
+                                        choice.delta.content = None;
+                                        choice.delta.tool_calls = Some(vec![
+                                            crate::ir::chat::ToolCallDelta {
+                                                index: call_counter as i64,
+                                                id: Some(format!("call_{}", call_counter + 1)),
+                                                kind: Some("function".into()),
+                                                function: Some(crate::ir::chat::FunctionCallDelta {
+                                                    name: Some(call.name),
+                                                    arguments: Some(call.arguments.to_string()),
+                                                }),
+                                            }
+                                        ]);
+                                    }
+                                    call_counter += 1;
+                                    for frame in renderer.render(call_chunk) {
+                                        yield Ok::<String, std::io::Error>(frame);
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        for frame in renderer.render(chunk) {
+                            yield Ok::<String, std::io::Error>(frame);
+                        }
                     }
                 }
                 Err(e) => {
@@ -652,6 +707,9 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
                     break;
                 }
             }
+        }
+        if let Some(Err(e)) = compact_decoder.map(|mut dec| dec.finish()) {
+            tracing::warn!(error = %e, "compact-tools stream finish error");
         }
         for frame in renderer.finish() {
             yield Ok(frame);
