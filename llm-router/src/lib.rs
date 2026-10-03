@@ -86,6 +86,8 @@ pub struct LlmRouterCtx {
     /// through this — the DB trigger that used to do it returned NULL for any
     /// model missing from `model_pricing`, which booked 92.8% of calls at $0.
     pub pricing: Arc<PricingEngine>,
+    /// Model-agnostic query classifier (e.g., regex fallback, local/hosted ML models).
+    pub request_classifier: Arc<dyn crate::routing::classifier::RequestClassifier>,
 }
 
 impl LlmRouterCtx {
@@ -128,6 +130,7 @@ impl LlmRouterCtx {
         let cfg = Arc::new(cfg);
         let salience_gate = build_salience_gate(&cfg);
         let pricing = Arc::new(PricingEngine::new(db.clone()));
+        let request_classifier = Arc::new(crate::routing::classifier::RegexClassifier);
         Self {
             db,
             http,
@@ -138,6 +141,7 @@ impl LlmRouterCtx {
             cell_store,
             salience_gate,
             pricing,
+            request_classifier,
         }
     }
 }

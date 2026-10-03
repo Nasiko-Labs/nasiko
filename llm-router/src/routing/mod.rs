@@ -124,6 +124,7 @@ pub async fn route_model(
     registry: &dyn TierRegistry,
     cell_store: &dyn CellStore,
     gate: &dyn SalienceGate,
+    classifier: &dyn crate::routing::classifier::RequestClassifier,
     inputs: &RouteInputs<'_>,
 ) -> RouteDecision {
     tracing::info!(
@@ -250,10 +251,45 @@ pub async fn route_model(
             // (`ThreadRng`) is `!Send`, so it is scoped to drop before the next `.await` — the
             // handler future must stay `Send`.
             let learned = cell_store.load(inputs.provider).await;
-            let (tier, request_type) = {
-                let mut rng = rand::rng();
-                classify(query, inputs.provider, &learned, &mut rng)
+            
+            let classify_input = crate::routing::classifier::ClassifyInput { query, context: None };
+            let classification = match crate::routing::classifier::RequestClassifier::classify(
+                classifier,
+                &classify_input
+            ).await {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!(
+                        target: "nasiko::llm_router::routing",
+                        error = %e,
+                        "classifier failed or timed out; falling back to regex baseline"
+                    );
+                    crate::routing::classifier::RequestClassifier::classify(
+                        &crate::routing::classifier::RegexClassifier,
+                        &classify_input
+                    ).await.unwrap()
+                }
             };
+            let request_type = classification.request_type;
+            
+            let tier = {
+                let mut rng = rand::rng();
+                crate::routing::classifier::pick_model_thompson(&learned, request_type, crate::routing::classifier::DEFAULT_W_QUALITY, crate::routing::classifier::DEFAULT_W_COST, &mut rng)
+            };
+            
+            let preview: String = query.chars().take(120).collect();
+            tracing::info!(
+                target: "nasiko::llm_router::classifier",
+                provider = %inputs.provider,
+                query_chars = query.chars().count(),
+                query_preview = %preview,
+                request_type = %request_type.as_str(),
+                complexity = classification.complexity,
+                confidence = classification.confidence,
+                learned_cells = learned.len(),
+                classified_tier = ?tier,
+                "classifier: classified query into request type and Thompson-sampled a model tier"
+            );
             // Per-config tier override takes priority over the global registry.
             let config_override = match tier {
                 Tier::Tier1 => inputs.tier1_model.map(str::to_string),
@@ -546,6 +582,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &crate::routing::classifier::RegexClassifier,
             &inputs("anthropic", &s, Some("pinned-model")),
         )
         .await;
@@ -563,6 +600,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &crate::routing::classifier::RegexClassifier,
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -582,6 +620,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &crate::routing::classifier::RegexClassifier,
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -612,6 +651,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &DenyGate,
+            &crate::routing::classifier::RegexClassifier,
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -638,6 +678,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &DenyGate,
+            &crate::routing::classifier::RegexClassifier,
             &i,
         )
         .await;
@@ -658,6 +699,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &DenyGate,
+            &crate::routing::classifier::RegexClassifier,
             &i,
         )
         .await;
@@ -677,6 +719,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &DenyGate,
+            &crate::routing::classifier::RegexClassifier,
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -699,6 +742,7 @@ mod tests {
             &test_support::StubRegistry,
             &cells,
             &AllowAllGate,
+            &crate::routing::classifier::RegexClassifier,
             &i,
         )
         .await;
@@ -726,6 +770,7 @@ mod tests {
             &test_support::StubRegistry,
             &cells,
             &AllowAllGate,
+            &crate::routing::classifier::RegexClassifier,
             &i,
         )
         .await;
@@ -743,6 +788,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &crate::routing::classifier::RegexClassifier,
             &inputs("gemini", &s, None),
         )
         .await;
@@ -761,6 +807,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &crate::routing::classifier::RegexClassifier,
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -777,6 +824,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &crate::routing::classifier::RegexClassifier,
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -795,6 +843,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &crate::routing::classifier::RegexClassifier,
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -814,6 +863,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &crate::routing::classifier::RegexClassifier,
             &i,
         )
         .await;

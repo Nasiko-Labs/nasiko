@@ -110,7 +110,7 @@ class DocReaderExecutor(AgentExecutor):
                 await event_queue.enqueue_event(
                     new_text_artifact_update_event(
                         task_id=task.id, context_id=task.context_id,
-                        name="response", text=result,
+                        name ="response", text=result,
                     )
                 )
             except Exception as e:

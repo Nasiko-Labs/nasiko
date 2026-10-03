@@ -472,6 +472,7 @@ pub(crate) async fn resolve_routed_request(
         ctx.tier_registry.as_ref(),
         ctx.cell_store.as_ref(),
         ctx.salience_gate.as_ref(),
+        ctx.request_classifier.as_ref(),
         &RouteInputs {
             agent_id: &agent_id,
             provider: &resolved.provider,
@@ -960,6 +961,7 @@ mod tests {
             pricing: Arc::new(nasiko_pricing::PricingEngine::new(
                 PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
             )),
+            request_classifier: Arc::new(crate::routing::classifier::RegexClassifier),
         }
     }
 
