@@ -1,5 +1,7 @@
 # Compact tool schemas in Nasiko
 
+For the request-path diagram, local full-stack setup, and application usage, see [Compact tools: architecture and local setup](compact-tools-architecture.md).
+
 ## Architecture and scope
 
 Nasiko's server is the shared ingress for agent runtime and control-plane traffic.
