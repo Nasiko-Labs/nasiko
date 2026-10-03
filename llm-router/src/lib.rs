@@ -48,8 +48,10 @@ pub use inbound::InboundFormat;
 pub use inject::{LlmInjectCtx, inject_llm_env};
 pub use resolver::{ConfigCache, ResolvedConfig};
 pub use routing::{
-    AllowAllGate, CellStore, ClassifierSalienceGate, DecisionCache, InMemoryCellStore, NoopCache,
-    PgCellStore, PgTierRegistry, RedisCache, SalienceGate, TierRegistry,
+    AllowAllGate, CellStore, Classification, ClassifierSalienceGate, ClassifyError, ClassifyInput,
+    DecisionCache, FallbackRequestClassifier, InMemoryCellStore, LocalRequestClassifier, NoopCache,
+    PgCellStore, PgTierRegistry, RedisCache, RegexRequestClassifier, RequestClassifier,
+    SalienceGate, TierRegistry, configured_request_classifier,
 };
 
 /// Shared context for the LLM router.
@@ -78,6 +80,9 @@ pub struct LlmRouterCtx {
     /// [`PgCellStore`] (durable, cross-instance) in production; tests use
     /// [`InMemoryCellStore`].
     pub cell_store: Arc<dyn CellStore>,
+    /// Request-type/complexity classifier. Regex remains the default backend; local model
+    /// inference is opt-in and wrapped with a timeout/confidence-gated regex fallback.
+    pub request_classifier: Arc<dyn RequestClassifier>,
     /// Level 2.5 salience gate — decides whether a boundary turn is substantive enough to
     /// classify + pin. [`ClassifierSalienceGate`] when `SALIENCE_GATE_ENABLED`; else [`AllowAllGate`]
     /// (classify at every boundary, i.e. behaviour before the gate existed).
@@ -126,6 +131,18 @@ impl LlmRouterCtx {
         );
         let router_cache = build_router_cache(&cfg);
         let cfg = Arc::new(cfg);
+        let request_classifier = configured_request_classifier(
+            &cfg.request_classifier_backend,
+            Some(&cfg.request_classifier_model_path),
+            Duration::from_millis(cfg.request_classifier_timeout_ms),
+            cfg.request_classifier_min_confidence,
+        );
+        tracing::info!(
+            target: "nasiko::llm_router::startup",
+            backend = request_classifier.name(),
+            seed = cfg.request_classifier_seed,
+            "llm-router: request classifier initialized"
+        );
         let salience_gate = build_salience_gate(&cfg);
         let pricing = Arc::new(PricingEngine::new(db.clone()));
         Self {
@@ -136,6 +153,7 @@ impl LlmRouterCtx {
             router_cache,
             tier_registry,
             cell_store,
+            request_classifier,
             salience_gate,
             pricing,
         }

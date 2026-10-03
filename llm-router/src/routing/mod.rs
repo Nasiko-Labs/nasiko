@@ -33,7 +33,11 @@ mod salience_classifier;
 pub use boundary::{BoundarySignals, Mode, Phase};
 pub use cache::{CachedDecision, DecisionCache, NoopCache, RedisCache};
 pub use cells::{CellStore, InMemoryCellStore, PgCellStore};
-pub use classifier::{RequestType, Tier, classify, classify_request_type, signal};
+pub use classifier::{
+    Classification, ClassifyError, ClassifyInput, FallbackRequestClassifier,
+    LocalRequestClassifier, RegexRequestClassifier, RequestClassifier, RequestType, Tier, classify,
+    classify_request_type, classify_with_request_type, configured_request_classifier, signal,
+};
 pub use registry::{PgTierRegistry, TierRegistry};
 pub use salience::{AllowAllGate, ClassifierSalienceGate, SalienceGate};
 
@@ -83,6 +87,10 @@ pub struct RouteInputs<'a> {
     pub signals: &'a BoundarySignals,
     /// The query to classify (latest user message text). `None` disables classification.
     pub query: Option<&'a str>,
+    /// Request classifier selected by runtime configuration.
+    pub request_classifier: &'a dyn RequestClassifier,
+    /// Seed for deterministic Thompson tier selection for identical query/provider/cells.
+    pub classifier_seed: u64,
 }
 
 /// The outcome of routing: the model to call and how it was chosen.
@@ -245,14 +253,58 @@ pub async fn route_model(
                 agent_id = %inputs.agent_id, %conv_id, provider = %inputs.provider,
                 "route_model: LEVEL 3 (Classified) — at fireable boundary with a query; invoking classifier"
             );
-            // Load the provider's learned quality, then Thompson-sample a tier. Production
-            // uses an entropy RNG (exploration drives learning); tests seed it. The RNG
-            // (`ThreadRng`) is `!Send`, so it is scoped to drop before the next `.await` — the
-            // handler future must stay `Send`.
+            // Classify request type/complexity through the configured backend. The backend
+            // wrapper fails closed to regex on load, inference, timeout, or confidence issues.
+            let classification = match inputs
+                .request_classifier
+                .classify(&ClassifyInput {
+                    query,
+                    context: None,
+                })
+                .await
+            {
+                Ok(classification) => classification,
+                Err(error) => {
+                    tracing::warn!(
+                        target: "nasiko::llm_router::classifier",
+                        backend = inputs.request_classifier.name(),
+                        error = %error,
+                        "request classifier returned an error; using regex fallback"
+                    );
+                    RegexRequestClassifier
+                        .classify(&ClassifyInput {
+                            query,
+                            context: None,
+                        })
+                        .await
+                        .expect("regex classifier is infallible")
+                }
+            };
+            let request_type = classification.request_type;
+            tracing::info!(
+                target: "nasiko::llm_router::classifier",
+                backend = inputs.request_classifier.name(),
+                request_type = %request_type.as_str(),
+                complexity = classification.complexity,
+                confidence = classification.confidence,
+                fallback_count = inputs.request_classifier.fallback_count(),
+                "request classifier decision"
+            );
+
+            // Load provider-specific learned quality and preserve its cost-aware tier map.
+            // A stable per-input seed makes tier selection reproducible while retaining
+            // Thompson exploration across distinct inputs.
             let learned = cell_store.load(inputs.provider).await;
             let (tier, request_type) = {
-                let mut rng = rand::rng();
-                classify(query, inputs.provider, &learned, &mut rng)
+                use rand::SeedableRng;
+                use std::hash::{Hash, Hasher};
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                inputs.classifier_seed.hash(&mut hasher);
+                inputs.provider.hash(&mut hasher);
+                query.hash(&mut hasher);
+                request_type.as_str().hash(&mut hasher);
+                let mut rng = rand::rngs::StdRng::seed_from_u64(hasher.finish());
+                classify_with_request_type(query, inputs.provider, request_type, &learned, &mut rng)
             };
             // Per-config tier override takes priority over the global registry.
             let config_override = match tier {
@@ -516,6 +568,8 @@ mod tests {
         }
     }
 
+    static TEST_REGEX_CLASSIFIER: RegexRequestClassifier = RegexRequestClassifier;
+
     fn inputs<'a>(
         provider: &'a str,
         signals: &'a BoundarySignals,
@@ -532,6 +586,8 @@ mod tests {
             tier3_model: None,
             signals,
             query: Some("hello"),
+            request_classifier: &TEST_REGEX_CLASSIFIER,
+            classifier_seed: 42,
         }
     }
 

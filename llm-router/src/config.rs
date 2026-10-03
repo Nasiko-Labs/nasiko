@@ -101,6 +101,20 @@ pub struct GatewayConfig {
     /// retuned. Default 0.80.
     pub salience_high_threshold: f64,
 
+    /// Request classifier backend. Defaults to `regex`, keeping the existing router
+    /// behaviour unchanged unless an operator explicitly opts into `local`.
+    pub request_classifier_backend: String,
+    /// Optional request-classifier model JSON override. Empty uses the model embedded
+    /// in the router binary when the `local` backend is selected.
+    pub request_classifier_model_path: String,
+    /// Maximum time allowed for one request-classifier inference.
+    pub request_classifier_timeout_ms: u64,
+    /// Predictions below this confidence use the regex fallback. Defaults to 0.50.
+    pub request_classifier_min_confidence: f32,
+    /// Fixed seed used to make Thompson tier selection reproducible for identical
+    /// query/provider/learned-cell state.
+    pub request_classifier_seed: u64,
+
     /// Fleet-wide kill switch for payload compression. Compression is opted into **per agent**
     /// (`agents.compress_enabled`); this only lets an operator stop all of it at once without
     /// editing every agent's row. Default on, so a UI toggle takes effect without a deploy.
@@ -185,6 +199,11 @@ impl Default for GatewayConfig {
             salience_weights_path: String::new(),
             salience_low_threshold: 0.20,
             salience_high_threshold: 0.80,
+            request_classifier_backend: "regex".into(),
+            request_classifier_model_path: String::new(),
+            request_classifier_timeout_ms: 50,
+            request_classifier_min_confidence: 0.50,
+            request_classifier_seed: 42,
             compress_kill_switch: true,
             compress_min_bytes: 2048,
             compress_types: nasiko_compress::TypeMask::DEFAULT,
@@ -274,6 +293,24 @@ impl GatewayConfig {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(d.salience_high_threshold),
+            request_classifier_backend: env_or("CLASSIFIER_BACKEND", &d.request_classifier_backend),
+            request_classifier_model_path: env_or(
+                "CLASSIFIER_MODEL_PATH",
+                &d.request_classifier_model_path,
+            ),
+            request_classifier_timeout_ms: std::env::var("CLASSIFIER_TIMEOUT_MS")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(d.request_classifier_timeout_ms),
+            request_classifier_min_confidence: std::env::var("CLASSIFIER_MIN_CONFIDENCE")
+                .ok()
+                .and_then(|value| value.parse::<f32>().ok())
+                .filter(|value| value.is_finite() && (0.0..=1.0).contains(value))
+                .unwrap_or(d.request_classifier_min_confidence),
+            request_classifier_seed: std::env::var("CLASSIFIER_SEED")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(d.request_classifier_seed),
             compress_kill_switch: env_flag("TOKEN_COMPRESS_ENABLED", true),
             compress_min_bytes: env_usize("TOKEN_COMPRESS_MIN_BYTES", 2048),
             // A bad label must not silently widen or narrow what gets rewritten, so an

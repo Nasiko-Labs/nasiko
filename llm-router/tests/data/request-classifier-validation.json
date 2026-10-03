@@ -1,0 +1,817 @@
+{
+  "schema_version": "p2-train-v1",
+  "purpose": "team-prepared and team-approved family-held-out P2 dataset",
+  "examples": [
+    {
+      "id": "seed-001",
+      "query": "Fix the typo in this Python comment: # retrun the cached value.",
+      "context": "No other files or changes are needed.",
+      "request_type": "code_generation",
+      "complexity": 1,
+      "family_id": "cg_fix_typo",
+      "source": "curated_seed"
+    },
+    {
+      "id": "seed-008",
+      "query": "Build a concurrent Rust service that batches incoming requests, enforces backpressure, and preserves request ordering.",
+      "context": "Requests may arrive from many threads; latency must stay bounded.",
+      "request_type": "code_generation",
+      "complexity": 4,
+      "family_id": "cg_concurrent_rust",
+      "source": "curated_seed"
+    },
+    {
+      "id": "seed-014",
+      "query": "Explain what this SQL query is doing.",
+      "context": "SELECT department, COUNT(*) FROM employees GROUP BY department",
+      "request_type": "code_understanding",
+      "complexity": 2,
+      "family_id": "cu_sql",
+      "source": "curated_seed"
+    },
+    {
+      "id": "seed-016",
+      "query": "Why can this multithreaded code produce duplicate writes?",
+      "context": "Two threads can execute the same check-then-insert sequence concurrently.",
+      "request_type": "code_understanding",
+      "complexity": 3,
+      "family_id": "cu_race",
+      "source": "curated_seed"
+    },
+    {
+      "id": "seed-019",
+      "query": "Analyze the concurrency and failure behavior of this multi-node scheduler.",
+      "context": "Workers heartbeat, leases expire, jobs are reassigned after timeout, and results are written to replicated storage.",
+      "request_type": "code_understanding",
+      "complexity": 5,
+      "family_id": "cu_scheduler",
+      "source": "curated_seed"
+    },
+    {
+      "id": "seed-025",
+      "query": "Design a backend service for matching candidate profiles to job postings.",
+      "context": "Start with structured fields such as skills, seniority, location, and employment type.",
+      "request_type": "technical_design",
+      "complexity": 3,
+      "family_id": "td_matching",
+      "source": "curated_seed"
+    },
+    {
+      "id": "seed-032",
+      "query": "How many days are in three weeks?",
+      "context": "",
+      "request_type": "analytical_reasoning",
+      "complexity": 1,
+      "family_id": "ar_basic_count",
+      "source": "curated_seed"
+    },
+    {
+      "id": "seed-039",
+      "query": "Reason through the optimal retry strategy under a finite request budget when failures are correlated and each retry increases load on an already saturated dependency.",
+      "context": "Compare bounded retry, exponential backoff, and immediate retry.",
+      "request_type": "analytical_reasoning",
+      "complexity": 5,
+      "family_id": "ar_retry",
+      "source": "curated_seed"
+    },
+    {
+      "id": "seed-042",
+      "query": "Rewrite this sentence to sound more professional.",
+      "context": "'send me the report asap'",
+      "request_type": "writing",
+      "complexity": 1,
+      "family_id": "wr_rewrite",
+      "source": "curated_seed"
+    },
+    {
+      "id": "seed-045",
+      "query": "Write a technical incident summary for engineering leadership.",
+      "context": "Include impact, timeline, root cause, mitigation, and next steps.",
+      "request_type": "writing",
+      "complexity": 3,
+      "family_id": "wr_incident",
+      "source": "curated_seed"
+    },
+    {
+      "id": "seed-051",
+      "query": "What is the capital of Japan?",
+      "context": "",
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "family_id": "fl_capital",
+      "source": "curated_seed"
+    },
+    {
+      "id": "seed-056",
+      "query": "When was Python 3.0 first released?",
+      "context": "",
+      "request_type": "factual_lookup",
+      "complexity": 3,
+      "family_id": "fl_python_release",
+      "source": "curated_seed"
+    },
+    {
+      "id": "seed-066",
+      "query": "Give me some ways to make my daily routine more consistent.",
+      "context": "I want practical suggestions rather than a detailed optimization plan.",
+      "request_type": "general",
+      "complexity": 3,
+      "family_id": "gn_routine",
+      "source": "curated_seed"
+    },
+    {
+      "id": "hn-008",
+      "query": "Why should we choose Kafka here?",
+      "context": "Compare it with the existing queue only at the architecture level; no implementation is required.",
+      "request_type": "technical_design",
+      "complexity": 3,
+      "family_id": "hn_td_vs_fl_02"
+    },
+    {
+      "id": "hn-010",
+      "query": "Help me solve this scheduling puzzle.",
+      "context": "There are five jobs, three machines, precedence constraints, and each job has a different duration.",
+      "request_type": "analytical_reasoning",
+      "complexity": 3,
+      "family_id": "hn_ar_01"
+    },
+    {
+      "id": "hn-014",
+      "query": "Define idempotency.",
+      "context": "Give the standard software-engineering definition without applying it to a particular architecture.",
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "family_id": "hn_fl_01"
+    },
+    {
+      "id": "hn-015",
+      "query": "Could you help me figure out what to do next?",
+      "context": "I have a broken build, an upcoming exam, and two project deadlines.",
+      "request_type": "general",
+      "complexity": 3,
+      "family_id": "hn_general_01"
+    },
+    {
+      "id": "hn-016",
+      "query": "Implement the retry policy you proposed earlier.",
+      "context": "Use exponential backoff, a maximum of five attempts, and stop retrying on 4xx responses.",
+      "request_type": "code_generation",
+      "complexity": 3,
+      "family_id": "hn_cg_02"
+    },
+    {
+      "id": "hn-024",
+      "query": "Design the schema needed to answer monthly active-user queries efficiently.",
+      "context": "Queries will run over hundreds of millions of status events.",
+      "request_type": "technical_design",
+      "complexity": 4,
+      "family_id": "hn_td_02"
+    },
+    {
+      "id": "hn-028",
+      "query": "How should we communicate an outage to different audiences?",
+      "context": "The audiences are customers, engineers, and executives; each needs different information.",
+      "request_type": "writing",
+      "complexity": 4,
+      "family_id": "hn_wr_04"
+    },
+    {
+      "id": "hn-030",
+      "query": "I have too many priorities and keep switching between them.",
+      "context": "I need a practical way to decide what to do each evening.",
+      "request_type": "general",
+      "complexity": 3,
+      "family_id": "hn_general_03"
+    },
+    {
+      "id": "exp-0021",
+      "query": "Implement a Python task: implement a worker that reads tasks, validates them, and records failures.",
+      "context": "Variant 1: use the python setting and keep the stated constraints relevant.",
+      "request_type": "code_generation",
+      "complexity": 3,
+      "family_id": "exp-code_generation-3",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0022",
+      "query": "Build a Rust task: implement a worker that reads tasks, validates them, and records failures.",
+      "context": "Variant 2: use the rust setting and keep the stated constraints relevant.",
+      "request_type": "code_generation",
+      "complexity": 3,
+      "family_id": "exp-code_generation-3",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0023",
+      "query": "Add a FastAPI task: implement a worker that reads tasks, validates them, and records failures.",
+      "context": "Variant 3: use the fastapi setting and keep the stated constraints relevant.",
+      "request_type": "code_generation",
+      "complexity": 3,
+      "family_id": "exp-code_generation-3",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0024",
+      "query": "Create a Kubernetes task: implement a worker that reads tasks, validates them, and records failures.",
+      "context": "Variant 4: use the kubernetes setting and keep the stated constraints relevant.",
+      "request_type": "code_generation",
+      "complexity": 3,
+      "family_id": "exp-code_generation-3",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0025",
+      "query": "Implement a SQL task: implement a worker that reads tasks, validates them, and records failures.",
+      "context": "Variant 5: use the sql setting and keep the stated constraints relevant.",
+      "request_type": "code_generation",
+      "complexity": 3,
+      "family_id": "exp-code_generation-3",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0026",
+      "query": "Build a Python task: implement a worker that reads tasks, validates them, and records failures.",
+      "context": "Variant 6: use the python setting and keep the stated constraints relevant.",
+      "request_type": "code_generation",
+      "complexity": 3,
+      "family_id": "exp-code_generation-3",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0027",
+      "query": "Add a Rust task: implement a worker that reads tasks, validates them, and records failures.",
+      "context": "Variant 7: use the rust setting and keep the stated constraints relevant.",
+      "request_type": "code_generation",
+      "complexity": 3,
+      "family_id": "exp-code_generation-3",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0028",
+      "query": "Create a FastAPI task: implement a worker that reads tasks, validates them, and records failures.",
+      "context": "Variant 8: use the fastapi setting and keep the stated constraints relevant.",
+      "request_type": "code_generation",
+      "complexity": 3,
+      "family_id": "exp-code_generation-3",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0029",
+      "query": "Implement a Kubernetes task: implement a worker that reads tasks, validates them, and records failures.",
+      "context": "Variant 9: use the kubernetes setting and keep the stated constraints relevant.",
+      "request_type": "code_generation",
+      "complexity": 3,
+      "family_id": "exp-code_generation-3",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0030",
+      "query": "Build a SQL task: implement a worker that reads tasks, validates them, and records failures.",
+      "context": "Variant 10: use the sql setting and keep the stated constraints relevant.",
+      "request_type": "code_generation",
+      "complexity": 3,
+      "family_id": "exp-code_generation-3",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0091",
+      "query": "Explain a Python task: analyze concurrency, retries, and failure recovery in this distributed scheduler.",
+      "context": "Variant 1: use the python setting and keep the stated constraints relevant.",
+      "request_type": "code_understanding",
+      "complexity": 5,
+      "family_id": "exp-code_understanding-5",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0092",
+      "query": "Walk me through a Rust task: analyze concurrency, retries, and failure recovery in this distributed scheduler.",
+      "context": "Variant 2: use the rust setting and keep the stated constraints relevant.",
+      "request_type": "code_understanding",
+      "complexity": 5,
+      "family_id": "exp-code_understanding-5",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0093",
+      "query": "Analyze a SQL task: analyze concurrency, retries, and failure recovery in this distributed scheduler.",
+      "context": "Variant 3: use the sql setting and keep the stated constraints relevant.",
+      "request_type": "code_understanding",
+      "complexity": 5,
+      "family_id": "exp-code_understanding-5",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0094",
+      "query": "Trace a Kubernetes task: analyze concurrency, retries, and failure recovery in this distributed scheduler.",
+      "context": "Variant 4: use the kubernetes setting and keep the stated constraints relevant.",
+      "request_type": "code_understanding",
+      "complexity": 5,
+      "family_id": "exp-code_understanding-5",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0095",
+      "query": "Explain a CUDA task: analyze concurrency, retries, and failure recovery in this distributed scheduler.",
+      "context": "Variant 5: use the cuda setting and keep the stated constraints relevant.",
+      "request_type": "code_understanding",
+      "complexity": 5,
+      "family_id": "exp-code_understanding-5",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0096",
+      "query": "Walk me through a Python task: analyze concurrency, retries, and failure recovery in this distributed scheduler.",
+      "context": "Variant 6: use the python setting and keep the stated constraints relevant.",
+      "request_type": "code_understanding",
+      "complexity": 5,
+      "family_id": "exp-code_understanding-5",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0097",
+      "query": "Analyze a Rust task: analyze concurrency, retries, and failure recovery in this distributed scheduler.",
+      "context": "Variant 7: use the rust setting and keep the stated constraints relevant.",
+      "request_type": "code_understanding",
+      "complexity": 5,
+      "family_id": "exp-code_understanding-5",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0098",
+      "query": "Trace a SQL task: analyze concurrency, retries, and failure recovery in this distributed scheduler.",
+      "context": "Variant 8: use the sql setting and keep the stated constraints relevant.",
+      "request_type": "code_understanding",
+      "complexity": 5,
+      "family_id": "exp-code_understanding-5",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0099",
+      "query": "Explain a Kubernetes task: analyze concurrency, retries, and failure recovery in this distributed scheduler.",
+      "context": "Variant 9: use the kubernetes setting and keep the stated constraints relevant.",
+      "request_type": "code_understanding",
+      "complexity": 5,
+      "family_id": "exp-code_understanding-5",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0100",
+      "query": "Walk me through a CUDA task: analyze concurrency, retries, and failure recovery in this distributed scheduler.",
+      "context": "Variant 10: use the cuda setting and keep the stated constraints relevant.",
+      "request_type": "code_understanding",
+      "complexity": 5,
+      "family_id": "exp-code_understanding-5",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0131",
+      "query": "Design a API task: design a distributed worker system with retries, heartbeats, and observability.",
+      "context": "Variant 1: use the api setting and keep the stated constraints relevant.",
+      "request_type": "technical_design",
+      "complexity": 4,
+      "family_id": "exp-technical_design-4",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0132",
+      "query": "Architect a database task: design a distributed worker system with retries, heartbeats, and observability.",
+      "context": "Variant 2: use the database setting and keep the stated constraints relevant.",
+      "request_type": "technical_design",
+      "complexity": 4,
+      "family_id": "exp-technical_design-4",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0133",
+      "query": "Plan a distributed service task: design a distributed worker system with retries, heartbeats, and observability.",
+      "context": "Variant 3: use the distributed service setting and keep the stated constraints relevant.",
+      "request_type": "technical_design",
+      "complexity": 4,
+      "family_id": "exp-technical_design-4",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0134",
+      "query": "How should I structure a inference platform task: design a distributed worker system with retries, heartbeats, and observability.",
+      "context": "Variant 4: use the inference platform setting and keep the stated constraints relevant.",
+      "request_type": "technical_design",
+      "complexity": 4,
+      "family_id": "exp-technical_design-4",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0135",
+      "query": "Design a worker system task: design a distributed worker system with retries, heartbeats, and observability.",
+      "context": "Variant 5: use the worker system setting and keep the stated constraints relevant.",
+      "request_type": "technical_design",
+      "complexity": 4,
+      "family_id": "exp-technical_design-4",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0136",
+      "query": "Architect a API task: design a distributed worker system with retries, heartbeats, and observability.",
+      "context": "Variant 6: use the api setting and keep the stated constraints relevant.",
+      "request_type": "technical_design",
+      "complexity": 4,
+      "family_id": "exp-technical_design-4",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0137",
+      "query": "Plan a database task: design a distributed worker system with retries, heartbeats, and observability.",
+      "context": "Variant 7: use the database setting and keep the stated constraints relevant.",
+      "request_type": "technical_design",
+      "complexity": 4,
+      "family_id": "exp-technical_design-4",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0138",
+      "query": "How should I structure a distributed service task: design a distributed worker system with retries, heartbeats, and observability.",
+      "context": "Variant 8: use the distributed service setting and keep the stated constraints relevant.",
+      "request_type": "technical_design",
+      "complexity": 4,
+      "family_id": "exp-technical_design-4",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0139",
+      "query": "Design a inference platform task: design a distributed worker system with retries, heartbeats, and observability.",
+      "context": "Variant 9: use the inference platform setting and keep the stated constraints relevant.",
+      "request_type": "technical_design",
+      "complexity": 4,
+      "family_id": "exp-technical_design-4",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0140",
+      "query": "Architect a worker system task: design a distributed worker system with retries, heartbeats, and observability.",
+      "context": "Variant 10: use the worker system setting and keep the stated constraints relevant.",
+      "request_type": "technical_design",
+      "complexity": 4,
+      "family_id": "exp-technical_design-4",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0161",
+      "query": "Calculate a throughput task: calculate a rate or complement probability from a small set of values.",
+      "context": "Variant 1: use the throughput setting and keep the stated constraints relevant.",
+      "request_type": "analytical_reasoning",
+      "complexity": 2,
+      "family_id": "exp-analytical_reasoning-2",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0162",
+      "query": "Derive a probability task: calculate a rate or complement probability from a small set of values.",
+      "context": "Variant 2: use the probability setting and keep the stated constraints relevant.",
+      "request_type": "analytical_reasoning",
+      "complexity": 2,
+      "family_id": "exp-analytical_reasoning-2",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0163",
+      "query": "Solve a resource allocation task: calculate a rate or complement probability from a small set of values.",
+      "context": "Variant 3: use the resource allocation setting and keep the stated constraints relevant.",
+      "request_type": "analytical_reasoning",
+      "complexity": 2,
+      "family_id": "exp-analytical_reasoning-2",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0164",
+      "query": "Reason through a latency task: calculate a rate or complement probability from a small set of values.",
+      "context": "Variant 4: use the latency setting and keep the stated constraints relevant.",
+      "request_type": "analytical_reasoning",
+      "complexity": 2,
+      "family_id": "exp-analytical_reasoning-2",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0165",
+      "query": "Calculate a capacity task: calculate a rate or complement probability from a small set of values.",
+      "context": "Variant 5: use the capacity setting and keep the stated constraints relevant.",
+      "request_type": "analytical_reasoning",
+      "complexity": 2,
+      "family_id": "exp-analytical_reasoning-2",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0166",
+      "query": "Derive a throughput task: calculate a rate or complement probability from a small set of values.",
+      "context": "Variant 6: use the throughput setting and keep the stated constraints relevant.",
+      "request_type": "analytical_reasoning",
+      "complexity": 2,
+      "family_id": "exp-analytical_reasoning-2",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0167",
+      "query": "Solve a probability task: calculate a rate or complement probability from a small set of values.",
+      "context": "Variant 7: use the probability setting and keep the stated constraints relevant.",
+      "request_type": "analytical_reasoning",
+      "complexity": 2,
+      "family_id": "exp-analytical_reasoning-2",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0168",
+      "query": "Reason through a resource allocation task: calculate a rate or complement probability from a small set of values.",
+      "context": "Variant 8: use the resource allocation setting and keep the stated constraints relevant.",
+      "request_type": "analytical_reasoning",
+      "complexity": 2,
+      "family_id": "exp-analytical_reasoning-2",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0169",
+      "query": "Calculate a latency task: calculate a rate or complement probability from a small set of values.",
+      "context": "Variant 9: use the latency setting and keep the stated constraints relevant.",
+      "request_type": "analytical_reasoning",
+      "complexity": 2,
+      "family_id": "exp-analytical_reasoning-2",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0170",
+      "query": "Derive a capacity task: calculate a rate or complement probability from a small set of values.",
+      "context": "Variant 10: use the capacity setting and keep the stated constraints relevant.",
+      "request_type": "analytical_reasoning",
+      "complexity": 2,
+      "family_id": "exp-analytical_reasoning-2",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0201",
+      "query": "Draft a email task: draft a short personal email.",
+      "context": "Variant 1: use the email setting and keep the stated constraints relevant.",
+      "request_type": "writing",
+      "complexity": 1,
+      "family_id": "exp-writing-1",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0202",
+      "query": "Write a status update task: draft a short personal email.",
+      "context": "Variant 2: use the status update setting and keep the stated constraints relevant.",
+      "request_type": "writing",
+      "complexity": 1,
+      "family_id": "exp-writing-1",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0203",
+      "query": "Prepare a memo task: draft a short personal email.",
+      "context": "Variant 3: use the memo setting and keep the stated constraints relevant.",
+      "request_type": "writing",
+      "complexity": 1,
+      "family_id": "exp-writing-1",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0204",
+      "query": "Rewrite a announcement task: draft a short personal email.",
+      "context": "Variant 4: use the announcement setting and keep the stated constraints relevant.",
+      "request_type": "writing",
+      "complexity": 1,
+      "family_id": "exp-writing-1",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0205",
+      "query": "Draft a postmortem task: draft a short personal email.",
+      "context": "Variant 5: use the postmortem setting and keep the stated constraints relevant.",
+      "request_type": "writing",
+      "complexity": 1,
+      "family_id": "exp-writing-1",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0206",
+      "query": "Write a email task: draft a short personal email.",
+      "context": "Variant 6: use the email setting and keep the stated constraints relevant.",
+      "request_type": "writing",
+      "complexity": 1,
+      "family_id": "exp-writing-1",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0207",
+      "query": "Prepare a status update task: draft a short personal email.",
+      "context": "Variant 7: use the status update setting and keep the stated constraints relevant.",
+      "request_type": "writing",
+      "complexity": 1,
+      "family_id": "exp-writing-1",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0208",
+      "query": "Rewrite a memo task: draft a short personal email.",
+      "context": "Variant 8: use the memo setting and keep the stated constraints relevant.",
+      "request_type": "writing",
+      "complexity": 1,
+      "family_id": "exp-writing-1",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0209",
+      "query": "Draft a announcement task: draft a short personal email.",
+      "context": "Variant 9: use the announcement setting and keep the stated constraints relevant.",
+      "request_type": "writing",
+      "complexity": 1,
+      "family_id": "exp-writing-1",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0210",
+      "query": "Write a postmortem task: draft a short personal email.",
+      "context": "Variant 10: use the postmortem setting and keep the stated constraints relevant.",
+      "request_type": "writing",
+      "complexity": 1,
+      "family_id": "exp-writing-1",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0261",
+      "query": "What is a HTTP task: state a standard port, date, author, or protocol fact.",
+      "context": "Variant 1: use the http setting and keep the stated constraints relevant.",
+      "request_type": "factual_lookup",
+      "complexity": 2,
+      "family_id": "exp-factual_lookup-2",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0262",
+      "query": "When was a Python task: state a standard port, date, author, or protocol fact.",
+      "context": "Variant 2: use the python setting and keep the stated constraints relevant.",
+      "request_type": "factual_lookup",
+      "complexity": 2,
+      "family_id": "exp-factual_lookup-2",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0263",
+      "query": "Who is a Kubernetes task: state a standard port, date, author, or protocol fact.",
+      "context": "Variant 3: use the kubernetes setting and keep the stated constraints relevant.",
+      "request_type": "factual_lookup",
+      "complexity": 2,
+      "family_id": "exp-factual_lookup-2",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0264",
+      "query": "What does a CUDA task: state a standard port, date, author, or protocol fact.",
+      "context": "Variant 4: use the cuda setting and keep the stated constraints relevant.",
+      "request_type": "factual_lookup",
+      "complexity": 2,
+      "family_id": "exp-factual_lookup-2",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0265",
+      "query": "What is a networking task: state a standard port, date, author, or protocol fact.",
+      "context": "Variant 5: use the networking setting and keep the stated constraints relevant.",
+      "request_type": "factual_lookup",
+      "complexity": 2,
+      "family_id": "exp-factual_lookup-2",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0266",
+      "query": "When was a HTTP task: state a standard port, date, author, or protocol fact.",
+      "context": "Variant 6: use the http setting and keep the stated constraints relevant.",
+      "request_type": "factual_lookup",
+      "complexity": 2,
+      "family_id": "exp-factual_lookup-2",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0267",
+      "query": "Who is a Python task: state a standard port, date, author, or protocol fact.",
+      "context": "Variant 7: use the python setting and keep the stated constraints relevant.",
+      "request_type": "factual_lookup",
+      "complexity": 2,
+      "family_id": "exp-factual_lookup-2",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0268",
+      "query": "What does a Kubernetes task: state a standard port, date, author, or protocol fact.",
+      "context": "Variant 8: use the kubernetes setting and keep the stated constraints relevant.",
+      "request_type": "factual_lookup",
+      "complexity": 2,
+      "family_id": "exp-factual_lookup-2",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0269",
+      "query": "What is a CUDA task: state a standard port, date, author, or protocol fact.",
+      "context": "Variant 9: use the cuda setting and keep the stated constraints relevant.",
+      "request_type": "factual_lookup",
+      "complexity": 2,
+      "family_id": "exp-factual_lookup-2",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0270",
+      "query": "When was a networking task: state a standard port, date, author, or protocol fact.",
+      "context": "Variant 10: use the networking setting and keep the stated constraints relevant.",
+      "request_type": "factual_lookup",
+      "complexity": 2,
+      "family_id": "exp-factual_lookup-2",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0331",
+      "query": "Help me with a study task: organize several competing personal priorities with changing constraints.",
+      "context": "Variant 1: use the study setting and keep the stated constraints relevant.",
+      "request_type": "general",
+      "complexity": 4,
+      "family_id": "exp-general-4",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0332",
+      "query": "Give me ideas for a projects task: organize several competing personal priorities with changing constraints.",
+      "context": "Variant 2: use the projects setting and keep the stated constraints relevant.",
+      "request_type": "general",
+      "complexity": 4,
+      "family_id": "exp-general-4",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0333",
+      "query": "Suggest ways to a routine task: organize several competing personal priorities with changing constraints.",
+      "context": "Variant 3: use the routine setting and keep the stated constraints relevant.",
+      "request_type": "general",
+      "complexity": 4,
+      "family_id": "exp-general-4",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0334",
+      "query": "Help me organize a planning task: organize several competing personal priorities with changing constraints.",
+      "context": "Variant 4: use the planning setting and keep the stated constraints relevant.",
+      "request_type": "general",
+      "complexity": 4,
+      "family_id": "exp-general-4",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0335",
+      "query": "Help me with a priorities task: organize several competing personal priorities with changing constraints.",
+      "context": "Variant 5: use the priorities setting and keep the stated constraints relevant.",
+      "request_type": "general",
+      "complexity": 4,
+      "family_id": "exp-general-4",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0336",
+      "query": "Give me ideas for a study task: organize several competing personal priorities with changing constraints.",
+      "context": "Variant 6: use the study setting and keep the stated constraints relevant.",
+      "request_type": "general",
+      "complexity": 4,
+      "family_id": "exp-general-4",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0337",
+      "query": "Suggest ways to a projects task: organize several competing personal priorities with changing constraints.",
+      "context": "Variant 7: use the projects setting and keep the stated constraints relevant.",
+      "request_type": "general",
+      "complexity": 4,
+      "family_id": "exp-general-4",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0338",
+      "query": "Help me organize a routine task: organize several competing personal priorities with changing constraints.",
+      "context": "Variant 8: use the routine setting and keep the stated constraints relevant.",
+      "request_type": "general",
+      "complexity": 4,
+      "family_id": "exp-general-4",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0339",
+      "query": "Help me with a planning task: organize several competing personal priorities with changing constraints.",
+      "context": "Variant 9: use the planning setting and keep the stated constraints relevant.",
+      "request_type": "general",
+      "complexity": 4,
+      "family_id": "exp-general-4",
+      "source": "controlled_template"
+    },
+    {
+      "id": "exp-0340",
+      "query": "Give me ideas for a priorities task: organize several competing personal priorities with changing constraints.",
+      "context": "Variant 10: use the priorities setting and keep the stated constraints relevant.",
+      "request_type": "general",
+      "complexity": 4,
+      "family_id": "exp-general-4",
+      "source": "controlled_template"
+    }
+  ]
+}
