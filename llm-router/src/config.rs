@@ -119,6 +119,10 @@ pub struct GatewayConfig {
     /// `compress_enabled` switch is set, so the fleet default is a kill switch, never the thing
     /// that turns a layer on. An operator sets this to `false` to stop IP-2 everywhere at once.
     pub brevity_enabled: bool,
+    /// Replace native `tools` with compact definitions and decode `<<call …>>` text back into
+    /// `tool_calls` (`src/compact_tools.rs`). **Off by default**; when off, requests and
+    /// responses are byte-identical to before. Still gated per agent by `compress_enabled`.
+    pub compact_tools_enabled: bool,
     /// Skip the directive below this transcript size. **Defaults to 0 — every turn gets it.**
     ///
     /// The directive is ~114 tokens of input. Output bills at 4x input on the default model, so
@@ -191,6 +195,7 @@ impl Default for GatewayConfig {
             compress_level: nasiko_compress::Level::Conservative,
             compress_dry_run: false,
             brevity_enabled: true,
+            compact_tools_enabled: false,
             brevity_min_bytes: 0,
             brevity_holdout_pct: 5,
             compress_recovery_enabled: true,
@@ -290,6 +295,7 @@ impl GatewayConfig {
             ),
             compress_dry_run: env_flag("TOKEN_COMPRESS_DRY_RUN", false),
             brevity_enabled: env_flag("TOKEN_BREVITY", d.brevity_enabled),
+            compact_tools_enabled: env_flag("COMPACT_TOOLS_ENABLED", d.compact_tools_enabled),
             brevity_min_bytes: env_usize("TOKEN_BREVITY_MIN_BYTES", d.brevity_min_bytes),
             brevity_holdout_pct: env_usize(
                 "TOKEN_BREVITY_HOLDOUT_PCT",

@@ -1,0 +1,750 @@
+{
+  "schema_version": "compact-tools-eval-v1",
+  "purpose": "Own extra development cases for [compact-tools]; reported separately from the public sample.",
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "create_calendar_event",
+        "description": "Create an event in the user's calendar.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "title": {
+              "type": "string",
+              "description": "Event title"
+            },
+            "start": {
+              "type": "string",
+              "format": "date-time",
+              "description": "Start time, ISO 8601"
+            },
+            "duration_min": {
+              "type": "integer",
+              "description": "Duration in minutes"
+            },
+            "attendees": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Attendee emails"
+            },
+            "visibility": {
+              "type": "string",
+              "enum": [
+                "public",
+                "private"
+              ]
+            }
+          },
+          "required": [
+            "title",
+            "start"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "send_email",
+        "description": "Send an email from the user's account.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "to": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Recipient emails"
+            },
+            "subject": {
+              "type": "string",
+              "description": "Subject line"
+            },
+            "body": {
+              "type": "string",
+              "description": "Plain-text body"
+            },
+            "cc": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "CC emails"
+            }
+          },
+          "required": [
+            "to",
+            "subject",
+            "body"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "search_flights",
+        "description": "Search one-way or multi-leg flights.",
+        "parameters": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "legs": {
+              "type": "array",
+              "description": "Flight legs in travel order",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "from": {
+                    "type": "string",
+                    "description": "IATA code"
+                  },
+                  "to": {
+                    "type": "string",
+                    "description": "IATA code"
+                  },
+                  "date": {
+                    "type": "string",
+                    "format": "date"
+                  }
+                },
+                "required": [
+                  "from",
+                  "to",
+                  "date"
+                ]
+              }
+            },
+            "passengers": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9,
+              "default": 1,
+              "description": "Number of travellers"
+            },
+            "cabin": {
+              "type": "string",
+              "enum": [
+                "economy",
+                "premium_economy",
+                "business",
+                "first"
+              ]
+            },
+            "max_price": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Upper bound in USD"
+            },
+            "flexible": {
+              "type": "boolean",
+              "description": "Allow +/- 1 day"
+            }
+          },
+          "required": [
+            "legs"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "update_ticket",
+        "description": "Update a support ticket.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "ticket_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "priority": {
+              "type": "integer",
+              "enum": [
+                1,
+                2,
+                3,
+                4
+              ]
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "open",
+                "pending",
+                "resolved",
+                "won't fix"
+              ]
+            },
+            "link": {
+              "type": "string",
+              "format": "uri",
+              "description": "Related URL"
+            },
+            "labels": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "bug",
+                  "feature",
+                  "docs"
+                ]
+              }
+            },
+            "assignee": {
+              "type": "object",
+              "properties": {
+                "email": {
+                  "type": "string",
+                  "format": "email"
+                },
+                "team": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "email"
+              ]
+            }
+          },
+          "required": [
+            "ticket_id"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_weather",
+        "description": "Get current weather for a city.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "city": {
+              "type": "string"
+            },
+            "units": {
+              "type": "string",
+              "enum": [
+                "metric",
+                "imperial"
+              ],
+              "default": "metric"
+            }
+          },
+          "required": [
+            "city"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "run_sql",
+        "description": "Run a read-only SQL query.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string"
+            },
+            "params": {
+              "type": "array",
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ]
+              }
+            }
+          },
+          "required": [
+            "query"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "set_reminder",
+        "description": "Set a reminder.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string",
+              "minLength": 1
+            },
+            "at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          "required": [
+            "text",
+            "at"
+          ]
+        }
+      }
+    }
+  ],
+  "cases": [
+    {
+      "id": "x-001",
+      "tools": [
+        "search_flights"
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "content": "Find business class flights BLR to SFO on 2026-11-02 then SFO to JFK on 2026-11-05 for 2 people"
+        }
+      ],
+      "expected": [
+        {
+          "name": "search_flights",
+          "arguments": {
+            "legs": [
+              {
+                "from": "BLR",
+                "to": "SFO",
+                "date": "2026-11-02"
+              },
+              {
+                "from": "SFO",
+                "to": "JFK",
+                "date": "2026-11-05"
+              }
+            ],
+            "passengers": 2,
+            "cabin": "business"
+          }
+        }
+      ],
+      "note": "array of objects, enum, range"
+    },
+    {
+      "id": "x-002",
+      "tools": [
+        "update_ticket"
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "content": "Mark ticket 123e4567-e89b-12d3-a456-426614174000 as priority 2 and assign it to dev@nasiko.dev on the platform team"
+        }
+      ],
+      "expected": [
+        {
+          "name": "update_ticket",
+          "arguments": {
+            "ticket_id": "123e4567-e89b-12d3-a456-426614174000",
+            "priority": 2,
+            "assignee": {
+              "email": "dev@nasiko.dev",
+              "team": "platform"
+            }
+          }
+        }
+      ],
+      "note": "numeric enum, uuid, nested object"
+    },
+    {
+      "id": "x-003",
+      "tools": [
+        "update_ticket"
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "content": "Close 123e4567-e89b-12d3-a456-426614174000 as won't fix, label it docs"
+        }
+      ],
+      "expected": [
+        {
+          "name": "update_ticket",
+          "arguments": {
+            "ticket_id": "123e4567-e89b-12d3-a456-426614174000",
+            "status": "won't fix",
+            "labels": [
+              "docs"
+            ]
+          }
+        }
+      ],
+      "note": "non-identifier enum value -> JSON enum form"
+    },
+    {
+      "id": "x-004",
+      "tools": [
+        "get_weather",
+        "create_calendar_event",
+        "send_email",
+        "search_flights",
+        "update_ticket"
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "content": "What's the weather in Pune in fahrenheit?"
+        }
+      ],
+      "expected": [
+        {
+          "name": "get_weather",
+          "arguments": {
+            "city": "Pune",
+            "units": "imperial"
+          }
+        }
+      ],
+      "note": "five tools — savings scale with tool count"
+    },
+    {
+      "id": "x-005",
+      "tools": [
+        "get_weather",
+        "send_email"
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "content": "Thanks, that's all!"
+        }
+      ],
+      "expected": [],
+      "note": "no call expected"
+    },
+    {
+      "id": "x-006",
+      "tools": [
+        "send_email",
+        "create_calendar_event"
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "content": "Email a@x.io and b@x.io 'Standup moved' saying it is at 11, and book standup tomorrow 11am IST for 15 min"
+        }
+      ],
+      "expected": [
+        {
+          "name": "send_email",
+          "arguments": {
+            "to": [
+              "a@x.io",
+              "b@x.io"
+            ],
+            "subject": "Standup moved",
+            "body": "Standup is at 11."
+          }
+        },
+        {
+          "name": "create_calendar_event",
+          "arguments": {
+            "title": "Standup",
+            "start": "2026-10-04T11:00:00+05:30",
+            "duration_min": 15
+          }
+        }
+      ],
+      "note": "multi-call, two tools"
+    },
+    {
+      "id": "x-007",
+      "tools": [
+        "run_sql"
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "content": "Count users created this week"
+        }
+      ],
+      "expected": [
+        {
+          "name": "run_sql",
+          "arguments": {
+            "query": "SELECT count(*) FROM users WHERE created_at > now() - interval '7 days'"
+          }
+        }
+      ],
+      "note": "anyOf -> whole request bypasses (compacted:false)"
+    },
+    {
+      "id": "x-008",
+      "tools": [
+        "set_reminder",
+        "get_weather"
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "content": "Remind me to call mom at 6pm today IST"
+        }
+      ],
+      "expected": [
+        {
+          "name": "set_reminder",
+          "arguments": {
+            "text": "Call mom",
+            "at": "2026-10-03T18:00:00+05:30"
+          }
+        }
+      ],
+      "note": "minLength -> bypass"
+    }
+  ],
+  "decoder_cases": [
+    {
+      "id": "xd-001",
+      "note": "text before, between and after two calls",
+      "tools": [
+        "send_email",
+        "create_calendar_event"
+      ],
+      "chunks": [
+        "On it.\n<<call send_email {\"to\":[\"sam@example.com\"],\"subject\":\"Build\",\"body\":\"Green.\"}>>\nand\n<<call create_calendar_event {\"title\":\"Retro\",\"start\":\"2026-10-04T10:00:00+05:30\"}>>\nDone."
+      ],
+      "expected": {
+        "calls": [
+          {
+            "name": "send_email",
+            "arguments": {
+              "to": [
+                "sam@example.com"
+              ],
+              "subject": "Build",
+              "body": "Green."
+            }
+          },
+          {
+            "name": "create_calendar_event",
+            "arguments": {
+              "title": "Retro",
+              "start": "2026-10-04T10:00:00+05:30"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "xd-002",
+      "note": "plain answer, no call; email and << in text",
+      "tools": [
+        "send_email"
+      ],
+      "chunks": [
+        "I've emailed riya@example.com; note a << b."
+      ],
+      "expected": {
+        "calls": []
+      }
+    },
+    {
+      "id": "xd-003",
+      "note": "escaped quotes, braces and >> inside strings, split mid-escape",
+      "tools": [
+        "send_email"
+      ],
+      "chunks": [
+        "<<call send_email {\"to\":[\"a@b.co\"],\"subject\":\"q \\",
+        "\" } { >> \",\"body\":\"日本語\"}>>"
+      ],
+      "expected": {
+        "calls": [
+          {
+            "name": "send_email",
+            "arguments": {
+              "to": [
+                "a@b.co"
+              ],
+              "subject": "q \" } { >> ",
+              "body": "日本語"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "xd-004",
+      "note": "nested objects and arrays of objects",
+      "tools": [
+        "search_flights"
+      ],
+      "chunks": [
+        "<<call search_flights {\"legs\":[{\"from\":\"BLR\",\"to\":\"SFO\",\"date\":\"2026-11-02\"}],\"passengers\":2,\"cabin\":\"business\"}>>"
+      ],
+      "expected": {
+        "calls": [
+          {
+            "name": "search_flights",
+            "arguments": {
+              "legs": [
+                {
+                  "from": "BLR",
+                  "to": "SFO",
+                  "date": "2026-11-02"
+                }
+              ],
+              "passengers": 2,
+              "cabin": "business"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "xd-005",
+      "note": "integer written as float",
+      "tools": [
+        "create_calendar_event"
+      ],
+      "chunks": [
+        "<<call create_calendar_event {\"title\":\"x\",\"start\":\"2026-10-04T10:00:00+05:30\",\"duration_min\":30.0}>>"
+      ],
+      "expected": {
+        "error": "invalid_arguments"
+      }
+    },
+    {
+      "id": "xd-006",
+      "note": "hallucinated extra argument",
+      "tools": [
+        "create_calendar_event"
+      ],
+      "chunks": [
+        "<<call create_calendar_event {\"title\":\"x\",\"start\":\"2026-10-04T10:00:00+05:30\",\"color\":\"red\"}>>"
+      ],
+      "expected": {
+        "error": "invalid_arguments"
+      }
+    },
+    {
+      "id": "xd-007",
+      "note": "stream ends inside a call",
+      "tools": [
+        "create_calendar_event"
+      ],
+      "chunks": [
+        "<<call create_calendar_event {\"title\":\"x\""
+      ],
+      "expected": {
+        "error": "invalid_arguments"
+      }
+    },
+    {
+      "id": "xd-008",
+      "note": "one valid call then one invalid call: no partial result",
+      "tools": [
+        "create_calendar_event"
+      ],
+      "chunks": [
+        "<<call create_calendar_event {\"title\":\"Retro\",\"start\":\"2026-10-04T10:00:00+05:30\"}>>\n<<call create_calendar_event {\"title\":\"y\"}>>"
+      ],
+      "expected": {
+        "error": "invalid_arguments"
+      }
+    },
+    {
+      "id": "xd-009",
+      "note": "unknown tool after a valid call",
+      "tools": [
+        "create_calendar_event"
+      ],
+      "chunks": [
+        "<<call create_calendar_event {\"title\":\"Retro\",\"start\":\"2026-10-04T10:00:00+05:30\"}>> <<call rm_rf {}>>"
+      ],
+      "expected": {
+        "error": "unknown_tool"
+      }
+    },
+    {
+      "id": "xd-010",
+      "note": "range violation",
+      "tools": [
+        "search_flights"
+      ],
+      "chunks": [
+        "<<call search_flights {\"legs\":[],\"passengers\":12}>>"
+      ],
+      "expected": {
+        "error": "invalid_arguments"
+      }
+    },
+    {
+      "id": "xd-011",
+      "note": "relative date not resolved",
+      "tools": [
+        "create_calendar_event"
+      ],
+      "chunks": [
+        "<<call create_calendar_event {\"title\":\"x\",\"start\":\"tomorrow 10am\"}>>"
+      ],
+      "expected": {
+        "error": "invalid_arguments"
+      }
+    },
+    {
+      "id": "xd-012",
+      "note": "calls inside a code fence, closers split",
+      "tools": [
+        "create_calendar_event"
+      ],
+      "chunks": [
+        "```\n<<call create_calendar_event {\"title\":\"Retro\",\"start\":\"2026-10-04T10:00:00+05:30\"}>",
+        ">\n```"
+      ],
+      "expected": {
+        "calls": [
+          {
+            "name": "create_calendar_event",
+            "arguments": {
+              "title": "Retro",
+              "start": "2026-10-04T10:00:00+05:30"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "xd-013",
+      "note": "lookalike markers stay text",
+      "tools": [
+        "create_calendar_event"
+      ],
+      "chunks": [
+        "<<caller>> and <<callback {}>>"
+      ],
+      "expected": {
+        "calls": []
+      }
+    },
+    {
+      "id": "xd-014",
+      "note": "parenthesised call syntax is rejected",
+      "tools": [
+        "get_weather"
+      ],
+      "chunks": [
+        "<<call get_weather({\"city\":\"Pune\"})>>"
+      ],
+      "expected": {
+        "error": "invalid_arguments"
+      }
+    }
+  ]
+}
