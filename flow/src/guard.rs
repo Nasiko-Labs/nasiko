@@ -2,6 +2,18 @@ use redis::AsyncCommands;
 
 use crate::context::FlowContext;
 
+/// Default wall-clock budget for one flow. Must stay in step with
+/// `nasiko_config::Config::flow_timeout_secs`, which is what the server
+/// actually builds its `FlowConfig` from.
+pub const DEFAULT_FLOW_TIMEOUT_SECS: u64 = 600;
+
+/// Slack between the flow timeout and the Redis state TTL. The guard reads
+/// `started_at` out of the flow's Redis key: once that key expires the elapsed
+/// check below has nothing to compare against and silently passes, and the
+/// depth/fan-out counters reset to zero. The TTL must therefore always outlive
+/// the timeout it stores the state for.
+pub const FLOW_STATE_TTL_SLACK_SECS: u64 = 60;
+
 #[derive(Debug, Clone)]
 pub struct FlowConfig {
     pub max_depth: u32,
@@ -17,22 +29,32 @@ impl Default for FlowConfig {
             max_depth: 5,
             max_fan_out: 20,
             max_flow_tokens: 100_000,
-            flow_timeout_secs: 120,
-            flow_state_ttl_secs: 300,
+            flow_timeout_secs: DEFAULT_FLOW_TIMEOUT_SECS,
+            flow_state_ttl_secs: state_ttl_for(DEFAULT_FLOW_TIMEOUT_SECS),
         }
     }
 }
 
 impl FlowConfig {
     pub fn from_env() -> Self {
+        let flow_timeout_secs = parse_env("NASIKO_FLOW_TIMEOUT_SECS", DEFAULT_FLOW_TIMEOUT_SECS);
         Self {
             max_depth: parse_env("NASIKO_FLOW_MAX_DEPTH", 5),
             max_fan_out: parse_env("NASIKO_FLOW_MAX_FAN_OUT", 20),
             max_flow_tokens: parse_env("NASIKO_FLOW_MAX_TOKENS", 100_000),
-            flow_timeout_secs: parse_env("NASIKO_FLOW_TIMEOUT_SECS", 120),
-            flow_state_ttl_secs: parse_env("NASIKO_FLOW_STATE_TTL_SECS", 300),
+            flow_timeout_secs,
+            flow_state_ttl_secs: parse_env(
+                "NASIKO_FLOW_STATE_TTL_SECS",
+                state_ttl_for(flow_timeout_secs),
+            ),
         }
     }
+}
+
+/// The Redis state TTL a given flow timeout needs — see
+/// [`FLOW_STATE_TTL_SLACK_SECS`] for why it can never be the smaller of the two.
+pub const fn state_ttl_for(flow_timeout_secs: u64) -> u64 {
+    flow_timeout_secs + FLOW_STATE_TTL_SLACK_SECS
 }
 
 fn parse_env<T: std::str::FromStr>(key: &str, default: T) -> T {

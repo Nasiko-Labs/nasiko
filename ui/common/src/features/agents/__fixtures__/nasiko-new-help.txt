@@ -1,0 +1,12 @@
+Scaffold a new agent project
+
+Usage: nasiko new [TEMPLATE] [NAME]
+
+Arguments:
+  [TEMPLATE]  Template name (e.g., openai, claude-sdk). Omit for interactive mode
+  [NAME]      Project directory name
+
+Options:
+  -h, --help  Print help
+
+Creates: AgentCard.json, Dockerfile, src/

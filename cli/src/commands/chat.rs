@@ -6,6 +6,11 @@ use crate::commands::tui::session::{self as cp};
 use crate::config;
 use nasiko_utils::term as status;
 
+/// Client budget for one chat turn. Must stay above the server's own agent-call
+/// timeout (`AGENT_CALL_TIMEOUT_SECS`, 600s): a client that gives up first turns
+/// an answer the server did produce into a CLI error.
+const CHAT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(660);
+
 /// Live status line shown while the CLI waits on the backend. Re-settable:
 /// each `set` clears the previous line first, so event output printed between
 /// states never collides with an animation frame. Also tracks whether a
@@ -270,7 +275,7 @@ fn send_message(endpoint: &str, text: &str, session_id: Option<&str>) -> Result<
     // contextId, but metadata is the documented contract the web UI uses).
     let http = ureq::Agent::new_with_config(
         ureq::config::Config::builder()
-            .timeout_global(Some(std::time::Duration::from_secs(300)))
+            .timeout_global(Some(CHAT_TIMEOUT))
             .http_status_as_error(false)
             .build(),
     );
@@ -730,7 +735,7 @@ fn reconnect_after_hitl(endpoint: &str, hitl_id: &str) -> Result<ureq::http::Res
 
     let http = ureq::Agent::new_with_config(
         ureq::config::Config::builder()
-            .timeout_global(Some(std::time::Duration::from_secs(300)))
+            .timeout_global(Some(CHAT_TIMEOUT))
             .http_status_as_error(false)
             .build(),
     );

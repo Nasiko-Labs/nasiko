@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::pricing::CostBreakdown;
 
@@ -297,6 +297,84 @@ fn read_u64(attrs: &HashMap<String, serde_json::Value>, keys: &[&str]) -> Option
     })
 }
 
+/// Whether this span is the LLM router's own record of a call it served.
+///
+/// `gen_ai.agent.id` is set only there (`oss/llm-router/src/handlers/chat.rs`),
+/// which makes it an unambiguous marker. Such a span carries the **resolved**
+/// provider and model — the ones actually called — where the calling agent's
+/// span carries only what it asked for. The two disagree whenever an agent's
+/// LLM config re-routes it, and the router is the one telling the truth.
+pub fn is_router_llm_span(span: &Span) -> bool {
+    span.attributes.contains_key("gen_ai.agent.id")
+}
+
+/// How each LLM-router span relates to the agent span for the same call.
+pub struct RouterSpanLinks<'a> {
+    /// Router span id → service name of the agent whose call it served.
+    pub attributed: HashMap<&'a str, &'a str>,
+    /// Span ids to leave out of any usage aggregation, because another span in
+    /// the trace already accounts for the same call. Holds the agent's span
+    /// where the router's superseded it, and the router's own span where it
+    /// could not be attributed.
+    pub excluded: HashSet<&'a str>,
+}
+
+/// Pair up each router span with the agent span describing the same LLM call.
+///
+/// One call produces two spans: the agent's, labelled with the model it asked
+/// for, and the router's, labelled with the model that ran. Both carry the same
+/// token counts, so any sum over a trace counts the call twice — and pricing the
+/// agent's label charges a cheap model for an expensive call. Neither is
+/// detectable downstream, which is why this pairing has to happen before any
+/// aggregation rather than being patched afterwards.
+///
+/// The router's span sits under the HTTP span for the agent's request, whose
+/// parent is the agent's own LLM span, so the nearest ancestor from a different
+/// service is the calling agent, and that ancestor's usage is the duplicate.
+///
+/// A router span with no such ancestor is dropped instead. It reaches a trace at
+/// all only because some caller propagated span context, and in this platform
+/// that caller is an agent recording the same call on a span of its own — just a
+/// sibling rather than an ancestor, because it propagated the context it was
+/// called with instead of its own. Keeping it would double the tokens and book
+/// them against the control plane, which is not an agent; dropping it costs only
+/// the model correction, which is where things stood before any of this.
+pub fn link_router_spans(spans: &[Span]) -> RouterSpanLinks<'_> {
+    let by_id: HashMap<&str, &Span> = spans.iter().map(|s| (s.span_id.as_str(), s)).collect();
+    let mut attributed = HashMap::new();
+    let mut excluded = HashSet::new();
+    for span in spans {
+        if !is_router_llm_span(span) {
+            continue;
+        }
+        let mut parent = span.parent_span_id.as_deref();
+        let mut agent = None;
+        while let Some(id) = parent {
+            let Some(ancestor) = by_id.get(id) else { break };
+            if ancestor.service_name != span.service_name && !ancestor.service_name.is_empty() {
+                agent = Some(*ancestor);
+                break;
+            }
+            parent = ancestor.parent_span_id.as_deref();
+        }
+        match agent {
+            Some(agent) => {
+                attributed.insert(span.span_id.as_str(), agent.service_name.as_str());
+                if !extract_usage_attrs(&agent.attributes).is_empty() {
+                    excluded.insert(agent.span_id.as_str());
+                }
+            }
+            None => {
+                excluded.insert(span.span_id.as_str());
+            }
+        }
+    }
+    RouterSpanLinks {
+        attributed,
+        excluded,
+    }
+}
+
 impl TraceDetails {
     /// Aggregate token counts across all spans:
     /// `(input_tokens, output_tokens, first_model_seen)`.
@@ -309,12 +387,13 @@ impl TraceDetails {
     /// Cost is intentionally not computed here — resolve it through a
     /// [`nasiko_pricing::PricingEngine`] (see [`crate::pricing::compute_cost`]).
     pub fn token_totals(&self) -> (u64, u64, Option<String>) {
+        let excluded = link_router_spans(&self.spans).excluded;
         let mut seen = std::collections::HashSet::new();
         let mut input = 0u64;
         let mut output = 0u64;
         let mut model: Option<String> = None;
         for span in &self.spans {
-            if !seen.insert(&span.span_id) {
+            if !seen.insert(&span.span_id) || excluded.contains(span.span_id.as_str()) {
                 continue;
             }
             let u = extract_usage_attrs(&span.attributes);
@@ -335,11 +414,12 @@ impl TraceDetails {
     /// Aggregate cache token counts across all spans:
     /// `(cache_read_tokens, cache_creation_tokens)`.
     pub fn cache_token_totals(&self) -> (u64, u64) {
+        let excluded = link_router_spans(&self.spans).excluded;
         let mut seen = std::collections::HashSet::new();
         let mut read = 0u64;
         let mut creation = 0u64;
         for span in &self.spans {
-            if !seen.insert(&span.span_id) {
+            if !seen.insert(&span.span_id) || excluded.contains(span.span_id.as_str()) {
                 continue;
             }
             let u = extract_usage_attrs(&span.attributes);
@@ -370,10 +450,11 @@ impl TraceDetails {
 
     /// Per-model four-class token totals, for mixed-model trace reporting.
     pub fn token_totals_by_model(&self) -> Vec<(Option<String>, u64, u64, u64, u64)> {
+        let excluded = link_router_spans(&self.spans).excluded;
         let mut seen = std::collections::HashSet::new();
         let mut by_model: Vec<(Option<String>, u64, u64, u64, u64)> = Vec::new();
         for span in &self.spans {
-            if !seen.insert(&span.span_id) {
+            if !seen.insert(&span.span_id) || excluded.contains(span.span_id.as_str()) {
                 continue;
             }
             let u = extract_usage_attrs(&span.attributes);

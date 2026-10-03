@@ -1,0 +1,63 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "ignoreDependencies": [
+    "@fontsource-variable/hanken-grotesk",
+    "@fontsource-variable/jetbrains-mono"
+  ],
+  "workspaces": {
+    ".": {
+      "entry": [
+        "scripts/*.ts",
+        "e2e/**/*.ts",
+        ".storybook/*.{ts,tsx}",
+        "*/src/main.tsx",
+        "*/*/src/main.tsx",
+        "*/src/mocks.ts",
+        "*/*/src/mocks/index.ts",
+        "*/*/src/routes/**/*.tsx",
+        "*/vite.config.ts",
+        "*/*/vite.config.ts",
+        "vite.shared.ts"
+      ],
+      "project": [
+        "scripts/**/*.ts",
+        "e2e/**/*.ts",
+        "*/src/**/*.{ts,tsx}",
+        "*/*/src/**/*.{ts,tsx}"
+      ],
+      "ignore": [
+        "**/routeTree.gen.ts"
+      ],
+      "ignoreDependencies": [
+        "@tanstack/react-query",
+        "lucide-react",
+        "motion",
+        "react-hook-form",
+        "sonner",
+        "zod"
+      ]
+    },
+    "common": {
+      "entry": [
+        "src/routes/**/*.tsx",
+        "src/**/*.test.{ts,tsx}",
+        "src/test/**/*.ts",
+        "src/**/*.stories.tsx"
+      ],
+      "project": [
+        "src/**/*.{ts,tsx}"
+      ],
+      "ignore": [
+        "src/components/ui/**",
+        "src/**/*.gen.ts"
+      ]
+    }
+  },
+  "ignoreIssues": {
+    "common/src/components/charts/**": [
+      "duplicates",
+      "exports",
+      "types"
+    ]
+  }
+}

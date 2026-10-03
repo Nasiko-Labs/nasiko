@@ -670,7 +670,14 @@ pub(crate) async fn orchestrator_stream(
         caller_uuid,
     );
 
+    // `A2aClient`'s own default is deliberately short — it is shared with agent
+    // card / discovery fetches, where a long hang is the wrong behaviour. This
+    // client makes real agent turns, including the `message/send` fallback taken
+    // by agents that reject `message/stream`, so it carries the agent budget.
     let a2a_client = nasiko_react_agent::A2aClient::new()
+        .with_timeout(std::time::Duration::from_secs(
+            state.config.agent_call_timeout_secs,
+        ))
         .with_headers(vec![("traceparent".to_string(), traceparent)]);
 
     // Each agent the orchestrator calls authenticates to /api/mcp with its own
@@ -1313,11 +1320,13 @@ async fn agent_stream(
             .post(&endpoint)
             .header("A2A-Version", nasiko_types::a2a::A2A_VERSION_HEADER_VALUE)
             .header("traceparent", crate::telemetry::traceparent_for(&flow_ctx))
-            // Agent turns can legitimately run past the shared client's default
-            // 60s timeout (long tool calls, multi-step orchestration); override
+            // Agent turns can legitimately run past the shared client's short
+            // default (long tool calls, multi-step orchestration); override
             // per-request instead of raising the global default for every caller
             // of `state.http_client`.
-            .timeout(std::time::Duration::from_secs(600))
+            .timeout(std::time::Duration::from_secs(
+                state.config.agent_call_timeout_secs,
+            ))
     };
 
     let response = build_agent_req()
@@ -1885,8 +1894,8 @@ async fn ensure_orchestrator_chat_session(
     };
 
     let _ = sqlx::query(
-        "INSERT INTO chat_sessions (session_id, user_id, agent_id, agent_url, title) \
-         VALUES ($1, $2, NULL, '/api/orchestrator/a2a', $3) \
+        "INSERT INTO chat_sessions (session_id, user_id, agent_id, agent_url, title, session_type) \
+         VALUES ($1, $2, NULL, '/api/orchestrator/a2a', $3, 'orchestrator') \
          ON CONFLICT (session_id) DO NOTHING",
     )
     .bind(context_id)

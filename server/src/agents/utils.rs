@@ -96,7 +96,56 @@ pub(crate) async fn fetch_and_apply_agent_card(
         crate::catalog::skills::sync_agent_skills_json(db, agent_id, skills_json).await;
     }
 
+    embed_updated_agent(db, agent_id).await;
+
     true
+}
+
+/// Re-reads the agent's current name/description/tags and embeds+persists
+/// them via `nasiko_orchestrator::embed_and_store_agent`, so routing's Stage 1
+/// doesn't have to do it lazily on the next `route()` call. Best-effort —
+/// failures are logged and never block the deploy/update flow.
+///
+/// Reads `OPENAI_API_KEY`/`OPENAI_BASE_URL`/`EMBEDDING_MODEL` straight from
+/// the environment rather than threading `Config` through every deploy path
+/// (seed / upload / update / rollback) that reaches this function — same
+/// env-driven approach `nasiko_config::Config` itself uses for these fields.
+async fn embed_updated_agent(db: &sqlx::PgPool, agent_id: Uuid) {
+    let Ok(api_key) = std::env::var("OPENAI_API_KEY") else {
+        return;
+    };
+    let base_url =
+        std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com".into());
+    let model =
+        std::env::var("EMBEDDING_MODEL").unwrap_or_else(|_| "text-embedding-3-small".into());
+
+    let row: Option<(String, Option<String>, Vec<String>)> =
+        sqlx::query_as("SELECT name, description, tags FROM agents WHERE id = $1")
+            .bind(agent_id)
+            .fetch_optional(db)
+            .await
+            .unwrap_or(None);
+
+    let Some((name, description, tags)) = row else {
+        return;
+    };
+
+    let agent = nasiko_orchestrator::AgentCard {
+        id: agent_id,
+        name,
+        description: description.unwrap_or_default(),
+        skills: vec![],
+        tags,
+        url: None,
+        embedding: None,
+        embedding_content_hash: None,
+    };
+
+    if let Err(e) =
+        nasiko_orchestrator::embed_and_store_agent(db, &agent, &api_key, &base_url, &model).await
+    {
+        tracing::warn!(%agent_id, error = %e, "proactive agent embedding failed (non-fatal, will be computed lazily on next route())");
+    }
 }
 
 /// Ensure a successful `runtime.deploy()` is visible to the crash-loop

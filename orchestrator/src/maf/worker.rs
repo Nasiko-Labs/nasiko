@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use futures::FutureExt;
+use nasiko_flow::FlowGuard;
 use nasiko_hitl::{HitlStore, NewHitlRequest};
-use nasiko_observability::ObservabilityProvider;
 use sqlx::PgPool;
 use tracing::{error, info, warn};
 use uuid::Uuid;
@@ -35,7 +35,7 @@ pub async fn run(
     db: PgPool,
     redis: redis::Client,
     http_client: reqwest::Client,
-    observability: Arc<dyn ObservabilityProvider>,
+    flow_guard: Arc<FlowGuard>,
     llm: LlmClient,
     hitl_store: Arc<dyn HitlStore>,
 ) {
@@ -64,7 +64,7 @@ pub async fn run(
         &mut conn,
         &db,
         &http_client,
-        observability.as_ref(),
+        &flow_guard,
         &llm,
         &hitl_store,
         &consumer,
@@ -101,7 +101,7 @@ pub async fn run(
                             &mut conn,
                             &db,
                             &http_client,
-                            observability.as_ref(),
+                            &flow_guard,
                             &llm,
                             &hitl_store,
                         )
@@ -125,6 +125,9 @@ struct Job {
     execution_id: Uuid,
     maf_json: String,
     user_id: Uuid,
+    /// Run-time data for this execution only, spliced into step 0 by
+    /// `executor::run_maf` — see `oss/server/src/maf.rs::RunWorkflowRequest`.
+    content: Option<String>,
     /// Present only on a continuation job, `oss/server/src/hitl/mod.rs::deliver_maf`'s `XADD` —
     /// a fresh run always omits these three.
     resume: Option<ResumeFields>,
@@ -140,6 +143,7 @@ fn parse_job(fields: &[redis::Value]) -> Option<Job> {
     let mut execution_id = None;
     let mut maf_json = None;
     let mut user_id = None;
+    let mut content = None;
     let mut resume_step_index = None;
     let mut resume_task_id = None;
     let mut resume_answer = None;
@@ -165,6 +169,7 @@ fn parse_job(fields: &[redis::Value]) -> Option<Job> {
             "execution_id" => execution_id = val.parse().ok(),
             "maf_json" => maf_json = Some(val),
             "user_id" => user_id = val.parse().ok(),
+            "content" => content = Some(val),
             "resume_step_index" => resume_step_index = val.parse().ok(),
             "resume_task_id" => resume_task_id = Some(val),
             "resume_answer" => resume_answer = Some(val),
@@ -196,6 +201,7 @@ fn parse_job(fields: &[redis::Value]) -> Option<Job> {
         execution_id: execution_id?,
         maf_json: maf_json?,
         user_id: user_id?,
+        content,
         resume,
     })
 }
@@ -249,12 +255,13 @@ async fn process_job(
     conn: &mut redis::aio::MultiplexedConnection,
     db: &PgPool,
     http_client: &reqwest::Client,
-    observability: &dyn ObservabilityProvider,
+    flow_guard: &Arc<FlowGuard>,
     llm: &LlmClient,
     hitl_store: &Arc<dyn HitlStore>,
 ) {
     let execution_id = job.execution_id;
     let user_id = job.user_id;
+    let content = job.content.clone();
     let maf_json_str = job.maf_json;
     let is_resume = job.resume.is_some();
 
@@ -324,11 +331,12 @@ async fn process_job(
                 executor::run_maf(
                     http_client,
                     db,
-                    observability,
+                    flow_guard,
                     execution_id,
                     user_id,
                     &maf_def,
                     llm,
+                    content.as_deref(),
                 )
                 .await
             }
@@ -337,7 +345,7 @@ async fn process_job(
                     executor::run_maf_from(
                         http_client,
                         db,
-                        observability,
+                        flow_guard,
                         execution_id,
                         user_id,
                         &maf_def,
@@ -373,6 +381,7 @@ async fn process_job(
         hitl_store,
         user_id,
         &maf_json_str,
+        content.as_deref(),
         new_attempt,
         max_attempts,
         &maf_def,
@@ -433,6 +442,8 @@ async fn finish_job(
     hitl_store: &Arc<dyn HitlStore>,
     user_id: Uuid,
     maf_json_str: &str,
+    // The original run's content, carried forward so a retry's re-enqueue keeps it.
+    content: Option<&str>,
     new_attempt: i32,
     max_attempts: i32,
     maf_def: &MafDefinition,
@@ -523,7 +534,7 @@ async fn finish_job(
                 .bind(execution_id)
                 .execute(db)
                 .await;
-                re_enqueue(conn, execution_id, maf_json_str, user_id).await;
+                re_enqueue(conn, execution_id, maf_json_str, user_id, content).await;
                 ack(conn, msg_id).await;
                 warn!(
                     "MAF execution {execution_id} failed (attempt {new_attempt}/{max_attempts}), re-enqueued: {e}"
@@ -575,15 +586,26 @@ async fn create_hitl_request(
 }
 
 async fn mark_failed(db: &PgPool, execution_id: Uuid, error: &str) {
+    // A failed run still spent real money — planning and any completed steps
+    // all made billed LLM calls before the failure. Recording 0 here would
+    // under-report spend on exactly the runs that are most likely to be
+    // retried, and the retries would compound it. The platform already has
+    // the priced rows; read them back the same way a successful run does.
+    let spend = executor::platform_spend(db, execution_id).await;
+
     let _ = sqlx::query(
         r#"UPDATE maf_executions
            SET status = 'failed',
                error = $1,
+               tokens_used = $2,
+               cost_usd = $3,
                completed_at = now(),
                duration_ms = EXTRACT(EPOCH FROM (now() - COALESCE(started_at, now())))::BIGINT * 1000
-           WHERE id = $2"#,
+           WHERE id = $4"#,
     )
     .bind(error)
+    .bind(spend.total_tokens)
+    .bind(spend.total_cost_usd)
     .bind(execution_id)
     .execute(db)
     .await;
@@ -603,25 +625,30 @@ async fn re_enqueue(
     execution_id: Uuid,
     maf_json: &str,
     user_id: Uuid,
+    content: Option<&str>,
 ) {
-    let _: redis::RedisResult<String> = redis::cmd("XADD")
-        .arg(STREAM_KEY)
+    let mut xadd = redis::cmd("XADD");
+    xadd.arg(STREAM_KEY)
         .arg("*")
         .arg("execution_id")
         .arg(execution_id.to_string())
         .arg("maf_json")
         .arg(maf_json)
         .arg("user_id")
-        .arg(user_id.to_string())
-        .query_async(conn)
-        .await;
+        .arg(user_id.to_string());
+    // Carry the original run's content forward on retry — otherwise a
+    // content-bearing execution would silently lose it on its 2nd/3rd attempt.
+    if let Some(content) = content {
+        xadd.arg("content").arg(content);
+    }
+    let _: redis::RedisResult<String> = xadd.query_async(conn).await;
 }
 
 async fn reclaim_pending(
     conn: &mut redis::aio::MultiplexedConnection,
     db: &PgPool,
     http_client: &reqwest::Client,
-    observability: &dyn ObservabilityProvider,
+    flow_guard: &Arc<FlowGuard>,
     llm: &LlmClient,
     hitl_store: &Arc<dyn HitlStore>,
     consumer: &str,
@@ -672,7 +699,7 @@ async fn reclaim_pending(
                 conn,
                 db,
                 http_client,
-                observability,
+                flow_guard,
                 llm,
                 hitl_store,
             )

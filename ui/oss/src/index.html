@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- Start of Reo Javascript -->
+    <script type="text/javascript">
+      !function(){var e,t,n;e="f4cf7633edc0a46",t=function(){Reo.init({clientID:"f4cf7633edc0a46", source: "internal"})},(n=document.createElement("script")).src="https://static.reo.dev/"+e+"/reo.js",n.defer=!0,n.onload=t,document.head.appendChild(n)}();
+    </script>
+    <!-- End of Reo Javascript -->
+    <link rel="icon" type="image/svg+xml" href="/mark-nasiko.svg" />
+    <link rel="preload" as="font" type="font/woff2" crossorigin href="../../node_modules/@fontsource-variable/hanken-grotesk/files/hanken-grotesk-latin-wght-normal.woff2" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OpenRuntime UI Lab</title>
+    <script>
+      // Mode and colour theme before first paint (plans/feat-app-shell.md §5.2). The key names, theme
+      // ids and attribute duplicate common/src/app/shell/theme.ts, which can't be imported here; theme.test.ts
+      // checks they match. theme.ts takes over after boot (menu changes, following the OS on System).
+      (function () {
+        var theme = null, accent = null
+        try { theme = localStorage.getItem('openruntime.theme'); accent = localStorage.getItem('openruntime.accent') } catch (e) {}
+        if (theme !== 'light' && theme !== 'dark') theme = 'system'
+        if (['teal', 'indigo', 'plum', 'carbon'].indexOf(accent) < 0) accent = 'carbon'
+        if (/\/login\/?$/.test(location.pathname)) accent = 'carbon'
+        var dark = theme === 'dark' || (theme === 'system' && !!window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches)
+        document.documentElement.classList.toggle('dark', dark)
+        document.documentElement.setAttribute('data-theme', accent)
+      })()
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./main.tsx"></script>
+  </body>
+</html>

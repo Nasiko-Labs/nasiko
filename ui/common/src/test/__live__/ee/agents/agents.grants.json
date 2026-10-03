@@ -1,0 +1,35 @@
+{
+  "fixture_version": 1,
+  "id": "agents.grants",
+  "recorded_at": "2026-09-29T07:44:51.917Z",
+  "window": {
+    "start": "2026-09-29T07:44:51.917Z",
+    "end": "2026-09-29T07:44:51.919Z"
+  },
+  "anchor": "2026-09-29T07:44:38.390Z",
+  "edition": "ee",
+  "identity": "admin",
+  "server": {
+    "sha": "ea233d201502a205e78339a7cb2688856b9ec2fa",
+    "dirty": false,
+    "openapi_sha256": "71f2d54fd3466adb48d9d26eed66afe028ed153262b6eeb57445c5b03b6bd9f7",
+    "binary_mtime": null
+  },
+  "request": {
+    "method": "GET",
+    "path": "/api/agents/{agent0}/grants",
+    "query": {}
+  },
+  "status": 200,
+  "content_type": "application/json",
+  "body": [
+    {
+      "id": "<id-1>",
+      "agent_id": "5eed0000-0001-4000-8000-000000000001",
+      "grant_type": "org_unit",
+      "grantee_id": "<unit-seed-eng>",
+      "granted_by": null,
+      "created_at": "2026-09-29T07:44:42.048691Z"
+    }
+  ]
+}

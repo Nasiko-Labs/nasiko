@@ -13,6 +13,8 @@ fn agent_card_construction_with_all_fields() {
         skills: vec!["code-review".to_string(), "refactor".to_string()],
         tags: vec!["engineering".to_string()],
         url: Some("http://localhost:9000".to_string()),
+        embedding: None,
+        embedding_content_hash: None,
     };
     assert_eq!(card.id, id);
     assert_eq!(card.name, "coder");
@@ -29,6 +31,8 @@ fn agent_card_construction_minimal() {
         skills: vec![],
         tags: vec![],
         url: None,
+        embedding: None,
+        embedding_content_hash: None,
     };
     assert!(card.skills.is_empty());
     assert!(card.url.is_none());
@@ -46,6 +50,8 @@ fn agent_card_serializes_to_json() {
         skills: vec!["skill-a".to_string()],
         tags: vec!["tag-x".to_string()],
         url: Some("http://agent:9000".to_string()),
+        embedding: None,
+        embedding_content_hash: None,
     };
     let json = serde_json::to_string(&card).unwrap();
     assert!(json.contains("test-agent"));
@@ -63,6 +69,8 @@ fn agent_card_round_trips_through_json() {
         skills: vec!["s1".to_string(), "s2".to_string()],
         tags: vec!["t1".to_string()],
         url: None,
+        embedding: None,
+        embedding_content_hash: None,
     };
     let json = serde_json::to_string(&original).unwrap();
     let restored: AgentCard = serde_json::from_str(&json).unwrap();
@@ -81,6 +89,8 @@ fn agent_card_with_url_none_omits_null() {
         skills: vec![],
         tags: vec![],
         url: None,
+        embedding: None,
+        embedding_content_hash: None,
     };
     let json = serde_json::to_string(&card).unwrap();
     // url: null is still present (Option serializes as null by default unless skip_serializing_if)

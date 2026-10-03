@@ -1,11 +1,22 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// Budget for a unary call (`message/send`, agent card fetches). Short by
+/// design: the same client serves discovery, where a long hang is a bug, not
+/// patience. A caller that makes real agent turns sets its own with
+/// [`A2aClient::with_timeout`].
+const DEFAULT_UNARY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Budget for a streaming call (`message/stream`). Streams legitimately outlive
+/// unary calls — progress events keep the caller informed while the agent works.
+const DEFAULT_STREAM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
 /// A2A JSON-RPC client for calling remote agents via the protocol.
 #[derive(Clone)]
 pub struct A2aClient {
     http: reqwest::Client,
     default_timeout: std::time::Duration,
+    stream_timeout: std::time::Duration,
     request_metadata: Option<serde_json::Value>,
     extra_headers: Vec<(String, String)>,
 }
@@ -125,25 +136,26 @@ impl Default for A2aClient {
 
 impl A2aClient {
     pub fn new() -> Self {
-        Self {
-            http: reqwest::Client::new(),
-            default_timeout: std::time::Duration::from_secs(30),
-            request_metadata: None,
-            extra_headers: Vec::new(),
-        }
+        Self::with_http_client(reqwest::Client::new())
     }
 
     pub fn with_http_client(http: reqwest::Client) -> Self {
         Self {
             http,
-            default_timeout: std::time::Duration::from_secs(30),
+            default_timeout: DEFAULT_UNARY_TIMEOUT,
+            stream_timeout: DEFAULT_STREAM_TIMEOUT,
             request_metadata: None,
             extra_headers: Vec::new(),
         }
     }
 
+    /// Set one budget for both unary and streaming calls. Callers that make
+    /// real agent turns pass the platform's agent-call timeout here, which
+    /// lifts `message/send` off the short discovery default — the fallback path
+    /// taken by agents that reject `message/stream` is a full agent turn too.
     pub fn with_timeout(mut self, timeout: std::time::Duration) -> Self {
         self.default_timeout = timeout;
+        self.stream_timeout = timeout;
         self
     }
 
@@ -440,9 +452,7 @@ impl A2aClient {
             .header("A2A-Version", nasiko_types::a2a::A2A_VERSION_HEADER_VALUE)
             .header("Accept", "text/event-stream")
             .json(&body)
-            // Streams outlive the non-streaming default: progress events keep
-            // the caller informed, so allow long-running agent work.
-            .timeout(std::time::Duration::from_secs(600));
+            .timeout(self.stream_timeout);
 
         for (key, value) in self.extra_headers.iter().chain(per_call_headers) {
             req = req.header(key, value);
@@ -684,7 +694,7 @@ impl A2aClient {
             .header("A2A-Version", "1.0")
             .header("Accept", "text/event-stream")
             .json(&body)
-            .timeout(std::time::Duration::from_secs(600));
+            .timeout(self.stream_timeout);
         for (key, value) in self.extra_headers.iter().chain(per_call_headers) {
             req = req.header(key, value);
         }

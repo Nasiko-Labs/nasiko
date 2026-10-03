@@ -1,8 +1,0 @@
-{
-  "$comment": "The models a generated surface may be built with, offered in the Weave dock and on the Weave page. Keys, never model ids: the browser sends `context.model` as one of these keys, the EE Weave surface refuses anything not listed (its GENERATION_MODELS is asserted equal to this file), and the generator maps the key to a real model id and its settings. To add a model: add it to the generator's MODEL_CHOICES (examples/dynamic_ui/dashboard/models.py) and to GENERATION_MODELS, list it here, and copy this file into the Weave checkout — `just weave-image` refuses to build while the bundled copy differs.",
-  "default": "haiku",
-  "models": [
-    { "key": "haiku", "label": "Haiku 4.5", "description": "Fastest" },
-    { "key": "sonnet", "label": "Sonnet 5", "description": "Better dashboards, takes longer" }
-  ]
-}

@@ -714,6 +714,11 @@ fn jsonrpc_error_none_data_omitted() {
 fn build_send_request_has_correct_method_and_version() {
     let req = build_send_request("hello", Some("ctx-1"));
     assert_eq!(req.jsonrpc, "2.0");
+    // gRPC-style method name — what every example agent's installed
+    // `a2a-sdk` actually registers in its dispatch table (confirmed against
+    // a real deployed `oss/agents/translator` build; the spec name
+    // `message/send` returns -32601 Method not found unless the agent opts
+    // into `enable_v0_3_compat`, which none of them do).
     assert_eq!(req.method, "SendMessage");
     assert!(req.params.is_some());
 }
@@ -725,17 +730,15 @@ fn build_stream_request_has_correct_method() {
 }
 
 #[test]
-fn build_send_request_params_deserialize_as_send_message_request() {
+fn build_send_request_params_have_grpc_role_and_correct_text() {
+    // `Role`'s own (de)serialization (from the external `a2a-lf` crate) uses
+    // the gRPC-style `ROLE_USER`/`ROLE_AGENT` names — that's also what every
+    // example agent's installed `a2a-sdk` expects, so `build_request` sends
+    // it through unpatched.
     let req = build_send_request("test text", Some("ctx-abc"));
     let params = req.params.unwrap();
-    let smr: SendMessageRequest = serde_json::from_value(params).unwrap();
-    assert_eq!(smr.message.role, Role::User);
-    // the message should contain our text
-    assert!(!smr.message.parts.is_empty());
-    match &smr.message.parts[0].content {
-        PartContent::Text(t) => assert_eq!(t, "test text"),
-        other => panic!("Expected Text part, got {other:?}"),
-    }
+    assert_eq!(params["message"]["role"], json!("ROLE_USER"));
+    assert_eq!(params["message"]["parts"][0]["text"], json!("test text"));
 }
 
 #[test]
@@ -880,6 +883,7 @@ fn make_registry_artifact() -> RegistryArtifact {
         name: "coding-agent".into(),
         version: "1.0.0".into(),
         artifact_type: "agent".into(),
+        format: "source".into(),
         status: "published".into(),
         description: Some("A coding agent".into()),
         metadata: serde_json::Value::Null,

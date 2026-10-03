@@ -1,0 +1,20 @@
+Build + push + deploy to active cluster
+
+Usage: nasiko deploy [OPTIONS] <IMAGE>
+
+Arguments:
+  <IMAGE>  Local Docker image or agent directory
+
+Options:
+      --name <NAME>           Agent name (defaults to image name before ':')
+      --port <PORT>           Container port [default: 8000]
+      --env-file <ENV_FILE>   Path to .env file with KEY=VALUE pairs
+  -e, --env <ENV>             Environment variable override (can be repeated: -e KEY=VALUE)
+      --writable              Mount a persistent, private-per-agent directory at /workspace — survives restarts, redeploys, and code updates (see docs/WRITABLE_STORAGE_FLAG.md)
+      --writable-path <PATH>  Mount the persistent directory at this absolute path instead of /workspace (implies --writable). Pick a dedicated state directory — the mount hides whatever the image ships at that path
+  -v, --version <VERSION>     Explicit version, skipping AgentCard.json and any version prompt
+  -y, --yes                   Non-interactive: auto-accept the suggested version instead of prompting
+  -h, --help                  Print help
+
+Reads: AgentCard.json, Dockerfile
+Writes: .nasiko/agent.json (agent ID binding)

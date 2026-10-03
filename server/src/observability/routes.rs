@@ -120,9 +120,19 @@ pub fn router() -> Router<AppState> {
 /// Protected observability router — mounted under /api/observability (auth required).
 ///
 /// Path params with `{agent_ref}` accept either a UUID or agent name.
+///
+/// Deliberately unthrottled, like the rest of this router. `/finops/*` carried
+/// a 20/min per-user window for a while because each request fans out several
+/// Tempo searches, but the TokenOps dashboard spends those on a single page
+/// load (dashboard for the current *and* previous window, timeseries, calendar,
+/// attributions) and again on every view toggle and calendar-day click, so
+/// normal use hit `429` within a minute. These are authenticated read-only
+/// reporting endpoints; the cost belongs in Tempo query bounds, not in a
+/// request counter that breaks the UI long before it protects anything.
 pub fn protected_router(state: AppState) -> Router<AppState> {
     let finops_routes = Router::new()
         .route("/finops/dashboard", get(handler::get_finops_dashboard))
+        .route("/finops/savings", get(handler::get_finops_savings))
         .route("/finops/insights", post(handler::get_finops_insights))
         .route("/finops/agent-hours", get(handler::get_agent_hours))
         .route(

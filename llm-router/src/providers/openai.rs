@@ -11,7 +11,7 @@
 use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::BoxStream;
-use serde_json::json;
+use serde_json::{Value, json};
 
 use super::dialect::ProviderDialect;
 use super::sse::sse_data_stream;
@@ -70,6 +70,28 @@ fn openai_droppable_param(body: &str) -> Option<String> {
         .get("param")
         .and_then(|p| p.as_str())
         .map(str::to_string)
+}
+
+/// The gpt-5.x reasoning-model rejection of function tools on `/v1/chat/completions`:
+/// `{"error":{"message":"Function tools with reasoning_effort are not supported for
+/// gpt-5.6 … set reasoning_effort to 'none'.","param":"reasoning_effort","code":null}}`.
+///
+/// [`openai_droppable_param`] cannot see this one — the `code` is null rather than an
+/// `unsupported_*` — and dropping would not help anyway: we never send `reasoning_effort`,
+/// so what the model rejects is its own default. The repair is to send it explicitly.
+/// Gated on both the named param and the remedy OpenAI itself prints, so it cannot
+/// misfire on another 400 that happens to mention the field.
+fn openai_reasoning_effort_repair(body: &str) -> Option<(String, Value)> {
+    let body: Value = serde_json::from_str(body).ok()?;
+    let error = body.get("error")?;
+    if error.get("param")?.as_str()? != "reasoning_effort" {
+        return None;
+    }
+    error
+        .get("message")?
+        .as_str()?
+        .contains("reasoning_effort to 'none'")
+        .then(|| ("reasoning_effort".to_string(), json!("none")))
 }
 
 #[async_trait]
@@ -236,6 +258,22 @@ impl ProviderClient for OpenAiProvider {
         }
         openai_droppable_param(message).or_else(|| self.dialect.extra_droppable_param(message))
     }
+
+    /// The one rejection class a drop cannot fix: a reasoning model refusing function
+    /// tools unless `reasoning_effort` is explicitly `"none"`. See
+    /// [`openai_reasoning_effort_repair`].
+    fn repairable_param(&self, err: &ProviderError) -> Option<(String, Value)> {
+        let ProviderError::Status {
+            status, message, ..
+        } = err
+        else {
+            return None;
+        };
+        if *status != 400 {
+            return None;
+        }
+        openai_reasoning_effort_repair(message)
+    }
 }
 
 #[cfg(test)]
@@ -310,6 +348,116 @@ mod tests {
         );
         assert_eq!(
             provider.droppable_param(&ProviderError::Status {
+                status: 400,
+                message: "not json".into(),
+                retryable: false
+            }),
+            None
+        );
+    }
+
+    /// The verbatim body a gpt-5.x reasoning model returns when a request carries
+    /// function tools — every Claude Code turn, which always sends its tool set.
+    fn reasoning_effort_rejection() -> ProviderError {
+        ProviderError::Status {
+            status: 400,
+            message: json!({
+                "error": {
+                    "message": "Function tools with reasoning_effort are not supported for gpt-5.6 in /v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to 'none'.",
+                    "type": "invalid_request_error",
+                    "param": "reasoning_effort",
+                    "code": Value::Null
+                }
+            })
+            .to_string(),
+            retryable: false,
+        }
+    }
+
+    #[test]
+    fn repairable_param_recognizes_the_reasoning_effort_rejection() {
+        let provider = OpenAiProvider::new(reqwest::Client::new(), "http://x".into());
+        assert_eq!(
+            provider.repairable_param(&reasoning_effort_rejection()),
+            Some(("reasoning_effort".to_string(), json!("none")))
+        );
+    }
+
+    #[test]
+    fn the_two_recovery_seams_never_both_claim_an_error() {
+        let provider = OpenAiProvider::new(reqwest::Client::new(), "http://x".into());
+        // A drop cannot fix the reasoning rejection (we never sent the param), so the
+        // droppable seam must not claim it — its `code` is null, not `unsupported_*`.
+        assert_eq!(
+            provider.droppable_param(&reasoning_effort_rejection()),
+            None
+        );
+
+        // And the repair seam must not claim a plain droppable-param rejection.
+        let unsupported = ProviderError::Status {
+            status: 400,
+            message: json!({
+                "error": {
+                    "message": "Unsupported value: 'temperature' does not support 0.1 with this model.",
+                    "param": "temperature",
+                    "code": "unsupported_value"
+                }
+            })
+            .to_string(),
+            retryable: false,
+        };
+        assert_eq!(provider.repairable_param(&unsupported), None);
+    }
+
+    #[test]
+    fn repairable_param_ignores_anything_but_this_exact_rejection() {
+        let provider = OpenAiProvider::new(reqwest::Client::new(), "http://x".into());
+
+        // Right param, different complaint — no remedy to apply, so not repairable.
+        let other_complaint = ProviderError::Status {
+            status: 400,
+            message: json!({
+                "error": {
+                    "message": "Invalid value for 'reasoning_effort': expected one of low, medium, high.",
+                    "param": "reasoning_effort",
+                    "code": Value::Null
+                }
+            })
+            .to_string(),
+            retryable: false,
+        };
+        assert_eq!(provider.repairable_param(&other_complaint), None);
+
+        // The remedy text alone, under a different param, is not enough either.
+        let other_param = ProviderError::Status {
+            status: 400,
+            message: json!({
+                "error": {
+                    "message": "set reasoning_effort to 'none'",
+                    "param": "tools",
+                    "code": Value::Null
+                }
+            })
+            .to_string(),
+            retryable: false,
+        };
+        assert_eq!(provider.repairable_param(&other_param), None);
+
+        // 5xx / transport / unparseable bodies are never repairable.
+        assert_eq!(
+            provider.repairable_param(&ProviderError::Status {
+                status: 500,
+                message: "boom".into(),
+                retryable: true
+            }),
+            None
+        );
+        assert_eq!(
+            provider.repairable_param(&ProviderError::Transport("timeout".into())),
+            None
+        );
+        assert_eq!(
+            provider.repairable_param(&ProviderError::Status {
                 status: 400,
                 message: "not json".into(),
                 retryable: false

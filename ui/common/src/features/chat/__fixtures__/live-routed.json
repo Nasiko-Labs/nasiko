@@ -1,0 +1,435 @@
+{
+  "recorded": "2026-09-27",
+  "server": "nasiko-cloud-rs cb3aaf0c (local stack)",
+  "prompt": "Ask the simulated-agent agent to say hello, then tell me what it replied.",
+  "expectedAgent": "simulated-agent",
+  "frames": [
+    {
+      "statusUpdate": {
+        "taskId": "id-3",
+        "contextId": "session-1",
+        "status": {
+          "state": "TASK_STATE_WORKING",
+          "timestamp": "2026-09-27T23:56:07.315960Z"
+        }
+      }
+    },
+    {
+      "statusUpdate": {
+        "taskId": "id-3",
+        "contextId": "session-1",
+        "status": {
+          "state": "TASK_STATE_WORKING",
+          "message": {
+            "messageId": "id-4",
+            "contextId": "session-1",
+            "taskId": "id-3",
+            "role": "ROLE_AGENT",
+            "parts": [
+              {
+                "data": {
+                  "trace_id": "trace-1",
+                  "type": "trace_meta"
+                }
+              }
+            ]
+          },
+          "timestamp": "2026-09-27T23:56:07.316025Z"
+        }
+      }
+    },
+    {
+      "statusUpdate": {
+        "taskId": "id-3",
+        "contextId": "session-1",
+        "status": {
+          "state": "TASK_STATE_WORKING",
+          "message": {
+            "messageId": "id-5",
+            "contextId": "session-1",
+            "taskId": "id-3",
+            "role": "ROLE_AGENT",
+            "parts": [
+              {
+                "data": {
+                  "agent": "simulated-agent",
+                  "message": "<message 11 chars>",
+                  "turn": 1,
+                  "type": "tool_call"
+                }
+              }
+            ]
+          },
+          "timestamp": "2026-09-27T23:56:09.194741Z"
+        }
+      }
+    },
+    {
+      "statusUpdate": {
+        "taskId": "id-3",
+        "contextId": "session-1",
+        "status": {
+          "state": "TASK_STATE_WORKING",
+          "message": {
+            "messageId": "id-6",
+            "contextId": "session-1",
+            "taskId": "id-3",
+            "role": "ROLE_AGENT",
+            "parts": [
+              {
+                "data": {
+                  "agent": "simulated-agent",
+                  "message": "<message 11 chars>",
+                  "type": "sub_status"
+                }
+              }
+            ]
+          },
+          "timestamp": "2026-09-27T23:56:09.212517Z"
+        }
+      }
+    },
+    {
+      "statusUpdate": {
+        "taskId": "id-3",
+        "contextId": "session-1",
+        "status": {
+          "state": "TASK_STATE_WORKING",
+          "message": {
+            "messageId": "id-7",
+            "contextId": "session-1",
+            "taskId": "id-3",
+            "role": "ROLE_AGENT",
+            "parts": [
+              {
+                "data": {
+                  "agent": "simulated-agent",
+                  "content": "<content 23 chars>",
+                  "type": "sub_content"
+                }
+              }
+            ]
+          },
+          "timestamp": "2026-09-27T23:56:10.579401Z"
+        }
+      }
+    },
+    {
+      "statusUpdate": {
+        "taskId": "id-3",
+        "contextId": "session-1",
+        "status": {
+          "state": "TASK_STATE_WORKING",
+          "message": {
+            "messageId": "id-8",
+            "contextId": "session-1",
+            "taskId": "id-3",
+            "role": "ROLE_AGENT",
+            "parts": [
+              {
+                "data": {
+                  "agent": "simulated-agent",
+                  "content": "<content 21 chars>",
+                  "type": "sub_content"
+                }
+              }
+            ]
+          },
+          "timestamp": "2026-09-27T23:56:10.769002Z"
+        }
+      }
+    },
+    {
+      "statusUpdate": {
+        "taskId": "id-3",
+        "contextId": "session-1",
+        "status": {
+          "state": "TASK_STATE_WORKING",
+          "message": {
+            "messageId": "id-9",
+            "contextId": "session-1",
+            "taskId": "id-3",
+            "role": "ROLE_AGENT",
+            "parts": [
+              {
+                "data": {
+                  "agent": "simulated-agent",
+                  "content": "<content 32 chars>",
+                  "type": "sub_content"
+                }
+              }
+            ]
+          },
+          "timestamp": "2026-09-27T23:56:10.907127Z"
+        }
+      }
+    },
+    {
+      "statusUpdate": {
+        "taskId": "id-3",
+        "contextId": "session-1",
+        "status": {
+          "state": "TASK_STATE_WORKING",
+          "message": {
+            "messageId": "id-10",
+            "contextId": "session-1",
+            "taskId": "id-3",
+            "role": "ROLE_AGENT",
+            "parts": [
+              {
+                "data": {
+                  "agent": "simulated-agent",
+                  "content": "<content 27 chars>",
+                  "type": "sub_content"
+                }
+              }
+            ]
+          },
+          "timestamp": "2026-09-27T23:56:11.012451Z"
+        }
+      }
+    },
+    {
+      "statusUpdate": {
+        "taskId": "id-3",
+        "contextId": "session-1",
+        "status": {
+          "state": "TASK_STATE_WORKING",
+          "message": {
+            "messageId": "id-11",
+            "contextId": "session-1",
+            "taskId": "id-3",
+            "role": "ROLE_AGENT",
+            "parts": [
+              {
+                "data": {
+                  "agent": "simulated-agent",
+                  "content": "<content 25 chars>",
+                  "type": "sub_content"
+                }
+              }
+            ]
+          },
+          "timestamp": "2026-09-27T23:56:11.135882Z"
+        }
+      }
+    },
+    {
+      "statusUpdate": {
+        "taskId": "id-3",
+        "contextId": "session-1",
+        "status": {
+          "state": "TASK_STATE_WORKING",
+          "message": {
+            "messageId": "id-12",
+            "contextId": "session-1",
+            "taskId": "id-3",
+            "role": "ROLE_AGENT",
+            "parts": [
+              {
+                "data": {
+                  "agent": "simulated-agent",
+                  "content": "<content 25 chars>",
+                  "type": "sub_content"
+                }
+              }
+            ]
+          },
+          "timestamp": "2026-09-27T23:56:11.187125Z"
+        }
+      }
+    },
+    {
+      "statusUpdate": {
+        "taskId": "id-3",
+        "contextId": "session-1",
+        "status": {
+          "state": "TASK_STATE_WORKING",
+          "message": {
+            "messageId": "id-13",
+            "contextId": "session-1",
+            "taskId": "id-3",
+            "role": "ROLE_AGENT",
+            "parts": [
+              {
+                "data": {
+                  "agent": "simulated-agent",
+                  "content": "<content 21 chars>",
+                  "type": "sub_content"
+                }
+              }
+            ]
+          },
+          "timestamp": "2026-09-27T23:56:11.338996Z"
+        }
+      }
+    },
+    {
+      "statusUpdate": {
+        "taskId": "id-3",
+        "contextId": "session-1",
+        "status": {
+          "state": "TASK_STATE_WORKING",
+          "message": {
+            "messageId": "id-14",
+            "contextId": "session-1",
+            "taskId": "id-3",
+            "role": "ROLE_AGENT",
+            "parts": [
+              {
+                "data": {
+                  "agent": "simulated-agent",
+                  "content": "<content 31 chars>",
+                  "type": "sub_content"
+                }
+              }
+            ]
+          },
+          "timestamp": "2026-09-27T23:56:11.501749Z"
+        }
+      }
+    },
+    {
+      "statusUpdate": {
+        "taskId": "id-3",
+        "contextId": "session-1",
+        "status": {
+          "state": "TASK_STATE_WORKING",
+          "message": {
+            "messageId": "id-15",
+            "contextId": "session-1",
+            "taskId": "id-3",
+            "role": "ROLE_AGENT",
+            "parts": [
+              {
+                "data": {
+                  "agent": "simulated-agent",
+                  "content": "<content 23 chars>",
+                  "type": "sub_content"
+                }
+              }
+            ]
+          },
+          "timestamp": "2026-09-27T23:56:11.576829Z"
+        }
+      }
+    },
+    {
+      "statusUpdate": {
+        "taskId": "id-3",
+        "contextId": "session-1",
+        "status": {
+          "state": "TASK_STATE_WORKING",
+          "message": {
+            "messageId": "id-16",
+            "contextId": "session-1",
+            "taskId": "id-3",
+            "role": "ROLE_AGENT",
+            "parts": [
+              {
+                "data": {
+                  "agent": "simulated-agent",
+                  "duration_ms": 2581,
+                  "result": "<result 230 chars>",
+                  "success": true,
+                  "turn": 1,
+                  "type": "tool_result"
+                }
+              }
+            ]
+          },
+          "timestamp": "2026-09-27T23:56:11.779617Z"
+        }
+      }
+    },
+    {
+      "artifactUpdate": {
+        "taskId": "id-3",
+        "contextId": "session-1",
+        "artifact": {
+          "artifactId": "id-17",
+          "parts": [
+            {
+              "text": "<text 200 chars>"
+            }
+          ]
+        },
+        "append": false,
+        "lastChunk": false
+      }
+    },
+    {
+      "artifactUpdate": {
+        "taskId": "id-3",
+        "contextId": "session-1",
+        "artifact": {
+          "artifactId": "id-17",
+          "parts": [
+            {
+              "text": "<text 64 chars>"
+            }
+          ]
+        },
+        "append": true,
+        "lastChunk": false
+      }
+    },
+    {
+      "artifactUpdate": {
+        "taskId": "id-3",
+        "contextId": "session-1",
+        "artifact": {
+          "artifactId": "id-17",
+          "parts": [
+            {
+              "text": ""
+            }
+          ]
+        },
+        "append": true,
+        "lastChunk": true
+      }
+    },
+    {
+      "statusUpdate": {
+        "taskId": "id-3",
+        "contextId": "session-1",
+        "status": {
+          "state": "TASK_STATE_WORKING",
+          "message": {
+            "messageId": "id-18",
+            "contextId": "session-1",
+            "taskId": "id-3",
+            "role": "ROLE_AGENT",
+            "parts": [
+              {
+                "data": {
+                  "cost_usd": 0.00022,
+                  "duration_ms": 6276,
+                  "estimated": true,
+                  "input_tokens": 1258,
+                  "model": "gpt-4o-mini",
+                  "output_tokens": 51,
+                  "total_tokens": 1309,
+                  "trace_id": "trace-1",
+                  "type": "usage_meta"
+                }
+              }
+            ]
+          },
+          "timestamp": "2026-09-27T23:56:13.616405Z"
+        }
+      }
+    },
+    {
+      "statusUpdate": {
+        "taskId": "id-3",
+        "contextId": "session-1",
+        "status": {
+          "state": "TASK_STATE_COMPLETED",
+          "timestamp": "2026-09-27T23:56:13.617597Z"
+        }
+      }
+    }
+  ]
+}

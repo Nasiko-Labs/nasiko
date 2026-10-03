@@ -23,13 +23,33 @@ fn flow_config_default_max_flow_tokens() {
 #[test]
 fn flow_config_default_flow_timeout_secs() {
     let cfg = FlowConfig::default();
-    assert_eq!(cfg.flow_timeout_secs, 120);
+    assert_eq!(cfg.flow_timeout_secs, 600);
 }
 
 #[test]
 fn flow_config_default_state_ttl_secs() {
     let cfg = FlowConfig::default();
-    assert_eq!(cfg.flow_state_ttl_secs, 300);
+    assert_eq!(cfg.flow_state_ttl_secs, 660);
+}
+
+/// The guard reads `started_at` out of the flow's Redis key, so a TTL at or
+/// below the timeout expires the state the timeout check depends on: the check
+/// then passes silently and the depth/fan-out counters reset mid-flow. The two
+/// must never be configured independently into that state.
+#[test]
+fn state_ttl_always_outlives_the_flow_timeout() {
+    for timeout in [1, 60, 120, 600, 3_600, 86_400] {
+        assert!(
+            nasiko_flow::state_ttl_for(timeout) > timeout,
+            "state TTL must outlive a {timeout}s flow timeout"
+        );
+    }
+}
+
+#[test]
+fn flow_config_default_state_ttl_outlives_its_own_timeout() {
+    let cfg = FlowConfig::default();
+    assert!(cfg.flow_state_ttl_secs > cfg.flow_timeout_secs);
 }
 
 // ── FlowRejection Display ──────────────────────────────────────────────────

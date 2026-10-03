@@ -1,0 +1,394 @@
+{
+  "fixture_version": 1,
+  "id": "tokenops.providers",
+  "recorded_at": "2026-09-29T05:55:36.991Z",
+  "window": {
+    "start": "2026-09-29T05:55:36.991Z",
+    "end": "2026-09-29T05:55:36.997Z"
+  },
+  "anchor": "2026-09-29T05:55:34.182Z",
+  "edition": "oss",
+  "identity": "admin",
+  "server": {
+    "sha": "ea233d201502a205e78339a7cb2688856b9ec2fa",
+    "dirty": false,
+    "openapi_sha256": "71f2d54fd3466adb48d9d26eed66afe028ed153262b6eeb57445c5b03b6bd9f7",
+    "binary_mtime": "2026-09-29T04:15:34.033Z"
+  },
+  "request": {
+    "method": "GET",
+    "path": "/api/llm-router/providers",
+    "query": {}
+  },
+  "status": 200,
+  "content_type": "application/json",
+  "body": {
+    "data": [
+      {
+        "models": [
+          {
+            "cache_creation_price_per_1m": null,
+            "cache_read_price_per_1m": null,
+            "currency": "USD",
+            "effective_from": "2026-09-29T05:55:32.521023Z",
+            "effective_until": null,
+            "input_price_per_1m": 0.8,
+            "model": "claude-3-5-haiku",
+            "notes": "Claude 3.5 Haiku",
+            "output_price_per_1m": 4,
+            "pricing_available": true
+          },
+          {
+            "cache_creation_price_per_1m": 1,
+            "cache_read_price_per_1m": 0.08,
+            "currency": "USD",
+            "effective_from": "2026-09-29T05:55:32.521023Z",
+            "effective_until": null,
+            "input_price_per_1m": 0.8,
+            "model": "claude-3-5-haiku-20241022",
+            "notes": "Claude 3.5 Haiku",
+            "output_price_per_1m": 4,
+            "pricing_available": true
+          },
+          {
+            "cache_creation_price_per_1m": null,
+            "cache_read_price_per_1m": null,
+            "currency": "USD",
+            "effective_from": "2026-09-29T05:55:32.521023Z",
+            "effective_until": null,
+            "input_price_per_1m": 3,
+            "model": "claude-3-5-sonnet",
+            "notes": "Claude 3.5 Sonnet",
+            "output_price_per_1m": 15,
+            "pricing_available": true
+          },
+          {
+            "cache_creation_price_per_1m": 3.75,
+            "cache_read_price_per_1m": 0.3,
+            "currency": "USD",
+            "effective_from": "2026-09-29T05:55:32.521023Z",
+            "effective_until": null,
+            "input_price_per_1m": 3,
+            "model": "claude-3-5-sonnet-20241022",
+            "notes": "Claude 3.5 Sonnet",
+            "output_price_per_1m": 15,
+            "pricing_available": true
+          },
+          {
+            "cache_creation_price_per_1m": 1,
+            "cache_read_price_per_1m": 0.08,
+            "currency": "USD",
+            "effective_from": "2026-09-29T05:55:32.521023Z",
+            "effective_until": null,
+            "input_price_per_1m": 0.8,
+            "model": "claude-haiku-4",
+            "notes": "Claude Haiku 4",
+            "output_price_per_1m": 4,
+            "pricing_available": true
+          },
+          {
+            "cache_creation_price_per_1m": 18.75,
+            "cache_read_price_per_1m": 1.5,
+            "currency": "USD",
+            "effective_from": "2026-09-29T05:55:32.521023Z",
+            "effective_until": null,
+            "input_price_per_1m": 15,
+            "model": "claude-opus-4",
+            "notes": "Claude Opus 4",
+            "output_price_per_1m": 75,
+            "pricing_available": true
+          },
+          {
+            "cache_creation_price_per_1m": 18.75,
+            "cache_read_price_per_1m": 1.5,
+            "currency": "USD",
+            "effective_from": "2026-09-29T05:55:32.584910Z",
+            "effective_until": null,
+            "input_price_per_1m": 15,
+            "model": "claude-opus-5",
+            "notes": "Claude Opus 5 - rate carried forward from Opus 4, verify",
+            "output_price_per_1m": 75,
+            "pricing_available": true
+          },
+          {
+            "cache_creation_price_per_1m": 3.75,
+            "cache_read_price_per_1m": 0.3,
+            "currency": "USD",
+            "effective_from": "2026-09-29T05:55:32.521023Z",
+            "effective_until": null,
+            "input_price_per_1m": 3,
+            "model": "claude-sonnet-4",
+            "notes": "Claude Sonnet 4",
+            "output_price_per_1m": 15,
+            "pricing_available": true
+          },
+          {
+            "cache_creation_price_per_1m": 3.75,
+            "cache_read_price_per_1m": 0.3,
+            "currency": "USD",
+            "effective_from": "2026-09-29T05:55:32.584910Z",
+            "effective_until": null,
+            "input_price_per_1m": 3,
+            "model": "claude-sonnet-5",
+            "notes": "Claude Sonnet 5 - rate carried forward from Sonnet 4, verify",
+            "output_price_per_1m": 15,
+            "pricing_available": true
+          }
+        ],
+        "provider": "anthropic"
+      },
+      {
+        "models": [
+          {
+            "cache_creation_price_per_1m": null,
+            "cache_read_price_per_1m": null,
+            "currency": "USD",
+            "effective_from": "2026-09-29T05:55:32.521023Z",
+            "effective_until": null,
+            "input_price_per_1m": 0.075,
+            "model": "gemini-1.5-flash",
+            "notes": "Gemini 1.5 Flash",
+            "output_price_per_1m": 0.3,
+            "pricing_available": true
+          },
+          {
+            "cache_creation_price_per_1m": null,
+            "cache_read_price_per_1m": null,
+            "currency": "USD",
+            "effective_from": "2026-09-29T05:55:32.521023Z",
+            "effective_until": null,
+            "input_price_per_1m": 1.25,
+            "model": "gemini-1.5-pro",
+            "notes": "Gemini 1.5 Pro",
+            "output_price_per_1m": 5,
+            "pricing_available": true
+          },
+          {
+            "cache_creation_price_per_1m": null,
+            "cache_read_price_per_1m": null,
+            "currency": "USD",
+            "effective_from": "2026-09-29T05:55:32.521023Z",
+            "effective_until": null,
+            "input_price_per_1m": 0.1,
+            "model": "gemini-2.0-flash",
+            "notes": "Gemini 2.0 Flash",
+            "output_price_per_1m": 0.4,
+            "pricing_available": true
+          },
+          {
+            "cache_creation_price_per_1m": null,
+            "cache_read_price_per_1m": null,
+            "currency": "USD",
+            "effective_from": "2026-09-29T05:55:32.638942Z",
+            "effective_until": null,
+            "input_price_per_1m": 0.15,
+            "model": "gemini-2.5-flash",
+            "notes": "boot seed (static list)",
+            "output_price_per_1m": 0.6,
+            "pricing_available": true
+          },
+          {
+            "cache_creation_price_per_1m": null,
+            "cache_read_price_per_1m": null,
+            "currency": "USD",
+            "effective_from": "2026-09-29T05:55:32.638410Z",
+            "effective_until": null,
+            "input_price_per_1m": 1.25,
+            "model": "gemini-2.5-pro",
+            "notes": "boot seed (static list)",
+            "output_price_per_1m": 10,
+            "pricing_available": true
+          },
+          {
+            "cache_creation_price_per_1m": null,
+            "cache_read_price_per_1m": null,
+            "currency": "USD",
+            "effective_from": "2026-09-29T05:55:32.521023Z",
+            "effective_until": null,
+            "input_price_per_1m": 0.15,
+            "model": "gemini-2.5-flash",
+            "notes": "Gemini 2.5 Flash",
+            "output_price_per_1m": 0.6,
+            "pricing_available": true
+          },
+          {
+            "cache_creation_price_per_1m": null,
+            "cache_read_price_per_1m": null,
+            "currency": "USD",
+            "effective_from": "2026-09-29T05:55:32.521023Z",
+            "effective_until": null,
+            "input_price_per_1m": 1.25,
+            "model": "gemini-2.5-pro",
+            "notes": "Gemini 2.5 Pro",
+            "output_price_per_1m": 10,
+            "pricing_available": true
+          }
+        ],
+        "provider": "gemini"
+      },
+      {
+        "models": [
+          {
+            "cache_creation_price_per_1m": null,
+            "cache_read_price_per_1m": null,
+            "currency": "USD",
+            "effective_from": "2026-09-29T05:55:32.521023Z",
+            "effective_until": null,
+            "input_price_per_1m": 0.5,
+            "model": "gpt-3.5-turbo",
+            "notes": "GPT-3.5 Turbo",
+            "output_price_per_1m": 1.5,
+            "pricing_available": true
+          },
+          {
+            "cache_creation_price_per_1m": null,
+            "cache_read_price_per_1m": null,
+            "currency": "USD",
+            "effective_from": "2026-09-29T05:55:32.521023Z",
+            "effective_until": null,
+            "input_price_per_1m": 2,
+            "model": "gpt-4.1",
+            "notes": "GPT-4.1",
+            "output_price_per_1m": 8,
+            "pricing_available": true
+          },
+          {
+            "cache_creation_price_per_1m": null,
+            "cache_read_price_per_1m": null,
+            "currency": "USD",
+            "effective_from": "2026-09-29T05:55:32.521023Z",
+            "effective_until": null,
+            "input_price_per_1m": 0.4,
+            "model": "gpt-4.1-mini",
+            "notes": "GPT-4.1 mini",
+            "output_price_per_1m": 1.6,
+            "pricing_available": true
+          },
+          {
+            "cache_creation_price_per_1m": null,
+            "cache_read_price_per_1m": null,
+            "currency": "USD",
+            "effective_from": "2026-09-29T05:55:32.521023Z",
+            "effective_until": null,
+            "input_price_per_1m": 0.1,
+            "model": "gpt-4.1-nano",
+            "notes": "GPT-4.1 nano",
+            "output_price_per_1m": 0.4,
+            "pricing_available": true
+          },
+          {
+            "cache_creation_price_per_1m": null,
+            "cache_read_price_per_1m": null,
+            "currency": "USD",
+            "effective_from": "2026-09-29T05:55:32.521023Z",
+            "effective_until": null,
+            "input_price_per_1m": 2.5,
+            "model": "gpt-4o",
+            "notes": "GPT-4o standard",
+            "output_price_per_1m": 10,
+            "pricing_available": true
+          },
+          {
+            "cache_creation_price_per_1m": null,
+            "cache_read_price_per_1m": null,
+            "currency": "USD",
+            "effective_from": "2026-09-29T05:55:32.521023Z",
+            "effective_until": null,
+            "input_price_per_1m": 0.15,
+            "model": "gpt-4o-mini",
+            "notes": "GPT-4o mini",
+            "output_price_per_1m": 0.6,
+            "pricing_available": true
+          },
+          {
+            "cache_creation_price_per_1m": null,
+            "cache_read_price_per_1m": null,
+            "currency": "USD",
+            "effective_from": "2026-09-29T05:55:32.521023Z",
+            "effective_until": null,
+            "input_price_per_1m": 10,
+            "model": "gpt-4-turbo",
+            "notes": "GPT-4 Turbo",
+            "output_price_per_1m": 30,
+            "pricing_available": true
+          },
+          {
+            "cache_creation_price_per_1m": null,
+            "cache_read_price_per_1m": null,
+            "currency": "USD",
+            "effective_from": "2026-09-29T05:55:32.521023Z",
+            "effective_until": null,
+            "input_price_per_1m": 3,
+            "model": "o1-mini",
+            "notes": "o1 mini",
+            "output_price_per_1m": 12,
+            "pricing_available": true
+          },
+          {
+            "cache_creation_price_per_1m": null,
+            "cache_read_price_per_1m": null,
+            "currency": "USD",
+            "effective_from": "2026-09-29T05:55:32.521023Z",
+            "effective_until": null,
+            "input_price_per_1m": 15,
+            "model": "o1-preview",
+            "notes": "o1 preview",
+            "output_price_per_1m": 60,
+            "pricing_available": true
+          },
+          {
+            "cache_creation_price_per_1m": null,
+            "cache_read_price_per_1m": null,
+            "currency": "USD",
+            "effective_from": "2026-09-29T05:55:32.521023Z",
+            "effective_until": null,
+            "input_price_per_1m": 10,
+            "model": "o3",
+            "notes": "o3",
+            "output_price_per_1m": 40,
+            "pricing_available": true
+          },
+          {
+            "cache_creation_price_per_1m": null,
+            "cache_read_price_per_1m": null,
+            "currency": "USD",
+            "effective_from": "2026-09-29T05:55:32.521023Z",
+            "effective_until": null,
+            "input_price_per_1m": 1.1,
+            "model": "o3-mini",
+            "notes": "o3 mini",
+            "output_price_per_1m": 4.4,
+            "pricing_available": true
+          },
+          {
+            "cache_creation_price_per_1m": null,
+            "cache_read_price_per_1m": null,
+            "currency": "USD",
+            "effective_from": "2026-09-29T05:55:32.521023Z",
+            "effective_until": null,
+            "input_price_per_1m": 0.13,
+            "model": "text-embedding-3-large",
+            "notes": "OpenAI text-embedding-3-large",
+            "output_price_per_1m": 0,
+            "pricing_available": true
+          },
+          {
+            "cache_creation_price_per_1m": null,
+            "cache_read_price_per_1m": null,
+            "currency": "USD",
+            "effective_from": "2026-09-29T05:55:32.521023Z",
+            "effective_until": null,
+            "input_price_per_1m": 0.02,
+            "model": "text-embedding-3-small",
+            "notes": "OpenAI text-embedding-3-small",
+            "output_price_per_1m": 0,
+            "pricing_available": true
+          }
+        ],
+        "provider": "openai"
+      }
+    ],
+    "message": "Providers retrieved successfully",
+    "status_code": 200
+  }
+}

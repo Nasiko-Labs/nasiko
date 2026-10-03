@@ -12,7 +12,7 @@ use crate::pricing::{CostBreakdown, CostRequest, compute_cost};
 use crate::tempo::{TempoClient, TraceSearchResult};
 use crate::types::{
     AgentFinOps, AgentStats, Session, SessionDetails, Span, SpanDetails, TokenUsage, TraceDetails,
-    TraceSummary, extract_usage_attrs, latency_percentiles,
+    TraceSummary, extract_usage_attrs, is_router_llm_span, latency_percentiles,
 };
 
 // ---------------------------------------------------------------------------
@@ -1324,12 +1324,23 @@ impl ObservabilityProvider for TempoLokiProvider {
         // span more than once (a re-export, or a batch replayed), and this is
         // the function that materializes `trace_usage`, so a duplicate would
         // double-count tokens and cost on every FinOps figure while the
-        // session view — which does dedup — stayed right.
-        let mut seen: HashSet<&String> = HashSet::new();
+        // session view — which does dedup — stayed right. Done once up front
+        // because the attribution pass below walks the span set as well.
+        let mut seen: HashSet<&str> = HashSet::new();
+        let mut spans: Vec<&crate::types::Span> = Vec::new();
         for span in &trace.spans {
-            if !seen.insert(&span.span_id) {
-                continue;
+            if seen.insert(span.span_id.as_str()) {
+                spans.push(span);
             }
+        }
+        // Pair each LLM-router span with the agent span for the same call, so the
+        // call is counted once and priced against the model that actually served
+        // it. Shared with the session view's aggregation (`TraceDetails`), which
+        // must reach the same totals — `cost_path_differential` is the gate on that.
+        let links = crate::types::link_router_spans(&trace.spans);
+        let (attributed, excluded) = (links.attributed, links.excluded);
+
+        for span in spans.iter().copied() {
             let u = extract_usage_attrs(&span.attributes);
             let (inp, out, model) = (u.input, u.output, u.model.clone());
             let (cr, cc) = (u.cache_read, u.cache_creation);
@@ -1348,11 +1359,25 @@ impl ObservabilityProvider for TempoLokiProvider {
             if inp == 0 && out == 0 && cr == 0 && cc == 0 && !is_tool_call {
                 continue;
             }
-            let name = &span.service_name;
+            // The router already booked this call, with the model that actually
+            // served it. Counting the agent's copy too would double the tokens.
+            if excluded.contains(span.span_id.as_str()) && !is_tool_call {
+                continue;
+            }
+            // A router span is booked against the agent it served, never against
+            // the control plane; one we could not attribute is dropped above.
+            let name = if is_router_llm_span(span) {
+                match attributed.get(span.span_id.as_str()) {
+                    Some(agent) => *agent,
+                    None => continue,
+                }
+            } else {
+                span.service_name.as_str()
+            };
             if name.is_empty() {
                 continue;
             }
-            let acc = by_agent.entry(name.clone()).or_insert(AgentAcc {
+            let acc = by_agent.entry(name.to_string()).or_insert(AgentAcc {
                 input: 0,
                 output: 0,
                 cache_read: 0,

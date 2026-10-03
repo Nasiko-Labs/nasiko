@@ -1,0 +1,77 @@
+{
+  "fixture_version": 1,
+  "id": "mcp.connector",
+  "recorded_at": "2026-09-30T14:28:36.571Z",
+  "window": {
+    "start": "2026-09-30T14:28:36.571Z",
+    "end": "2026-09-30T14:28:36.579Z"
+  },
+  "anchor": "2026-09-30T14:28:34.234Z",
+  "edition": "oss",
+  "identity": "admin",
+  "server": {
+    "sha": "a6feda17b873f12bac56addd44fda43ff7d6c37a",
+    "dirty": false,
+    "openapi_sha256": "8082e58f9e220358b2c225ae5b11c6e295a3b67fd21b945e6e73c16a5f2d67d7",
+    "binary_mtime": "2026-09-30T14:28:12.734Z"
+  },
+  "request": {
+    "method": "GET",
+    "path": "/api/mcp/connectors/{mcpDocs}",
+    "query": {}
+  },
+  "status": 200,
+  "content_type": "application/json",
+  "body": {
+    "data": {
+      "agent_count": 0,
+      "auth_type": "none",
+      "build_status": null,
+      "connection_count": 1,
+      "connector_id": "5eed000e-0000-4000-8000-000000000006",
+      "created_at": "2026-09-16T14:28:34.234Z",
+      "credential_header_name": "Authorization",
+      "description": "Search and read the internal documentation site.",
+      "display_name": "Docs search",
+      "has_credential": false,
+      "is_active": true,
+      "is_connected": true,
+      "is_owner": true,
+      "is_public": false,
+      "logo_url": null,
+      "name": "docs-search",
+      "oauth_configured": false,
+      "owner_id": "<admin-id>",
+      "owner_username": "admin",
+      "provider_type": "mcp_server",
+      "setup_error": null,
+      "setup_status": null,
+      "source_kind": "external_url",
+      "tool_count": 4,
+      "tools": [
+        {
+          "description": "Read one page as Markdown.",
+          "name": "get_page"
+        },
+        {
+          "description": "List documentation spaces.",
+          "name": "list_spaces"
+        },
+        {
+          "description": "Full-text search across every space.",
+          "name": "search_docs"
+        },
+        {
+          "description": "Summarize a page in a few sentences.",
+          "name": "summarize_page"
+        }
+      ],
+      "transport": "streamable_http",
+      "updated_at": "2026-09-16T14:28:34.234Z",
+      "url": "https://docs-mcp.example.com/mcp",
+      "url_param_name": null
+    },
+    "message": "Connector retrieved successfully",
+    "status_code": 200
+  }
+}

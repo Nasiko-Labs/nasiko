@@ -33,12 +33,21 @@ const MAX_RESUME_ATTEMPTS: i32 = 5;
 const RETRYABLE: FailureKind = FailureKind::Retryable {
     max_attempts: MAX_RESUME_ATTEMPTS,
 };
+/// `deliver()`'s own agent request timeout — see `build_req`'s doc comment below. The claim
+/// lease (`lease_secs`) must always exceed this by a safety margin, or a slow-but-healthy agent
+/// turn lets a second replica steal the lease mid-delivery and re-send the human's answer a
+/// second time, double-executing whatever the agent does with it.
+const AGENT_RESUME_REQUEST_TIMEOUT_SECS: i64 = 300;
 /// How long a claim is honored before another dispatcher process may steal it (§3.2's exact
-/// claim query, implemented in `HitlStore::claim_for_resume`). Must exceed the longest delivery
-/// can legitimately take — `deliver()`'s own agent request timeout is 300s — or a slow-but-healthy
-/// agent turn lets a second replica steal the lease mid-delivery and re-send the human's answer
-/// a second time, double-executing whatever the agent does with it.
-const LEASE_SECS: i64 = 360;
+/// claim query, implemented in `HitlStore::claim_for_resume`). Sourced from the same
+/// `HITL_RESUME_LEASE_MINUTES` knob the sibling `mcp_tool` dispatcher uses
+/// (`nasiko_hitl::dispatcher::DispatcherConfig::effective_lease_minutes`) — this dispatcher
+/// claims exactly once per delivery attempt (unlike that one, which holds a single claim across
+/// its own in-process retry loop), so the floor here only needs to clear one request's timeout
+/// plus margin, not the sum of every retry.
+fn lease_secs(config: &nasiko_config::Config) -> i64 {
+    (config.hitl_resume_lease_minutes * 60).max(AGENT_RESUME_REQUEST_TIMEOUT_SECS + 60)
+}
 /// Concurrent in-flight deliveries, mirroring `build_worker::run`'s own `tasks` cap on the same
 /// claim/spawn shape. `deliver()` can drive an entire ReAct turn for an `orchestrator`-origin row
 /// (tens of seconds), so awaiting each claimed row before claiming the next — as the drain loop
@@ -85,6 +94,7 @@ pub async fn run(state: AppState, mut notify: mpsc::Receiver<()>) {
     // Tracks in-flight `deliver()` calls across poll cycles so a slow delivery never blocks
     // claiming (or delivering) everything else — see `MAX_CONCURRENT_DELIVERIES`'s doc comment.
     let mut deliveries: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
+    let lease_secs = lease_secs(&state.config);
     loop {
         tokio::select! {
             msg = notify.recv() => {
@@ -109,7 +119,7 @@ pub async fn run(state: AppState, mut notify: mpsc::Receiver<()>) {
         // every other in-flight one, so a panicking or merely slow delivery can't take the
         // dispatcher down or stall the rest of the queue.
         while deliveries.len() < MAX_CONCURRENT_DELIVERIES {
-            let claimed = match state.hitl_store.claim_for_resume(LEASE_SECS).await {
+            let claimed = match state.hitl_store.claim_for_resume(lease_secs).await {
                 Ok(Some(row)) => row,
                 Ok(None) => break,
                 Err(e) => {
@@ -418,7 +428,7 @@ async fn deliver(state: AppState, row: HitlRequest) {
     let req_body = nasiko_types::a2a::build_stream_request_for_task(&answer, &context_id, &task_id);
 
     // Reused for the initial send and (non-streaming path only) the one-shot `message/send`
-    // retry — same headers, different body. 300s, not the shared client's 60s default: agent
+    // retry — `AGENT_RESUME_REQUEST_TIMEOUT_SECS`, not the shared client's 60s default: agent
     // turns can be slow (mirrors `maf/executor.rs::post_a2a_request`, the other call site that
     // talks to an agent on a human's behalf).
     //
@@ -437,7 +447,9 @@ async fn deliver(state: AppState, row: HitlRequest) {
         state
             .http_client
             .post(&endpoint)
-            .timeout(Duration::from_secs(300))
+            .timeout(Duration::from_secs(
+                AGENT_RESUME_REQUEST_TIMEOUT_SECS as u64,
+            ))
             .header("A2A-Version", nasiko_types::a2a::A2A_VERSION_HEADER_VALUE)
             .header("traceparent", crate::telemetry::traceparent_for(&flow_ctx))
             .json(body)
@@ -1309,8 +1321,8 @@ async fn persist_resume_reply(
     let session_id = row.chat_session_id.as_deref().unwrap_or(context_id);
 
     if let Err(e) = sqlx::query(
-        "INSERT INTO chat_sessions (session_id, user_id, agent_id, agent_url, title) \
-         VALUES ($1, $2, $3, '/api/orchestrator/a2a', 'New chat') \
+        "INSERT INTO chat_sessions (session_id, user_id, agent_id, agent_url, title, session_type) \
+         VALUES ($1, $2, $3, '/api/orchestrator/a2a', 'New chat', 'orchestrator') \
          ON CONFLICT (session_id) DO NOTHING",
     )
     .bind(session_id)

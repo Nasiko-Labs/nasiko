@@ -12,7 +12,9 @@ use serde::Deserialize;
 use tracing::instrument;
 use utoipa::IntoParams;
 
-use super::service::{EnsureSessionOutcome, InsightsRequest, ObservabilityService};
+use super::service::{
+    EnsureSessionOutcome, InsightsRequest, ObservabilityService, parse_iso_or_default,
+};
 
 /// Request extension injected by EE middleware to scope FinOps queries to a
 /// set of user UUIDs (org-unit filter). OSS handlers check for this extension
@@ -910,5 +912,129 @@ mod tests {
     fn resolve_range_params_rejects_an_invalid_range_with_400() {
         let err = resolve_range_params(&None, &None, &Some("bogus".to_string())).unwrap_err();
         assert_eq!(err.status(), StatusCode::BAD_REQUEST);
+    }
+}
+
+// ── finops/savings ────────────────────────────────────────────────────────────
+
+/// Query params for `GET /finops/savings`.
+///
+/// The window and dimension filters are deliberately the same ones `/finops/dashboard` takes, so a
+/// client can carry its filter state across without translating it, and so the savings aggregate
+/// answers the same question as the spend aggregate beside it.
+#[derive(Debug, Deserialize)]
+pub struct SavingsParams {
+    pub start_time: Option<String>,
+    pub end_time: Option<String>,
+    pub range: Option<String>,
+    pub agent_id: Option<String>,
+    pub model: Option<String>,
+    pub provider: Option<String>,
+    /// "total" (default) | "agent" | "session".
+    pub scope: Option<String>,
+    /// One session's savings; implies `scope=session`.
+    pub session_id: Option<String>,
+    /// Row cap for the agent and session scopes.
+    pub limit: Option<i64>,
+}
+
+/// Rows returned for the agent and session scopes. Bounded so a wide window cannot return the whole
+/// estate in one response.
+const SAVINGS_DEFAULT_LIMIT: i64 = 25;
+const SAVINGS_MAX_LIMIT: i64 = 200;
+
+pub async fn get_finops_savings(
+    State(state): State<AppState>,
+    claims: Claims,
+    Query(params): Query<SavingsParams>,
+) -> Response {
+    if let Err(r) = validate_range(params.range.as_deref()) {
+        return r;
+    }
+    let scope = match super::savings::Scope::parse(params.scope.as_deref()) {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    // `session_id` names one session, which only means anything in the session rollup.
+    let scope = if params.session_id.is_some() {
+        super::savings::Scope::Session
+    } else {
+        scope
+    };
+
+    let (start_time, end_time) =
+        match resolve_range_params(&params.start_time, &params.end_time, &params.range) {
+            Ok(v) => v,
+            Err(r) => return r,
+        };
+    let start = parse_iso_or_default(start_time.as_deref(), 30);
+    let end = end_time
+        .as_deref()
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        .map(|d| d.with_timezone(&Utc))
+        .unwrap_or_else(Utc::now);
+
+    // The dashboard accepts a name or a UUID here; the ledger is UUID-keyed, so resolve before use.
+    let agent_uuid = match resolve_agent_uuid(&state.db, params.agent_id.as_deref()).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    if let Some(id) = agent_uuid
+        && !crate::acl::can_access_agent(&state, &claims, id).await
+    {
+        return (StatusCode::NOT_FOUND, "agent not found").into_response();
+    }
+
+    let accessible = accessible_agent_ids(&state, &claims).await;
+    let query = super::savings::SavingsQuery {
+        start,
+        end,
+        scope,
+        agent_id: agent_uuid,
+        provider: params.provider.as_deref(),
+        model: params.model.as_deref(),
+        session_id: params.session_id.as_deref(),
+        limit: params
+            .limit
+            .unwrap_or(SAVINGS_DEFAULT_LIMIT)
+            .clamp(1, SAVINGS_MAX_LIMIT),
+        accessible_agent_ids: accessible.as_deref(),
+    };
+
+    match super::savings::get_savings(&state.db, &query).await {
+        Ok(data) => Json(super::savings::SavingsResponse {
+            data,
+            status_code: 200,
+            message: "ok".into(),
+        })
+        .into_response(),
+        Err(e) => {
+            tracing::error!(%e, "finops savings query failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response()
+        }
+    }
+}
+
+/// Resolve an `agent_id` param that may be a UUID or a name to the UUID the ledger is keyed on.
+#[allow(clippy::result_large_err)]
+async fn resolve_agent_uuid(
+    db: &sqlx::PgPool,
+    raw: Option<&str>,
+) -> Result<Option<uuid::Uuid>, Response> {
+    let Some(raw) = raw.filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+    if let Ok(id) = uuid::Uuid::parse_str(raw) {
+        return Ok(Some(id));
+    }
+    let found: Option<uuid::Uuid> =
+        sqlx::query_scalar("SELECT id FROM agents WHERE name = $1 AND deleted_at IS NULL")
+            .bind(raw)
+            .fetch_optional(db)
+            .await
+            .unwrap_or(None);
+    match found {
+        Some(id) => Ok(Some(id)),
+        None => Err((StatusCode::NOT_FOUND, "agent not found").into_response()),
     }
 }

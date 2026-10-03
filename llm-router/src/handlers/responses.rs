@@ -250,7 +250,7 @@ async fn translated_attempt(
     })?;
     let mut request = parsed.chat.clone();
     let mut config = attempt.clone();
-    let mut dropped = Vec::new();
+    let mut applied = Vec::new();
     loop {
         if parsed.stream {
             match provider.chat_stream(&request, &config).await {
@@ -265,12 +265,12 @@ async fn translated_attempt(
                     return Ok(response);
                 }
                 Err(error) => {
-                    if fallback::try_drop_param(
+                    if fallback::try_fix_param(
                         &*provider,
                         &error,
                         &mut request,
                         &mut config,
-                        &mut dropped,
+                        &mut applied,
                     ) {
                         continue;
                     }
@@ -312,12 +312,12 @@ async fn translated_attempt(
                     return Ok(mark_lossy(Json(value).into_response()));
                 }
                 Err(error) => {
-                    if fallback::try_drop_param(
+                    if fallback::try_fix_param(
                         &*provider,
                         &error,
                         &mut request,
                         &mut config,
-                        &mut dropped,
+                        &mut applied,
                     ) {
                         continue;
                     }
@@ -785,6 +785,9 @@ impl AttemptGuard {
                 compress_metadata: None,
                 // /v1/responses does not share chat_core, so IP-1/IP-2 never run here (PRD §9).
                 brevity_metadata: None,
+                // Nothing was compressed, so there is nothing to credit to a savings layer.
+                compress_bytes: None,
+                request_bytes: None,
             }),
         }
     }
@@ -855,6 +858,8 @@ fn log_response_usage(
             // Never compressed: this surface does not go through `chat_core`.
             compress_metadata: None,
             brevity_metadata: None,
+            compress_bytes: None,
+            request_bytes: None,
         },
     );
 }

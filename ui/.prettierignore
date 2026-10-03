@@ -1,0 +1,23 @@
+# Prettier covers the app's TypeScript and CSS (plan §2.5); docs and fixtures keep their own style.
+*
+!**/
+!*.ts
+!*.js
+!**/src/**/*.ts
+!**/src/**/*.tsx
+!**/src/**/*.css
+!*/vite.config.ts
+!*/*/vite.config.ts
+!scripts/**/*.ts
+node_modules/
+.claude/
+**/dist/
+coverage/
+common/public/
+**/routeTree.gen.ts
+common/src/lib/api/schema.gen.ts
+common/src/test/__live__/
+# Stock shadcn output stays close to the registry so `shadcn diff` stays readable (local edits are listed per file).
+common/src/components/ui/
+# Vendored verbatim from nasiko-cloud-rs (ee/web/src/weave/core/README.md).
+ee/web/src/weave/core/

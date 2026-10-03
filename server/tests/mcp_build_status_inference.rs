@@ -57,15 +57,22 @@ async fn infers_success_and_failure_for_an_agent_job() {
     .unwrap();
 
     assert_eq!(
-        infer_build_status(&server.db, success_build_id, false).await.as_deref(),
+        infer_build_status(&server.db, success_build_id, false)
+            .await
+            .as_deref(),
         Some("success")
     );
     assert_eq!(
-        infer_build_status(&server.db, failed_build_id, false).await.as_deref(),
+        infer_build_status(&server.db, failed_build_id, false)
+            .await
+            .as_deref(),
         Some("failed")
     );
     // Wrong table for this id (is_mcp_job=true against an agent_builds id) — no row, None.
-    assert_eq!(infer_build_status(&server.db, success_build_id, true).await, None);
+    assert_eq!(
+        infer_build_status(&server.db, success_build_id, true).await,
+        None
+    );
 
     server.cleanup().await;
 }
@@ -107,15 +114,22 @@ async fn infers_success_and_failure_for_an_mcp_connector_job() {
     .unwrap();
 
     assert_eq!(
-        infer_build_status(&server.db, success_build_id, true).await.as_deref(),
+        infer_build_status(&server.db, success_build_id, true)
+            .await
+            .as_deref(),
         Some("success")
     );
     assert_eq!(
-        infer_build_status(&server.db, failed_build_id, true).await.as_deref(),
+        infer_build_status(&server.db, failed_build_id, true)
+            .await
+            .as_deref(),
         Some("failed")
     );
     // Wrong table for this id (is_mcp_job=false against an mcp_connector_builds id) — no row, None.
-    assert_eq!(infer_build_status(&server.db, success_build_id, false).await, None);
+    assert_eq!(
+        infer_build_status(&server.db, success_build_id, false).await,
+        None
+    );
 
     server.cleanup().await;
 }

@@ -1,0 +1,671 @@
+/* Sources are explicit: an edition builds from its own `src/` root, so automatic detection would miss
+   the core. The core scans common/; an edition layer adds its own `@source` in its stylesheet. */
+@import "tailwindcss" source(none);
+@source "../";
+/* shadcn's animation utilities (animate-in, slide-in-*, fade-*); without it those classes are inert (eng D8). */
+@import "tw-animate-css";
+
+/* Hanken Grotesk (UI) and JetBrains Mono (figures and ids), Latin subset only (@fontsource-variable,
+   self-hosted; docs/lab-vs-react-migration-review.md §6.4). The packages' full CSS also pulls other
+   scripts as soon as one glyph like "Δ" appears; those characters fall back to the system font instead.
+   index.html preloads the sans file. */
+@font-face {
+  font-family: "Hanken Grotesk Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("../../node_modules/@fontsource-variable/hanken-grotesk/files/hanken-grotesk-latin-wght-normal.woff2")
+    format("woff2-variations");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "JetBrains Mono Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 800;
+  src: url("../../node_modules/@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2")
+    format("woff2-variations");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+/* Theme tokens, shadcn/ui convention (Tailwind v4: CSS variables + @theme inline). Two switches on
+   <html>, both set before first paint by the inline script in index.html:
+   - `.dark` selects the mode (System / Light / Dark); shadcn's `dark:` utilities key off it too;
+   - `data-theme` selects Carbon (default; Mist in light mode), Teal, Indigo or Plum. Each theme is a whole token set (neutrals,
+     primary, chart order), so every theme block repeats every themed token: a dark block must not
+     inherit a light theme's value.
+   Status tokens and the logo are shared per mode, on :root and .dark. Contrast: contrast.test.ts.
+   Values: docs/lab-vs-react-migration-review.md §6.4. */
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  --radius: 0.5rem;
+  --success: #1d7d3e;
+  --warning: #b94e00;
+  --destructive: #c2272d;
+  --info: #196ea9;
+  --logo: #bb8f06;
+  /* Settings → Appearance's mode previews: a drawing of the app in each mode, the same in every theme and mode (a
+     nested .dark can't do it: the dark token blocks apply only on <html>). Decorative; the tiles carry names. */
+  --preview-light-page: #ffffff;
+  --preview-light-side: #f4f6f8;
+  --preview-light-line: #e2e6ea;
+  --preview-light-ink: #c4cbd2;
+  --preview-dark-page: #131518;
+  --preview-dark-side: #1b1e22;
+  --preview-dark-line: #2c3137;
+  --preview-dark-ink: #4a525b;
+  /* The login showcase (the user's "Nasiko Console" prototype, screen "01 Sign in"), per mode and the same in every
+     theme: Aceternity's "Login Form With Gradient" colour field rising from under the layer stack (user review 2026-10-01), translucent glass plates and a glass headline card. The
+     prototype's plain gold accent is replaced by the theme's primary (user review 2026-10-01). Mirrored: the visual is
+     on the left. */
+  --showcase-bg:
+    radial-gradient(
+      ellipse 55% 70% at 24% 72%,
+      rgb(214 180 125 / 0.34),
+      rgb(230 210 175 / 0.18) 45%,
+      transparent 75%
+    ),
+    radial-gradient(ellipse 35% 35% at 28% 18%, rgb(255 255 255 / 0.9), transparent 70%),
+    radial-gradient(ellipse 50% 50% at 100% 100%, rgb(16 185 129 / 0.06), transparent 60%), #faf8f4;
+  /* The glow's colour field, the same in every theme and mode (sampled from the block's canvas): a beige-grey base
+     under four blobs (peach, dusty rose, sage, teal-grey) that each cycle through all four hues; the peach and the
+     teal-grey are softened from the block's (user review 2026-10-01: less warm, less blue). */
+  --showcase-glow-base: #a49b8d;
+  --showcase-glow-1: #e3b386;
+  --showcase-glow-2: #a8808a;
+  --showcase-glow-3: #7fb08c;
+  --showcase-glow-4: #8c9796;
+  --showcase-glow: rgb(255 255 255 / 0.65);
+  --showcase-dot: rgb(80 60 30 / 0.09);
+  --showcase-floor: rgb(90 65 25 / 0.28);
+  --showcase-glass-border: rgb(255 255 255 / 0.85);
+  --showcase-chip: rgb(255 255 255 / 0.55);
+  --showcase-chip-fg: #3d362b;
+  --showcase-chip-on: #1a1712;
+  --showcase-chip-on-fg: #ffffff;
+  --showcase-tag: rgb(26 23 18 / 0.5);
+  --showcase-layer-shadow: rgb(90 65 25 / 0.35);
+  /* The headline card (user review 2026-10-01): light glass with dark text in light mode, 62% black glass with white
+     text in dark mode; the word in the brand's gold (a deeper gold on the light card, the logo's dark-mode gold on the
+     dark one). Contrast-tested over every glow hue. */
+  --showcase-card: rgb(255 255 255 / 0.58);
+  --showcase-card-border: rgb(255 255 255 / 0.85);
+  --showcase-card-foreground: #1a1712;
+  --showcase-card-muted: #5c5446;
+  --showcase-accent: #8a6800;
+  /* Bottom plate to top: Frameworks, Tools, Coding Harnesses, Agents. */
+  --showcase-layer-1: linear-gradient(135deg, rgb(255 255 255 / 0.35), rgb(255 255 255 / 0.12));
+  --showcase-layer-2: linear-gradient(135deg, rgb(255 255 255 / 0.5), rgb(255 255 255 / 0.18));
+  --showcase-layer-3: linear-gradient(135deg, rgb(255 255 255 / 0.66), rgb(255 255 255 / 0.26));
+  --showcase-layer-4: linear-gradient(135deg, rgb(255 255 255 / 0.92), rgb(255 255 255 / 0.5));
+  --showcase-layer-1-edge: rgb(255 255 255 / 0.6);
+  --showcase-layer-2-edge: rgb(255 255 255 / 0.7);
+  --showcase-layer-3-edge: rgb(255 255 255 / 0.8);
+  --showcase-layer-4-edge: rgb(255 255 255 / 0.95);
+  --chart-other: #dde2e4;
+  --chart-other-edge: #8a9396;
+  --card-foreground: var(--foreground);
+  --popover-foreground: var(--foreground);
+  --secondary: var(--muted);
+  --secondary-foreground: var(--foreground);
+  /* Accent-coloured text (links, the active nav label). The primary itself meets 4.5:1 as text in
+     every theme; the token stays so text never names the fill directly. */
+  --primary-text: var(--primary);
+  /* Sidebar (shadcn tokens), mapped onto the tokens above; --sidebar itself is per theme. Its "accent" is
+     the hover fill, so it maps to --muted: the active row uses --accent (rowStyles.ts ACTIVE_ROW). */
+  --sidebar-foreground: var(--foreground);
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-accent: var(--muted);
+  --sidebar-accent-foreground: var(--foreground);
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--ring);
+}
+
+/* The visx chart kit's own variables (src/components/charts, from the React migration), mapped onto
+   the app's tokens so the kit follows every theme and mode. Series colours come from the Two-tone
+   tokens; strokes and markers use the edge shade (a pastel fill is too light as a line on white). */
+:root {
+  --chart-line-primary: var(--chart-1-edge);
+  --chart-line-secondary: var(--chart-2-edge);
+  --chart-background: var(--card);
+  --chart-foreground: var(--foreground);
+  --chart-foreground-muted: var(--muted-foreground);
+  --chart-label: var(--muted-foreground);
+  --chart-grid: var(--border);
+  --chart-crosshair: var(--muted-foreground);
+  --chart-indicator-color: var(--foreground);
+  --chart-indicator-secondary-color: var(--muted-foreground);
+  --chart-tooltip-background: var(--popover);
+  --chart-segment-background: var(--muted);
+  --chart-segment-line: var(--border);
+  --chart-marker-background: var(--card);
+  --chart-marker-border: var(--border);
+  --chart-marker-foreground: var(--foreground);
+  --chart-marker-badge-background: var(--primary);
+  --chart-marker-badge-foreground: var(--primary-foreground);
+  --chart-brush-border: var(--border);
+}
+
+.dark {
+  --success: #68ca80;
+  --warning: #f49752;
+  --destructive: #fa706a;
+  --info: #6bbaf0;
+  --logo: #f7e19c;
+  --showcase-bg:
+    radial-gradient(
+      ellipse 55% 70% at 24% 72%,
+      rgb(214 170 105 / 0.36),
+      rgb(120 90 55 / 0.14) 45%,
+      transparent 75%
+    ),
+    radial-gradient(ellipse 35% 35% at 28% 22%, rgb(255 220 170 / 0.07), transparent 70%),
+    radial-gradient(ellipse 50% 50% at 100% 100%, rgb(16 185 129 / 0.05), transparent 60%),
+    linear-gradient(180deg, #0a0a0b, #0e0d0b);
+  --showcase-glow: rgb(255 214 160 / 0.1);
+  --showcase-dot: rgb(255 255 255 / 0.05);
+  --showcase-floor: rgb(0 0 0 / 0.55);
+  --showcase-glass-border: rgb(255 255 255 / 0.12);
+  --showcase-chip: rgb(30 26 22 / 0.5);
+  --showcase-chip-fg: #ece3d6;
+  --showcase-chip-on: #f5f0e8;
+  --showcase-chip-on-fg: #14110d;
+  --showcase-tag: rgb(245 240 232 / 0.55);
+  --showcase-layer-shadow: rgb(0 0 0 / 0.7);
+  --showcase-card: rgb(0 0 0 / 0.62);
+  --showcase-card-border: rgb(255 255 255 / 0.1);
+  --showcase-card-foreground: #ffffff;
+  --showcase-card-muted: rgb(255 255 255 / 0.68);
+  --showcase-accent: #f7e19c;
+  --showcase-layer-1: linear-gradient(135deg, rgb(255 255 255 / 0.05), rgb(255 255 255 / 0.01));
+  --showcase-layer-2: linear-gradient(135deg, rgb(255 236 205 / 0.08), rgb(255 255 255 / 0.02));
+  --showcase-layer-3: linear-gradient(135deg, rgb(255 226 180 / 0.13), rgb(255 255 255 / 0.03));
+  --showcase-layer-4: linear-gradient(135deg, rgb(255 240 215 / 0.28), rgb(255 255 255 / 0.06));
+  --showcase-layer-1-edge: rgb(255 255 255 / 0.1);
+  --showcase-layer-2-edge: rgb(255 255 255 / 0.12);
+  --showcase-layer-3-edge: rgb(255 240 215 / 0.16);
+  --showcase-layer-4-edge: rgb(255 245 230 / 0.32);
+  --chart-other: #6b7375;
+  --chart-other-edge: var(--chart-other);
+}
+
+/* Two-tone chart palette: cornflower #4777d2, peach #ffb98c (edge #d95800), orchid #cd5ea2,
+   mint #8fedd0 (edge #009f7a), lavender #aaa0e6 (edge #583da6). A chart never leads with its theme's
+   own hue; medium and light fills alternate in every order. Light mode draws a 2 px edge in
+   --chart-n-edge; dark mode turns edges off (edge = fill). */
+
+/* Teal, light */
+:root[data-theme="teal"] {
+  --background: #ffffff;
+  --sidebar: #f7fbfc;
+  --card: #ffffff;
+  --popover: #ffffff;
+  --muted: #e9f2f4;
+  --border: #d9e3e6;
+  --input: #c7d3d7;
+  --foreground: #0d1b1e;
+  --muted-foreground: #546468;
+  --primary: #006375;
+  --primary-hover: #004f60;
+  --primary-foreground: #ffffff;
+  --accent: #dceff4;
+  --accent-foreground: #004f60;
+  --ring: #267e90;
+  --chart-1: #4777d2;
+  --chart-1-edge: #4777d2;
+  --chart-2: #ffb98c;
+  --chart-2-edge: #d95800;
+  --chart-3: #cd5ea2;
+  --chart-3-edge: #cd5ea2;
+  --chart-4: #8fedd0;
+  --chart-4-edge: #009f7a;
+  --chart-5: #aaa0e6;
+  --chart-5-edge: #583da6;
+}
+
+/* Indigo, light */
+:root[data-theme="indigo"] {
+  --background: #ffffff;
+  --sidebar: #f9fafe;
+  --card: #ffffff;
+  --popover: #ffffff;
+  --muted: #eef0f7;
+  --border: #dfe1e9;
+  --input: #ced0da;
+  --foreground: #161722;
+  --muted-foreground: #5d606c;
+  --primary: #4849a9;
+  --primary-hover: #37368f;
+  --primary-foreground: #ffffff;
+  --accent: #e5e9ff;
+  --accent-foreground: #37368f;
+  --ring: #5f64c7;
+  --chart-1: #ffb98c;
+  --chart-1-edge: #d95800;
+  --chart-2: #cd5ea2;
+  --chart-2-edge: #cd5ea2;
+  --chart-3: #8fedd0;
+  --chart-3-edge: #009f7a;
+  --chart-4: #4777d2;
+  --chart-4-edge: #4777d2;
+  --chart-5: #aaa0e6;
+  --chart-5-edge: #583da6;
+}
+
+/* Plum, light */
+:root[data-theme="plum"] {
+  --background: #ffffff;
+  --sidebar: #fcf9f7;
+  --card: #ffffff;
+  --popover: #ffffff;
+  --muted: #f4efeb;
+  --border: #e6e0db;
+  --input: #d7cfca;
+  --foreground: #1e1711;
+  --muted-foreground: #685e58;
+  --primary: #853867;
+  --primary-hover: #6d2653;
+  --primary-foreground: #ffffff;
+  --accent: #fbe4f0;
+  --accent-foreground: #6d2653;
+  --ring: #a25281;
+  --chart-1: #8fedd0;
+  --chart-1-edge: #009f7a;
+  --chart-2: #4777d2;
+  --chart-2-edge: #4777d2;
+  --chart-3: #ffb98c;
+  --chart-3-edge: #d95800;
+  --chart-4: #cd5ea2;
+  --chart-4-edge: #cd5ea2;
+  --chart-5: #aaa0e6;
+  --chart-5-edge: #583da6;
+}
+
+/* Mist (light) / Carbon (dark): shadcn's default new-york neutral tokens, unchanged except where this
+   app's rules need more: the ring is solid 2 px here (not a 50% glow), so light mode uses the default's
+   own 0.556 grey (4.7:1) instead of 0.708 (2.6:1); --primary-hover is ours (shadcn uses primary/90);
+   status colours stay per mode; charts use the Two-tone palette in Teal's order (the default chart set
+   has a yellow series, and yellow is the logo only). */
+:root,
+:root[data-theme="carbon"] {
+  --background: oklch(1 0 0);
+  --sidebar: oklch(0.985 0 0);
+  --card: oklch(1 0 0);
+  --popover: oklch(1 0 0);
+  --muted: oklch(0.97 0 0);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --foreground: oklch(0.145 0 0);
+  /* Lab: 0.556 was 4.3:1 on --muted, the hover fill of rows with a secondary line (chat rail); 0.54 is 4.6:1.
+     0.54 then failed on --accent, which is a step deeper than --muted (0.94 vs 0.97): 4.2:1, caught by axe on the
+     trace waterfall's duration label. Tuned against --accent instead, the darkest fill muted text sits on, so every
+     muted-on-hover case clears AA rather than the next one being found the same way. 0.52 is 4.7:1 there. */
+  --muted-foreground: oklch(0.52 0 0);
+  --primary: oklch(0.205 0 0);
+  --primary-hover: oklch(0.3 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  /* Lab: shadcn's 0.97 equals --muted, the sidebar's hover fill, so the current nav item read as a hover and barely
+     showed on the 0.985 sidebar. One step deeper keeps the current item apart from hover. */
+  --accent: oklch(0.94 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --ring: oklch(0.556 0 0);
+  --chart-1: #4777d2;
+  --chart-1-edge: #4777d2;
+  --chart-2: #ffb98c;
+  --chart-2-edge: #d95800;
+  --chart-3: #cd5ea2;
+  --chart-3-edge: #cd5ea2;
+  --chart-4: #8fedd0;
+  --chart-4-edge: #009f7a;
+  --chart-5: #aaa0e6;
+  --chart-5-edge: #583da6;
+}
+
+/* Teal, dark. Surfaces are composed, not inverted: page < sidebar < card, tinted toward the primary. */
+.dark[data-theme="teal"] {
+  --background: #081012;
+  --sidebar: #0d1416;
+  --card: #121a1c;
+  --popover: #121a1c;
+  --muted: #1f2729;
+  --border: #2a3234;
+  --input: #363f41;
+  --foreground: #ebeff0;
+  --muted-foreground: #a1adb1;
+  --primary: #7abdce;
+  --primary-hover: #9accd9;
+  --primary-foreground: #091113;
+  --accent: #14333a;
+  --accent-foreground: #b6d8e1;
+  --ring: #7abdce;
+  --chart-1: #4777d2;
+  --chart-1-edge: #4777d2;
+  --chart-2: #ffb98c;
+  --chart-2-edge: #ffb98c;
+  --chart-3: #cd5ea2;
+  --chart-3-edge: #cd5ea2;
+  --chart-4: #8fedd0;
+  --chart-4-edge: #8fedd0;
+  --chart-5: #aaa0e6;
+  --chart-5-edge: #aaa0e6;
+}
+
+/* Indigo, dark */
+.dark[data-theme="indigo"] {
+  --background: #0d0e14;
+  --sidebar: #111218;
+  --card: #17181e;
+  --popover: #17181e;
+  --muted: #24252b;
+  --border: #2f3036;
+  --input: #3b3d44;
+  --foreground: #edeef2;
+  --muted-foreground: #a8aab4;
+  --primary: #9fa9fc;
+  --primary-hover: #bac1fd;
+  --primary-foreground: #0e0f15;
+  --accent: #26294f;
+  --accent-foreground: #c6cdfe;
+  --ring: #9fa9fc;
+  --chart-1: #ffb98c;
+  --chart-1-edge: #ffb98c;
+  --chart-2: #cd5ea2;
+  --chart-2-edge: #cd5ea2;
+  --chart-3: #8fedd0;
+  --chart-3-edge: #8fedd0;
+  --chart-4: #4777d2;
+  --chart-4-edge: #4777d2;
+  --chart-5: #aaa0e6;
+  --chart-5-edge: #aaa0e6;
+}
+
+/* Plum, dark */
+.dark[data-theme="plum"] {
+  --background: #110d10;
+  --sidebar: #161114;
+  --card: #1c171a;
+  --popover: #1c171a;
+  --muted: #292327;
+  --border: #342e32;
+  --input: #413b3f;
+  --foreground: #f1edef;
+  --muted-foreground: #b2a7ae;
+  --primary: #e097c0;
+  --primary-hover: #e8b2d1;
+  --primary-foreground: #130e11;
+  --accent: #412234;
+  --accent-foreground: #ecc3d9;
+  --ring: #e097c0;
+  --chart-1: #8fedd0;
+  --chart-1-edge: #8fedd0;
+  --chart-2: #4777d2;
+  --chart-2-edge: #4777d2;
+  --chart-3: #ffb98c;
+  --chart-3-edge: #ffb98c;
+  --chart-4: #cd5ea2;
+  --chart-4-edge: #cd5ea2;
+  --chart-5: #aaa0e6;
+  --chart-5-edge: #aaa0e6;
+}
+
+/* Carbon: Mist's dark mode (shadcn's default dark neutral tokens). */
+.dark,
+.dark[data-theme="carbon"] {
+  --background: oklch(0.145 0 0);
+  --sidebar: oklch(0.205 0 0);
+  --card: oklch(0.205 0 0);
+  --popover: oklch(0.205 0 0);
+  --muted: oklch(0.269 0 0);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --foreground: oklch(0.985 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --primary: oklch(0.922 0 0);
+  --primary-hover: oklch(0.85 0 0);
+  --primary-foreground: oklch(0.205 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --ring: oklch(0.556 0 0);
+  --chart-1: #4777d2;
+  --chart-1-edge: #4777d2;
+  --chart-2: #ffb98c;
+  --chart-2-edge: #ffb98c;
+  --chart-3: #cd5ea2;
+  --chart-3-edge: #cd5ea2;
+  --chart-4: #8fedd0;
+  --chart-4-edge: #8fedd0;
+  --chart-5: #aaa0e6;
+  --chart-5-edge: #aaa0e6;
+}
+
+/* Mode and theme switches never animate colours (§5.4): theme.ts sets this class for one frame. */
+.theme-switching,
+.theme-switching *,
+.theme-switching *::before,
+.theme-switching *::after {
+  transition: none !important;
+}
+
+/* Reduced motion: every tw-animate-css entrance and exit (sheets, menus, popovers, tooltips) keeps
+   its fade and drops the slide and zoom (plans/feat-app-shell.md §5.4). Class-substring selectors:
+   the primitives use variant classes such as `data-[state=open]:animate-in`. */
+@media (prefers-reduced-motion: reduce) {
+  [class*="animate-in"],
+  [class*="animate-out"] {
+    --tw-enter-translate-x: 0 !important;
+    --tw-enter-translate-y: 0 !important;
+    --tw-exit-translate-x: 0 !important;
+    --tw-exit-translate-y: 0 !important;
+    --tw-enter-scale: 1 !important;
+    --tw-exit-scale: 1 !important;
+  }
+}
+
+@theme inline {
+  --color-preview-light-page: var(--preview-light-page);
+  --color-preview-light-side: var(--preview-light-side);
+  --color-preview-light-line: var(--preview-light-line);
+  --color-preview-light-ink: var(--preview-light-ink);
+  --color-preview-dark-page: var(--preview-dark-page);
+  --color-preview-dark-side: var(--preview-dark-side);
+  --color-preview-dark-line: var(--preview-dark-line);
+  --color-preview-dark-ink: var(--preview-dark-ink);
+  --color-showcase-glow-base: var(--showcase-glow-base);
+  --color-showcase-glow-1: var(--showcase-glow-1);
+  --color-showcase-glow-2: var(--showcase-glow-2);
+  --color-showcase-glow-3: var(--showcase-glow-3);
+  --color-showcase-glow-4: var(--showcase-glow-4);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary-text: var(--primary-text);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-destructive: var(--destructive);
+  --color-info: var(--info);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-chart-other: var(--chart-other);
+  --color-chart-1-edge: var(--chart-1-edge);
+  --color-chart-2-edge: var(--chart-2-edge);
+  --color-chart-3-edge: var(--chart-3-edge);
+  --color-chart-4-edge: var(--chart-4-edge);
+  --color-chart-5-edge: var(--chart-5-edge);
+  --color-chart-other-edge: var(--chart-other-edge);
+  --color-logo: var(--logo);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --font-sans: "Hanken Grotesk Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --radius-lg: var(--radius);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-sm: calc(var(--radius) - 4px);
+}
+
+/* Type and layout scale beyond Tailwind's defaults (§6.2 "density"): name a size here instead of an
+   arbitrary `text-[11px]` or `max-w-[560px]` in a component. */
+@theme {
+  --text-2xs: 0.6875rem;
+  --text-2xs--line-height: 1rem;
+  --text-3xs: 0.625rem;
+  --text-3xs--line-height: 0.875rem;
+  /* Monograms and the collapsed rail's one-letter badge. */
+  --text-4xs: 0.5625rem;
+  --text-4xs--line-height: 1;
+  --text-5xs: 0.5rem;
+  --text-5xs--line-height: 1;
+  /* Mono ids and code (JetBrains Mono reads larger than the sans at the same size). */
+  --text-code: 0.8125rem;
+  --text-code--line-height: 1.25rem;
+  /* The trace narrative: one step above body. */
+  --text-lead: 1.0625rem;
+  --text-lead--line-height: 1.75rem;
+  --container-page: 87.5rem;
+  --container-sheet: 35rem;
+  --container-sheet-sm: 30rem;
+  --container-sheet-lg: 45rem;
+  /* The login showcase (prototype "01 Sign in"): ambient, not UI transitions, so not motion.ts presets; every user
+     also sets motion-reduce:animate-none. The layer stack bobs 8 px; each headline word arrives out of a blur. */
+  --animate-float: float 7s ease-in-out infinite;
+  @keyframes float {
+    50% {
+      translate: 0 -8px;
+    }
+  }
+  /* Each glow blob wanders and cycles through the four glow hues; the blobs run out of phase and at different
+     speeds (their own animation-delay/duration), so which hue leads keeps changing, as in the block's canvas. */
+  --animate-glow: glow 10s linear infinite;
+  @keyframes glow {
+    0%,
+    100% {
+      transform: translate(0, 0) scale(1);
+      background-color: var(--showcase-glow-1);
+    }
+    25% {
+      transform: translate(35%, 20%) scale(1.15);
+      background-color: var(--showcase-glow-2);
+    }
+    50% {
+      transform: translate(10%, 45%) scale(0.9);
+      background-color: var(--showcase-glow-3);
+    }
+    75% {
+      transform: translate(-30%, 15%) scale(1.1);
+      background-color: var(--showcase-glow-4);
+    }
+  }
+  /* The onboarding guide's Welcome step (our take on Aceternity's Tracing Beam): a beam crosses the four stages every
+     4 s and each stage's icon lights as it passes (its own negative animation-delay). Both still under reduced motion. */
+  --animate-beam: beam 4s linear infinite;
+  @keyframes beam {
+    from {
+      translate: -100% 0;
+    }
+    to {
+      translate: 400% 0;
+    }
+  }
+  --animate-stage: stage 4s linear infinite;
+  @keyframes stage {
+    0%,
+    18% {
+      border-color: var(--primary);
+      background-color: var(--primary);
+      color: var(--primary-foreground);
+    }
+    30%,
+    100% {
+      border-color: var(--border);
+      background-color: var(--muted);
+      color: var(--foreground);
+    }
+  }
+  /* The page loader (Aceternity's LoaderThree, on the Nasiko mark): each bar's outline draws, then it fills, then the
+     same in reverse. Bars carry pathLength=1 and a staggered animation-delay. Static and filled under reduced motion. */
+  --animate-mark-draw: mark-draw 1.6s ease-in-out infinite alternate both;
+  @keyframes mark-draw {
+    from {
+      stroke-dashoffset: 1;
+      fill-opacity: 0;
+    }
+    60% {
+      fill-opacity: 0;
+    }
+    to {
+      stroke-dashoffset: 0;
+      fill-opacity: 1;
+    }
+  }
+  /* The sidebar's waitlist badge (our take on Aceternity's Moving Border, in CSS): a glint circles the pill's 1 px
+     edge while the flag's cloth waves, both looping. Under reduced motion the glint is hidden and the flag still. */
+  --animate-orbit: orbit 3s linear infinite;
+  @keyframes orbit {
+    to {
+      rotate: 360deg;
+    }
+  }
+  --animate-flag-wave: flag-wave 1.4s ease-in-out infinite;
+  @keyframes flag-wave {
+    25% {
+      transform: skewY(-8deg) scaleX(0.92);
+    }
+    50% {
+      transform: none;
+    }
+    75% {
+      transform: skewY(8deg) scaleX(0.95);
+    }
+  }
+  --animate-word-in: word-in 0.7s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  @keyframes word-in {
+    from {
+      opacity: 0;
+      translate: 0 0.4em;
+      filter: blur(8px);
+    }
+  }
+}
+
+/* shadcn's base: every border defaults to the hairline token. Tailwind 4 otherwise draws a bare
+   `border` in currentColor, so a Card or a table row line came out in the text colour. */
+@layer base {
+  *,
+  ::after,
+  ::before {
+    border-color: var(--border);
+  }
+}
+
+body {
+  @apply bg-background font-sans text-foreground antialiased;
+}

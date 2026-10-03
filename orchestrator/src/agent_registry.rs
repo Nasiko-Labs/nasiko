@@ -9,7 +9,8 @@ pub async fn get_agents_for_user(
     pool: &PgPool,
 ) -> Result<Vec<AgentCard>, RouterError> {
     let rows = sqlx::query_as::<_, AgentRow>(
-        r#"SELECT a.id, a.name, a.description, a.skills, a.tags, a.url
+        r#"SELECT a.id, a.name, a.description, a.skills, a.tags, a.url,
+                  a.embedding, a.embedding_content_hash
            FROM agents a
            LEFT JOIN agent_grants g
                ON g.agent_id = a.id
@@ -33,6 +34,10 @@ pub async fn get_agents_for_user(
             skills: extract_skill_names(r.skills.0),
             tags: r.tags,
             url: r.url,
+            embedding: r
+                .embedding
+                .map(|v| v.into_iter().map(|f| f as f32).collect()),
+            embedding_content_hash: r.embedding_content_hash,
         })
         .collect())
 }
@@ -45,6 +50,8 @@ struct AgentRow {
     skills: sqlx::types::Json<serde_json::Value>,
     tags: Vec<String>,
     url: Option<String>,
+    embedding: Option<Vec<f64>>,
+    embedding_content_hash: Option<i64>,
 }
 
 fn extract_skill_names(skills_json: serde_json::Value) -> Vec<String> {

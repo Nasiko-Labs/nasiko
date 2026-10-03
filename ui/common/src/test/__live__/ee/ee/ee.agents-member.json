@@ -1,0 +1,65 @@
+{
+  "fixture_version": 1,
+  "id": "ee.agents-member",
+  "recorded_at": "2026-09-29T07:44:51.947Z",
+  "window": {
+    "start": "2026-09-29T07:44:51.947Z",
+    "end": "2026-09-29T07:44:51.949Z"
+  },
+  "anchor": "2026-09-29T07:44:38.390Z",
+  "edition": "ee",
+  "identity": "seed-ee-member",
+  "server": {
+    "sha": "ea233d201502a205e78339a7cb2688856b9ec2fa",
+    "dirty": false,
+    "openapi_sha256": "71f2d54fd3466adb48d9d26eed66afe028ed153262b6eeb57445c5b03b6bd9f7",
+    "binary_mtime": null
+  },
+  "request": {
+    "method": "GET",
+    "path": "/api/agents",
+    "query": {
+      "limit": "100",
+      "offset": "0"
+    }
+  },
+  "status": 200,
+  "content_type": "application/json",
+  "body": [
+    {
+      "id": "5eed0000-0001-4000-8000-000000000001",
+      "name": "seed-support-bot",
+      "display_name": "Support Bot",
+      "description": "Seeded by nasiko-ui-lab (scripts/seed-trace-usage.ts)",
+      "owner_id": "<admin-id>",
+      "url": null,
+      "icon_url": null,
+      "version": "1.0.0",
+      "protocol_version": "0.3.0",
+      "preferred_transport": "JSONRPC",
+      "documentation_url": null,
+      "capabilities": {
+        "chat_agent": false,
+        "pushNotifications": false,
+        "stateTransitionHistory": false,
+        "streaming": false
+      },
+      "security_schemes": {},
+      "default_input_modes": [
+        "application/json",
+        "text/plain"
+      ],
+      "default_output_modes": [
+        "application/json"
+      ],
+      "skills": [],
+      "tags": [],
+      "metadata": {},
+      "status": "registered",
+      "image": null,
+      "transport_path": null,
+      "created_at": "2026-09-29T07:44:38.765967Z",
+      "updated_at": "2026-09-29T07:44:38.765967Z"
+    }
+  ]
+}

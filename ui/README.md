@@ -1,194 +1,133 @@
-# `ui/` — Nasiko control-plane frontend
+# OpenRuntime UI Lab
 
-Vanilla JavaScript Web Components. **No build step, no bundler, no framework
-runtime to install.** The files in this directory are the files the browser
-loads; the server embeds them into the binary at compile time with
-[`rust-embed`](https://crates.io/crates/rust-embed), so a release build is a
-single executable with the UI inside it.
+A React experiment for Nasiko's OpenRuntime frontend. It tests the stack from DOC-2026-031:
+React 19 + Vite (static SPA), TanStack Router/Query, Tailwind v4 + shadcn/ui, Recharts, Motion.
 
-There is nothing to `npm install` in order to run Nasiko. The `package.json`
-here exists only for optional type-checking (see [Type checking](#type-checking)).
+What's here:
+- **Overview** (`/`): the homepage. Needs you (waiting requests, agents that need action, budget warnings, failing
+  sessions), fleet Spend, Fleet health (each agent rated Healthy / Watch / Needs action / Unknown with the reason; each
+  count opens `/agents?health=<rating>`), coding harnesses, recent sessions and quick actions. A source that can't be
+  checked says so with Retry, so "Nothing needs you" only shows when every source answered. The backend status page
+  is at `/status`.
+- **The observability demo**: follow the money from a spend spike to the span that caused it.
+  - **TokenOps** (`/tokenops`): a plain-English summary first, details in disclosures.
+  - **Sessions** (`/sessions`): the fleet pulse, or one day's sessions ranked by cost.
+  - **Session trace** (`/sessions/:id`): a narrated waterfall with the failing span open.
+  - Demo walkthrough: `docs/designs/openruntime-demo-script.md`.
+- **TokenOps** detail (`/tokenops`): LLM cost organised around five operator questions:
+  - Where am I this month?
+  - Why did spend spike?
+  - Who drives cost?
+  - Which traces burned it?
+  - Is cost buying performance?
+- **Harnesses** (`/harnesses`): coding-harness usage (Claude Code, Codex, OpenCode, Cursor) from Org down to
+  one developer. Needs a proposed endpoint; without it the page shows your own usage from existing ones.
+- **Agents** (`/agents`): the catalog of every agent you can see, Your agents (`/agents/mine`) with the ones that
+  need attention pinned first, and one agent's page (`/agents/:id`): health, activity, versions, access and settings.
+  Restart, Start and roll back report what actually happened, not just that the call returned.
+- **Deploy and Builds** (`/deploy`, `/builds`, `/builds/:id`): deploy an agent from the browser by uploading a zip
+  (checked in the browser the way the server checks it), from a GitHub repository, or from a registry image. The Builds
+  list pins in-progress builds on top, a Build page follows one build live and ends with Chat with it or the fix, each
+  agent page has a Builds tab, and a build you leave keeps being followed (a sidebar count and one toast when it
+  finishes). **Deploy an agent** buttons replace the CLI-only empty states; the CLI steps stay underneath.
+- **Chat** (`/chat`, `/chat/:id`): talk to one agent in the browser, with streamed replies, tool steps, answerable
+  requests and the trace one click away, or let OpenRuntime choose the agents (`/chat?auto=1`, routed chat).
+  **Try it** on a running agent's page opens a chat with it. Guide: `docs/chat.md`.
+- **Weave fixtures** (`/weave`, EE dev builds only): a React renderer for Weave's generated dashboards.
+- **App shell**: a sidebar grouped by goal (collapses to an icon rail with ⌘B / Ctrl+B, a sheet on phones), a
+  theme menu (System / Light / Dark, and the Teal, Indigo, Plum or Mist/Carbon theme) and Sign out, synced across tabs. Design reference:
+  `DESIGN.md`.
 
----
+## Quickstart: mock data (about 2 minutes)
 
-## Layout
-
-```
-ui/
-├── common/            shared by every edition — the bulk of the UI
-│   ├── core/          element base class, DI container, router, bootstrap,
-│   │                  data-source registry, events, error boundary
-│   ├── services/      API client, query/list helpers, SSE, per-area services
-│   ├── state/         signals + store
-│   ├── design-system/ primitives — app-button, app-table, app-modal, … ;
-│   │                  catalog.json is the generated inventory
-│   ├── features/      reusable, domain-aware components (header, nav, graph)
-│   ├── pages/         page components, one per screen
-│   ├── surface/       the Weave DSL runtime (lexer → parser → materializer →
-│   │                  store → render)
-│   ├── tokens/        design tokens as CSS custom properties + tokens.json
-│   ├── styles/        shared stylesheets
-│   ├── utils/         escaping, markdown, dates, icons, streams, theme
-│   └── vendor/        single-file ESM builds (lit, marked, dompurify,
-│                      highlight.js, chart.js) — see vendor/README.md
-├── oss/               this edition's application layer: one .html per URL,
-│                      plus per-page preview modules and edition.json
-├── scripts/           generators, ui-lint, check-imports
-├── tests/             Node test-runner suites (no DOM required)
-├── types/             generated globals.d.ts
-└── tsconfig.json      type-check scope
-```
-
-`ui/` is one tree shared by every Nasiko edition. Each edition declares itself
-in `ui/<edition>/edition.json`; the tooling reads whatever manifests are present
-rather than hardcoding a list, so a checkout with one edition and a checkout
-with several both work unchanged. `ui/scripts/editions.mjs` documents the
-manifest contract.
-
-## How it is served
-
-The server crate's `build.rs` walks up from its own directory to find the
-`ui/` root and exports it as `NASIKO_UI`. The server then embeds two trees:
-
-| Embed | Served at |
-| --- | --- |
-| `$NASIKO_UI/oss/` | `/` — page shells, one real URL per screen |
-| `$NASIKO_UI/common/` | `/common/…` |
-
-An extension-less path that matches no embedded file falls back to
-`index.html`; a path with an extension is a genuine 404, so a stale asset URL
-never returns HTML. Because the root is resolved at build time rather than written as a relative
-path, the crate can sit at any depth without breaking the embed.
-
-## The layer model
-
-```
-APPLICATION      oss/*.html — one page shell per screen, real URLs
-      ↓
-DOMAIN           page components + their state and services
-      ↓
-COMPONENTS       reusable, domain-aware, app-agnostic
-      ↓
-DESIGN SYSTEM    primitives + tokens + type + icons + a11y
-      ↓
-PLATFORM         core/ · services/ · state/ — DI, errors, api, query,
-                 signals, events
-```
-
-**Dependencies point downward, never upward.** A design-system primitive must
-not know about a page; a shared component must not know where its data comes
-from. This is enforced by `ui-lint.mjs`, not by convention.
-
-Composition happens in exactly one place: `common/core/bootstrap.js`. It is the
-only file that binds an interface to an implementation.
-
-### Conventions that follow from it
-
-- **Light DOM + `@scope`**, not Shadow DOM. `attachShadow` is a lint error.
-  Styles are scoped with CSS `@scope`; every component declares its scope.
-- **Data comes from the registry**, never from globals. Components resolve
-  loaders through `core/data-sources.js`; assigning `window.fetchX = …` is a
-  lint error. An unknown name throws where it is resolved, instead of leaving a
-  view empty forever.
-- **Teardown is declared, not remembered.** Use `this.listen()`,
-  `this.interval()` and `this.signal` from the element base class in
-  `connected()`; they are torn down automatically on disconnect.
-- **Escaping is by construction.** Use Lit `html` templates, or `escHtml` /
-  `escAttr` from `utils/escape.js` — never a locally-defined helper.
-- **Colours are tokens.** Literal colour values in the design system are a lint
-  error; add or use a token in `common/tokens/`.
-- **Import specifiers are what the browser resolves.** There is no bundler and
-  no import map, so every specifier is either relative or rooted at `/common/`,
-  and every one carries its explicit `.js` extension. `check-imports.mjs` fails
-  the build on any that does not resolve to a real file.
-- **`design-system/catalog.json` is a contract, not a listing.** It is
-  generated from the components and is what anything outside the UI reads to
-  learn which components exist and what they accept. Regenerate it whenever a
-  component's public surface changes.
-
-## Working on it
-
-Everything runs on Node's built-in tooling — no npm install needed.
+Needs Node 24 (`.nvmrc`; `engines` allows 22.18+, which `scripts/*.ts` need to run without a build step).
 
 ```sh
-# every relative and /common/… specifier resolves to a file that exists
-node ui/scripts/check-imports.mjs
-
-# generated artifacts are in sync with their sources
-node ui/scripts/gen-globals.mjs     --check
-node ui/scripts/gen-tokens.mjs      --check
-node ui/scripts/gen-boot-inline.mjs --check
-node ui/scripts/gen-catalog.mjs     --check
-node ui/scripts/gen-dsl-catalog.mjs --check
-
-# architecture rules
-node ui/scripts/ui-lint.mjs
-
-# hermetic tests — platform layer, streaming, and the surface runtime
-node --test ui/tests/*.test.mjs
+npm install
+npm run dev            # http://localhost:3000/tokenops  — "MOCK DATA" badge in the sidebar footer
 ```
 
-Drop `--check` from any generator to regenerate its output. Never hand-edit a
-generated file. `types/globals.d.ts`, `common/tokens/tokens.json`,
-`design-system/catalog.json`, `surface/dsl-catalog.json` and the inline boot
-snippet in every page `<head>` all have one.
+Every API call is answered in the browser from a deterministic seed: 60 days of data, 20 agents, a spike day,
+unpriced calls and a deleted agent. No server needed.
+The agent pages mutate that seed in memory, so Restart, Stop, roll back, secrets and access changes round-trip until
+you reload. One seed agent is crashed, one failed, one deploying and one stopped, so every status shows.
 
-### `ui-lint.mjs` and the ratchet
+For the demo, pin the date so the figures match the script:
+`http://localhost:3000/tokenops?anchor=2026-09-26&demo=1`. Degraded states for QA:
+`?mock=tempo-down|empty|trace-503|trace-500|scan-fail`; for the app shell, `?mock=server-down` (a stopped server) and
+`?mock=logout-unavailable` (a failed sign-out).
 
-`ui-lint.mjs` enforces the layer rules above. Rules that are already at zero
-fail the build on any new violation. Rules with pre-existing debt are recorded
-in `scripts/ui-lint-baseline.json` with an exact count:
+**Deploy in mock mode.** Uploads, GitHub clones and registry imports all complete against the seed, and a new agent
+reads `deploying` until its build settles. States: `?mock=deploy-build-fails` (the upload is accepted, the build fails),
+`deploy-github-unconfigured|deploy-github-disconnected|deploy-github-no-repos`,
+`deploy-registry-disabled|deploy-registry-not-running`, `deploy-no-rights` (EE without deploy rights) and
+`builds-absent` (a server without `/api/builds`). Navigate in-app while a build runs: a full reload resets the mock.
 
-> **The baseline may go down. It may never go up.**
+**Harnesses in mock mode.** A separate seed (60 developers, 11 units: 3 root units, 7 teams and one nested unit, 4 harnesses plus an unknown one)
+answers the page. The OSS build (`npm run dev`) shows the viewer's own usage; `?as=<seed username>` picks the viewer
+(default `admin`, the superuser; `?as=sam` is a non-superuser, whose viewer comes from the `/api/me` claims).
+The EE build (`npm run dev -- ee`) adds the org levels and a "View as" menu:
+- `/harnesses?as=admin` (default): Org level.
+- `?as=maya`: manager of one unit (lands on Engineering). `?as=omar`: two units (Your units). `?as=lena`: nested units.
+- `?as=tom` (manager who leads nothing) and `?as=sam` (member): their own Individual view. `?as=root`: superuser.
 
-A change that adds a violation fails CI even if the rule is not yet at zero.
-Fix violations as you touch the files; when a rule reaches zero it stays there.
-Regenerate the baseline (only ever downward) with:
+States: `?mock=usage-404|prev-fail|usage-500|all-unpriced|no-activity`, plus `drill-404` in the EE build.
+
+## Quickstart: live OSS server
 
 ```sh
-node ui/scripts/ui-lint.mjs --update-baseline
+# in nasiko-cloud-rs (unchanged by this repo)
+just run-stack
+
+# here
+npm run seed:live      # optional: load seed rows into the local Postgres (npm run seed:reset removes them)
+npm run dev:live       # log in as admin / changeme
 ```
 
-### Type checking
+**Chat.** `/chat` talks to one agent in the browser, and `/chat?auto=1` lets OpenRuntime choose. `docs/chat.md` has a mock quickstart (5 steps), a stack quickstart (8 steps), every mock scenario, the routed smoke and the error guide. Server gaps: `docs/designs/openruntime-chat-recommendations.md` (v1a) and `docs/designs/openruntime-chat-v1b-recommendations.md` (v1b).
 
-The UI is plain JavaScript with JSDoc types; `tsc --checkJs` checks it and
-emits nothing.
+**Live data for Sessions and Session trace.** These read chat sessions and Tempo traces, which
+`seed:live` doesn't create:
+1. Start the stack with `TEMPO_URL` and `LOKI_URL` set on nasiko-server.
+2. Deploy an agent and talk to it with `nasiko chat <agent>`.
+3. Reload `/sessions`.
+
+Without trace data the page still lists the sessions (each opens its own page) under a note that
+says why cost and tokens are missing and how to fix it. On windows of 7 days or more (7d, 30d,
+Last month, This month after the 7th) the server's Tempo search is longer than Tempo allows, so every row lacks trace data even
+with Tempo running; pick 24h or open a session. This is best-effort, not a ship gate.
+
+**Live data for Harnesses.** `seed:live` also inserts coding-agent rows, their `trace_usage` turns, chat sessions
+and messages (`5eed0002…` ids). These are real rows in the shared tables, so live TokenOps and Sessions numbers
+include the harness traffic too; a seed agent the CLI later adopts (`nasiko agents install`) is kept on reset. The org endpoint doesn't exist yet, so live mode shows the "not available on this server"
+line and your own usage. `VITE_NASIKO_MOCK=harnesses npm run dev:live` previews the page with mock data (in the EE
+build, `npm run dev:live:ee`, the org levels too). The proposed contract: `docs/designs/openruntime-harness-recommendations.md`.
+
+**Live contract.** `npm run record:live` records seed-only server responses into `common/src/test/__live__/` (it starts its own
+throwaway server and database, so the dev stack is untouched), and `npm test` checks the mocks, types and error handling
+against them. EE runs on its own `nasiko_ee` database: `npm run ee:server`, `npm run seed:ee`, `npm run record:live --
+--edition ee`, and `npm run dev:live:ee` for the lab against it. Guide: `docs/live-contract.md`.
+
+Trace drill-down relies on a proposed `/finops/top-traces` endpoint that the server doesn't have yet. To preview
+it against live data, run `VITE_NASIKO_MOCK=top-traces npm run dev:live`. Deploy works against the live server as it
+is; `VITE_NASIKO_MOCK=deploy,agents npm run dev:live` previews the deploy pages on mock data (the two keys go together). All env vars are listed in `.env.example`.
+
+## Check
 
 ```sh
-cd ui && npm install && npx tsc -p tsconfig.json
+npm test               # typecheck + ESLint (zero warnings) + vitest
+npm run lint           # ESLint + Prettier check (npm run format writes)
+npm run build          # production build; then npm run budgets checks its size
+npm run e2e            # the demo flows in Chromium, with axe on every page (mock mode, port 3917)
+npm run test:stories   # every Storybook story as a browser test with axe (npm run storybook for the UI)
+npm run knip           # unused files, dependencies and exports
 ```
 
-`tsconfig.json`'s `include` is deliberately narrow — the platform layer and a
-couple of utilities. Widen it one directory at a time, and only to a clean
-zero. A config that reports thousands of errors gets switched off, which
-protects nothing.
+The improvement plan these checks come from (and what each phase changed) is `docs/lab-vs-react-migration-review.md`.
 
-### Adding a page
-
-1. Add `ui/oss/<page>.html` — the shell: module order and first-paint skeleton.
-2. Add `ui/common/pages/<page>-page.js` (+ `.css`) — the page component.
-3. Register its data loaders in `core/data-sources.js`; wire it up in
-   `core/bootstrap.js`.
-   Then run `node ui/scripts/gen-boot-inline.mjs` so the new page gets the
-   shared inline boot snippet.
-4. Run the commands above. `check-imports` and `ui-lint` will tell you if the
-   dependency direction is wrong.
-
-### Adding a design-system component
-
-1. Create `ui/common/design-system/<name>/` with the component and its styles.
-2. Use tokens for every colour, space and radius.
-3. Regenerate the catalog: `node ui/scripts/gen-catalog.mjs`.
-4. Add a preview so it appears on `/design-system.html`.
-
-## Vendored dependencies
-
-`common/vendor/` holds single-file ESM builds committed directly, because the
-UI has no package manager at runtime. Do not edit them — replace them wholesale
-on upgrade and update the version table in `common/vendor/README.md`.
-
-## Browser support
-
-Modern evergreen browsers. The UI relies on native ES modules, custom elements,
-`AbortController`, CSS custom properties, `@scope` and CSS nesting. There is no
-transpilation and no polyfill layer.
+Workflow: gstack `/autoplan` → build → `/review` → `/qa` → `/ship` → `/land-and-deploy`.
+Conventions for humans and agents are in `CLAUDE.md`; the current plan is in `plans/feat-observability-demo.md`
+(TokenOps: `plans/feat-tokenops-page.md`; Harnesses: `plans/feat-harness-org-view.md`; Agents: `plans/feat-agents.md`; Chat: `plans/feat-chat.md`, routed chat: `plans/feat-chat-v1b.md`; app shell: `plans/feat-app-shell.md`; Overview: `plans/feat-overview.md`; Deploy and Builds: `plans/feat-deploy.md`). Which legacy pages are rebuilt and which are next: `docs/rebuild-status.md`. Server gaps found along the way: `docs/designs/openruntime-server-recommendations.md`
+(agent pages: `docs/designs/openruntime-agents-recommendations.md`; app shell: `docs/designs/openruntime-app-shell-recommendations.md`; Overview: `docs/designs/openruntime-overview-recommendations.md`; Deploy and Builds: `docs/designs/openruntime-deploy-recommendations.md`).
+Design: `docs/designs/openruntime-observability-demo.md`; what the stack cost: `docs/designs/openruntime-stack-scorecard.md`.
+Release notes are in `CHANGELOG.md` and deferred work is in `TODOS.md`.

@@ -1,0 +1,67 @@
+{
+  "fixture_version": 1,
+  "id": "mcp.consumers",
+  "recorded_at": "2026-09-30T14:28:36.605Z",
+  "window": {
+    "start": "2026-09-30T14:28:36.605Z",
+    "end": "2026-09-30T14:28:36.609Z"
+  },
+  "anchor": "2026-09-30T14:28:34.234Z",
+  "edition": "oss",
+  "identity": "admin",
+  "server": {
+    "sha": "a6feda17b873f12bac56addd44fda43ff7d6c37a",
+    "dirty": false,
+    "openapi_sha256": "8082e58f9e220358b2c225ae5b11c6e295a3b67fd21b945e6e73c16a5f2d67d7",
+    "binary_mtime": "2026-09-30T14:28:12.734Z"
+  },
+  "request": {
+    "method": "GET",
+    "path": "/api/mcp/connectors/{mcpDocs}/consumers",
+    "query": {}
+  },
+  "status": 200,
+  "content_type": "application/json",
+  "body": {
+    "data": {
+      "agents": [
+        {
+          "agent_display_name": "Research Agent",
+          "agent_id": "5eed0000-0001-4000-8000-000000000002",
+          "agent_name": "seed-research-agent",
+          "agent_owner_id": "<admin-id>",
+          "enabled": false,
+          "owner_username": "admin",
+          "tool_rules": [],
+          "tools_used": 0,
+          "total_tools": 4
+        },
+        {
+          "agent_display_name": "Support Bot",
+          "agent_id": "5eed0000-0001-4000-8000-000000000001",
+          "agent_name": "seed-support-bot",
+          "agent_owner_id": "<admin-id>",
+          "enabled": true,
+          "owner_username": "admin",
+          "tool_rules": [
+            {
+              "pattern": "get_page",
+              "stance": "allow"
+            },
+            {
+              "pattern": "summarize_page",
+              "stance": "ask"
+            }
+          ],
+          "tools_used": 4,
+          "total_tools": 4
+        }
+      ],
+      "departments": [],
+      "teams": [],
+      "users": []
+    },
+    "message": "Connector consumers retrieved successfully",
+    "status_code": 200
+  }
+}

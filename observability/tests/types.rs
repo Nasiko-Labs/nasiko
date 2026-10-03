@@ -7,6 +7,7 @@ use nasiko_observability::find_root_span;
 use nasiko_observability::pricing::CostBreakdown;
 use nasiko_observability::types::{
     Session, Span, TokenUsage, TraceDetails, extract_token_attrs, latency_percentiles,
+    link_router_spans,
 };
 
 // ─── TokenUsage ───────────────────────────────────────────────────────────────
@@ -164,6 +165,88 @@ fn trace_token_totals_ignore_replayed_span_ids() {
     let trace = make_trace(vec![span.clone(), span]);
 
     assert_eq!(trace.token_totals(), (200, 100, Some("gpt-4o".into())));
+}
+
+// ─── LLM-router span pairing ──────────────────────────────────────────────────
+
+/// The router's own record of a call it served: the same tokens the calling
+/// agent reports, but the model that actually ran. `gen_ai.agent.id` is what
+/// marks it as the router's.
+fn router_span(span_id: &str, parent: &str, model: &str, input: u64, output: u64) -> Span {
+    let mut span = gen_ai_span(span_id, model, input, output);
+    span.service_name = "nasiko-cp".to_owned();
+    span.parent_span_id = Some(parent.to_owned());
+    span.attributes
+        .insert("gen_ai.agent.id".into(), serde_json::json!("agent-uuid"));
+    span
+}
+
+#[test]
+fn router_span_supersedes_the_agents_copy_of_the_same_call() {
+    // One LLM call, two spans: the agent asked for gpt-4o-mini, the router
+    // resolved that to gpt-6-astra and served it. Counting both doubles the
+    // tokens; believing the agent prices an expensive call as a cheap one.
+    let mut agent = gen_ai_span("llm", "gpt-4o-mini", 440, 67);
+    agent.service_name = "devops-agent".to_owned();
+    let mut http = make_span("req", "nasiko-cp");
+    http.parent_span_id = Some("llm".to_owned());
+    let trace = make_trace(vec![
+        agent,
+        http,
+        router_span("chat", "req", "openai.gpt-6-astra", 440, 67),
+    ]);
+
+    let (input, output, model) = trace.token_totals();
+    assert_eq!(input, 440, "the call is counted once, not twice");
+    assert_eq!(output, 67);
+    assert_eq!(
+        model.as_deref(),
+        Some("openai.gpt-6-astra"),
+        "the model that ran, not the one the agent asked for"
+    );
+}
+
+#[test]
+fn an_unattributable_router_span_is_dropped_rather_than_double_counted() {
+    // Nothing above it from another service, because the agent propagated the
+    // context it was *called* with rather than its own LLM span's. Its copy of
+    // the call is then a sibling instead of an ancestor — still a duplicate, but
+    // one this pairing cannot see. Counting the router's span as well would
+    // double the tokens, so it is dropped and the agent's figure stands.
+    let mut agent = gen_ai_span("llm", "gpt-4o-mini", 440, 67);
+    agent.service_name = "devops-agent".to_owned();
+    let trace = make_trace(vec![
+        agent,
+        router_span("chat", "sibling-parent", "openai.gpt-6-astra", 440, 67),
+    ]);
+
+    let (input, output, _) = trace.token_totals();
+    assert_eq!((input, output), (440, 67), "counted once, not twice");
+}
+
+#[test]
+fn both_usage_paths_exclude_the_same_spans() {
+    // The session view and the FinOps materializer aggregate separately over the
+    // same spans and must agree — `cost_path_differential` is the live gate, and
+    // this is the unit-level one. A rule applied to only one of them shows up as
+    // a dashboard that disagrees with the trace it was derived from.
+    let mut agent = gen_ai_span("llm", "gpt-4o-mini", 440, 67);
+    agent.service_name = "devops-agent".to_owned();
+    let mut http = make_span("req", "nasiko-cp");
+    http.parent_span_id = Some("llm".to_owned());
+    let spans = vec![
+        agent,
+        http,
+        router_span("chat", "req", "openai.gpt-6-astra", 440, 67),
+    ];
+
+    let links = link_router_spans(&spans);
+    assert!(
+        links.excluded.contains("llm"),
+        "the agent's copy is the one superseded"
+    );
+    assert_eq!(links.attributed.get("chat"), Some(&"devops-agent"));
+    assert_eq!(make_trace(spans).token_totals().0, 440);
 }
 
 #[test]

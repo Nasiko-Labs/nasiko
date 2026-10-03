@@ -40,6 +40,7 @@ pub mod recovery;
 pub mod resolver;
 pub mod routing;
 mod tool_compact;
+mod savings;
 pub mod usage;
 
 pub use config::GatewayConfig;
