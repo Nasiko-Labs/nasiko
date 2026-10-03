@@ -25,7 +25,9 @@ use crate::LlmRouterCtx;
 use crate::auth::verify_agent_jwt;
 use crate::error::GatewayError;
 use crate::inbound::{ChatStreamRenderer, InboundFormat, inbound_for};
-use crate::ir::{ChatChunk, Usage};
+use crate::ir::{
+    ChatChunk, ChatResponse, ChunkChoice, Delta, FunctionCallDelta, ToolCallDelta, Usage,
+};
 use crate::providers::{ProviderError, fallback};
 use crate::resolver::{PgRegistry, RegistryStore, RequestHint, resolve};
 use crate::routing::boundary::{TRACEPARENT_HEADER, parse_flow_id};
@@ -288,6 +290,22 @@ async fn chat_core(
         "brevity: directive decision"
     );
 
+    // ── compact tools seam (P1) ───────────────────────────────────────────────────────────
+    // Compact the provider-facing tool definitions only after routing, compression and
+    // brevity have run. The canonical schemas remain in `compact_tools` context so the
+    // eventual model response can be decoded back into native ToolCall values.
+    let compact_tools = crate::compact_tools::prepare_request(&mut req)
+        .map_err(|e| GatewayError::BadRequest(format!("invalid compact tool schema: {e}")))?;
+
+    if let Some(context) = &compact_tools {
+        tracing::info!(
+            target: "nasiko::llm_router::compact_tools",
+            %agent_id,
+            tool_count = context.tools.len(),
+            "compact tools: provider-facing native schemas replaced with compact protocol"
+        );
+    }
+
     // ── savings ledger inputs ─────────────────────────────────────────────────────────────
     // Measured here, after both seams, because this is the payload the provider will actually
     // bill for — which is what makes `sent_bytes / reported_input_tokens` a calibration rather
@@ -354,6 +372,7 @@ async fn chat_core(
             ctx,
             renderer,
             provider_stream: stream,
+            compact_tools,
             provider,
             model,
             agent_id,
@@ -374,6 +393,15 @@ async fn chat_core(
     let (resp, (provider, model)) = fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
         .instrument(llm_span.clone())
         .await?;
+
+    // Compact mode replaces native upstream tool schemas with a text protocol.
+    // Decode that protocol back into canonical tool calls before the response
+    // reaches the inbound renderer.
+    let resp = match &compact_tools {
+        Some(context) => decode_compact_response(resp, context)?,
+        None => resp,
+    };
+
     let latency_ms = started.elapsed().as_millis() as i64;
 
     // Record effective model and token usage on the server-side gen_ai span.
@@ -406,6 +434,44 @@ async fn chat_core(
     );
 
     Ok(Json(inbound.render_chat_response(resp)).into_response())
+}
+
+/// Decode provider responses produced by the compact-tool protocol back into
+/// canonical OpenAI-shaped tool calls before the response reaches the inbound
+/// renderer.
+///
+/// Compact mode deliberately removes native `tools` from the upstream request,
+/// so the provider response is expected to contain tool calls in assistant text
+/// using the `<<call TOOL_NAME JSON_OBJECT>>` grammar. Any malformed call,
+/// unknown tool, or invalid argument is surfaced as a client-actionable 400
+/// rather than guessed or silently passed through.
+fn decode_compact_response(
+    mut resp: ChatResponse,
+    context: &crate::compact_tools::CompactToolContext,
+) -> Result<ChatResponse, GatewayError> {
+    for choice in &mut resp.choices {
+        let Some(Value::String(text)) = choice.message.content.as_ref() else {
+            continue;
+        };
+
+        let (remaining, calls) = crate::compact_tools::decode_calls(text, &context.tools)
+            .map_err(|e| GatewayError::BadRequest(format!("invalid compact tool call: {e}")))?;
+
+        if calls.is_empty() {
+            continue;
+        }
+
+        choice.message.content = if remaining.is_empty() {
+            None
+        } else {
+            Some(Value::String(remaining))
+        };
+
+        choice.message.tool_calls = Some(calls);
+        choice.finish_reason = Some("tool_calls".to_string());
+    }
+
+    Ok(resp)
 }
 
 pub(crate) async fn resolve_routed_request(
@@ -557,6 +623,7 @@ struct StreamChatArgs<'a> {
     ctx: &'a LlmRouterCtx,
     renderer: Box<dyn ChatStreamRenderer>,
     provider_stream: BoxStream<'static, Result<ChatChunk, ProviderError>>,
+    compact_tools: Option<crate::compact_tools::CompactToolContext>,
     provider: String,
     model: String,
     agent_id: String,
@@ -582,11 +649,123 @@ struct StreamChatArgs<'a> {
 /// Usage is captured as chunks flow and written when the stream ends — including on
 /// client disconnect — via a `Drop` guard. `provider`/`model` are the effective
 /// (possibly fallback) values chosen by the executor.
+fn decode_compact_stream_chunk(
+    chunk: ChatChunk,
+    decoder: &mut crate::compact_tools::StreamDecoder,
+    tools: &[crate::ir::ToolDef],
+    next_tool_call_index: &mut i64,
+) -> Result<Vec<ChatChunk>, crate::compact_tools::CompactToolsError> {
+    if chunk.choices.len() > 1 {
+        // The compact decoder currently has one ordered text stream. Do not
+        // guess how multiple independent choices should be interleaved.
+        return Err(crate::compact_tools::CompactToolsError::MalformedCall);
+    }
+
+    let Some(choice) = chunk.choices.first() else {
+        return Ok(vec![chunk]);
+    };
+
+    // Compact mode owns tool-call decoding. If a provider unexpectedly emits
+    // native tool calls as well, fail closed instead of mixing protocols.
+    if choice.delta.tool_calls.is_some() {
+        return Err(crate::compact_tools::CompactToolsError::MalformedCall);
+    }
+
+    let Some(content) = choice.delta.content.as_ref() else {
+        // Usage/terminal metadata chunks can pass through unchanged.
+        return Ok(vec![chunk]);
+    };
+
+    let events = decoder.push(content, tools)?;
+
+    if events.is_empty() {
+        // The decoder may intentionally buffer a partial marker or partial JSON.
+        // Metadata such as usage has already been captured by stream state.
+        return Ok(Vec::new());
+    }
+
+    let mut result = Vec::with_capacity(events.len());
+
+    for (event_pos, event) in events.iter().enumerate() {
+        let mut decoded =
+            compact_stream_event_to_chunk(event, &chunk.model, choice.index, next_tool_call_index);
+
+        // Preserve response metadata from the provider chunk on the final
+        // decoded event. This avoids duplicating usage across synthetic chunks.
+        if event_pos + 1 == events.len() {
+            decoded.id = chunk.id.clone();
+            decoded.object = chunk.object.clone();
+            decoded.created = chunk.created;
+            decoded.usage = chunk.usage.clone();
+            decoded.extra = chunk.extra.clone();
+
+            // A completed compact call represents a native tool-call response.
+            if matches!(event, crate::compact_tools::StreamEvent::ToolCall(_)) {
+                decoded.choices[0].finish_reason = Some("tool_calls".to_string());
+            } else {
+                decoded.choices[0].finish_reason = choice.finish_reason.clone();
+            }
+        }
+
+        result.push(decoded);
+    }
+
+    Ok(result)
+}
+
+fn compact_stream_event_to_chunk(
+    event: &crate::compact_tools::StreamEvent,
+    model: &str,
+    choice_index: i64,
+    next_tool_call_index: &mut i64,
+) -> ChatChunk {
+    let delta = match event {
+        crate::compact_tools::StreamEvent::Text(text) => Delta {
+            role: None,
+            content: Some(text.clone()),
+            tool_calls: None,
+        },
+        crate::compact_tools::StreamEvent::ToolCall(call) => {
+            let index = *next_tool_call_index;
+            *next_tool_call_index += 1;
+
+            Delta {
+                role: None,
+                content: None,
+                tool_calls: Some(vec![ToolCallDelta {
+                    index,
+                    id: Some(call.id.clone()),
+                    kind: Some(call.kind.clone()),
+                    function: Some(FunctionCallDelta {
+                        name: Some(call.function.name.clone()),
+                        arguments: Some(call.function.arguments.clone()),
+                    }),
+                }]),
+            }
+        }
+    };
+
+    ChatChunk {
+        id: format!("compact-{}", choice_index),
+        object: "chat.completion.chunk".to_string(),
+        created: None,
+        model: model.to_string(),
+        choices: vec![ChunkChoice {
+            index: choice_index,
+            delta,
+            finish_reason: None,
+        }],
+        usage: None,
+        extra: serde_json::Map::new(),
+    }
+}
+
 fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
     let StreamChatArgs {
         ctx,
         renderer,
         provider_stream,
+        compact_tools,
         provider,
         model,
         agent_id,
@@ -601,6 +780,7 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
         compress_bytes,
         request_bytes,
     } = args;
+
     let state = Arc::new(Mutex::new(StreamState::default()));
     let guard = UsageGuard {
         db: ctx.db.clone(),
@@ -623,16 +803,29 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
 
     let body_stream = async_stream::stream! {
         // Moved in so it drops (→ writes usage) when the stream ends or the client
-        // disconnects. `state` is read by the guard at drop time. `renderer` moves in
-        // too — it owns the agent-facing SSE framing (flat `data:` for OpenAI, stateful
-        // `event:` sequences for Anthropic) and its terminal events.
+        // disconnects. `state` is read by the guard at drop time.
         let _guard = guard;
         let mut renderer = renderer;
         futures::pin_mut!(provider_stream);
+
+        let mut compact_decoder = compact_tools
+            .as_ref()
+            .map(|_| crate::compact_tools::StreamDecoder::new());
+
+        // Tool-call indices must remain stable across provider chunks.
+        let mut next_tool_call_index: i64 = 0;
+
+        // Once compact decoding fails, do not attempt to flush the decoder as
+        // though the stream completed successfully. This mirrors the existing
+        // provider-stream failure behavior: log the failure and terminate the
+        // client stream cleanly.
+        let mut compact_decode_failed = false;
+
         while let Some(item) = provider_stream.next().await {
             match item {
                 Ok(mut chunk) => {
                     chunk.model = model.clone();
+
                     {
                         let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
                         if chunk.usage.is_some() {
@@ -642,8 +835,36 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
                             st.finish_reason = Some(fr);
                         }
                     }
-                    for frame in renderer.render(chunk) {
-                        yield Ok::<String, std::io::Error>(frame);
+
+                    let decoded_chunks = if let (Some(context), Some(decoder)) =
+                        (compact_tools.as_ref(), compact_decoder.as_mut())
+                    {
+                        decode_compact_stream_chunk(
+                            chunk,
+                            decoder,
+                            &context.tools,
+                            &mut next_tool_call_index,
+                        )
+                    } else {
+                        Ok(vec![chunk])
+                    };
+
+                    match decoded_chunks {
+                        Ok(chunks) => {
+                            for chunk in chunks {
+                                for frame in renderer.render(chunk) {
+                                    yield Ok::<String, std::io::Error>(frame);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                error = %e,
+                                "invalid compact tool call in provider stream"
+                            );
+                            compact_decode_failed = true;
+                            break;
+                        }
                     }
                 }
                 Err(e) => {
@@ -653,6 +874,43 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
                 }
             }
         }
+
+        // Flush anything buffered by the compact decoder. In particular this
+        // handles ordinary text that arrived immediately before the provider's
+        // terminal chunk.
+        if !compact_decode_failed {
+            if let (Some(context), Some(decoder)) =
+                (compact_tools.as_ref(), compact_decoder.as_mut())
+            {
+                match decoder.finish() {
+                    Ok(events) => {
+                        for event in events {
+                            let chunk = compact_stream_event_to_chunk(
+                                &event,
+                                &model,
+                                0,
+                                &mut next_tool_call_index,
+                            );
+
+                            for frame in renderer.render(chunk) {
+                                yield Ok::<String, std::io::Error>(frame);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            error = %e,
+                            "incomplete compact tool call at end of provider stream"
+                        );
+                    }
+                }
+
+                // Keep the binding alive so the context remains explicitly part of
+                // the compact streaming path.
+                let _ = context;
+            }
+        }
+
         for frame in renderer.finish() {
             yield Ok(frame);
         }
@@ -1286,6 +1544,250 @@ mod tests {
         assert_eq!(v["candidates"][0]["content"]["parts"][0]["text"], "ok");
         assert_eq!(v["candidates"][0]["finishReason"], "STOP");
         assert_eq!(v["usageMetadata"]["totalTokenCount"], 4);
+    }
+
+    #[tokio::test]
+    async fn compact_nonstream_round_trips_tool_call() {
+        let mut server = mockito::Server::new_async().await;
+
+        // Compact mode must remove the native provider-facing `tools` field.
+        // The provider therefore answers using the textual compact-call grammar.
+        let provider = server
+            .mock("POST", "/chat/completions")
+            .match_body(mockito::Matcher::PartialJson(json!({
+                "model": "gpt-4o"
+            })))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "id": "chatcmpl-compact",
+                    "object": "chat.completion",
+                    "model": "gpt-4o",
+                    "choices": [{
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": "<<call get_weather {\"city\":\"Hyderabad\",\"unit\":\"celsius\"}>>"
+                        },
+                        "finish_reason": "stop"
+                    }],
+                    "usage": {
+                        "prompt_tokens": 20,
+                        "completion_tokens": 10,
+                        "total_tokens": 30
+                    }
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+
+        let ctx = ctx_with(server.url());
+        let store = Store {
+            config: None,
+            is_coding_agent: false,
+            compress_enabled: false,
+        };
+
+        let body = json!({
+            "model": "gpt-4o",
+            "messages": [{
+                "role": "user",
+                "content": "What is the weather in Hyderabad?"
+            }],
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get the current weather for a city",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "city": {
+                                "type": "string"
+                            },
+                            "unit": {
+                                "type": "string",
+                                "enum": ["celsius", "fahrenheit"]
+                            }
+                        },
+                        "required": ["city"],
+                        "additionalProperties": false
+                    }
+                }
+            }],
+            "tool_choice": "auto"
+        });
+
+        let resp = chat_core(
+            &ctx,
+            &store,
+            &auth_headers(&token()),
+            body,
+            InboundFormat::OpenAi,
+            None,
+        )
+        .await
+        .unwrap();
+
+        provider.assert_async().await;
+
+        let v: Value = serde_json::from_str(&body_string(resp).await).unwrap();
+
+        let choice = &v["choices"][0];
+
+        assert_eq!(choice["finish_reason"], "tool_calls");
+
+        // The compact textual protocol must not leak back to the client.
+        assert!(
+            choice["message"]["content"].is_null(),
+            "compact protocol leaked into client response: {v}"
+        );
+
+        let calls = choice["message"]["tool_calls"]
+            .as_array()
+            .expect("decoded native tool_calls");
+
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["type"], "function");
+        assert_eq!(calls[0]["function"]["name"], "get_weather");
+
+        let arguments = calls[0]["function"]["arguments"]
+            .as_str()
+            .expect("arguments should be serialized JSON");
+
+        let arguments: Value = serde_json::from_str(arguments).expect("valid tool-call arguments");
+
+        assert_eq!(arguments["city"], "Hyderabad");
+        assert_eq!(arguments["unit"], "celsius");
+
+        assert_eq!(v["usage"]["total_tokens"], 30);
+    }
+
+    #[tokio::test]
+    async fn compact_stream_round_trips_split_tool_call() {
+        let mut server = mockito::Server::new_async().await;
+
+        // Deliberately split both the compact marker/tool name and JSON
+        // arguments across provider SSE chunks.
+        let sse = concat!(
+            "data: {\"id\":\"x\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"<<call get_wea\"}}]}\n\n",
+            "data: {\"id\":\"x\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ther {\\\"city\\\":\\\"Hyder\"}}]}\n\n",
+            "data: {\"id\":\"x\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"abad\\\",\\\"unit\\\":\\\"celsius\\\"}>>\"}}]}\n\n",
+            "data: {\"id\":\"x\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":20,\"completion_tokens\":10,\"total_tokens\":30}}\n\n",
+            "data: [DONE]\n\n",
+        );
+
+        let provider = server
+            .mock("POST", "/chat/completions")
+            .match_body(mockito::Matcher::PartialJson(json!({
+                "model": "gpt-4o",
+                "stream": true
+            })))
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse)
+            .create_async()
+            .await;
+
+        let ctx = ctx_with(server.url());
+
+        let store = Store {
+            config: None,
+            is_coding_agent: false,
+            compress_enabled: false,
+        };
+
+        let body = json!({
+            "model": "gpt-4o",
+            "stream": true,
+            "messages": [{
+                "role": "user",
+                "content": "What is the weather in Hyderabad?"
+            }],
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get the current weather for a city",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "city": {
+                                "type": "string"
+                            },
+                            "unit": {
+                                "type": "string",
+                                "enum": ["celsius", "fahrenheit"]
+                            }
+                        },
+                        "required": ["city"],
+                        "additionalProperties": false
+                    }
+                }
+            }],
+            "tool_choice": "auto"
+        });
+
+        let resp = chat_core(
+            &ctx,
+            &store,
+            &auth_headers(&token()),
+            body,
+            InboundFormat::OpenAi,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            resp.headers().get(CONTENT_TYPE).unwrap(),
+            "text/event-stream"
+        );
+
+        let body = body_string(resp).await;
+
+        provider.assert_async().await;
+
+        // The textual compact protocol must never leak to the client.
+        assert!(
+            !body.contains("<<call"),
+            "compact call leaked into client SSE:\n{body}"
+        );
+
+        // It must be reconstructed as a native streaming tool call.
+        assert!(
+            body.contains("\"tool_calls\""),
+            "native tool_calls missing from SSE:\n{body}"
+        );
+
+        assert!(
+            body.contains("\"name\":\"get_weather\""),
+            "tool name missing from SSE:\n{body}"
+        );
+
+        // Arguments are carried as a JSON string inside the native
+        // function-call delta, so inspect the important values directly.
+        assert!(
+            body.contains("Hyderabad"),
+            "city argument missing from SSE:\n{body}"
+        );
+
+        assert!(
+            body.contains("celsius"),
+            "unit argument missing from SSE:\n{body}"
+        );
+
+        assert!(
+            body.contains("\"finish_reason\":\"tool_calls\""),
+            "tool-call finish reason missing from SSE:\n{body}"
+        );
+
+        assert!(
+            body.trim_end().ends_with("data: [DONE]"),
+            "stream did not terminate with [DONE]:\n{body}"
+        );
     }
 
     #[tokio::test]
