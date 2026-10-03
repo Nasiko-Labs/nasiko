@@ -42,14 +42,15 @@ pub mod routing;
 mod savings;
 pub mod usage;
 
-pub use config::GatewayConfig;
+pub use config::{ClassifierBackend, GatewayConfig};
 pub use error::GatewayError;
 pub use inbound::InboundFormat;
 pub use inject::{LlmInjectCtx, inject_llm_env};
 pub use resolver::{ConfigCache, ResolvedConfig};
 pub use routing::{
-    AllowAllGate, CellStore, ClassifierSalienceGate, DecisionCache, InMemoryCellStore, NoopCache,
-    PgCellStore, PgTierRegistry, RedisCache, SalienceGate, TierRegistry,
+    AllowAllGate, CellStore, ClassifierSalienceGate, DecisionCache, GuardedClassifier,
+    InMemoryCellStore, NaiveBayesClassifier, NoopCache, PgCellStore, PgTierRegistry, RedisCache,
+    RegexClassifier, RequestClassifier, SalienceGate, TierRegistry,
 };
 
 /// Shared context for the LLM router.
@@ -82,6 +83,9 @@ pub struct LlmRouterCtx {
     /// classify + pin. [`ClassifierSalienceGate`] when `SALIENCE_GATE_ENABLED`; else [`AllowAllGate`]
     /// (classify at every boundary, i.e. behaviour before the gate existed).
     pub salience_gate: Arc<dyn SalienceGate>,
+    /// Level 3 request-type classifier: the configured backend (`CLASSIFIER_BACKEND`,
+    /// default regex) behind a timeout with regex fallback. See [`build_request_classifier`].
+    pub request_classifier: Arc<GuardedClassifier>,
     /// The platform's single cost engine. Every `token_usage` row is priced
     /// through this — the DB trigger that used to do it returned NULL for any
     /// model missing from `model_pricing`, which booked 92.8% of calls at $0.
@@ -127,6 +131,7 @@ impl LlmRouterCtx {
         let router_cache = build_router_cache(&cfg);
         let cfg = Arc::new(cfg);
         let salience_gate = build_salience_gate(&cfg);
+        let request_classifier = Arc::new(build_request_classifier(&cfg));
         let pricing = Arc::new(PricingEngine::new(db.clone()));
         Self {
             db,
@@ -137,9 +142,49 @@ impl LlmRouterCtx {
             tier_registry,
             cell_store,
             salience_gate,
+            request_classifier,
             pricing,
         }
     }
+}
+
+/// Build the Level 3 request classifier from config.
+///
+/// `regex` (the default) wraps [`RegexClassifier`], so routing is identical to before the
+/// trait existed. `nb` trains [`NaiveBayesClassifier`] on the embedded labelled set; if that
+/// fails it logs a warning and uses the regex — a classifier that cannot load costs routing
+/// quality, never availability. Either way the backend sits behind
+/// `CLASSIFIER_TIMEOUT_MS` with regex fallback. Public so `examples/classifier_eval.rs`
+/// builds exactly what the router runs.
+pub fn build_request_classifier(cfg: &GatewayConfig) -> GuardedClassifier {
+    // Compile the regex tables now (they are lazy) so the first routed request — and the
+    // eval's first case — does not pay for it. Every backend can fall back to the regex.
+    let _ = routing::classify_request_type("");
+    let timeout = Duration::from_millis(cfg.classifier_timeout_ms);
+    let backend: Arc<dyn RequestClassifier> = match cfg.classifier_backend {
+        ClassifierBackend::Regex => Arc::new(RegexClassifier),
+        ClassifierBackend::NaiveBayes => {
+            match NaiveBayesClassifier::embedded(cfg.classifier_confidence_threshold) {
+                Ok(nb) => Arc::new(nb),
+                Err(e) => {
+                    tracing::warn!(
+                        target: "nasiko::llm_router::startup",
+                        error = %e,
+                        "llm-router: naive Bayes classifier failed to load; using the regex classifier"
+                    );
+                    Arc::new(RegexClassifier)
+                }
+            }
+        }
+    };
+    tracing::info!(
+        target: "nasiko::llm_router::startup",
+        backend = backend.name(),
+        timeout_ms = cfg.classifier_timeout_ms,
+        confidence_threshold = cfg.classifier_confidence_threshold,
+        "llm-router: request classifier ready"
+    );
+    GuardedClassifier::new(backend, timeout)
 }
 
 /// Build the Level 2.5 salience gate from config.

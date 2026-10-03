@@ -26,9 +26,20 @@
 //! feedback accumulates the posterior tightens and selection converges. Thompson's
 //! stochasticity is the exploration that makes that learning possible, so production feeds
 //! it an entropy RNG; tests inject a seeded one.
+//!
+//! ## Pluggable request-type backends
+//!
+//! Step 1 is pluggable through the [`RequestClassifier`] trait (section 5). The router holds
+//! a [`GuardedClassifier`]: the configured backend (`CLASSIFIER_BACKEND`, default
+//! [`RegexClassifier`] = step 1 above, unchanged) behind a timeout, with regex fallback on
+//! error or timeout. Step 2 ([`select_tier`]) and the provider tier mapping are unchanged.
 
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
+use async_trait::async_trait;
 use rand::Rng;
 use rand_distr::{Beta, Distribution};
 
@@ -309,6 +320,20 @@ pub fn classify<R: Rng + ?Sized>(
     rng: &mut R,
 ) -> (Tier, RequestType) {
     let request_type = classify_request_type(query);
+    let tier = select_tier(query, request_type, provider, cells, rng);
+    (tier, request_type)
+}
+
+/// Thompson-sample a [`Tier`] for an already-classified `request_type` — the second half of
+/// [`classify`], split out so the router can take the request type from any
+/// [`RequestClassifier`] backend while keeping the provider-scoped tier mapping unchanged.
+pub fn select_tier<R: Rng + ?Sized>(
+    query: &str,
+    request_type: RequestType,
+    provider: &str,
+    cells: &CellMap,
+    rng: &mut R,
+) -> Tier {
     let tier = pick_model_thompson(cells, request_type, DEFAULT_W_QUALITY, DEFAULT_W_COST, rng);
     let preview: String = query.chars().take(120).collect();
     tracing::info!(
@@ -321,7 +346,160 @@ pub fn classify<R: Rng + ?Sized>(
         classified_tier = ?tier,
         "classifier: classified query into request type and Thompson-sampled a model tier"
     );
-    (tier, request_type)
+    tier
+}
+
+// --------------------------------------------------------------------------
+// 5. Pluggable request-type classifier
+// --------------------------------------------------------------------------
+
+/// What a [`RequestClassifier`] sees: the latest user query plus optional surrounding
+/// context (code, logs, a document). The router passes `context: None` today.
+#[derive(Debug, Clone, Copy)]
+pub struct ClassifyInput<'a> {
+    pub query: &'a str,
+    pub context: Option<&'a str>,
+}
+
+/// A classifier's verdict.
+///
+/// - `request_type` — one of the seven [`RequestType`]s (the bandit's learning key).
+/// - `complexity` — 1 (trivial single operation) … 5 (intricate cross-component reasoning
+///   and validation). Reported, not used for tier selection: the bandit key stays
+///   `(tier, request_type)`.
+/// - `confidence` — the backend's estimate, in `[0, 1]`, that `request_type` is correct.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Classification {
+    pub request_type: RequestType,
+    pub complexity: u8,
+    pub confidence: f32,
+}
+
+/// Why a backend could not classify. Every variant makes the router fall back to the regex.
+#[derive(Debug, thiserror::Error)]
+pub enum ClassifyError {
+    #[error("classifier model failed to load: {0}")]
+    Load(String),
+    #[error("classifier inference failed: {0}")]
+    Inference(String),
+    #[error("classifier timed out after {0:?}")]
+    Timeout(Duration),
+}
+
+/// A request-type classifier backend. Implementations must be deterministic: identical
+/// input ⇒ identical [`Classification`]. Async so a hosted backend can make network calls.
+#[async_trait]
+pub trait RequestClassifier: Send + Sync {
+    /// Stable backend name (`regex`, `nb`, …) for logs and the eval.
+    fn name(&self) -> &str;
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError>;
+}
+
+/// Complexity the regex backend always reports: it has no complexity signal, so it claims
+/// the rubric midpoint ("multi-step with limited constraints") rather than guessing.
+pub const REGEX_COMPLEXITY: u8 = 3;
+/// Confidence the regex backend always reports. A keyword vote count carries no per-query
+/// certainty, so this is a flat prior: the regex's accuracy on our hand-labelled validation
+/// split (`data/classifier/val.jsonl`, 24/70 ≈ 0.34), rounded.
+pub const REGEX_CONFIDENCE: f32 = 0.35;
+
+/// The default backend: [`classify_request_type`] over the query alone (context is
+/// ignored, exactly as before the trait existed), with fixed [`REGEX_COMPLEXITY`] and
+/// [`REGEX_CONFIDENCE`]. Never fails.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct RegexClassifier;
+
+impl RegexClassifier {
+    /// The regex verdict, synchronously — also the router's fallback answer.
+    pub fn classify_sync(input: &ClassifyInput<'_>) -> Classification {
+        Classification {
+            request_type: classify_request_type(input.query),
+            complexity: REGEX_COMPLEXITY,
+            confidence: REGEX_CONFIDENCE,
+        }
+    }
+}
+
+#[async_trait]
+impl RequestClassifier for RegexClassifier {
+    fn name(&self) -> &str {
+        "regex"
+    }
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+        Ok(Self::classify_sync(input))
+    }
+}
+
+/// How a [`GuardedClassifier`] produced its answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClassifyOutcome {
+    /// The configured backend answered.
+    Backend,
+    /// The backend erred or timed out; the regex answered instead.
+    Fallback,
+}
+
+/// What the router holds: the configured backend (`Arc<dyn RequestClassifier>`) behind a
+/// timeout, with the regex as the answer of last resort. It never fails — an `Err` or a
+/// timeout yields [`RegexClassifier`]'s verdict and bumps [`fallbacks`](Self::fallbacks).
+///
+/// The timeout bounds *awaiting*: a backend that yields (a network call) is cut off on
+/// time, while a purely CPU-bound backend such as the naive Bayes runs to completion on its
+/// first poll (microseconds) and is never interrupted.
+pub struct GuardedClassifier {
+    backend: Arc<dyn RequestClassifier>,
+    timeout: Duration,
+    fallbacks: AtomicU64,
+}
+
+impl GuardedClassifier {
+    pub fn new(backend: Arc<dyn RequestClassifier>, timeout: Duration) -> Self {
+        Self {
+            backend,
+            timeout,
+            fallbacks: AtomicU64::new(0),
+        }
+    }
+
+    /// The regex backend — what the router uses unless configured otherwise.
+    pub fn regex() -> Self {
+        Self::new(Arc::new(RegexClassifier), Duration::from_millis(50))
+    }
+
+    /// The wrapped backend's name.
+    pub fn backend_name(&self) -> &str {
+        self.backend.name()
+    }
+
+    /// Fallbacks (errors + timeouts) since construction.
+    pub fn fallbacks(&self) -> u64 {
+        self.fallbacks.load(Ordering::Relaxed)
+    }
+
+    /// Classify with the backend, falling back to the regex on error or timeout.
+    pub async fn classify(&self, input: &ClassifyInput<'_>) -> (Classification, ClassifyOutcome) {
+        let result = match tokio::time::timeout(self.timeout, self.backend.classify(input)).await {
+            Ok(result) => result,
+            Err(_) => Err(ClassifyError::Timeout(self.timeout)),
+        };
+        match result {
+            Ok(c) => (c, ClassifyOutcome::Backend),
+            Err(e) => {
+                let total = self.fallbacks.fetch_add(1, Ordering::Relaxed) + 1;
+                tracing::warn!(
+                    target: "nasiko::llm_router::classifier",
+                    backend = self.backend.name(),
+                    error = %e,
+                    fallbacks_total = total,
+                    "classifier: backend failed; using the regex classifier for this request"
+                );
+                (
+                    RegexClassifier::classify_sync(input),
+                    ClassifyOutcome::Fallback,
+                )
+            }
+        }
+    }
 }
 
 #[cfg(test)]

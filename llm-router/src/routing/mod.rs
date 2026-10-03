@@ -24,6 +24,7 @@ pub mod classifier;
 // The salience classifier itself — feature engine, weight loading, scoring, banding.
 // Private to `routing`: only `salience.rs` (a sibling module) uses it directly, via
 // `ClassifierSalienceGate`.
+pub mod naive_bayes;
 mod patterns;
 pub mod pricing_sync;
 pub mod registry;
@@ -33,7 +34,12 @@ mod salience_classifier;
 pub use boundary::{BoundarySignals, Mode, Phase};
 pub use cache::{CachedDecision, DecisionCache, NoopCache, RedisCache};
 pub use cells::{CellStore, InMemoryCellStore, PgCellStore};
-pub use classifier::{RequestType, Tier, classify, classify_request_type, signal};
+pub use classifier::{
+    Classification, ClassifyError, ClassifyInput, ClassifyOutcome, GuardedClassifier,
+    RegexClassifier, RequestClassifier, RequestType, Tier, classify, classify_request_type,
+    select_tier, signal,
+};
+pub use naive_bayes::NaiveBayesClassifier;
 pub use registry::{PgTierRegistry, TierRegistry};
 pub use salience::{AllowAllGate, ClassifierSalienceGate, SalienceGate};
 
@@ -124,6 +130,7 @@ pub async fn route_model(
     registry: &dyn TierRegistry,
     cell_store: &dyn CellStore,
     gate: &dyn SalienceGate,
+    classifier: &GuardedClassifier,
     inputs: &RouteInputs<'_>,
 ) -> RouteDecision {
     tracing::info!(
@@ -245,14 +252,34 @@ pub async fn route_model(
                 agent_id = %inputs.agent_id, %conv_id, provider = %inputs.provider,
                 "route_model: LEVEL 3 (Classified) — at fireable boundary with a query; invoking classifier"
             );
+            // Request type from the configured backend (regex by default; falls back to the
+            // regex on error/timeout). Only reached at a fireable boundary on a cache miss,
+            // so `continue` steps and sticky turns never re-classify.
+            let (classification, outcome) = classifier
+                .classify(&ClassifyInput {
+                    query,
+                    context: None,
+                })
+                .await;
+            let request_type = classification.request_type;
+            tracing::info!(
+                target: "nasiko::llm_router::routing",
+                agent_id = %inputs.agent_id, %conv_id,
+                backend = classifier.backend_name(),
+                ?outcome,
+                request_type = %request_type.as_str(),
+                complexity = classification.complexity,
+                confidence = classification.confidence,
+                "route_model: LEVEL 3 — request classified"
+            );
             // Load the provider's learned quality, then Thompson-sample a tier. Production
             // uses an entropy RNG (exploration drives learning); tests seed it. The RNG
             // (`ThreadRng`) is `!Send`, so it is scoped to drop before the next `.await` — the
             // handler future must stay `Send`.
             let learned = cell_store.load(inputs.provider).await;
-            let (tier, request_type) = {
+            let tier = {
                 let mut rng = rand::rng();
-                classify(query, inputs.provider, &learned, &mut rng)
+                select_tier(query, request_type, inputs.provider, &learned, &mut rng)
             };
             // Per-config tier override takes priority over the global registry.
             let config_override = match tier {
@@ -546,6 +573,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &GuardedClassifier::regex(),
             &inputs("anthropic", &s, Some("pinned-model")),
         )
         .await;
@@ -563,6 +591,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &GuardedClassifier::regex(),
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -582,6 +611,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &GuardedClassifier::regex(),
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -612,6 +642,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &DenyGate,
+            &GuardedClassifier::regex(),
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -638,6 +669,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &DenyGate,
+            &GuardedClassifier::regex(),
             &i,
         )
         .await;
@@ -658,6 +690,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &DenyGate,
+            &GuardedClassifier::regex(),
             &i,
         )
         .await;
@@ -677,6 +710,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &DenyGate,
+            &GuardedClassifier::regex(),
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -699,6 +733,7 @@ mod tests {
             &test_support::StubRegistry,
             &cells,
             &AllowAllGate,
+            &GuardedClassifier::regex(),
             &i,
         )
         .await;
@@ -726,6 +761,7 @@ mod tests {
             &test_support::StubRegistry,
             &cells,
             &AllowAllGate,
+            &GuardedClassifier::regex(),
             &i,
         )
         .await;
@@ -743,6 +779,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &GuardedClassifier::regex(),
             &inputs("gemini", &s, None),
         )
         .await;
@@ -761,6 +798,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &GuardedClassifier::regex(),
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -777,6 +815,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &GuardedClassifier::regex(),
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -795,6 +834,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &GuardedClassifier::regex(),
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -814,11 +854,205 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &GuardedClassifier::regex(),
             &i,
         )
         .await;
         assert_eq!(d.source, RouteSource::Default);
         assert_eq!(d.model, "cfg-model");
+    }
+
+    // --- pluggable request classifier at Level 3 ---
+
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    /// A backend that counts calls and answers with a fixed type, errors, or stalls.
+    struct ScriptedClassifier {
+        calls: AtomicUsize,
+        behaviour: Behaviour,
+    }
+    enum Behaviour {
+        Answer(RequestType),
+        Fail,
+        Stall,
+    }
+    impl ScriptedClassifier {
+        fn new(behaviour: Behaviour) -> Arc<Self> {
+            Arc::new(Self {
+                calls: AtomicUsize::new(0),
+                behaviour,
+            })
+        }
+        fn calls(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
+    }
+    #[async_trait]
+    impl RequestClassifier for ScriptedClassifier {
+        fn name(&self) -> &str {
+            "scripted"
+        }
+        async fn classify(
+            &self,
+            _input: &ClassifyInput<'_>,
+        ) -> Result<Classification, ClassifyError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            match self.behaviour {
+                Behaviour::Answer(rt) => Ok(Classification {
+                    request_type: rt,
+                    complexity: 4,
+                    confidence: 0.9,
+                }),
+                Behaviour::Fail => Err(ClassifyError::Inference("boom".into())),
+                Behaviour::Stall => {
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    unreachable!("the guard times out first")
+                }
+            }
+        }
+    }
+
+    /// A working in-memory decision cache (get returns what put stored).
+    #[derive(Default)]
+    struct MemCache(Mutex<std::collections::HashMap<(String, String), CachedDecision>>);
+    #[async_trait]
+    impl DecisionCache for MemCache {
+        async fn get(&self, conv_id: &str, agent_id: &str) -> Option<CachedDecision> {
+            self.0
+                .lock()
+                .unwrap()
+                .get(&(conv_id.into(), agent_id.into()))
+                .cloned()
+        }
+        async fn put(&self, conv_id: &str, agent_id: &str, decision: &CachedDecision) {
+            self.0
+                .lock()
+                .unwrap()
+                .insert((conv_id.into(), agent_id.into()), decision.clone());
+        }
+    }
+
+    async fn route_with(
+        cache: &dyn DecisionCache,
+        classifier: &GuardedClassifier,
+        phase: Phase,
+        query: &str,
+    ) -> RouteDecision {
+        let s = signals(Some("c1"), phase, Mode::FreeFlowing);
+        let mut i = inputs("anthropic", &s, None);
+        i.query = Some(query);
+        route_model(
+            cache,
+            &test_support::StubRegistry,
+            &InMemoryCellStore::new(),
+            &AllowAllGate,
+            classifier,
+            &i,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn classifier_runs_at_cold_start_and_switch_only() {
+        for (phase, expect_calls) in [
+            (Phase::ColdStart, 1),
+            (Phase::Switch, 1),
+            (Phase::Continue, 0),
+        ] {
+            let backend = ScriptedClassifier::new(Behaviour::Answer(RequestType::CodeGeneration));
+            let guard = GuardedClassifier::new(backend.clone(), Duration::from_millis(50));
+            let d = route_with(&FakeCache::empty(), &guard, phase, "write a parser").await;
+            assert_eq!(backend.calls(), expect_calls, "{phase:?}");
+            let expected_source = if expect_calls == 1 {
+                RouteSource::Classified
+            } else {
+                RouteSource::Config
+            };
+            assert_eq!(d.source, expected_source, "{phase:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn tier_stays_sticky_through_continue_steps() {
+        // Turn 1 classifies and pins; every later step of the same conversation (tool-loop
+        // `continue`, or even a `switch` while the decision is cached) reuses the pinned
+        // model and tier without calling the classifier again.
+        let cache = MemCache::default();
+        let backend = ScriptedClassifier::new(Behaviour::Answer(RequestType::TechnicalDesign));
+        let guard = GuardedClassifier::new(backend.clone(), Duration::from_millis(50));
+        let first = route_with(&cache, &guard, Phase::ColdStart, "design a sharded queue").await;
+        assert_eq!(first.source, RouteSource::Classified);
+        for (phase, q) in [
+            (Phase::Continue, "tool result: 3 shards ok"),
+            (Phase::Continue, "write a haiku instead"),
+            (Phase::Switch, "what is the capital of France?"),
+        ] {
+            let next = route_with(&cache, &guard, phase, q).await;
+            assert_eq!(next.source, RouteSource::CacheHit);
+            assert_eq!(next.model, first.model);
+            assert_eq!(next.tier, first.tier);
+        }
+        assert_eq!(backend.calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn backend_error_falls_back_to_regex_and_counts() {
+        let guard = GuardedClassifier::new(
+            ScriptedClassifier::new(Behaviour::Fail),
+            Duration::from_millis(50),
+        );
+        let d = route_with(&FakeCache::empty(), &guard, Phase::Switch, "write a parser").await;
+        assert_eq!(
+            d.source,
+            RouteSource::Classified,
+            "a failing backend never breaks routing"
+        );
+        assert_eq!(guard.fallbacks(), 1);
+        let input = ClassifyInput {
+            query: "draft an email to my team",
+            context: None,
+        };
+        let (c, outcome) = guard.classify(&input).await;
+        assert_eq!(outcome, ClassifyOutcome::Fallback);
+        assert_eq!(c, RegexClassifier::classify_sync(&input));
+        assert_eq!(guard.fallbacks(), 2);
+    }
+
+    #[tokio::test]
+    async fn backend_timeout_falls_back_to_regex_and_counts() {
+        let guard = GuardedClassifier::new(
+            ScriptedClassifier::new(Behaviour::Stall),
+            Duration::from_millis(10),
+        );
+        let input = ClassifyInput {
+            query: "what is the capital of France?",
+            context: None,
+        };
+        let started = std::time::Instant::now();
+        let (c, outcome) = guard.classify(&input).await;
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "timeout not enforced"
+        );
+        assert_eq!(outcome, ClassifyOutcome::Fallback);
+        assert_eq!(c.request_type, RequestType::FactualLookup);
+        assert_eq!(guard.fallbacks(), 1);
+    }
+
+    #[tokio::test]
+    async fn healthy_backend_counts_no_fallback() {
+        let guard = GuardedClassifier::regex();
+        let (c, outcome) = guard
+            .classify(&ClassifyInput {
+                query: "hello there",
+                context: None,
+            })
+            .await;
+        assert_eq!(outcome, ClassifyOutcome::Backend);
+        assert_eq!(c.request_type, RequestType::General);
+        assert_eq!(guard.fallbacks(), 0);
     }
 
     #[test]
