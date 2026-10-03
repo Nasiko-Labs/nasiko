@@ -19,11 +19,19 @@ fn key() -> impl Strategy<Value = String> {
 
 fn description() -> impl Strategy<Value = String> {
     // Arbitrary text, control characters and grammar punctuation included.
-    prop_oneof![any::<String>(), "[ -~]{0,30}", Just(" # = (x) | \\ \"".to_string())]
+    prop_oneof![
+        any::<String>(),
+        "[ -~]{0,30}",
+        Just(" # = (x) | \\ \"".to_string())
+    ]
 }
 
 fn enum_string() -> impl Strategy<Value = String> {
-    prop_oneof!["[a-z][a-z0-9_-]{0,6}", "[ -~]{0,8}", Just("string".to_string())]
+    prop_oneof![
+        "[a-z][a-z0-9_-]{0,6}",
+        "[ -~]{0,8}",
+        Just("string".to_string())
+    ]
 }
 
 fn scalar() -> impl Strategy<Value = Value> {
@@ -48,9 +56,11 @@ fn leaf() -> impl Strategy<Value = Value> {
             Just("uuid")
         ]
         .prop_map(|f| json!({"type": "string", "format": f})),
-        (0u64..5, 5u64..50).prop_map(|(a, b)| json!({"type": "string", "minLength": a, "maxLength": b})),
+        (0u64..5, 5u64..50)
+            .prop_map(|(a, b)| json!({"type": "string", "minLength": a, "maxLength": b})),
         Just(json!({"type": "string", "pattern": "^[a-z]+(\\d{2})?$"})),
-        (-50i64..0, 0i64..50).prop_map(|(a, b)| json!({"type": "integer", "minimum": a, "maximum": b})),
+        (-50i64..0, 0i64..50)
+            .prop_map(|(a, b)| json!({"type": "integer", "minimum": a, "maximum": b})),
         Just(json!({"type": "number", "exclusiveMinimum": 0, "multipleOf": 0.25})),
         Just(json!({"type": "boolean"})),
         Just(json!({"type": ["string", "null"]})),
@@ -66,20 +76,21 @@ fn leaf() -> impl Strategy<Value = Value> {
 
 /// A property schema, possibly nested, without descriptions on `items` (no place for them).
 fn schema() -> BoxedStrategy<Value> {
-    leaf().prop_recursive(3, 24, 4, |inner| {
-        prop_oneof![
-            (inner.clone(), prop::option::of(1u64..4)).prop_map(|(items, min)| {
-                let mut s = json!({"type": "array", "items": strip_annotations(items)});
-                if let Some(min) = min {
-                    s["minItems"] = json!(min);
-                }
-                s
-            }),
-            object(inner.clone()),
-            Just(json!({"type": "object"})),
-        ]
-    })
-    .boxed()
+    leaf()
+        .prop_recursive(3, 24, 4, |inner| {
+            prop_oneof![
+                (inner.clone(), prop::option::of(1u64..4)).prop_map(|(items, min)| {
+                    let mut s = json!({"type": "array", "items": strip_annotations(items)});
+                    if let Some(min) = min {
+                        s["minItems"] = json!(min);
+                    }
+                    s
+                }),
+                object(inner.clone()),
+                Just(json!({"type": "object"})),
+            ]
+        })
+        .boxed()
 }
 
 fn object(inner: impl Strategy<Value = Value> + Clone) -> impl Strategy<Value = Value> {
@@ -106,8 +117,12 @@ fn object(inner: impl Strategy<Value = Value> + Clone) -> impl Strategy<Value = 
 
 /// A schema in property position: may carry a description and a default.
 fn property(inner: impl Strategy<Value = Value>) -> impl Strategy<Value = Value> {
-    (inner, prop::option::of(description()), prop::option::of(scalar())).prop_map(
-        |(mut s, desc, default)| {
+    (
+        inner,
+        prop::option::of(description()),
+        prop::option::of(scalar()),
+    )
+        .prop_map(|(mut s, desc, default)| {
             if let Some(d) = desc {
                 s["description"] = json!(d);
             }
@@ -115,8 +130,7 @@ fn property(inner: impl Strategy<Value = Value>) -> impl Strategy<Value = Value>
                 s["default"] = d;
             }
             s
-        },
-    )
+        })
 }
 
 fn strip_annotations(mut s: Value) -> Value {

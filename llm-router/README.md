@@ -63,6 +63,14 @@ examples/mint_token.rs   dev/test JWT minter
 `AGENT_JWT_SECRET` (required; fail-closed if empty), `AGENT_JWT_ALGORITHM` (HS256),
 `DEFAULT_PROVIDER` (openai), `DEFAULT_MODEL` (gpt-4o-mini), `PLATFORM_OPENAI_API_KEY`,
 `LLM_CONFIG_CACHE_TTL` (30s), `{OPENAI,ANTHROPIC,GEMINI}_API_BASE` (test overrides).
+
+`TOKEN_COMPACT_TOOLS` (default **off**): replace a request's native `tools` with compact
+definitions and decode `<<call …>>` replies back into standard `tool_calls`
+([`nasiko-tool-compact`](../tool-compact/README.md), `src/compact_tools.rs`). It also needs the
+agent's own token-optimization switch. Covered: non-streaming chat on the OpenAI, Anthropic and
+Gemini inbound surfaces. Streaming, `/v1/responses`, forced `tool_choice`,
+`parallel_tool_calls: false`, `response_format`, tool history and unsupported schemas go out
+unchanged. A reply that does not decode is retried once with the native request.
 Reuses the platform's `SECRETS_ENCRYPTION_KEY` (per-user HKDF AES-256-GCM) and
 `DATABASE_URL`.
 

@@ -47,9 +47,12 @@ pub fn decode_tools(compact: &CompactTools) -> Result<Vec<ToolDef>, CompactError
         let mut root = empty_object();
         let shape = root.object.get_or_insert_with(Default::default);
         let mut strict = None;
+        let mut parameters_absent = false;
         for annotation in header.annotations {
             match annotation {
                 Annotation::Any => shape.properties = None,
+                Annotation::NoRequired => shape.required = Some(Vec::new()),
+                Annotation::NoParams => parameters_absent = true,
                 Annotation::Closed => shape.additional = Additional::Allowed(false),
                 Annotation::Open => shape.additional = Additional::Allowed(true),
                 Annotation::Strict(s) => strict = Some(s),
@@ -65,11 +68,16 @@ pub fn decode_tools(compact: &CompactTools) -> Result<Vec<ToolDef>, CompactError
                 "a free-form object cannot list properties",
             ));
         }
-        shape.required = (!required.is_empty()).then_some(required);
+        if !required.is_empty() {
+            shape.required = Some(required);
+        }
+        if parameters_absent && root != empty_object() {
+            return Err(invalid(line_no, "`noparams` on a tool with parameters"));
+        }
         tools.push(ToolDef {
             name: header.name,
             description: header.description,
-            parameters: Some(to_json(&root)),
+            parameters: (!parameters_absent).then(|| to_json(&root)),
             strict,
             extra: Map::new(),
         });
@@ -150,7 +158,9 @@ fn parse_properties(
             }
             let (children, child_required) = parse_properties(lines, index, depth + 1)?;
             shape.properties = Some(children);
-            shape.required = (!child_required.is_empty()).then_some(child_required);
+            if !child_required.is_empty() {
+                shape.required = Some(child_required);
+            }
         }
         if !optional {
             required.push(name.clone());
@@ -255,13 +265,21 @@ enum Annotation {
     Any,
     Closed,
     Open,
+    NoRequired,
+    NoParams,
     Const,
     Type(Vec<Kind>),
     Strict(bool),
 }
 
 fn union_to_node(terms: Vec<Term>) -> Result<Node, String> {
-    if terms.iter().any(Term::is_value) {
+    let literal_mode = terms.iter().any(|t| {
+        t.is_value()
+            || t.annotations
+                .iter()
+                .any(|a| matches!(a, Annotation::Const | Annotation::Type(_)))
+    });
+    if literal_mode {
         return literals_to_node(terms);
     }
     let mut nodes = terms
@@ -418,7 +436,7 @@ fn apply(node: &mut Node, annotation: Annotation) -> Result<(), String> {
                 Some(Pattern::compile(&source).ok_or_else(|| format!("bad pattern `{source}`"))?);
         }
         Annotation::Unique(u) => b.unique_items = Some(u),
-        Annotation::Any | Annotation::Closed | Annotation::Open => {
+        Annotation::Any | Annotation::Closed | Annotation::Open | Annotation::NoRequired => {
             let shape = node
                 .object
                 .as_mut()
@@ -426,10 +444,11 @@ fn apply(node: &mut Node, annotation: Annotation) -> Result<(), String> {
             match annotation {
                 Annotation::Any => shape.properties = None,
                 Annotation::Closed => shape.additional = Additional::Allowed(false),
+                Annotation::NoRequired => shape.required = Some(Vec::new()),
                 _ => shape.additional = Additional::Allowed(true),
             }
         }
-        Annotation::Const | Annotation::Type(_) | Annotation::Strict(_) => {
+        Annotation::Const | Annotation::Type(_) | Annotation::Strict(_) | Annotation::NoParams => {
             return Err(format!("`{annotation:?}` is not valid here"));
         }
     }
@@ -556,6 +575,8 @@ impl<'a> Cursor<'a> {
                     "any" => Annotation::Any,
                     "closed" => Annotation::Closed,
                     "open" => Annotation::Open,
+                    "noreq" => Annotation::NoRequired,
+                    "noparams" => Annotation::NoParams,
                     "const" => Annotation::Const,
                     "unique" => Annotation::Unique(true),
                     "strict" => Annotation::Strict(true),
@@ -717,6 +738,12 @@ mod tests {
                 "anything": {},
                 "pick": {"type": "array", "items": {"enum": ["x y", "z"]}}
             }, "required": ["when", "limit"]}),
+            // Found by review: these forms must read back exactly.
+            json!({"type": "object", "properties": {
+                "n": {"const": null},
+                "tn": {"type": "null", "const": null},
+                "obj": {"type": "object", "properties": {"a": {"type": "string"}}, "required": []}
+            }, "required": []}),
             // Found by property testing: a one-value enum as array items.
             json!({"type": "object", "properties": {
                 "one": {"type": "array", "items": {"type": "string", "enum": ["a"]}},
@@ -781,10 +808,7 @@ mod tests {
         let back = decode_tools(&encode_tools(&tools).unwrap()).unwrap();
         let names: Vec<_> = back.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names, ["a", "b"]);
-        assert_eq!(
-            back[0].parameters,
-            Some(json!({"type": "object", "properties": {}}))
-        );
+        assert_eq!(back[0].parameters, None, "absent parameters stay absent");
     }
 
     #[test]

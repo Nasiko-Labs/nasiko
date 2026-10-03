@@ -121,6 +121,9 @@ impl Renderer<'_> {
             .as_ref()
             .ok_or_else(|| self.keyword("/parameters", "properties"))?;
         let mut annotations = self.object_annotations(shape);
+        if schema.parameters_absent {
+            annotations.push("noparams".into());
+        }
         match schema.strict {
             Some(true) => annotations.push("strict".into()),
             Some(false) => annotations.push("nonstrict".into()),
@@ -141,6 +144,10 @@ impl Renderer<'_> {
         if shape.properties.is_none() {
             out.push("any".to_string());
         }
+        // `required: []` reads back differently from no `required` at all, so it is marked.
+        if shape.required.as_ref().is_some_and(Vec::is_empty) {
+            out.push("noreq".to_string());
+        }
         match shape.additional {
             Additional::Allowed(false) => out.push("closed".into()),
             Additional::Allowed(true) => out.push("open".into()),
@@ -159,6 +166,14 @@ impl Renderer<'_> {
         lines: &mut Vec<String>,
     ) -> Result<(), CompactError> {
         let Some(props) = &shape.properties else {
+            // A free-form object has no property lines to mark required ones on.
+            if shape.required.as_ref().is_some_and(|r| !r.is_empty()) {
+                return Err(unsupported(
+                    self.tool,
+                    &format!("{path}/required"),
+                    UnsupportedFeature::InconsistentRequired,
+                ));
+            }
             return Ok(());
         };
         let required = shape.required.as_deref().unwrap_or_default();
@@ -223,6 +238,9 @@ impl Renderer<'_> {
         node: &'n Node,
         path: &str,
     ) -> Result<(String, Option<&'n ObjectShape>), CompactError> {
+        if node.const_value.is_some() && node.enum_values.is_some() {
+            return Err(self.keyword(path, "const"));
+        }
         if let Some(value) = &node.const_value {
             return self
                 .literal_expr(node, std::slice::from_ref(value), true, path)
@@ -653,7 +671,7 @@ mod tests {
         assert_eq!(encode_tools(&tools), encode_tools(&tools));
         assert_eq!(
             encode_tools(&tools).unwrap().definitions(),
-            "a: A\nb:\n x?: string"
+            "a (noparams): A\nb:\n x?: string"
         );
     }
 }

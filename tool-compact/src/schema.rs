@@ -174,9 +174,30 @@ pub(crate) struct Node {
     pub any_of: Option<Vec<Node>>,
     pub one_of: Option<Vec<Node>>,
     pub all_of: Option<Vec<Node>>,
+    pub not: Option<Box<Node>>,
+    pub if_then_else: Option<Box<Conditional>>,
+    pub dependent_required: Option<Vec<(String, Vec<String>)>>,
+    pub property_names: Option<Box<Node>>,
+    pub contains: Option<Box<Contains>>,
     /// The first assertion keyword this crate cannot enforce. Any call that reaches this node is
     /// rejected rather than passed unchecked.
     pub unvalidatable: Option<String>,
+}
+
+/// `if` / `then` / `else`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct Conditional {
+    pub condition: Option<Node>,
+    pub then_branch: Option<Node>,
+    pub else_branch: Option<Node>,
+}
+
+/// `contains` with its `minContains` / `maxContains` (defaults 1 and unbounded).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct Contains {
+    pub schema: Option<Node>,
+    pub min: Option<u64>,
+    pub max: Option<u64>,
 }
 
 /// Something the compact text cannot carry exactly, and where it is.
@@ -192,6 +213,8 @@ pub(crate) struct ToolSchema {
     pub name: String,
     pub description: Option<String>,
     pub strict: Option<bool>,
+    /// The tool declared no `parameters` at all (distinct from an empty object schema).
+    pub parameters_absent: bool,
     pub root: Node,
     pub blockers: Vec<Blocker>,
 }
@@ -239,26 +262,21 @@ const ANNOTATION_KEYWORDS: &[&str] = &[
 /// Assertion keywords this crate does not implement. A call that must satisfy one cannot be
 /// proven valid, so it fails closed.
 const UNVALIDATABLE_KEYWORDS: &[&str] = &[
-    "not",
-    "if",
-    "then",
-    "else",
     "patternProperties",
     "prefixItems",
     "additionalItems",
-    "dependentRequired",
     "dependentSchemas",
     "dependencies",
-    "propertyNames",
-    "contains",
-    "minContains",
-    "maxContains",
     "unevaluatedProperties",
     "unevaluatedItems",
 ];
 
 /// Depth guard for `$ref` chains and nesting; deeper schemas are not something a model is shown.
 const MAX_DEPTH: usize = 64;
+
+/// Total nodes one tool's schema may expand to. `$ref` is expanded inline, so a chain of
+/// definitions that each reference the next twice would otherwise grow exponentially.
+const MAX_NODES: usize = 10_000;
 
 /// Parse a tool's schema.
 ///
@@ -269,6 +287,7 @@ pub(crate) fn analyze(tool: &ToolDef) -> ToolSchema {
         defs: None,
         ref_stack: Vec::new(),
         blockers: Vec::new(),
+        nodes: 0,
     };
     if !is_safe_tool_name(&tool.name) {
         parser.block("/name", UnsupportedFeature::UnsafeName);
@@ -298,6 +317,7 @@ pub(crate) fn analyze(tool: &ToolDef) -> ToolSchema {
         name: tool.name.clone(),
         description: tool.description.clone(),
         strict: tool.strict,
+        parameters_absent: tool.parameters.is_none(),
         root,
         blockers: parser.blockers,
     }
@@ -318,6 +338,7 @@ struct Parser {
     defs: Option<Map<String, Value>>,
     ref_stack: Vec<String>,
     blockers: Vec<Blocker>,
+    nodes: usize,
 }
 
 impl Parser {
@@ -337,9 +358,10 @@ impl Parser {
 
     fn parse(&mut self, schema: &Value, path: &str, depth: usize) -> Node {
         let mut node = Node::default();
-        if depth > MAX_DEPTH {
-            node.unvalidatable = Some("nesting depth".into());
-            self.block(path, UnsupportedFeature::Keyword("nesting depth".into()));
+        self.nodes += 1;
+        if depth > MAX_DEPTH || self.nodes > MAX_NODES {
+            node.unvalidatable = Some("schema size".into());
+            self.block(path, UnsupportedFeature::Keyword("schema size".into()));
             return node;
         }
         let Some(map) = schema.as_object() else {
@@ -512,6 +534,44 @@ impl Parser {
                 let resolved = self.resolve_ref(value, path, depth);
                 node.all_of.get_or_insert_with(Vec::new).push(resolved);
             }
+            "not" | "if" | "then" | "else" | "propertyNames" | "contains" => {
+                self.block_keyword(path, keyword);
+                let child = Box::new(self.parse(value, &format!("{path}/{keyword}"), depth + 1));
+                match keyword {
+                    "not" => node.not = Some(child),
+                    "propertyNames" => node.property_names = Some(child),
+                    "contains" => {
+                        node.contains.get_or_insert_with(Default::default).schema = Some(*child)
+                    }
+                    _ => {
+                        let cond = node.if_then_else.get_or_insert_with(Default::default);
+                        match keyword {
+                            "if" => cond.condition = Some(*child),
+                            "then" => cond.then_branch = Some(*child),
+                            _ => cond.else_branch = Some(*child),
+                        }
+                    }
+                }
+            }
+            "minContains" | "maxContains" => {
+                self.block_keyword(path, keyword);
+                let Some(n) = value.as_u64() else {
+                    return self.invalid(node, path, keyword);
+                };
+                let contains = node.contains.get_or_insert_with(Default::default);
+                if keyword == "minContains" {
+                    contains.min = Some(n);
+                } else {
+                    contains.max = Some(n);
+                }
+            }
+            "dependentRequired" => {
+                self.block_keyword(path, keyword);
+                match dependent_required(value) {
+                    Some(deps) => node.dependent_required = Some(deps),
+                    None => self.invalid(node, path, keyword),
+                }
+            }
             "$defs" | "definitions" => self.block_keyword(path, keyword),
             kw if ANNOTATION_KEYWORDS.contains(&kw) => self.block_keyword(path, kw),
             kw if UNVALIDATABLE_KEYWORDS.contains(&kw) => {
@@ -532,6 +592,11 @@ impl Parser {
         };
         let kinds: Option<Vec<Kind>> = words.iter().map(|w| Kind::from_keyword(w)).collect();
         match kinds {
+            Some(kinds) if value.as_array().is_some_and(|a| a.len() == 1) => {
+                // `["object"]` means the same as `"object"` but would read back differently.
+                self.block_keyword(path, "type");
+                node.types = kinds;
+            }
             Some(kinds)
                 if !kinds.is_empty()
                     && Some(kinds.len()) == value.as_array().map(Vec::len).or(Some(1)) =>
@@ -582,10 +647,25 @@ impl Parser {
     }
 }
 
+/// `dependentRequired`: property name → names that must accompany it.
+fn dependent_required(value: &Value) -> Option<Vec<(String, Vec<String>)>> {
+    value
+        .as_object()?
+        .iter()
+        .map(|(key, names)| {
+            let names = names
+                .as_array()?
+                .iter()
+                .map(|n| n.as_str().map(str::to_string))
+                .collect::<Option<Vec<_>>>()?;
+            Some((key.clone(), names))
+        })
+        .collect()
+}
+
 /// Serialize a tree back to JSON Schema (the canonical form).
 ///
-/// Canonical means: keys in `serde_json`'s order, `required: []` omitted. Everything else is
-/// exactly what the tree holds.
+/// Canonical means keys in `serde_json`'s order; everything else is exactly what the tree holds.
 pub(crate) fn to_json(node: &Node) -> Value {
     let mut m = Map::new();
     match node.types.as_slice() {
@@ -619,7 +699,7 @@ pub(crate) fn to_json(node: &Node) -> Value {
                 .collect();
             m.insert("properties".into(), Value::Object(props));
         }
-        if let Some(required) = shape.required.as_ref().filter(|r| !r.is_empty()) {
+        if let Some(required) = &shape.required {
             let list = required.iter().map(|n| Value::from(n.as_str())).collect();
             m.insert("required".into(), Value::Array(list));
         }
@@ -769,7 +849,13 @@ mod tests {
 
     #[test]
     fn inexpressible_enums_block() {
-        for values in [json!([]), json!([{"a": 1}]), json!([[1]]), json!([null]), json!([null, null])] {
+        for values in [
+            json!([]),
+            json!([{"a": 1}]),
+            json!([[1]]),
+            json!([null]),
+            json!([null, null]),
+        ] {
             let blocker = first_blocker(json!({
                 "type": "object",
                 "properties": {"a": {"enum": values}}

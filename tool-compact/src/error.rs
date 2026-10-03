@@ -7,8 +7,9 @@ use thiserror::Error;
 /// variant is a decoding failure, and decoding fails closed — a reply that produces one of them
 /// yields no calls at all.
 ///
-/// [`CompactError::code`] maps each variant onto the two stable codes OpenAI-shaped callers and
-/// the evaluation contract use: `unknown_tool` and `invalid_arguments`.
+/// [`CompactError::code`] gives a stable code per variant. Decoding failures use only the two
+/// the evaluation contract knows, `unknown_tool` and `invalid_arguments`; the other two codes
+/// belong to encoding (`unsupported_schema`) and to parsing definitions (`invalid_definitions`).
 #[derive(Debug, Clone, PartialEq, Error)]
 pub enum CompactError {
     #[error("tool `{tool}` cannot be compacted: {feature} at `{path}`")]

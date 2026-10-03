@@ -6,7 +6,7 @@
 //! else is a hallucination — the same policy OpenAI applies in strict mode. A keyword this crate
 //! cannot enforce makes the call invalid rather than unchecked.
 
-use serde_json::{Map, Value};
+use serde_json::{Map, Number, Value};
 
 use crate::error::{ArgumentFault, CompactError};
 use crate::schema::{Additional, Bounds, Kind, Node, ObjectShape};
@@ -41,12 +41,12 @@ fn check(node: &Node, value: &Value, path: &str) -> Result<(), Violation> {
         return Err(violation(path, ArgumentFault::WrongType { expected }));
     }
     if let Some(values) = &node.enum_values
-        && !values.contains(value)
+        && !values.iter().any(|v| json_equal(v, value))
     {
         return Err(violation(path, ArgumentFault::NotInEnum));
     }
     if let Some(expected) = &node.const_value
-        && expected != value
+        && !json_equal(expected, value)
     {
         return Err(violation(path, ArgumentFault::ConstMismatch));
     }
@@ -66,6 +66,7 @@ fn check(node: &Node, value: &Value, path: &str) -> Result<(), Violation> {
         }
         _ => {}
     }
+    check_assertions(node, value, path)?;
     check_combinators(node, value, path)
 }
 
@@ -113,7 +114,7 @@ fn check_bounds(b: &Bounds, value: &Value, path: &str) -> Result<(), Violation> 
             if limit(&b.exclusive_maximum).is_some_and(|m| x >= m) {
                 return fail("exclusiveMaximum");
             }
-            if limit(&b.multiple_of).is_some_and(|m| !is_multiple(x, m)) {
+            if b.multiple_of.as_ref().is_some_and(|m| !is_multiple(n, m)) {
                 return fail("multipleOf");
             }
         }
@@ -137,12 +138,7 @@ fn check_bounds(b: &Bounds, value: &Value, path: &str) -> Result<(), Violation> 
             if b.max_items.is_some_and(|m| count > m) {
                 return fail("maxItems");
             }
-            if b.unique_items == Some(true)
-                && items
-                    .iter()
-                    .enumerate()
-                    .any(|(i, a)| items.iter().skip(i + 1).any(|b| a == b))
-            {
+            if b.unique_items == Some(true) && has_duplicates(items) {
                 return fail("uniqueItems");
             }
         }
@@ -160,13 +156,69 @@ fn check_bounds(b: &Bounds, value: &Value, path: &str) -> Result<(), Violation> 
     Ok(())
 }
 
-/// Tolerant of binary floating point (`0.3` is a multiple of `0.1`).
-fn is_multiple(x: f64, step: f64) -> bool {
-    if step <= 0.0 {
+/// Exact for integers; for fractions, tolerant of binary floating point (`0.3` is a multiple of
+/// `0.1`) with a fixed tolerance on the remainder, never one that grows with the value.
+fn is_multiple(value: &Number, step: &Number) -> bool {
+    if let (Some(v), Some(s)) = (as_i128(value), as_i128(step)) {
+        return s != 0 && v % s == 0;
+    }
+    let (Some(v), Some(s)) = (value.as_f64(), step.as_f64()) else {
+        return false;
+    };
+    if s <= 0.0 {
         return false;
     }
-    let quotient = x / step;
-    (quotient - quotient.round()).abs() <= 1e-9 * quotient.abs().max(1.0)
+    let remainder = (v / s).fract().abs();
+    !(1e-9..=1.0 - 1e-9).contains(&remainder)
+}
+
+fn as_i128(n: &Number) -> Option<i128> {
+    n.as_i64()
+        .map(i128::from)
+        .or_else(|| n.as_u64().map(i128::from))
+}
+
+/// JSON Schema equality: numbers compare by value, so `1.0` equals `1`.
+fn json_equal(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Number(x), Value::Number(y)) => match (as_i128(x), as_i128(y)) {
+            (Some(x), Some(y)) => x == y,
+            _ => x.as_f64() == y.as_f64(),
+        },
+        (Value::Array(x), Value::Array(y)) => {
+            x.len() == y.len() && x.iter().zip(y).all(|(a, b)| json_equal(a, b))
+        }
+        (Value::Object(x), Value::Object(y)) => {
+            x.len() == y.len()
+                && x.iter()
+                    .all(|(k, v)| y.get(k).is_some_and(|w| json_equal(v, w)))
+        }
+        _ => a == b,
+    }
+}
+
+/// `uniqueItems` in O(n log n): sort a value-normalised rendering of each item.
+fn has_duplicates(items: &[Value]) -> bool {
+    let mut keys: Vec<String> = items.iter().map(|v| normalized(v).to_string()).collect();
+    keys.sort_unstable();
+    keys.windows(2).any(|pair| pair[0] == pair[1])
+}
+
+/// Integral floats rewritten as integers, so `1.0` and `1` render the same.
+fn normalized(value: &Value) -> Value {
+    match value {
+        Value::Number(n) if as_i128(n).is_none() => match n.as_f64() {
+            Some(f) if f.fract() == 0.0 && f.abs() < 9.0e15 => Value::from(f as i64),
+            _ => value.clone(),
+        },
+        Value::Array(items) => Value::Array(items.iter().map(normalized).collect()),
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(k, v)| (k.clone(), normalized(v)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
 }
 
 fn check_object(
@@ -200,6 +252,68 @@ fn check_object(
                     return Err(violation(&key_path, ArgumentFault::Undeclared));
                 }
             }
+        }
+    }
+    Ok(())
+}
+
+/// `not`, `if`/`then`/`else`, `dependentRequired`, `propertyNames` and `contains`.
+fn check_assertions(node: &Node, value: &Value, path: &str) -> Result<(), Violation> {
+    let fail = |keyword: &'static str| Err(violation(path, ArgumentFault::Constraint { keyword }));
+    if let Some(not) = &node.not
+        && check(not, value, path).is_ok()
+    {
+        return fail("not");
+    }
+    if let Some(cond) = &node.if_then_else
+        && let Some(condition) = &cond.condition
+    {
+        let branch = if check(condition, value, path).is_ok() {
+            &cond.then_branch
+        } else {
+            &cond.else_branch
+        };
+        if let Some(branch) = branch {
+            check(branch, value, path)?;
+        }
+    }
+    if let Value::Object(map) = value {
+        for (key, names) in node.dependent_required.iter().flatten() {
+            if !map.contains_key(key) {
+                continue;
+            }
+            if let Some(missing) = names.iter().find(|n| !map.contains_key(*n)) {
+                return Err(violation(
+                    &format!("{path}/{missing}"),
+                    ArgumentFault::MissingRequired,
+                ));
+            }
+        }
+        if let Some(names) = &node.property_names {
+            for key in map.keys() {
+                if check(names, &Value::String(key.clone()), path).is_err() {
+                    return Err(violation(
+                        &format!("{path}/{key}"),
+                        ArgumentFault::Constraint {
+                            keyword: "propertyNames",
+                        },
+                    ));
+                }
+            }
+        }
+    }
+    if let (Value::Array(items), Some(contains)) = (value, &node.contains) {
+        let matching = contains.schema.as_ref().map_or(items.len(), |schema| {
+            items
+                .iter()
+                .filter(|item| check(schema, item, path).is_ok())
+                .count()
+        }) as u64;
+        if matching < contains.min.unwrap_or(1) {
+            return fail("contains");
+        }
+        if contains.max.is_some_and(|max| matching > max) {
+            return fail("maxContains");
         }
     }
     Ok(())
@@ -436,13 +550,16 @@ mod tests {
 
     #[test]
     fn an_unenforceable_keyword_fails_closed() {
-        let schema = one_prop(json!({"type": "string", "not": {"const": "x"}}));
+        let schema = one_prop(json!({
+            "type": "object",
+            "patternProperties": {"^x": {"type": "string"}}
+        }));
         assert_eq!(
-            fault(schema, json!({"v": "y"})),
+            fault(schema, json!({"v": {"xa": "y"}})),
             Some((
                 "/v".into(),
                 ArgumentFault::Unvalidatable {
-                    keyword: "not".into()
+                    keyword: "patternProperties".into()
                 }
             ))
         );

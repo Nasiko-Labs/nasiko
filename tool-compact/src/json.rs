@@ -13,6 +13,9 @@ use crate::error::ArgumentFault;
 
 const DUPLICATE: &str = "duplicate key";
 
+/// 2^64: integers at or above this magnitude cannot be represented exactly.
+const U64_LIMIT: f64 = 18_446_744_073_709_551_616.0;
+
 /// Parse exactly one JSON value from `text`, rejecting duplicate keys at any depth.
 pub(crate) fn parse_strict(text: &str) -> Result<Value, ArgumentFault> {
     let mut de = serde_json::Deserializer::from_str(text);
@@ -60,6 +63,11 @@ impl<'de> Visitor<'de> for StrictVisitor {
     }
 
     fn visit_f64<E: de::Error>(self, v: f64) -> Result<StrictValue, E> {
+        // An integer literal too large for u64/i64 arrives here already rounded; passing it on
+        // would hand the client a different number than the model wrote.
+        if v.fract() == 0.0 && v.abs() >= U64_LIMIT {
+            return Err(E::custom("integer too large to represent exactly"));
+        }
         Number::from_f64(v)
             .map(|n| StrictValue(Value::Number(n)))
             .ok_or_else(|| E::custom("non-finite number"))
