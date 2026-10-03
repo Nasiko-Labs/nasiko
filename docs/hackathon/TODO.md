@@ -8,7 +8,7 @@ Status is `Not started`, `In progress`, or `Done`. Update this file when a task 
 | T02 | Add tool, call, and error types | [lld/02-types-and-errors.md](lld/02-types-and-errors.md) | Done |
 | T03 | Accept only the schema features the grammar can represent | [lld/03-supported-schema.md](lld/03-supported-schema.md) | Done |
 | T04 | Encode one tool as a compact signature | [lld/04-encode-one-tool.md](lld/04-encode-one-tool.md) | Done |
-| T05 | Rebuild the schema from the compact form | [lld/05-schema-round-trip.md](lld/05-schema-round-trip.md) | Not started |
+| T05 | Rebuild the schema from the compact form | [lld/05-schema-round-trip.md](lld/05-schema-round-trip.md) | Done |
 | T06 | Decode one well-formed call | [lld/06-decode-one-call.md](lld/06-decode-one-call.md) | Not started |
 | T07 | Keep `>>` inside a string argument | [lld/07-closer-inside-string.md](lld/07-closer-inside-string.md) | Not started |
 | T08 | Reject unknown tools and invalid arguments | [lld/08-fail-closed.md](lld/08-fail-closed.md) | Not started |

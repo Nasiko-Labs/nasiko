@@ -3,7 +3,7 @@
 use crate::schema::{Field, Scalar, Shape, classify};
 use crate::types::{CompactError, CompactTools, ToolDef};
 
-const INSTRUCTION: &str = "To call a tool, emit: <<call name {json args}>>";
+pub(crate) const INSTRUCTION: &str = "To call a tool, emit: <<call name {json args}>>";
 
 pub(crate) fn render(tools: &[ToolDef]) -> Result<CompactTools, CompactError> {
     let mut lines = Vec::with_capacity(tools.len() + 1);

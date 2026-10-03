@@ -40,7 +40,9 @@ pub fn decode_calls(_text: &str, _tools: &[ToolDef]) -> Result<Vec<ToolCall>, Co
     Err(not_built())
 }
 
-/// Rebuild tool schemas from a compact block.
-pub fn decode_tools(_compact: &CompactTools) -> Result<Vec<ToolDef>, CompactError> {
-    Err(not_built())
+/// Rebuild tool schemas from the compact signature text.
+///
+/// The stored originals are not consulted. A fact missing from the text is missing here.
+pub fn decode_tools(compact: &CompactTools) -> Result<Vec<ToolDef>, CompactError> {
+    decode::schemas_from_text(&compact.text)
 }
