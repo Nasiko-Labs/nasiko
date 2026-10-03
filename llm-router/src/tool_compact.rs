@@ -46,6 +46,9 @@ pub(crate) enum Skip {
     Streaming,
     NoTools,
     ForcedToolChoice,
+    /// The client asked for at most one call (`parallel_tool_calls: false`) or uses the legacy
+    /// `functions` / `function_call` fields; compaction cannot honour either, so send natively.
+    ClientToolSemantics,
     ToolHistory,
     UnsupportedToolShape,
     Unsupported(String),
@@ -66,6 +69,12 @@ pub(crate) fn apply(req: &mut ChatRequest, cfg: &GatewayConfig) -> Result<Applie
         Some(tools) if !tools.is_empty() => tools,
         _ => return Err(Skip::NoTools),
     };
+    if req.extra.get("parallel_tool_calls") == Some(&Value::Bool(false))
+        || req.extra.contains_key("functions")
+        || req.extra.contains_key("function_call")
+    {
+        return Err(Skip::ClientToolSemantics);
+    }
     match &req.tool_choice {
         None => {}
         Some(Value::String(s)) if s == "auto" => {}
@@ -236,6 +245,11 @@ mod tests {
                 Skip::ForcedToolChoice,
             ),
             (json!({"tools": []}), Skip::NoTools),
+            (
+                json!({"parallel_tool_calls": false}),
+                Skip::ClientToolSemantics,
+            ),
+            (json!({"function_call": "auto"}), Skip::ClientToolSemantics),
             (
                 json!({"messages": [{"role": "user", "content": "x"}, {"role": "tool", "content": "r", "tool_call_id": "c1"}]}),
                 Skip::ToolHistory,

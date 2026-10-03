@@ -173,6 +173,7 @@ async fn run_case(
     if !system_parts.is_empty() {
         all_messages.push(json!({"role": "system", "content": system_parts.join("\n\n")}));
     }
+    let original_messages = messages.clone();
     all_messages.extend(messages);
     let mut request = Map::new();
     request.insert("messages".into(), Value::Array(all_messages.clone()));
@@ -212,7 +213,10 @@ async fn run_case(
         add_live(&mut line, &COMPACT_KEYS, reply, &defs, compacted);
         if live.native_baseline {
             let mut native = request.as_object().cloned().unwrap_or_default();
-            native.insert("messages".into(), json!(native_messages(&all_messages)));
+            native.insert(
+                "messages".into(),
+                json!(native_messages(&original_messages)),
+            );
             native.insert("tools".into(), Value::Array(natives));
             let reply = live.chat(&Value::Object(native)).await;
             add_live(&mut line, &NATIVE_KEYS, reply, &defs, false);
@@ -221,10 +225,12 @@ async fn run_case(
     Ok(Value::Object(line))
 }
 
-/// The native-tools baseline keeps only the reference-time system note, not the compact text.
-fn native_messages(all: &[Value]) -> Vec<Value> {
+/// The native-tools baseline: the case's ORIGINAL messages, untouched (including any system
+/// message the case itself carries), preceded by the fixed reference-time note. It must not drop
+/// or rewrite the task's own instructions, or the two arms would answer different prompts.
+fn native_messages(original: &[Value]) -> Vec<Value> {
     let mut messages = vec![json!({"role": "system", "content": REFERENCE_TIME})];
-    messages.extend(all.iter().filter(|m| m["role"] != "system").cloned());
+    messages.extend(original.iter().cloned());
     messages
 }
 

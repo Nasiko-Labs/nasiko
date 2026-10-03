@@ -38,7 +38,7 @@ Properties: required ones first in `required` order, then optional ones alphabet
 | `string` | `str` | yes |
 | `string` + `format: date-time` | `datetime` | yes |
 | `integer`, `number`, `boolean` | `int`, `num`, `bool` | yes |
-| `enum` of simple strings (`[A-Za-z0-9_.:/+-]+`) | `a\|b\|c` | yes |
+| `enum` of simple strings (`[A-Za-z0-9_./+-]+` (no colon: `p:a:b` would be ambiguous)) | `a\|b\|c` | yes |
 | `array` + `items` | `[T]` | yes |
 | nested `object` with `properties` | `{k:T,k2?:T}` | yes |
 | `required` | no `?` | yes |
@@ -49,7 +49,7 @@ Properties: required ones first in `required` order, then optional ones alphabet
 
 `compacted:false` plus `bypass:[{tool, reason}]` in the eval output. Reason is `unsupported:<keyword>` for any schema keyword outside the table:
 `$ref`, `$defs`, `oneOf`, `anyOf`, `allOf`, `const`, `pattern`, `minimum`, `maximum`, `minLength`, `maxLength`, `additionalProperties`,
-`default`, `title`, union `type` lists, and so on. Also: `unsupported:enum`/`enum-value` (non-string enums, values outside the simple charset, a lone value spelled like a type word),
+`default`, `title`, union `type` lists, and so on. Also: `unsupported:enum`/`enum-value` (non-string enums, values outside the simple charset such as `a:b`, a lone value spelled like a type word),
 `unsupported:property-name` (names outside `[A-Za-z_][A-Za-z0-9_-]*`), `unsupported:description-newline`, `unsupported:items`, `unsupported:properties`, `unsupported:required`.
 
 **Bypass scope is the whole request.** If any requested tool is bypassed, every tool is sent natively; native and compact tools are never mixed, because model behaviour on a mixed request is unknown.

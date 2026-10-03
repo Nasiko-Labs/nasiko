@@ -311,7 +311,7 @@ fn is_enum_token(text: &str) -> bool {
     !text.is_empty()
         && text
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | ':' | '/' | '+'))
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/' | '+'))
 }
 
 /// Tool names allow `.`; property names do not, so dotted note paths stay unambiguous.
@@ -456,6 +456,10 @@ duration_min: Duration in minutes"
             ),
             (
                 json!({"type": "object", "properties": {"a": {"enum": ["int"]}}}),
+                "unsupported:enum-value",
+            ),
+            (
+                json!({"type": "object", "properties": {"a": {"type": "string", "enum": ["a:b", "c"]}}}),
                 "unsupported:enum-value",
             ),
             (
