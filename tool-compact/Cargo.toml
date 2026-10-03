@@ -1,0 +1,10 @@
+[package]
+name = "nasiko-tool-compact"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Compact tool-schema encoding and fail-closed decoding of compact tool calls."
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
