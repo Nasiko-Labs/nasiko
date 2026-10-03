@@ -1,0 +1,48 @@
+{
+  "agentFramework": "openai-agents",
+  "capabilities": {
+    "pushNotifications": false,
+    "stateTransitionHistory": false,
+    "streaming": false
+  },
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "description": "Answers questions by searching Wikipedia, built with the OpenAI Agents SDK.",
+  "name": "openai-research-agent",
+  "preferredTransport": "JSONRPC",
+  "protocolVersion": "0.2.9",
+  "provider": {
+    "organization": "Nasiko",
+    "url": "https://nasiko.com"
+  },
+  "security": [],
+  "securitySchemes": {},
+  "skills": [
+    {
+      "description": "Answers questions by searching Wikipedia for relevant information.",
+      "examples": [
+        "What is quantum computing?",
+        "Tell me about the Eiffel Tower"
+      ],
+      "id": "wikipedia_research",
+      "inputModes": [
+        "text/plain"
+      ],
+      "name": "Wikipedia Research",
+      "outputModes": [
+        "text/plain"
+      ],
+      "tags": [
+        "research",
+        "wikipedia",
+        "qa"
+      ]
+    }
+  ],
+  "url": "http://localhost:10003/",
+  "version": "1.0.1"
+}
