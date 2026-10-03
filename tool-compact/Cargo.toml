@@ -1,0 +1,13 @@
+[package]
+name = "nasiko-tool-compact"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+# Tool parameters are JSON Schema and call arguments are JSON; both need a real parser.
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = "1"
