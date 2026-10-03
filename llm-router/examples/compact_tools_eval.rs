@@ -753,7 +753,11 @@ mod tests {
         let system = normal.record["compact_request"]["messages"][0]["content"]
             .as_str()
             .unwrap();
-        assert!(system.starts_with("Tools:\nlookup(") && !system.contains("2026-10-02"));
+        assert!(
+            system.starts_with("Tools; ")
+                && system.contains("\nlookup(")
+                && !system.contains("2026-10-02")
+        );
         assert_eq!(
             normal.native_request["messages"],
             json!([{"role": "user", "content": "hi"}])

@@ -37,7 +37,7 @@ fn decode_single_tool(line: &str) -> Result<ToolDef> {
     let params_str = line[open_idx + 1..close_idx].trim();
     let after_close = line[close_idx + 1..].trim();
 
-    let description = if let Some(stripped) = after_close.strip_prefix('-') {
+    let description = if let Some(stripped) = after_close.strip_prefix(':') {
         let d = stripped.trim();
         if d.is_empty() {
             None

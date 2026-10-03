@@ -17,8 +17,9 @@ pub fn encode_tools(tools: &[ToolDef]) -> Result<CompactTools> {
     let definitions_rendered = definitions.join("\n");
     // Every word here is paid on every request, so it states only what models get
     // wrong without it: act rather than ask, and one marker per requested action.
+    // `render` puts it first, so it also introduces the definitions that follow.
     let instructions = format!(
-        "Use these tools without asking: emit one {OPEN}tool {{json args}}{CLOSE} per requested action. If none applies, answer normally."
+        "Tools; per requested action emit {OPEN}name {{json args}}{CLOSE} without asking, else reply normally:"
     );
 
     Ok(CompactTools {
@@ -49,7 +50,7 @@ fn encode_single_tool(tool: &ToolDef) -> Result<String> {
         let trimmed = desc.trim();
         if !trimmed.is_empty() {
             let collapsed = collapse_whitespace(trimmed);
-            sig.push_str(" - ");
+            sig.push_str(": ");
             sig.push_str(&collapsed);
         }
     }
@@ -201,16 +202,12 @@ mod tests {
         assert!(
             compact
                 .definitions
-                .contains(" - Create an event in the user's calendar.")
+                .contains("): Create an event in the user's calendar.")
         );
         assert!(compact.instructions.contains("<<call "));
-        assert!(compact.instructions.contains("one <<call "));
         assert!(compact.instructions.contains("per requested action"));
-        assert!(
-            compact
-                .render()
-                .starts_with("Tools:\ncreate_calendar_event(")
-        );
+        assert!(compact.instructions.contains("without asking"));
+        assert!(compact.render().starts_with("Tools; per requested action"));
     }
 
     #[test]
