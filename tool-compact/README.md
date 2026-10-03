@@ -77,7 +77,7 @@ call   = "<<call" ws name *ws object *ws ">>"
 object = a JSON object
 ```
 
-The model is shown: `To call a tool, emit <<call name {json args}>>, one per call. Otherwise reply in plain text.`
+The model is shown: `To call a tool, emit <<call name {json args}>>, one per call; else plain text.`
 
 **No escaping.** The decoder finds the end of `object` by tracking JSON strings and brace/bracket nesting, so `>>`, `}`, or `<<call` inside a string argument is content, not structure. Once `<<call` has been read, the output is committed to being a call: anything that does not complete one is an error — a half-written call is never returned as plain text, and never silently dropped.
 
@@ -144,7 +144,7 @@ Offline and deterministic by default: writes one JSONL line per case to `OUT` an
 
 ### Public sample set (`compact-tools-eval@v1-sample`)
 
-- **Token reduction: 32.9%** (656 → 440 tokens) against the scorer's baseline, `{messages, tools}` as each case gives them — counted with `tiktoken-rs` `o200k_base` over the full request body. Per case: 36.4%, 35.1%, 22.7%; the fixed call-format text (29 tokens) weighs most on the one-tool case.
+- **Token reduction: 33.8%** (656 → 434 tokens) against the scorer's baseline, `{messages, tools}` as each case gives them — counted with `tiktoken-rs` `o200k_base` over the full request body. Per case: 37.2%, 35.9%, 24.1%; the fixed call-format text (27 tokens) weighs most on the one-tool case.
 - **Bypassed:** 0 of 3 cases (`create_calendar_event` and `send_email` both compact fully).
 - **Round trip:** 3 of 3 — the expected calls, written in the compact grammar, decode back to themselves.
 - **Decoder cases:** 5 of 5 pass, including the split-marker case and the `>>`-inside-a-string case.
@@ -166,15 +166,15 @@ Six models from six providers on the hackathon's OpenAI-compatible Bedrock route
 |---|---|---|---|---|
 | `openai.gpt-oss-120b` | 3/3 | 1/3 | 3/3 | 1/3 |
 | `mistral.mistral-large-3-675b-instruct` | 3/3 | 1/3 | 3/3 | 2/3 |
-| `qwen.qwen3-32b` | 2/3 | 1/3 | 3/3 | 1/3 |
-| `deepseek.v3.2` | 3/3 | 2/3 | 3/3 | 2/3 |
+| `qwen.qwen3-32b` | 3/3 | 1/3 | 3/3 | 1/3 |
+| `deepseek.v3.2` | 3/3 | 1/3 | 3/3 | 2/3 |
 | `moonshotai.kimi-k2.5` | 3/3 | 2/3 | 3/3 | 2/3 |
 | `zai.glm-4.7` | 3/3 | 1/3 | 3/3 | 2/3 |
-| **Total** | **17/18** | **8/18** | **18/18** | **10/18** |
+| **Total** | **18/18** | **7/18** | **18/18** | **10/18** |
 
 "Valid calls" means the model wrote a call the decoder accepted (or correctly answered in text when no tool fit). "Matches expected" uses the brief's rule: same tool and arguments, with `free_text_fields` checked for presence only.
 
-- **The one compact format failure** is Qwen3-32B closing a call with `}}>` instead of `>>`. The decoder rejected it rather than guessing. Earlier runs showed the same pattern; a reworded instruction moved Qwen's error to a single `>` without fixing it, so it was not kept.
+- **Every model wrote well-formed calls** with the current instruction. Under an earlier, longer instruction Qwen3-32B closed a call with `}}>` instead of `>>`, and the decoder rejected it rather than guessing. A shorter wording that dropped the word `call` from the example made GPT-OSS write `<<create_calendar_event …>>`, so no call was made; it was rejected for that reason.
 - **Most mismatches are the same in both arms and are not format errors:**
   - ct-002: every model resolves "tomorrow" from 2026-10-02 to 2026-10-03, but the sample expects 2026-10-04 (an off-by-one in the sample; nothing here special-cases it).
   - ct-001: several models add an unrequested `duration_min: 60`.
