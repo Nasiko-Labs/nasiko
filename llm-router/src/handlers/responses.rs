@@ -109,7 +109,11 @@ async fn responses_core(
     let signals = RequestSignals {
         turn_ordinal: user_turn_ordinal(body.get("input")),
         is_tool_continuation: is_tool_continuation(body.get("input")),
+        anchor_text: query.clone(),
         query,
+        // The Responses surface does not extract classification context yet (documented
+        // limit): the classifier sees the query alone here.
+        context: None,
     };
     let routed = resolve_routed_request(
         ctx,
@@ -1058,6 +1062,7 @@ mod tests {
             tier_registry: Arc::new(NoTiers),
             cell_store: Arc::new(crate::routing::InMemoryCellStore::new()),
             salience_gate: Arc::new(crate::routing::salience::AllowAllGate),
+            request_classifier: Arc::new(crate::routing::RegexClassifier),
             pricing: Arc::new(nasiko_pricing::PricingEngine::new(
                 PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
             )),

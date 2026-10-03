@@ -1,0 +1,77 @@
+{"t":"cg","c":1,"s":"clear","q":"Rename the variable `cnt` to `retry_count` in this function.","x":"def send(msg):\n    cnt = 0\n    while cnt < 3:\n        cnt += 1"}
+{"t":"cg","c":1,"s":"clear","q":"Change the log level on line 12 from debug to info.","x":"logger.debug(\"cache warmed in %sms\", elapsed)"}
+{"t":"cg","c":1,"s":"clear","q":"Add a trailing comma after the last item in this JS array.","x":"const colors = [\"red\", \"green\", \"blue\"]"}
+{"t": "cg", "c": 1, "s": "clear", "q": "Correct the misspelled word in this docstring: 'Recieves the order payload'.", "x": "def handle(payload):\n    \"\"\"Recieves the order payload.\"\"\""}
+{"t":"cg","c":1,"s":"clear","q":"Make this Rust function public.","x":"fn parse_header(raw: &str) -> Option<Header> { ... }"}
+{"t":"cg","c":1,"s":"clear","q":"Give me the git command to undo my last commit but keep the changes staged."}
+{"t":"cg","c":1,"s":"clear","q":"Write a one-line bash command that counts the lines in every .py file under src/."}
+{"t":"cg","c":1,"s":"clear","q":"Replace the hard-coded port 8080 with the PORT environment variable.","x":"app.listen(8080, () => console.log('up'))"}
+{"t":"cg","c":1,"s":"clear","q":"Swap the order of these two CSS rules so the hover style wins.","x":".btn:hover { color: red; }\n.btn { color: black; }"}
+{"t":"cg","c":2,"s":"clear","q":"Write a Python function that returns the n-th Fibonacci number iteratively."}
+{"t":"cg","c":2,"s":"clear","q":"Write a SQL query that returns the ten customers with the highest total order value last month.","x":"Tables: customers(id, name), orders(id, customer_id, total, created_at)"}
+{"t":"cg","c":2,"s":"clear","q":"Convert this callback-based Node function to async/await.","x":"function load(path, cb) {\n  fs.readFile(path, 'utf8', (err, data) => {\n    if (err) return cb(err);\n    cb(null, JSON.parse(data));\n  });\n}"}
+{"t":"cg","c":2,"s":"clear","q":"Add a null check before dereferencing `user.profile` in this TypeScript snippet.","x":"const avatar = user.profile.avatarUrl;"}
+{"t":"cg","c":2,"s":"clear","q":"Write a regex that matches US ZIP codes, with or without the +4 extension."}
+{"t":"cg","c":2,"s":"clear","q":"Create a Dockerfile for a Flask app that runs with gunicorn on port 5000."}
+{"t":"cg","c":2,"s":"clear","q":"Write a Go function that reverses the words in a sentence."}
+{"t":"cg","c":2,"s":"clear","q":"Add a unit test for the `slugify` function covering spaces and uppercase letters.","x":"def slugify(s):\n    return s.strip().lower().replace(' ', '-')"}
+{"t":"cg","c":2,"s":"clear","q":"Write a GitHub Actions workflow that runs `cargo test` on every pull request."}
+{"t":"cg","c":2,"s":"clear","q":"Turn this list of dicts into a pandas DataFrame and sort it by the 'score' column descending.","x":"rows = [{'name': 'a', 'score': 3}, {'name': 'b', 'score': 9}]"}
+{"t":"cg","c":2,"s":"clear","q":"Write a Kotlin data class for a Book with title, author, ISBN and an optional publication year."}
+{"t":"cg","c":2,"s":"clear","q":"Generate a JSON schema for this payload.","x":"{\"id\": 12, \"email\": \"a@b.co\", \"tags\": [\"x\"], \"active\": true}"}
+{"t":"cg","c":2,"s":"clear","q":"Write a C function that checks whether a string is a palindrome, ignoring case."}
+{"t":"cg","c":2,"s":"clear","q":"Add error handling so this fetch call shows a toast when the request fails.","x":"const res = await fetch('/api/items');\nsetItems(await res.json());"}
+{"t":"cg","c":2,"s":"clear","q":"Write a crontab entry that runs backup.sh every day at 02:30."}
+{"t":"cg","c":2,"s":"clear","q":"Implement a `debounce` helper in TypeScript with proper generics."}
+{"t":"cg","c":2,"s":"clear","q":"Write a Java method that reads a file and returns its lines in reverse order."}
+{"t":"cg","c":3,"s":"clear","q":"Implement an LRU cache in Python with O(1) get and put, plus tests for eviction order."}
+{"t":"cg","c":3,"s":"clear","q":"Write a Rust CLI that reads CSV from stdin and prints the sum of a column given by name; error clearly on a missing column.","x":"Use only the standard library; assume the first row is a header."}
+{"t":"cg","c":3,"s":"clear","q":"Build a React hook `useLocalStorage` that syncs state across tabs and handles JSON parse errors."}
+{"t":"cg","c":3,"s":"clear","q":"Write an Express middleware that rate-limits by API key to 100 requests per minute using a sliding window in memory, with tests."}
+{"t":"cg","c":3,"s":"clear","q":"Implement retry with exponential backoff and jitter around this HTTP call; give up after 5 attempts and surface the last error.","x":"resp = requests.get(url, timeout=5)\nresp.raise_for_status()"}
+{"t":"cg","c":3,"s":"clear","q":"Write a SQL migration that splits the `name` column into `first_name` and `last_name`, backfills existing rows, and is reversible.","x":"PostgreSQL 15; table users(id serial, name text not null)"}
+{"t":"cg","c":3,"s":"clear","q":"Create a Terraform module for an S3 bucket with versioning, server-side encryption and a lifecycle rule that expires objects after 90 days."}
+{"t":"cg","c":3,"s":"clear","q":"Write a Python script that walks a directory, finds duplicate files by SHA-256, and prints groups of duplicates sorted by size."}
+{"t": "cg", "c": 3, "s": "clear", "q": "Write a TypeScript function that validates a semantic version string (MAJOR.MINOR.PATCH with optional pre-release) and returns its parts, with table-driven tests."}
+{"t":"cg","c":3,"s":"clear","q":"Write pytest fixtures and tests for this repository class using an in-memory SQLite database.","x":"class UserRepo:\n    def __init__(self, conn): self.conn = conn\n    def add(self, name): ...\n    def get(self, id): ..."}
+{"t":"cg","c":3,"s":"clear","q":"Add pagination (limit/offset, max 100) to this FastAPI endpoint and return a total count header.","x":"@app.get('/items')\ndef list_items(db: Session = Depends(get_db)):\n    return db.query(Item).all()"}
+{"t":"cg","c":3,"s":"clear","q":"Write a Kubernetes Deployment and Service for a Node app with 3 replicas, readiness and liveness probes, and resource limits."}
+{"t":"cg","c":3,"s":"clear","q":"Port this Python function to idiomatic Rust, keeping the same behaviour for empty input.","x":"def chunk(xs, n):\n    return [xs[i:i+n] for i in range(0, len(xs), n)]"}
+{"t":"cg","c":4,"s":"clear","q":"Implement a thread-safe bounded blocking queue in Java without using java.util.concurrent, with tests that exercise producer/consumer contention."}
+{"t":"cg","c":4,"s":"clear","q":"Write a lock-free single-producer single-consumer ring buffer in Rust with unsafe code justified in comments, plus loom tests."}
+{"t":"cg","c":4,"s":"clear","q":"Implement a JSON parser in Go from scratch (no encoding/json) that supports nested objects, arrays, numbers, strings with escapes, and reports line/column on errors."}
+{"t":"cg","c":4,"s":"clear","q":"Write a Python asyncio web crawler that respects robots.txt, limits concurrency per host to 2, deduplicates URLs, and stops at depth 3; include tests with a fake HTTP server."}
+{"t":"cg","c":4,"s":"clear","q":"Implement optimistic concurrency control for this update endpoint using a version column; return 409 on conflict and add tests for concurrent writers.","x":"Spring Boot 3, JPA, entity Order(id, status, version)"}
+{"t":"cg","c":5,"s":"clear","q":"Implement a Raft leader election and log replication module in Rust with deterministic simulation tests covering partitions and leader crashes."}
+{"t":"cg","c":5,"s":"clear","q":"Write a CRDT-based collaborative text buffer (RGA or similar) in TypeScript with merge, delete tombstones, and property-based tests proving convergence across 3 replicas."}
+{"t":"cg","c":4,"s":"clear","q":"Refactor this 300-line Express handler into service, repository and controller layers without changing behaviour, and add tests that pin current behaviour first.","x":"The handler validates input, queries Postgres directly, calls Stripe, sends email via SES and writes an audit log in one function."}
+{"t":"cg","c":1,"s":"boundary","tags":["neg"],"q":"Don't explain anything, just give me the regex for a hex color like #fff or #ffffff."}
+{"t":"cg","c":2,"s":"boundary","q":"This function throws on empty lists. Explain the bug and fix it.","x":"def average(xs):\n    return sum(xs) / len(xs)"}
+{"t":"cg","c":2,"s":"boundary","q":"Why does this loop never end? Please send the corrected version.","x":"let i = 0;\nwhile (i < 10) {\n  console.log(i);\n}"}
+{"t":"cg","c":3,"s":"boundary","q":"Here is the API design we agreed on. Now implement the POST /orders handler exactly as specified, with validation.","x":"POST /orders: body {sku, qty>0, coupon?}; 201 with order id; 422 on validation error; idempotency via Idempotency-Key header."}
+{"t":"cg","c":2,"s":"boundary","q":"What does this function do? Rewrite it to be readable while keeping behaviour.","x":"const f=a=>a.reduce((p,c)=>(p[c]=(p[c]||0)+1,p),{})"}
+{"t":"cg","c":3,"s":"boundary","q":"Our test suite is flaky because tests share a temp directory. Change the fixtures so each test gets its own.","x":"@pytest.fixture(scope='session')\ndef workdir():\n    return '/tmp/work'"}
+{"t":"cg","c":2,"s":"boundary","q":"Translate this Python snippet into Java.","x":"total = sum(x * 2 for x in nums if x > 0)"}
+{"t":"cg","c":1,"s":"boundary","tags":["mis"],"q":"In the architecture doc's code sample, change `localhost` to `db.internal`.","x":"conn = connect(host=\"localhost\", port=5432)"}
+{"t":"cg","c":2,"s":"boundary","tags":["mis"],"q":"Write a function that calculates the probability density of a normal distribution at x."}
+{"t":"cg","c":3,"s":"boundary","q":"Given this schema design, write the CREATE TABLE statements with appropriate indexes and foreign keys.","x":"Users have many workspaces; workspaces have many projects; projects have tasks with assignee (user) and due date; queries filter tasks by assignee and due date."}
+{"t":"cg","c":1,"s":"clear","tags":["very_short"],"q":"python one-liner to flatten a list of lists"}
+{"t":"cg","c":2,"s":"clear","tags":["very_short"],"q":"bash: rename all .jpeg to .jpg"}
+{"t":"cg","c":2,"s":"clear","q":"Write an Ansible task that installs nginx and ensures it is running and enabled on boot."}
+{"t":"cg","c":2,"s":"clear","q":"Add type hints to this function.","x":"def merge(a, b, key=None):\n    out = dict(a)\n    out.update(b)\n    return out"}
+{"t":"cg","c":3,"s":"clear","q":"Write a SwiftUI view that shows a searchable list of contacts loaded asynchronously, with a loading state and an error banner."}
+{"t":"cg","c":2,"s":"clear","q":"Write a PowerShell script that lists services that are set to Automatic but currently stopped."}
+{"t":"cg","c":3,"s":"clear","q":"Write a GraphQL resolver for `user(id)` with DataLoader batching for the user's posts, in Node."}
+{"t":"cg","c":2,"s":"clear","q":"Write a Makefile with build, test and clean targets for a C project with sources in src/."}
+{"t":"cg","c":3,"s":"clear","q":"Implement a binary search tree in C++ with insert, delete (all three cases) and in-order iteration, plus tests."}
+{"t":"cg","c":2,"s":"clear","q":"Write an nginx server block that redirects all HTTP traffic to HTTPS for example.org."}
+{"t":"cg","c":3,"s":"clear","q":"Write a Spark job in PySpark that reads parquet click events, sessionizes them with a 30-minute inactivity gap, and writes session counts per user per day."}
+{"t":"cg","c":4,"s":"clear","q":"Implement a small Lisp interpreter in Python supporting define, lambda, if, let, and tail-call optimization, with a test suite."}
+{"t":"cg","c":2,"s":"clear","q":"Write a SQL query to find duplicate emails in the users table, ignoring case."}
+{"t":"cg","c":3,"s":"clear","q":"Write a Bash script that rotates logs in /var/log/myapp: compress files older than 1 day, delete ones older than 14, and never touch the current log."}
+{"t":"cg","c":2,"s":"clear","q":"Write a Vue 3 component with a counter, increment/decrement buttons, and a minimum of zero."}
+{"t":"cg","c":1,"s":"clear","q":"Remove the unused import on the first line.","x":"import os\nimport sys\n\nprint(sys.argv)"}
+{"t":"cg","c":3,"s":"clear","q":"Write a Python decorator that caches function results to disk keyed by arguments, with a TTL and safe concurrent access."}
+{"t":"cg","c":4,"s":"clear","q":"Write an end-to-end Playwright test suite for a checkout flow: guest checkout, saved card, declined card, and coupon edge cases, with page objects."}
+{"t":"cg","c":2,"s":"clear","q":"Write a jq expression that extracts the names of all items whose price is above 20.","x":"{\"items\": [{\"name\": \"a\", \"price\": 10}, {\"name\": \"b\", \"price\": 25}]}"}
+{"t":"cg","c":3,"s":"clear","q":"Add OpenTelemetry tracing to this Go HTTP handler, propagating context to the database call and recording errors on the span.","x":"func handler(w http.ResponseWriter, r *http.Request) {\n  rows, err := db.Query(\"SELECT ...\")\n  ...\n}"}

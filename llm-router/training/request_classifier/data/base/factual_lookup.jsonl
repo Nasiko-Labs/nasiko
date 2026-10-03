@@ -1,0 +1,65 @@
+{"t":"fl","c":1,"s":"clear","q":"What port does PostgreSQL listen on by default?"}
+{"t":"fl","c":1,"s":"clear","q":"What does `Array.prototype.flatMap` return?"}
+{"t":"fl","c":1,"s":"clear","q":"Who wrote 'One Hundred Years of Solitude'?"}
+{"t":"fl","c":1,"s":"clear","q":"What HTTP status code means 'Too Many Requests'?"}
+{"t":"fl","c":1,"s":"clear","q":"What does `HashMap::entry` do in Rust? One sentence is enough."}
+{"t":"fl","c":1,"s":"clear","q":"When was the first version of Python released?"}
+{"t":"fl","c":1,"s":"clear","q":"What is the capital of Australia?"}
+{"t":"fl","c":1,"s":"clear","q":"What does the `-p` flag do for `mkdir`?"}
+{"t":"fl","c":1,"s":"clear","q":"What's the difference between TCP and UDP, briefly?"}
+{"t":"fl","c":1,"s":"clear","q":"Which Python built-in returns both the index and the value while looping?"}
+{"t":"fl","c":1,"s":"clear","q":"What is the default branch name created by `git init` in recent Git versions?"}
+{"t":"fl","c":1,"s":"clear","q":"What does ACID stand for in databases?"}
+{"t":"fl","c":1,"s":"clear","q":"What does `Promise.allSettled` resolve to?"}
+{"t":"fl","c":1,"s":"clear","q":"How many bytes are in a kibibyte?"}
+{"t":"fl","c":1,"s":"clear","q":"What is the boiling point of water at sea level in Fahrenheit?"}
+{"t":"fl","c":2,"s":"clear","q":"What is the CAP theorem, in two or three sentences?"}
+{"t":"fl","c":1,"s":"clear","q":"What does `Option::unwrap_or_default` do?"}
+{"t":"fl","c":1,"s":"clear","q":"Which year did the Berlin Wall fall?"}
+{"t":"fl","c":1,"s":"clear","q":"What does the `async` keyword do on a JavaScript function?"}
+{"t":"fl","c":1,"s":"clear","q":"What is the maximum value of a signed 32-bit integer?"}
+{"t":"fl","c":2,"s":"clear","q":"What is the difference between a process and a thread?"}
+{"t":"fl","c":1,"s":"clear","q":"What does `SELECT DISTINCT` do?"}
+{"t":"fl","c":1,"s":"clear","q":"What is the chemical symbol for tungsten?"}
+{"t":"fl","c":1,"s":"clear","q":"What does `std::mem::swap` do?"}
+{"t":"fl","c":1,"s":"clear","q":"Which HTTP method is idempotent: POST or PUT?"}
+{"t":"fl","c":1,"s":"clear","q":"What is the default timeout for `requests.get` in Python?"}
+{"t":"fl","c":1,"s":"clear","q":"What does DNS stand for?"}
+{"t":"fl","c":1,"s":"clear","q":"What's the speed of light in a vacuum, in km/s?"}
+{"t":"fl","c":2,"s":"clear","q":"What is eventual consistency? Short definition please."}
+{"t":"fl","c":1,"s":"clear","q":"In Go, what does `defer` do?"}
+{"t":"fl","c":1,"s":"clear","q":"What's the file extension for TypeScript JSX files?"}
+{"t":"fl","c":1,"s":"clear","q":"What does `git rebase --onto` do, in one sentence?"}
+{"t":"fl","c":1,"s":"clear","q":"Who is the author of the Linux kernel?"}
+{"t":"fl","c":1,"s":"clear","q":"What does the CSS property `box-sizing: border-box` change?"}
+{"t":"fl","c":1,"s":"clear","q":"What is the time complexity of lookup in a balanced binary search tree?"}
+{"t":"fl","c":1,"s":"clear","q":"What does `kubectl rollout undo` do?"}
+{"t":"fl","c":1,"s":"clear","q":"How many continents are there?"}
+{"t":"fl","c":2,"s":"clear","q":"What is the difference between `==` and `===` in JavaScript?"}
+{"t":"fl","c":1,"s":"clear","q":"What does the `?` mean after a type in TypeScript, like `name?: string`?"}
+{"t":"fl","c":1,"s":"clear","q":"Which SQL clause filters groups after aggregation?"}
+{"t":"fl","c":1,"s":"boundary","q":"What does `Vec::retain` do in Rust? Just a one-line answer.","x":"No codebase context."}
+{"t":"fl","c":1,"s":"boundary","q":"What does `str.partition` return in Python?","x":"No code attached; general question."}
+{"t":"fl","c":2,"s":"boundary","q":"What's the time complexity of quicksort on average and in the worst case?"}
+{"t":"fl","c":1,"s":"boundary","q":"What does `useEffect` with an empty dependency array do?"}
+{"t":"fl","c":1,"s":"boundary","tags":["mis"],"q":"What architectural style is the Pantheon in Rome?"}
+{"t":"fl","c":1,"s":"boundary","tags":["mis"],"q":"What does a cache line typically measure on x86 CPUs, in bytes?"}
+{"t":"fl","c":1,"s":"boundary","tags":["mis"],"q":"Who designed the Eiffel Tower?"}
+{"t":"fl","c":1,"s":"boundary","q":"What does the `@Transactional` annotation do in Spring?"}
+{"t":"fl","c":2,"s":"boundary","q":"What is the difference between `let`, `const` and `var` in JavaScript?"}
+{"t":"fl","c":1,"s":"clear","tags":["very_short"],"q":"default redis port?"}
+{"t":"fl","c":1,"s":"clear","tags":["very_short"],"q":"what is a mutex"}
+{"t":"fl","c":1,"s":"clear","tags":["very_short"],"q":"who invented the telephone"}
+{"t":"fl","c":1,"s":"clear","q":"What does the `Retry-After` header mean?"}
+{"t":"fl","c":1,"s":"clear","q":"What is the largest planet in our solar system?"}
+{"t":"fl","c":1,"s":"clear","q":"What does `Object.freeze` do?"}
+{"t":"fl","c":2,"s":"clear","q":"What are the four principles of object-oriented programming?"}
+{"t":"fl","c":1,"s":"clear","q":"What does `ON DELETE CASCADE` mean on a foreign key?"}
+{"t":"fl","c":1,"s":"clear","q":"Which country has the most time zones?"}
+{"t":"fl","c":1,"s":"clear","q":"What does `Iterator::zip` do?"}
+{"t":"fl","c":1,"s":"clear","q":"What's the unit of electrical resistance?"}
+{"t":"fl","c":1,"s":"clear","q":"What does the `--force-with-lease` option of git push do?"}
+{"t":"fl","c":1,"s":"clear","q":"What is a JWT?"}
+{"t":"fl","c":1,"s":"clear","q":"How many bits are in an IPv6 address?"}
+{"t":"fl","c":1,"s":"clear","q":"What does `Math.floor(-2.5)` return in JavaScript?"}
+{"t":"fl","c":2,"s":"clear","q":"What does the Rust `Send` trait mean, and how is it different from `Sync`?"}

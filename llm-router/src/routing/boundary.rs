@@ -156,12 +156,29 @@ impl BoundarySignals {
     /// marks every in-flow call fireable rather than deriving cold_start/switch/continue
     /// from the agent call-chain (that finer phase is deferred — it only changes behaviour
     /// under a cache miss, and needs the flow-guard chain state).
+    ///
+    /// Callers that know whether the transcript is mid tool-loop should use [`in_flow_turn`],
+    /// which keeps those turns `continue`.
+    ///
+    /// [`in_flow_turn`]: Self::in_flow_turn
     pub fn in_flow(flow_id: String, mode: Mode) -> Self {
         Self {
             conv_id: Some(flow_id),
             phase: Phase::Switch,
             mode,
         }
+    }
+
+    /// [`in_flow`](Self::in_flow) for a call that also knows whether its transcript is mid
+    /// tool-loop. A tool continuation is `Phase::Continue` — never a boundary, so it never
+    /// reclassifies (the hard invariant), whether or not the decision cache can serve it —
+    /// and anything else is exactly [`in_flow`](Self::in_flow).
+    pub fn in_flow_turn(flow_id: String, mode: Mode, is_tool_continuation: bool) -> Self {
+        let mut signals = Self::in_flow(flow_id, mode);
+        if is_tool_continuation {
+            signals.phase = Phase::Continue;
+        }
+        signals
     }
 
     /// Signals for a coding-agent CLI session (Claude Code, Codex, OpenCode, Cursor).
@@ -230,6 +247,20 @@ mod tests {
             h.insert(*k, v.parse().unwrap());
         }
         h
+    }
+
+    #[test]
+    fn in_flow_tool_loop_turn_is_continue() {
+        let looping = BoundarySignals::in_flow_turn("ses".into(), Mode::FreeFlowing, true);
+        assert_eq!(looping.phase, Phase::Continue);
+        assert!(!looping.is_fireable_boundary());
+        let fresh = BoundarySignals::in_flow_turn("ses".into(), Mode::FreeFlowing, false);
+        let plain = BoundarySignals::in_flow("ses".into(), Mode::FreeFlowing);
+        assert!(fresh.is_fireable_boundary());
+        assert_eq!(
+            (fresh.conv_id, fresh.phase, fresh.mode),
+            (plain.conv_id, plain.phase, plain.mode)
+        );
     }
 
     #[test]

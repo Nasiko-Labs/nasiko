@@ -1,0 +1,2364 @@
+{
+ "schema_version": "h4-public-eval-v1",
+ "purpose": "classifier: own held-out split (val); synthetic, never trained on",
+ "source": "llm-router/training/request_classifier",
+ "examples": [
+  {
+   "id": "ar-0001",
+   "query": "What is the probability of getting at least one six in four rolls of a fair die?",
+   "context": null,
+   "request_type": "analytical_reasoning",
+   "complexity": 2,
+   "tests": [
+    "clear"
+   ]
+  },
+  {
+   "id": "ar-0001-v1",
+   "query": "Hey, sorry to bother you, What is the probability of getting at least one six in four rolls of a fair die?\n\nThanks a lot, really stuck on this.",
+   "context": null,
+   "request_type": "analytical_reasoning",
+   "complexity": 2,
+   "tests": [
+    "clear",
+    "padded"
+   ]
+  },
+  {
+   "id": "ar-0007",
+   "query": "Given these logs, reconstruct the order in which the two workers updated the account row and explain how the balance went negative.",
+   "context": "10:01:02.110 w1 read balance=100\n10:01:02.115 w2 read balance=100\n10:01:02.140 w1 write balance=30 (withdraw 70)\n10:01:02.152 w2 write balance=40 (withdraw 60)\n10:01:05.000 audit: sum(withdrawals)=130, balance=40",
+   "request_type": "analytical_reasoning",
+   "complexity": 4,
+   "tests": [
+    "clear"
+   ]
+  },
+  {
+   "id": "ar-0007-v1",
+   "query": "Hello there, Given these logs, reconstruct the order in which the two workers updated the account row and explain how the balance went negative.\n\nCheers,\nSam",
+   "context": "10:01:02.110 w1 read balance=100\n10:01:02.115 w2 read balance=100\n10:01:02.140 w1 write balance=30 (withdraw 70)\n10:01:02.152 w2 write balance=40 (withdraw 60)\n10:01:05.000 audit: sum(withdrawals)=130, balance=40",
+   "request_type": "analytical_reasoning",
+   "complexity": 4,
+   "tests": [
+    "clear",
+    "padded"
+   ]
+  },
+  {
+   "id": "ar-0008",
+   "query": "p99 latency doubled after Tuesday's deploy. Using the metrics below, figure out what changed and which explanation fits best.",
+   "context": "Deploy 14:00. After: GC pause p99 12ms->85ms, heap 2GB->3.6GB, request rate flat, DB p99 flat, new feature caches full user objects per request.",
+   "request_type": "analytical_reasoning",
+   "complexity": 4,
+   "tests": [
+    "clear"
+   ]
+  },
+  {
+   "id": "ar-0008-v1",
+   "query": "Hello! Thanks in advance for the help. p99 latency doubled after Tuesday's deploy. Using the metrics below, figure out what changed and which explanation fits best.\n\nBest regards,\nPriya",
+   "context": "Deploy 14:00. After: GC pause p99 12ms->85ms, heap 2GB->3.6GB, request rate flat, DB p99 flat, new feature caches full user objects per request.",
+   "request_type": "analytical_reasoning",
+   "complexity": 4,
+   "tests": [
+    "clear",
+    "padded"
+   ]
+  },
+  {
+   "id": "ar-0009",
+   "query": "Solve for x: 3x + 7 = 2x - 5, and check your answer.",
+   "context": null,
+   "request_type": "analytical_reasoning",
+   "complexity": 3,
+   "tests": [
+    "clear"
+   ]
+  },
+  {
+   "id": "ar-0009-v1",
+   "query": "Hey, sorry to bother you, Solve for x: 3x + 7 = 2x - 5, and check your answer.\n\nBest regards,\nPriya",
+   "context": null,
+   "request_type": "analytical_reasoning",
+   "complexity": 3,
+   "tests": [
+    "clear",
+    "padded"
+   ]
+  },
+  {
+   "id": "ar-0009-v2",
+   "query": "Solve for x: 3x + 7 = 2x - 5, and check your answer.",
+   "context": "Context: none provided.",
+   "request_type": "analytical_reasoning",
+   "complexity": 3,
+   "tests": [
+    "clear",
+    "placeholder_context"
+   ]
+  },
+  {
+   "id": "ar-0015",
+   "query": "Explain from these numbers why adding more consumers didn't increase throughput.",
+   "context": "Consumers 4 -> 12; throughput 900/s -> 940/s; partitions = 4; consumer lag concentrated on 4 partitions; CPU per consumer 15%.",
+   "request_type": "analytical_reasoning",
+   "complexity": 4,
+   "tests": [
+    "clear"
+   ]
+  },
+  {
+   "id": "ar-0015-v1",
+   "query": "Hello there, Explain from these numbers why adding more consumers didn't increase throughput.\n\nAppreciate it!",
+   "context": "Consumers 4 -> 12; throughput 900/s -> 940/s; partitions = 4; consumer lag concentrated on 4 partitions; CPU per consumer 15%.",
+   "request_type": "analytical_reasoning",
+   "complexity": 4,
+   "tests": [
+    "clear",
+    "padded"
+   ]
+  },
+  {
+   "id": "ar-0019",
+   "query": "Compute the expected number of coin flips until you see two heads in a row, and show the derivation.",
+   "context": null,
+   "request_type": "analytical_reasoning",
+   "complexity": 3,
+   "tests": [
+    "clear"
+   ]
+  },
+  {
+   "id": "ar-0019-v1",
+   "query": "compuet the expected number of coin flips until you see two heads in a row, and show the derivation.",
+   "context": null,
+   "request_type": "analytical_reasoning",
+   "complexity": 3,
+   "tests": [
+    "clear",
+    "noisy"
+   ]
+  },
+  {
+   "id": "ar-0019-v2",
+   "query": "Compute the expected number of coin flips until you see two heads in a row, and show the derivation.",
+   "context": "No codebase context.",
+   "request_type": "analytical_reasoning",
+   "complexity": 3,
+   "tests": [
+    "clear",
+    "placeholder_context"
+   ]
+  },
+  {
+   "id": "ar-0023",
+   "query": "Two sensors disagree about when the freezer door was opened. Using the readings below, work out which clock is skewed, by how much, and whether the temperature excursion could have spoiled the stock.",
+   "context": "Door sensor: open 21:04:10, close 21:19:55. Temp probe: rises from -18C at 21:12:30, peaks -6C at 21:27:00, back to -18C at 21:52:00. Probe clock last synced 9 days ago (drifts up to 1s/hour). Stock spoils if above -12C for more than 20 minutes.",
+   "request_type": "analytical_reasoning",
+   "complexity": 5,
+   "tests": [
+    "clear"
+   ]
+  },
+  {
+   "id": "ar-0023-v1",
+   "query": "Hello there, Two sensors disagree about when the freezer door was opened. Using the readings below, work out which clock is skewed, by how much, and whether the temperature excursion could have spoiled the stock.\n\nCheers,\nSam",
+   "context": "Door sensor: open 21:04:10, close 21:19:55. Temp probe: rises from -18C at 21:12:30, peaks -6C at 21:27:00, back to -18C at 21:52:00. Probe clock last synced 9 days ago (drifts up to 1s/hour). Stock spoils if above -12C for more than 20 minutes.",
+   "request_type": "analytical_reasoning",
+   "complexity": 5,
+   "tests": [
+    "clear",
+    "padded"
+   ]
+  },
+  {
+   "id": "ar-0024",
+   "query": "Is the following argument valid? 'All services with tests are reliable. The billing service is reliable. Therefore the billing service has tests.' Explain.",
+   "context": null,
+   "request_type": "analytical_reasoning",
+   "complexity": 3,
+   "tests": [
+    "clear"
+   ]
+  },
+  {
+   "id": "ar-0024-v1",
+   "query": "Hi! Is the following argument valid? 'All services with tests are reliable. The billing service is reliable. Therefore the billing service has tests.' Explain.\n\nty!",
+   "context": null,
+   "request_type": "analytical_reasoning",
+   "complexity": 3,
+   "tests": [
+    "clear",
+    "padded"
+   ]
+  },
+  {
+   "id": "ar-0044",
+   "query": "A bag has 5 red and 3 blue marbles. Drawing two without replacement, what's the probability both are red?",
+   "context": null,
+   "request_type": "analytical_reasoning",
+   "complexity": 3,
+   "tests": [
+    "clear"
+   ]
+  },
+  {
+   "id": "ar-0044-v1",
+   "query": "Hello there, A bag has 5 red and 3 blue marbles. Drawing two without replacement, what's the probability both are red?\n\nThanks a lot, really stuck on this.",
+   "context": null,
+   "request_type": "analytical_reasoning",
+   "complexity": 3,
+   "tests": [
+    "clear",
+    "padded"
+   ]
+  },
+  {
+   "id": "ar-0046",
+   "query": "Given a 99.9% SLA, how many minutes of downtime are allowed per month, and how much error budget is left if we've had two 12-minute outages?",
+   "context": null,
+   "request_type": "analytical_reasoning",
+   "complexity": 3,
+   "tests": [
+    "clear"
+   ]
+  },
+  {
+   "id": "ar-0046-v1",
+   "query": "gvien a 99.9% sla, how many minutes of downtime are allowed per month, and how much error budget is left if we've had two 12-minute outages? basically",
+   "context": null,
+   "request_type": "analytical_reasoning",
+   "complexity": 3,
+   "tests": [
+    "clear",
+    "noisy"
+   ]
+  },
+  {
+   "id": "ar-0046-v2",
+   "query": "Given a 99.9% SLA, how many minutes of downtime are allowed per month, and how much error budget is left if we've had two 12-minute outages?",
+   "context": "No additional context.",
+   "request_type": "analytical_reasoning",
+   "complexity": 3,
+   "tests": [
+    "clear",
+    "placeholder_context"
+   ]
+  },
+  {
+   "id": "cg-0004",
+   "query": "Correct the misspelled word in this docstring: 'Recieves the order payload'.",
+   "context": "def handle(payload):\n    \"\"\"Recieves the order payload.\"\"\"",
+   "request_type": "code_generation",
+   "complexity": 1,
+   "tests": [
+    "clear"
+   ]
+  },
+  {
+   "id": "cg-0004-v1",
+   "query": "Quick question: Correct the misspelled word in this docstring: 'Recieves the order payload'.\n\nty!",
+   "context": "def handle(payload):\n    \"\"\"Recieves the order payload.\"\"\"",
+   "request_type": "code_generation",
+   "complexity": 1,
+   "tests": [
+    "clear",
+    "padded"
+   ]
+  },
+  {
+   "id": "cg-0011",
+   "query": "Write a SQL query that returns the ten customers with the highest total order value last month.",
+   "context": "Tables: customers(id, name), orders(id, customer_id, total, created_at)",
+   "request_type": "code_generation",
+   "complexity": 2,
+   "tests": [
+    "clear"
+   ]
+  },
+  {
+   "id": "cg-0011-v1",
+   "query": "Hi! Write a SQL query that returns the ten customers with the highest total order value last month.\n\nThank you in advance.",
+   "context": "Tables: customers(id, name), orders(id, customer_id, total, created_at)",
+   "request_type": "code_generation",
+   "complexity": 2,
+   "tests": [
+    "clear",
+    "padded"
+   ]
+  },
+  {
+   "id": "cg-0012",
+   "query": "Convert this callback-based Node function to async/await.",
+   "context": "function load(path, cb) {\n  fs.readFile(path, 'utf8', (err, data) => {\n    if (err) return cb(err);\n    cb(null, JSON.parse(data));\n  });\n}",
+   "request_type": "code_generation",
+   "complexity": 2,
+   "tests": [
+    "clear"
+   ]
+  },
+  {
+   "id": "cg-0012-v1",
+   "query": "convret htis callback-based node function to async/await",
+   "context": "function load(path, cb) {\n  fs.readFile(path, 'utf8', (err, data) => {\n    if (err) return cb(err);\n    cb(null, JSON.parse(data));\n  });\n}",
+   "request_type": "code_generation",
+   "complexity": 2,
+   "tests": [
+    "clear",
+    "noisy"
+   ]
+  },
+  {
+   "id": "cg-0012-v2",
+   "query": "Hey team, Convert this callback-based Node function to async/await.\n\nCheers,\nSam",
+   "context": "function load(path, cb) {\n  fs.readFile(path, 'utf8', (err, data) => {\n    if (err) return cb(err);\n    cb(null, JSON.parse(data));\n  });\n}",
+   "request_type": "code_generation",
+   "complexity": 2,
+   "tests": [
+    "clear",
+    "padded"
+   ]
+  },
+  {
+   "id": "cg-0013",
+   "query": "Add a null check before dereferencing `user.profile` in this TypeScript snippet.",
+   "context": "const avatar = user.profile.avatarUrl;",
+   "request_type": "code_generation",
+   "complexity": 2,
+   "tests": [
+    "clear"
+   ]
+  },
+  {
+   "id": "cg-0013-v1",
+   "query": "Hello! Thanks in advance for the help. Add a null check before dereferencing `user.profile` in this TypeScript snippet.\n\nty!",
+   "context": "const avatar = user.profile.avatarUrl;",
+   "request_type": "code_generation",
+   "complexity": 2,
+   "tests": [
+    "clear",
+    "padded"
+   ]
+  },
+  {
+   "id": "cg-0020",
+   "query": "Write a Kotlin data class for a Book with title, author, ISBN and an optional publication year.",
+   "context": null,
+   "request_type": "code_generation",
+   "complexity": 2,
+   "tests": [
+    "clear"
+   ]
+  },
+  {
+   "id": "cg-0020-v1",
+   "query": "write a kotlin data class for a book with title, author, isbn and an honestly optional publicaiton year.",
+   "context": null,
+   "request_type": "code_generation",
+   "complexity": 2,
+   "tests": [
+    "clear",
+    "noisy"
+   ]
+  },
+  {
+   "id": "cg-0037",
+   "query": "Add pagination (limit/offset, max 100) to this FastAPI endpoint and return a total count header.",
+   "context": "@app.get('/items')\ndef list_items(db: Session = Depends(get_db)):\n    return db.query(Item).all()",
+   "request_type": "code_generation",
+   "complexity": 3,
+   "tests": [
+    "clear"
+   ]
+  },
+  {
+   "id": "cg-0037-v1",
+   "query": "add pagination (limit/offset, max 100) to this fastapi endponit and return a total count header",
+   "context": "@app.get('/items')\ndef list_items(db: Session = Depends(get_db)):\n    return db.query(Item).all()",
+   "request_type": "code_generation",
+   "complexity": 3,
+   "tests": [
+    "clear",
+    "noisy"
+   ]
+  },
+  {
+   "id": "cg-0037-v2",
+   "query": "Good morning! Add pagination (limit/offset, max 100) to this FastAPI endpoint and return a total count header.\n\nThanks so much.",
+   "context": "@app.get('/items')\ndef list_items(db: Session = Depends(get_db)):\n    return db.query(Item).all()",
+   "request_type": "code_generation",
+   "complexity": 3,
+   "tests": [
+    "clear",
+    "padded"
+   ]
+  },
+  {
+   "id": "cg-0038",
+   "query": "Write a Kubernetes Deployment and Service for a Node app with 3 replicas, readiness and liveness probes, and resource limits.",
+   "context": null,
+   "request_type": "code_generation",
+   "complexity": 3,
+   "tests": [
+    "clear"
+   ]
+  },
+  {
+   "id": "cg-0038-v1",
+   "query": "Hey, sorry to bother you, Write a Kubernetes Deployment and Service for a Node app with 3 replicas, readiness and liveness probes, and resource limits.\n\nThanks!",
+   "context": null,
+   "request_type": "code_generation",
+   "complexity": 3,
+   "tests": [
+    "clear",
+    "padded"
+   ]
+  },
+  {
+   "id": "cg-0041",
+   "query": "Write a lock-free single-producer single-consumer ring buffer in Rust with unsafe code justified in comments, plus loom tests.",
+   "context": null,
+   "request_type": "code_generation",
+   "complexity": 4,
+   "tests": [
+    "clear"
+   ]
+  },
+  {
+   "id": "cg-0041-v1",
+   "query": "Write a lock-free single-producer single-consumer ring buffer in Rust with unsafe coed justified in comments, plus loom tests.",
+   "context": null,
+   "request_type": "code_generation",
+   "complexity": 4,
+   "tests": [
+    "clear",
+    "noisy"
+   ]
+  },
+  {
+   "id": "cg-0041-v2",
+   "query": "Write a lock-free single-producer single-consumer ring buffer in Rust with unsafe code justified in comments, plus loom tests.",
+   "context": "No additional context.",
+   "request_type": "code_generation",
+   "complexity": 4,
+   "tests": [
+    "clear",
+    "placeholder_context"
+   ]
+  },
+  {
+   "id": "cg-0055",
+   "query": "In the architecture doc's code sample, change `localhost` to `db.internal`.",
+   "context": "conn = connect(host=\"localhost\", port=5432)",
+   "request_type": "code_generation",
+   "complexity": 1,
+   "tests": [
+    "boundary",
+    "misleading_keyword"
+   ]
+  },
+  {
+   "id": "cg-0055-v1",
+   "query": "Hello there, In the architecture doc's code sample, change `localhost` to `db.internal`.\n\nty!",
+   "context": "conn = connect(host=\"localhost\", port=5432)",
+   "request_type": "code_generation",
+   "complexity": 1,
+   "tests": [
+    "boundary",
+    "misleading_keyword",
+    "padded"
+   ]
+  },
+  {
+   "id": "cg-0055-v2",
+   "query": "In the architecture doc's code sample, chnage `localhost` to `db.internal`",
+   "context": "conn = connect(host=\"localhost\", port=5432)",
+   "request_type": "code_generation",
+   "complexity": 1,
+   "tests": [
+    "boundary",
+    "misleading_keyword",
+    "noisy"
+   ]
+  },
+  {
+   "id": "cg-0056",
+   "query": "Write a function that calculates the probability density of a normal distribution at x.",
+   "context": null,
+   "request_type": "code_generation",
+   "complexity": 2,
+   "tests": [
+    "boundary",
+    "misleading_keyword"
+   ]
+  },
+  {
+   "id": "cg-0056-v1",
+   "query": "Hey team, Write a function that calculates the probability density of a normal distribution at x.\n\nCheers,\nSam",
+   "context": null,
+   "request_type": "code_generation",
+   "complexity": 2,
+   "tests": [
+    "boundary",
+    "misleading_keyword",
+    "padded"
+   ]
+  },
+  {
+   "id": "cg-0058",
+   "query": "python one-liner to flatten a list of lists",
+   "context": null,
+   "request_type": "code_generation",
+   "complexity": 1,
+   "tests": [
+    "clear",
+    "very_short"
+   ]
+  },
+  {
+   "id": "cg-0058-v1",
+   "query": "python one-liner to flatten a list of lsits",
+   "context": null,
+   "request_type": "code_generation",
+   "complexity": 1,
+   "tests": [
+    "clear",
+    "noisy",
+    "very_short"
+   ]
+  },
+  {
+   "id": "cg-0061",
+   "query": "Add type hints to this function.",
+   "context": "def merge(a, b, key=None):\n    out = dict(a)\n    out.update(b)\n    return out",
+   "request_type": "code_generation",
+   "complexity": 2,
+   "tests": [
+    "clear",
+    "very_short"
+   ]
+  },
+  {
+   "id": "cg-0061-v1",
+   "query": "Hello! Thanks in advance for the help. Add type hints to this function.\n\nBest regards,\nPriya",
+   "context": "def merge(a, b, key=None):\n    out = dict(a)\n    out.update(b)\n    return out",
+   "request_type": "code_generation",
+   "complexity": 2,
+   "tests": [
+    "clear",
+    "padded",
+    "very_short"
+   ]
+  },
+  {
+   "id": "cg-0061-v2",
+   "query": "Add type hints to htis function",
+   "context": "def merge(a, b, key=None):\n    out = dict(a)\n    out.update(b)\n    return out",
+   "request_type": "code_generation",
+   "complexity": 2,
+   "tests": [
+    "clear",
+    "noisy",
+    "very_short"
+   ]
+  },
+  {
+   "id": "cg-0062",
+   "query": "Write a SwiftUI view that shows a searchable list of contacts loaded asynchronously, with a loading state and an error banner.",
+   "context": null,
+   "request_type": "code_generation",
+   "complexity": 3,
+   "tests": [
+    "clear"
+   ]
+  },
+  {
+   "id": "cg-0062-v1",
+   "query": "Write basically a SwiftUI veiw that shows a searchable list of contacts loaded asynchronously, with a loading state and an error banner.",
+   "context": null,
+   "request_type": "code_generation",
+   "complexity": 3,
+   "tests": [
+    "clear",
+    "noisy"
+   ]
+  },
+  {
+   "id": "cg-0062-v2",
+   "query": "Write a SwiftUI view that shows a searchable list of contacts loaded asynchronously, with a loading state and an error banner.",
+   "context": "No other files or changes needed.",
+   "request_type": "code_generation",
+   "complexity": 3,
+   "tests": [
+    "clear",
+    "placeholder_context"
+   ]
+  },
+  {
+   "id": "cu-0009",
+   "query": "Walk me through how this React component re-renders when the parent passes a new `filters` object each render.",
+   "context": "function List({ filters }) {\n  const data = useMemo(() => query(filters), [filters]);\n  return <Table rows={data} />;\n}",
+   "request_type": "code_understanding",
+   "complexity": 3,
+   "tests": [
+    "clear"
+   ]
+  },
+  {
+   "id": "cu-0027",
+   "query": "Explain what each flag in this command does.",
+   "context": "tar -czvf backup.tgz --exclude='*.log' ./project",
+   "request_type": "code_understanding",
+   "complexity": 2,
+   "tests": [
+    "clear"
+   ]
+  },
+  {
+   "id": "cu-0027-v1",
+   "query": "Hey team, Explain what each flag in this command does.\n\nThanks so much.",
+   "context": "tar -czvf backup.tgz --exclude='*.log' ./project",
+   "request_type": "code_understanding",
+   "complexity": 2,
+   "tests": [
+    "clear",
+    "padded"
+   ]
+  },
+  {
+   "id": "cu-0032",
+   "query": "Why does get_setting keep giving me stale data after the setting changes in the database?",
+   "context": "@lru_cache\ndef get_setting(name):\n    return db.read(name)",
+   "request_type": "code_understanding",
+   "complexity": 2,
+   "tests": [
+    "boundary"
+   ]
+  },
+  {
+   "id": "cu-0032-v1",
+   "query": "Quick question: Why does get_setting keep giving me stale data after the setting changes in the database?\n\nAppreciate it!",
+   "context": "@lru_cache\ndef get_setting(name):\n    return db.read(name)",
+   "request_type": "code_understanding",
+   "complexity": 2,
+   "tests": [
+    "boundary",
+    "padded"
+   ]
+  },
+  {
+   "id": "cu-0032-v2",
+   "query": "why does get_setting keep giving me stale data after the setitng just changes in the database",
+   "context": "@lru_cache\ndef get_setting(name):\n    return db.read(name)",
+   "request_type": "code_understanding",
+   "complexity": 2,
+   "tests": [
+    "boundary",
+    "noisy"
+   ]
+  },
+  {
+   "id": "cu-0036",
+   "query": "Explain what this function that computes the design matrix does.",
+   "context": "def design(X):\n    return np.hstack([np.ones((X.shape[0], 1)), X])",
+   "request_type": "code_understanding",
+   "complexity": 2,
+   "tests": [
+    "boundary",
+    "misleading_keyword"
+   ]
+  },
+  {
+   "id": "cu-0036-v1",
+   "query": "explian what this function that computes the design matrix does",
+   "context": "def design(X):\n    return np.hstack([np.ones((X.shape[0], 1)), X])",
+   "request_type": "code_understanding",
+   "complexity": 2,
+   "tests": [
+    "boundary",
+    "misleading_keyword",
+    "noisy"
+   ]
+  },
+  {
+   "id": "cu-0036-v2",
+   "query": "Hello there, Explain what this function that computes the design matrix does.\n\nBest regards,\nPriya",
+   "context": "def design(X):\n    return np.hstack([np.ones((X.shape[0], 1)), X])",
+   "request_type": "code_understanding",
+   "complexity": 2,
+   "tests": [
+    "boundary",
+    "misleading_keyword",
+    "padded"
+   ]
+  },
+  {
+   "id": "cu-0041",
+   "query": "Why does this Python function modify the caller's list?",
+   "context": "def add_item(item, items=[]):\n    items.append(item)\n    return items",
+   "request_type": "code_understanding",
+   "complexity": 2,
+   "tests": [
+    "clear"
+   ]
+  },
+  {
+   "id": "cu-0041-v1",
+   "query": "Hey, sorry to bother you, Why does this Python function modify the caller's list?\n\nThank you in advance.",
+   "context": "def add_item(item, items=[]):\n    items.append(item)\n    return items",
+   "request_type": "code_understanding",
+   "complexity": 2,
+   "tests": [
+    "clear",
+    "padded"
+   ]
+  },
+  {
+   "id": "cu-0048",
+   "query": "What does this Excel formula compute?",
+   "context": "=SUMIFS(C:C, A:A, \">=\"&DATE(2024,1,1), B:B, \"EMEA\")",
+   "request_type": "code_understanding",
+   "complexity": 2,
+   "tests": [
+    "clear",
+    "very_short"
+   ]
+  },
+  {
+   "id": "cu-0048-v1",
+   "query": "Hey team, What does this Excel formula compute?\n\nCheers,\nSam",
+   "context": "=SUMIFS(C:C, A:A, \">=\"&DATE(2024,1,1), B:B, \"EMEA\")",
+   "request_type": "code_understanding",
+   "complexity": 2,
+   "tests": [
+    "clear",
+    "padded",
+    "very_short"
+   ]
+  },
+  {
+   "id": "cu-0048-v2",
+   "query": "Waht does this Excel formula basically compute",
+   "context": "=SUMIFS(C:C, A:A, \">=\"&DATE(2024,1,1), B:B, \"EMEA\")",
+   "request_type": "code_understanding",
+   "complexity": 2,
+   "tests": [
+    "clear",
+    "noisy",
+    "very_short"
+   ]
+  },
+  {
+   "id": "wr-0001",
+   "query": "Write a 1,500-word postmortem for public release from these internal notes: blameless tone, a clear timeline, customer impact, root cause explained for non-engineers, what we're changing, and no speculation beyond the evidence.",
+   "context": "Notes: 4h partial outage of document sync; cause: a schema migration locked a hot table; the canary didn't catch it because canary traffic has few writes; on-call paged at minute 12; rollback blocked because the migration wasn't reversible; restored from replica; 0.3% of edits lost (users notified individually); changes: online migrations only, write-heavy canary, reversible-migration lint, faster paging.",
+   "request_type": "writing",
+   "complexity": 5,
+   "tests": [
+    "clear"
+   ]
+  },
+  {
+   "id": "wr-0001-v1",
+   "query": "write a 1,500-word postmortem for public release from these inetrnal notes: blameless tone, a clear timeline, customer impact, root cause explained for non-engineers, what we're changing, and no speculation beyond the evidence.",
+   "context": "Notes: 4h partial outage of document sync; cause: a schema migration locked a hot table; the canary didn't catch it because canary traffic has few writes; on-call paged at minute 12; rollback blocked because the migration wasn't reversible; restored from replica; 0.3% of edits lost (users notified individually); changes: online migrations only, write-heavy canary, reversible-migration lint, faster paging.",
+   "request_type": "writing",
+   "complexity": 5,
+   "tests": [
+    "clear",
+    "noisy"
+   ]
+  },
+  {
+   "id": "wr-0001-v2",
+   "query": "Good morning! Write a 1,500-word postmortem for public release from these internal notes: blameless tone, a clear timeline, customer impact, root cause explained for non-engineers, what we're changing, and no speculation beyond the evidence.\n\nThanks a lot, really stuck on this.",
+   "context": "Notes: 4h partial outage of document sync; cause: a schema migration locked a hot table; the canary didn't catch it because canary traffic has few writes; on-call paged at minute 12; rollback blocked because the migration wasn't reversible; restored from replica; 0.3% of edits lost (users notified individually); changes: online migrations only, write-heavy canary, reversible-migration lint, faster paging.",
+   "request_type": "writing",
+   "complexity": 5,
+   "tests": [
+    "clear",
+    "padded"
+   ]
+  },
+  {
+   "id": "fl-0002",
+   "query": "What does `Array.prototype.flatMap` return?",
+   "context": null,
+   "request_type": "factual_lookup",
+   "complexity": 1,
+   "tests": [
+    "clear",
+    "very_short"
+   ]
+  },
+  {
+   "id": "fl-0002-v1",
+   "query": "waht does `array.prototype.flatmap` return",
+   "context": null,
+   "request_type": "factual_lookup",
+   "complexity": 1,
+   "tests": [
+    "clear",
+    "noisy",
+    "very_short"
+   ]
+  },
+  {
+   "id": "fl-0003",
+   "query": "Who wrote 'One Hundred Years of Solitude'?",
+   "context": null,
+   "request_type": "factual_lookup",
+   "complexity": 1,
+   "tests": [
+    "clear"
+   ]
+  },
+  {
+   "id": "fl-0003-v1",
+   "query": "Who wrote 'One Hnudred Years of Solitude'?",
+   "context": null,
+   "request_type": "factual_lookup",
+   "complexity": 1,
+   "tests": [
+    "clear",
+    "noisy"
+   ]
+  },
+  {
+   "id": "fl-0026",
+   "query": "What is the default timeout for `requests.get` in Python?",
+   "context": null,
+   "request_type": "factual_lookup",
+   "complexity": 1,
+   "tests": [
+    "clear"
+   ]
+  },
+  {
+   "id": "fl-0026-v1",
+   "query": "hWat is the just default timeout for `requests.get` in Python",
+   "context": null,
+   "request_type": "factual_lookup",
+   "complexity": 1,
+   "tests": [
+    "clear",
+    "noisy"
+   ]
+  },
+  {
+   "id": "fl-0026-v2",
+   "query": "What is the default timeout for `requests.get` in Python?",
+   "context": "No other files or changes needed.",
+   "request_type": "factual_lookup",
+   "complexity": 1,
+   "tests": [
+    "clear",
+    "placeholder_context"
+   ]
+  },
+  {
+   "id": "fl-0042",
+   "query": "What does `str.partition` return in Python?",
+   "context": "No code attached; general question.",
+   "request_type": "factual_lookup",
+   "complexity": 1,
+   "tests": [
+    "boundary",
+    "very_short"
+   ]
+  },
+  {
+   "id": "fl-0042-v1",
+   "query": "what does `str.partition` retrun in python?",
+   "context": "No code attached; general question.",
+   "request_type": "factual_lookup",
+   "complexity": 1,
+   "tests": [
+    "boundary",
+    "noisy",
+    "very_short"
+   ]
+  },
+  {
+   "id": "fl-0047",
+   "query": "Who designed the Eiffel Tower?",
+   "context": null,
+   "request_type": "factual_lookup",
+   "complexity": 1,
+   "tests": [
+    "boundary",
+    "misleading_keyword",
+    "very_short"
+   ]
+  },
+  {
+   "id": "fl-0047-v1",
+   "query": "Who designed the Eiffle Tower",
+   "context": null,
+   "request_type": "factual_lookup",
+   "complexity": 1,
+   "tests": [
+    "boundary",
+    "misleading_keyword",
+    "noisy",
+    "very_short"
+   ]
+  },
+  {
+   "id": "fl-0048",
+   "query": "What does the `@Transactional` annotation do in Spring?",
+   "context": null,
+   "request_type": "factual_lookup",
+   "complexity": 1,
+   "tests": [
+    "boundary"
+   ]
+  },
+  {
+   "id": "fl-0048-v1",
+   "query": "Hi! What does the `@Transactional` annotation do in Spring?\n\nAppreciate it!",
+   "context": null,
+   "request_type": "factual_lookup",
+   "complexity": 1,
+   "tests": [
+    "boundary",
+    "padded"
+   ]
+  },
+  {
+   "id": "fl-0048-v2",
+   "query": "What does the `@Transactional` annotation do in Spring?",
+   "context": "No codebase context.",
+   "request_type": "factual_lookup",
+   "complexity": 1,
+   "tests": [
+    "boundary",
+    "placeholder_context"
+   ]
+  },
+  {
+   "id": "fl-0050",
+   "query": "default redis port?",
+   "context": null,
+   "request_type": "factual_lookup",
+   "complexity": 1,
+   "tests": [
+    "clear",
+    "very_short"
+   ]
+  },
+  {
+   "id": "fl-0050-v1",
+   "query": "default rdeis port basically",
+   "context": null,
+   "request_type": "factual_lookup",
+   "complexity": 1,
+   "tests": [
+    "clear",
+    "noisy",
+    "very_short"
+   ]
+  },
+  {
+   "id": "fl-0056",
+   "query": "What are the four principles of object-oriented programming?",
+   "context": null,
+   "request_type": "factual_lookup",
+   "complexity": 2,
+   "tests": [
+    "clear"
+   ]
+  },
+  {
+   "id": "fl-0056-v1",
+   "query": "Hey, sorry to bother you, What are the four principles of object-oriented programming?\n\nBest regards,\nPriya",
+   "context": null,
+   "request_type": "factual_lookup",
+   "complexity": 2,
+   "tests": [
+    "clear",
+    "padded"
+   ]
+  },
+  {
+   "id": "fl-0062",
+   "query": "What is a JWT?",
+   "context": null,
+   "request_type": "factual_lookup",
+   "complexity": 1,
+   "tests": [
+    "clear",
+    "very_short"
+   ]
+  },
+  {
+   "id": "fl-0062-v1",
+   "query": "Hey, sorry to bother you, What is a JWT?\n\nAppreciate it!",
+   "context": null,
+   "request_type": "factual_lookup",
+   "complexity": 1,
+   "tests": [
+    "clear",
+    "padded",
+    "very_short"
+   ]
+  },
+  {
+   "id": "fl-0062-v2",
+   "query": "What is a JWT?",
+   "context": "No other files or changes needed.",
+   "request_type": "factual_lookup",
+   "complexity": 1,
+   "tests": [
+    "clear",
+    "placeholder_context",
+    "very_short"
+   ]
+  },
+  {
+   "id": "ge-0013",
+   "query": "ok cool",
+   "context": null,
+   "request_type": "general",
+   "complexity": 1,
+   "tests": [
+    "clear",
+    "very_short"
+   ]
+  },
+  {
+   "id": "ge-0013-v1",
+   "query": "kind of ok colo",
+   "context": null,
+   "request_type": "general",
+   "complexity": 1,
+   "tests": [
+    "clear",
+    "noisy",
+    "very_short"
+   ]
+  },
+  {
+   "id": "ge-0016",
+   "query": "Give me some ideas for a team-building activity for 10 people.",
+   "context": null,
+   "request_type": "general",
+   "complexity": 2,
+   "tests": [
+    "clear"
+   ]
+  },
+  {
+   "id": "ge-0016-v1",
+   "query": "Hello! Thanks in advance for the help. Give me some ideas for a team-building activity for 10 people.\n\nThank you in advance.",
+   "context": null,
+   "request_type": "general",
+   "complexity": 2,
+   "tests": [
+    "clear",
+    "padded"
+   ]
+  },
+  {
+   "id": "ge-0016-v2",
+   "query": "Give me some ideas for a team-building activity for 10 people.",
+   "context": "Context: none provided.",
+   "request_type": "general",
+   "complexity": 2,
+   "tests": [
+    "clear",
+    "placeholder_context"
+   ]
+  },
+  {
+   "id": "ge-0021",
+   "query": "Tell me a joke.",
+   "context": null,
+   "request_type": "general",
+   "complexity": 1,
+   "tests": [
+    "clear",
+    "very_short"
+   ]
+  },
+  {
+   "id": "ge-0021-v1",
+   "query": "Hi, hope you're well. Tell me a joke.\n\nThank you in advance.",
+   "context": null,
+   "request_type": "general",
+   "complexity": 1,
+   "tests": [
+    "clear",
+    "padded",
+    "very_short"
+   ]
+  },
+  {
+   "id": "ge-0032",
+   "query": "Which do you like better, cats or dogs?",
+   "context": null,
+   "request_type": "general",
+   "complexity": 1,
+   "tests": [
+    "clear"
+   ]
+  },
+  {
+   "id": "ge-0032-v1",
+   "query": "whihc do you like better, cats honestly or dogs?",
+   "context": null,
+   "request_type": "general",
+   "complexity": 1,
+   "tests": [
+    "clear",
+    "noisy"
+   ]
+  },
+  {
+   "id": "ge-0034",
+   "query": "you're awesome",
+   "context": null,
+   "request_type": "general",
+   "complexity": 1,
+   "tests": [
+    "clear",
+    "very_short"
+   ]
+  },
+  {
+   "id": "ge-0034-v1",
+   "query": "Quick question: you're awesome\n\nty!",
+   "context": null,
+   "request_type": "general",
+   "complexity": 1,
+   "tests": [
+    "clear",
+    "padded",
+    "very_short"
+   ]
+  },
+  {
+   "id": "ge-0042",
+   "query": "I'm going to architecture school next year, wish me luck!",
+   "context": null,
+   "request_type": "general",
+   "complexity": 1,
+   "tests": [
+    "boundary",
+    "misleading_keyword"
+   ]
+  },
+  {
+   "id": "ge-0042-v1",
+   "query": "i'm gonig to architecture school next year, wish me luck just",
+   "context": null,
+   "request_type": "general",
+   "complexity": 1,
+   "tests": [
+    "boundary",
+    "misleading_keyword",
+    "noisy"
+   ]
+  },
+  {
+   "id": "ge-0046",
+   "query": "thanks!!",
+   "context": null,
+   "request_type": "general",
+   "complexity": 1,
+   "tests": [
+    "clear",
+    "very_short"
+   ]
+  },
+  {
+   "id": "ge-0046-v1",
+   "query": "thanks!! just",
+   "context": null,
+   "request_type": "general",
+   "complexity": 1,
+   "tests": [
+    "clear",
+    "noisy",
+    "very_short"
+   ]
+  },
+  {
+   "id": "ge-0046-v2",
+   "query": "thanks!!",
+   "context": "No additional context.",
+   "request_type": "general",
+   "complexity": 1,
+   "tests": [
+    "clear",
+    "placeholder_context",
+    "very_short"
+   ]
+  },
+  {
+   "id": "ge-0049",
+   "query": "What's a thoughtful gift for a friend who just moved abroad?",
+   "context": null,
+   "request_type": "general",
+   "complexity": 2,
+   "tests": [
+    "clear"
+   ]
+  },
+  {
+   "id": "ge-0049-v1",
+   "query": "Hi, hope you're well. What's a thoughtful gift for a friend who just moved abroad?\n\nAppreciate it!",
+   "context": null,
+   "request_type": "general",
+   "complexity": 2,
+   "tests": [
+    "clear",
+    "padded"
+   ]
+  },
+  {
+   "id": "cg-0085",
+   "query": "Review this handler briefly, then rewrite it to use parameterized queries.",
+   "context": "q = f\"SELECT * FROM users WHERE email = '{email}'\"\ncur.execute(q)",
+   "request_type": "code_generation",
+   "complexity": 3,
+   "tests": [
+    "multi_intent",
+    "multi_intent"
+   ]
+  },
+  {
+   "id": "cg-0085-v1",
+   "query": "Reivew this handler briefly, then rewrite it to use parameterized queries.",
+   "context": "q = f\"SELECT * FROM users WHERE email = '{email}'\"\ncur.execute(q)",
+   "request_type": "code_generation",
+   "complexity": 3,
+   "tests": [
+    "multi_intent",
+    "multi_intent",
+    "noisy"
+   ]
+  },
+  {
+   "id": "wr-0006",
+   "query": "Translate this message into French and make it slightly more formal.",
+   "context": "Hey, can we push our call to Thursday? Something came up.",
+   "request_type": "writing",
+   "complexity": 2,
+   "tests": [
+    "multi_intent",
+    "multi_intent"
+   ]
+  },
+  {
+   "id": "wr-0006-v1",
+   "query": "Hey, sorry to bother you, Translate this message into French and make it slightly more formal.\n\nThanks a lot, really stuck on this.",
+   "context": "Hey, can we push our call to Thursday? Something came up.",
+   "request_type": "writing",
+   "complexity": 2,
+   "tests": [
+    "multi_intent",
+    "multi_intent",
+    "padded"
+   ]
+  },
+  {
+   "id": "td-0012",
+   "query": "Our search is slow and results are poor. Propose a new search architecture and explain how we'd measure relevance improvements.",
+   "context": null,
+   "request_type": "technical_design",
+   "complexity": 4,
+   "tests": [
+    "multi_intent",
+    "multi_intent"
+   ]
+  },
+  {
+   "id": "td-0012-v1",
+   "query": "Hey team, Our search is slow and results are poor. Propose a new search architecture and explain how we'd measure relevance improvements.\n\nThanks!",
+   "context": null,
+   "request_type": "technical_design",
+   "complexity": 4,
+   "tests": [
+    "multi_intent",
+    "multi_intent",
+    "padded"
+   ]
+  },
+  {
+   "id": "wr-0008",
+   "query": "Write a short LinkedIn recommendation for my former colleague and suggest a headline for it.",
+   "context": "Worked together 3 years; she led our data platform migration and mentored new hires.",
+   "request_type": "writing",
+   "complexity": 2,
+   "tests": [
+    "multi_intent",
+    "multi_intent"
+   ]
+  },
+  {
+   "id": "wr-0008-v1",
+   "query": "Write a shotr LinkedIn recommendation kind of for my ofrmer colleague and suggest a headline for it",
+   "context": "Worked together 3 years; she led our data platform migration and mentored new hires.",
+   "request_type": "writing",
+   "complexity": 2,
+   "tests": [
+    "multi_intent",
+    "multi_intent",
+    "noisy"
+   ]
+  },
+  {
+   "id": "ar-0062",
+   "query": "Estimate how many support tickets we'll get after launching in Germany and how many agents we'd need.",
+   "context": "Current: 3 tickets per 1,000 active users per week; Germany projection 40k users by month 3; one agent handles 120 tickets/week.",
+   "request_type": "analytical_reasoning",
+   "complexity": 3,
+   "tests": [
+    "multi_intent",
+    "multi_intent"
+   ]
+  },
+  {
+   "id": "ar-0062-v1",
+   "query": "honestly Estimate how many support tickets we'll get afetr launching in Germany and how amny agents we'd need.",
+   "context": "Current: 3 tickets per 1,000 active users per week; Germany projection 40k users by month 3; one agent handles 120 tickets/week.",
+   "request_type": "analytical_reasoning",
+   "complexity": 3,
+   "tests": [
+    "multi_intent",
+    "multi_intent",
+    "noisy"
+   ]
+  },
+  {
+   "id": "ar-0062-v2",
+   "query": "Hey, sorry to bother you, Estimate how many support tickets we'll get after launching in Germany and how many agents we'd need.\n\nty!",
+   "context": "Current: 3 tickets per 1,000 active users per week; Germany projection 40k users by month 3; one agent handles 120 tickets/week.",
+   "request_type": "analytical_reasoning",
+   "complexity": 3,
+   "tests": [
+    "multi_intent",
+    "multi_intent",
+    "padded"
+   ]
+  },
+  {
+   "id": "cu-0055",
+   "query": "Explain this error message and what part of my code triggers it; I'll handle the fix.",
+   "context": "TypeError: Cannot read properties of undefined (reading 'map')\n  at ProductList (ProductList.jsx:12)\n\n12: return props.items.map(i => <Item {...i} />)",
+   "request_type": "code_understanding",
+   "complexity": 2,
+   "tests": [
+    "multi_intent",
+    "multi_intent"
+   ]
+  },
+  {
+   "id": "cu-0055-v1",
+   "query": "Good morning! Explain this error message and what part of my code triggers it; I'll handle the fix.\n\nThanks!",
+   "context": "TypeError: Cannot read properties of undefined (reading 'map')\n  at ProductList (ProductList.jsx:12)\n\n12: return props.items.map(i => <Item {...i} />)",
+   "request_type": "code_understanding",
+   "complexity": 2,
+   "tests": [
+    "multi_intent",
+    "multi_intent",
+    "padded"
+   ]
+  },
+  {
+   "id": "cu-0055-v2",
+   "query": "Exlpain this error message and what part of my code triggers it; I'll handle the fix",
+   "context": "TypeError: Cannot read properties of undefined (reading 'map')\n  at ProductList (ProductList.jsx:12)\n\n12: return props.items.map(i => <Item {...i} />)",
+   "request_type": "code_understanding",
+   "complexity": 2,
+   "tests": [
+    "multi_intent",
+    "multi_intent",
+    "noisy"
+   ]
+  },
+  {
+   "id": "cu-0056",
+   "query": "wat does this even do???? 😩",
+   "context": "x = [i for i in range(10) if i % 2][::-1]",
+   "request_type": "code_understanding",
+   "complexity": 2,
+   "tests": [
+    "noisy",
+    "very_short"
+   ]
+  },
+  {
+   "id": "cu-0056-v1",
+   "query": "Good morning! wat does this even do???? 😩\n\nAppreciate it!",
+   "context": "x = [i for i in range(10) if i % 2][::-1]",
+   "request_type": "code_understanding",
+   "complexity": 2,
+   "tests": [
+    "noisy",
+    "padded",
+    "very_short"
+   ]
+  },
+  {
+   "id": "cu-0056-v2",
+   "query": "wat does this kind of evne do???? 😩",
+   "context": "x = [i for i in range(10) if i % 2][::-1]",
+   "request_type": "code_understanding",
+   "complexity": 2,
+   "tests": [
+    "noisy",
+    "noisy",
+    "very_short"
+   ]
+  },
+  {
+   "id": "wr-0010",
+   "query": "can u make this sound less angry b4 i send it to my landlord lol",
+   "context": "THE HEATER IS STILL BROKEN. I TOLD YOU 3 WEEKS AGO. FIX IT.",
+   "request_type": "writing",
+   "complexity": 2,
+   "tests": [
+    "noisy"
+   ]
+  },
+  {
+   "id": "wr-0010-v1",
+   "query": "just can u make this sound less angry b4 i send it to my lnadlord lol",
+   "context": "THE HEATER IS STILL BROKEN. I TOLD YOU 3 WEEKS AGO. FIX IT.",
+   "request_type": "writing",
+   "complexity": 2,
+   "tests": [
+    "noisy",
+    "noisy"
+   ]
+  },
+  {
+   "id": "wr-0010-v2",
+   "query": "Hi! can u make this sound less angry b4 i send it to my landlord lol\n\nAppreciate it!",
+   "context": "THE HEATER IS STILL BROKEN. I TOLD YOU 3 WEEKS AGO. FIX IT.",
+   "request_type": "writing",
+   "complexity": 2,
+   "tests": [
+    "noisy",
+    "padded"
+   ]
+  },
+  {
+   "id": "fl-0067",
+   "query": "hey quick one, what does 'grep -v' do? thx!!",
+   "context": null,
+   "request_type": "factual_lookup",
+   "complexity": 1,
+   "tests": [
+    "noisy"
+   ]
+  },
+  {
+   "id": "fl-0067-v1",
+   "query": "Hello! Thanks in advance for the help. hey quick one, what does 'grep -v' do? thx!!\n\nAppreciate it!",
+   "context": null,
+   "request_type": "factual_lookup",
+   "complexity": 1,
+   "tests": [
+    "noisy",
+    "padded"
+   ]
+  },
+  {
+   "id": "fl-0067-v2",
+   "query": "hey quick one, what does 'grep -v' do? thx!!",
+   "context": "No additional context.",
+   "request_type": "factual_lookup",
+   "complexity": 1,
+   "tests": [
+    "noisy",
+    "placeholder_context"
+   ]
+  },
+  {
+   "id": "ge-0052",
+   "query": "so i've been thinking a lot lately, like, about whether i should move to a new city or not, my friends are here but jobs are there, idk, what would you do",
+   "context": null,
+   "request_type": "general",
+   "complexity": 2,
+   "tests": [
+    "noisy"
+   ]
+  },
+  {
+   "id": "ge-0052-v1",
+   "query": "Hi! so i've been thinking a lot lately, like, about whether i should move to a new city or not, my friends are here but jobs are there, idk, what would you do\n\nThank you in advance.",
+   "context": null,
+   "request_type": "general",
+   "complexity": 2,
+   "tests": [
+    "noisy",
+    "padded"
+   ]
+  },
+  {
+   "id": "fl-0071",
+   "query": "What does EBITDA stand for?",
+   "context": null,
+   "request_type": "factual_lookup",
+   "complexity": 1,
+   "tests": [
+    "ood",
+    "very_short"
+   ]
+  },
+  {
+   "id": "fl-0071-v1",
+   "query": "Good morning! What does EBITDA stand for?\n\nThanks!",
+   "context": null,
+   "request_type": "factual_lookup",
+   "complexity": 1,
+   "tests": [
+    "ood",
+    "padded",
+    "very_short"
+   ]
+  },
+  {
+   "id": "fl-0071-v2",
+   "query": "What does EBITDA stand for?",
+   "context": "No other files or changes needed.",
+   "request_type": "factual_lookup",
+   "complexity": 1,
+   "tests": [
+    "ood",
+    "placeholder_context",
+    "very_short"
+   ]
+  },
+  {
+   "id": "td-0017",
+   "query": "How should I design the data tables for tracking patients, appointments and prescriptions in a small clinic app?",
+   "context": null,
+   "request_type": "technical_design",
+   "complexity": 3,
+   "tests": [
+    "ood"
+   ]
+  },
+  {
+   "id": "td-0017-v1",
+   "query": "how should i design the data tables for tracknig patients, appointments and prescriptions in a small clinic app",
+   "context": null,
+   "request_type": "technical_design",
+   "complexity": 3,
+   "tests": [
+    "ood",
+    "noisy"
+   ]
+  },
+  {
+   "id": "td-0018",
+   "query": "Design the order flow and inventory sync between our three retail stores and the online shop so stock counts stay accurate.",
+   "context": null,
+   "request_type": "technical_design",
+   "complexity": 4,
+   "tests": [
+    "ood"
+   ]
+  },
+  {
+   "id": "td-0018-v1",
+   "query": "Hey, sorry to bother you, Design the order flow and inventory sync between our three retail stores and the online shop so stock counts stay accurate.\n\nty!",
+   "context": null,
+   "request_type": "technical_design",
+   "complexity": 4,
+   "tests": [
+    "ood",
+    "padded"
+   ]
+  },
+  {
+   "id": "cg-0100",
+   "query": "Escribe una función en Python que devuelva los números pares de una lista.",
+   "context": null,
+   "request_type": "code_generation",
+   "complexity": 2,
+   "tests": [
+    "clear",
+    "non_english"
+   ]
+  },
+  {
+   "id": "cg-0100-v1",
+   "query": "Hey, sorry to bother you, Escribe una función en Python que devuelva los números pares de una lista.\n\nCheers,\nSam",
+   "context": null,
+   "request_type": "code_generation",
+   "complexity": 2,
+   "tests": [
+    "clear",
+    "non_english",
+    "padded"
+   ]
+  },
+  {
+   "id": "cg-0100-v2",
+   "query": "Escribe una función en Python que devuelva los números pares de una lista.",
+   "context": "Context: none provided.",
+   "request_type": "code_generation",
+   "complexity": 2,
+   "tests": [
+    "clear",
+    "non_english",
+    "placeholder_context"
+   ]
+  },
+  {
+   "id": "cu-0060",
+   "query": "¿Qué hace este código? No lo entiendo.",
+   "context": "const total = items.reduce((s, i) => s + i.price * i.qty, 0);",
+   "request_type": "code_understanding",
+   "complexity": 2,
+   "tests": [
+    "clear",
+    "non_english"
+   ]
+  },
+  {
+   "id": "cu-0060-v1",
+   "query": "Hey, sorry to bother you, ¿Qué hace este código? No lo entiendo.\n\nty!",
+   "context": "const total = items.reduce((s, i) => s + i.price * i.qty, 0);",
+   "request_type": "code_understanding",
+   "complexity": 2,
+   "tests": [
+    "clear",
+    "non_english",
+    "padded"
+   ]
+  },
+  {
+   "id": "td-0019",
+   "query": "¿Cómo diseñarías la arquitectura de un sistema de reservas de hoteles con alta disponibilidad?",
+   "context": null,
+   "request_type": "technical_design",
+   "complexity": 4,
+   "tests": [
+    "clear",
+    "non_english"
+   ]
+  },
+  {
+   "id": "td-0019-v1",
+   "query": "Hi, hope you're well. ¿Cómo diseñarías la arquitectura de un sistema de reservas de hoteles con alta disponibilidad?\n\nty!",
+   "context": null,
+   "request_type": "technical_design",
+   "complexity": 4,
+   "tests": [
+    "clear",
+    "non_english",
+    "padded"
+   ]
+  },
+  {
+   "id": "cg-0103",
+   "query": "Escreva uma função em JavaScript que remova itens duplicados de um array.",
+   "context": null,
+   "request_type": "code_generation",
+   "complexity": 2,
+   "tests": [
+    "clear",
+    "non_english"
+   ]
+  },
+  {
+   "id": "cg-0103-v1",
+   "query": "escreva uma honestly função em javascript que remova itnes duplicados de um array.",
+   "context": null,
+   "request_type": "code_generation",
+   "complexity": 2,
+   "tests": [
+    "clear",
+    "noisy",
+    "non_english"
+   ]
+  },
+  {
+   "id": "cg-0103-v2",
+   "query": "Escreva uma função em JavaScript que remova itens duplicados de um array.",
+   "context": "No other files or changes needed.",
+   "request_type": "code_generation",
+   "complexity": 2,
+   "tests": [
+    "clear",
+    "non_english",
+    "placeholder_context"
+   ]
+  },
+  {
+   "id": "ar-0075",
+   "query": "Analise estes números e diga por que as vendas caíram em abril.",
+   "context": "Março: 1.200 pedidos, preço médio R$90. Abril: 900 pedidos, preço médio R$110 após aumento de preço em 1º de abril. Tráfego estável.",
+   "request_type": "analytical_reasoning",
+   "complexity": 3,
+   "tests": [
+    "clear",
+    "non_english"
+   ]
+  },
+  {
+   "id": "ar-0075-v1",
+   "query": "Hi! Analise estes números e diga por que as vendas caíram em abril.\n\nThanks a lot, really stuck on this.",
+   "context": "Março: 1.200 pedidos, preço médio R$90. Abril: 900 pedidos, preço médio R$110 após aumento de preço em 1º de abril. Tráfego estável.",
+   "request_type": "analytical_reasoning",
+   "complexity": 3,
+   "tests": [
+    "clear",
+    "non_english",
+    "padded"
+   ]
+  },
+  {
+   "id": "cu-0063",
+   "query": "这段代码是做什么的？",
+   "context": "print(sorted(set(words), key=len)[-1])",
+   "request_type": "code_understanding",
+   "complexity": 2,
+   "tests": [
+    "clear",
+    "non_english",
+    "very_short"
+   ]
+  },
+  {
+   "id": "cu-0063-v1",
+   "query": "这段代码是做什么的？ kind of",
+   "context": "print(sorted(set(words), key=len)[-1])",
+   "request_type": "code_understanding",
+   "complexity": 2,
+   "tests": [
+    "clear",
+    "noisy",
+    "non_english",
+    "very_short"
+   ]
+  },
+  {
+   "id": "cu-0063-v2",
+   "query": "Good morning! 这段代码是做什么的？\n\nty!",
+   "context": "print(sorted(set(words), key=len)[-1])",
+   "request_type": "code_understanding",
+   "complexity": 2,
+   "tests": [
+    "clear",
+    "non_english",
+    "padded",
+    "very_short"
+   ]
+  },
+  {
+   "id": "wr-0021",
+   "query": "Bonjour! Could you help me write a short thank-you note en français for my host family?",
+   "context": null,
+   "request_type": "writing",
+   "complexity": 2,
+   "tests": [
+    "clear",
+    "non_english"
+   ]
+  },
+  {
+   "id": "wr-0021-v1",
+   "query": "bonjour! cuold you help me write a short thank-you note en français for my host family?",
+   "context": null,
+   "request_type": "writing",
+   "complexity": 2,
+   "tests": [
+    "clear",
+    "noisy",
+    "non_english"
+   ]
+  },
+  {
+   "id": "td-0023",
+   "query": "Design a REST API for a library system: books, members, loans and reservations. Include endpoints and status codes.",
+   "context": null,
+   "request_type": "technical_design",
+   "complexity": 3,
+   "tests": [
+    "clear"
+   ]
+  },
+  {
+   "id": "td-0023-v1",
+   "query": "Hey, sorry to bother you, Design a REST API for a library system: books, members, loans and reservations. Include endpoints and status codes.\n\nBest regards,\nPriya",
+   "context": null,
+   "request_type": "technical_design",
+   "complexity": 3,
+   "tests": [
+    "clear",
+    "padded"
+   ]
+  },
+  {
+   "id": "td-0023-v2",
+   "query": "Design a REST API for a library system: books, members, loans and reservations. Include endpoints and status codes.",
+   "context": "Context: none provided.",
+   "request_type": "technical_design",
+   "complexity": 3,
+   "tests": [
+    "clear",
+    "placeholder_context"
+   ]
+  },
+  {
+   "id": "td-0042",
+   "query": "Design the offline-first sync architecture for a mobile note-taking app, including conflict handling and schema migrations on device.",
+   "context": null,
+   "request_type": "technical_design",
+   "complexity": 4,
+   "tests": [
+    "clear"
+   ]
+  },
+  {
+   "id": "td-0042-v1",
+   "query": "Hi, hope you're well. Design the offline-first sync architecture for a mobile note-taking app, including conflict handling and schema migrations on device.\n\nThank you in advance.",
+   "context": null,
+   "request_type": "technical_design",
+   "complexity": 4,
+   "tests": [
+    "clear",
+    "padded"
+   ]
+  },
+  {
+   "id": "td-0045",
+   "query": "What's the right way to model recurring calendar events with exceptions in a relational database?",
+   "context": null,
+   "request_type": "technical_design",
+   "complexity": 3,
+   "tests": [
+    "clear"
+   ]
+  },
+  {
+   "id": "td-0045-v1",
+   "query": "Good morning! What's the right way to model recurring calendar events with exceptions in a relational database?\n\nThank you in advance.",
+   "context": null,
+   "request_type": "technical_design",
+   "complexity": 3,
+   "tests": [
+    "clear",
+    "padded"
+   ]
+  },
+  {
+   "id": "td-0045-v2",
+   "query": "What's the right way to model recurring calendar events with exceptions in a relational database?",
+   "context": "No other files or changes needed.",
+   "request_type": "technical_design",
+   "complexity": 3,
+   "tests": [
+    "clear",
+    "placeholder_context"
+   ]
+  },
+  {
+   "id": "td-0046",
+   "query": "Design a zero-downtime migration from MySQL to PostgreSQL for a 4TB database with continuous writes, including validation, backfill, dual reads and rollback criteria.",
+   "context": null,
+   "request_type": "technical_design",
+   "complexity": 5,
+   "tests": [
+    "clear"
+   ]
+  },
+  {
+   "id": "td-0046-v1",
+   "query": "Design a zero-downtime migration from MySQL to PostgreSQL for a 4TB database wiht continuous writes, including validation, backfill, dual reads and rollback criteria.",
+   "context": null,
+   "request_type": "technical_design",
+   "complexity": 5,
+   "tests": [
+    "clear",
+    "noisy"
+   ]
+  },
+  {
+   "id": "td-0046-v2",
+   "query": "Design a zero-downtime migration from MySQL to PostgreSQL for a 4TB database with continuous writes, including validation, backfill, dual reads and rollback criteria.",
+   "context": "No other files or changes needed.",
+   "request_type": "technical_design",
+   "complexity": 5,
+   "tests": [
+    "clear",
+    "placeholder_context"
+   ]
+  },
+  {
+   "id": "td-0054",
+   "query": "Which primary key type should we use for a new table: UUID v4, UUID v7 or bigint? Short recommendation please.",
+   "context": null,
+   "request_type": "technical_design",
+   "complexity": 2,
+   "tests": [
+    "clear"
+   ]
+  },
+  {
+   "id": "td-0054-v1",
+   "query": "which primary key type should we use for a new table: uuid v4, uuid v7 or bigint? hsort recommendation please.",
+   "context": null,
+   "request_type": "technical_design",
+   "complexity": 2,
+   "tests": [
+    "clear",
+    "noisy"
+   ]
+  },
+  {
+   "id": "td-0054-v2",
+   "query": "Which primary key type should we use for a new table: UUID v4, UUID v7 or bigint? Short recommendation please.",
+   "context": "No codebase context.",
+   "request_type": "technical_design",
+   "complexity": 2,
+   "tests": [
+    "clear",
+    "placeholder_context"
+   ]
+  },
+  {
+   "id": "td-0059",
+   "query": "Given these requirements, design the schema and indexes; I'll write the migrations myself.",
+   "context": "Track device telemetry: 50k devices, a reading every 10s, queries by device and time range, retain 13 months, downsample after 30 days.",
+   "request_type": "technical_design",
+   "complexity": 4,
+   "tests": [
+    "boundary"
+   ]
+  },
+  {
+   "id": "td-0059-v1",
+   "query": "just Given these requirements, design the schmea and indexes; I'll write the migrations myself.",
+   "context": "Track device telemetry: 50k devices, a reading every 10s, queries by device and time range, retain 13 months, downsample after 30 days.",
+   "request_type": "technical_design",
+   "complexity": 4,
+   "tests": [
+    "boundary",
+    "noisy"
+   ]
+  },
+  {
+   "id": "td-0059-v2",
+   "query": "Hi, hope you're well. Given these requirements, design the schema and indexes; I'll write the migrations myself.\n\nty!",
+   "context": "Track device telemetry: 50k devices, a reading every 10s, queries by device and time range, retain 13 months, downsample after 30 days.",
+   "request_type": "technical_design",
+   "complexity": 4,
+   "tests": [
+    "boundary",
+    "padded"
+   ]
+  },
+  {
+   "id": "td-0065",
+   "query": "Design a data retention and deletion system that satisfies GDPR erasure requests across our databases, backups, logs and analytics warehouse.",
+   "context": null,
+   "request_type": "technical_design",
+   "complexity": 4,
+   "tests": [
+    "clear"
+   ]
+  },
+  {
+   "id": "td-0065-v1",
+   "query": "Hi, hope you're well. Design a data retention and deletion system that satisfies GDPR erasure requests across our databases, backups, logs and analytics warehouse.\n\nThanks!",
+   "context": null,
+   "request_type": "technical_design",
+   "complexity": 4,
+   "tests": [
+    "clear",
+    "padded"
+   ]
+  },
+  {
+   "id": "td-0067",
+   "query": "Propose the architecture for a real-time collaborative whiteboard: transport, conflict resolution, persistence and scaling rooms.",
+   "context": null,
+   "request_type": "technical_design",
+   "complexity": 4,
+   "tests": [
+    "clear"
+   ]
+  },
+  {
+   "id": "td-0067-v1",
+   "query": "Porpose the architecture for a real-time collaborative whiteboard: transport, um conflict resolution, persistence and scaling rooms.",
+   "context": null,
+   "request_type": "technical_design",
+   "complexity": 4,
+   "tests": [
+    "clear",
+    "noisy"
+   ]
+  },
+  {
+   "id": "td-0067-v2",
+   "query": "Propose the architecture for a real-time collaborative whiteboard: transport, conflict resolution, persistence and scaling rooms.",
+   "context": "No additional context.",
+   "request_type": "technical_design",
+   "complexity": 4,
+   "tests": [
+    "clear",
+    "placeholder_context"
+   ]
+  },
+  {
+   "id": "ar-0078",
+   "query": "Don't suggest fixes yet. From these measurements, tell me what's saturated.",
+   "context": "CPU 35%, memory 60%, disk IOPS 99% of provisioned, network 10%, queue depth growing.",
+   "request_type": "analytical_reasoning",
+   "complexity": 3,
+   "tests": [
+    "trap",
+    "negation"
+   ]
+  },
+  {
+   "id": "ar-0078-v1",
+   "query": "Hi, hope you're well. Don't suggest fixes yet. From these measurements, tell me what's saturated.\n\nAppreciate it!",
+   "context": "CPU 35%, memory 60%, disk IOPS 99% of provisioned, network 10%, queue depth growing.",
+   "request_type": "analytical_reasoning",
+   "complexity": 3,
+   "tests": [
+    "trap",
+    "negation",
+    "padded"
+   ]
+  },
+  {
+   "id": "wr-0024",
+   "query": "Rewrite this commit message so it's clear and follows conventional style.",
+   "context": "fixed stuff w/ the cache thing, also some cleanup",
+   "request_type": "writing",
+   "complexity": 2,
+   "tests": [
+    "trap",
+    "misleading_keyword"
+   ]
+  },
+  {
+   "id": "wr-0024-v1",
+   "query": "Hey, sorry to bother you, Rewrite this commit message so it's clear and follows conventional style.\n\nThanks a lot, really stuck on this.",
+   "context": "fixed stuff w/ the cache thing, also some cleanup",
+   "request_type": "writing",
+   "complexity": 2,
+   "tests": [
+    "trap",
+    "misleading_keyword",
+    "padded"
+   ]
+  },
+  {
+   "id": "wr-0024-v2",
+   "query": "rewrtie this commit message so it's clear and follows conventional style",
+   "context": "fixed stuff w/ the cache thing, also some cleanup",
+   "request_type": "writing",
+   "complexity": 2,
+   "tests": [
+    "trap",
+    "misleading_keyword",
+    "noisy"
+   ]
+  },
+  {
+   "id": "fl-0080",
+   "query": "What does the term 'technical debt' mean?",
+   "context": null,
+   "request_type": "factual_lookup",
+   "complexity": 1,
+   "tests": [
+    "trap",
+    "misleading_keyword"
+   ]
+  },
+  {
+   "id": "fl-0080-v1",
+   "query": "Hi, hope you're well. What does the term 'technical debt' mean?\n\nThank you in advance.",
+   "context": null,
+   "request_type": "factual_lookup",
+   "complexity": 1,
+   "tests": [
+    "trap",
+    "misleading_keyword",
+    "padded"
+   ]
+  },
+  {
+   "id": "fl-0080-v2",
+   "query": "What does the term 'technical debt' mean?",
+   "context": "No additional context.",
+   "request_type": "factual_lookup",
+   "complexity": 1,
+   "tests": [
+    "trap",
+    "misleading_keyword",
+    "placeholder_context"
+   ]
+  },
+  {
+   "id": "fl-0083",
+   "query": "What does 'idempotent' mean in the context of HTTP?",
+   "context": null,
+   "request_type": "factual_lookup",
+   "complexity": 1,
+   "tests": [
+    "trap",
+    "misleading_keyword"
+   ]
+  },
+  {
+   "id": "fl-0083-v1",
+   "query": "Hello! Thanks in advance for the help. What does 'idempotent' mean in the context of HTTP?\n\nThanks a lot, really stuck on this.",
+   "context": null,
+   "request_type": "factual_lookup",
+   "complexity": 1,
+   "tests": [
+    "trap",
+    "misleading_keyword",
+    "padded"
+   ]
+  },
+  {
+   "id": "fl-0083-v2",
+   "query": "What does 'idempotent' mean in the context of HTTP?",
+   "context": "No codebase context.",
+   "request_type": "factual_lookup",
+   "complexity": 1,
+   "tests": [
+    "trap",
+    "misleading_keyword",
+    "placeholder_context"
+   ]
+  },
+  {
+   "id": "cg-0117",
+   "query": "Explain nothing, just output a docker-compose file with postgres and redis services for local development.",
+   "context": null,
+   "request_type": "code_generation",
+   "complexity": 2,
+   "tests": [
+    "trap",
+    "misleading_keyword"
+   ]
+  },
+  {
+   "id": "cg-0117-v1",
+   "query": "xEplain nothing, just output a docker-compose file with postgres and redis services for local development.",
+   "context": null,
+   "request_type": "code_generation",
+   "complexity": 2,
+   "tests": [
+    "trap",
+    "misleading_keyword",
+    "noisy"
+   ]
+  },
+  {
+   "id": "cg-0117-v2",
+   "query": "Explain nothing, just output a docker-compose file with postgres and redis services for local development.",
+   "context": "No other files or changes needed.",
+   "request_type": "code_generation",
+   "complexity": 2,
+   "tests": [
+    "trap",
+    "misleading_keyword",
+    "placeholder_context"
+   ]
+  },
+  {
+   "id": "cg-0119",
+   "query": "In this proof-of-concept script, change the sleep from 5 seconds to 1 second.",
+   "context": "import time\ntime.sleep(5)\nrun()",
+   "request_type": "code_generation",
+   "complexity": 1,
+   "tests": [
+    "trap",
+    "misleading_keyword"
+   ]
+  },
+  {
+   "id": "cg-0119-v1",
+   "query": "In tihs proof-of-concept script, change the sleep from 5 seconds to 1 second",
+   "context": "import time\ntime.sleep(5)\nrun()",
+   "request_type": "code_generation",
+   "complexity": 1,
+   "tests": [
+    "trap",
+    "misleading_keyword",
+    "noisy"
+   ]
+  },
+  {
+   "id": "wr-0049",
+   "query": "Write a haiku about a server that never sleeps.",
+   "context": null,
+   "request_type": "writing",
+   "complexity": 2,
+   "tests": [
+    "clear"
+   ]
+  },
+  {
+   "id": "wr-0049-v1",
+   "query": "Write a hiaku about um a server that never sleeps",
+   "context": null,
+   "request_type": "writing",
+   "complexity": 2,
+   "tests": [
+    "clear",
+    "noisy"
+   ]
+  },
+  {
+   "id": "wr-0049-v2",
+   "query": "Write a haiku about a server that never sleeps.",
+   "context": "Context: none provided.",
+   "request_type": "writing",
+   "complexity": 2,
+   "tests": [
+    "clear",
+    "placeholder_context"
+   ]
+  },
+  {
+   "id": "wr-0056",
+   "query": "Write a tweet announcing our app now supports offline mode.",
+   "context": null,
+   "request_type": "writing",
+   "complexity": 2,
+   "tests": [
+    "clear"
+   ]
+  },
+  {
+   "id": "wr-0056-v1",
+   "query": "rWite a tweet announcing our app now supports offline mode",
+   "context": null,
+   "request_type": "writing",
+   "complexity": 2,
+   "tests": [
+    "clear",
+    "noisy"
+   ]
+  },
+  {
+   "id": "wr-0063",
+   "query": "Write the README introduction for our open-source CLI: what it does, who it's for, and a quick example sentence; no code blocks needed.",
+   "context": null,
+   "request_type": "writing",
+   "complexity": 3,
+   "tests": [
+    "boundary"
+   ]
+  },
+  {
+   "id": "wr-0063-v1",
+   "query": "Hey, sorry to bother you, Write the README introduction for our open-source CLI: what it does, who it's for, and a quick example sentence; no code blocks needed.\n\nBest regards,\nPriya",
+   "context": null,
+   "request_type": "writing",
+   "complexity": 3,
+   "tests": [
+    "boundary",
+    "padded"
+   ]
+  },
+  {
+   "id": "wr-0063-v2",
+   "query": "Write the README introduction for our open-source CLI: what it does, who it's for, and a quick example sentence; no code blocks needed.",
+   "context": "No codebase context.",
+   "request_type": "writing",
+   "complexity": 3,
+   "tests": [
+    "boundary",
+    "placeholder_context"
+   ]
+  },
+  {
+   "id": "wr-0064",
+   "query": "Don't summarize it, just make this paragraph shorter and punchier.",
+   "context": "Our team has been working very hard over the last several months in order to deliver a product that we believe will really make a significant difference for our customers.",
+   "request_type": "writing",
+   "complexity": 2,
+   "tests": [
+    "boundary",
+    "negation"
+   ]
+  },
+  {
+   "id": "wr-0064-v1",
+   "query": "Don't summarize it, just make this paragraph shorter kind of and punchier",
+   "context": "Our team has been working very hard over the last several months in order to deliver a product that we believe will really make a significant difference for our customers.",
+   "request_type": "writing",
+   "complexity": 2,
+   "tests": [
+    "boundary",
+    "negation",
+    "noisy"
+   ]
+  },
+  {
+   "id": "wr-0071",
+   "query": "Write a short out-of-office auto-reply for next week; I'm back on the 14th and Priya covers urgent issues.",
+   "context": null,
+   "request_type": "writing",
+   "complexity": 2,
+   "tests": [
+    "clear"
+   ]
+  },
+  {
+   "id": "wr-0071-v1",
+   "query": "Quick question: Write a short out-of-office auto-reply for next week; I'm back on the 14th and Priya covers urgent issues.\n\nThank you in advance.",
+   "context": null,
+   "request_type": "writing",
+   "complexity": 2,
+   "tests": [
+    "clear",
+    "padded"
+   ]
+  },
+  {
+   "id": "wr-0076",
+   "query": "Rephrase this sentence three different ways.",
+   "context": "The meeting has been moved to Thursday.",
+   "request_type": "writing",
+   "complexity": 2,
+   "tests": [
+    "clear",
+    "very_short"
+   ]
+  },
+  {
+   "id": "wr-0076-v1",
+   "query": "Good morning! Rephrase this sentence three different ways.\n\nty!",
+   "context": "The meeting has been moved to Thursday.",
+   "request_type": "writing",
+   "complexity": 2,
+   "tests": [
+    "clear",
+    "padded",
+    "very_short"
+   ]
+  },
+  {
+   "id": "wr-0076-v2",
+   "query": "Rephrase this sentence honestly there different ways",
+   "context": "The meeting has been moved to Thursday.",
+   "request_type": "writing",
+   "complexity": 2,
+   "tests": [
+    "clear",
+    "noisy",
+    "very_short"
+   ]
+  }
+ ]
+}

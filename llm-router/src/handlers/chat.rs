@@ -29,7 +29,7 @@ use crate::ir::{ChatChunk, Usage};
 use crate::providers::{ProviderError, fallback};
 use crate::resolver::{PgRegistry, RegistryStore, RequestHint, resolve};
 use crate::routing::boundary::{TRACEPARENT_HEADER, parse_flow_id};
-use crate::routing::{self, BoundarySignals, RouteInputs};
+use crate::routing::{self, BoundarySignals, ComplexityRouting, RouteInputs};
 use crate::usage::{self, UsageRecord};
 
 #[derive(Clone)]
@@ -40,6 +40,9 @@ pub(crate) struct RoutedRequest {
     pub flow_id: Option<String>,
     pub attribution_source: Option<routing::attribution::AttributionSource>,
 }
+
+/// Cap on the classification context the chat surface hands the Level 3 classifier.
+const CLASSIFICATION_CONTEXT_CHARS: usize = 2000;
 
 /// Prompt-derived signals `resolve_routed_request` needs beyond the resolved config,
 /// gathered once per format-specific handler since each wire format shapes its transcript
@@ -57,6 +60,13 @@ pub(crate) struct RequestSignals {
     /// in-flight tool loop sticky. Only used when the resolved agent is a coding-agent
     /// integration.
     pub is_tool_continuation: bool,
+    /// The current genuine prompt's text — the coding-agent `conv_id` anchor. Equals `query`
+    /// except mid tool-loop, where a client's text accompanying a tool result is not a new
+    /// prompt (see `routing::turn_anchor`).
+    pub anchor_text: Option<String>,
+    /// Bounded classification context for the Level 3 classifier
+    /// (`routing::classification_context`). `None` where a surface does not extract it yet.
+    pub context: Option<String>,
 }
 
 /// Record a call's four token classes on its `gen_ai` span.
@@ -192,10 +202,13 @@ async fn chat_core(
         provider: Some(format.provider_label()),
         model: req.model.as_deref(),
     };
+    let anchor = routing::turn_anchor(&req.messages);
     let signals = RequestSignals {
         query: routing::latest_user_query(&req.messages),
-        turn_ordinal: routing::user_turn_ordinal(&req.messages),
-        is_tool_continuation: routing::is_tool_continuation(&req.messages),
+        turn_ordinal: anchor.ordinal,
+        is_tool_continuation: anchor.mid_tool_loop,
+        anchor_text: anchor.anchor_text,
+        context: routing::classification_context(&req.messages, CLASSIFICATION_CONTEXT_CHARS),
     };
     let routed =
         resolve_routed_request(ctx, store, headers, agent_id, owner_id, hint, signals).await?;
@@ -431,7 +444,7 @@ pub(crate) async fn resolve_routed_request(
             BoundarySignals::for_coding_agent(
                 &agent_id,
                 signals.turn_ordinal,
-                signals.query.as_deref(),
+                signals.anchor_text.as_deref(),
                 signals.is_tool_continuation,
             ),
             None,
@@ -461,7 +474,7 @@ pub(crate) async fn resolve_routed_request(
             .map(|user_id| user_id.to_string())
             .unwrap_or_else(|| owner_id.clone());
         (
-            boundary_signals_for(&attribution),
+            boundary_signals_for(&attribution, signals.is_tool_continuation),
             Some(attribution.flow_id.clone()),
             billed_user_id,
             Some(attribution.source),
@@ -472,6 +485,7 @@ pub(crate) async fn resolve_routed_request(
         ctx.tier_registry.as_ref(),
         ctx.cell_store.as_ref(),
         ctx.salience_gate.as_ref(),
+        ctx.request_classifier.as_ref(),
         &RouteInputs {
             agent_id: &agent_id,
             provider: &resolved.provider,
@@ -483,6 +497,13 @@ pub(crate) async fn resolve_routed_request(
             tier3_model: resolved.tier3_model.as_deref(),
             signals: &boundary,
             query: signals.query.as_deref(),
+            context: signals.context.as_deref(),
+            min_confidence: ctx.cfg.classifier.min_confidence,
+            tier_seed: ctx.cfg.router_tier_seed,
+            complexity_routing: ComplexityRouting {
+                enabled: ctx.cfg.classifier.complexity_routing,
+                guard_confidence: ctx.cfg.classifier.complexity_guard_confidence,
+            },
         },
     )
     .await;
@@ -490,6 +511,9 @@ pub(crate) async fn resolve_routed_request(
         target: "nasiko::llm_router::chat",
         %agent_id,
         source = ?decision.source, tier = ?decision.tier,
+        request_type = decision.classification.map(|c| c.request_type.as_str()),
+        complexity = decision.classification.map(|c| c.complexity),
+        confidence = decision.classification.map(|c| c.confidence),
         provider = %resolved.provider,
         resolved_model = %resolved.model,
         decision_model = %decision.model,
@@ -531,7 +555,13 @@ pub(crate) async fn resolve_routed_request(
 /// here come from that same trusted flow state. Attribution is strict, so an
 /// unattributable call was rejected before this point; every served call is
 /// in-flow.
-fn boundary_signals_for(a: &routing::attribution::FlowAttribution) -> BoundarySignals {
+///
+/// A transcript that is mid tool-loop is `continue` (never reclassified) even inside a flow;
+/// see [`BoundarySignals::in_flow_turn`].
+fn boundary_signals_for(
+    a: &routing::attribution::FlowAttribution,
+    is_tool_continuation: bool,
+) -> BoundarySignals {
     // Key the decision cache on the conversation's stable context_id, not
     // the flow_id (= this turn's trace id, which the CLI re-mints every
     // turn). Turn 1 writes the sticky decision under it and turn 2+ hit
@@ -541,11 +571,11 @@ fn boundary_signals_for(a: &routing::attribution::FlowAttribution) -> BoundarySi
         .clone()
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| a.flow_id.clone());
-    let signals = BoundarySignals::in_flow(conv_id.clone(), a.mode);
+    let signals = BoundarySignals::in_flow_turn(conv_id.clone(), a.mode, is_tool_continuation);
     tracing::info!(
         target: "nasiko::llm_router::boundary",
         flow_id = %a.flow_id, %conv_id, mode = ?a.mode,
-        source = a.source.as_label(), phase = ?signals.phase,
+        source = a.source.as_label(), phase = ?signals.phase, is_tool_continuation,
         is_fireable_boundary = signals.is_fireable_boundary(),
         "boundary signals: known flow → IN-FLOW (router may re-select the model at this boundary)"
     );
@@ -957,6 +987,7 @@ mod tests {
             tier_registry: Arc::new(NoTiers),
             cell_store: Arc::new(crate::routing::InMemoryCellStore::new()),
             salience_gate: Arc::new(crate::routing::AllowAllGate),
+            request_classifier: Arc::new(crate::routing::RegexClassifier),
             pricing: Arc::new(nasiko_pricing::PricingEngine::new(
                 PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
             )),
@@ -1357,6 +1388,52 @@ mod tests {
     }
 
     #[test]
+    fn anthropic_tool_result_with_trailing_text_keeps_conv_id_and_continue_phase() {
+        // Turn 1: a genuine prompt. Turn 2: the CLI returns a tool result *and* a text block
+        // (a <system-reminder>) in the same user turn — a tool-loop step, not a new prompt.
+        let turn1 = json!({
+            "model": "claude-x", "max_tokens": 64,
+            "messages": [{ "role": "user", "content": "refactor the parser module" }]
+        });
+        let turn2 = json!({
+            "model": "claude-x", "max_tokens": 64,
+            "messages": [
+                { "role": "user", "content": "refactor the parser module" },
+                { "role": "assistant", "content": [
+                    { "type": "tool_use", "id": "tu_1", "name": "read_file", "input": { "path": "parser.rs" } }
+                ]},
+                { "role": "user", "content": [
+                    { "type": "tool_result", "tool_use_id": "tu_1", "content": "fn parse() {}" },
+                    { "type": "text", "text": "<system-reminder>Keep the todo list updated.</system-reminder>" }
+                ]}
+            ]
+        });
+        let signals_for = |body: Value| {
+            let req = inbound_for(InboundFormat::Anthropic)
+                .parse_chat(body)
+                .unwrap();
+            let anchor = routing::turn_anchor(&req.messages);
+            BoundarySignals::for_coding_agent(
+                AGENT,
+                anchor.ordinal,
+                anchor.anchor_text.as_deref(),
+                anchor.mid_tool_loop,
+            )
+        };
+        let first = signals_for(turn1);
+        let looping = signals_for(turn2.clone());
+        assert!(first.is_fireable_boundary());
+        assert_eq!(looping.phase, routing::Phase::Continue);
+        assert_eq!(first.conv_id, looping.conv_id);
+        // The shared helpers keep their literal meaning (brevity/compress rely on them).
+        let req = inbound_for(InboundFormat::Anthropic)
+            .parse_chat(turn2)
+            .unwrap();
+        assert!(!routing::is_tool_continuation(&req.messages));
+        assert_eq!(routing::user_turn_ordinal(&req.messages), 2);
+    }
+
+    #[test]
     fn boundary_signals_in_flow_when_attributed() {
         let attribution = routing::attribution::FlowAttribution {
             flow_id: "f1".into(),
@@ -1366,9 +1443,13 @@ mod tests {
             source: routing::attribution::AttributionSource::Traceparent,
         };
         // The stable context_id keys the decision cache, not the per-turn flow id.
-        let signals = boundary_signals_for(&attribution);
+        let signals = boundary_signals_for(&attribution, false);
         assert_eq!(signals.conv_id.as_deref(), Some("ses_1"));
         assert!(signals.is_fireable_boundary());
+        // Mid tool-loop inside a flow: same conversation key, but never a boundary.
+        let looping = boundary_signals_for(&attribution, true);
+        assert_eq!(looping.conv_id.as_deref(), Some("ses_1"));
+        assert!(!looping.is_fireable_boundary());
     }
 
     #[tokio::test]
@@ -1443,6 +1524,8 @@ mod tests {
                 query: Some("write a function that reverses a string".into()),
                 turn_ordinal: 1,
                 is_tool_continuation: false,
+                anchor_text: Some("write a function that reverses a string".into()),
+                context: None,
             },
         )
         .await
@@ -1489,6 +1572,8 @@ mod tests {
                 query: Some("write a function that reverses a string".into()),
                 turn_ordinal: 1,
                 is_tool_continuation: false,
+                anchor_text: Some("write a function that reverses a string".into()),
+                context: None,
             },
         )
         .await;

@@ -116,7 +116,7 @@ impl Weights {
 /// (unlike `std::collections::hash_map::DefaultHasher`, which is explicitly *not*
 /// guaranteed stable across Rust versions). A trained weight vector is only meaningful if
 /// hashing is stable, so this must never change without retraining.
-fn fnv1a(bytes: &[u8]) -> u64 {
+pub(super) fn fnv1a(bytes: &[u8]) -> u64 {
     const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME: u64 = 0x0000_0100_0000_01b3;
     let mut hash = OFFSET_BASIS;
@@ -131,7 +131,13 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 /// construction: one hash picks the bucket, a second (differently-salted) hash picks the
 /// sign, so hash collisions partially cancel instead of only ever adding.
 fn hash_to_bucket(gram: &str) -> (usize, f64) {
-    let bucket = (fnv1a(gram.as_bytes()) as usize) % NUM_BUCKETS;
+    hash_to_bucket_n(gram, NUM_BUCKETS)
+}
+
+/// [`hash_to_bucket`] for an arbitrary bucket count, so the request classifier's feature
+/// engine (`super::request_features`) shares the exact same hashing construction.
+pub(super) fn hash_to_bucket_n(gram: &str, num_buckets: usize) -> (usize, f64) {
+    let bucket = (fnv1a(gram.as_bytes()) as usize) % num_buckets;
     let sign_bit = fnv1a(format!("sign:{gram}").as_bytes()) & 1;
     let sign = if sign_bit == 0 { 1.0 } else { -1.0 };
     (bucket, sign)
@@ -139,7 +145,7 @@ fn hash_to_bucket(gram: &str) -> (usize, f64) {
 
 /// Lowercase word tokens, splitting on anything that isn't alphanumeric. Empty tokens are
 /// dropped, so runs of punctuation/whitespace just act as separators.
-fn word_tokens(text: &str) -> Vec<String> {
+pub(super) fn word_tokens(text: &str) -> Vec<String> {
     text.to_lowercase()
         .split(|c: char| !c.is_alphanumeric())
         .filter(|s| !s.is_empty())
@@ -148,7 +154,7 @@ fn word_tokens(text: &str) -> Vec<String> {
 }
 
 /// Word n-grams (`n` consecutive tokens joined by a single space) for `n` in `1..=max_n`.
-fn word_ngrams(tokens: &[String], max_n: usize) -> Vec<String> {
+pub(super) fn word_ngrams(tokens: &[String], max_n: usize) -> Vec<String> {
     let mut grams = Vec::new();
     for n in 1..=max_n {
         if n > tokens.len() {
@@ -166,7 +172,7 @@ fn word_ngrams(tokens: &[String], max_n: usize) -> Vec<String> {
 /// appear inside a gram. Operates on `char`s (not bytes) so multi-byte UTF-8 isn't split
 /// mid-codepoint — this is what carries the code-switching case (e.g. `"Hola, ..."`)
 /// without a network call.
-fn char_ngrams(text: &str, min_n: usize, max_n: usize) -> Vec<String> {
+pub(super) fn char_ngrams(text: &str, min_n: usize, max_n: usize) -> Vec<String> {
     let chars: Vec<char> = text.to_lowercase().chars().collect();
     let mut grams = Vec::new();
     for n in min_n..=max_n {
@@ -744,6 +750,68 @@ mod tests {
         ] {
             let p = score(query, &weights);
             assert!((0.0..=1.0).contains(&p), "probability out of range: {p}");
+        }
+    }
+    /// Fixed probe set for [`salience_golden_scores_unchanged`].
+    const GOLDEN_QUERIES: [&str; 20] = [
+        "hi",
+        "hello there!",
+        "thanks, that worked",
+        "ok",
+        "",
+        "\u{1F44D}\u{1F389}",
+        "???",
+        "refactor this function to remove the global state",
+        "write a python script that parses CSV and prints the top 5 rows",
+        "how should I design a rate limiter for a multi-tenant API?",
+        "explain why this borrow checker error happens in my iterator chain",
+        "what is the capital of France?",
+        "Hola, can you help me debug this?",
+        "summarize these release notes for customers in three bullets",
+        "calculate the probability of two sixes in three dice rolls",
+        "lol",
+        "good morning team, hope everyone had a great weekend",
+        "fix typo in comment",
+        "Investigate intermittent 401s after token refresh across two app instances and propose a fix",
+        "a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a",
+    ];
+
+    /// Scores of [`GOLDEN_QUERIES`] under the embedded weights, captured from the code *before*
+    /// the tokenizer/hash helpers were made `pub(super)` for the request-classifier feature
+    /// engine. Guards that sharing those helpers changed nothing about the gate. The tolerance
+    /// absorbs `hashed_features`' `HashMap` summation order, which varies per process.
+    const GOLDEN_SCORES: [f64; 20] = [
+        9.241410079177215e-06,
+        0.005560425255524117,
+        0.001330609799248639,
+        1.616815461270046e-05,
+        3.6485752937180725e-08,
+        2.746762939705212e-05,
+        0.003272642804302449,
+        0.9942179043711014,
+        0.9990286801616378,
+        0.9989460409622993,
+        0.999935297540605,
+        0.9943775610393699,
+        0.9556841028134119,
+        0.998738240608921,
+        0.9986917749879086,
+        0.00012894566829588358,
+        0.8637006064743087,
+        0.8370252734486028,
+        0.9998671035154869,
+        0.9928618449605188,
+    ];
+
+    #[test]
+    fn salience_golden_scores_unchanged() {
+        let model = embedded_model().expect("embedded weights load");
+        for (q, want) in GOLDEN_QUERIES.iter().zip(GOLDEN_SCORES) {
+            let got = score(q, &model.weights);
+            assert!(
+                (got - want).abs() <= 1e-9 * want.abs().max(1e-12),
+                "salience score drifted for {q:?}: got {got}, want {want}"
+            );
         }
     }
 }
