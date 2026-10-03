@@ -6,7 +6,7 @@ Status is `Not started`, `In progress`, or `Done`. Update this file when a task 
 | --- | --- | --- | --- |
 | T01 | Create the `nasiko-tool-compact` crate and register it in the workspace | [lld/01-crate-skeleton.md](lld/01-crate-skeleton.md) | Done |
 | T02 | Add tool, call, and error types | [lld/02-types-and-errors.md](lld/02-types-and-errors.md) | Done |
-| T03 | Accept only the schema features the grammar can represent | [lld/03-supported-schema.md](lld/03-supported-schema.md) | Not started |
+| T03 | Accept only the schema features the grammar can represent | [lld/03-supported-schema.md](lld/03-supported-schema.md) | Done |
 | T04 | Encode one tool as a compact signature | [lld/04-encode-one-tool.md](lld/04-encode-one-tool.md) | Not started |
 | T05 | Rebuild the schema from the compact form | [lld/05-schema-round-trip.md](lld/05-schema-round-trip.md) | Not started |
 | T06 | Decode one well-formed call | [lld/06-decode-one-call.md](lld/06-decode-one-call.md) | Not started |
