@@ -10,6 +10,8 @@
 /// fail-closed behaviour (e.g. an empty `agent_jwt_secret`) is enforced at use sites.
 #[derive(Debug, Clone)]
 pub struct GatewayConfig {
+    /// Experimental compact tool definitions; disabled unless explicitly enabled.
+    pub compact_tools_enabled: bool,
     /// Shared HS256 secret the orchestrator mints agent-identity JWTs with. Empty ⇒
     /// every request is rejected 401 (fail closed) — never fail open.
     pub agent_jwt_secret: String,
@@ -160,6 +162,7 @@ impl Default for GatewayConfig {
     /// The canonical defaults (also the values `from_env` falls back to per key).
     fn default() -> Self {
         Self {
+            compact_tools_enabled: false,
             agent_jwt_secret: String::new(),
             agent_jwt_algorithm: "HS256".into(),
             default_provider: "openai".into(),
@@ -206,6 +209,7 @@ impl GatewayConfig {
     pub fn from_env() -> Self {
         let d = Self::default();
         Self {
+            compact_tools_enabled: env_flag("COMPACT_TOOLS_ENABLED", false),
             agent_jwt_secret: env_or("AGENT_JWT_SECRET", &d.agent_jwt_secret),
             agent_jwt_algorithm: env_or("AGENT_JWT_ALGORITHM", &d.agent_jwt_algorithm),
             default_provider: env_or("DEFAULT_PROVIDER", &d.default_provider),

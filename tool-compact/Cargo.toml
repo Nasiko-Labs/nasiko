@@ -1,0 +1,15 @@
+[package]
+name = "nasiko-tool-compact"
+version.workspace = true
+edition.workspace = true
+description = "Deterministic compact tool schemas and fail-closed call decoding"
+license = "MIT"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+proptest = "=1.11.0"
