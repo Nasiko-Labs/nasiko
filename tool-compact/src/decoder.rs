@@ -24,12 +24,11 @@ pub fn render_call(name: &str, arguments: &Value) -> Result<String, CompactError
             reason: "arguments must be a JSON object".to_string(),
         });
     }
-    let arguments = serde_json::to_string(arguments).map_err(|error| {
-        CompactError::InvalidArguments {
+    let arguments =
+        serde_json::to_string(arguments).map_err(|error| CompactError::InvalidArguments {
             tool: name.to_string(),
             reason: error.to_string(),
-        }
-    })?;
+        })?;
     Ok(format!("<<call {name} {arguments}>>"))
 }
 
@@ -230,12 +229,11 @@ impl StreamDecoder {
             .tools
             .get(&pending.name)
             .ok_or_else(|| CompactError::UnknownTool(pending.name.clone()))?;
-        let arguments = parse_unique_json(&pending.json).map_err(|reason| {
-            CompactError::InvalidArguments {
+        let arguments =
+            parse_unique_json(&pending.json).map_err(|reason| CompactError::InvalidArguments {
                 tool: pending.name.clone(),
                 reason,
-            }
-        })?;
+            })?;
         if !arguments.is_object() {
             return Err(CompactError::InvalidArguments {
                 tool: pending.name.clone(),
