@@ -38,6 +38,7 @@ pub use classifier::{
     RegexRequestClassifier, RequestClassifier, RequestType, Tier, build_request_classifier,
     classify, classify_request_type, signal,
 };
+pub use classifier::{RequestType, Tier, classify, classify_request_type, signal};
 pub use registry::{PgTierRegistry, TierRegistry};
 pub use salience::{AllowAllGate, ClassifierSalienceGate, SalienceGate};
 
