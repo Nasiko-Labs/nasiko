@@ -1,0 +1,36 @@
+﻿{
+  "name": "Nasiko Cost-Aware Request Classifier Agent",
+  "description": "Intelligent A2A classifier agent providing context-aware request categorization, 1-5 complexity scoring, and failover protection for cost-efficient LLM routing.",
+  "version": "1.0.0",
+  "provider": {
+    "organization": "Nasiko Labs Contributor",
+    "url": "https://github.com/Nasiko-Labs/nasiko"
+  },
+  "documentationUrl": "https://github.com/Nasiko-Labs/nasiko/pulls",
+  "supportedInterfaces": [
+    {
+      "url": "http://localhost:8085/v1",
+      "protocolBinding": "HTTP+JSON",
+      "protocolVersion": "1.0"
+    }
+  ],
+  "capabilities": {
+    "streaming": false,
+    "pushNotifications": false,
+    "extendedAgentCard": true
+  },
+  "skills": [
+    {
+      "id": "classify_request",
+      "name": "Cost-Aware Request Classification",
+      "description": "Evaluates user and agent prompts to determine request type, complexity (1-5), and confidence score with sub-millisecond p50 latency.",
+      "tags": ["routing", "cost-governance", "classification", "tokenops"]
+    },
+    {
+      "id": "regex_failover",
+      "name": "Zero-Downtime Heuristic Fallback",
+      "description": "Automatic fail-closed fallback to regex baseline during timeout or service disconnection.",
+      "tags": ["resilience", "fallback", "reliability"]
+    }
+  ]
+}
