@@ -48,8 +48,9 @@ pub use inbound::InboundFormat;
 pub use inject::{LlmInjectCtx, inject_llm_env};
 pub use resolver::{ConfigCache, ResolvedConfig};
 pub use routing::{
-    AllowAllGate, CellStore, ClassifierSalienceGate, DecisionCache, InMemoryCellStore, NoopCache,
-    PgCellStore, PgTierRegistry, RedisCache, SalienceGate, TierRegistry,
+    AllowAllGate, CellStore, ClassifierSalienceGate, ClassifyInput, DecisionCache,
+    InMemoryCellStore, NoopCache, PgCellStore, PgTierRegistry, RedisCache, RequestClassifier,
+    SalienceGate, TierRegistry, build_request_classifier,
 };
 
 /// Shared context for the LLM router.
@@ -82,6 +83,9 @@ pub struct LlmRouterCtx {
     /// classify + pin. [`ClassifierSalienceGate`] when `SALIENCE_GATE_ENABLED`; else [`AllowAllGate`]
     /// (classify at every boundary, i.e. behaviour before the gate existed).
     pub salience_gate: Arc<dyn SalienceGate>,
+    /// Request classifier used at safe routing boundaries. Defaults to deterministic regex;
+    /// model-backed mode falls back to regex on timeout or invalid output.
+    pub request_classifier: Arc<dyn RequestClassifier>,
     /// The platform's single cost engine. Every `token_usage` row is priced
     /// through this — the DB trigger that used to do it returned NULL for any
     /// model missing from `model_pricing`, which booked 92.8% of calls at $0.
@@ -127,6 +131,14 @@ impl LlmRouterCtx {
         let router_cache = build_router_cache(&cfg);
         let cfg = Arc::new(cfg);
         let salience_gate = build_salience_gate(&cfg);
+        let request_classifier = routing::build_request_classifier(
+            &cfg.request_classifier_backend,
+            &cfg.request_classifier_endpoint,
+            &cfg.request_classifier_model,
+            &cfg.request_classifier_api_key,
+            Duration::from_millis(cfg.request_classifier_timeout_ms),
+            http.clone(),
+        );
         let pricing = Arc::new(PricingEngine::new(db.clone()));
         Self {
             db,
@@ -137,6 +149,7 @@ impl LlmRouterCtx {
             tier_registry,
             cell_store,
             salience_gate,
+            request_classifier,
             pricing,
         }
     }

@@ -101,6 +101,14 @@ pub struct GatewayConfig {
     /// retuned. Default 0.80.
     pub salience_high_threshold: f64,
 
+    /// Request classifier backend. `regex` is the deterministic default; `openai_compatible`
+    /// enables a configurable hosted/model endpoint with regex fallback.
+    pub request_classifier_backend: String,
+    pub request_classifier_endpoint: String,
+    pub request_classifier_model: String,
+    pub request_classifier_api_key: String,
+    pub request_classifier_timeout_ms: u64,
+
     /// Fleet-wide kill switch for payload compression. Compression is opted into **per agent**
     /// (`agents.compress_enabled`); this only lets an operator stop all of it at once without
     /// editing every agent's row. Default on, so a UI toggle takes effect without a deploy.
@@ -185,6 +193,11 @@ impl Default for GatewayConfig {
             salience_weights_path: String::new(),
             salience_low_threshold: 0.20,
             salience_high_threshold: 0.80,
+            request_classifier_backend: "regex".into(),
+            request_classifier_endpoint: "https://api.openai.com/v1".into(),
+            request_classifier_model: "gpt-4o-mini".into(),
+            request_classifier_api_key: String::new(),
+            request_classifier_timeout_ms: 1500,
             compress_kill_switch: true,
             compress_min_bytes: 2048,
             compress_types: nasiko_compress::TypeMask::DEFAULT,
@@ -274,6 +287,26 @@ impl GatewayConfig {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(d.salience_high_threshold),
+            request_classifier_backend: env_or(
+                "REQUEST_CLASSIFIER_BACKEND",
+                &d.request_classifier_backend,
+            ),
+            request_classifier_endpoint: env_or(
+                "REQUEST_CLASSIFIER_ENDPOINT",
+                &d.request_classifier_endpoint,
+            ),
+            request_classifier_model: env_or(
+                "REQUEST_CLASSIFIER_MODEL",
+                &d.request_classifier_model,
+            ),
+            request_classifier_api_key: env_first(
+                &["REQUEST_CLASSIFIER_API_KEY", "OPENAI_API_KEY"],
+                &d.request_classifier_api_key,
+            ),
+            request_classifier_timeout_ms: std::env::var("REQUEST_CLASSIFIER_TIMEOUT_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(d.request_classifier_timeout_ms),
             compress_kill_switch: env_flag("TOKEN_COMPRESS_ENABLED", true),
             compress_min_bytes: env_usize("TOKEN_COMPRESS_MIN_BYTES", 2048),
             // A bad label must not silently widen or narrow what gets rewritten, so an

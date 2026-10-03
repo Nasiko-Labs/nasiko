@@ -33,7 +33,10 @@ mod salience_classifier;
 pub use boundary::{BoundarySignals, Mode, Phase};
 pub use cache::{CachedDecision, DecisionCache, NoopCache, RedisCache};
 pub use cells::{CellStore, InMemoryCellStore, PgCellStore};
-pub use classifier::{RequestType, Tier, classify, classify_request_type, signal};
+pub use classifier::{
+    Classification, ClassifyInput, RegexClassifier, RequestClassifier, RequestType, Tier,
+    build_request_classifier, classify, classify_request_type, classify_with_classifier, signal,
+};
 pub use registry::{PgTierRegistry, TierRegistry};
 pub use salience::{AllowAllGate, ClassifierSalienceGate, SalienceGate};
 
@@ -83,6 +86,8 @@ pub struct RouteInputs<'a> {
     pub signals: &'a BoundarySignals,
     /// The query to classify (latest user message text). `None` disables classification.
     pub query: Option<&'a str>,
+    /// Configured request classifier. `None` keeps the legacy deterministic regex path (tests/backward compatibility).
+    pub classifier: Option<&'a dyn RequestClassifier>,
 }
 
 /// The outcome of routing: the model to call and how it was chosen.
@@ -250,10 +255,24 @@ pub async fn route_model(
             // (`ThreadRng`) is `!Send`, so it is scoped to drop before the next `.await` — the
             // handler future must stay `Send`.
             let learned = cell_store.load(inputs.provider).await;
-            let (tier, request_type) = {
-                let mut rng = rand::rng();
-                classify(query, inputs.provider, &learned, &mut rng)
+            let (tier, classification) = match inputs.classifier {
+                Some(classifier) => {
+                    classify_with_classifier(classifier, query, inputs.provider, &learned).await
+                }
+                None => {
+                    let mut rng = rand::rng();
+                    let (tier, request_type) = classify(query, inputs.provider, &learned, &mut rng);
+                    (
+                        tier,
+                        Classification {
+                            request_type,
+                            complexity: 1,
+                            confidence: 1.0,
+                        },
+                    )
+                }
             };
+            let request_type = classification.request_type;
             // Per-config tier override takes priority over the global registry.
             let config_override = match tier {
                 Tier::Tier1 => inputs.tier1_model.map(str::to_string),
@@ -532,6 +551,7 @@ mod tests {
             tier3_model: None,
             signals,
             query: Some("hello"),
+            classifier: None,
         }
     }
 

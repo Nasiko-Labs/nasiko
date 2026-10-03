@@ -290,6 +290,325 @@ pub fn pick_model_thompson<R: Rng + ?Sized>(
 }
 
 // --------------------------------------------------------------------------
+// 4. Request classifier abstraction (P2)
+// --------------------------------------------------------------------------
+
+use std::time::Duration;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Classification {
+    pub request_type: RequestType,
+    pub complexity: u8,
+    pub confidence: f32,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ClassifyInput<'a> {
+    pub query: &'a str,
+    pub context: Option<&'a str>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ClassifyError {
+    #[error("classifier request failed: {0}")]
+    Request(String),
+    #[error("classifier timed out")]
+    Timeout,
+    #[error("classifier returned invalid output: {0}")]
+    InvalidOutput(String),
+}
+
+#[async_trait::async_trait]
+pub trait RequestClassifier: Send + Sync {
+    fn name(&self) -> &str;
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError>;
+}
+
+/// Deterministic baseline classifier. This is the default backend and is also the
+/// fail-safe used when a model backend times out or returns malformed output.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct RegexClassifier;
+
+impl RegexClassifier {
+    fn classify_sync(&self, query: &str) -> Classification {
+        let request_type = classify_request_type(query);
+        let lower = query.to_ascii_lowercase();
+        let words = lower.split_whitespace().count();
+        let chars = lower.chars().count();
+        let has_code = lower.contains("```")
+            || lower.contains("function ")
+            || lower.contains("class ")
+            || lower.contains("sql ");
+        let has_multi_step = [
+            "compare",
+            "design",
+            "architecture",
+            "debug",
+            "analyze",
+            "analyse",
+            "trade-off",
+            "tradeoff",
+        ]
+        .iter()
+        .any(|x| lower.contains(x));
+        let complexity = match (has_multi_step, has_code, words, chars) {
+            (true, _, _, _) => 5,
+            (_, true, w, _) if w > 80 => 5,
+            (_, true, w, _) if w > 35 => 4,
+            (_, _, w, c) if w > 120 || c > 900 => 5,
+            (_, _, w, c) if w > 60 || c > 450 => 4,
+            (_, _, w, c) if w > 25 || c > 180 => 3,
+            (_, _, w, c) if w > 8 || c > 50 => 2,
+            _ => 1,
+        };
+        let confidence = match request_type {
+            RequestType::General => 0.55,
+            _ => 0.85,
+        };
+        Classification {
+            request_type,
+            complexity,
+            confidence,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl RequestClassifier for RegexClassifier {
+    fn name(&self) -> &str {
+        "regex"
+    }
+
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+        Ok(self.classify_sync(input.query))
+    }
+}
+
+#[derive(Clone)]
+pub struct OpenAiCompatibleClassifier {
+    client: reqwest::Client,
+    endpoint: String,
+    model: String,
+    api_key: String,
+    timeout: Duration,
+}
+
+impl std::fmt::Debug for OpenAiCompatibleClassifier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpenAiCompatibleClassifier")
+            .field("endpoint", &self.endpoint)
+            .field("model", &self.model)
+            .field("api_key_set", &!self.api_key.is_empty())
+            .field("timeout", &self.timeout)
+            .finish()
+    }
+}
+
+impl OpenAiCompatibleClassifier {
+    pub fn new(
+        client: reqwest::Client,
+        endpoint: String,
+        model: String,
+        api_key: String,
+        timeout: Duration,
+    ) -> Self {
+        Self {
+            client,
+            endpoint,
+            model,
+            api_key,
+            timeout,
+        }
+    }
+
+    fn chat_endpoint(&self) -> String {
+        if self.endpoint.ends_with("/chat/completions") {
+            self.endpoint.clone()
+        } else {
+            format!("{}/chat/completions", self.endpoint.trim_end_matches('/'))
+        }
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct ChatResponse {
+    choices: Vec<ChatChoice>,
+}
+#[derive(serde::Deserialize)]
+struct ChatChoice {
+    message: ChatMessage,
+}
+#[derive(serde::Deserialize)]
+struct ChatMessage {
+    content: Option<String>,
+}
+
+#[async_trait::async_trait]
+impl RequestClassifier for OpenAiCompatibleClassifier {
+    fn name(&self) -> &str {
+        "openai_compatible"
+    }
+
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+        let system = r#"You are a deterministic request classifier. Return ONLY one JSON object, with exactly these fields: request_type, complexity, confidence. request_type must be one of code_generation, code_understanding, technical_design, analytical_reasoning, writing, factual_lookup, general. complexity is an integer 1 through 5. confidence is a number 0 through 1. Do not use markdown."#;
+        let body = serde_json::json!({
+            "model": self.model,
+            "temperature": 0,
+            "seed": 0,
+            "messages": [
+                {"role":"system", "content":system},
+                {"role":"user", "content": input.query}
+            ]
+        });
+        let mut req = self
+            .client
+            .post(self.chat_endpoint())
+            .timeout(self.timeout)
+            .json(&body);
+        if !self.api_key.is_empty() {
+            req = req.bearer_auth(&self.api_key);
+        }
+        let response = req.send().await.map_err(|e| {
+            if e.is_timeout() {
+                ClassifyError::Timeout
+            } else {
+                ClassifyError::Request(e.to_string())
+            }
+        })?;
+        if !response.status().is_success() {
+            return Err(ClassifyError::Request(format!(
+                "HTTP {}",
+                response.status()
+            )));
+        }
+        let parsed: ChatResponse = response
+            .json()
+            .await
+            .map_err(|e| ClassifyError::InvalidOutput(e.to_string()))?;
+        let content = parsed
+            .choices
+            .first()
+            .and_then(|c| c.message.content.as_deref())
+            .ok_or_else(|| {
+                ClassifyError::InvalidOutput("missing choices[0].message.content".into())
+            })?;
+        let value: serde_json::Value = serde_json::from_str(content.trim())
+            .map_err(|e| ClassifyError::InvalidOutput(e.to_string()))?;
+        let request_type = value
+            .get("request_type")
+            .and_then(|v| v.as_str())
+            .and_then(RequestType::from_wire)
+            .ok_or_else(|| ClassifyError::InvalidOutput("invalid request_type".into()))?;
+        let complexity = value
+            .get("complexity")
+            .and_then(|v| v.as_u64())
+            .filter(|v| (1..=5).contains(v))
+            .ok_or_else(|| ClassifyError::InvalidOutput("complexity must be 1..5".into()))?
+            as u8;
+        let confidence = value
+            .get("confidence")
+            .and_then(|v| v.as_f64())
+            .filter(|v| (0.0..=1.0).contains(v))
+            .ok_or_else(|| ClassifyError::InvalidOutput("confidence must be 0..1".into()))?
+            as f32;
+        Ok(Classification {
+            request_type,
+            complexity,
+            confidence,
+        })
+    }
+}
+
+pub struct FallbackClassifier<P = OpenAiCompatibleClassifier> {
+    primary: P,
+    fallback: RegexClassifier,
+}
+
+impl<P> FallbackClassifier<P> {
+    pub fn new(primary: P) -> Self {
+        Self {
+            primary,
+            fallback: RegexClassifier,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl<P: RequestClassifier> RequestClassifier for FallbackClassifier<P> {
+    fn name(&self) -> &str {
+        "fallback"
+    }
+
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+        match self.primary.classify(input).await {
+            Ok(result) => Ok(result),
+            Err(err) => {
+                tracing::warn!(target: "nasiko::llm_router::classifier", error = %err, "request classifier failed; falling back to regex");
+                self.fallback.classify(input).await
+            }
+        }
+    }
+}
+
+/// Build the configured request classifier. `regex` is intentionally the default.
+pub fn build_request_classifier(
+    backend: &str,
+    endpoint: &str,
+    model: &str,
+    api_key: &str,
+    timeout: Duration,
+    client: reqwest::Client,
+) -> std::sync::Arc<dyn RequestClassifier> {
+    if backend.eq_ignore_ascii_case("openai_compatible")
+        || backend.eq_ignore_ascii_case("openai")
+        || backend.eq_ignore_ascii_case("model")
+    {
+        let primary = OpenAiCompatibleClassifier::new(
+            client,
+            endpoint.to_string(),
+            model.to_string(),
+            api_key.to_string(),
+            timeout,
+        );
+        std::sync::Arc::new(FallbackClassifier::new(primary))
+    } else {
+        std::sync::Arc::new(RegexClassifier)
+    }
+}
+
+pub async fn classify_with_classifier(
+    classifier: &dyn RequestClassifier,
+    query: &str,
+    provider: &str,
+    cells: &CellMap,
+) -> (Tier, Classification) {
+    let input = ClassifyInput {
+        query,
+        context: None,
+    };
+    let classification = classifier.classify(&input).await.unwrap_or_else(|err| {
+        tracing::warn!(target: "nasiko::llm_router::classifier", error = %err, "classifier failed after fallback; using regex baseline");
+        RegexClassifier.classify_sync(query)
+    });
+    // Create the production entropy RNG only after the model request has completed; this
+    // keeps the router future Send while preserving Thompson exploration.
+    let mut rng = rand::rng();
+    let tier = pick_model_thompson(
+        cells,
+        classification.request_type,
+        DEFAULT_W_QUALITY,
+        DEFAULT_W_COST,
+        &mut rng,
+    );
+    tracing::info!(target: "nasiko::llm_router::classifier", provider = %provider, classifier = %classifier.name(), request_type = %classification.request_type.as_str(), complexity = classification.complexity, confidence = classification.confidence, classified_tier = ?tier, "classifier: classified request");
+    (tier, classification)
+}
+
+// --------------------------------------------------------------------------
+// 4. Request classifier abstraction (P2)
+// --------------------------------------------------------------------------
+
+// --------------------------------------------------------------------------
 // 4. Public entry point
 // --------------------------------------------------------------------------
 
