@@ -145,6 +145,10 @@ pub struct GatewayConfig {
     /// byte-identical to a build without it.
     pub brevity_holdout_pct: u8,
 
+    /// Replace JSON Schema tool definitions with compact one-line signatures and decode
+    /// `<<call ...>>` markers back into standard `tool_calls`. Off by default.
+    pub compact_tools_enabled: bool,
+
     /// Persist pre-compression originals so an agent can recover what was elided (IP-5).
     /// Defaults **on**; only ever writes a row when compression actually elided something, which
     /// requires the agent's switch, so an opted-out fleet stores nothing.
@@ -193,6 +197,7 @@ impl Default for GatewayConfig {
             brevity_enabled: true,
             brevity_min_bytes: 0,
             brevity_holdout_pct: 5,
+            compact_tools_enabled: false,
             compress_recovery_enabled: true,
             compress_recovery_min_bytes: 8192,
             compress_recovery_ttl_secs: 86_400,
@@ -296,6 +301,7 @@ impl GatewayConfig {
                 d.brevity_holdout_pct as usize,
             )
             .min(100) as u8,
+            compact_tools_enabled: env_flag("TOKEN_COMPACT_TOOLS", d.compact_tools_enabled),
             compress_recovery_enabled: env_flag(
                 "TOKEN_COMPRESS_RECOVERY",
                 d.compress_recovery_enabled,
