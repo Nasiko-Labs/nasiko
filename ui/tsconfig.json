@@ -1,50 +1,24 @@
 {
-  "//": [
-    "Type CHECKING only — this project has no build step and emits nothing (noEmit).",
-    "`tsc --checkJs` over JSDoc is the memo's recommended middle ground: it catches a",
-    "real share of broken contracts without adding a bundler or changing a single",
-    "runtime file.",
-    "",
-    "`include` is the platform layer plus the two new utils — the code written with",
-    "types in mind. It is deliberately NOT the whole UI: turning checkJs on across",
-    "48k LOC of existing components would report thousands of errors and get switched",
-    "off, which protects nothing. Widen it one directory at a time, and only to a",
-    "clean zero — see AGENTS.md.",
-    "",
-    "The vendored Lit bundle carries a `// @ts-nocheck` first line (vendor/README.md",
-    "explains why it is required and easy to lose on upgrade). A sibling .d.ts does not",
-    "work: TS 5 resolves an explicit .js import to the .js and ignores the declaration.",
-    "",
-    "Known next steps, in order of value:",
-    "  1. services/data-functions.js — excluded for now: it is a verbatim move and its",
-    "     URLSearchParams calls pass numbers. Rewriting them on services/query.js's",
-    "     qs()/listFetcher() fixes the types and the duplication together (Phase 4).",
-    "  2. components/ — after the domain split, per domain."
+  "files": [],
+  "references": [
+    {
+      "path": "./oss"
+    },
+    {
+      "path": "./tsconfig.node.json"
+    },
+    {
+      "path": "./e2e"
+    }
   ],
   "compilerOptions": {
-    "target": "ES2022",
-    "module": "ESNext",
-    "moduleResolution": "Bundler",
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "allowJs": true,
-    "checkJs": true,
-    "noEmit": true,
-    "strict": false,
-    "noImplicitAny": false,
-    "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true,
     "paths": {
-      "/common/*": ["./common/*"]
+      "@/*": [
+        "./common/src/*"
+      ],
+      "@edition/*": [
+        "./oss/src/*"
+      ]
     }
-  },
-  "include": [
-    "types/globals.d.ts",
-    "common/core/**/*.js",
-    "common/services/api.js",
-    "common/services/query.js",
-    "common/services/sse.js",
-    "common/state/**/*.js",
-    "common/utils/escape.js",
-    "common/utils/url-policy.js"
-  ]
+  }
 }

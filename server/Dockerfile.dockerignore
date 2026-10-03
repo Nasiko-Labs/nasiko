@@ -1,0 +1,38 @@
+# Build context for server/Dockerfile only.
+#
+# BuildKit reads `<dockerfile>.dockerignore` in preference to the root
+# `.dockerignore`, which is what this file is for. The root one has to
+# re-include specific paths under `target/` for the enterprise images, which
+# copy prebuilt binaries from there — and those negations make Docker walk the
+# whole of `target/`. On a developer machine that is a ~100 GB directory, and
+# the context transfer alone runs for minutes before anything compiles.
+#
+# This build needs none of it: it compiles from source in-image.
+
+**/target/
+.git/
+**/node_modules/
+**/dist/
+
+# Agent images and the registry build from their own contexts.
+agents/
+registry/
+
+docs/
+*.zip
+*.log
+
+# Never ship a developer's credentials into a build context.
+.env
+.env.*
+**/.env
+**/.env.*
+
+# Test and tooling output.
+coverage/
+test-results/
+playwright-report/
+storybook-static/
+.storybook/
+**/__pycache__/
+.venv/

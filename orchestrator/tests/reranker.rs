@@ -15,6 +15,8 @@ fn make_agents(names: &[&str]) -> Vec<AgentCard> {
             skills: vec![],
             tags: vec![],
             url: None,
+            embedding: None,
+            embedding_content_hash: None,
         })
         .collect()
 }
@@ -153,6 +155,8 @@ async fn with_history_and_live_store_returns_scored_results() {
             skills: vec!["rust".into()],
             tags: vec!["engineering".into()],
             url: None,
+            embedding: None,
+            embedding_content_hash: None,
         },
         AgentCard {
             id: Uuid::new_v4(),
@@ -161,12 +165,14 @@ async fn with_history_and_live_store_returns_scored_results() {
             skills: vec!["trading".into()],
             tags: vec!["finance".into()],
             url: None,
+            embedding: None,
+            embedding_content_hash: None,
         },
     ];
 
-    let cache = Default::default();
-    let store =
-        Arc::new(VectorStore::build(agents.clone(), api_key, base_url, model, &cache).await);
+    let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL required");
+    let pool = sqlx::PgPool::connect(&db_url).await.unwrap();
+    let store = Arc::new(VectorStore::build(agents.clone(), api_key, base_url, model, &pool).await);
     let reranker = Reranker::new(store);
     let history = SessionHistory {
         messages: vec![ChatMessage {

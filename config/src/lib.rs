@@ -47,6 +47,10 @@ pub struct Config {
     pub openai_api_key: Option<String>,
     pub openai_base_url: Option<String>,
     pub openai_model: String,
+    /// MAF "decompose one instruction into atomic sub-queries" service.
+    /// `None` disables `/maf/workflow/from-instruction` (503).
+    pub decomposer_api_url: Option<String>,
+    pub decomposer_api_key: Option<String>,
     pub router_model: String,
     pub capability_generator_model: String,
     /// Model for the MCP-connector description LLM fallback — only called when
@@ -146,6 +150,13 @@ pub struct Config {
     /// (PRD §9 IP-3). Shrinks what the loop carries, which also defers the
     /// context-compaction cliff. On by default — gated by the agent's own
     /// switch, so this is a fleet kill switch rather than an enabler.
+    /// How often the brevity holdout is re-analysed into a measured effect factor.
+    pub savings_factor_refresh_secs: u64,
+    /// Minimum samples **per arm** before a measured factor replaces the seeded one. Below this
+    /// the arm means are noise, and a noisy `fixture` figure is worse than an honest seed.
+    pub savings_factor_min_samples: i64,
+    /// Trailing window the holdout comparison reads.
+    pub savings_factor_window_days: i64,
     pub react_compress_enabled: bool,
     /// Skip tool results below this size.
     pub react_compress_min_bytes: usize,
@@ -385,6 +396,8 @@ impl Config {
             openai_api_key: std::env::var("OPENAI_API_KEY").ok(),
             openai_base_url: std::env::var("OPENAI_BASE_URL").ok(),
             openai_model: env_or("OPENAI_MODEL", "gpt-4o-mini"),
+            decomposer_api_url: std::env::var("MODEL_API_URL").ok(),
+            decomposer_api_key: std::env::var("MODEL_APIKEY").ok(),
             router_model: env_or("ROUTER_MODEL", "gpt-4o-mini"),
             capability_generator_model: env_or("CAPABILITY_GENERATOR_MODEL", "gpt-4o-mini"),
             mcp_description_model: env_or("MCP_DESCRIPTION_MODEL", "gpt-4o-mini"),
@@ -460,6 +473,9 @@ impl Config {
             router_shortlist_threshold: env_parse("ROUTER_SHORTLIST_THRESHOLD", 15),
             router_shortlist_size: env_parse("ROUTER_SHORTLIST_SIZE", 10),
             pacms_history_pool_size: env_parse("PACMS_HISTORY_POOL_SIZE", 150),
+            savings_factor_refresh_secs: env_parse("SAVINGS_FACTOR_REFRESH_SECS", 86_400),
+            savings_factor_min_samples: env_parse("SAVINGS_FACTOR_MIN_SAMPLES", 1_600),
+            savings_factor_window_days: env_parse("SAVINGS_FACTOR_WINDOW_DAYS", 30),
             react_compress_enabled: env_parse("TOKEN_COMPRESS_TOOL_RESULTS", true),
             react_compress_min_bytes: env_parse("TOKEN_COMPRESS_TOOL_RESULTS_MIN_BYTES", 2048),
             history_compress_enabled: env_parse("TOKEN_COMPRESS_HISTORY", true),

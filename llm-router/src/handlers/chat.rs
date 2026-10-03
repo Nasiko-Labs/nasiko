@@ -275,7 +275,7 @@ async fn chat_core(
     // ── brevity seam (IP-2) ───────────────────────────────────────────────────────────────
     // After compression, so the size floor is judged on the bytes actually being sent, and so a
     // compressed tool result cannot push a turn over the floor it would otherwise miss.
-    let brevity = crate::brevity::apply(&mut req, &ctx.cfg, &resolved);
+    let brevity = crate::brevity::apply(&mut req, &ctx.cfg, &resolved, flow_id.as_deref());
     let brevity_metadata = Some(crate::brevity::to_metadata(
         &brevity,
         crate::brevity::DIRECTIVE.len(),
@@ -287,6 +287,16 @@ async fn chat_core(
         skipped = ?brevity.err(),
         "brevity: directive decision"
     );
+
+    // ── savings ledger inputs ─────────────────────────────────────────────────────────────
+    // Measured here, after both seams, because this is the payload the provider will actually
+    // bill for — which is what makes `sent_bytes / reported_input_tokens` a calibration rather
+    // than a guess (savings.rs). Only a reduction that really happened is credited: `applied` is
+    // already false for a dry run and for a pass that found nothing to shrink.
+    let sent_bytes = crate::brevity::estimated_bytes(&req);
+    let compress_bytes = compression
+        .applied
+        .then_some((compression.bytes_in, compression.bytes_out));
 
     tracing::info!(
         target: "nasiko::llm_router::chat",
@@ -361,6 +371,8 @@ async fn chat_core(
             platform_paid,
             compress_metadata: compression.to_metadata(),
             brevity_metadata: brevity_metadata.clone(),
+            compress_bytes,
+            request_bytes: Some(sent_bytes),
             span: llm_span.clone(),
         });
     }
@@ -399,6 +411,8 @@ async fn chat_core(
             platform_paid,
             compress_metadata: compression.to_metadata(),
             brevity_metadata: brevity_metadata.clone(),
+            compress_bytes,
+            request_bytes: Some(sent_bytes),
         },
     );
 
@@ -569,6 +583,10 @@ struct StreamChatArgs<'a> {
     /// all, so every trace-derived figure counted it as free.
     span: tracing::Span,
     brevity_metadata: Option<serde_json::Value>,
+    /// Savings-ledger inputs, threaded through to the `Drop` write for the same reason
+    /// `compress_metadata` is: on this path the `UsageRecord` is only built once the stream ends.
+    compress_bytes: Option<(usize, usize)>,
+    request_bytes: Option<usize>,
 }
 
 /// Stream provider chunks back as OpenAI SSE: `data: <chunk>\n\n` … `data: [DONE]\n\n`.
@@ -591,6 +609,8 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
         compress_metadata,
         span,
         brevity_metadata,
+        compress_bytes,
+        request_bytes,
     } = args;
     let state = Arc::new(Mutex::new(StreamState::default()));
     let guard = UsageGuard {
@@ -608,6 +628,8 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
         platform_paid,
         compress_metadata,
         brevity_metadata,
+        compress_bytes,
+        request_bytes,
     };
 
     let body_stream = async_stream::stream! {
@@ -677,6 +699,9 @@ struct UsageGuard {
     /// Taken in `drop`, which runs exactly once.
     compress_metadata: Option<serde_json::Value>,
     brevity_metadata: Option<serde_json::Value>,
+    /// `Copy`, so unlike the two above these are read rather than taken.
+    compress_bytes: Option<(usize, usize)>,
+    request_bytes: Option<usize>,
 }
 
 impl Drop for UsageGuard {
@@ -705,6 +730,8 @@ impl Drop for UsageGuard {
                 platform_paid: self.platform_paid,
                 compress_metadata,
                 brevity_metadata,
+                compress_bytes: self.compress_bytes,
+                request_bytes: self.request_bytes,
             },
         );
     }
@@ -842,6 +869,10 @@ mod tests {
                     finish_reason: None,
                 })),
                 flow_id: None,
+                // This test is about the span's lifetime, not the savings ledger: no compression
+                // ran, so there is nothing for the guard to credit.
+                compress_bytes: None,
+                request_bytes: None,
                 attribution_source: None,
                 platform_paid: true,
                 // This test covers span lifetime, not compression.

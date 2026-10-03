@@ -1,5 +1,20 @@
+# Build context for the public repo's images (server/Dockerfile and friends).
+#
+# `target/` is anchored to the context root, which is right here: the public
+# repo has no nested oss/ for it to miss. The private repo's root
+# .dockerignore needs `**/target/` instead, for exactly that reason.
 target/
 .git/
 .env
+
+# Installed packages. server/Dockerfile's node stage runs its own `npm ci`
+# from the lockfile rather than taking whatever a developer has on disk, and
+# ui/node_modules is ~430 MB of context otherwise.
+**/node_modules/
+
+# Build output. The UI bundle is produced inside the image, never copied in.
+**/dist/
+coverage/
+
 *.md
 !README.md

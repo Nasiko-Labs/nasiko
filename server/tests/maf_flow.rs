@@ -1024,3 +1024,358 @@ async fn test_maf_not_visible_to_other_user_in_list() {
 
     server.cleanup().await;
 }
+
+// ─── Draft promotion ───────────────────────────────────────────────────────
+//
+// `from-instruction` is what normally writes a draft, but it calls the external
+// decomposer service — so these seed the row it would have written and test the
+// part that matters here: promotion is a status change and nothing else.
+
+/// Insert a draft carrying fully resolved steps, as `from-instruction` leaves it.
+async fn seed_draft_with_steps(
+    server: &common::TestServer,
+    user_id: Uuid,
+    agent_id: Uuid,
+) -> (Uuid, Value) {
+    let maf_json = json!({
+        "description": null,
+        "output_generation": null,
+        "steps": [{
+            "step_id": Uuid::new_v4(),
+            "step_index": 0,
+            "agent_id": agent_id,
+            "agent_name": "MAF Test Agent",
+            "agent_endpoint": "http://fake-agent.local/a2a",
+            "task_description": "Summarise the provided text"
+        }]
+    });
+    let id: Uuid = sqlx::query_scalar(
+        "INSERT INTO mafs (user_id, name, description, maf_json, status, drafted_at)
+         VALUES ($1, $2, $3, $4::jsonb, 'draft', now()) RETURNING id",
+    )
+    .bind(user_id)
+    .bind("Seeded draft")
+    .bind("summarise the provided text")
+    .bind(maf_json.to_string())
+    .fetch_one(&server.db)
+    .await
+    .expect("seed_draft_with_steps");
+    (id, maf_json)
+}
+
+#[tokio::test]
+#[serial]
+async fn test_promote_flips_status_without_touching_steps() {
+    let server = common::TestServer::start().await;
+    let user_id = Uuid::new_v4();
+    seed_user(&server, user_id).await;
+    let agent_id = seed_agent(&server, user_id).await;
+    let (draft_id, seeded_json) = seed_draft_with_steps(&server, user_id, agent_id).await;
+
+    let res = auth(
+        server
+            .client
+            .post(server.url(&format!("/api/maf/workflow/{draft_id}/promote"))),
+        user_id,
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 200);
+
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["data"]["status"], "active");
+
+    // The whole point: the plan that was reviewed is the plan that survives.
+    // A re-decompose would renumber `step_id` even if it produced the same text.
+    assert_eq!(
+        body["data"]["maf_json"], seeded_json,
+        "promotion must leave maf_json byte-for-byte identical"
+    );
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn test_promote_empty_draft_is_400() {
+    let server = common::TestServer::start().await;
+    let user_id = Uuid::new_v4();
+    seed_user(&server, user_id).await;
+
+    // What `POST /maf/workflow/draft` writes: the sentence, no steps.
+    let res: Value = auth(
+        server
+            .client
+            .post(server.url("/api/maf/workflow/draft"))
+            .json(&json!({"instruction": "something I typed but never decomposed"})),
+        user_id,
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    let draft_id = res["data"]["id"].as_str().unwrap();
+
+    // Promoting it would otherwise yield an active workflow that runs zero
+    // steps and reports success.
+    let promote = auth(
+        server
+            .client
+            .post(server.url(&format!("/api/maf/workflow/{draft_id}/promote"))),
+        user_id,
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(promote.status(), 400);
+
+    let status: String = sqlx::query_scalar("SELECT status FROM mafs WHERE id = $1")
+        .bind(Uuid::parse_str(draft_id).unwrap())
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    assert_eq!(
+        status, "draft",
+        "a refused promotion must not change status"
+    );
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn test_promote_is_not_repeatable_and_is_owner_only() {
+    let server = common::TestServer::start().await;
+    let owner = Uuid::new_v4();
+    let stranger = Uuid::new_v4();
+    seed_user(&server, owner).await;
+    seed_user(&server, stranger).await;
+    let agent_id = seed_agent(&server, owner).await;
+    let (draft_id, _) = seed_draft_with_steps(&server, owner, agent_id).await;
+
+    // Someone else's draft is not promotable.
+    let res = auth(
+        server
+            .client
+            .post(server.url(&format!("/api/maf/workflow/{draft_id}/promote"))),
+        stranger,
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 403);
+
+    // The owner promotes once...
+    let first = auth(
+        server
+            .client
+            .post(server.url(&format!("/api/maf/workflow/{draft_id}/promote"))),
+        owner,
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(first.status(), 200);
+
+    // ...and a second attempt is refused rather than re-running anything.
+    let second = auth(
+        server
+            .client
+            .post(server.url(&format!("/api/maf/workflow/{draft_id}/promote"))),
+        owner,
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(second.status(), 400);
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn test_draft_runs_before_and_after_promotion() {
+    let server = common::TestServer::start().await;
+    let user_id = Uuid::new_v4();
+    seed_user(&server, user_id).await;
+    let agent_id = seed_agent(&server, user_id).await;
+    let (draft_id, _) = seed_draft_with_steps(&server, user_id, agent_id).await;
+
+    // A draft with steps runs without being deployed first — trying a workflow
+    // out must not require committing to it.
+    let early = auth(
+        server
+            .client
+            .post(server.url(&format!("/api/maf/workflow/{draft_id}/run"))),
+        user_id,
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(early.status(), 202, "a draft with steps is runnable");
+
+    // Before promotion it is in the drafts list only.
+    let in_list = |body: &Value| {
+        body["data"]["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["id"] == draft_id.to_string())
+    };
+    let workflows: Value = auth(server.client.get(server.url("/api/maf/workflows")), user_id)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let drafts: Value = auth(
+        server.client.get(server.url("/api/maf/workflow/drafts")),
+        user_id,
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    assert!(!in_list(&workflows), "a draft is not a live workflow");
+    assert!(in_list(&drafts));
+
+    auth(
+        server
+            .client
+            .post(server.url(&format!("/api/maf/workflow/{draft_id}/promote"))),
+        user_id,
+    )
+    .send()
+    .await
+    .unwrap();
+
+    // After promotion it is runnable, and `drafted_at` keeps it in the drafts
+    // list so an idea can still be followed from sentence to runs.
+    let run = auth(
+        server
+            .client
+            .post(server.url(&format!("/api/maf/workflow/{draft_id}/run"))),
+        user_id,
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(run.status(), 202);
+
+    let workflows: Value = auth(server.client.get(server.url("/api/maf/workflows")), user_id)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let drafts: Value = auth(
+        server.client.get(server.url("/api/maf/workflow/drafts")),
+        user_id,
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    assert!(in_list(&workflows));
+    assert!(in_list(&drafts));
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn test_draft_is_editable() {
+    let server = common::TestServer::start().await;
+    let user_id = Uuid::new_v4();
+    seed_user(&server, user_id).await;
+    let agent_id = seed_agent(&server, user_id).await;
+    let (draft_id, _) = seed_draft_with_steps(&server, user_id, agent_id).await;
+
+    // Fixing a step the decomposer got wrong must not require deploying the
+    // workflow first. This used to 404 on a row GET returns 200 for.
+    let res = auth(
+        server
+            .client
+            .put(server.url(&format!("/api/maf/workflow/{draft_id}")))
+            .json(&json!({
+                "name": "Edited while still a draft",
+                "steps": [{
+                    "step_index": 0,
+                    "agent_id": agent_id,
+                    "task_description": "A corrected task description"
+                }]
+            })),
+        user_id,
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 200);
+
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["data"]["name"], "Edited while still a draft");
+    assert_eq!(
+        body["data"]["maf_json"]["steps"][0]["task_description"],
+        "A corrected task description"
+    );
+    // Editing is not deploying: the row is still a draft afterwards.
+    assert_eq!(body["data"]["status"], "draft");
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn test_run_stepless_workflow_is_400() {
+    let server = common::TestServer::start().await;
+    let user_id = Uuid::new_v4();
+    seed_user(&server, user_id).await;
+
+    // The row `POST /maf/workflow/draft` writes: a sentence, no steps. Running
+    // it would otherwise enqueue an execution that iterates nothing and
+    // reports success.
+    let saved: Value = auth(
+        server
+            .client
+            .post(server.url("/api/maf/workflow/draft"))
+            .json(&json!({"instruction": "typed but never decomposed"})),
+        user_id,
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    let draft_id = saved["data"]["id"].as_str().unwrap();
+
+    let run = auth(
+        server
+            .client
+            .post(server.url(&format!("/api/maf/workflow/{draft_id}/run"))),
+        user_id,
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(run.status(), 400);
+
+    // Nothing was enqueued.
+    let execs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM maf_executions WHERE maf_id = $1")
+        .bind(Uuid::parse_str(draft_id).unwrap())
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    assert_eq!(execs, 0);
+
+    server.cleanup().await;
+}

@@ -1,0 +1,13 @@
+Attach one of your configs to an agent you own
+
+Usage: nasiko llm-config attach [OPTIONS] <AGENT> <CONFIG>
+
+Arguments:
+  <AGENT>   Agent name or ID
+  <CONFIG>  Config name or ID
+
+Options:
+      --inbound-format <INBOUND_FORMAT>
+          SDK format the agent's code speaks: openai | anthropic | gemini
+  -h, --help
+          Print help

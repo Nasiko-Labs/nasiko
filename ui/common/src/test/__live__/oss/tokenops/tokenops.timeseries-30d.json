@@ -1,0 +1,377 @@
+{
+  "fixture_version": 1,
+  "id": "tokenops.timeseries-30d",
+  "recorded_at": "2026-09-29T05:55:36.964Z",
+  "window": {
+    "start": "2026-09-29T05:55:36.964Z",
+    "end": "2026-09-29T05:55:36.975Z"
+  },
+  "anchor": "2026-09-29T05:55:34.182Z",
+  "edition": "oss",
+  "identity": "admin",
+  "server": {
+    "sha": "ea233d201502a205e78339a7cb2688856b9ec2fa",
+    "dirty": false,
+    "openapi_sha256": "71f2d54fd3466adb48d9d26eed66afe028ed153262b6eeb57445c5b03b6bd9f7",
+    "binary_mtime": "2026-09-29T04:15:34.033Z"
+  },
+  "request": {
+    "method": "GET",
+    "path": "/api/observability/finops/spend-timeseries",
+    "query": {
+      "range": "30d"
+    }
+  },
+  "status": 200,
+  "content_type": "application/json",
+  "body": {
+    "data": {
+      "bucket": "day",
+      "points": [
+        {
+          "bucket_start": "2026-08-30T00:00:00.000Z",
+          "spend_usd": 1.90723,
+          "operations": 181,
+          "tool_calls": 250,
+          "top_agent_name": "seed-code-reviewer",
+          "top_agent_spend_usd": 0.831947,
+          "p50_latency_ms": 1648,
+          "p95_latency_ms": 5154,
+          "p99_latency_ms": 6907.4
+        },
+        {
+          "bucket_start": "2026-08-31T00:00:00.000Z",
+          "spend_usd": 4.460049,
+          "operations": 392,
+          "tool_calls": 495,
+          "top_agent_name": "seed-code-reviewer",
+          "top_agent_spend_usd": 1.121217,
+          "p50_latency_ms": 1572.5,
+          "p95_latency_ms": 5512.749999999999,
+          "p99_latency_ms": 7875.0599999999995
+        },
+        {
+          "bucket_start": "2026-09-01T00:00:00.000Z",
+          "spend_usd": 5.716231,
+          "operations": 361,
+          "tool_calls": 446,
+          "top_agent_name": "admin-codex",
+          "top_agent_spend_usd": 1.746564,
+          "p50_latency_ms": 1338,
+          "p95_latency_ms": 5072,
+          "p99_latency_ms": 7090.999999999999
+        },
+        {
+          "bucket_start": "2026-09-02T00:00:00.000Z",
+          "spend_usd": 4.737273,
+          "operations": 365,
+          "tool_calls": 435,
+          "top_agent_name": "seed-code-reviewer",
+          "top_agent_spend_usd": 1.595645,
+          "p50_latency_ms": 1643,
+          "p95_latency_ms": 5445,
+          "p99_latency_ms": 6688.039999999998
+        },
+        {
+          "bucket_start": "2026-09-03T00:00:00.000Z",
+          "spend_usd": 6.693699,
+          "operations": 397,
+          "tool_calls": 451,
+          "top_agent_name": "seed-code-reviewer",
+          "top_agent_spend_usd": 1.778915,
+          "p50_latency_ms": 1274,
+          "p95_latency_ms": 4777.799999999998,
+          "p99_latency_ms": 8042.599999999999
+        },
+        {
+          "bucket_start": "2026-09-04T00:00:00.000Z",
+          "spend_usd": 6.29442,
+          "operations": 458,
+          "tool_calls": 541,
+          "top_agent_name": "seed-code-reviewer",
+          "top_agent_spend_usd": 1.668194,
+          "p50_latency_ms": 1551,
+          "p95_latency_ms": 5444.399999999998,
+          "p99_latency_ms": 7209.649999999999
+        },
+        {
+          "bucket_start": "2026-09-05T00:00:00.000Z",
+          "spend_usd": 3.481315,
+          "operations": 194,
+          "tool_calls": 225,
+          "top_agent_name": "seed-code-reviewer",
+          "top_agent_spend_usd": 0.939888,
+          "p50_latency_ms": 1441.5,
+          "p95_latency_ms": 4795.399999999997,
+          "p99_latency_ms": 6767.609999999998
+        },
+        {
+          "bucket_start": "2026-09-06T00:00:00.000Z",
+          "spend_usd": 3.144539,
+          "operations": 206,
+          "tool_calls": 272,
+          "top_agent_name": "admin-codex",
+          "top_agent_spend_usd": 0.94048,
+          "p50_latency_ms": 1412.5,
+          "p95_latency_ms": 5052.749999999999,
+          "p99_latency_ms": 6466.25
+        },
+        {
+          "bucket_start": "2026-09-07T00:00:00.000Z",
+          "spend_usd": 6.402854,
+          "operations": 452,
+          "tool_calls": 526,
+          "top_agent_name": "seed-code-reviewer",
+          "top_agent_spend_usd": 1.480487,
+          "p50_latency_ms": 1285,
+          "p95_latency_ms": 5192.199999999999,
+          "p99_latency_ms": 7358.149999999999
+        },
+        {
+          "bucket_start": "2026-09-08T00:00:00.000Z",
+          "spend_usd": 6.937953,
+          "operations": 409,
+          "tool_calls": 466,
+          "top_agent_name": "seed-code-reviewer",
+          "top_agent_spend_usd": 1.772031,
+          "p50_latency_ms": 1209,
+          "p95_latency_ms": 4904.599999999999,
+          "p99_latency_ms": 7429.079999999998
+        },
+        {
+          "bucket_start": "2026-09-09T00:00:00.000Z",
+          "spend_usd": 4.132066,
+          "operations": 373,
+          "tool_calls": 432,
+          "top_agent_name": "seed-code-reviewer",
+          "top_agent_spend_usd": 1.091837,
+          "p50_latency_ms": 1663,
+          "p95_latency_ms": 5566.4,
+          "p99_latency_ms": 7410.28
+        },
+        {
+          "bucket_start": "2026-09-10T00:00:00.000Z",
+          "spend_usd": 5.829782,
+          "operations": 422,
+          "tool_calls": 509,
+          "top_agent_name": "seed-code-reviewer",
+          "top_agent_spend_usd": 1.216645,
+          "p50_latency_ms": 1485,
+          "p95_latency_ms": 5086.5,
+          "p99_latency_ms": 6740.979999999999
+        },
+        {
+          "bucket_start": "2026-09-11T00:00:00.000Z",
+          "spend_usd": 6.045282,
+          "operations": 404,
+          "tool_calls": 461,
+          "top_agent_name": "seed-code-reviewer",
+          "top_agent_spend_usd": 1.204804,
+          "p50_latency_ms": 1657.5,
+          "p95_latency_ms": 4801.499999999999,
+          "p99_latency_ms": 6696.47
+        },
+        {
+          "bucket_start": "2026-09-12T00:00:00.000Z",
+          "spend_usd": 2.04457,
+          "operations": 176,
+          "tool_calls": 237,
+          "top_agent_name": "seed-code-reviewer",
+          "top_agent_spend_usd": 0.364138,
+          "p50_latency_ms": 1377.5,
+          "p95_latency_ms": 5498.499999999996,
+          "p99_latency_ms": 7122
+        },
+        {
+          "bucket_start": "2026-09-13T00:00:00.000Z",
+          "spend_usd": 5.823558,
+          "operations": 228,
+          "tool_calls": 260,
+          "top_agent_name": "admin-codex",
+          "top_agent_spend_usd": 3.415456,
+          "p50_latency_ms": 1200,
+          "p95_latency_ms": 5114.099999999998,
+          "p99_latency_ms": 6533.109999999999
+        },
+        {
+          "bucket_start": "2026-09-14T00:00:00.000Z",
+          "spend_usd": 4.749847,
+          "operations": 380,
+          "tool_calls": 510,
+          "top_agent_name": "seed-code-reviewer",
+          "top_agent_spend_usd": 0.954758,
+          "p50_latency_ms": 1643.5,
+          "p95_latency_ms": 5845.55,
+          "p99_latency_ms": 7852.349999999999
+        },
+        {
+          "bucket_start": "2026-09-15T00:00:00.000Z",
+          "spend_usd": 4.178348,
+          "operations": 389,
+          "tool_calls": 463,
+          "top_agent_name": "seed-code-reviewer",
+          "top_agent_spend_usd": 1.49351,
+          "p50_latency_ms": 1367,
+          "p95_latency_ms": 4695.5999999999985,
+          "p99_latency_ms": 5907.12
+        },
+        {
+          "bucket_start": "2026-09-16T00:00:00.000Z",
+          "spend_usd": 4.39895,
+          "operations": 353,
+          "tool_calls": 393,
+          "top_agent_name": "seed-code-reviewer",
+          "top_agent_spend_usd": 1.387874,
+          "p50_latency_ms": 1483,
+          "p95_latency_ms": 5378.4,
+          "p99_latency_ms": 7489.88
+        },
+        {
+          "bucket_start": "2026-09-17T00:00:00.000Z",
+          "spend_usd": 4.222585,
+          "operations": 395,
+          "tool_calls": 510,
+          "top_agent_name": "seed-code-reviewer",
+          "top_agent_spend_usd": 1.028608,
+          "p50_latency_ms": 1689,
+          "p95_latency_ms": 5716.799999999999,
+          "p99_latency_ms": 7561.94
+        },
+        {
+          "bucket_start": "2026-09-18T00:00:00.000Z",
+          "spend_usd": 5.652332,
+          "operations": 430,
+          "tool_calls": 505,
+          "top_agent_name": "seed-code-reviewer",
+          "top_agent_spend_usd": 1.643655,
+          "p50_latency_ms": 1439.5,
+          "p95_latency_ms": 5568.5,
+          "p99_latency_ms": 8067.62
+        },
+        {
+          "bucket_start": "2026-09-19T00:00:00.000Z",
+          "spend_usd": 2.535346,
+          "operations": 177,
+          "tool_calls": 195,
+          "top_agent_name": "seed-code-reviewer",
+          "top_agent_spend_usd": 0.551371,
+          "p50_latency_ms": 1435,
+          "p95_latency_ms": 4218.199999999996,
+          "p99_latency_ms": 6356.159999999999
+        },
+        {
+          "bucket_start": "2026-09-20T00:00:00.000Z",
+          "spend_usd": 7.663721,
+          "operations": 284,
+          "tool_calls": 374,
+          "top_agent_name": "seed-code-reviewer",
+          "top_agent_spend_usd": 6.198977,
+          "p50_latency_ms": 938,
+          "p95_latency_ms": 4272.9,
+          "p99_latency_ms": 6745.419999999998
+        },
+        {
+          "bucket_start": "2026-09-21T00:00:00.000Z",
+          "spend_usd": 4.566618,
+          "operations": 379,
+          "tool_calls": 436,
+          "top_agent_name": "seed-code-reviewer",
+          "top_agent_spend_usd": 1.278225,
+          "p50_latency_ms": 1635,
+          "p95_latency_ms": 5533.499999999998,
+          "p99_latency_ms": 7369.44
+        },
+        {
+          "bucket_start": "2026-09-22T00:00:00.000Z",
+          "spend_usd": 5.903678,
+          "operations": 396,
+          "tool_calls": 501,
+          "top_agent_name": "seed-code-reviewer",
+          "top_agent_spend_usd": 1.533888,
+          "p50_latency_ms": 1530,
+          "p95_latency_ms": 5532.249999999996,
+          "p99_latency_ms": 7593.1
+        },
+        {
+          "bucket_start": "2026-09-23T00:00:00.000Z",
+          "spend_usd": 5.439067,
+          "operations": 373,
+          "tool_calls": 436,
+          "top_agent_name": "admin-codex",
+          "top_agent_spend_usd": 1.249988,
+          "p50_latency_ms": 1524,
+          "p95_latency_ms": 4682,
+          "p99_latency_ms": 5912.679999999999
+        },
+        {
+          "bucket_start": "2026-09-24T00:00:00.000Z",
+          "spend_usd": 9.215634,
+          "operations": 439,
+          "tool_calls": 538,
+          "top_agent_name": "admin-codex",
+          "top_agent_spend_usd": 3.496724,
+          "p50_latency_ms": 1256,
+          "p95_latency_ms": 5157.499999999999,
+          "p99_latency_ms": 6924.159999999999
+        },
+        {
+          "bucket_start": "2026-09-25T00:00:00.000Z",
+          "spend_usd": 5.153264,
+          "operations": 386,
+          "tool_calls": 447,
+          "top_agent_name": "seed-code-reviewer",
+          "top_agent_spend_usd": 1.176723,
+          "p50_latency_ms": 1606,
+          "p95_latency_ms": 5194.249999999999,
+          "p99_latency_ms": 6628.349999999999
+        },
+        {
+          "bucket_start": "2026-09-26T00:00:00.000Z",
+          "spend_usd": 3.658789,
+          "operations": 202,
+          "tool_calls": 240,
+          "top_agent_name": "admin-codex",
+          "top_agent_spend_usd": 1.583944,
+          "p50_latency_ms": 1200,
+          "p95_latency_ms": 4912.299999999998,
+          "p99_latency_ms": 6568.539999999999
+        },
+        {
+          "bucket_start": "2026-09-27T00:00:00.000Z",
+          "spend_usd": 3.57982,
+          "operations": 192,
+          "tool_calls": 205,
+          "top_agent_name": "admin-codex",
+          "top_agent_spend_usd": 1.42362,
+          "p50_latency_ms": 1253.5,
+          "p95_latency_ms": 4813.049999999999,
+          "p99_latency_ms": 7297.0599999999995
+        },
+        {
+          "bucket_start": "2026-09-28T00:00:00.000Z",
+          "spend_usd": 5.043874,
+          "operations": 405,
+          "tool_calls": 448,
+          "top_agent_name": "seed-code-reviewer",
+          "top_agent_spend_usd": 1.024437,
+          "p50_latency_ms": 1380,
+          "p95_latency_ms": 5586.799999999999,
+          "p99_latency_ms": 7514.959999999999
+        },
+        {
+          "bucket_start": "2026-09-29T00:00:00.000Z",
+          "spend_usd": 0.023982,
+          "operations": 14,
+          "tool_calls": 17,
+          "top_agent_name": "seed-triage-router",
+          "top_agent_spend_usd": 0.014969,
+          "p50_latency_ms": 1936,
+          "p95_latency_ms": 3876.499999999999,
+          "p99_latency_ms": 4734.5
+        }
+      ]
+    },
+    "status_code": 200,
+    "message": "Spend timeseries retrieved successfully"
+  }
+}

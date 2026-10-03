@@ -1,13 +1,88 @@
 {
-  "name": "nasiko-ui-typecheck",
+  "name": "nasiko-ui-lab",
   "private": true,
+  "version": "0.19.0",
   "type": "module",
-  "description": "Type-checking tooling for ui/. Dev-only: the UI has no build step, emits nothing, and ships no node_modules. See ui/AGENTS.md.",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "workspaces": [
+    "common"
+  ],
   "scripts": {
-    "check-types": "tsc -p tsconfig.json"
+    "dev": "node scripts/app.ts dev",
+    "build": "node scripts/app.ts typecheck && node scripts/app.ts build",
+    "typecheck": "node scripts/app.ts typecheck",
+    "lint": "eslint . --max-warnings 0 && prettier --check .",
+    "test": "node scripts/app.ts typecheck && eslint . --max-warnings 0 && vitest run",
+    "test:watch": "vitest",
+    "coverage": "vitest run --coverage",
+    "preview": "node scripts/app.ts preview",
+    "gen:api": "node scripts/gen-api.ts",
+    "dev:live": "VITE_NASIKO_API_MODE=live node scripts/app.ts dev",
+    "seed:sql": "node scripts/seed-trace-usage.ts",
+    "seed:live": "node scripts/seed-live.ts",
+    "seed:reset": "node scripts/seed-live.ts --reset",
+    "record:live": "node scripts/record-live.ts",
+    "contract:check": "node scripts/contract-check.ts",
+    "ee:server": "node scripts/ee-server.ts",
+    "seed:ee": "node scripts/seed-live.ts --edition ee",
+    "dev:live:ee": "NASIKO_API_URL=http://localhost:9090 VITE_NASIKO_API_MODE=live node scripts/app.ts dev ee",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "knip": "knip",
+    "budgets": "node scripts/check-budgets.ts",
+    "e2e": "playwright test --config e2e/playwright.config.ts",
+    "storybook": "storybook dev -p 6006 --no-open",
+    "build-storybook": "storybook build -o storybook-static",
+    "test:stories": "vitest run --config vitest.storybook.config.ts"
   },
   "devDependencies": {
-    "typescript": "~5.9.0"
+    "@axe-core/playwright": "4.13.0",
+    "@babel/core": "7.29.7",
+    "@eslint-react/eslint-plugin": "5.23.0",
+    "@eslint/js": "9.39.5",
+    "@playwright/test": "1.63.0",
+    "@rolldown/plugin-babel": "0.2.4",
+    "@storybook/addon-a11y": "10.6.0",
+    "@storybook/addon-themes": "10.6.0",
+    "@storybook/addon-vitest": "10.6.0",
+    "@storybook/react-vite": "10.6.0",
+    "@tailwindcss/vite": "^4.3.3",
+    "@tanstack/router-plugin": "^1.168.40",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.7",
+    "@types/d3-array": "^3.2.2",
+    "@types/d3-shape": "^3.2.0",
+    "@types/node": "^24.13.3",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.7",
+    "@vitejs/plugin-react": "^6.1.1",
+    "@vitest/browser": "4.1.11",
+    "@vitest/browser-playwright": "4.1.11",
+    "@vitest/coverage-v8": "^4.1.11",
+    "axe-core": "^4.13.0",
+    "babel-plugin-react-compiler": "1.0.0",
+    "eslint": "9.39.5",
+    "eslint-plugin-jsx-a11y": "6.10.2",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "eslint-plugin-react-refresh": "0.5.7",
+    "globals": "17.12.0",
+    "jsdom": "^29.1.1",
+    "knip": "6.38.0",
+    "msw": "^2.15.0",
+    "prettier": "3.9.9",
+    "prettier-plugin-tailwindcss": "0.8.1",
+    "storybook": "10.6.0",
+    "typescript": "~6.0.2",
+    "typescript-eslint": "8.71.0",
+    "vite": "^8.3.0",
+    "vitest": "^4.1.11"
   },
-  "//": "typescript is pinned to a minor range on purpose: TS 5 and TS 7 resolve an explicit .js import differently (5 checks the .js, 7 prefers a sibling .d.ts), which changes whether the vendored Lit bundle is type-checked. Verified clean against 5.9.3."
+  "msw": {
+    "workerDirectory": [
+      "public"
+    ]
+  }
 }

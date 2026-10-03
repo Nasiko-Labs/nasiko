@@ -1,4 +1,4 @@
-use nasiko_orchestrator::{AgentCard, EmbeddingCache, VectorStore};
+use nasiko_orchestrator::{AgentCard, VectorStore};
 use uuid::Uuid;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -13,8 +13,16 @@ fn make_agents(names: &[&str]) -> Vec<AgentCard> {
             skills: vec![],
             tags: vec![],
             url: None,
+            embedding: None,
+            embedding_content_hash: None,
         })
         .collect()
+}
+
+async fn test_pool() -> sqlx::PgPool {
+    let db_url = std::env::var("DATABASE_URL")
+        .expect("DATABASE_URL required for tests marked 'requires live Postgres database'");
+    sqlx::PgPool::connect(&db_url).await.unwrap()
 }
 
 // ── cosine_similarity (via shortlist behavior) ────────────────────────────────
@@ -141,20 +149,23 @@ async fn build_with_api_key_embeds_agents() {
     let model = "text-embedding-3-small".to_string();
 
     let agents = make_agents(&["coding-agent", "data-agent"]);
-    let cache = Default::default();
-    let store = VectorStore::build(agents, api_key, base_url, model, &cache).await;
+    let pool = test_pool().await;
+    let store = VectorStore::build(agents, api_key, base_url, model, &pool).await;
     let result = store.shortlist("write code", 1, 1).await;
     assert!(!result.is_empty());
 }
 
-// ── embedding cache: repeat build() calls should not re-embed ────────────────
+// ── persisted embedding: repeat build() calls should not re-embed ───────────
 // Regression test for the redundant-recompute bug: Stage 1 used to call the
-// embeddings API for every agent on every route() call. With a shared
-// `EmbeddingCache`, a second `build()` call for the same agents must reuse the
-// cached vectors instead of hitting the network again.
+// embeddings API for every agent on every route() call. With the embedding
+// persisted to `agents.embedding`/`embedding_content_hash`, a second build()
+// call for the same (unchanged) agent must reuse the stored vector — loaded
+// fresh from the DB into the agent's `AgentCard` — instead of hitting the
+// network again.
 
 #[tokio::test]
-async fn build_reuses_cached_embedding_on_second_call() {
+#[ignore = "requires live Postgres database"]
+async fn build_reuses_stored_embedding_on_second_call() {
     let mut server = mockito::Server::new_async().await;
     let mock = server
         .mock("POST", "/v1/embeddings")
@@ -165,34 +176,60 @@ async fn build_reuses_cached_embedding_on_second_call() {
         .create_async()
         .await;
 
-    let agents = make_agents(&["agent-1"]);
-    let cache: EmbeddingCache = Default::default();
+    let pool = test_pool().await;
+    let agent_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO agents (id, name, owner_id, version, image, status) VALUES ($1, 'agent-1', gen_random_uuid(), '1.0.0', 'img:1', 'running')")
+        .bind(agent_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let mut agents = make_agents(&["agent-1"]);
+    agents[0].id = agent_id;
 
     let _store1 = VectorStore::build(
         agents.clone(),
         "sk-test".to_string(),
         server.url(),
         "test-model".to_string(),
-        &cache,
+        &pool,
     )
     .await;
 
-    // Second build() with the same agents + cache must be served entirely
-    // from cache — the mock only expects a single call.
+    // Re-fetch the agent card the way `route()` does, so the second build()
+    // sees the embedding/hash that got persisted by the first call.
+    let (embedding, embedding_content_hash): (Option<Vec<f64>>, Option<i64>) =
+        sqlx::query_as("SELECT embedding, embedding_content_hash FROM agents WHERE id = $1")
+            .bind(agent_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    agents[0].embedding = embedding.map(|v| v.into_iter().map(|f| f as f32).collect());
+    agents[0].embedding_content_hash = embedding_content_hash;
+
+    // Second build() with the refreshed agents must be served entirely from
+    // the stored embedding — the mock only expects a single call.
     let _store2 = VectorStore::build(
         agents,
         "sk-test".to_string(),
         server.url(),
         "test-model".to_string(),
-        &cache,
+        &pool,
     )
     .await;
 
     mock.assert_async().await;
+
+    sqlx::query("DELETE FROM agents WHERE id = $1")
+        .bind(agent_id)
+        .execute(&pool)
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
-async fn build_re_embeds_when_agent_content_changes() {
+#[ignore = "requires live Postgres database"]
+async fn build_re_embeds_when_stored_hash_is_stale() {
     let mut server = mockito::Server::new_async().await;
     let mock = server
         .mock("POST", "/v1/embeddings")
@@ -203,20 +240,39 @@ async fn build_re_embeds_when_agent_content_changes() {
         .create_async()
         .await;
 
+    let pool = test_pool().await;
+    let agent_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO agents (id, name, owner_id, version, image, status) VALUES ($1, 'agent-1', gen_random_uuid(), '1.0.0', 'img:1', 'running')")
+        .bind(agent_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
     let mut agents = make_agents(&["agent-1"]);
-    let cache: EmbeddingCache = Default::default();
+    agents[0].id = agent_id;
 
     let _store1 = VectorStore::build(
         agents.clone(),
         "sk-test".to_string(),
         server.url(),
         "test-model".to_string(),
-        &cache,
+        &pool,
     )
     .await;
 
-    // Changing the embedded content (description) invalidates the cache entry
-    // even though the agent id and TTL window are unchanged.
+    // Re-fetch the stored embedding/hash the way `route()` does...
+    let (embedding, embedding_content_hash): (Option<Vec<f64>>, Option<i64>) =
+        sqlx::query_as("SELECT embedding, embedding_content_hash FROM agents WHERE id = $1")
+            .bind(agent_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    agents[0].embedding = embedding.map(|v| v.into_iter().map(|f| f as f32).collect());
+    agents[0].embedding_content_hash = embedding_content_hash;
+
+    // ...then change the embedded content (description), which invalidates
+    // the stored hash even though the agent id and the row itself are
+    // otherwise unchanged.
     agents[0].description = "a brand new description".to_string();
 
     let _store2 = VectorStore::build(
@@ -224,9 +280,15 @@ async fn build_re_embeds_when_agent_content_changes() {
         "sk-test".to_string(),
         server.url(),
         "test-model".to_string(),
-        &cache,
+        &pool,
     )
     .await;
 
     mock.assert_async().await;
+
+    sqlx::query("DELETE FROM agents WHERE id = $1")
+        .bind(agent_id)
+        .execute(&pool)
+        .await
+        .unwrap();
 }

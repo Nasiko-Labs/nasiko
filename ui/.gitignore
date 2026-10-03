@@ -1,0 +1,55 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+# Both editions' bundles are build output and stay out of git. The server
+# embeds them at compile time, so something has to build them first:
+# server/Dockerfile does it in a Node stage (so `docker compose up -d` needs
+# nothing but Docker), and `just run`/`just release*` do it on the host.
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# gstack reports (qa, land-and-deploy)
+.gstack/qa-reports/
+.gstack/deploy-reports/
+
+# MSW writes its worker here on install (package.json `msw.workerDirectory`).
+# The served copy is common/public/mockServiceWorker.js, which Vite picks up as
+# publicDir; this one is a build-time artifact of the install, not source.
+/public/
+
+# env
+.env
+
+# live-contract recorder state (plans/feat-live-contract.md §5)
+.live/
+
+# Coverage and incremental-build output. `npm run coverage` writes ~556 files
+# into coverage/ and `tsc -b` leaves *.tsbuildinfo; neither was ignored, so a
+# plain `git add -A` after running the checks swept them into the commit.
+coverage/
+*.tsbuildinfo
+
+# Playwright
+test-results/
+playwright-report/
+# Storybook
+storybook-static/

@@ -1,0 +1,210 @@
+{
+  "fixture_version": 1,
+  "id": "tokenops.calendar",
+  "recorded_at": "2026-09-29T05:55:36.975Z",
+  "window": {
+    "start": "2026-09-29T05:55:36.975Z",
+    "end": "2026-09-29T05:55:36.980Z"
+  },
+  "anchor": "2026-09-29T05:55:34.182Z",
+  "edition": "oss",
+  "identity": "admin",
+  "server": {
+    "sha": "ea233d201502a205e78339a7cb2688856b9ec2fa",
+    "dirty": false,
+    "openapi_sha256": "71f2d54fd3466adb48d9d26eed66afe028ed153262b6eeb57445c5b03b6bd9f7",
+    "binary_mtime": "2026-09-29T04:15:34.033Z"
+  },
+  "request": {
+    "method": "GET",
+    "path": "/api/observability/finops/spend-calendar",
+    "query": {
+      "month": "{anchorMonth}"
+    }
+  },
+  "status": 200,
+  "content_type": "application/json",
+  "body": {
+    "data": {
+      "days": [
+        {
+          "date": "2026-09-01",
+          "spend_usd": 5.716231,
+          "operations": 361,
+          "intensity": 0.6202753928812721
+        },
+        {
+          "date": "2026-09-02",
+          "spend_usd": 4.737273,
+          "operations": 365,
+          "intensity": 0.514047432873311
+        },
+        {
+          "date": "2026-09-03",
+          "spend_usd": 6.693699,
+          "operations": 397,
+          "intensity": 0.7263416711210539
+        },
+        {
+          "date": "2026-09-04",
+          "spend_usd": 6.29442,
+          "operations": 458,
+          "intensity": 0.6830154062107942
+        },
+        {
+          "date": "2026-09-05",
+          "spend_usd": 3.481315,
+          "operations": 194,
+          "intensity": 0.3777618555598023
+        },
+        {
+          "date": "2026-09-06",
+          "spend_usd": 3.144539,
+          "operations": 206,
+          "intensity": 0.34121786954646866
+        },
+        {
+          "date": "2026-09-07",
+          "spend_usd": 6.402854,
+          "operations": 452,
+          "intensity": 0.6947817155064979
+        },
+        {
+          "date": "2026-09-08",
+          "spend_usd": 6.937953,
+          "operations": 409,
+          "intensity": 0.7528459789093188
+        },
+        {
+          "date": "2026-09-09",
+          "spend_usd": 4.132066,
+          "operations": 373,
+          "intensity": 0.4483756624883327
+        },
+        {
+          "date": "2026-09-10",
+          "spend_usd": 5.829782,
+          "operations": 422,
+          "intensity": 0.6325969542627242
+        },
+        {
+          "date": "2026-09-11",
+          "spend_usd": 6.045282,
+          "operations": 404,
+          "intensity": 0.6559811294589181
+        },
+        {
+          "date": "2026-09-12",
+          "spend_usd": 2.04457,
+          "operations": 176,
+          "intensity": 0.22185885420362852
+        },
+        {
+          "date": "2026-09-13",
+          "spend_usd": 5.823558,
+          "operations": 228,
+          "intensity": 0.6319215802190071
+        },
+        {
+          "date": "2026-09-14",
+          "spend_usd": 4.749847,
+          "operations": 380,
+          "intensity": 0.5154118533787265
+        },
+        {
+          "date": "2026-09-15",
+          "spend_usd": 4.178348,
+          "operations": 389,
+          "intensity": 0.4533977803371972
+        },
+        {
+          "date": "2026-09-16",
+          "spend_usd": 4.39895,
+          "operations": 353,
+          "intensity": 0.4773355799503328
+        },
+        {
+          "date": "2026-09-17",
+          "spend_usd": 4.222585,
+          "operations": 395,
+          "intensity": 0.45819799267201833
+        },
+        {
+          "date": "2026-09-18",
+          "spend_usd": 5.652332,
+          "operations": 430,
+          "intensity": 0.6133416322740252
+        },
+        {
+          "date": "2026-09-19",
+          "spend_usd": 2.535346,
+          "operations": 177,
+          "intensity": 0.2751135733038011
+        },
+        {
+          "date": "2026-09-20",
+          "spend_usd": 7.663721,
+          "operations": 284,
+          "intensity": 0.8315999745649629
+        },
+        {
+          "date": "2026-09-21",
+          "spend_usd": 4.566618,
+          "operations": 379,
+          "intensity": 0.4955294448542556
+        },
+        {
+          "date": "2026-09-22",
+          "spend_usd": 5.903678,
+          "operations": 396,
+          "intensity": 0.6406155018743153
+        },
+        {
+          "date": "2026-09-23",
+          "spend_usd": 5.439067,
+          "operations": 373,
+          "intensity": 0.5901999797300985
+        },
+        {
+          "date": "2026-09-24",
+          "spend_usd": 9.215634,
+          "operations": 439,
+          "intensity": 1
+        },
+        {
+          "date": "2026-09-25",
+          "spend_usd": 5.153264,
+          "operations": 386,
+          "intensity": 0.5591871378572544
+        },
+        {
+          "date": "2026-09-26",
+          "spend_usd": 3.658789,
+          "operations": 202,
+          "intensity": 0.3970197818185927
+        },
+        {
+          "date": "2026-09-27",
+          "spend_usd": 3.57982,
+          "operations": 192,
+          "intensity": 0.3884507566164201
+        },
+        {
+          "date": "2026-09-28",
+          "spend_usd": 5.043874,
+          "operations": 405,
+          "intensity": 0.5473170918029087
+        },
+        {
+          "date": "2026-09-29",
+          "spend_usd": 0.023982,
+          "operations": 14,
+          "intensity": 0.002602316888886866
+        }
+      ],
+      "highlighted_dates": []
+    },
+    "status_code": 200,
+    "message": "Spend calendar retrieved successfully"
+  }
+}

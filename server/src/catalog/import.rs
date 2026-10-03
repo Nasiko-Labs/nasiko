@@ -76,7 +76,12 @@ pub(crate) fn agent_metadata_from_card(card: &serde_json::Value) -> AgentMetadat
         // import 500'd after the agent row had already committed. Matches the
         // slug rule registry publishers apply, so a round-trip through the
         // registry keeps one stable name.
-        name: slugify(card.get("name").and_then(|v| v.as_str()).unwrap_or("agent")),
+        name: crate::agents::image_name_slug(
+            card.get("name").and_then(|v| v.as_str()).unwrap_or("agent"),
+        ),
+        // (`build_image_tag` slugifies the image reference's own name segment
+        // too; the catalog row is slugified here so the stored name and the
+        // image it resolves to never drift apart.)
         // The human-readable original is preserved here for the UI.
         display_name: card.get("name").and_then(|v| v.as_str()).map(String::from),
         description: card
@@ -742,22 +747,6 @@ async fn effective_allowed_hosts(state: &AppState) -> Vec<String> {
     allowed
 }
 
-/// Lowercase a display name into an OCI-safe repository component.
-///
-/// Registry publishers apply the same rule before pushing, so a name survives
-/// publish → import unchanged and a re-import updates the existing agent
-/// instead of registering a second one under a differently-cased name.
-fn slugify(name: &str) -> String {
-    let s: String = name
-        .to_lowercase()
-        .replace(' ', "-")
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
-        .collect();
-    let s = s.trim_matches('-').to_string();
-    if s.is_empty() { "agent".to_string() } else { s }
-}
-
 /// Split an OCI reference into `(repo_with_host, tag)`, defaulting the tag to
 /// `latest`.
 ///
@@ -1203,7 +1192,7 @@ pub(crate) async fn import_registry(
 mod tests {
     use super::{
         BUILTIN_ALLOWED_REGISTRY_HOSTS, agent_card_from_manifest, agent_metadata_from_card,
-        find_owned_agent, read_agent_card, registry_url_host, slugify, split_reference_tag,
+        find_owned_agent, read_agent_card, registry_url_host, split_reference_tag,
         validate_registry_host,
     };
 
@@ -1452,30 +1441,17 @@ mod tests {
     }
 
     // ─── Card name slugification ────────────────────────────────────────────
+    // The rule itself is `agents::image_name_slug` and is tested there; this
+    // covers only that the card's name reaches the catalog row through it.
 
     #[test]
-    fn display_names_become_oci_safe_repository_components() {
-        // "Infrastructure Manager" previously reached build_image_tag verbatim,
-        // producing `nasiko/Infrastructure Manager:1.0.0` — an invalid reference
-        // that made docker fail *after* the agent row had committed.
-        assert_eq!(slugify("Infrastructure Manager"), "infrastructure-manager");
-        assert_eq!(slugify("infrastructure_manager"), "infrastructure_manager");
-        assert_eq!(slugify("Code Reviewer 2.0"), "code-reviewer-20");
-    }
-
-    #[test]
-    fn slugify_never_yields_an_empty_name() {
-        // An empty repo component is as invalid as a spaced one.
-        assert_eq!(slugify("---"), "agent");
-        assert_eq!(slugify(""), "agent");
-    }
-
-    #[test]
-    fn slugified_names_are_stable_across_a_publish_import_round_trip() {
-        // Publish slugifies before pushing; import must land on the same name,
-        // otherwise a re-import creates a second agent instead of updating one.
-        let published = "infrastructure-manager";
-        assert_eq!(slugify("Infrastructure Manager"), published);
-        assert_eq!(slugify(published), published);
+    fn card_display_name_lands_in_the_catalog_slugified() {
+        let meta = agent_metadata_from_card(&serde_json::json!({
+            "name": "Infrastructure Manager",
+            "version": "1.0.0",
+        }));
+        assert_eq!(meta.name, "infrastructure-manager");
+        // The human-readable original survives for the UI.
+        assert_eq!(meta.display_name.as_deref(), Some("Infrastructure Manager"));
     }
 }

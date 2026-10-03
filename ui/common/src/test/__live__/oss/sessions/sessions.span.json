@@ -1,0 +1,134 @@
+{
+  "fixture_version": 1,
+  "id": "sessions.span",
+  "recorded_at": "2026-09-29T08:53:59.310Z",
+  "window": {
+    "start": "2026-09-29T08:53:59.310Z",
+    "end": "2026-09-29T08:53:59.338Z"
+  },
+  "anchor": "2026-09-29T08:53:49.244Z",
+  "edition": "oss",
+  "identity": "admin",
+  "server": {
+    "sha": "ea233d201502a205e78339a7cb2688856b9ec2fa",
+    "dirty": false,
+    "openapi_sha256": "71f2d54fd3466adb48d9d26eed66afe028ed153262b6eeb57445c5b03b6bd9f7",
+    "binary_mtime": "2026-09-29T04:15:34.033Z"
+  },
+  "request": {
+    "method": "GET",
+    "path": "/api/observability/span/{trace0}/{span0}",
+    "query": {}
+  },
+  "status": 200,
+  "content_type": "application/json",
+  "body": {
+    "data": {
+      "span": {
+        "id": "U3Bhbjo4MjQ4NjJjNzY3Nzc1OTE1",
+        "span_id": "824862c767775915",
+        "trace": {
+          "id": "VHJhY2U6NWVlZDgxNTAzNzBmMjE3ZTVhNjRiNTJhOTNjY2I1ZDQ=",
+          "trace_id": "5eed8150370f217e5a64b52a93ccb5d4"
+        },
+        "name": "planner",
+        "span_kind": "server",
+        "status_code": "UNSET",
+        "code": "UNSET",
+        "status_message": "",
+        "start_time": "2026-09-29T08:29:18.366Z",
+        "end_time": "2026-09-29T08:29:22.766Z",
+        "parent_id": null,
+        "latency_ms": 4400,
+        "token_count_total": 0,
+        "provider": null,
+        "model": null,
+        "cache_read_tokens": 0,
+        "cache_creation_tokens": 0,
+        "cost_summary": {
+          "total": {
+            "cost": 0,
+            "tokens": 0
+          },
+          "prompt": {
+            "cost": 0,
+            "tokens": 0
+          },
+          "completion": {
+            "cost": 0,
+            "tokens": 0
+          },
+          "cache_read": {
+            "cost": 0,
+            "tokens": 0
+          },
+          "cache_creation": {
+            "cost": 0,
+            "tokens": 0
+          }
+        },
+        "input": {
+          "value": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"Prep notes for the Acme renewal call\"}]}]",
+          "mime_type": "json",
+          "parsed_value": [
+            {
+              "parts": [
+                {
+                  "content": "Prep notes for the Acme renewal call",
+                  "type": "text"
+                }
+              ],
+              "role": "user"
+            }
+          ]
+        },
+        "output": {
+          "value": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"Prepared the brief.\"}]}]",
+          "mime_type": "json",
+          "parsed_value": [
+            {
+              "parts": [
+                {
+                  "content": "Prepared the brief.",
+                  "type": "text"
+                }
+              ],
+              "role": "assistant"
+            }
+          ]
+        },
+        "attributes": {
+          "gen_ai": {
+            "agent": {
+              "name": "seed-sales-assistant"
+            },
+            "input": {
+              "messages": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"Prep notes for the Acme renewal call\"}]}]"
+            },
+            "operation": {
+              "name": "invoke_agent"
+            },
+            "output": {
+              "messages": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"Prepared the brief.\"}]}]"
+            }
+          },
+          "session": {
+            "id": "5eed-sess-sales-assistant-2026-09-29"
+          }
+        },
+        "events": [],
+        "span_annotations": [],
+        "span_annotation_summaries": [],
+        "document_retrieval_metrics": [],
+        "document_evaluations": [],
+        "project": {
+          "id": "",
+          "annotation_configs": {
+            "configs": [],
+            "edges": []
+          }
+        }
+      }
+    }
+  }
+}

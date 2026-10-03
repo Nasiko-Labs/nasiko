@@ -1,0 +1,25 @@
+{
+  "fixture_version": 1,
+  "id": "errors.requires-admin",
+  "source": "hand-written",
+  "cites": "nasiko-cloud-rs ea233d20 oss/server/src/auth/rbac.rs require_user_manager: (StatusCode::FORBIDDEN, \"requires admin role\").into_response()",
+  "recorded_at": null,
+  "window": null,
+  "anchor": null,
+  "edition": "oss",
+  "identity": "non-admin",
+  "server": {
+    "sha": "ea233d20",
+    "dirty": false,
+    "openapi_sha256": null,
+    "binary_mtime": null
+  },
+  "request": {
+    "method": "GET",
+    "path": "/api/users/me",
+    "query": {}
+  },
+  "status": 403,
+  "content_type": "text/plain",
+  "body": "requires admin role"
+}

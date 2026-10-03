@@ -83,16 +83,21 @@ pub async fn plan_maf(
         .iter()
         .map(|a| {
             let desc = a.description.as_deref().unwrap_or("no description");
-            format!("  id: {}  name: \"{}\"  description: \"{}\"", a.id, a.name, desc)
+            format!(
+                "  id: {}  name: \"{}\"  description: \"{}\"",
+                a.id, a.name, desc
+            )
         })
         .collect::<Vec<_>>()
         .join("\n");
 
-    let user_msg = format!(
-        "Available agents:\n{agent_table}\n\nWorkflow description:\n{description}"
-    );
+    let user_msg =
+        format!("Available agents:\n{agent_table}\n\nWorkflow description:\n{description}");
 
-    let messages = vec![ChatMessage::system(SYSTEM_PROMPT), ChatMessage::user(user_msg)];
+    let messages = vec![
+        ChatMessage::system(SYSTEM_PROMPT),
+        ChatMessage::user(user_msg),
+    ];
 
     let (json, _tokens) = llm.chat_json(messages).await?;
     let raw: RawMafPlan =
@@ -114,7 +119,10 @@ pub async fn plan_maf(
         };
 
         let agent = agent.ok_or_else(|| {
-            format!("step {i}: '{}' does not match any available agent", step.agent_id)
+            format!(
+                "step {i}: '{}' does not match any available agent",
+                step.agent_id
+            )
         })?;
 
         steps.push(PlannedStep {

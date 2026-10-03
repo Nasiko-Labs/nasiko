@@ -438,9 +438,16 @@ async fn create_session(
         _ => "New chat".to_string(),
     };
 
+    // No agent resolved above means the caller is chatting with the
+    // orchestrator, which picks the agent per turn.
+    let session_type = if agent_id.is_some() {
+        "direct_chat"
+    } else {
+        "orchestrator"
+    };
     let result = sqlx::query_as::<_, ChatSession>(
-        r#"INSERT INTO chat_sessions (session_id, user_id, agent_id, agent_url, title)
-           VALUES ($1, $2, $3, $4, $5)
+        r#"INSERT INTO chat_sessions (session_id, user_id, agent_id, agent_url, title, session_type)
+           VALUES ($1, $2, $3, $4, $5, $6)
            RETURNING *"#,
     )
     .bind(&session_id)
@@ -448,6 +455,7 @@ async fn create_session(
     .bind(agent_id)
     .bind(&agent_url)
     .bind(&title)
+    .bind(session_type)
     .fetch_one(&state.db)
     .await;
 

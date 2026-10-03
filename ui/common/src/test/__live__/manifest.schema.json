@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "manifest.schema.json",
+  "title": "Live contract manifest (plans/feat-live-contract.md §4)",
+  "type": "object",
+  "required": ["strict", "endpoints"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "strict": { "type": "boolean", "description": "false while the inventory scanner is report-only" },
+    "endpoints": { "type": "array", "items": { "$ref": "#/$defs/endpoint" } }
+  },
+  "$defs": {
+    "endpoint": {
+      "type": "object",
+      "required": ["id", "feature", "method", "path"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9]+(\\.[a-z0-9-]+)+$", "description": "feature.name; also the fixture file name" },
+        "feature": { "enum": ["shell", "tokenops", "sessions", "agents", "chat", "harnesses", "router", "mcp", "ee", "errors"] },
+        "method": { "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"] },
+        "path": { "type": "string", "pattern": "^/", "description": "may contain {tokens} resolved from the seed (see tokens() in scripts/record-live.ts)" },
+        "query": { "type": "object", "additionalProperties": { "type": "string" } },
+        "auth": { "enum": ["admin", "none", "member"], "default": "admin", "description": "member = the EE seed member seed-ee-member (EE only)" },
+        "editions": { "type": "array", "items": { "enum": ["oss", "ee"] }, "minItems": 1, "default": ["oss"] },
+        "window": { "enum": ["hour", "day"], "description": "re-issue once if the request crossed this boundary" },
+        "values": {
+          "description": "compare values too, where live and mock derive from the same seed",
+          "oneOf": [{ "type": "boolean" }, { "type": "object", "additionalProperties": false, "properties": { "ignore": { "type": "array", "items": { "type": "string" } }, "tolerance": { "type": "number" } } }]
+        },
+        "map_paths": { "type": "array", "items": { "type": "string" }, "description": "objects keyed by data: compare value shapes only" },
+        "placeholders": { "type": "array", "items": { "type": "string" }, "description": "paths of server-generated ids scrubbed to placeholders" },
+        "allow": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["path", "reason", "since"],
+            "additionalProperties": false,
+            "properties": { "path": { "type": "string" }, "reason": { "type": "string", "minLength": 10 }, "since": { "type": "string" } }
+          }
+        },
+        "absent": { "type": "boolean", "description": "proposed endpoint: recorded to prove it answers the unknown-route 404" },
+        "no_replay": { "type": "string", "minLength": 10, "description": "recorded as a server shape, never replayed against the mocks, with the reason" },
+        "hand_written": { "type": "string", "description": "not recorded: the fixture is written by hand, citing this source" },
+        "excluded": { "type": "string", "minLength": 10, "description": "not recorded, with the reason" },
+        "replay_path": { "type": "string", "pattern": "^/", "description": "replay against this mock path instead (tokens allowed); needs replay_reason" },
+        "replay_reason": { "type": "string", "minLength": 10 },
+        "traces": { "type": "boolean", "description": "needs the seed's traces in Tempo; recorded as source no-trace-data when they never became searchable (plan §6)" }
+      }
+    }
+  },
+  "examples": [
+    {
+      "strict": false,
+      "endpoints": [
+        {
+          "id": "tokenops.dashboard-30d",
+          "feature": "tokenops",
+          "method": "GET",
+          "path": "/api/observability/finops/dashboard",
+          "query": { "range": "30d", "view": "agent" },
+          "allow": [{ "path": "$.data.summary.example_field", "reason": "mock models a newer contract (R-L10)", "since": "2026-09-28" }]
+        }
+      ]
+    }
+  ]
+}

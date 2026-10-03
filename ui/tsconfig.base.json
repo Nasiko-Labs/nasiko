@@ -1,0 +1,31 @@
+{
+  "//": "Shared by every edition's tsc program (oss/tsconfig.json, ee/web/tsconfig.json).",
+  "compilerOptions": {
+    "target": "es2023",
+    "lib": [
+      "ES2023",
+      "DOM"
+    ],
+    "module": "esnext",
+    "types": [
+      "vite/client",
+      "vitest/globals",
+      "@testing-library/jest-dom"
+    ],
+    "allowArbitraryExtensions": true,
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "allowJs": true,
+    "checkJs": false,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "erasableSyntaxOnly": true,
+    "noFallthroughCasesInSwitch": true
+  }
+}

@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
@@ -92,6 +94,28 @@ pub trait HitlStore: Send + Sync {
         maf_execution_id: Uuid,
         owner_user_id: Uuid,
     ) -> Result<Vec<HitlRequest>, HitlError>;
+    /// The same rows as [`HitlStore::list_for_maf_execution`], for a whole page of executions at
+    /// once, keyed by `maf_execution_id` — the discovery path for the two execution *list*
+    /// endpoints, which would otherwise issue one query per row. `owner_user_id` carries the same
+    /// requirement as the single-execution method: it must be the value the caller already
+    /// validated against `maf_executions.user_id`.
+    ///
+    /// The default implementation loops, which is correct but issues one query per id; a real
+    /// store overrides it with a single batched query.
+    async fn list_for_maf_executions(
+        &self,
+        maf_execution_ids: &[Uuid],
+        owner_user_id: Uuid,
+    ) -> Result<HashMap<Uuid, Vec<HitlRequest>>, HitlError> {
+        let mut out: HashMap<Uuid, Vec<HitlRequest>> = HashMap::new();
+        for id in maf_execution_ids {
+            let rows = self.list_for_maf_execution(*id, owner_user_id).await?;
+            if !rows.is_empty() {
+                out.insert(*id, rows);
+            }
+        }
+        Ok(out)
+    }
     /// The exact `UPDATE ... WHERE status = 'pending' RETURNING *` from §5. `status` is the
     /// human's decision (`Resolved` or, for future `tool_approval` rejects, `Rejected`).
     async fn resolve(
@@ -582,6 +606,36 @@ impl HitlStore for PgHitlStore {
         .fetch_all(&self.pool)
         .await?;
         rows.into_iter().map(HitlRequest::try_from).collect()
+    }
+
+    /// One query for the whole page, rather than the trait's default loop. Empty in, empty out —
+    /// `= ANY('{}')` would be a pointless round trip for a page of runs that never paused.
+    async fn list_for_maf_executions(
+        &self,
+        maf_execution_ids: &[Uuid],
+        owner_user_id: Uuid,
+    ) -> Result<HashMap<Uuid, Vec<HitlRequest>>, HitlError> {
+        if maf_execution_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let rows: Vec<HitlRequestRow> = sqlx::query_as(
+            "SELECT * FROM hitl_requests \
+             WHERE maf_execution_id = ANY($1) AND owner_user_id = $2 ORDER BY created_at",
+        )
+        .bind(maf_execution_ids)
+        .bind(owner_user_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut out: HashMap<Uuid, Vec<HitlRequest>> = HashMap::new();
+        for row in rows {
+            let row = HitlRequest::try_from(row)?;
+            // `maf_execution_id` is the column just filtered on, so it is never NULL here.
+            if let Some(exec_id) = row.maf_execution_id {
+                out.entry(exec_id).or_default().push(row);
+            }
+        }
+        Ok(out)
     }
 
     async fn resolve(

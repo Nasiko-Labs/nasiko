@@ -9,6 +9,7 @@ members = [
     "secrets",
     "observability",
     "pricing",
+    "savings",
     "runtime",
     "react-agent",
     "orchestrator",
@@ -39,6 +40,7 @@ nasiko-compress = { path = "compress" }
 nasiko-tool-compact = { path = "tool-compact" }
 nasiko-config = { path = "config" }
 nasiko-pricing = { path = "pricing" }
+nasiko-savings = { path = "savings" }
 nasiko-flow = { path = "flow" }
 nasiko-hitl = { path = "hitl" }
 nasiko-agent-proxy = { path = "agent-proxy" }
@@ -165,6 +167,7 @@ dotenvy = "0.15"
 # ─── Embedding / registry ──────────────────────────────────────────────────
 rust-embed = { version = "8", features = ["mime-guess", "include-exclude", "interpolate-folder-path"] }
 mime_guess = "2"
+percent-encoding = "2"
 
 mockito = "1"
 

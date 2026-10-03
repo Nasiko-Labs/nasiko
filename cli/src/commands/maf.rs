@@ -11,6 +11,319 @@ use serde_json::{Value, json};
 use crate::api::{Client, unwrap_data};
 use crate::commands::agents::resolve_agent_id;
 
+// ─── End-to-end trace ───────────────────────────────────────────────────────
+
+/// `nasiko maf trace "<instruction>"` — the whole MAF pipeline in one command.
+///
+/// Creates a workflow from one compound instruction, runs it, and reports every
+/// stage as it happens: how the decomposer split the sentence, which agent the
+/// routing engine gave each step, each step's outcome as it lands, and the
+/// closing token/cost breakdown.
+///
+/// This exists because no single existing subcommand answers "is MAF working
+/// end to end" — `workflow create`, `workflow run --wait` and `execution get`
+/// each show one stage, and a failure in the seam between them is invisible
+/// until you run all three by hand and compare.
+pub fn trace(
+    instruction: &str,
+    content: Option<&str>,
+    cleanup: bool,
+    json_out: bool,
+) -> Result<()> {
+    let client = Client::from_active_cluster()?;
+
+    let (workflow, decompose_secs) = create_from_instruction(&client, instruction)?;
+    let workflow_id = workflow
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let steps = planned_steps(&workflow);
+
+    if !json_out {
+        print_plan(&workflow, &steps, decompose_secs);
+    }
+
+    let exec_id = queue_run(&client, &workflow_id, content)?;
+    let execution = poll_with_step_progress(&client, &exec_id, &steps, json_out)?;
+
+    if json_out {
+        let combined = json!({ "workflow": workflow, "execution": execution });
+        println!("{}", serde_json::to_string_pretty(&combined)?);
+    } else {
+        print_trace_summary(&client, &execution, &exec_id);
+        print_followups(&client, &workflow_id, cleanup)?;
+    }
+
+    // A failed run is reported in full above and *then* fails the command, so
+    // the details stay on screen and the exit code still tells a script the
+    // truth.
+    if execution.get("status").and_then(Value::as_str) == Some("failed") {
+        anyhow::bail!("execution failed");
+    }
+    Ok(())
+}
+
+/// Creates the workflow, returning it with how long the call took.
+///
+/// The elapsed time is worth surfacing on its own: this is the one stage that
+/// depends on an external service (the decomposer at `MODEL_API_URL`), so when
+/// a trace feels slow this number says whether that is where the time went.
+fn create_from_instruction(client: &Client, instruction: &str) -> Result<(Value, f64)> {
+    let spin = nasiko_utils::term::start_status("decomposing instruction");
+    let start = std::time::Instant::now();
+    let resp = client.post_json(
+        "/maf/workflow/from-instruction",
+        &json!({ "instruction": instruction }),
+    );
+    drop(spin);
+    let workflow: Value = unwrap_data(resp?)?;
+    Ok((workflow, start.elapsed().as_secs_f64()))
+}
+
+/// One step of the plan, as stored in the workflow definition.
+struct PlannedStep {
+    index: i64,
+    agent: String,
+    task: String,
+}
+
+fn planned_steps(workflow: &Value) -> Vec<PlannedStep> {
+    let empty = Vec::new();
+    workflow
+        .get("maf_json")
+        .and_then(|m| m.get("steps"))
+        .and_then(Value::as_array)
+        .unwrap_or(&empty)
+        .iter()
+        .map(|s| PlannedStep {
+            index: s.get("step_index").and_then(Value::as_i64).unwrap_or(0),
+            agent: s
+                .get("agent_name")
+                .and_then(Value::as_str)
+                .unwrap_or("?")
+                .to_string(),
+            task: s
+                .get("task_description")
+                .and_then(Value::as_str)
+                .unwrap_or("?")
+                .to_string(),
+        })
+        .collect()
+}
+
+fn print_plan(workflow: &Value, steps: &[PlannedStep], decompose_secs: f64) {
+    let name = workflow.get("name").and_then(Value::as_str).unwrap_or("?");
+    let id = workflow.get("id").and_then(Value::as_str).unwrap_or("?");
+    println!(
+        "\n1. Decomposed into {} step(s) in {decompose_secs:.1}s",
+        steps.len()
+    );
+    println!("\n2. Workflow '{name}' ({id})");
+    for step in steps {
+        println!("     {}. [{}] {}", step.index, step.agent, step.task);
+    }
+}
+
+fn queue_run(client: &Client, workflow_id: &str, content: Option<&str>) -> Result<String> {
+    let resp: Value = unwrap_data(client.post_json(
+        &format!("/maf/workflow/{workflow_id}/run"),
+        &json!({ "content": content }),
+    )?)?;
+    let exec_id = resp
+        .get("execution_id")
+        .and_then(Value::as_str)
+        .unwrap_or("?")
+        .to_string();
+    let number = resp
+        .get("execution_number")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    println!("\n3. Running execution #{number} ({exec_id})");
+    Ok(exec_id)
+}
+
+/// Polls the execution, printing each step the moment it reaches a terminal
+/// state rather than only dumping the lot at the end.
+///
+/// A MAF run is a sequence of agent calls that can each take tens of seconds,
+/// so a silent wait gives no way to tell a slow step from a wedged one. Steps
+/// are reported once each, in the order they finish — which, execution being
+/// sequential, is also step order.
+fn poll_with_step_progress(
+    client: &Client,
+    exec_id: &str,
+    steps: &[PlannedStep],
+    json_out: bool,
+) -> Result<Value> {
+    let mut reported = vec![false; steps.len()];
+    let mut spin = Some(nasiko_utils::term::start_status("waiting for execution"));
+
+    for _ in 0..MAX_POLL_ATTEMPTS {
+        let execution: Value = unwrap_data(client.get_json(&format!("/maf/execution/{exec_id}"))?)?;
+
+        if !json_out {
+            // The spinner owns the current line; drop it before printing a step
+            // and start a fresh one after, or the two interleave.
+            let newly_done = report_finished_steps(&execution, &mut reported, &mut spin);
+            if newly_done {
+                spin = Some(nasiko_utils::term::start_status("waiting for execution"));
+            }
+        }
+
+        match execution.get("status").and_then(Value::as_str) {
+            Some("success") | Some("failed") => {
+                drop(spin);
+                return Ok(execution);
+            }
+            _ => {}
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
+
+    drop(spin);
+    anyhow::bail!(
+        "still running after {}s — the run continues server-side. Check it with: \
+nasiko maf execution result {exec_id}",
+        MAX_POLL_ATTEMPTS as u64 * POLL_INTERVAL.as_secs()
+    )
+}
+
+/// Prints any step that has finished since the last poll. Returns whether it
+/// printed anything, so the caller knows to restart its spinner.
+fn report_finished_steps(
+    execution: &Value,
+    reported: &mut [bool],
+    spin: &mut Option<nasiko_utils::term::StatusHandle>,
+) -> bool {
+    let empty = Vec::new();
+    let results = execution
+        .get("step_results")
+        .and_then(Value::as_array)
+        .unwrap_or(&empty);
+
+    let mut printed = false;
+    for step in results {
+        let idx = step.get("step_index").and_then(Value::as_i64).unwrap_or(0) as usize;
+        let status = step
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("pending");
+        if idx >= reported.len() || reported[idx] || !matches!(status, "success" | "failed") {
+            continue;
+        }
+        if !printed {
+            spin.take();
+            printed = true;
+        }
+        reported[idx] = true;
+        let agent = step
+            .get("agent_name")
+            .and_then(Value::as_str)
+            .unwrap_or("?");
+        let latency = step.get("latency_ms").and_then(Value::as_i64).unwrap_or(0);
+        let tokens = step.get("tokens_used").and_then(Value::as_i64).unwrap_or(0);
+        println!("     {idx}. [{agent}] {status}  {latency}ms  {tokens} tokens");
+        if let Some(Value::String(error)) = step.get("error")
+            && !error.is_empty()
+        {
+            println!("        error: {error}");
+        }
+    }
+    printed
+}
+
+fn print_trace_summary(client: &Client, execution: &Value, exec_id: &str) {
+    let status = execution
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("?");
+    let duration = execution
+        .get("duration_ms")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    let tokens = execution
+        .get("tokens_used")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    println!("\n4. Result: {status}  {duration}ms  {tokens} orchestration tokens");
+
+    print_agent_usage(client, exec_id);
+
+    if let Some(Value::String(output)) = execution.get("output")
+        && !output.is_empty()
+    {
+        println!("\n   output:\n{output}");
+    }
+    if let Some(Value::String(error)) = execution.get("error")
+        && !error.is_empty()
+    {
+        println!("\n   error: {error}");
+    }
+}
+
+/// Prints the per-step agent-side token figures.
+///
+/// These are served separately from the execution row because collecting them
+/// inline costs seconds per step, so they are only ever available from this
+/// endpoint. A step shows `-` when its agent emits no instrumented spans: that
+/// is unknown, not zero, and printing `0` would read as a fact.
+fn print_agent_usage(client: &Client, exec_id: &str) {
+    let Ok(raw) = client.get_json(&format!("/maf/execution/{exec_id}/usage")) else {
+        return;
+    };
+    let Ok(usage) = unwrap_data::<Value>(raw) else {
+        return;
+    };
+    let empty = Vec::new();
+    let steps = usage
+        .get("steps")
+        .and_then(Value::as_array)
+        .unwrap_or(&empty);
+    if steps.is_empty() {
+        return;
+    }
+
+    println!("\n   agent-side usage:");
+    for step in steps {
+        let idx = step.get("step_index").and_then(Value::as_i64).unwrap_or(0);
+        let agent = step
+            .get("agent_name")
+            .and_then(Value::as_str)
+            .unwrap_or("?");
+        let resolved = step
+            .get("resolved")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if resolved {
+            let input = step
+                .get("input_tokens")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            let output = step
+                .get("output_tokens")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            let model = step.get("model").and_then(Value::as_str).unwrap_or("?");
+            println!("     {idx}. [{agent}] in={input} out={output} model={model}");
+        } else {
+            println!("     {idx}. [{agent}] - (agent emits no instrumented spans)");
+        }
+    }
+}
+
+fn print_followups(client: &Client, workflow_id: &str, cleanup: bool) -> Result<()> {
+    if cleanup {
+        client.delete(&format!("/maf/workflow/{workflow_id}"))?;
+        println!("\nDeleted workflow {workflow_id}");
+        return Ok(());
+    }
+    println!("\nWorkflow kept: {workflow_id}");
+    println!("   re-run:  nasiko maf workflow run {workflow_id} --wait");
+    println!("   delete:  nasiko maf workflow delete {workflow_id}");
+    Ok(())
+}
+
 // ─── Workflow commands ──────────────────────────────────────────────────────
 
 /// `nasiko maf workflow list` — list your MAF workflows.
@@ -50,14 +363,28 @@ pub fn workflow_list(json_out: bool) -> Result<()> {
 /// `nasiko maf workflow create --step "..." [--step "..."] [--agent ...]` — define a new
 /// workflow. Steps run in the order given; an omitted (or "-") `--agent` for a step lets the
 /// routing engine auto-assign it.
+///
+/// `--instruction "..."` is the alternative, mutually-exclusive form: sends one compound
+/// sentence to the decomposer service, which splits it into atomic steps server-side (each
+/// then auto-assigned an agent) — see `POST /maf/workflow/from-instruction` in
+/// `oss/server/src/maf.rs`.
 pub fn workflow_create(
     name: Option<&str>,
     description: Option<&str>,
     steps: &[String],
     agents: &[String],
+    instruction: Option<&str>,
 ) -> Result<()> {
+    let client = Client::from_active_cluster()?;
+
+    if let Some(instruction) = instruction {
+        let body = json!({ "instruction": instruction });
+        let resp: Value = unwrap_data(client.post_json("/maf/workflow/from-instruction", &body)?)?;
+        return print_created(&resp, None);
+    }
+
     if steps.is_empty() {
-        anyhow::bail!("at least one --step is required");
+        anyhow::bail!("at least one --step or --instruction is required");
     }
     let step_bodies = build_step_bodies(steps, agents)?;
     let body = json!({
@@ -66,14 +393,25 @@ pub fn workflow_create(
         "steps": step_bodies,
     });
 
-    let client = Client::from_active_cluster()?;
     let resp: Value = unwrap_data(client.post_json("/maf/workflows", &body)?)?;
+    print_created(&resp, Some(steps.len()))
+}
+
+/// Prints the `Created workflow '<name>' (<id>) with N step(s)` confirmation line.
+/// `known_step_count` is `None` when the step count isn't known client-side (the
+/// `--instruction` path — the decomposer decides it server-side), so it's read back
+/// from the response's `maf_json.steps` instead.
+fn print_created(resp: &Value, known_step_count: Option<usize>) -> Result<()> {
     let id = resp.get("id").and_then(Value::as_str).unwrap_or("?");
     let created_name = resp.get("name").and_then(Value::as_str).unwrap_or("?");
-    println!(
-        "Created workflow '{created_name}' ({id}) with {} step(s)",
-        steps.len()
-    );
+    let step_count = known_step_count.unwrap_or_else(|| {
+        resp.get("maf_json")
+            .and_then(|m| m.get("steps"))
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .unwrap_or(0)
+    });
+    println!("Created workflow '{created_name}' ({id}) with {step_count} step(s)");
     Ok(())
 }
 
@@ -230,13 +568,15 @@ pub fn workflow_delete(workflow: &str, force: bool) -> Result<()> {
     Ok(())
 }
 
-/// `nasiko maf workflow run <name|id> [--wait]` — queue a run; with `--wait`, poll until it
-/// finishes and print the result.
-pub fn workflow_run(workflow: &str, wait: bool) -> Result<()> {
+/// `nasiko maf workflow run <name|id> [--wait] [--content "..."]` — queue a run; with `--wait`,
+/// poll until it finishes and print the result. `--content` is run-time data folded into step
+/// 0's task description before planning, so the same saved workflow can be re-run against
+/// different input each time instead of baking it in at creation.
+pub fn workflow_run(workflow: &str, wait: bool, content: Option<&str>) -> Result<()> {
     let client = Client::from_active_cluster()?;
     let id = resolve_workflow_id(&client, workflow)?;
-    let resp: Value =
-        unwrap_data(client.post_json(&format!("/maf/workflow/{id}/run"), &json!({}))?)?;
+    let body = json!({ "content": content });
+    let resp: Value = unwrap_data(client.post_json(&format!("/maf/workflow/{id}/run"), &body)?)?;
     let exec_id = resp
         .get("execution_id")
         .and_then(Value::as_str)

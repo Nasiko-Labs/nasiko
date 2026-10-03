@@ -55,3 +55,6 @@ _to_delete/
 # source, and it accumulates. To keep one durably, `git add -f` it or copy it
 # out; `--compare` takes any directory of .dsl files.
 ui/tests/fixtures/runs/
+
+# Private React/Next migration workspace; do not force-add before release approval.
+/react/
