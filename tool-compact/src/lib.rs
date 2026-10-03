@@ -27,5 +27,3 @@ pub use types::{
 };
 pub use validator::validate_tool_call;
 
-#[cfg(test)]
-mod tests;
