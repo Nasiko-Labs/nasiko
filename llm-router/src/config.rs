@@ -101,6 +101,19 @@ pub struct GatewayConfig {
     /// retuned. Default 0.80.
     pub salience_high_threshold: f64,
 
+    /// Request-type classifier backend used at Level 3: `regex` (default — the keyword
+    /// classifier, behaviour unchanged) or `nb` (local naive Bayes trained at startup from
+    /// the embedded labelled set). Env `CLASSIFIER_BACKEND`; an unknown value warns and
+    /// uses `regex`.
+    pub classifier_backend: ClassifierBackend,
+    /// Below this confidence the `nb` backend keeps the regex's label. Env
+    /// `CLASSIFIER_CONFIDENCE_THRESHOLD`, default 0.35 (best 5-fold CV accuracy on the
+    /// training split).
+    pub classifier_confidence_threshold: f32,
+    /// Per-classification budget; past it the router uses the regex result and counts a
+    /// fallback. Env `CLASSIFIER_TIMEOUT_MS`, default 50.
+    pub classifier_timeout_ms: u64,
+
     /// Fleet-wide kill switch for payload compression. Compression is opted into **per agent**
     /// (`agents.compress_enabled`); this only lets an operator stop all of it at once without
     /// editing every agent's row. Default on, so a UI toggle takes effect without a deploy.
@@ -185,6 +198,9 @@ impl Default for GatewayConfig {
             salience_weights_path: String::new(),
             salience_low_threshold: 0.20,
             salience_high_threshold: 0.80,
+            classifier_backend: ClassifierBackend::Regex,
+            classifier_confidence_threshold: 0.35,
+            classifier_timeout_ms: 50,
             compress_kill_switch: true,
             compress_min_bytes: 2048,
             compress_types: nasiko_compress::TypeMask::DEFAULT,
@@ -274,6 +290,24 @@ impl GatewayConfig {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(d.salience_high_threshold),
+            classifier_backend: parse_or_warn(
+                "CLASSIFIER_BACKEND",
+                ClassifierBackend::parse,
+                d.classifier_backend,
+            ),
+            classifier_confidence_threshold: parse_or_warn(
+                "CLASSIFIER_CONFIDENCE_THRESHOLD",
+                |v| match v.trim().parse::<f32>() {
+                    Ok(t) if (0.0..=1.0).contains(&t) => Ok(t),
+                    _ => Err(format!("expected a number in [0, 1], got {v:?}")),
+                },
+                d.classifier_confidence_threshold,
+            ),
+            classifier_timeout_ms: parse_or_warn(
+                "CLASSIFIER_TIMEOUT_MS",
+                |v| v.trim().parse::<u64>(),
+                d.classifier_timeout_ms,
+            ),
             compress_kill_switch: env_flag("TOKEN_COMPRESS_ENABLED", true),
             compress_min_bytes: env_usize("TOKEN_COMPRESS_MIN_BYTES", 2048),
             // A bad label must not silently widen or narrow what gets rewritten, so an
@@ -324,6 +358,27 @@ impl GatewayConfig {
             "gemini" => &self.platform_gemini_api_key,
             "openrouter" => &self.platform_openrouter_api_key,
             _ => "",
+        }
+    }
+}
+
+/// Which [`RequestClassifier`](crate::routing::RequestClassifier) backend Level 3 uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClassifierBackend {
+    /// Keyword regex — the default; routing is identical to before the trait existed.
+    Regex,
+    /// Local naive Bayes, trained at startup from the embedded labelled set.
+    NaiveBayes,
+}
+
+impl ClassifierBackend {
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "regex" => Ok(Self::Regex),
+            "nb" | "naive_bayes" => Ok(Self::NaiveBayes),
+            other => Err(format!(
+                "unknown classifier backend {other:?} (expected regex|nb)"
+            )),
         }
     }
 }
@@ -420,6 +475,27 @@ mod tests {
         assert_eq!(cfg.platform_key_for("openai"), "sk-openai");
         assert_eq!(cfg.platform_key_for("anthropic"), "sk-ant");
         assert_eq!(cfg.platform_key_for("gemini"), "sk-gem");
+    }
+
+    #[test]
+    fn classifier_defaults_to_regex() {
+        let cfg = GatewayConfig::default();
+        assert_eq!(cfg.classifier_backend, ClassifierBackend::Regex);
+        assert_eq!(cfg.classifier_confidence_threshold, 0.35);
+        assert_eq!(cfg.classifier_timeout_ms, 50);
+    }
+
+    #[test]
+    fn classifier_backend_parses_known_values_only() {
+        assert_eq!(
+            ClassifierBackend::parse("regex"),
+            Ok(ClassifierBackend::Regex)
+        );
+        assert_eq!(
+            ClassifierBackend::parse(" NB "),
+            Ok(ClassifierBackend::NaiveBayes)
+        );
+        assert!(ClassifierBackend::parse("hosted").is_err());
     }
 
     #[test]
