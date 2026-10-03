@@ -6,6 +6,7 @@
 //! pool; the real work lives in [`chat_core`], which takes a `&dyn RegistryStore` so
 //! the whole path is testable without a database.
 
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -483,6 +484,8 @@ pub(crate) async fn resolve_routed_request(
             tier3_model: resolved.tier3_model.as_deref(),
             signals: &boundary,
             query: signals.query.as_deref(),
+            request_type_override: classify_at_safe_boundary(ctx, &resolved, &boundary, &signals)
+                .await,
         },
     )
     .await;
@@ -523,6 +526,42 @@ pub(crate) async fn resolve_routed_request(
         flow_id,
         attribution_source,
     })
+}
+
+async fn classify_at_safe_boundary(
+    ctx: &LlmRouterCtx,
+    resolved: &crate::resolver::ResolvedConfig,
+    boundary: &BoundarySignals,
+    signals: &RequestSignals,
+) -> Option<routing::RequestType> {
+    let query = signals.query.as_deref()?;
+    if !resolved.has_llm_config || boundary.conv_id.is_none() || !boundary.is_fireable_boundary() {
+        return None;
+    }
+    let input = routing::ClassifyInput {
+        query,
+        context: None,
+    };
+    let (classification, fell_back) = routing::classifier::classify_with_fallback(
+        ctx.request_classifier.as_ref(),
+        &input,
+        std::time::Duration::from_millis(ctx.cfg.classifier_timeout_ms),
+        ctx.cfg.classifier_min_confidence,
+    )
+    .await;
+    if fell_back {
+        ctx.classifier_fallbacks.fetch_add(1, Ordering::Relaxed);
+    }
+    tracing::info!(
+        target: "nasiko::llm_router::classifier",
+        backend = ctx.request_classifier.name(),
+        request_type = %classification.request_type.as_str(),
+        complexity = classification.complexity,
+        confidence = classification.confidence,
+        fallback = fell_back,
+        "request classifier: boundary decision"
+    );
+    Some(classification.request_type)
 }
 
 /// Derive the model-routing [`BoundarySignals`] from the attributed flow.
@@ -957,6 +996,8 @@ mod tests {
             tier_registry: Arc::new(NoTiers),
             cell_store: Arc::new(crate::routing::InMemoryCellStore::new()),
             salience_gate: Arc::new(crate::routing::AllowAllGate),
+            request_classifier: Arc::new(crate::routing::RegexRequestClassifier),
+            classifier_fallbacks: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             pricing: Arc::new(nasiko_pricing::PricingEngine::new(
                 PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
             )),

@@ -1,0 +1,10 @@
+{
+  "schema_version": "classifier-eval-v1-sample",
+  "examples": [
+    {"id": "pub-01", "query": "Fix typo in this Python comment: # retrun the cached value", "context": "No other files or changes needed.", "request_type": "code_generation", "complexity": 1},
+    {"id": "pub-02", "query": "Explain why this Rust borrow checker error happens.", "context": "fn main() { let x = String::new(); let y = &x; drop(x); println!(\"{y}\"); }", "request_type": "code_understanding", "complexity": 3},
+    {"id": "pub-03", "query": "Design a multi-region event ingestion service with idempotency and a migration plan.", "context": "Must preserve existing clients and tolerate replay.", "request_type": "technical_design", "complexity": 5},
+    {"id": "pub-04", "query": "What is the capital of France?", "context": "", "request_type": "factual_lookup", "complexity": 1},
+    {"id": "pub-05", "query": "Draft a concise outage update for customers.", "context": "Impact lasted 12 minutes.", "request_type": "writing", "complexity": 2}
+  ]
+}

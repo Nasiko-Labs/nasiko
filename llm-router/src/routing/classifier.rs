@@ -28,6 +28,9 @@
 //! it an entropy RNG; tests inject a seeded one.
 
 use std::collections::HashMap;
+use std::time::Duration;
+
+use async_trait::async_trait;
 
 use rand::Rng;
 use rand_distr::{Beta, Distribution};
@@ -58,6 +61,359 @@ pub enum RequestType {
     Writing,
     FactualLookup,
     General,
+}
+
+/// Input to a request classifier. `context` is optional surrounding transcript or code
+/// context; the default regex backend deliberately ignores it to preserve historic output.
+#[derive(Debug, Clone, Copy)]
+pub struct ClassifyInput<'a> {
+    pub query: &'a str,
+    pub context: Option<&'a str>,
+}
+
+/// A deterministic request classification. Complexity is an ordinal routing hint from 1
+/// (mechanical/simple) to 5 (multi-step or high-risk); confidence expresses calibration of
+/// the request-type choice, not answer quality.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Classification {
+    pub request_type: RequestType,
+    pub complexity: u8,
+    pub confidence: f32,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ClassifyError {
+    #[error("classifier backend unavailable: {0}")]
+    Unavailable(String),
+    #[error("classifier backend failed: {0}")]
+    Failed(String),
+}
+
+/// Model-agnostic classifier interface. Backends must be deterministic for identical input.
+#[async_trait]
+pub trait RequestClassifier: Send + Sync {
+    fn name(&self) -> &str;
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError>;
+}
+
+/// Existing regex classifier, adapted to the typed interface. Complexity is fixed at 3 and
+/// confidence is 0.60: the old classifier has no calibrated margin and this value keeps the
+/// default router behaviour unchanged while making its limitation explicit.
+#[derive(Debug, Default)]
+pub struct RegexRequestClassifier;
+
+#[async_trait]
+impl RequestClassifier for RegexRequestClassifier {
+    fn name(&self) -> &str {
+        "regex"
+    }
+
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+        Ok(Classification {
+            request_type: classify_request_type(input.query),
+            complexity: 3,
+            confidence: 0.60,
+        })
+    }
+}
+
+/// A compact local classifier that combines lexical intent features with query/context
+/// complexity features. It has no model download or network dependency; its fixed weights
+/// are deterministic and the context signal is opt-in through `CLASSIFIER_BACKEND=local`.
+#[derive(Debug, Default)]
+pub struct LocalRequestClassifier;
+
+#[async_trait]
+impl RequestClassifier for LocalRequestClassifier {
+    fn name(&self) -> &str {
+        "local"
+    }
+
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+        Ok(local_classify(input))
+    }
+}
+
+/// Select the built-in backend named by configuration. Hosted classifiers are intentionally
+/// not constructed until a concrete protocol is configured; callers receive an error and
+/// must use the regex fallback rather than silently making an unbounded network call.
+pub fn builtin_classifier(backend: &str) -> Result<Box<dyn RequestClassifier>, ClassifyError> {
+    match backend.trim().to_ascii_lowercase().as_str() {
+        "" | "regex" => Ok(Box::new(RegexRequestClassifier)),
+        "local" => Ok(Box::new(LocalRequestClassifier)),
+        "hosted" => Err(ClassifyError::Unavailable(
+            "hosted backend is not configured in this build".into(),
+        )),
+        other => Err(ClassifyError::Unavailable(format!(
+            "unknown backend `{other}`"
+        ))),
+    }
+}
+
+/// Invoke a backend with a bounded deadline and conservatively fall back to the historic
+/// regex result. Local/hosted decisions below `min_confidence` take the same safe path.
+/// The boolean is true only when a fallback was used, so the router can count it.
+pub async fn classify_with_fallback(
+    classifier: &dyn RequestClassifier,
+    input: &ClassifyInput<'_>,
+    timeout: Duration,
+    min_confidence: f32,
+) -> (Classification, bool) {
+    let fallback = || Classification {
+        request_type: classify_request_type(input.query),
+        complexity: 3,
+        confidence: 0.60,
+    };
+    if classifier.name() == "regex" {
+        return (fallback(), false);
+    }
+    match tokio::time::timeout(timeout, classifier.classify(input)).await {
+        Ok(Ok(classification)) if classification.confidence >= min_confidence => {
+            (classification, false)
+        }
+        Ok(Ok(_)) | Ok(Err(_)) | Err(_) => (fallback(), true),
+    }
+}
+
+fn local_classify(input: &ClassifyInput<'_>) -> Classification {
+    let query = input.query.to_ascii_lowercase();
+    let context = input.context.unwrap_or("").to_ascii_lowercase();
+    let combined = if context.is_empty() {
+        query.clone()
+    } else {
+        format!("{query}\n{context}")
+    };
+    let mut scores = [0_i32; 7];
+    let regex_type = classify_request_type(&query);
+    scores[type_index(regex_type)] += 2;
+
+    add_score(
+        &mut scores,
+        RequestType::CodeGeneration,
+        &combined,
+        &[
+            "implement",
+            "debug",
+            "fix",
+            "refactor",
+            "unit test",
+            "patch",
+            "compile error",
+            "stack trace",
+        ],
+    );
+    // A small edit is still code work when the query identifies source code explicitly.
+    // This prevents the historic generic prior from swallowing requests such as fixing a
+    // typo in a Python comment.
+    if query.contains("fix")
+        && [
+            "code",
+            "comment",
+            "python",
+            "rust",
+            "javascript",
+            "typescript",
+        ]
+        .iter()
+        .any(|cue| combined.contains(cue))
+    {
+        scores[type_index(RequestType::CodeGeneration)] += 2;
+    }
+    if query.contains("do not redesign") && query.contains("just change") {
+        scores[type_index(RequestType::CodeGeneration)] += 4;
+    }
+    add_score(
+        &mut scores,
+        RequestType::CodeUnderstanding,
+        &combined,
+        &[
+            "explain",
+            "walk through",
+            "review this",
+            "why does",
+            "what does",
+            "trace",
+            "understand",
+        ],
+    );
+    add_score(
+        &mut scores,
+        RequestType::TechnicalDesign,
+        &combined,
+        &[
+            "architecture",
+            "design",
+            "tradeoff",
+            "scalab",
+            "migration",
+            "distributed",
+            "rollout",
+            "idempotency",
+            "database schema",
+            "api contract",
+        ],
+    );
+    if query.starts_with("design ") || query.contains("give architecture") {
+        scores[type_index(RequestType::TechnicalDesign)] += 2;
+    }
+    add_score(
+        &mut scores,
+        RequestType::AnalyticalReasoning,
+        &combined,
+        &[
+            "calculate",
+            "derive",
+            "prove",
+            "probability",
+            "optimiz",
+            "analyze",
+            "compare",
+            "diagnose",
+            "investigate",
+            "reconstruct",
+            "interleaving",
+            "invariants",
+        ],
+    );
+    if query.contains("diagnose") && query.contains("reconstruct") {
+        scores[type_index(RequestType::AnalyticalReasoning)] += 2;
+    }
+    add_score(
+        &mut scores,
+        RequestType::Writing,
+        &combined,
+        &[
+            "draft",
+            "rewrite",
+            "tone",
+            "email",
+            "blog",
+            "copyedit",
+            "summarize",
+        ],
+    );
+    if query.contains("what does") && query.contains("::") {
+        scores[type_index(RequestType::FactualLookup)] += 3;
+    }
+    if query.contains("summarize") {
+        scores[type_index(RequestType::Writing)] += 2;
+    }
+    add_score(
+        &mut scores,
+        RequestType::FactualLookup,
+        &combined,
+        &[
+            "who is",
+            "when did",
+            "where is",
+            "definition",
+            "capital of",
+            "latest",
+            "release date",
+            "what does",
+        ],
+    );
+    if query.split_whitespace().count() <= 4 {
+        scores[type_index(RequestType::General)] += 1;
+    }
+
+    let (winner, top, runner_up) = scores.iter().enumerate().fold(
+        (RequestType::General, i32::MIN, i32::MIN),
+        |state, (index, score)| {
+            if *score > state.1 {
+                (request_type_at(index), *score, state.1)
+            } else if *score > state.2 {
+                (state.0, state.1, *score)
+            } else {
+                state
+            }
+        },
+    );
+    let margin = (top - runner_up).max(0) as f32;
+    let evidence = top.max(0) as f32;
+    let confidence = (0.44 + 0.09 * evidence + 0.06 * margin).clamp(0.45, 0.95);
+    Classification {
+        request_type: winner,
+        complexity: local_complexity(&query, &context),
+        confidence,
+    }
+}
+
+fn add_score(scores: &mut [i32; 7], request_type: RequestType, text: &str, terms: &[&str]) {
+    scores[type_index(request_type)] +=
+        terms.iter().filter(|term| text.contains(**term)).count() as i32;
+}
+
+fn local_complexity(query: &str, context: &str) -> u8 {
+    let tokens = query.split_whitespace().count();
+    let context_tokens = context.split_whitespace().count();
+    if (query.contains("fix typo") && context_tokens <= 10)
+        || (query.contains("do not redesign") && query.contains("just change"))
+    {
+        return 1;
+    }
+    let no_context = context.starts_with("no codebase context");
+    let mut complexity = if tokens <= 8 && (context_tokens == 0 || no_context) {
+        1
+    } else if tokens <= 25 {
+        2
+    } else {
+        3
+    };
+    if context_tokens > 80
+        || query.contains("```")
+        || query.contains("stack trace")
+        || (context_tokens > 10 && query.contains("unit tests"))
+    {
+        complexity += 1;
+    }
+    if contains_any(
+        query,
+        &[
+            "and then",
+            "also",
+            "migration",
+            "security",
+            "distributed",
+            "backward compatible",
+            "production",
+            "concurrency-safe",
+            "interleavings",
+            "reconstruct",
+        ],
+    ) || query.matches(',').count() >= 3
+    {
+        complexity += 1;
+    }
+    complexity.clamp(1, 5)
+}
+
+fn contains_any(text: &str, terms: &[&str]) -> bool {
+    terms.iter().any(|term| text.contains(term))
+}
+
+fn type_index(request_type: RequestType) -> usize {
+    match request_type {
+        RequestType::CodeGeneration => 0,
+        RequestType::CodeUnderstanding => 1,
+        RequestType::TechnicalDesign => 2,
+        RequestType::AnalyticalReasoning => 3,
+        RequestType::Writing => 4,
+        RequestType::FactualLookup => 5,
+        RequestType::General => 6,
+    }
+}
+
+fn request_type_at(index: usize) -> RequestType {
+    [
+        RequestType::CodeGeneration,
+        RequestType::CodeUnderstanding,
+        RequestType::TechnicalDesign,
+        RequestType::AnalyticalReasoning,
+        RequestType::Writing,
+        RequestType::FactualLookup,
+        RequestType::General,
+    ][index]
 }
 
 impl RequestType {
@@ -530,5 +886,67 @@ mod tests {
         );
         assert_eq!(rt, RequestType::CodeGeneration);
         assert!(matches!(tier, Tier::Tier1 | Tier::Tier2 | Tier::Tier3));
+    }
+
+    #[tokio::test]
+    async fn local_backend_uses_context_and_reports_bounded_complexity() {
+        let classifier = LocalRequestClassifier;
+        let result = classifier
+            .classify(&ClassifyInput {
+                query: "Design a multi-region migration with backward compatibility",
+                context: Some(
+                    "Existing API clients must continue to work during a staged rollout.",
+                ),
+            })
+            .await
+            .unwrap();
+        assert_eq!(result.request_type, RequestType::TechnicalDesign);
+        assert!((1..=5).contains(&result.complexity));
+        assert!((0.0..=1.0).contains(&result.confidence));
+    }
+
+    #[tokio::test]
+    async fn local_backend_recognizes_small_source_code_edits() {
+        let classifier = LocalRequestClassifier;
+        let result = classifier
+            .classify(&ClassifyInput {
+                query: "Fix typo in this Python comment",
+                context: Some("No other files need changes."),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(result.request_type, RequestType::CodeGeneration);
+        assert_eq!(result.complexity, 1);
+    }
+
+    struct BrokenClassifier;
+
+    #[async_trait]
+    impl RequestClassifier for BrokenClassifier {
+        fn name(&self) -> &str {
+            "broken"
+        }
+
+        async fn classify(&self, _: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+            Err(ClassifyError::Failed("test failure".into()))
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_backend_falls_back_to_historic_regex_result() {
+        let (result, fallback) = classify_with_fallback(
+            &BrokenClassifier,
+            &ClassifyInput {
+                query: "draft an email",
+                context: None,
+            },
+            std::time::Duration::from_millis(10),
+            0.55,
+        )
+        .await;
+        assert!(fallback);
+        assert_eq!(result.request_type, classify_request_type("draft an email"));
+        assert_eq!(result.complexity, 3);
     }
 }

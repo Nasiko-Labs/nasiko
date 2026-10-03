@@ -1,0 +1,14 @@
+{"id":"train-01","query":"Add a Rust helper that parses a UUID string and write unit tests for invalid input.","context":"The crate uses anyhow for errors.","request_type":"code_generation","complexity":2}
+{"id":"train-02","query":"Implement pagination for the GET /projects endpoint.","context":"Use the existing Axum handlers and repository layer.","request_type":"code_generation","complexity":3}
+{"id":"train-03","query":"Explain why this Tokio task can deadlock when it holds a MutexGuard across await.","context":"The function starts a child task while updating shared state.","request_type":"code_understanding","complexity":3}
+{"id":"train-04","query":"What does this SQL query return, and which index can it use?","context":"SELECT * FROM events WHERE tenant_id = $1 AND created_at > $2","request_type":"code_understanding","complexity":2}
+{"id":"train-05","query":"Design an idempotent webhook ingestion service with retry handling.","context":"It must accept duplicate deliveries and persist results in Postgres.","request_type":"technical_design","complexity":4}
+{"id":"train-06","query":"Propose a migration strategy from a monolith to independently deployable services.","context":"The team has one month and cannot pause feature work.","request_type":"technical_design","complexity":5}
+{"id":"train-07","query":"Compare these two amortization schedules and identify which loan costs less.","context":"Loan A is 8% for 24 months; Loan B is 7.4% with a 2% origination fee.","request_type":"analytical_reasoning","complexity":3}
+{"id":"train-08","query":"Work through the probability that at least two of eight requests fail when each fails with probability 0.03.","context":"Show the reasoning, not only the result.","request_type":"analytical_reasoning","complexity":3}
+{"id":"train-09","query":"Write a concise release announcement for a new dark mode feature.","context":"Tone: friendly and practical. Keep it below 120 words.","request_type":"writing","complexity":1}
+{"id":"train-10","query":"Rewrite this support reply so it is clearer and more empathetic.","context":"Customer says their invoice shows an unexpected charge.","request_type":"writing","complexity":2}
+{"id":"train-11","query":"What is the current stable Rust edition?","context":null,"request_type":"factual_lookup","complexity":1}
+{"id":"train-12","query":"Find the documented meaning of HTTP status code 428.","context":null,"request_type":"factual_lookup","complexity":1}
+{"id":"train-13","query":"Help me choose a name for my weekend study group.","context":null,"request_type":"general","complexity":1}
+{"id":"train-14","query":"How can I organize a short agenda for tomorrow's team check-in?","context":null,"request_type":"general","complexity":1}
