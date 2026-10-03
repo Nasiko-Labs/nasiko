@@ -1,0 +1,8 @@
+fastembed
+scikit-learn
+scipy
+numpy
+joblib
+fastapi
+uvicorn
+pydantic

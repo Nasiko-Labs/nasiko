@@ -31,6 +31,7 @@ use std::collections::HashMap;
 
 use rand::Rng;
 use rand_distr::{Beta, Distribution};
+use serde::{Deserialize, Serialize};
 
 use super::patterns::{CATEGORY_PATTERNS, NEGATIVE_SIGNALS, POSITIVE_SIGNALS};
 
@@ -49,7 +50,8 @@ pub enum Tier {
 /// The coarse kind of work a query represents. Learning is keyed on this, so the router can
 /// discover (e.g.) that the cheap tier is good enough for `FactualLookup` but not
 /// `CodeGeneration`. Order is irrelevant; `General` is the catch-all default.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RequestType {
     CodeGeneration,
     CodeUnderstanding,
@@ -164,16 +166,27 @@ const TIER_ARMS: [TierArm; 3] = [
 /// patterns wins, ties broken by declaration order, defaulting to `General`. Port of
 /// `categories.rs::classify`.
 pub fn classify_request_type(text: &str) -> RequestType {
+    classify_request_type_scored(text).0
+}
+
+/// Return the legacy regex label and a deterministic, uncalibrated vote-margin confidence.
+/// A confidence of 0.5 means no pattern matched; stronger separation from the runner-up raises it.
+pub fn classify_request_type_scored(text: &str) -> (RequestType, f64) {
     let mut best = RequestType::General;
     let mut best_score = 0usize;
+    let mut second_score = 0usize;
     for (rt, pats) in CATEGORY_PATTERNS.iter() {
         let score = pats.iter().filter(|p| p.is_match(text)).count();
         if score > best_score {
+            second_score = best_score;
             best_score = score;
             best = *rt;
+        } else if score > second_score {
+            second_score = score;
         }
     }
-    best
+    let confidence = (best_score + 1) as f64 / (best_score + second_score + 2) as f64;
+    (best, confidence)
 }
 
 // --------------------------------------------------------------------------

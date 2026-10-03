@@ -1,0 +1,1544 @@
+{
+ "examples": [
+  {
+   "id": "seed-000",
+   "query": "Rename the variable `tmp` to `buffer` in this function.",
+   "context": "",
+   "request_type": "code_generation",
+   "complexity": 1
+  },
+  {
+   "id": "seed-001",
+   "query": "Write a function that reverses a string in JavaScript.",
+   "context": "",
+   "request_type": "code_generation",
+   "complexity": 1
+  },
+  {
+   "id": "seed-002",
+   "query": "Add a --verbose flag to my argparse CLI that sets logging to DEBUG.",
+   "context": "Python 3.11 script, argparse already used.",
+   "request_type": "code_generation",
+   "complexity": 2
+  },
+  {
+   "id": "seed-003",
+   "query": "Write a SQL query returning the top 5 customers by total order value in the last 30 days.",
+   "context": "Tables: customers(id,name), orders(id,customer_id,total,created_at).",
+   "request_type": "code_generation",
+   "complexity": 2
+  },
+  {
+   "id": "seed-004",
+   "query": "Create a React component for a paginated table with sortable columns.",
+   "context": "TypeScript, no UI library.",
+   "request_type": "code_generation",
+   "complexity": 3
+  },
+  {
+   "id": "seed-005",
+   "query": "Generate a Dockerfile for a FastAPI app using uvicorn, multi-stage, non-root user.",
+   "context": "",
+   "request_type": "code_generation",
+   "complexity": 2
+  },
+  {
+   "id": "seed-006",
+   "query": "Build a retry decorator with exponential backoff and jitter, configurable on exception types.",
+   "context": "Python 3.12.",
+   "request_type": "code_generation",
+   "complexity": 3
+  },
+  {
+   "id": "seed-007",
+   "query": "Write unit tests for this function covering empty input and unicode.",
+   "context": "def slugify(s: str) -> str: ...",
+   "request_type": "code_generation",
+   "complexity": 2
+  },
+  {
+   "id": "seed-008",
+   "query": "Convert this callback-based Node function to async/await.",
+   "context": "fs.readFile with nested callbacks, 12 lines.",
+   "request_type": "code_generation",
+   "complexity": 2
+  },
+  {
+   "id": "seed-009",
+   "query": "Implement an LRU cache with O(1) get and put and thread safety in Go.",
+   "context": "",
+   "request_type": "code_generation",
+   "complexity": 3
+  },
+  {
+   "id": "seed-010",
+   "query": "Write a bash script that backs up a Postgres database to S3 daily and prunes backups older than 14 days.",
+   "context": "",
+   "request_type": "code_generation",
+   "complexity": 3
+  },
+  {
+   "id": "seed-011",
+   "query": "Add input validation to this endpoint so negative quantities return a 422.",
+   "context": "Axum handler, serde struct Order { qty: i32 }.",
+   "request_type": "code_generation",
+   "complexity": 2
+  },
+  {
+   "id": "seed-012",
+   "query": "Implement a rate limiter middleware using a token bucket, backed by Redis, with per-API-key limits.",
+   "context": "Rust, tower middleware, existing redis client.",
+   "request_type": "code_generation",
+   "complexity": 4
+  },
+  {
+   "id": "seed-013",
+   "query": "Write a regex that matches ISO 8601 dates with optional time and timezone.",
+   "context": "",
+   "request_type": "code_generation",
+   "complexity": 2
+  },
+  {
+   "id": "seed-014",
+   "query": "Port this Python script to Rust, keeping the CLI interface identical.",
+   "context": "200-line script using requests and csv.",
+   "request_type": "code_generation",
+   "complexity": 4
+  },
+  {
+   "id": "seed-015",
+   "query": "Write a GitHub Actions workflow that runs cargo test and clippy on every pull request.",
+   "context": "",
+   "request_type": "code_generation",
+   "complexity": 2
+  },
+  {
+   "id": "seed-016",
+   "query": "Implement a diff algorithm for two JSON documents that outputs RFC 6902 patches.",
+   "context": "TypeScript, no dependencies.",
+   "request_type": "code_generation",
+   "complexity": 4
+  },
+  {
+   "id": "seed-017",
+   "query": "Make this loop use iterators instead of indexing.",
+   "context": "for i in 0..v.len() { sum += v[i]; }",
+   "request_type": "code_generation",
+   "complexity": 1
+  },
+  {
+   "id": "seed-018",
+   "query": "write me a python snippet to read a csv into a dict",
+   "context": "",
+   "request_type": "code_generation",
+   "complexity": 1
+  },
+  {
+   "id": "seed-019",
+   "query": "Refactor this 300-line handler into smaller functions without changing behaviour, and add tests.",
+   "context": "Go HTTP handler for order checkout.",
+   "request_type": "code_generation",
+   "complexity": 4
+  },
+  {
+   "id": "seed-020",
+   "query": "Add a Kubernetes liveness and readiness probe to this deployment yaml.",
+   "context": "Service listens on 8080, /healthz exists.",
+   "request_type": "code_generation",
+   "complexity": 2
+  },
+  {
+   "id": "seed-021",
+   "query": "What does this regex do? `^(?=.*[A-Z])(?=.*\\d).{8,}$`",
+   "context": "",
+   "request_type": "code_understanding",
+   "complexity": 2
+  },
+  {
+   "id": "seed-022",
+   "query": "Walk me through what this SQL query computes.",
+   "context": "SELECT d, SUM(x) OVER (PARTITION BY d ORDER BY t ROWS BETWEEN 6 PRECEDING AND CURRENT ROW) FROM m;",
+   "request_type": "code_understanding",
+   "complexity": 2
+  },
+  {
+   "id": "seed-023",
+   "query": "Why does this React component re-render on every keystroke?",
+   "context": "useState in the parent holds the whole form object; children are not memoized.",
+   "request_type": "code_understanding",
+   "complexity": 3
+  },
+  {
+   "id": "seed-024",
+   "query": "What is the difference between `&str` and `String` in this snippet and why does it fail to compile?",
+   "context": "let s: &str = String::from(\"a\");",
+   "request_type": "code_understanding",
+   "complexity": 2
+  },
+  {
+   "id": "seed-025",
+   "query": "Summarize what this module is responsible for.",
+   "context": "src/routing/boundary.rs, 220 lines of enum definitions and a decide() function.",
+   "request_type": "code_understanding",
+   "complexity": 3
+  },
+  {
+   "id": "seed-026",
+   "query": "Is there a race condition in this code?",
+   "context": "Two goroutines increment a shared counter without a mutex, then wg.Wait().",
+   "request_type": "code_understanding",
+   "complexity": 3
+  },
+  {
+   "id": "seed-027",
+   "query": "What does `git rebase -i HEAD~3` actually do?",
+   "context": "",
+   "request_type": "code_understanding",
+   "complexity": 1
+  },
+  {
+   "id": "seed-028",
+   "query": "Trace through this recursion for n=4 and tell me the call order.",
+   "context": "def f(n): return 1 if n<=1 else f(n-1)+f(n-2)",
+   "request_type": "code_understanding",
+   "complexity": 2
+  },
+  {
+   "id": "seed-029",
+   "query": "Why am I getting a borrow checker error on line 14?",
+   "context": "let first = &v[0]; v.push(4); println!(\"{}\", first);",
+   "request_type": "code_understanding",
+   "complexity": 2
+  },
+  {
+   "id": "seed-030",
+   "query": "Review this PR diff and explain what behavioural change it introduces.",
+   "context": "Changes the default timeout from 30s to None in the HTTP client builder.",
+   "request_type": "code_understanding",
+   "complexity": 3
+  },
+  {
+   "id": "seed-031",
+   "query": "What does this bash one-liner do? `find . -name '*.log' -mtime +7 -delete`",
+   "context": "",
+   "request_type": "code_understanding",
+   "complexity": 1
+  },
+  {
+   "id": "seed-032",
+   "query": "Find the bug: the pagination skips the last page when the total is a multiple of the page size.",
+   "context": "pages = total // size + 1 if total % size else total // size",
+   "request_type": "code_understanding",
+   "complexity": 3
+  },
+  {
+   "id": "seed-033",
+   "query": "Why does this Python function mutate its default argument between calls?",
+   "context": "def add(x, acc=[]): acc.append(x); return acc",
+   "request_type": "code_understanding",
+   "complexity": 2
+  },
+  {
+   "id": "seed-034",
+   "query": "Explain how this tokio select! loop handles cancellation of the other branch.",
+   "context": "Two branches: a channel recv and a sleep timer, inside loop {}.",
+   "request_type": "code_understanding",
+   "complexity": 3
+  },
+  {
+   "id": "seed-035",
+   "query": "Can you describe the control flow of this state machine?",
+   "context": "enum State { Idle, Running, Done } with a 40-line transition function.",
+   "request_type": "code_understanding",
+   "complexity": 3
+  },
+  {
+   "id": "seed-036",
+   "query": "Explain the memory layout of this struct and where padding is inserted.",
+   "context": "#[repr(C)] struct A { a: u8, b: u32, c: u16 }",
+   "request_type": "code_understanding",
+   "complexity": 3
+  },
+  {
+   "id": "seed-037",
+   "query": "what does `async` do on this function",
+   "context": "async fn load() -> Vec<u8> { ... }",
+   "request_type": "code_understanding",
+   "complexity": 1
+  },
+  {
+   "id": "seed-038",
+   "query": "Why is this query doing a sequential scan even though there is an index?",
+   "context": "Index on users(email); query uses WHERE lower(email) = $1.",
+   "request_type": "code_understanding",
+   "complexity": 3
+  },
+  {
+   "id": "seed-039",
+   "query": "Look at this stack trace and tell me what is most likely the root cause.",
+   "context": "NullPointerException at OrderService.java:88 after upgrading the DI container.",
+   "request_type": "code_understanding",
+   "complexity": 3
+  },
+  {
+   "id": "seed-040",
+   "query": "Propose a schema for storing multi-tenant audit logs that supports 90-day retention.",
+   "context": "Postgres, ~50M events/day, queries by tenant and time range.",
+   "request_type": "technical_design",
+   "complexity": 3
+  },
+  {
+   "id": "seed-041",
+   "query": "How should we structure a plugin system for our CLI so third parties can add commands?",
+   "context": "Rust CLI, currently a single crate with clap subcommands.",
+   "request_type": "technical_design",
+   "complexity": 3
+  },
+  {
+   "id": "seed-042",
+   "query": "Compare Kafka and SQS for our order-event pipeline and recommend one.",
+   "context": "AWS only, 2k msgs/s peak, small team, ordering needed per customer.",
+   "request_type": "technical_design",
+   "complexity": 3
+  },
+  {
+   "id": "seed-043",
+   "query": "Sketch an architecture for real-time collaborative editing for our notes app.",
+   "context": "Web client, currently REST + Postgres.",
+   "request_type": "technical_design",
+   "complexity": 5
+  },
+  {
+   "id": "seed-044",
+   "query": "Design the API for a feature-flag service. Include evaluation, targeting rules, and audit.",
+   "context": "",
+   "request_type": "technical_design",
+   "complexity": 4
+  },
+  {
+   "id": "seed-045",
+   "query": "What is a sensible caching strategy for a read-heavy product catalog?",
+   "context": "10k SKUs, updated hourly, global users.",
+   "request_type": "technical_design",
+   "complexity": 2
+  },
+  {
+   "id": "seed-046",
+   "query": "Should this be a monolith or microservices?",
+   "context": "Team of 5, 3 domains, one DB, early-stage startup.",
+   "request_type": "technical_design",
+   "complexity": 3
+  },
+  {
+   "id": "seed-047",
+   "query": "Design a zero-downtime strategy for splitting our users table into two services.",
+   "context": "Postgres, 200M rows, 24/7 traffic.",
+   "request_type": "technical_design",
+   "complexity": 5
+  },
+  {
+   "id": "seed-048",
+   "query": "Propose a folder structure for a Rust workspace with a library, a CLI, and a server.",
+   "context": "",
+   "request_type": "technical_design",
+   "complexity": 1
+  },
+  {
+   "id": "seed-049",
+   "query": "How would you design idempotent webhook handling for a payments provider?",
+   "context": "At-least-once delivery, events can arrive out of order.",
+   "request_type": "technical_design",
+   "complexity": 4
+  },
+  {
+   "id": "seed-050",
+   "query": "Design a sharding scheme for a time-series metrics store.",
+   "context": "Writes 500k points/s, queries are mostly the last 24h.",
+   "request_type": "technical_design",
+   "complexity": 5
+  },
+  {
+   "id": "seed-051",
+   "query": "Outline an authentication design for a mobile app and a public API sharing one user base.",
+   "context": "",
+   "request_type": "technical_design",
+   "complexity": 3
+  },
+  {
+   "id": "seed-052",
+   "query": "What data model would you use to represent versioned documents with branching?",
+   "context": "",
+   "request_type": "technical_design",
+   "complexity": 3
+  },
+  {
+   "id": "seed-053",
+   "query": "Plan the rollout of a breaking API change to 300 integrators.",
+   "context": "Versioning is currently by header; deprecation policy undefined.",
+   "request_type": "technical_design",
+   "complexity": 3
+  },
+  {
+   "id": "seed-054",
+   "query": "Design a job scheduler that guarantees a task runs at most once across a cluster.",
+   "context": "No ZooKeeper allowed; Postgres is available.",
+   "request_type": "technical_design",
+   "complexity": 4
+  },
+  {
+   "id": "seed-055",
+   "query": "Where should input validation live in a layered architecture?",
+   "context": "",
+   "request_type": "technical_design",
+   "complexity": 2
+  },
+  {
+   "id": "seed-056",
+   "query": "Design the observability stack for 40 microservices: logs, metrics, traces, alerting.",
+   "context": "Kubernetes, budget-conscious.",
+   "request_type": "technical_design",
+   "complexity": 4
+  },
+  {
+   "id": "seed-057",
+   "query": "Suggest an approach for offline-first sync in our mobile app.",
+   "context": "Conflicts are rare; data is per-user.",
+   "request_type": "technical_design",
+   "complexity": 4
+  },
+  {
+   "id": "seed-058",
+   "query": "Which database fits an event-sourced ledger and why?",
+   "context": "",
+   "request_type": "technical_design",
+   "complexity": 2
+  },
+  {
+   "id": "seed-059",
+   "query": "Design a multi-region failover plan for our primary database.",
+   "context": "RPO 1 minute, RTO 15 minutes.",
+   "request_type": "technical_design",
+   "complexity": 5
+  },
+  {
+   "id": "seed-060",
+   "query": "Propose how to split this 5k-line module into cohesive crates.",
+   "context": "Rust; types, parsing, IO and CLI are tangled.",
+   "request_type": "technical_design",
+   "complexity": 3
+  },
+  {
+   "id": "seed-061",
+   "query": "How would you architect the permission model for nested organisations and projects?",
+   "context": "",
+   "request_type": "technical_design",
+   "complexity": 4
+  },
+  {
+   "id": "seed-062",
+   "query": "Our p99 latency doubled after the release but p50 is flat. What are the most likely causes and how do I rank them?",
+   "context": "Release added a feature flag lookup and a new DB index.",
+   "request_type": "analytical_reasoning",
+   "complexity": 4
+  },
+  {
+   "id": "seed-063",
+   "query": "Estimate how many servers we need for 2M daily active users.",
+   "context": "Avg 40 requests/user/day, 3x peak factor, 20ms CPU per request.",
+   "request_type": "analytical_reasoning",
+   "complexity": 3
+  },
+  {
+   "id": "seed-064",
+   "query": "A/B test shows +2% conversion with p=0.08. Should we ship?",
+   "context": "n=12,000 per arm, 2 weeks, one holiday weekend inside the window.",
+   "request_type": "analytical_reasoning",
+   "complexity": 3
+  },
+  {
+   "id": "seed-065",
+   "query": "If a train leaves at 3pm at 60 mph and another at 4pm at 80 mph, when does the second catch up?",
+   "context": "",
+   "request_type": "analytical_reasoning",
+   "complexity": 2
+  },
+  {
+   "id": "seed-066",
+   "query": "Why might our model's accuracy drop in production while offline validation stays high?",
+   "context": "",
+   "request_type": "analytical_reasoning",
+   "complexity": 3
+  },
+  {
+   "id": "seed-067",
+   "query": "Which of these three vendors is cheapest over 3 years given the usage curve?",
+   "context": "Vendor A flat 40k/yr; B 0.02 per call with 500k free; C tiered. Usage grows 8% monthly from 2M calls.",
+   "request_type": "analytical_reasoning",
+   "complexity": 4
+  },
+  {
+   "id": "seed-068",
+   "query": "Work out the expected value of this bet.",
+   "context": "Win 5 with probability 0.3, lose 2 otherwise.",
+   "request_type": "analytical_reasoning",
+   "complexity": 1
+  },
+  {
+   "id": "seed-069",
+   "query": "Our queue depth grows every Monday morning. Give me a hypothesis tree and the data I'd check first.",
+   "context": "",
+   "request_type": "analytical_reasoning",
+   "complexity": 4
+  },
+  {
+   "id": "seed-070",
+   "query": "Compare the failure modes of two-phase commit versus sagas for our checkout flow and tell me which risks dominate.",
+   "context": "",
+   "request_type": "analytical_reasoning",
+   "complexity": 4
+  },
+  {
+   "id": "seed-071",
+   "query": "Is it a coincidence that the errors started right after the DST change?",
+   "context": "Cron jobs in two services; one uses UTC, one local time.",
+   "request_type": "analytical_reasoning",
+   "complexity": 3
+  },
+  {
+   "id": "seed-072",
+   "query": "Prove that the sum of two even numbers is even.",
+   "context": "",
+   "request_type": "analytical_reasoning",
+   "complexity": 1
+  },
+  {
+   "id": "seed-073",
+   "query": "Reason about whether this lock ordering can deadlock.",
+   "context": "Thread A locks X then Y; thread B locks Y then X only on the error path.",
+   "request_type": "analytical_reasoning",
+   "complexity": 3
+  },
+  {
+   "id": "seed-074",
+   "query": "Why did revenue fall 6% last quarter? Decompose it into volume, price and mix effects.",
+   "context": "Table of product-level units and prices per quarter attached.",
+   "request_type": "analytical_reasoning",
+   "complexity": 4
+  },
+  {
+   "id": "seed-075",
+   "query": "Analyse the trade-offs of switching our CI to self-hosted runners given the numbers.",
+   "context": "Current spend 9k/month, 40 engineers, avg build 12 minutes.",
+   "request_type": "analytical_reasoning",
+   "complexity": 3
+  },
+  {
+   "id": "seed-076",
+   "query": "Given these logs, reconstruct the sequence of events that led to the double shipment.",
+   "context": "Three services' logs with timestamps, clock skew up to 2s.",
+   "request_type": "analytical_reasoning",
+   "complexity": 5
+  },
+  {
+   "id": "seed-077",
+   "query": "What are the odds of rolling at least one six in four dice rolls?",
+   "context": "",
+   "request_type": "analytical_reasoning",
+   "complexity": 1
+  },
+  {
+   "id": "seed-078",
+   "query": "Evaluate whether our retry policy could amplify an outage.",
+   "context": "3 retries, no backoff, 10 upstream callers.",
+   "request_type": "analytical_reasoning",
+   "complexity": 4
+  },
+  {
+   "id": "seed-079",
+   "query": "Why does cache hit rate fall as we add more nodes?",
+   "context": "Consistent hashing without virtual nodes, 2 to 8 nodes.",
+   "request_type": "analytical_reasoning",
+   "complexity": 3
+  },
+  {
+   "id": "seed-080",
+   "query": "Critically assess this claim: 'microservices always reduce deployment risk'.",
+   "context": "",
+   "request_type": "analytical_reasoning",
+   "complexity": 3
+  },
+  {
+   "id": "seed-081",
+   "query": "Explain the statistical flaw in judging the campaign by comparing it to last month.",
+   "context": "",
+   "request_type": "analytical_reasoning",
+   "complexity": 2
+  },
+  {
+   "id": "seed-082",
+   "query": "Draft an email to my team announcing the Friday deploy freeze.",
+   "context": "",
+   "request_type": "writing",
+   "complexity": 1
+  },
+  {
+   "id": "seed-083",
+   "query": "Write a short, friendly apology to a customer whose order shipped late.",
+   "context": "Order delayed 4 days by carrier.",
+   "request_type": "writing",
+   "complexity": 1
+  },
+  {
+   "id": "seed-084",
+   "query": "Proofread this paragraph for grammar and tone.",
+   "context": "Our team have been working hard to deliver the features what you requested.",
+   "request_type": "writing",
+   "complexity": 1
+  },
+  {
+   "id": "seed-085",
+   "query": "Write a blog post introduction about why observability matters for small teams.",
+   "context": "Audience: engineering managers. ~150 words.",
+   "request_type": "writing",
+   "complexity": 2
+  },
+  {
+   "id": "seed-086",
+   "query": "Turn these bullet points into a polished project update for executives.",
+   "context": "Shipped auth v2; latency -30%; two incidents; hiring 2 SREs.",
+   "request_type": "writing",
+   "complexity": 3
+  },
+  {
+   "id": "seed-087",
+   "query": "Write release notes for version 2.4 from this changelog.",
+   "context": "feat: bulk import; fix: crash on empty csv; chore: bump deps.",
+   "request_type": "writing",
+   "complexity": 2
+  },
+  {
+   "id": "seed-088",
+   "query": "Make this README intro more concise and less marketing-heavy.",
+   "context": "Our revolutionary, blazing-fast, next-generation library...",
+   "request_type": "writing",
+   "complexity": 2
+  },
+  {
+   "id": "seed-089",
+   "query": "Draft a postmortem summary for a non-technical audience.",
+   "context": "30-minute outage, caused by an expired certificate, no data loss.",
+   "request_type": "writing",
+   "complexity": 3
+  },
+  {
+   "id": "seed-090",
+   "query": "Write a job description for a senior backend engineer.",
+   "context": "Rust, distributed systems, remote-friendly.",
+   "request_type": "writing",
+   "complexity": 2
+  },
+  {
+   "id": "seed-091",
+   "query": "Give me three catchy names and taglines for a developer tool that compresses prompts.",
+   "context": "",
+   "request_type": "writing",
+   "complexity": 2
+  },
+  {
+   "id": "seed-092",
+   "query": "Translate this paragraph into Spanish and keep the formal tone.",
+   "context": "Thank you for contacting support. We will reply within one business day.",
+   "request_type": "writing",
+   "complexity": 1
+  },
+  {
+   "id": "seed-093",
+   "query": "Write a commit message for these changes.",
+   "context": "Adds retry with backoff to the S3 uploader and a test.",
+   "request_type": "writing",
+   "complexity": 1
+  },
+  {
+   "id": "seed-094",
+   "query": "Write a one-page proposal arguing for adopting trunk-based development.",
+   "context": "Audience: skeptical staff engineers.",
+   "request_type": "writing",
+   "complexity": 4
+  },
+  {
+   "id": "seed-095",
+   "query": "Polish this LinkedIn post announcing our open-source release.",
+   "context": "",
+   "request_type": "writing",
+   "complexity": 1
+  },
+  {
+   "id": "seed-096",
+   "query": "Rewrite the following in the active voice.",
+   "context": "The report was reviewed by the committee and the budget was approved.",
+   "request_type": "writing",
+   "complexity": 1
+  },
+  {
+   "id": "seed-097",
+   "query": "Write a poem about debugging in Python.",
+   "context": "",
+   "request_type": "writing",
+   "complexity": 2
+  },
+  {
+   "id": "seed-098",
+   "query": "Summarise this meeting transcript into decisions, owners and deadlines.",
+   "context": "45-minute standup transcript pasted below, 3,000 words.",
+   "request_type": "writing",
+   "complexity": 3
+  },
+  {
+   "id": "seed-099",
+   "query": "Create the speaker notes for a five-minute lightning talk on property-based testing.",
+   "context": "",
+   "request_type": "writing",
+   "complexity": 3
+  },
+  {
+   "id": "seed-100",
+   "query": "Write a polite reminder email for an overdue invoice.",
+   "context": "Invoice 1042 is 14 days late.",
+   "request_type": "writing",
+   "complexity": 1
+  },
+  {
+   "id": "seed-101",
+   "query": "Compose a technical blog post comparing two approaches to feature flags, with a clear narrative.",
+   "context": "Audience: mid-level engineers, 1,000 words.",
+   "request_type": "writing",
+   "complexity": 4
+  },
+  {
+   "id": "seed-102",
+   "query": "Shorten this abstract to 100 words without losing the main result.",
+   "context": "",
+   "request_type": "writing",
+   "complexity": 2
+  },
+  {
+   "id": "seed-103",
+   "query": "What is the capital of Australia?",
+   "context": "",
+   "request_type": "factual_lookup",
+   "complexity": 1
+  },
+  {
+   "id": "seed-104",
+   "query": "What port does PostgreSQL use by default?",
+   "context": "",
+   "request_type": "factual_lookup",
+   "complexity": 1
+  },
+  {
+   "id": "seed-105",
+   "query": "Who created the Linux kernel and when?",
+   "context": "",
+   "request_type": "factual_lookup",
+   "complexity": 1
+  },
+  {
+   "id": "seed-106",
+   "query": "What is the maximum size of an item in DynamoDB?",
+   "context": "",
+   "request_type": "factual_lookup",
+   "complexity": 1
+  },
+  {
+   "id": "seed-107",
+   "query": "What is the difference between HTTP 401 and 403?",
+   "context": "",
+   "request_type": "factual_lookup",
+   "complexity": 1
+  },
+  {
+   "id": "seed-108",
+   "query": "When was Rust 1.0 released?",
+   "context": "",
+   "request_type": "factual_lookup",
+   "complexity": 1
+  },
+  {
+   "id": "seed-109",
+   "query": "What does CORS stand for?",
+   "context": "",
+   "request_type": "factual_lookup",
+   "complexity": 1
+  },
+  {
+   "id": "seed-110",
+   "query": "How many bits are in an IPv6 address?",
+   "context": "",
+   "request_type": "factual_lookup",
+   "complexity": 1
+  },
+  {
+   "id": "seed-111",
+   "query": "Which HTTP method is idempotent, PUT or POST?",
+   "context": "",
+   "request_type": "factual_lookup",
+   "complexity": 1
+  },
+  {
+   "id": "seed-112",
+   "query": "What is the default branch name git uses in new repos?",
+   "context": "",
+   "request_type": "factual_lookup",
+   "complexity": 1
+  },
+  {
+   "id": "seed-113",
+   "query": "What is the time complexity of binary search?",
+   "context": "",
+   "request_type": "factual_lookup",
+   "complexity": 1
+  },
+  {
+   "id": "seed-114",
+   "query": "Who wrote 'The Mythical Man-Month'?",
+   "context": "",
+   "request_type": "factual_lookup",
+   "complexity": 1
+  },
+  {
+   "id": "seed-115",
+   "query": "What does the `-r` flag do in `cp`?",
+   "context": "",
+   "request_type": "factual_lookup",
+   "complexity": 1
+  },
+  {
+   "id": "seed-116",
+   "query": "What is the boiling point of water at sea level in Fahrenheit?",
+   "context": "",
+   "request_type": "factual_lookup",
+   "complexity": 1
+  },
+  {
+   "id": "seed-117",
+   "query": "What is the current LTS version of Node.js?",
+   "context": "",
+   "request_type": "factual_lookup",
+   "complexity": 1
+  },
+  {
+   "id": "seed-118",
+   "query": "Define eventual consistency in one line.",
+   "context": "",
+   "request_type": "factual_lookup",
+   "complexity": 1
+  },
+  {
+   "id": "seed-119",
+   "query": "What is the RFC number for HTTP/1.1 semantics?",
+   "context": "",
+   "request_type": "factual_lookup",
+   "complexity": 2
+  },
+  {
+   "id": "seed-120",
+   "query": "Which AWS service offers managed Kafka?",
+   "context": "",
+   "request_type": "factual_lookup",
+   "complexity": 1
+  },
+  {
+   "id": "seed-121",
+   "query": "How many days are in a leap year?",
+   "context": "",
+   "request_type": "factual_lookup",
+   "complexity": 1
+  },
+  {
+   "id": "seed-122",
+   "query": "What is the syntax for a Python list comprehension?",
+   "context": "",
+   "request_type": "factual_lookup",
+   "complexity": 1
+  },
+  {
+   "id": "seed-123",
+   "query": "Who is the author of the `serde` crate?",
+   "context": "",
+   "request_type": "factual_lookup",
+   "complexity": 1
+  },
+  {
+   "id": "seed-124",
+   "query": "What is the formula for compound interest?",
+   "context": "",
+   "request_type": "factual_lookup",
+   "complexity": 1
+  },
+  {
+   "id": "seed-125",
+   "query": "Which year did the HTTP/2 specification get published?",
+   "context": "",
+   "request_type": "factual_lookup",
+   "complexity": 1
+  },
+  {
+   "id": "seed-126",
+   "query": "hello there",
+   "context": "",
+   "request_type": "general",
+   "complexity": 1
+  },
+  {
+   "id": "seed-127",
+   "query": "Thanks, that was helpful!",
+   "context": "",
+   "request_type": "general",
+   "complexity": 1
+  },
+  {
+   "id": "seed-128",
+   "query": "Can you help me with something?",
+   "context": "",
+   "request_type": "general",
+   "complexity": 1
+  },
+  {
+   "id": "seed-129",
+   "query": "What can you do?",
+   "context": "",
+   "request_type": "general",
+   "complexity": 1
+  },
+  {
+   "id": "seed-130",
+   "query": "I'm feeling a bit stuck today.",
+   "context": "",
+   "request_type": "general",
+   "complexity": 1
+  },
+  {
+   "id": "seed-131",
+   "query": "Tell me something interesting.",
+   "context": "",
+   "request_type": "general",
+   "complexity": 1
+  },
+  {
+   "id": "seed-132",
+   "query": "Good morning! How are you?",
+   "context": "",
+   "request_type": "general",
+   "complexity": 1
+  },
+  {
+   "id": "seed-133",
+   "query": "ok",
+   "context": "",
+   "request_type": "general",
+   "complexity": 1
+  },
+  {
+   "id": "seed-134",
+   "query": "Can we continue where we left off?",
+   "context": "",
+   "request_type": "general",
+   "complexity": 1
+  },
+  {
+   "id": "seed-135",
+   "query": "Which is better, tabs or spaces?",
+   "context": "",
+   "request_type": "general",
+   "complexity": 1
+  },
+  {
+   "id": "seed-136",
+   "query": "Give me a motivational quote for Monday.",
+   "context": "",
+   "request_type": "general",
+   "complexity": 1
+  },
+  {
+   "id": "seed-137",
+   "query": "I need some advice on organizing my week.",
+   "context": "",
+   "request_type": "general",
+   "complexity": 2
+  },
+  {
+   "id": "seed-138",
+   "query": "Plan a weekend trip to Lisbon for two people.",
+   "context": "",
+   "request_type": "general",
+   "complexity": 3
+  },
+  {
+   "id": "seed-139",
+   "query": "What should I cook tonight with chicken and rice?",
+   "context": "",
+   "request_type": "general",
+   "complexity": 1
+  },
+  {
+   "id": "seed-140",
+   "query": "Brainstorm ideas for a team offsite activity.",
+   "context": "",
+   "request_type": "general",
+   "complexity": 2
+  },
+  {
+   "id": "seed-141",
+   "query": "Can you recommend a good book on leadership?",
+   "context": "",
+   "request_type": "general",
+   "complexity": 1
+  },
+  {
+   "id": "seed-142",
+   "query": "Could you repeat that more simply?",
+   "context": "",
+   "request_type": "general",
+   "complexity": 1
+  },
+  {
+   "id": "seed-143",
+   "query": "Help me decide between two job offers.",
+   "context": "One pays more, the other has better growth.",
+   "request_type": "general",
+   "complexity": 3
+  },
+  {
+   "id": "seed-144",
+   "query": "Let's play a word game.",
+   "context": "",
+   "request_type": "general",
+   "complexity": 1
+  },
+  {
+   "id": "seed-145",
+   "query": "hmm not sure what I want to ask",
+   "context": "",
+   "request_type": "general",
+   "complexity": 1
+  },
+  {
+   "id": "seed-146",
+   "query": "How do I stay focused when working from home?",
+   "context": "",
+   "request_type": "general",
+   "complexity": 2
+  },
+  {
+   "id": "seed-147",
+   "query": "Tell me a joke about programmers.",
+   "context": "",
+   "request_type": "general",
+   "complexity": 1
+  },
+  {
+   "id": "seed-148",
+   "query": "What's a good name for my cat?",
+   "context": "",
+   "request_type": "general",
+   "complexity": 1
+  },
+  {
+   "id": "seed-149",
+   "query": "Summarize your capabilities in a sentence.",
+   "context": "",
+   "request_type": "general",
+   "complexity": 1
+  },
+  {
+   "id": "seed-150",
+   "query": "What is the best way to structure error handling across 12 microservices that share a message bus?",
+   "context": "",
+   "request_type": "technical_design",
+   "complexity": 4
+  },
+  {
+   "id": "seed-151",
+   "query": "What is this function doing with the lifetimes here?",
+   "context": "fn longest<'a>(a: &'a str, b: &'a str) -> &'a str { if a.len() > b.len() { a } else { b } }",
+   "request_type": "code_understanding",
+   "complexity": 2
+  },
+  {
+   "id": "seed-152",
+   "query": "What is causing the memory to grow after each request in this handler?",
+   "context": "Go service, goroutines spawned per request, a map caches results forever.",
+   "request_type": "analytical_reasoning",
+   "complexity": 3
+  },
+  {
+   "id": "seed-153",
+   "query": "What are the tradeoffs between optimistic and pessimistic locking for our booking system?",
+   "context": "High contention on popular slots.",
+   "request_type": "technical_design",
+   "complexity": 3
+  },
+  {
+   "id": "seed-154",
+   "query": "Who should own the database schema in a team of three squads sharing one Postgres?",
+   "context": "",
+   "request_type": "technical_design",
+   "complexity": 3
+  },
+  {
+   "id": "seed-155",
+   "query": "When should I use a trait object instead of generics in Rust?",
+   "context": "",
+   "request_type": "factual_lookup",
+   "complexity": 2
+  },
+  {
+   "id": "seed-156",
+   "query": "Where is the retry logic implemented in this codebase?",
+   "context": "Monorepo with 40 crates.",
+   "request_type": "code_understanding",
+   "complexity": 2
+  },
+  {
+   "id": "seed-157",
+   "query": "Our architecture docs are outdated. Rewrite the overview section to match the new event-driven design.",
+   "context": "Current text describes the old monolith, 400 words.",
+   "request_type": "writing",
+   "complexity": 3
+  },
+  {
+   "id": "seed-158",
+   "query": "Draft a design doc outline for moving to event sourcing. Just headings, no content.",
+   "context": "",
+   "request_type": "technical_design",
+   "complexity": 2
+  },
+  {
+   "id": "seed-159",
+   "query": "Should we refactor now or ship first? Weigh the risks given the deadline.",
+   "context": "Two weeks to launch, 30% test coverage.",
+   "request_type": "analytical_reasoning",
+   "complexity": 3
+  },
+  {
+   "id": "seed-160",
+   "query": "Calculate the cheapest way to cover this: 3 services, 2M requests each, per-request price differs by region.",
+   "context": "",
+   "request_type": "analytical_reasoning",
+   "complexity": 3
+  },
+  {
+   "id": "seed-161",
+   "query": "Write a short story about a compiler that learns to feel.",
+   "context": "",
+   "request_type": "writing",
+   "complexity": 2
+  },
+  {
+   "id": "seed-162",
+   "query": "Write an email explaining how the new rate limiter works to our customers.",
+   "context": "Limit is 100 requests per minute per key; bursts allowed up to 20.",
+   "request_type": "writing",
+   "complexity": 2
+  },
+  {
+   "id": "seed-163",
+   "query": "Write a function-level docstring for this code.",
+   "context": "def normalize(v): return v / (np.linalg.norm(v) or 1)",
+   "request_type": "writing",
+   "complexity": 1
+  },
+  {
+   "id": "seed-164",
+   "query": "Explain what a mutex is to a ten year old.",
+   "context": "",
+   "request_type": "writing",
+   "complexity": 2
+  },
+  {
+   "id": "seed-165",
+   "query": "Explain how this code works and then rewrite it to be faster.",
+   "context": "def dedupe(xs): return [x for i,x in enumerate(xs) if x not in xs[:i]]",
+   "request_type": "code_generation",
+   "complexity": 3
+  },
+  {
+   "id": "seed-166",
+   "query": "Explain why we picked Postgres over Mongo, as a decision record.",
+   "context": "",
+   "request_type": "writing",
+   "complexity": 3
+  },
+  {
+   "id": "seed-167",
+   "query": "Define a REST API for managing library books, including endpoints and error codes.",
+   "context": "",
+   "request_type": "technical_design",
+   "complexity": 3
+  },
+  {
+   "id": "seed-168",
+   "query": "Define a Rust struct for a user with an optional email and a list of roles.",
+   "context": "",
+   "request_type": "code_generation",
+   "complexity": 1
+  },
+  {
+   "id": "seed-169",
+   "query": "Define idempotency.",
+   "context": "",
+   "request_type": "factual_lookup",
+   "complexity": 1
+  },
+  {
+   "id": "seed-170",
+   "query": "How many requests per second can a single Redis instance handle roughly?",
+   "context": "",
+   "request_type": "factual_lookup",
+   "complexity": 2
+  },
+  {
+   "id": "seed-171",
+   "query": "How many servers do I need if each handles 800 rps and I expect 12k rps with 30% headroom?",
+   "context": "",
+   "request_type": "analytical_reasoning",
+   "complexity": 2
+  },
+  {
+   "id": "seed-172",
+   "query": "Solve this: if f(x) = 3x^2 - 12x + 9, find the minimum and where it occurs.",
+   "context": "",
+   "request_type": "analytical_reasoning",
+   "complexity": 2
+  },
+  {
+   "id": "seed-173",
+   "query": "Prove by induction that 1+2+...+n = n(n+1)/2.",
+   "context": "",
+   "request_type": "analytical_reasoning",
+   "complexity": 2
+  },
+  {
+   "id": "seed-174",
+   "query": "Fix this bug: the discount is applied twice when the coupon and the loyalty tier overlap.",
+   "context": "def total(cart): d = coupon(cart) + loyalty(cart); return price(cart) - d - coupon(cart)",
+   "request_type": "code_generation",
+   "complexity": 3
+  },
+  {
+   "id": "seed-175",
+   "query": "fix the bug where the app crashes if the user list is empty",
+   "context": "",
+   "request_type": "code_generation",
+   "complexity": 2
+  },
+  {
+   "id": "seed-176",
+   "query": "Why is this code slow, and how would you restructure it?",
+   "context": "Nested loops over two 100k-element lists to find matches.",
+   "request_type": "code_understanding",
+   "complexity": 3
+  },
+  {
+   "id": "seed-177",
+   "query": "Summarize this function and then write tests for it.",
+   "context": "def parse_duration(s): ...  # supports 1h30m, 45s, 2d",
+   "request_type": "code_generation",
+   "complexity": 3
+  },
+  {
+   "id": "seed-178",
+   "query": "Explain the bug in this snippet, then give me the corrected version.",
+   "context": "for (i = 0; i <= arr.length; i++) sum += arr[i];",
+   "request_type": "code_understanding",
+   "complexity": 2
+  },
+  {
+   "id": "seed-179",
+   "query": "Give me a quick overview of OAuth2 and then draft the login flow for our app.",
+   "context": "SPA plus Rust API.",
+   "request_type": "technical_design",
+   "complexity": 3
+  },
+  {
+   "id": "seed-180",
+   "query": "Look at these latency numbers, decide if it is a regression, and write a two-line Slack update.",
+   "context": "p50 120ms -> 135ms, p99 400ms -> 900ms after release 4.2.",
+   "request_type": "analytical_reasoning",
+   "complexity": 3
+  },
+  {
+   "id": "seed-181",
+   "query": "Compare these two designs and then summarize your recommendation in an email to the VP.",
+   "context": "Design A: single Postgres. Design B: Postgres plus a Kafka-fed read model.",
+   "request_type": "technical_design",
+   "complexity": 4
+  },
+  {
+   "id": "seed-182",
+   "query": "Translate this SQL to a Rust sqlx query and explain what the join does.",
+   "context": "SELECT u.id, COUNT(o.id) FROM users u LEFT JOIN orders o ON o.user_id=u.id GROUP BY u.id",
+   "request_type": "code_generation",
+   "complexity": 2
+  },
+  {
+   "id": "seed-183",
+   "query": "pls help!!! my code no work, it say undefined is not a function lol",
+   "context": "button.onclick = handlr;",
+   "request_type": "code_understanding",
+   "complexity": 2
+  },
+  {
+   "id": "seed-184",
+   "query": "so basically i was wondering, like, whats the diff between a process and a thread",
+   "context": "",
+   "request_type": "factual_lookup",
+   "complexity": 1
+  },
+  {
+   "id": "seed-185",
+   "query": "URGENT: need a regex for UK postcodes asap thx",
+   "context": "",
+   "request_type": "code_generation",
+   "complexity": 2
+  },
+  {
+   "id": "seed-186",
+   "query": "write something nice for my coworker's farewell card, she is moving to Berlin",
+   "context": "",
+   "request_type": "writing",
+   "complexity": 1
+  },
+  {
+   "id": "seed-187",
+   "query": "can u make this sound more professional: hey guys the server is down again, working on it",
+   "context": "",
+   "request_type": "writing",
+   "complexity": 1
+  },
+  {
+   "id": "seed-188",
+   "query": "tell me why my sourdough starter smells like acetone",
+   "context": "",
+   "request_type": "general",
+   "complexity": 2
+  },
+  {
+   "id": "seed-189",
+   "query": "What should I name my open source CLI that renames photos by date?",
+   "context": "",
+   "request_type": "general",
+   "complexity": 2
+  },
+  {
+   "id": "seed-190",
+   "query": "How do I convince my manager to let us pay down tech debt?",
+   "context": "",
+   "request_type": "general",
+   "complexity": 3
+  },
+  {
+   "id": "seed-191",
+   "query": "is it worth learning Rust in 2026 or should I stick with Go for backend jobs",
+   "context": "",
+   "request_type": "general",
+   "complexity": 2
+  },
+  {
+   "id": "seed-192",
+   "query": "Recommend a few podcasts about distributed systems.",
+   "context": "",
+   "request_type": "general",
+   "complexity": 1
+  },
+  {
+   "id": "seed-193",
+   "query": "Who won the 2018 FIFA World Cup?",
+   "context": "",
+   "request_type": "factual_lookup",
+   "complexity": 1
+  },
+  {
+   "id": "seed-194",
+   "query": "Convert 72 degrees Fahrenheit to Celsius.",
+   "context": "",
+   "request_type": "factual_lookup",
+   "complexity": 1
+  },
+  {
+   "id": "seed-195",
+   "query": "What's the sum of the first 20 odd numbers?",
+   "context": "",
+   "request_type": "analytical_reasoning",
+   "complexity": 1
+  },
+  {
+   "id": "seed-196",
+   "query": "what year did the berlin wall fall",
+   "context": "",
+   "request_type": "factual_lookup",
+   "complexity": 1
+  },
+  {
+   "id": "seed-197",
+   "query": "Explain the difference between TCP and UDP.",
+   "context": "",
+   "request_type": "factual_lookup",
+   "complexity": 2
+  },
+  {
+   "id": "seed-198",
+   "query": "I have 3 hours before a demo. Tell me what to cut from this plan so it still works.",
+   "context": "Plan lists auth, dashboard, export, email alerts, dark mode, audit log.",
+   "request_type": "analytical_reasoning",
+   "complexity": 3
+  },
+  {
+   "id": "seed-199",
+   "query": "Lay out how you would test a payments reconciliation job end to end.",
+   "context": "Nightly batch, reads provider CSVs, writes to ledger.",
+   "request_type": "technical_design",
+   "complexity": 3
+  },
+  {
+   "id": "seed-200",
+   "query": "Give me a quick Python one-liner to flatten a list of lists.",
+   "context": "",
+   "request_type": "code_generation",
+   "complexity": 1
+  },
+  {
+   "id": "seed-201",
+   "query": "What would break if we changed this enum's discriminants?",
+   "context": "#[repr(u8)] enum Op { Add = 1, Sub = 2 } is serialized to disk and sent over the wire.",
+   "request_type": "analytical_reasoning",
+   "complexity": 3
+  },
+  {
+   "id": "seed-202",
+   "query": "Rewrite this error message so it tells the user what to do next.",
+   "context": "Error: ECONNREFUSED 127.0.0.1:5432",
+   "request_type": "writing",
+   "complexity": 1
+  },
+  {
+   "id": "seed-203",
+   "query": "List the pros and cons of using GraphQL for a mobile backend.",
+   "context": "",
+   "request_type": "technical_design",
+   "complexity": 2
+  },
+  {
+   "id": "seed-204",
+   "query": "thanks! one more thing, can you also check the spelling in my cover letter",
+   "context": "",
+   "request_type": "writing",
+   "complexity": 1
+  },
+  {
+   "id": "seed-205",
+   "query": "What is 17 times 23?",
+   "context": "",
+   "request_type": "analytical_reasoning",
+   "complexity": 1
+  },
+  {
+   "id": "seed-206",
+   "query": "Create a table of HTTP status codes grouped by class.",
+   "context": "",
+   "request_type": "factual_lookup",
+   "complexity": 1
+  },
+  {
+   "id": "seed-207",
+   "query": "Help me understand this error: cannot move out of borrowed content.",
+   "context": "",
+   "request_type": "code_understanding",
+   "complexity": 2
+  },
+  {
+   "id": "seed-208",
+   "query": "Set up a CI pipeline that builds, tests, and deploys a Rust service to Fly.io on tag push.",
+   "context": "",
+   "request_type": "code_generation",
+   "complexity": 3
+  },
+  {
+   "id": "seed-209",
+   "query": "Write a Python script that reads a folder of PDFs, extracts the text, and saves a CSV of word counts.",
+   "context": "",
+   "request_type": "code_generation",
+   "complexity": 3
+  },
+  {
+   "id": "seed-210",
+   "query": "Is this SQL injection safe?",
+   "context": "query = f\"SELECT * FROM users WHERE name = '{name}'\"",
+   "request_type": "code_understanding",
+   "complexity": 2
+  },
+  {
+   "id": "seed-211",
+   "query": "Describe the architecture of our ingestion pipeline for the new hire onboarding doc.",
+   "context": "Kafka -> Flink -> ClickHouse, with a dead-letter topic.",
+   "request_type": "writing",
+   "complexity": 3
+  },
+  {
+   "id": "seed-212",
+   "query": "Review my approach: I plan to put the feature flags in the same table as user settings.",
+   "context": "",
+   "request_type": "technical_design",
+   "complexity": 2
+  },
+  {
+   "id": "seed-213",
+   "query": "ok",
+   "context": "",
+   "request_type": "general",
+   "complexity": 1
+  },
+  {
+   "id": "seed-214",
+   "query": "hmm",
+   "context": "Previous message asked about caching.",
+   "request_type": "general",
+   "complexity": 1
+  },
+  {
+   "id": "seed-215",
+   "query": "Which one would you pick?",
+   "context": "",
+   "request_type": "general",
+   "complexity": 1
+  },
+  {
+   "id": "seed-216",
+   "query": "Could be either honestly. Thoughts?",
+   "context": "",
+   "request_type": "general",
+   "complexity": 1
+  },
+  {
+   "id": "seed-217",
+   "query": "Write a haiku about merge conflicts.",
+   "context": "",
+   "request_type": "writing",
+   "complexity": 1
+  },
+  {
+   "id": "seed-218",
+   "query": "Analyse these quarterly figures and tell me whether the churn increase is statistically meaningful.",
+   "context": "Q1 churn 2.1% of 40k; Q2 churn 2.4% of 42k.",
+   "request_type": "analytical_reasoning",
+   "complexity": 3
+  },
+  {
+   "id": "seed-219",
+   "query": "Describe the steps to roll back a failed database migration safely.",
+   "context": "Postgres, migration added a NOT NULL column with a default.",
+   "request_type": "technical_design",
+   "complexity": 3
+  }
+ ]
+}

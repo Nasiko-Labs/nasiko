@@ -15,12 +15,16 @@
 //! from the user's next turn ([`classifier::signal`]) is folded back into those cells, so the
 //! router learns which tier suffices for which kind of query. See [`route_model`].
 
+use self::request_classifier::RequestClassifier;
+
 pub mod attribution;
 pub mod boundary;
 pub mod cache;
 pub mod catalog;
 pub mod cells;
 pub mod classifier;
+pub mod local_classifier;
+pub mod request_classifier;
 // The salience classifier itself — feature engine, weight loading, scoring, banding.
 // Private to `routing`: only `salience.rs` (a sibling module) uses it directly, via
 // `ClassifierSalienceGate`.
@@ -83,6 +87,10 @@ pub struct RouteInputs<'a> {
     pub signals: &'a BoundarySignals,
     /// The query to classify (latest user message text). `None` disables classification.
     pub query: Option<&'a str>,
+    /// Optional caller-supplied context for classifiers; currently absent in normal routing.
+    pub context: Option<&'a str>,
+    /// Classifier injected by the host; `None` keeps the historical regex path.
+    pub request_classifier: Option<&'a dyn request_classifier::RequestClassifier>,
 }
 
 /// The outcome of routing: the model to call and how it was chosen.
@@ -250,10 +258,30 @@ pub async fn route_model(
             // (`ThreadRng`) is `!Send`, so it is scoped to drop before the next `.await` — the
             // handler future must stay `Send`.
             let learned = cell_store.load(inputs.provider).await;
-            let (tier, request_type) = {
-                let mut rng = rand::rng();
-                classify(query, inputs.provider, &learned, &mut rng)
+            let fallback_classifier = request_classifier::RegexRequestClassifier;
+            let selected_classifier = inputs.request_classifier.unwrap_or(&fallback_classifier);
+            let classification = match selected_classifier.classify(query, inputs.context).await {
+                Ok(result) => result,
+                Err(error) => {
+                    tracing::warn!(error = %error, "request classifier failed; using regex fallback");
+                    request_classifier::RegexRequestClassifier
+                        .classify(query, inputs.context)
+                        .await
+                        .unwrap_or_else(|_| unreachable!("regex classifier is infallible"))
+                }
             };
+            let request_type = classification.request_type;
+            let tier = {
+                let mut rng = rand::rng();
+                classifier::pick_model_thompson(
+                    &learned,
+                    request_type,
+                    classifier::DEFAULT_W_QUALITY,
+                    classifier::DEFAULT_W_COST,
+                    &mut rng,
+                )
+            };
+            tracing::info!(target: "nasiko::llm_router::classifier", request_type = %request_type.as_str(), complexity = classification.complexity, confidence = classification.confidence, "request classified");
             // Per-config tier override takes priority over the global registry.
             let config_override = match tier {
                 Tier::Tier1 => inputs.tier1_model.map(str::to_string),
@@ -532,6 +560,8 @@ mod tests {
             tier3_model: None,
             signals,
             query: Some("hello"),
+            context: None,
+            request_classifier: None,
         }
     }
 
@@ -644,6 +674,118 @@ mod tests {
         assert_eq!(d.source, RouteSource::Default);
         assert_eq!(d.model, "cfg-model");
         assert!(cache.puts.lock().unwrap().is_empty());
+    }
+
+    /// Classifier that records how many times routing asked it to classify.
+    struct CountingClassifier(std::sync::atomic::AtomicUsize);
+    #[async_trait]
+    impl request_classifier::RequestClassifier for CountingClassifier {
+        async fn classify(
+            &self,
+            _query: &str,
+            _context: Option<&str>,
+        ) -> Result<request_classifier::Classification, String> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(request_classifier::Classification {
+                request_type: classifier::RequestType::Writing,
+                complexity: 2,
+                confidence: 0.9,
+            })
+        }
+    }
+
+    fn calls(c: &CountingClassifier) -> usize {
+        c.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    #[tokio::test]
+    async fn classifier_is_never_called_on_continue_steps() {
+        // Mid tool-loop turns are `Continue`: the tier stays sticky, so even a cache MISS must not
+        // trigger classification (and so can't change the selected tier).
+        let counter = CountingClassifier(Default::default());
+        let cache = FakeCache::empty();
+        let s = signals(Some("c1"), Phase::Continue, Mode::FreeFlowing);
+        let mut i = inputs("anthropic", &s, None);
+        i.request_classifier = Some(&counter);
+        let d = route_model(
+            &cache,
+            &test_support::StubRegistry,
+            &InMemoryCellStore::new(),
+            &AllowAllGate,
+            &i,
+        )
+        .await;
+        assert_ne!(d.source, RouteSource::Classified);
+        assert_eq!(calls(&counter), 0, "Continue must never classify");
+        assert!(cache.puts.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn classifier_runs_once_at_cold_start_and_switch_but_not_on_cache_hit() {
+        for phase in [Phase::ColdStart, Phase::Switch] {
+            let counter = CountingClassifier(Default::default());
+            let cache = FakeCache::empty();
+            let s = signals(Some("c1"), phase, Mode::FreeFlowing);
+            let mut i = inputs("anthropic", &s, None);
+            i.request_classifier = Some(&counter);
+            let d = route_model(
+                &cache,
+                &test_support::StubRegistry,
+                &InMemoryCellStore::new(),
+                &AllowAllGate,
+                &i,
+            )
+            .await;
+            assert_eq!(d.source, RouteSource::Classified, "{phase:?}");
+            assert_eq!(calls(&counter), 1, "{phase:?} classifies exactly once");
+        }
+
+        // A sticky cache hit short-circuits before the classifier, even at a fireable boundary.
+        let counter = CountingClassifier(Default::default());
+        let cache = FakeCache::with_hit("cached-model");
+        let s = signals(Some("c1"), Phase::Switch, Mode::FreeFlowing);
+        let mut i = inputs("anthropic", &s, None);
+        i.request_classifier = Some(&counter);
+        let d = route_model(
+            &cache,
+            &test_support::StubRegistry,
+            &InMemoryCellStore::new(),
+            &AllowAllGate,
+            &i,
+        )
+        .await;
+        assert_eq!(d.source, RouteSource::CacheHit);
+        assert_eq!(d.model, "cached-model");
+        assert_eq!(calls(&counter), 0, "cache hit must not re-classify");
+    }
+
+    #[tokio::test]
+    async fn failing_classifier_falls_back_to_regex_and_routing_still_succeeds() {
+        struct Broken;
+        #[async_trait]
+        impl request_classifier::RequestClassifier for Broken {
+            async fn classify(
+                &self,
+                _: &str,
+                _: Option<&str>,
+            ) -> Result<request_classifier::Classification, String> {
+                Err("offline".into())
+            }
+        }
+        let cache = FakeCache::empty();
+        let s = signals(Some("c1"), Phase::Switch, Mode::FreeFlowing);
+        let mut i = inputs("anthropic", &s, None);
+        i.request_classifier = Some(&Broken);
+        let d = route_model(
+            &cache,
+            &test_support::StubRegistry,
+            &InMemoryCellStore::new(),
+            &AllowAllGate,
+            &i,
+        )
+        .await;
+        assert_eq!(d.source, RouteSource::Classified);
+        assert_eq!(cache.puts.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]
