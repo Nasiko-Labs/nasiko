@@ -1,7 +1,9 @@
 //! Integration tests for JWT encoding, decoding, and related helpers.
 
+mod common;
+
 use nasiko_auth::{
-    AuthError, AuthService, Identity, SimpleJwtAuth,
+    AuthError, AuthService, AuthServiceImpl, Identity, SimpleJwtAuth,
     jwt::{DEFAULT_EXPIRY_SECS, decode_jwt, encode_jwt, extract_jti, hash_jti},
 };
 
@@ -259,13 +261,135 @@ async fn simple_jwt_auth_can_access_agent_always_true() {
 // ─── Token revocation (requires DB — ignored) ────────────────────────────────
 
 #[tokio::test]
+#[serial_test::serial]
 #[ignore = "requires live Postgres database"]
 async fn auth_service_impl_revoke_tokens_for_user_requires_db() {
-    todo!("wire up test PgPool and AuthServiceImpl")
+    let test_db = common::TestDb::create().await;
+    let auth = AuthServiceImpl::new(test_db.pool.clone(), "test-revocation-secret".into());
+
+    let (user_a_id, id_a) = test_db.create_user("revocation_user_a").await;
+    let (user_b_id, id_b) = test_db.create_user("revocation_user_b").await;
+
+    // Mint two tokens for user A and one token for user B
+    let token_a1 = auth.issue_token(&id_a).await.expect("mint token a1");
+    let token_a2 = auth.issue_token(&id_a).await.expect("mint token a2");
+    let token_b1 = auth.issue_token(&id_b).await.expect("mint token b1");
+
+    // Validate minted tokens
+    let decoded_a1 = auth.validate_token(&token_a1).await.expect("validate a1");
+    assert_eq!(decoded_a1.user_id, user_a_id.to_string());
+    let decoded_b1 = auth.validate_token(&token_b1).await.expect("validate b1");
+    assert_eq!(decoded_b1.user_id, user_b_id.to_string());
+
+    // Verify all 3 tokens are recorded in auth_tokens with revoked_at IS NULL
+    let active_before: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM auth_tokens WHERE revoked_at IS NULL",
+    )
+    .fetch_one(&test_db.pool)
+    .await
+    .expect("count active tokens");
+    assert_eq!(active_before, 3);
+
+    // Revoke tokens for user A only
+    let revoked_count = auth
+        .revoke_tokens_for_user(&user_a_id.to_string())
+        .await
+        .expect("revoke tokens for user a");
+    assert_eq!(revoked_count, 2, "must revoke exactly 2 tokens belonging to user A");
+
+    // Verify User A tokens now have revoked_at set
+    let user_a_revoked: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM auth_tokens WHERE user_id = $1 AND revoked_at IS NOT NULL",
+    )
+    .bind(user_a_id)
+    .fetch_one(&test_db.pool)
+    .await
+    .expect("count user A revoked tokens");
+    assert_eq!(user_a_revoked, 2);
+
+    // Verify User B token is still active (unrevoked)
+    let user_b_active: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM auth_tokens WHERE user_id = $1 AND revoked_at IS NULL",
+    )
+    .bind(user_b_id)
+    .fetch_one(&test_db.pool)
+    .await
+    .expect("count user B active tokens");
+    assert_eq!(user_b_active, 1);
+
+    // Revoking again should be idempotent and return 0 affected rows
+    let second_revocation = auth
+        .revoke_tokens_for_user(&user_a_id.to_string())
+        .await
+        .expect("repeat revoke for user a");
+    assert_eq!(second_revocation, 0);
+
+    test_db.cleanup().await;
 }
 
 #[tokio::test]
+#[serial_test::serial]
 #[ignore = "requires live Postgres database"]
 async fn auth_service_impl_revoke_all_tokens_requires_db() {
-    todo!("wire up test PgPool and AuthServiceImpl")
+    let test_db = common::TestDb::create().await;
+    let auth = AuthServiceImpl::new(test_db.pool.clone(), "test-revocation-all-secret".into());
+
+    let (user_a_id, id_a) = test_db.create_user("revoke_all_user_a").await;
+    let (user_b_id, id_b) = test_db.create_user("revoke_all_user_b").await;
+    let agent_id = test_db.create_agent("revoke_all_agent", user_a_id).await;
+
+    // Mint user tokens and an agent token
+    let token_a = auth.issue_token(&id_a).await.expect("mint token a");
+    let token_b = auth.issue_token(&id_b).await.expect("mint token b");
+    let token_agent = auth
+        .issue_agent_token(&agent_id.to_string())
+        .await
+        .expect("mint agent token");
+
+    // Validate tokens
+    assert_eq!(
+        auth.validate_token(&token_a).await.unwrap().user_id,
+        user_a_id.to_string()
+    );
+    assert_eq!(
+        auth.validate_token(&token_b).await.unwrap().user_id,
+        user_b_id.to_string()
+    );
+
+    // All 3 tokens should be active in auth_tokens
+    let active_before: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM auth_tokens WHERE revoked_at IS NULL",
+    )
+    .fetch_one(&test_db.pool)
+    .await
+    .expect("count active before");
+    assert_eq!(active_before, 3);
+
+    // Revoke all tokens across the database
+    let revoked_count = auth.revoke_all_tokens().await.expect("revoke all tokens");
+    assert_eq!(revoked_count, 3, "must revoke all 3 active tokens");
+
+    // Verify 0 active tokens remain
+    let active_after: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM auth_tokens WHERE revoked_at IS NULL",
+    )
+    .fetch_one(&test_db.pool)
+    .await
+    .expect("count active after");
+    assert_eq!(active_after, 0);
+
+    // Verify all 3 tokens are marked revoked
+    let revoked_total: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM auth_tokens WHERE revoked_at IS NOT NULL",
+    )
+    .fetch_one(&test_db.pool)
+    .await
+    .expect("count revoked after");
+    assert_eq!(revoked_total, 3);
+
+    // Repeated call should return 0 affected rows
+    let second_revocation = auth.revoke_all_tokens().await.expect("repeat revoke all");
+    assert_eq!(second_revocation, 0);
+
+    test_db.cleanup().await;
 }
