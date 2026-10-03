@@ -109,6 +109,7 @@ impl LlmRouterCtx {
             anthropic_api_base = %cfg.anthropic_api_base,
             gemini_api_base = %cfg.gemini_api_base,
             llm_gateway_base_url = %cfg.llm_gateway_base_url,
+            request_type_backend = cfg.request_type_backend.as_str(),
             "llm-router: initializing with effective GatewayConfig"
         );
         let cache = Arc::new(ConfigCache::new(Duration::from_secs(

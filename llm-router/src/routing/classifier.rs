@@ -32,7 +32,38 @@ use std::collections::HashMap;
 use rand::Rng;
 use rand_distr::{Beta, Distribution};
 
+use super::minilm;
 use super::patterns::{CATEGORY_PATTERNS, NEGATIVE_SIGNALS, POSITIVE_SIGNALS};
+
+/// Which Level-3 request-type classifier to run. Tier selection (Thompson sampling)
+/// is the same either way; only the bucket that keys the bandit cells changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RequestTypeBackend {
+    /// Regex vote-count (litellm Adaptive Router port). The default — no new
+    /// behaviour unless an operator opts in.
+    #[default]
+    Regex,
+    /// 384-d hashing-trick + prototype cosine (MiniLM-width, no ONNX).
+    MiniLm,
+}
+
+impl RequestTypeBackend {
+    /// Parse `ROUTER_CLASSIFIER`. Unknown or empty values fall back to [`Self::Regex`]
+    /// so a typo never takes the router offline.
+    pub fn parse(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "minilm" | "mini-lm" | "semantic" => Self::MiniLm,
+            _ => Self::Regex,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Regex => "regex",
+            Self::MiniLm => "minilm",
+        }
+    }
+}
 
 /// Coarse model strength tier. Tier 1 = most capable (complex queries), Tier 3 = smallest
 /// (very simple queries), Tier 2 = in between.
@@ -164,6 +195,18 @@ const TIER_ARMS: [TierArm; 3] = [
 /// patterns wins, ties broken by declaration order, defaulting to `General`. Port of
 /// `categories.rs::classify`.
 pub fn classify_request_type(text: &str) -> RequestType {
+    classify_request_type_with(text, RequestTypeBackend::Regex)
+}
+
+/// Bucket a query using the chosen [`RequestTypeBackend`].
+pub fn classify_request_type_with(text: &str, backend: RequestTypeBackend) -> RequestType {
+    match backend {
+        RequestTypeBackend::MiniLm => minilm::classify_request_type(text),
+        RequestTypeBackend::Regex => classify_request_type_regex(text),
+    }
+}
+
+fn classify_request_type_regex(text: &str) -> RequestType {
     let mut best = RequestType::General;
     let mut best_score = 0usize;
     for (rt, pats) in CATEGORY_PATTERNS.iter() {
@@ -302,13 +345,15 @@ pub fn pick_model_thompson<R: Rng + ?Sized>(
 ///
 /// `cells` are the provider's learned quality estimates (empty ⇒ pure cold-start priors);
 /// `rng` drives Thompson exploration (entropy in production, seeded in tests).
+/// `backend` selects the request-type classifier (`regex` or `minilm`).
 pub fn classify<R: Rng + ?Sized>(
     query: &str,
     provider: &str,
     cells: &CellMap,
     rng: &mut R,
+    backend: RequestTypeBackend,
 ) -> (Tier, RequestType) {
-    let request_type = classify_request_type(query);
+    let request_type = classify_request_type_with(query, backend);
     let tier = pick_model_thompson(cells, request_type, DEFAULT_W_QUALITY, DEFAULT_W_COST, rng);
     let preview: String = query.chars().take(120).collect();
     tracing::info!(
@@ -317,6 +362,7 @@ pub fn classify<R: Rng + ?Sized>(
         query_chars = query.chars().count(),
         query_preview = %preview,
         request_type = %request_type.as_str(),
+        request_type_backend = backend.as_str(),
         learned_cells = cells.len(),
         classified_tier = ?tier,
         "classifier: classified query into request type and Thompson-sampled a model tier"
@@ -380,6 +426,39 @@ mod tests {
             assert_eq!(RequestType::from_wire(rt.as_str()), Some(rt));
         }
         assert_eq!(RequestType::from_wire("nonsense"), None);
+    }
+
+    #[test]
+    fn request_type_backend_parse_falls_back_to_regex() {
+        assert_eq!(
+            RequestTypeBackend::parse("minilm"),
+            RequestTypeBackend::MiniLm
+        );
+        assert_eq!(
+            RequestTypeBackend::parse("MINI-LM"),
+            RequestTypeBackend::MiniLm
+        );
+        assert_eq!(
+            RequestTypeBackend::parse("semantic"),
+            RequestTypeBackend::MiniLm
+        );
+        assert_eq!(RequestTypeBackend::parse("regex"), RequestTypeBackend::Regex);
+        assert_eq!(RequestTypeBackend::parse(""), RequestTypeBackend::Regex);
+        assert_eq!(
+            RequestTypeBackend::parse("not-a-backend"),
+            RequestTypeBackend::Regex
+        );
+    }
+
+    #[test]
+    fn minilm_backend_classifies_code_generation() {
+        assert_eq!(
+            classify_request_type_with(
+                "write me a Python sort function",
+                RequestTypeBackend::MiniLm
+            ),
+            RequestType::CodeGeneration
+        );
     }
 
     // --- feedback signal ---
@@ -527,6 +606,7 @@ mod tests {
             "anthropic",
             &cells,
             &mut rng,
+            RequestTypeBackend::Regex,
         );
         assert_eq!(rt, RequestType::CodeGeneration);
         assert!(matches!(tier, Tier::Tier1 | Tier::Tier2 | Tier::Tier3));

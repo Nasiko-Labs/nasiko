@@ -24,6 +24,7 @@ pub mod classifier;
 // The salience classifier itself — feature engine, weight loading, scoring, banding.
 // Private to `routing`: only `salience.rs` (a sibling module) uses it directly, via
 // `ClassifierSalienceGate`.
+mod minilm;
 mod patterns;
 pub mod pricing_sync;
 pub mod registry;
@@ -33,7 +34,7 @@ mod salience_classifier;
 pub use boundary::{BoundarySignals, Mode, Phase};
 pub use cache::{CachedDecision, DecisionCache, NoopCache, RedisCache};
 pub use cells::{CellStore, InMemoryCellStore, PgCellStore};
-pub use classifier::{RequestType, Tier, classify, signal};
+pub use classifier::{RequestType, RequestTypeBackend, Tier, classify, signal};
 pub use registry::{PgTierRegistry, TierRegistry};
 pub use salience::{AllowAllGate, ClassifierSalienceGate, SalienceGate};
 
@@ -83,6 +84,9 @@ pub struct RouteInputs<'a> {
     pub signals: &'a BoundarySignals,
     /// The query to classify (latest user message text). `None` disables classification.
     pub query: Option<&'a str>,
+    /// Level 3 request-type backend. Default is the regex vote-count classifier;
+    /// `MiniLm` is the 384-d hashing-trick prototype matcher (`ROUTER_CLASSIFIER=minilm`).
+    pub request_type_backend: RequestTypeBackend,
 }
 
 /// The outcome of routing: the model to call and how it was chosen.
@@ -252,7 +256,13 @@ pub async fn route_model(
             let learned = cell_store.load(inputs.provider).await;
             let (tier, request_type) = {
                 let mut rng = rand::rng();
-                classify(query, inputs.provider, &learned, &mut rng)
+                classify(
+                    query,
+                    inputs.provider,
+                    &learned,
+                    &mut rng,
+                    inputs.request_type_backend,
+                )
             };
             // Per-config tier override takes priority over the global registry.
             let config_override = match tier {
@@ -532,6 +542,7 @@ mod tests {
             tier3_model: None,
             signals,
             query: Some("hello"),
+            request_type_backend: RequestTypeBackend::Regex,
         }
     }
 
