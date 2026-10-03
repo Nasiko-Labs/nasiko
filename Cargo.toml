@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+"nasiko-tool-compact",
     # ─── OSS crates ─────────────────────────────────────────────────────────
     "auth",
     "compress",
