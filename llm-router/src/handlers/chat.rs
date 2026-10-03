@@ -370,10 +370,47 @@ async fn chat_core(
         });
     }
 
+    // ── compact tools seam (opt-in, non-streaming only) ────────────────────────────────────
+    // Off by default; when off, `prepare` returns before reading the request and the native
+    // call below is exactly what ran before. A compact reply that does not decode is retried
+    // natively — nothing has been sent to the client yet (compact_tools.rs).
+    let compact = crate::compact_tools::prepare(&req, &ctx.cfg);
+    tracing::debug!(
+        target: "nasiko::llm_router::compact_tools",
+        %agent_id,
+        applied = compact.is_ok(),
+        skipped = ?compact.as_ref().err(),
+        "compact tools: decision"
+    );
+
     // Non-streaming: run with ordered fallbacks; usage records the effective provider/model.
-    let (resp, (provider, model)) = fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
-        .instrument(llm_span.clone())
-        .await?;
+    let (resp, (provider, model)) = match compact {
+        Err(_) => {
+            fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
+                .instrument(llm_span.clone())
+                .await?
+        }
+        Ok(prepared) => {
+            let (mut resp, effective) =
+                fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &prepared.request)
+                    .instrument(llm_span.clone())
+                    .await?;
+            match prepared.restore(&mut resp) {
+                Ok(()) => (resp, effective),
+                Err(e) => {
+                    tracing::warn!(
+                        target: "nasiko::llm_router::compact_tools",
+                        %agent_id,
+                        error = e.as_label(),
+                        "compact tools: reply did not decode; retrying natively"
+                    );
+                    fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
+                        .instrument(llm_span.clone())
+                        .await?
+                }
+            }
+        }
+    };
     let latency_ms = started.elapsed().as_millis() as i64;
 
     // Record effective model and token usage on the server-side gen_ai span.

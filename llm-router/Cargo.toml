@@ -19,6 +19,7 @@ nasiko-pricing.workspace = true
 nasiko-savings.workspace = true
 # Internal — structural payload compression at the egress seam (src/compress.rs)
 nasiko-compress.workspace = true
+nasiko-tool-compact.workspace = true
 
 # Web / async
 axum = { workspace = true }
@@ -60,6 +61,8 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
+# compact_tools_eval example only.
+tiktoken-rs = "=0.12.1"
 tokio = { workspace = true }
 serde_json = { workspace = true }
 serial_test = { workspace = true }
