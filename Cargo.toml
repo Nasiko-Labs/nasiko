@@ -21,11 +21,13 @@ members = [
     "hitl",
     "agent-proxy",
     "llm-router",
+    "tool-compact",
     "mcp-gateway",
     "cli",
     "github",
     "bench",
     "bench-support",
+   
 ]
 
 [workspace.package]
