@@ -67,3 +67,8 @@ base64 = { workspace = true }
 mockito = { workspace = true }
 tower = { workspace = true }
 zstd.workspace = true
+# compact_tools_eval example only. The router does not use tool compaction yet; when it is
+# wired in, nasiko-tool-compact moves to [dependencies]. tiktoken-rs stays here: it measures
+# token savings in the example and must never be a dependency of the library or router.
+nasiko-tool-compact = { path = "../tool-compact" }
+tiktoken-rs = "=0.12.1"
