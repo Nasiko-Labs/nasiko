@@ -288,6 +288,18 @@ async fn chat_core(
         "brevity: directive decision"
     );
 
+    // ── compact tool schemas seam ─────────────────────────────────────────────────────────
+    // After brevity, not before: brevity reads `req.tools` to detect a tool loop, and clearing
+    // it first would silently switch that check off. Before `sent_bytes`, so the savings
+    // calibration sees the bytes actually sent. Off by default (`COMPACT_TOOLS_ENABLED`).
+    let compact_tools = crate::compact_tools::apply(&mut req, &ctx.cfg, &resolved);
+    tracing::debug!(
+        target: "nasiko::llm_router::compact_tools",
+        %agent_id,
+        decision = %crate::compact_tools::to_metadata(&compact_tools),
+        "compact_tools: request decision"
+    );
+
     // ── savings ledger inputs ─────────────────────────────────────────────────────────────
     // Measured here, after both seams, because this is the payload the provider will actually
     // bill for — which is what makes `sent_bytes / reported_input_tokens` a calibration rather
@@ -348,6 +360,11 @@ async fn chat_core(
             fallback::execute_chat_stream(&ctx.http, &ctx.cfg, &resolved, &req)
                 .instrument(llm_span.clone())
                 .await?;
+        // Compacted request: turn `<<call …>>` text back into tool-call deltas as it streams.
+        let stream = match &compact_tools {
+            Ok(applied) => crate::compact_tools::wrap_stream(stream, applied.tools.clone()),
+            Err(_) => stream,
+        };
         llm_span.record("gen_ai.response.model", model.as_str());
         let renderer = inbound.chat_stream_renderer();
         return stream_chat(StreamChatArgs {
@@ -371,10 +388,38 @@ async fn chat_core(
     }
 
     // Non-streaming: run with ordered fallbacks; usage records the effective provider/model.
-    let (resp, (provider, model)) = fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
-        .instrument(llm_span.clone())
-        .await?;
+    let (mut resp, (provider, model)) =
+        fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
+            .instrument(llm_span.clone())
+            .await?;
     let latency_ms = started.elapsed().as_millis() as i64;
+
+    // Compacted request: decode `<<call …>>` text into native `tool_calls` before usage is
+    // logged (so `finish_reason` reads `tool_calls`). Fail closed: a call that does not decode
+    // and validate is an error — after usage is recorded, since the tokens were spent.
+    let compact_error = match &compact_tools {
+        Ok(applied) => match crate::compact_tools::decode_response(&mut resp, applied) {
+            Ok(calls) => {
+                tracing::debug!(
+                    target: "nasiko::llm_router::compact_tools",
+                    %agent_id, calls, "compact_tools: response decoded"
+                );
+                None
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "nasiko::llm_router::compact_tools",
+                    %agent_id, code = e.code(), error = %e,
+                    "compact_tools: model produced an invalid tool call; failing closed"
+                );
+                Some(GatewayError::Upstream(format!(
+                    "model returned an invalid tool call ({})",
+                    e.code()
+                )))
+            }
+        },
+        Err(_) => None,
+    };
 
     // Record effective model and token usage on the server-side gen_ai span.
     llm_span.record("gen_ai.response.model", model.as_str());
@@ -405,6 +450,9 @@ async fn chat_core(
         },
     );
 
+    if let Some(e) = compact_error {
+        return Err(e);
+    }
     Ok(Json(inbound.render_chat_response(resp)).into_response())
 }
 
