@@ -3617,6 +3617,7 @@ dependencies = [
  "mockito",
  "nasiko-compress",
  "nasiko-pricing",
+ "nasiko-savings",
  "nasiko-secrets",
  "nasiko-tool-compact",
  "rand 0.9.5",
@@ -3745,10 +3746,11 @@ dependencies = [
  "dashmap",
  "futures",
  "mockito",
+ "nasiko-agent-proxy",
  "nasiko-compress",
  "nasiko-config",
+ "nasiko-flow",
  "nasiko-hitl",
- "nasiko-observability",
  "nasiko-types",
  "redis",
  "reqwest",
@@ -3817,13 +3819,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "nasiko-savings"
+version = "0.1.0"
+dependencies = [
+ "sqlx",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "nasiko-secrets"
 version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
  "hkdf",
- "rand 0.9.5",
  "sha2 0.10.9",
  "thiserror 2.0.20",
  "uuid",
@@ -3875,6 +3885,7 @@ dependencies = [
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
+ "percent-encoding",
  "rand 0.9.5",
  "redis",
  "reqwest",
