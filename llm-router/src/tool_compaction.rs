@@ -14,6 +14,29 @@ pub(crate) struct Applied {
     original: Vec<CompactDef>,
 }
 
+/// Selection runs after route resolution, using the shared outbound client.
+/// Streaming keeps native tools because Phase 1 router compaction is non-streaming.
+pub(crate) async fn transform(
+    req: &mut ChatRequest,
+    cfg: &GatewayConfig,
+    http: &reqwest::Client,
+) -> Option<Applied> {
+    if !cfg.tool_compaction_enabled {
+        return None;
+    }
+    if let Some(outcome) =
+        crate::tool_selection::select_request(req, &cfg.tool_selection, http, None).await
+    {
+        if outcome.native_fallback {
+            return None;
+        }
+        if let Some(tools) = req.tools.take() {
+            req.tools = Some(outcome.indices.iter().map(|&i| tools[i].clone()).collect());
+        }
+    }
+    apply(req, cfg)
+}
+
 pub(crate) fn apply(req: &mut ChatRequest, cfg: &GatewayConfig) -> Option<Applied> {
     if !cfg.tool_compaction_enabled || req.is_streaming() {
         return None;

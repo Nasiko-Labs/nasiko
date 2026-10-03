@@ -107,6 +107,35 @@ OpenAI-compatible `/chat/completions` endpoint and adds `raw_output` and
 The call grammar matches the public decoder cases, so their chunks are fed
 to `StreamDecoder` unchanged; no case-specific conversion is needed.
 
+## Phase 2 tool selection
+
+Phase 2 optionally selects a smaller catalog before the Phase 1 encoder. Set
+`TOOL_COMPACTION_ENABLED=true` (the existing `NASIKO_TOOL_COMPACTION` flag also
+works), `TOOL_SELECTION_MODE=jev`, and provide `TYPESAFE_API_KEY` through the
+process environment. Selection is off by default. Each Jev answer maps to an
+existing native tool; local policy retains mandatory tools and dependencies,
+enforces budgets, and falls back to compact-all on any invalid or failed decision.
+
+For machines with Docker and no Cargo installation, execute the evaluator from
+the repository root. The dataset must already exist; the public download command
+is shown above. The runner builds the real Rust example and writes measured JSONL.
+
+```sh
+./llm-router/scripts/compact-tools-eval.sh off
+./llm-router/scripts/compact-tools-eval.sh deterministic
+# TYPESAFE_API_KEY must be exported for a live selector run.
+TOOL_SELECTION_TIMEOUT_MS=10000 ./llm-router/scripts/compact-tools-eval.sh jev
+```
+
+`off` is the original offline P1 evaluation. `deterministic` is a lexical test
+baseline, not a guarantee of recall. `jev` uses the actual API and keeps the
+generating LLM offline unless `PROVIDER_BASE_URL` and `MODEL` are also set.
+Results default to `target/compact-tools-<mode>.jsonl`; override `EVAL_SET` and
+`OUT` as needed. Set `CARGO_NET_OFFLINE=true` once Cargo dependencies are cached.
+
+See [tool-selection.md](tool-selection.md) for configuration, cost accounting,
+router startup, test commands, and the reconciliation with the Phase 2 spec.
+
 ## Manual end-to-end smoke
 
 ```sh

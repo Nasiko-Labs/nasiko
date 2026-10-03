@@ -115,6 +115,8 @@ pub struct GatewayConfig {
 
     /// Experimental compact function declarations; off unless explicitly enabled.
     pub tool_compaction_enabled: bool,
+    /// Optional Phase 2 catalog selection. Off preserves the Phase 1 transform.
+    pub tool_selection: crate::tool_selection::SelectionConfig,
 
     /// Append the brevity directive to outbound requests (IP-2, output tokens).
     ///
@@ -194,6 +196,7 @@ impl Default for GatewayConfig {
             compress_level: nasiko_compress::Level::Conservative,
             compress_dry_run: false,
             tool_compaction_enabled: false,
+            tool_selection: crate::tool_selection::SelectionConfig::default(),
             brevity_enabled: true,
             brevity_min_bytes: 0,
             brevity_holdout_pct: 5,
@@ -293,7 +296,11 @@ impl GatewayConfig {
                 nasiko_compress::Level::Conservative,
             ),
             compress_dry_run: env_flag("TOKEN_COMPRESS_DRY_RUN", false),
-            tool_compaction_enabled: env_flag("NASIKO_TOOL_COMPACTION", false),
+            tool_compaction_enabled: env_flag(
+                "TOOL_COMPACTION_ENABLED",
+                env_flag("NASIKO_TOOL_COMPACTION", false),
+            ),
+            tool_selection: selection_from_env(),
             brevity_enabled: env_flag("TOKEN_BREVITY", d.brevity_enabled),
             brevity_min_bytes: env_usize("TOKEN_BREVITY_MIN_BYTES", d.brevity_min_bytes),
             brevity_holdout_pct: env_usize(
@@ -390,6 +397,73 @@ fn parse_or_warn<T, E: std::fmt::Display>(
             );
             default
         }
+    }
+}
+
+fn selection_from_env() -> crate::tool_selection::SelectionConfig {
+    use crate::tool_selection::{FallbackMode, SelectionApiKey, SelectionConfig, SelectionMode};
+    let d = SelectionConfig::default();
+    let mut configuration_error = None;
+    let mut mode = parse_or_warn("TOOL_SELECTION_MODE", str::parse::<SelectionMode>, d.mode);
+    let dependencies = match std::env::var("TOOL_SELECTION_DEPENDENCIES") {
+        Ok(raw) if !raw.trim().is_empty() => match serde_json::from_str(&raw) {
+            Ok(graph) => graph,
+            Err(_) => {
+                tracing::warn!(target:"nasiko::llm_router::startup", "invalid TOOL_SELECTION_DEPENDENCIES; disabling tool selection");
+                mode = SelectionMode::Off;
+                configuration_error = Some(crate::tool_selection::SelectionError::InvalidPolicy);
+                d.dependencies.clone()
+            }
+        },
+        _ => d.dependencies.clone(),
+    };
+    let threshold = env_parse_first(&["TOOL_SELECTION_THRESHOLD"], d.include_threshold);
+    let uncertainty_floor = match std::env::var("TOOL_SELECTION_UNCERTAINTY_FLOOR")
+        .ok()
+        .as_deref()
+    {
+        Some("off" | "none") => None,
+        _ => Some(env_parse_first(
+            &["TOOL_SELECTION_UNCERTAINTY_FLOOR"],
+            d.uncertainty_floor.unwrap_or(threshold).min(threshold),
+        )),
+    };
+    SelectionConfig {
+        configuration_error,
+        mode,
+        fallback: parse_or_warn(
+            "TOOL_SELECTION_FALLBACK",
+            str::parse::<FallbackMode>,
+            d.fallback,
+        ),
+        include_threshold: threshold,
+        uncertainty_floor,
+        max_tools: std::env::var("TOOL_SELECTION_MAX_TOOLS")
+            .ok()
+            .and_then(|v| v.parse().ok()),
+        max_tool_tokens: std::env::var("TOOL_SELECTION_MAX_TOKENS")
+            .ok()
+            .and_then(|v| v.parse().ok()),
+        min_selected_tools: env_usize("TOOL_SELECTION_MIN_TOOLS", d.min_selected_tools),
+        min_jev_catalog_tokens: env_parse_first(
+            &["TOOL_SELECTION_MIN_CATALOG_TOKENS"],
+            d.min_jev_catalog_tokens,
+        ),
+        timeout_ms: env_parse_first(&["TOOL_SELECTION_TIMEOUT_MS"], d.timeout_ms),
+        jev_model: env_first(
+            &["TOOL_SELECTION_JEV_MODEL", "TYPESAFE_MODEL"],
+            &d.jev_model,
+        ),
+        jev_base_url: env_or("TYPESAFE_BASE_URL", &d.jev_base_url),
+        api_key: SelectionApiKey::new(env_or("TYPESAFE_API_KEY", "")),
+        mandatory_tools: std::env::var("TOOL_SELECTION_MANDATORY")
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect(),
+        dependencies,
     }
 }
 

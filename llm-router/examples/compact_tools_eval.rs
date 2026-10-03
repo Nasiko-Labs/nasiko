@@ -9,6 +9,7 @@ use std::env;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 
+use nasiko_llm_router::tool_selection::{SelectionMode, select_request};
 use nasiko_tool_compact::{
     CompactError, StreamDecoder, ToolCall, ToolDef, decode_calls, encode_tools, render_call,
 };
@@ -193,14 +194,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tokenizer = tiktoken_rs::o200k_base()?;
     let mut native_tokens = 0usize;
     let mut compact_tokens = 0usize;
+    // Explicit evaluator opt-in: the official invocation remains offline Phase 1
+    // even if a deployment has TOOL_SELECTION_MODE or credentials configured.
+    let eval_selection = env::var("EVAL_SELECTION_MODE")
+        .unwrap_or_else(|_| "off".into())
+        .parse::<SelectionMode>()?;
+    let mut selection_cfg = nasiko_llm_router::GatewayConfig::from_env().tool_selection;
+    selection_cfg.mode = eval_selection;
 
     for case in dataset["cases"].as_array().ok_or("dataset cases missing")? {
-        let native_tools = selected(&case["tools"], &catalog)?;
+        let all_native_tools = selected(&case["tools"], &catalog)?;
+        let all_definitions = all_native_tools
+            .iter()
+            .map(|raw| to_def(raw))
+            .collect::<Result<Vec<_>, _>>()?;
+        let baseline_request = request_for(case, &all_native_tools, &all_definitions, model_id).0;
+        let selection_request = serde_json::from_value(json!({
+            "model":model_id,"messages":case["messages"],"tools":all_native_tools
+        }))?;
+        let outcome = select_request(&selection_request, &selection_cfg, &client, None).await;
+        let native_tools = if let Some(outcome) = &outcome {
+            outcome
+                .indices
+                .iter()
+                .map(|&i| all_native_tools[i])
+                .collect::<Vec<_>>()
+        } else {
+            all_native_tools.clone()
+        };
         let definitions = native_tools
             .iter()
             .map(|raw| to_def(raw))
             .collect::<Result<Vec<_>, _>>()?;
-        let (request, compacted) = request_for(case, &native_tools, &definitions, model_id);
+        let (mut request, mut compacted) = request_for(case, &native_tools, &definitions, model_id);
+        if outcome.as_ref().is_some_and(|o| o.native_fallback) {
+            request = json!({"model":model_id,"messages":case["messages"],"tools":all_native_tools,"temperature":0,"stream":false});
+            compacted = false;
+        }
         let expected = case["expected"].as_array().ok_or("case expected missing")?;
         let calls = expected
             .iter()
@@ -219,23 +249,89 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             String::new()
         };
-        let roundtrip = if compacted {
-            decode_calls(&rendered, &definitions)?
+        let roundtrip_result = if compacted {
+            decode_calls(&rendered, &definitions)
         } else {
             // Native fallback keeps the original call contract; no compact decoder runs.
-            calls.clone()
+            Ok(calls.clone())
         };
+        if outcome.is_none() && roundtrip_result.is_err() {
+            return Err(roundtrip_result.err().unwrap().into());
+        }
+        let roundtrip_ok = roundtrip_result.is_ok();
+        let roundtrip = roundtrip_result.unwrap_or_default();
         let mut line = json!({
             "id":case["id"], "compact_request":request,
             "compacted":compacted, "rendered_calls":rendered,
             "roundtrip_calls":calls_json(&roundtrip)
         });
         let native = json!({
-            "model":model_id,"messages":case["messages"],"tools":native_tools,
+            "model":model_id,"messages":case["messages"],"tools":all_native_tools,
             "temperature":0,"stream":false
         });
-        native_tokens += tokenizer.encode_ordinary(&native.to_string()).len();
-        compact_tokens += tokenizer.encode_ordinary(&request.to_string()).len();
+        let native_count = tokenizer.encode_ordinary(&native.to_string()).len();
+        let submitted_count = tokenizer.encode_ordinary(&request.to_string()).len();
+        native_tokens += native_count;
+        compact_tokens += submitted_count;
+        if let Some(outcome) = &outcome {
+            let required = required_names(case)?;
+            let selected_names = definitions
+                .iter()
+                .map(|t| t.name.as_str())
+                .collect::<std::collections::BTreeSet<_>>();
+            let retained = required
+                .iter()
+                .filter(|n| selected_names.contains(n.as_str()))
+                .count();
+            let overhead = if matches!(eval_selection, SelectionMode::Deterministic) {
+                Some(0u64)
+            } else {
+                outcome
+                    .telemetry
+                    .selection_usage
+                    .as_ref()
+                    .and_then(|u| u.input_tokens.checked_add(u.output_tokens))
+            };
+            let baseline_count = tokenizer
+                .encode_ordinary(&baseline_request.to_string())
+                .len();
+            let mut telemetry = serde_json::to_value(&outcome.telemetry)?;
+            // Offline rows must be byte-deterministic; timing is only reported live.
+            if eval_selection == SelectionMode::Deterministic {
+                telemetry["selection_latency_ms"] = Value::Null;
+            }
+            line["selection"] = json!({
+                "telemetry":telemetry,
+                "probabilities":outcome.probabilities,
+                "selected_names":selected_names,
+                "ground_truth_source":if case.get("required_tools").is_some() {"required_tools"} else {"expected"},
+                "required_tools":required,
+                "false_exclusions":required.len()-retained,
+                "false_inclusions":selected_names.len()-retained,
+                "recall":ratio(retained,required.len()),"precision":ratio(retained,selected_names.len()),
+                "tool_count_reduction":1.0 - selected_names.len() as f64 / all_native_tools.len() as f64,
+                "tokenizer":"o200k_base","native_request_tokens":native_count,
+                "phase1_request_tokens":baseline_count,"submitted_request_tokens":submitted_count,
+                "gross_request_reduction":1.0 - submitted_count as f64 / native_count as f64,
+                "request_tokens_saved_over_phase1":baseline_count as i64-submitted_count as i64,
+                "selector_tokens":overhead,
+                "net_request_tokens_saved":overhead.map(|n| native_count as i128-submitted_count as i128-i128::from(n)),
+                "roundtrip_ok":roundtrip_ok,
+                "model_adherence":Value::Null
+            });
+            eprintln!(
+                "phase2 {}: tools {} -> {}, required retained {}/{}, fallback={:?}, request tokens {} -> {}, selector tokens={:?}",
+                case["id"].as_str().unwrap_or("unknown"),
+                all_native_tools.len(),
+                selected_names.len(),
+                retained,
+                required.len(),
+                outcome.telemetry.fallback,
+                native_count,
+                submitted_count,
+                overhead
+            );
+        }
         if live {
             let response = live_output(
                 &client,
@@ -255,6 +351,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 native_live_calls(&response)
             };
             line["raw_output"] = Value::String(raw);
+            if outcome.is_some() {
+                line["selection"]["model_adherence"] =
+                    json!(matches_expected(case, &line["live_calls"]["calls"]));
+            }
         }
         writeln!(writer, "{line}")?;
     }
@@ -299,9 +399,93 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn ratio(numerator: usize, denominator: usize) -> Option<f64> {
+    (denominator > 0).then(|| numerator as f64 / denominator as f64)
+}
+
+fn matches_expected(case: &Value, decoded: &Value) -> bool {
+    let Some(actual) = decoded.as_array() else {
+        return false;
+    };
+    let Some(expected) = case["expected"].as_array() else {
+        return false;
+    };
+    let ignored = case
+        .pointer("/match/free_text_fields")
+        .and_then(Value::as_array);
+    let canonical = |calls: &[Value]| {
+        let mut calls = calls.to_vec();
+        for call in &mut calls {
+            if let Some(arguments) = call["arguments"].as_object_mut() {
+                for field in ignored.into_iter().flatten().filter_map(Value::as_str) {
+                    arguments.remove(field);
+                }
+            }
+        }
+        let mut serialized = calls.iter().map(Value::to_string).collect::<Vec<_>>();
+        serialized.sort();
+        serialized
+    };
+    canonical(actual) == canonical(expected)
+}
+
+/// Ground truth is used only after selection, never in request construction.
+fn required_names(
+    case: &Value,
+) -> Result<std::collections::BTreeSet<String>, Box<dyn std::error::Error>> {
+    if let Some(names) = case.get("required_tools") {
+        return names
+            .as_array()
+            .ok_or("required_tools must be an array")?
+            .iter()
+            .map(|name| {
+                name.as_str()
+                    .map(str::to_string)
+                    .ok_or_else(|| "required tool must be a name".into())
+            })
+            .collect();
+    }
+    case["expected"]
+        .as_array()
+        .ok_or("case expected missing")?
+        .iter()
+        .map(|call| {
+            call["name"]
+                .as_str()
+                .map(str::to_string)
+                .ok_or_else(|| "expected name missing".into())
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adherence_uses_official_free_text_matching_rules() {
+        let case = json!({"expected":[{"name":"calendar","arguments":{"title":"Review","duration":30}}],"match":{"free_text_fields":["title"]}});
+        assert!(matches_expected(
+            &case,
+            &json!([{"name":"calendar","arguments":{"title":"Design review","duration":30}}])
+        ));
+        assert!(!matches_expected(
+            &case,
+            &json!([{"name":"calendar","arguments":{"title":"Review","duration":10}}])
+        ));
+        assert!(!matches_expected(&case, &Value::Null));
+    }
+
+    #[test]
+    fn ground_truth_is_dataset_derived_and_empty_truth_is_not_perfect_recall() {
+        let case = json!({"expected":[{"name":"calendar","arguments":{}}]});
+        assert_eq!(
+            required_names(&case).unwrap(),
+            std::collections::BTreeSet::from(["calendar".into()])
+        );
+        assert_eq!(ratio(0, 0), None);
+        assert!(required_names(&json!({"required_tools":[1],"expected":[]})).is_err());
+    }
 
     #[test]
     fn unsupported_schema_keeps_native_tool_request() {
