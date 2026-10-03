@@ -334,6 +334,8 @@ flowchart LR
 > paths originate **inside** the server. Agents never receive a direct, public request, and both call
 > back out into the LLM Router and MCP Gateway rather than holding real API keys or tool credentials.
 
+The LLM Router's opt-in compact tool-schema path is documented in the [architecture and local setup guide](llm-router/docs/compact-tools-architecture.md).
+
 ## Requirements
 
 

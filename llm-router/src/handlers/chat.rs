@@ -173,6 +173,8 @@ async fn chat_core(
     );
 
     let inbound = inbound_for(format);
+    let compact_wire_supported =
+        ctx.cfg.compact_tools_enabled && crate::compact_tools::supports_wire_tools(&body);
     let mut req = inbound.parse_chat(body)?;
     if let Some(stream) = force_stream {
         req.stream = Some(stream);
@@ -287,6 +289,27 @@ async fn chat_core(
         skipped = ?brevity.err(),
         "brevity: directive decision"
     );
+
+    // Compact definitions after routing and existing transforms. Unsupported surfaces retain
+    // native tool calling; the Responses passthrough is deliberately outside this seam.
+    let compact = match crate::compact_tools::apply(
+        &mut req,
+        crate::compact_tools::RouterPolicy {
+            cfg: &ctx.cfg,
+            resolved: &resolved,
+            format,
+            wire_supported: compact_wire_supported,
+        },
+    ) {
+        Ok(prepared) => {
+            tracing::debug!(target: "nasiko::llm_router::compact_tools", applied = true, "compact tools");
+            Some(prepared)
+        }
+        Err(reason) => {
+            tracing::debug!(target: "nasiko::llm_router::compact_tools", applied = false, reason = reason.as_str(), "compact tools bypass");
+            None
+        }
+    };
 
     // ── savings ledger inputs ─────────────────────────────────────────────────────────────
     // Measured here, after both seams, because this is the payload the provider will actually
@@ -405,6 +428,15 @@ async fn chat_core(
         },
     );
 
+    // Usage was already recorded: malformed compact output still incurred provider cost.
+    let resp = if let Some(prepared) = compact {
+        prepared.restore(resp).map_err(|error| {
+            tracing::warn!(target: "nasiko::llm_router::compact_tools", code = error.code(), "compact response rejected");
+            GatewayError::Upstream(format!("compact_tools: {}", error.code()))
+        })?
+    } else {
+        resp
+    };
     Ok(Json(inbound.render_chat_response(resp)).into_response())
 }
 
