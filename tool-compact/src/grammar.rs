@@ -161,7 +161,7 @@ impl Scanner {
     }
 
     /// Feed the next chunk. Returns the tokens completed by it, in order.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn push(&mut self, chunk: &str) -> Result<Vec<Token>> {
         let mut tokens = Vec::new();
         self.push_with(chunk, |t| {

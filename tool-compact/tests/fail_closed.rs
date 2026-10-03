@@ -239,3 +239,20 @@ fn stream_one_char_at_a_time_through_a_hostile_mix() {
     assert_eq!(calls, decode(text).unwrap());
     assert_eq!(calls[0].arguments["subject"], json!("}>> \" é😀"));
 }
+
+#[test]
+fn first_error_in_text_order_wins_regardless_of_chunking() {
+    // A semantic error (unknown tool) followed by a later syntax error: the reported
+    // error must not depend on where the chunk boundaries fall.
+    let text = "<<call nope {}>> then <<call !";
+    let whole = decode(text);
+    assert_eq!(whole, Err(CompactError::UnknownTool("nope".into())));
+    for (i, _) in text.char_indices().skip(1) {
+        let mut decoder = StreamDecoder::new(&tools());
+        let split = decoder
+            .push(&text[..i])
+            .and_then(|_| decoder.push(&text[i..]))
+            .and_then(|_| decoder.finish());
+        assert_eq!(split, whole, "split at {i}");
+    }
+}
