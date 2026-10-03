@@ -57,3 +57,16 @@ ui/tests/fixtures/runs/
 
 # Private React/Next migration workspace; do not force-add before release approval.
 /react/
+
+# Sensitive GCP / Vertex AI service account credentials & secrets
+server.json
+*service-account*.json
+*credentials*.json
+secrets/
+.secrets/
+
+# Local evaluation artifacts
+classifier-eval.json
+classifier-out.jsonl
+compact-tools-eval.json
+scripts/

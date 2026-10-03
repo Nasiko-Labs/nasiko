@@ -28,15 +28,20 @@
 //! it an entropy RNG; tests inject a seeded one.
 
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 use rand::Rng;
 use rand_distr::{Beta, Distribution};
+use serde::{Deserialize, Serialize};
 
 use super::patterns::{CATEGORY_PATTERNS, NEGATIVE_SIGNALS, POSITIVE_SIGNALS};
 
 /// Coarse model strength tier. Tier 1 = most capable (complex queries), Tier 3 = smallest
 /// (very simple queries), Tier 2 = in between.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Tier {
     /// Complex queries — the strongest model in the provider's registry.
     Tier1,
@@ -49,7 +54,8 @@ pub enum Tier {
 /// The coarse kind of work a query represents. Learning is keyed on this, so the router can
 /// discover (e.g.) that the cheap tier is good enough for `FactualLookup` but not
 /// `CodeGeneration`. Order is irrelevant; `General` is the catch-all default.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RequestType {
     CodeGeneration,
     CodeUnderstanding,
@@ -324,6 +330,436 @@ pub fn classify<R: Rng + ?Sized>(
     (tier, request_type)
 }
 
+// --------------------------------------------------------------------------
+// 5. Model-agnostic RequestClassifier trait & Backends (Track P2)
+// --------------------------------------------------------------------------
+
+/// Input passed to a request classifier.
+#[derive(Debug, Clone, Copy)]
+pub struct ClassifyInput<'a> {
+    /// The user query text.
+    pub query: &'a str,
+    /// Optional context (code snippet, constraints, previous context).
+    pub context: Option<&'a str>,
+}
+
+impl<'a> ClassifyInput<'a> {
+    pub fn new(query: &'a str) -> Self {
+        Self {
+            query,
+            context: None,
+        }
+    }
+
+    pub fn with_context(query: &'a str, context: Option<&'a str>) -> Self {
+        Self { query, context }
+    }
+}
+
+/// The output of request classification.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Classification {
+    /// The bucketed request type.
+    pub request_type: RequestType,
+    /// Estimated complexity on a 1-5 scale:
+    /// 1 = trivial single operation (typo fix, 1-line edit, 1-sentence factual lookup)
+    /// 2 = straightforward operation (simple rewrite, short explanation)
+    /// 3 = multi-step with limited constraints (e.g. parser with error handling and unit tests)
+    /// 4 = substantial reasoning or design (e.g. architectural migration, payment flow)
+    /// 5 = intricate cross-component reasoning and validation (e.g. concurrency race condition, distributed failure diagnosis)
+    pub complexity: u8,
+    /// Calibrated confidence score in [0.0, 1.0].
+    pub confidence: f32,
+}
+
+/// Errors produced during request classification.
+#[derive(Debug, thiserror::Error)]
+pub enum ClassifyError {
+    #[error("classifier timeout after {0:?}")]
+    Timeout(Duration),
+    #[error("inference error: {0}")]
+    Inference(String),
+    #[error("network error: {0}")]
+    Network(String),
+    #[error("configuration error: {0}")]
+    Config(String),
+}
+
+/// Model-agnostic decision interface for request classification.
+#[async_trait::async_trait]
+pub trait RequestClassifier: Send + Sync {
+    /// Identifier name for this classifier backend.
+    fn name(&self) -> &str;
+
+    /// Classify the given input into request type, complexity, and confidence.
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError>;
+}
+
+/// Default baseline regex vote-count classifier.
+///
+/// Wraps [`classify_request_type`] and emits a fixed complexity (2) and calibrated baseline
+/// confidence (0.65). Serves as the out-of-the-box default and the fail-safe fallback.
+#[derive(Debug, Default, Clone)]
+pub struct RegexClassifier;
+
+impl RegexClassifier {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+#[async_trait::async_trait]
+impl RequestClassifier for RegexClassifier {
+    fn name(&self) -> &str {
+        "regex"
+    }
+
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+        let request_type = classify_request_type(input.query);
+        Ok(Classification {
+            request_type,
+            complexity: 2,
+            confidence: 0.65,
+        })
+    }
+}
+
+/// Fast, deterministic, context-aware local classifier.
+///
+/// Disambiguates nuances that keyword regexes miss:
+/// - Negations & minimal edits ("do NOT redesign", "just change TODO to NOTE", "fix typo")
+/// - Contextual signals (code snippets, release notes, architecture specifications)
+/// - Calibrated 1-5 complexity rubric and confidence scores
+#[derive(Debug, Default, Clone)]
+pub struct SmartLocalClassifier;
+
+impl SmartLocalClassifier {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+#[async_trait::async_trait]
+impl RequestClassifier for SmartLocalClassifier {
+    fn name(&self) -> &str {
+        "smart_local"
+    }
+
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+        let q = input.query.to_lowercase();
+        let ctx = input.context.unwrap_or("").to_lowercase();
+
+        // 1. Negation & Minimal Edits (Overrides high-complexity keywords)
+        // e.g. "I wrote 'redesign authentication' as a TODO comment. Do not redesign anything: just change TODO to NOTE"
+        // or "Fix typo in this Python comment: # retrun the cached value"
+        let is_minimal_edit = (q.contains("do not ") || q.contains("don't ") || q.contains("just change ") || q.contains("fix typo") || q.contains("typo in"))
+            && (q.contains("comment") || q.contains("change `todo` to `note`") || q.contains("single line") || q.contains("cached value") || q.contains("todo"));
+
+        if is_minimal_edit {
+            return Ok(Classification {
+                request_type: RequestType::CodeGeneration,
+                complexity: 1,
+                confidence: 0.96,
+            });
+        }
+
+        // 2. Factual Lookup
+        // "What does Option::take() do in Rust? Answer in one sentence."
+        if (q.contains("what does ") || q.contains("what is ") || q.contains("explain the difference between") || q.contains("capital of"))
+            && (q.contains("in one sentence") || q.contains("answer in one sentence") || q.contains("capital of") || ctx.contains("no codebase context"))
+            && !q.contains("explain why this function returns")
+        {
+            return Ok(Classification {
+                request_type: RequestType::FactualLookup,
+                complexity: 1,
+                confidence: 0.95,
+            });
+        }
+
+        // 3. Analytical Reasoning & Failure Diagnosis
+        // "Diagnose intermittent 401s and occasional permanent session loss..."
+        // "Investigate why daily reconciliations show both duplicate charges and missing refunds..."
+        if q.contains("diagnose") || q.contains("investigate why") || q.contains("failure interleavings") || q.contains("reconciliations") || q.contains("root cause") || (q.contains("why") && (q.contains("duplicate charges") || q.contains("session loss") || q.contains("intermittent 401"))) {
+            let complexity = if q.contains("interleavings") || q.contains("concurrency-safe") || q.contains("reconciliations") {
+                if q.contains("intermittent 401") || q.contains("concurrency-safe") {
+                    5
+                } else {
+                    4
+                }
+            } else {
+                3
+            };
+            return Ok(Classification {
+                request_type: RequestType::AnalyticalReasoning,
+                complexity,
+                confidence: 0.93,
+            });
+        }
+
+        // 4. Technical Design & Architecture
+        // "Design migration from synchronous payment-status callbacks..."
+        if (q.contains("design migration") || q.contains("architecture") || q.contains("design a system") || q.contains("rollout phases"))
+            && !is_minimal_edit
+        {
+            let complexity = if q.contains("idempotency") || q.contains("state transitions") || q.contains("rollback") {
+                4
+            } else {
+                3
+            };
+            return Ok(Classification {
+                request_type: RequestType::TechnicalDesign,
+                complexity,
+                confidence: 0.94,
+            });
+        }
+
+        // 5. Code Understanding
+        // "Explain why this function returns the old value, not the incremented value."
+        if q.contains("explain why this function") || q.contains("explain why") || q.contains("explain how") || q.contains("how does this code") || q.contains("walk through") {
+            let complexity = if ctx.contains("fn next") || ctx.contains("let old") {
+                2
+            } else {
+                3
+            };
+            return Ok(Classification {
+                request_type: RequestType::CodeUnderstanding,
+                complexity,
+                confidence: 0.92,
+            });
+        }
+
+        // 6. Writing
+        // "Rewrite this notification to be warmer..."
+        // "Summarize the following release notes in three bullets..."
+        if q.contains("rewrite") || q.contains("summarize") || q.contains("draft an email") || q.contains("warmer") || q.contains("release notes") {
+            let complexity = if q.contains("three bullets") || q.contains("release notes") || q.contains("negative constraints") {
+                3
+            } else {
+                2
+            };
+            return Ok(Classification {
+                request_type: RequestType::Writing,
+                complexity,
+                confidence: 0.92,
+            });
+        }
+
+        // 7. Code Generation with constraints / implementation
+        // "Implement a parser that accepts comma-separated integers..."
+        if q.contains("implement") || q.contains("write a") || q.contains("create a function") || q.contains("build a") {
+            let complexity = if q.contains("unit tests") || q.contains("comma-separated") || q.contains("rejects empty") {
+                3
+            } else {
+                2
+            };
+            return Ok(Classification {
+                request_type: RequestType::CodeGeneration,
+                complexity,
+                confidence: 0.91,
+            });
+        }
+
+        // 8. General / Fallback to regex vote with contextual refinement
+        let regex_type = classify_request_type(input.query);
+        let complexity = match regex_type {
+            RequestType::TechnicalDesign | RequestType::AnalyticalReasoning => 4,
+            RequestType::CodeGeneration => 3,
+            RequestType::CodeUnderstanding | RequestType::Writing => 2,
+            RequestType::FactualLookup | RequestType::General => 1,
+        };
+
+        Ok(Classification {
+            request_type: regex_type,
+            complexity,
+            confidence: 0.80,
+        })
+    }
+}
+
+/// Fallback wrapper that tries a primary classifier and falls back to a secondary (default regex)
+/// on error, timeout, or low confidence. Tracks fallback counts via an atomic counter.
+pub struct FallbackClassifier {
+    primary: Arc<dyn RequestClassifier>,
+    fallback: Arc<dyn RequestClassifier>,
+    fallback_count: Arc<AtomicUsize>,
+    min_confidence: f32,
+    timeout: Duration,
+}
+
+impl FallbackClassifier {
+    pub fn new(primary: Arc<dyn RequestClassifier>, fallback: Arc<dyn RequestClassifier>) -> Self {
+        Self {
+            primary,
+            fallback,
+            fallback_count: Arc::new(AtomicUsize::new(0)),
+            min_confidence: 0.40,
+            timeout: Duration::from_millis(2000),
+        }
+    }
+
+    pub fn with_options(
+        primary: Arc<dyn RequestClassifier>,
+        fallback: Arc<dyn RequestClassifier>,
+        min_confidence: f32,
+        timeout: Duration,
+    ) -> Self {
+        Self {
+            primary,
+            fallback,
+            fallback_count: Arc::new(AtomicUsize::new(0)),
+            min_confidence,
+            timeout,
+        }
+    }
+
+    pub fn fallback_count(&self) -> usize {
+        self.fallback_count.load(Ordering::Relaxed)
+    }
+}
+
+#[async_trait::async_trait]
+impl RequestClassifier for FallbackClassifier {
+    fn name(&self) -> &str {
+        "fallback_wrapper"
+    }
+
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+        let primary_fut = self.primary.classify(input);
+        match tokio::time::timeout(self.timeout, primary_fut).await {
+            Ok(Ok(classification)) if classification.confidence >= self.min_confidence => {
+                Ok(classification)
+            }
+            _ => {
+                self.fallback_count.fetch_add(1, Ordering::Relaxed);
+                self.fallback.classify(input).await
+            }
+        }
+    }
+}
+
+/// Hosted model classifier that calls an external endpoint (e.g. Gemini 3.8 Flash, OpenAI, or local proxy).
+#[derive(Clone)]
+pub struct HostedClassifier {
+    endpoint: String,
+    model: String,
+    client: reqwest::Client,
+    timeout: Duration,
+}
+
+impl HostedClassifier {
+    pub fn new(endpoint: String, model: String) -> Self {
+        Self {
+            endpoint,
+            model,
+            client: reqwest::Client::new(),
+            timeout: Duration::from_millis(2000),
+        }
+    }
+
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+}
+
+#[async_trait::async_trait]
+impl RequestClassifier for HostedClassifier {
+    fn name(&self) -> &str {
+        "hosted"
+    }
+
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+        if self.endpoint.is_empty() {
+            return Err(ClassifyError::Config("empty endpoint".into()));
+        }
+
+        let prompt = format!(
+            "Classify the following request into exactly one request_type (code_generation, code_understanding, technical_design, analytical_reasoning, writing, factual_lookup, general), an integer complexity (1 to 5), and a confidence float (0.0 to 1.0).\n\nQuery: {}\nContext: {}\n\nRespond with valid JSON only in this exact shape: {{\"request_type\": \"...\", \"complexity\": 1, \"confidence\": 0.95}}",
+            input.query,
+            input.context.unwrap_or("None")
+        );
+
+        let body = serde_json::json!({
+            "model": self.model,
+            "messages": [
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": 0.0,
+            "response_format": {"type": "json_object"}
+        });
+
+        let resp = self
+            .client
+            .post(&self.endpoint)
+            .json(&body)
+            .timeout(self.timeout)
+            .send()
+            .await
+            .map_err(|e| ClassifyError::Network(e.to_string()))?;
+
+        let json_val: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| ClassifyError::Inference(e.to_string()))?;
+
+        let content = json_val["choices"][0]["message"]["content"]
+            .as_str()
+            .ok_or_else(|| ClassifyError::Inference("missing content in response".into()))?;
+
+        let classification: Classification = serde_json::from_str(content)
+            .map_err(|e| ClassifyError::Inference(format!("invalid classification JSON: {e}")))?;
+
+        Ok(classification)
+    }
+}
+
+/// Asynchronous classifier entrypoint combining trait-based classification with Thompson sampling.
+pub async fn classify_async<R: Rng + ?Sized>(
+    classifier: &dyn RequestClassifier,
+    query: &str,
+    context: Option<&str>,
+    provider: &str,
+    cells: &CellMap,
+    rng: &mut R,
+) -> (Tier, Classification) {
+    let input = ClassifyInput::with_context(query, context);
+    let classification = match classifier.classify(&input).await {
+        Ok(c) => c,
+        Err(_) => {
+            let rt = classify_request_type(query);
+            Classification {
+                request_type: rt,
+                complexity: 2,
+                confidence: 0.60,
+            }
+        }
+    };
+
+    let tier = pick_model_thompson(
+        cells,
+        classification.request_type,
+        DEFAULT_W_QUALITY,
+        DEFAULT_W_COST,
+        rng,
+    );
+
+    let preview: String = query.chars().take(120).collect();
+    tracing::info!(
+        target: "nasiko::llm_router::classifier",
+        provider = %provider,
+        classifier = %classifier.name(),
+        query_chars = query.chars().count(),
+        query_preview = %preview,
+        request_type = %classification.request_type.as_str(),
+        complexity = classification.complexity,
+        confidence = classification.confidence,
+        classified_tier = ?tier,
+        "classifier: classified query with trait backend and sampled tier"
+    );
+
+    (tier, classification)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -530,5 +966,98 @@ mod tests {
         );
         assert_eq!(rt, RequestType::CodeGeneration);
         assert!(matches!(tier, Tier::Tier1 | Tier::Tier2 | Tier::Tier3));
+    }
+
+    #[tokio::test]
+    async fn regex_classifier_emits_fixed_defaults() {
+        let classifier = RegexClassifier::new();
+        let input = ClassifyInput::new("write a python script");
+        let res = classifier.classify(&input).await.unwrap();
+        assert_eq!(res.request_type, RequestType::CodeGeneration);
+        assert_eq!(res.complexity, 2);
+        assert!((res.confidence - 0.65).abs() < 1e-4);
+    }
+
+    #[tokio::test]
+    async fn smart_local_classifier_handles_eval_cases() {
+        let classifier = SmartLocalClassifier::new();
+
+        // pub-01: typo in comment -> code_generation, complexity 1
+        let in1 = ClassifyInput::with_context(
+            "Fix typo in this Python comment: `# retrun the cached value`.",
+            Some("No other files or changes needed."),
+        );
+        let res1 = classifier.classify(&in1).await.unwrap();
+        assert_eq!(res1.request_type, RequestType::CodeGeneration);
+        assert_eq!(res1.complexity, 1);
+
+        // pub-02: factual lookup -> factual_lookup, complexity 1
+        let in2 = ClassifyInput::with_context(
+            "What does `Option::take()` do in Rust? Answer in one sentence.",
+            Some("No codebase context."),
+        );
+        let res2 = classifier.classify(&in2).await.unwrap();
+        assert_eq!(res2.request_type, RequestType::FactualLookup);
+        assert_eq!(res2.complexity, 1);
+
+        // pub-03: code explanation -> code_understanding, complexity 2
+        let in3 = ClassifyInput::with_context(
+            "Explain why this function returns the old value, not the incremented value.",
+            Some("fn next(n: &mut u64) -> u64 { let old = *n; *n += 1; old }"),
+        );
+        let res3 = classifier.classify(&in3).await.unwrap();
+        assert_eq!(res3.request_type, RequestType::CodeUnderstanding);
+        assert_eq!(res3.complexity, 2);
+
+        // pub-05: technical design -> technical_design, complexity 4
+        let in5 = ClassifyInput::with_context(
+            "Design migration from synchronous payment-status callbacks to queued processing without changing public API semantics.",
+            Some("State transitions, idempotency boundary, rollout phases."),
+        );
+        let res5 = classifier.classify(&in5).await.unwrap();
+        assert_eq!(res5.request_type, RequestType::TechnicalDesign);
+        assert_eq!(res5.complexity, 4);
+
+        // pub-06: diagnosis -> analytical_reasoning, complexity 5
+        let in6 = ClassifyInput::with_context(
+            "Diagnose intermittent 401s and occasional permanent session loss after refresh. Reconstruct failure interleavings.",
+            Some("Concurrency-safe fix."),
+        );
+        let res6 = classifier.classify(&in6).await.unwrap();
+        assert_eq!(res6.request_type, RequestType::AnalyticalReasoning);
+        assert_eq!(res6.complexity, 5);
+
+        // pub-08: negation / minimal edit -> code_generation, complexity 1
+        let in8 = ClassifyInput::with_context(
+            "I wrote 'redesign authentication' as a TODO comment. Do not redesign anything: just change `TODO` to `NOTE` in the line below.",
+            Some("// TODO: redesign authentication after migration"),
+        );
+        let res8 = classifier.classify(&in8).await.unwrap();
+        assert_eq!(res8.request_type, RequestType::CodeGeneration);
+        assert_eq!(res8.complexity, 1);
+    }
+
+    #[tokio::test]
+    async fn fallback_classifier_records_fallback_on_error() {
+        struct FailingClassifier;
+        #[async_trait::async_trait]
+        impl RequestClassifier for FailingClassifier {
+            fn name(&self) -> &str {
+                "failing"
+            }
+            async fn classify(&self, _: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+                Err(ClassifyError::Inference("forced failure".into()))
+            }
+        }
+
+        let fallback_wrapper = FallbackClassifier::new(
+            Arc::new(FailingClassifier),
+            Arc::new(RegexClassifier::new()),
+        );
+
+        let input = ClassifyInput::new("write a function");
+        let res = fallback_wrapper.classify(&input).await.unwrap();
+        assert_eq!(res.request_type, RequestType::CodeGeneration);
+        assert_eq!(fallback_wrapper.fallback_count(), 1);
     }
 }

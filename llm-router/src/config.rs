@@ -154,6 +154,17 @@ pub struct GatewayConfig {
     pub compress_recovery_min_bytes: usize,
     /// How long an original stays recoverable. Sized to outlive the flow that produced it.
     pub compress_recovery_ttl_secs: u64,
+
+    /// Request classifier backend to use (`regex`, `local`, `hosted`). Default: `regex`.
+    pub classifier_backend: String,
+    /// Path to a local model or weights file (if applicable).
+    pub classifier_model_path: String,
+    /// Hosted endpoint for LLM-based classification.
+    pub classifier_endpoint: String,
+    /// Model identifier for hosted classification (e.g. `gemini-2.0-flash` or `gpt-4o-mini`).
+    pub classifier_model: String,
+    /// Timeout in milliseconds for classifier requests before falling back to regex.
+    pub classifier_timeout_ms: u64,
 }
 
 impl Default for GatewayConfig {
@@ -196,6 +207,11 @@ impl Default for GatewayConfig {
             compress_recovery_enabled: true,
             compress_recovery_min_bytes: 8192,
             compress_recovery_ttl_secs: 86_400,
+            classifier_backend: "regex".into(),
+            classifier_model_path: String::new(),
+            classifier_endpoint: String::new(),
+            classifier_model: "gemini-2.0-flash".into(),
+            classifier_timeout_ms: 2000,
         }
     }
 }
@@ -307,6 +323,14 @@ impl GatewayConfig {
             compress_recovery_ttl_secs: env_usize(
                 "TOKEN_COMPRESS_RECOVERY_TTL_SECS",
                 d.compress_recovery_ttl_secs as usize,
+            ) as u64,
+            classifier_backend: env_or("CLASSIFIER_BACKEND", &d.classifier_backend),
+            classifier_model_path: env_or("CLASSIFIER_MODEL_PATH", &d.classifier_model_path),
+            classifier_endpoint: env_or("CLASSIFIER_ENDPOINT", &d.classifier_endpoint),
+            classifier_model: env_or("CLASSIFIER_MODEL", &d.classifier_model),
+            classifier_timeout_ms: env_usize(
+                "CLASSIFIER_TIMEOUT_MS",
+                d.classifier_timeout_ms as usize,
             ) as u64,
         }
     }
