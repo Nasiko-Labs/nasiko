@@ -77,7 +77,7 @@
       "context": null,
       "request_type": "code_generation",
       "complexity": 2,
-      "split": "calibration",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -87,7 +87,7 @@
       "context": null,
       "request_type": "code_generation",
       "complexity": 2,
-      "split": "calibration",
+      "split": "train",
       "is_derived": true
     },
     {
@@ -117,7 +117,7 @@
       "context": null,
       "request_type": "code_generation",
       "complexity": 4,
-      "split": "train",
+      "split": "validation",
       "is_derived": false
     },
     {
@@ -127,7 +127,7 @@
       "context": null,
       "request_type": "code_generation",
       "complexity": 4,
-      "split": "train",
+      "split": "validation",
       "is_derived": true
     },
     {
@@ -137,7 +137,7 @@
       "context": null,
       "request_type": "code_generation",
       "complexity": 5,
-      "split": "calibration",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -147,7 +147,7 @@
       "context": null,
       "request_type": "code_generation",
       "complexity": 5,
-      "split": "calibration",
+      "split": "train",
       "is_derived": true
     },
     {
@@ -337,7 +337,7 @@
       "context": null,
       "request_type": "code_generation",
       "complexity": 1,
-      "split": "train",
+      "split": "validation",
       "is_derived": false
     },
     {
@@ -347,7 +347,7 @@
       "context": null,
       "request_type": "code_generation",
       "complexity": 1,
-      "split": "train",
+      "split": "validation",
       "is_derived": true
     },
     {
@@ -357,7 +357,7 @@
       "context": null,
       "request_type": "code_generation",
       "complexity": 1,
-      "split": "train",
+      "split": "validation",
       "is_derived": true
     },
     {
@@ -367,7 +367,7 @@
       "context": null,
       "request_type": "code_generation",
       "complexity": 3,
-      "split": "train",
+      "split": "calibration",
       "is_derived": false
     },
     {
@@ -377,7 +377,7 @@
       "context": null,
       "request_type": "code_generation",
       "complexity": 3,
-      "split": "train",
+      "split": "calibration",
       "is_derived": true
     },
     {
@@ -387,7 +387,7 @@
       "context": null,
       "request_type": "code_generation",
       "complexity": 3,
-      "split": "train",
+      "split": "calibration",
       "is_derived": true
     },
     {
@@ -397,7 +397,7 @@
       "context": "User context: production environment with tight SLA.",
       "request_type": "code_generation",
       "complexity": 3,
-      "split": "train",
+      "split": "calibration",
       "is_derived": true
     },
     {
@@ -737,7 +737,7 @@
       "context": "async fn deadlocking() { let a = lock1.lock().await; let b = lock2.lock().await; }",
       "request_type": "code_understanding",
       "complexity": 3,
-      "split": "train",
+      "split": "calibration",
       "is_derived": false
     },
     {
@@ -747,7 +747,7 @@
       "context": "async fn deadlocking() { let a = lock1.lock().await; let b = lock2.lock().await; }",
       "request_type": "code_understanding",
       "complexity": 3,
-      "split": "train",
+      "split": "calibration",
       "is_derived": true
     },
     {
@@ -757,7 +757,7 @@
       "context": "async fn deadlocking() { let a = lock1.lock().await; let b = lock2.lock().await; }",
       "request_type": "code_understanding",
       "complexity": 3,
-      "split": "train",
+      "split": "calibration",
       "is_derived": true
     },
     {
@@ -767,7 +767,7 @@
       "context": null,
       "request_type": "code_understanding",
       "complexity": 2,
-      "split": "train",
+      "split": "calibration",
       "is_derived": false
     },
     {
@@ -777,7 +777,7 @@
       "context": null,
       "request_type": "code_understanding",
       "complexity": 2,
-      "split": "train",
+      "split": "calibration",
       "is_derived": true
     },
     {
@@ -787,7 +787,7 @@
       "context": null,
       "request_type": "code_understanding",
       "complexity": 2,
-      "split": "train",
+      "split": "calibration",
       "is_derived": true
     },
     {
@@ -797,7 +797,7 @@
       "context": "User context: production environment with tight SLA.",
       "request_type": "code_understanding",
       "complexity": 2,
-      "split": "train",
+      "split": "calibration",
       "is_derived": true
     },
     {
@@ -807,7 +807,7 @@
       "context": null,
       "request_type": "code_understanding",
       "complexity": 3,
-      "split": "calibration",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -817,7 +817,7 @@
       "context": null,
       "request_type": "code_understanding",
       "complexity": 3,
-      "split": "calibration",
+      "split": "train",
       "is_derived": true
     },
     {
@@ -827,7 +827,7 @@
       "context": null,
       "request_type": "code_understanding",
       "complexity": 3,
-      "split": "calibration",
+      "split": "train",
       "is_derived": true
     },
     {
@@ -837,7 +837,7 @@
       "context": "User context: production environment with tight SLA.",
       "request_type": "code_understanding",
       "complexity": 3,
-      "split": "calibration",
+      "split": "train",
       "is_derived": true
     },
     {
@@ -877,7 +877,7 @@
       "context": null,
       "request_type": "code_understanding",
       "complexity": 4,
-      "split": "validation",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -887,7 +887,7 @@
       "context": null,
       "request_type": "code_understanding",
       "complexity": 4,
-      "split": "validation",
+      "split": "train",
       "is_derived": true
     },
     {
@@ -897,7 +897,7 @@
       "context": null,
       "request_type": "code_understanding",
       "complexity": 4,
-      "split": "validation",
+      "split": "train",
       "is_derived": true
     },
     {
@@ -907,7 +907,7 @@
       "context": "User context: production environment with tight SLA.",
       "request_type": "code_understanding",
       "complexity": 4,
-      "split": "validation",
+      "split": "train",
       "is_derived": true
     },
     {
@@ -1017,7 +1017,7 @@
       "context": null,
       "request_type": "code_understanding",
       "complexity": 4,
-      "split": "validation",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -1027,7 +1027,7 @@
       "context": null,
       "request_type": "code_understanding",
       "complexity": 4,
-      "split": "validation",
+      "split": "train",
       "is_derived": true
     },
     {
@@ -1037,7 +1037,7 @@
       "context": null,
       "request_type": "code_understanding",
       "complexity": 4,
-      "split": "validation",
+      "split": "train",
       "is_derived": true
     },
     {
@@ -1047,7 +1047,7 @@
       "context": "User context: production environment with tight SLA.",
       "request_type": "code_understanding",
       "complexity": 4,
-      "split": "validation",
+      "split": "train",
       "is_derived": true
     },
     {
@@ -1127,7 +1127,7 @@
       "context": null,
       "request_type": "code_understanding",
       "complexity": 2,
-      "split": "calibration",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -1137,7 +1137,7 @@
       "context": null,
       "request_type": "code_understanding",
       "complexity": 2,
-      "split": "calibration",
+      "split": "train",
       "is_derived": true
     },
     {
@@ -1147,7 +1147,7 @@
       "context": null,
       "request_type": "code_understanding",
       "complexity": 2,
-      "split": "calibration",
+      "split": "train",
       "is_derived": true
     },
     {
@@ -1157,7 +1157,7 @@
       "context": "User context: production environment with tight SLA.",
       "request_type": "code_understanding",
       "complexity": 2,
-      "split": "calibration",
+      "split": "train",
       "is_derived": true
     },
     {
@@ -1167,7 +1167,7 @@
       "context": "type Flatten<T> = T extends (infer U)[] ? U : never;",
       "request_type": "code_understanding",
       "complexity": 3,
-      "split": "train",
+      "split": "validation",
       "is_derived": false
     },
     {
@@ -1177,7 +1177,7 @@
       "context": "type Flatten<T> = T extends (infer U)[] ? U : never;",
       "request_type": "code_understanding",
       "complexity": 3,
-      "split": "train",
+      "split": "validation",
       "is_derived": true
     },
     {
@@ -1187,7 +1187,7 @@
       "context": "type Flatten<T> = T extends (infer U)[] ? U : never;",
       "request_type": "code_understanding",
       "complexity": 3,
-      "split": "train",
+      "split": "validation",
       "is_derived": true
     },
     {
@@ -1197,7 +1197,7 @@
       "context": null,
       "request_type": "technical_design",
       "complexity": 2,
-      "split": "train",
+      "split": "validation",
       "is_derived": false
     },
     {
@@ -1207,7 +1207,7 @@
       "context": null,
       "request_type": "technical_design",
       "complexity": 2,
-      "split": "train",
+      "split": "validation",
       "is_derived": true
     },
     {
@@ -1217,7 +1217,7 @@
       "context": null,
       "request_type": "technical_design",
       "complexity": 2,
-      "split": "train",
+      "split": "validation",
       "is_derived": true
     },
     {
@@ -1267,7 +1267,7 @@
       "context": null,
       "request_type": "technical_design",
       "complexity": 3,
-      "split": "validation",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -1277,7 +1277,7 @@
       "context": null,
       "request_type": "technical_design",
       "complexity": 3,
-      "split": "validation",
+      "split": "train",
       "is_derived": true
     },
     {
@@ -1287,7 +1287,7 @@
       "context": null,
       "request_type": "technical_design",
       "complexity": 3,
-      "split": "validation",
+      "split": "train",
       "is_derived": true
     },
     {
@@ -1297,7 +1297,7 @@
       "context": "User context: production environment with tight SLA.",
       "request_type": "technical_design",
       "complexity": 3,
-      "split": "validation",
+      "split": "train",
       "is_derived": true
     },
     {
@@ -1307,7 +1307,7 @@
       "context": null,
       "request_type": "technical_design",
       "complexity": 5,
-      "split": "calibration",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -1317,7 +1317,7 @@
       "context": null,
       "request_type": "technical_design",
       "complexity": 5,
-      "split": "calibration",
+      "split": "train",
       "is_derived": true
     },
     {
@@ -1327,7 +1327,7 @@
       "context": null,
       "request_type": "technical_design",
       "complexity": 3,
-      "split": "validation",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -1337,7 +1337,7 @@
       "context": null,
       "request_type": "technical_design",
       "complexity": 3,
-      "split": "validation",
+      "split": "train",
       "is_derived": true
     },
     {
@@ -1347,7 +1347,7 @@
       "context": null,
       "request_type": "technical_design",
       "complexity": 3,
-      "split": "validation",
+      "split": "train",
       "is_derived": true
     },
     {
@@ -1357,7 +1357,7 @@
       "context": "User context: production environment with tight SLA.",
       "request_type": "technical_design",
       "complexity": 3,
-      "split": "validation",
+      "split": "train",
       "is_derived": true
     },
     {
@@ -1367,7 +1367,7 @@
       "context": null,
       "request_type": "technical_design",
       "complexity": 4,
-      "split": "train",
+      "split": "calibration",
       "is_derived": false
     },
     {
@@ -1377,7 +1377,7 @@
       "context": null,
       "request_type": "technical_design",
       "complexity": 4,
-      "split": "train",
+      "split": "calibration",
       "is_derived": true
     },
     {
@@ -1387,7 +1387,7 @@
       "context": null,
       "request_type": "technical_design",
       "complexity": 4,
-      "split": "train",
+      "split": "calibration",
       "is_derived": true
     },
     {
@@ -1397,7 +1397,7 @@
       "context": "User context: production environment with tight SLA.",
       "request_type": "technical_design",
       "complexity": 4,
-      "split": "train",
+      "split": "calibration",
       "is_derived": true
     },
     {
@@ -1407,7 +1407,7 @@
       "context": null,
       "request_type": "technical_design",
       "complexity": 3,
-      "split": "validation",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -1417,7 +1417,7 @@
       "context": null,
       "request_type": "technical_design",
       "complexity": 3,
-      "split": "validation",
+      "split": "train",
       "is_derived": true
     },
     {
@@ -1427,7 +1427,7 @@
       "context": null,
       "request_type": "technical_design",
       "complexity": 3,
-      "split": "validation",
+      "split": "train",
       "is_derived": true
     },
     {
@@ -1437,7 +1437,7 @@
       "context": "User context: production environment with tight SLA.",
       "request_type": "technical_design",
       "complexity": 3,
-      "split": "validation",
+      "split": "train",
       "is_derived": true
     },
     {
@@ -1447,7 +1447,7 @@
       "context": null,
       "request_type": "technical_design",
       "complexity": 4,
-      "split": "validation",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -1457,7 +1457,7 @@
       "context": null,
       "request_type": "technical_design",
       "complexity": 4,
-      "split": "validation",
+      "split": "train",
       "is_derived": true
     },
     {
@@ -1467,7 +1467,7 @@
       "context": null,
       "request_type": "technical_design",
       "complexity": 4,
-      "split": "validation",
+      "split": "train",
       "is_derived": true
     },
     {
@@ -1477,7 +1477,7 @@
       "context": "User context: production environment with tight SLA.",
       "request_type": "technical_design",
       "complexity": 4,
-      "split": "validation",
+      "split": "train",
       "is_derived": true
     },
     {
@@ -1487,7 +1487,7 @@
       "context": null,
       "request_type": "technical_design",
       "complexity": 3,
-      "split": "validation",
+      "split": "calibration",
       "is_derived": false
     },
     {
@@ -1497,7 +1497,7 @@
       "context": null,
       "request_type": "technical_design",
       "complexity": 3,
-      "split": "validation",
+      "split": "calibration",
       "is_derived": true
     },
     {
@@ -1507,7 +1507,7 @@
       "context": null,
       "request_type": "technical_design",
       "complexity": 3,
-      "split": "validation",
+      "split": "calibration",
       "is_derived": true
     },
     {
@@ -1517,7 +1517,7 @@
       "context": "User context: production environment with tight SLA.",
       "request_type": "technical_design",
       "complexity": 3,
-      "split": "validation",
+      "split": "calibration",
       "is_derived": true
     },
     {
@@ -1527,7 +1527,7 @@
       "context": null,
       "request_type": "technical_design",
       "complexity": 3,
-      "split": "calibration",
+      "split": "validation",
       "is_derived": false
     },
     {
@@ -1537,7 +1537,7 @@
       "context": null,
       "request_type": "technical_design",
       "complexity": 3,
-      "split": "calibration",
+      "split": "validation",
       "is_derived": true
     },
     {
@@ -1547,7 +1547,7 @@
       "context": null,
       "request_type": "technical_design",
       "complexity": 3,
-      "split": "calibration",
+      "split": "validation",
       "is_derived": true
     },
     {
@@ -1557,7 +1557,7 @@
       "context": "User context: production environment with tight SLA.",
       "request_type": "technical_design",
       "complexity": 3,
-      "split": "calibration",
+      "split": "validation",
       "is_derived": true
     },
     {
@@ -1567,7 +1567,7 @@
       "context": null,
       "request_type": "technical_design",
       "complexity": 5,
-      "split": "train",
+      "split": "validation",
       "is_derived": false
     },
     {
@@ -1577,7 +1577,7 @@
       "context": null,
       "request_type": "technical_design",
       "complexity": 5,
-      "split": "train",
+      "split": "validation",
       "is_derived": true
     },
     {
@@ -1587,7 +1587,7 @@
       "context": null,
       "request_type": "technical_design",
       "complexity": 5,
-      "split": "train",
+      "split": "validation",
       "is_derived": true
     },
     {
@@ -1597,7 +1597,7 @@
       "context": "User context: production environment with tight SLA.",
       "request_type": "technical_design",
       "complexity": 5,
-      "split": "train",
+      "split": "validation",
       "is_derived": true
     },
     {
@@ -1607,7 +1607,7 @@
       "context": null,
       "request_type": "technical_design",
       "complexity": 2,
-      "split": "train",
+      "split": "calibration",
       "is_derived": false
     },
     {
@@ -1617,7 +1617,7 @@
       "context": null,
       "request_type": "technical_design",
       "complexity": 2,
-      "split": "train",
+      "split": "calibration",
       "is_derived": true
     },
     {
@@ -1627,7 +1627,7 @@
       "context": null,
       "request_type": "technical_design",
       "complexity": 2,
-      "split": "train",
+      "split": "calibration",
       "is_derived": true
     },
     {
@@ -1637,7 +1637,7 @@
       "context": "User context: production environment with tight SLA.",
       "request_type": "technical_design",
       "complexity": 2,
-      "split": "train",
+      "split": "calibration",
       "is_derived": true
     },
     {
@@ -1647,7 +1647,7 @@
       "context": null,
       "request_type": "analytical_reasoning",
       "complexity": 2,
-      "split": "train",
+      "split": "validation",
       "is_derived": false
     },
     {
@@ -1657,7 +1657,7 @@
       "context": null,
       "request_type": "analytical_reasoning",
       "complexity": 2,
-      "split": "train",
+      "split": "validation",
       "is_derived": true
     },
     {
@@ -1667,7 +1667,7 @@
       "context": null,
       "request_type": "analytical_reasoning",
       "complexity": 2,
-      "split": "train",
+      "split": "validation",
       "is_derived": true
     },
     {
@@ -1697,7 +1697,7 @@
       "context": null,
       "request_type": "analytical_reasoning",
       "complexity": 3,
-      "split": "train",
+      "split": "validation",
       "is_derived": false
     },
     {
@@ -1707,7 +1707,7 @@
       "context": null,
       "request_type": "analytical_reasoning",
       "complexity": 3,
-      "split": "train",
+      "split": "validation",
       "is_derived": true
     },
     {
@@ -1717,7 +1717,7 @@
       "context": null,
       "request_type": "analytical_reasoning",
       "complexity": 3,
-      "split": "train",
+      "split": "validation",
       "is_derived": true
     },
     {
@@ -1727,7 +1727,7 @@
       "context": "User context: production environment with tight SLA.",
       "request_type": "analytical_reasoning",
       "complexity": 3,
-      "split": "train",
+      "split": "validation",
       "is_derived": true
     },
     {
@@ -1737,7 +1737,7 @@
       "context": null,
       "request_type": "analytical_reasoning",
       "complexity": 3,
-      "split": "validation",
+      "split": "calibration",
       "is_derived": false
     },
     {
@@ -1747,7 +1747,7 @@
       "context": null,
       "request_type": "analytical_reasoning",
       "complexity": 3,
-      "split": "validation",
+      "split": "calibration",
       "is_derived": true
     },
     {
@@ -1797,7 +1797,7 @@
       "context": null,
       "request_type": "analytical_reasoning",
       "complexity": 4,
-      "split": "validation",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -1807,7 +1807,7 @@
       "context": null,
       "request_type": "analytical_reasoning",
       "complexity": 4,
-      "split": "validation",
+      "split": "train",
       "is_derived": true
     },
     {
@@ -1817,7 +1817,7 @@
       "context": null,
       "request_type": "analytical_reasoning",
       "complexity": 4,
-      "split": "validation",
+      "split": "train",
       "is_derived": true
     },
     {
@@ -1827,7 +1827,7 @@
       "context": "User context: production environment with tight SLA.",
       "request_type": "analytical_reasoning",
       "complexity": 4,
-      "split": "validation",
+      "split": "train",
       "is_derived": true
     },
     {
@@ -1907,7 +1907,7 @@
       "context": null,
       "request_type": "analytical_reasoning",
       "complexity": 2,
-      "split": "calibration",
+      "split": "validation",
       "is_derived": false
     },
     {
@@ -1917,7 +1917,7 @@
       "context": null,
       "request_type": "analytical_reasoning",
       "complexity": 2,
-      "split": "calibration",
+      "split": "validation",
       "is_derived": true
     },
     {
@@ -1927,7 +1927,7 @@
       "context": null,
       "request_type": "analytical_reasoning",
       "complexity": 2,
-      "split": "calibration",
+      "split": "validation",
       "is_derived": true
     },
     {
@@ -1937,7 +1937,7 @@
       "context": "User context: production environment with tight SLA.",
       "request_type": "analytical_reasoning",
       "complexity": 2,
-      "split": "calibration",
+      "split": "validation",
       "is_derived": true
     },
     {
@@ -1987,7 +1987,7 @@
       "context": null,
       "request_type": "analytical_reasoning",
       "complexity": 2,
-      "split": "calibration",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -1997,7 +1997,7 @@
       "context": null,
       "request_type": "analytical_reasoning",
       "complexity": 2,
-      "split": "calibration",
+      "split": "train",
       "is_derived": true
     },
     {
@@ -2007,7 +2007,7 @@
       "context": null,
       "request_type": "analytical_reasoning",
       "complexity": 2,
-      "split": "calibration",
+      "split": "train",
       "is_derived": true
     },
     {
@@ -2017,7 +2017,7 @@
       "context": "User context: production environment with tight SLA.",
       "request_type": "analytical_reasoning",
       "complexity": 2,
-      "split": "calibration",
+      "split": "train",
       "is_derived": true
     },
     {
@@ -2107,7 +2107,7 @@
       "context": null,
       "request_type": "writing",
       "complexity": 2,
-      "split": "train",
+      "split": "calibration",
       "is_derived": false
     },
     {
@@ -2117,7 +2117,7 @@
       "context": null,
       "request_type": "writing",
       "complexity": 2,
-      "split": "train",
+      "split": "calibration",
       "is_derived": true
     },
     {
@@ -2127,7 +2127,7 @@
       "context": null,
       "request_type": "writing",
       "complexity": 2,
-      "split": "train",
+      "split": "calibration",
       "is_derived": true
     },
     {
@@ -2137,7 +2137,7 @@
       "context": null,
       "request_type": "writing",
       "complexity": 2,
-      "split": "train",
+      "split": "calibration",
       "is_derived": true
     },
     {
@@ -2277,7 +2277,7 @@
       "context": null,
       "request_type": "writing",
       "complexity": 3,
-      "split": "train",
+      "split": "validation",
       "is_derived": false
     },
     {
@@ -2287,7 +2287,7 @@
       "context": null,
       "request_type": "writing",
       "complexity": 3,
-      "split": "train",
+      "split": "validation",
       "is_derived": true
     },
     {
@@ -2297,7 +2297,7 @@
       "context": null,
       "request_type": "writing",
       "complexity": 3,
-      "split": "train",
+      "split": "validation",
       "is_derived": true
     },
     {
@@ -2307,7 +2307,7 @@
       "context": "User context: production environment with tight SLA.",
       "request_type": "writing",
       "complexity": 3,
-      "split": "train",
+      "split": "validation",
       "is_derived": true
     },
     {
@@ -2317,7 +2317,7 @@
       "context": null,
       "request_type": "writing",
       "complexity": 5,
-      "split": "validation",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -2327,7 +2327,7 @@
       "context": null,
       "request_type": "writing",
       "complexity": 5,
-      "split": "validation",
+      "split": "train",
       "is_derived": true
     },
     {
@@ -2337,7 +2337,7 @@
       "context": null,
       "request_type": "writing",
       "complexity": 5,
-      "split": "validation",
+      "split": "train",
       "is_derived": true
     },
     {
@@ -2347,7 +2347,7 @@
       "context": "User context: production environment with tight SLA.",
       "request_type": "writing",
       "complexity": 5,
-      "split": "validation",
+      "split": "train",
       "is_derived": true
     },
     {
@@ -2457,7 +2457,7 @@
       "context": null,
       "request_type": "writing",
       "complexity": 2,
-      "split": "train",
+      "split": "validation",
       "is_derived": false
     },
     {
@@ -2467,7 +2467,7 @@
       "context": null,
       "request_type": "writing",
       "complexity": 2,
-      "split": "train",
+      "split": "validation",
       "is_derived": true
     },
     {
@@ -2477,7 +2477,7 @@
       "context": null,
       "request_type": "writing",
       "complexity": 2,
-      "split": "train",
+      "split": "validation",
       "is_derived": true
     },
     {
@@ -2487,7 +2487,7 @@
       "context": "User context: production environment with tight SLA.",
       "request_type": "writing",
       "complexity": 2,
-      "split": "train",
+      "split": "validation",
       "is_derived": true
     },
     {
@@ -2537,7 +2537,7 @@
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 1,
-      "split": "train",
+      "split": "calibration",
       "is_derived": false
     },
     {
@@ -2547,7 +2547,7 @@
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 1,
-      "split": "train",
+      "split": "calibration",
       "is_derived": true
     },
     {
@@ -2557,7 +2557,7 @@
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 1,
-      "split": "train",
+      "split": "calibration",
       "is_derived": true
     },
     {
@@ -2617,7 +2617,7 @@
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 1,
-      "split": "calibration",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -2627,7 +2627,7 @@
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 1,
-      "split": "calibration",
+      "split": "train",
       "is_derived": true
     },
     {
@@ -2637,7 +2637,7 @@
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 1,
-      "split": "calibration",
+      "split": "train",
       "is_derived": true
     },
     {
@@ -2647,7 +2647,7 @@
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 2,
-      "split": "train",
+      "split": "calibration",
       "is_derived": false
     },
     {
@@ -2657,7 +2657,7 @@
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 2,
-      "split": "train",
+      "split": "calibration",
       "is_derived": true
     },
     {
@@ -2667,7 +2667,7 @@
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 2,
-      "split": "train",
+      "split": "calibration",
       "is_derived": true
     },
     {
@@ -2677,7 +2677,7 @@
       "context": "User context: production environment with tight SLA.",
       "request_type": "factual_lookup",
       "complexity": 2,
-      "split": "train",
+      "split": "calibration",
       "is_derived": true
     },
     {
@@ -2727,7 +2727,7 @@
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 3,
-      "split": "train",
+      "split": "calibration",
       "is_derived": false
     },
     {
@@ -2737,7 +2737,7 @@
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 3,
-      "split": "train",
+      "split": "calibration",
       "is_derived": true
     },
     {
@@ -2747,7 +2747,7 @@
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 3,
-      "split": "train",
+      "split": "calibration",
       "is_derived": true
     },
     {
@@ -2757,7 +2757,7 @@
       "context": "User context: production environment with tight SLA.",
       "request_type": "factual_lookup",
       "complexity": 3,
-      "split": "train",
+      "split": "calibration",
       "is_derived": true
     },
     {
@@ -2807,7 +2807,7 @@
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 1,
-      "split": "train",
+      "split": "validation",
       "is_derived": false
     },
     {
@@ -2817,7 +2817,7 @@
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 1,
-      "split": "train",
+      "split": "validation",
       "is_derived": true
     },
     {
@@ -2827,7 +2827,7 @@
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 1,
-      "split": "train",
+      "split": "validation",
       "is_derived": true
     },
     {
@@ -2837,7 +2837,7 @@
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 1,
-      "split": "validation",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -2847,7 +2847,7 @@
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 1,
-      "split": "validation",
+      "split": "train",
       "is_derived": true
     },
     {
@@ -2857,7 +2857,7 @@
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 1,
-      "split": "validation",
+      "split": "train",
       "is_derived": true
     },
     {
@@ -2997,7 +2997,7 @@
       "context": null,
       "request_type": "general",
       "complexity": 2,
-      "split": "train",
+      "split": "validation",
       "is_derived": false
     },
     {
@@ -3007,7 +3007,7 @@
       "context": null,
       "request_type": "general",
       "complexity": 2,
-      "split": "train",
+      "split": "validation",
       "is_derived": true
     },
     {
@@ -3017,7 +3017,7 @@
       "context": null,
       "request_type": "general",
       "complexity": 2,
-      "split": "train",
+      "split": "validation",
       "is_derived": true
     },
     {
@@ -3027,7 +3027,7 @@
       "context": "User context: production environment with tight SLA.",
       "request_type": "general",
       "complexity": 2,
-      "split": "train",
+      "split": "validation",
       "is_derived": true
     },
     {
@@ -3037,7 +3037,7 @@
       "context": null,
       "request_type": "general",
       "complexity": 3,
-      "split": "train",
+      "split": "validation",
       "is_derived": false
     },
     {
@@ -3047,7 +3047,7 @@
       "context": null,
       "request_type": "general",
       "complexity": 3,
-      "split": "train",
+      "split": "validation",
       "is_derived": true
     },
     {
@@ -3057,7 +3057,7 @@
       "context": null,
       "request_type": "general",
       "complexity": 3,
-      "split": "train",
+      "split": "validation",
       "is_derived": true
     },
     {
@@ -3067,7 +3067,7 @@
       "context": "User context: production environment with tight SLA.",
       "request_type": "general",
       "complexity": 3,
-      "split": "train",
+      "split": "validation",
       "is_derived": true
     },
     {
@@ -3077,7 +3077,7 @@
       "context": null,
       "request_type": "general",
       "complexity": 2,
-      "split": "validation",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -3087,7 +3087,7 @@
       "context": null,
       "request_type": "general",
       "complexity": 2,
-      "split": "validation",
+      "split": "train",
       "is_derived": true
     },
     {
@@ -3097,7 +3097,7 @@
       "context": null,
       "request_type": "general",
       "complexity": 2,
-      "split": "validation",
+      "split": "train",
       "is_derived": true
     },
     {
@@ -3107,7 +3107,7 @@
       "context": "User context: production environment with tight SLA.",
       "request_type": "general",
       "complexity": 2,
-      "split": "validation",
+      "split": "train",
       "is_derived": true
     },
     {
@@ -3117,7 +3117,7 @@
       "context": "Assistant: Here is the breakdown of your code.",
       "request_type": "general",
       "complexity": 1,
-      "split": "train",
+      "split": "validation",
       "is_derived": false
     },
     {
@@ -3127,7 +3127,7 @@
       "context": "Assistant: Here is the breakdown of your code.",
       "request_type": "general",
       "complexity": 1,
-      "split": "train",
+      "split": "validation",
       "is_derived": true
     },
     {
@@ -3137,7 +3137,7 @@
       "context": "Assistant: Here is the breakdown of your code.",
       "request_type": "general",
       "complexity": 1,
-      "split": "train",
+      "split": "validation",
       "is_derived": true
     },
     {
@@ -3147,7 +3147,7 @@
       "context": "Alice: We need to ship on Friday. Bob: Let's test first.",
       "request_type": "general",
       "complexity": 2,
-      "split": "calibration",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -3157,7 +3157,7 @@
       "context": "Alice: We need to ship on Friday. Bob: Let's test first.",
       "request_type": "general",
       "complexity": 2,
-      "split": "calibration",
+      "split": "train",
       "is_derived": true
     },
     {
@@ -3167,7 +3167,7 @@
       "context": "Alice: We need to ship on Friday. Bob: Let's test first.",
       "request_type": "general",
       "complexity": 2,
-      "split": "calibration",
+      "split": "train",
       "is_derived": true
     },
     {
@@ -3207,7 +3207,7 @@
       "context": null,
       "request_type": "general",
       "complexity": 3,
-      "split": "validation",
+      "split": "calibration",
       "is_derived": false
     },
     {
@@ -3217,7 +3217,7 @@
       "context": null,
       "request_type": "general",
       "complexity": 3,
-      "split": "validation",
+      "split": "calibration",
       "is_derived": true
     },
     {
@@ -3227,7 +3227,7 @@
       "context": null,
       "request_type": "general",
       "complexity": 3,
-      "split": "validation",
+      "split": "calibration",
       "is_derived": true
     },
     {
@@ -3237,7 +3237,7 @@
       "context": "User context: production environment with tight SLA.",
       "request_type": "general",
       "complexity": 3,
-      "split": "validation",
+      "split": "calibration",
       "is_derived": true
     },
     {
@@ -3627,7 +3627,7 @@
       "context": null,
       "request_type": "code_generation",
       "complexity": 5,
-      "split": "train",
+      "split": "calibration",
       "is_derived": false
     },
     {
@@ -3637,7 +3637,7 @@
       "context": null,
       "request_type": "code_generation",
       "complexity": 5,
-      "split": "train",
+      "split": "calibration",
       "is_derived": true
     },
     {
@@ -3647,7 +3647,7 @@
       "context": null,
       "request_type": "code_generation",
       "complexity": 5,
-      "split": "train",
+      "split": "calibration",
       "is_derived": true
     },
     {
@@ -3657,7 +3657,7 @@
       "context": "User context: production environment with tight SLA.",
       "request_type": "code_generation",
       "complexity": 5,
-      "split": "train",
+      "split": "calibration",
       "is_derived": true
     },
     {
@@ -3817,7 +3817,7 @@
       "context": null,
       "request_type": "code_generation",
       "complexity": 5,
-      "split": "validation",
+      "split": "calibration",
       "is_derived": false
     },
     {
@@ -3847,7 +3847,7 @@
       "context": null,
       "request_type": "code_generation",
       "complexity": 3,
-      "split": "calibration",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -3927,7 +3927,7 @@
       "context": null,
       "request_type": "code_understanding",
       "complexity": 2,
-      "split": "train",
+      "split": "validation",
       "is_derived": false
     },
     {
@@ -3937,7 +3937,7 @@
       "context": null,
       "request_type": "code_understanding",
       "complexity": 4,
-      "split": "train",
+      "split": "validation",
       "is_derived": false
     },
     {
@@ -3947,7 +3947,7 @@
       "context": null,
       "request_type": "code_understanding",
       "complexity": 1,
-      "split": "calibration",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -3957,7 +3957,7 @@
       "context": null,
       "request_type": "code_understanding",
       "complexity": 5,
-      "split": "validation",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -3967,7 +3967,7 @@
       "context": null,
       "request_type": "code_understanding",
       "complexity": 3,
-      "split": "validation",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -3977,7 +3977,7 @@
       "context": null,
       "request_type": "code_understanding",
       "complexity": 1,
-      "split": "train",
+      "split": "calibration",
       "is_derived": false
     },
     {
@@ -4017,7 +4017,7 @@
       "context": null,
       "request_type": "code_understanding",
       "complexity": 4,
-      "split": "validation",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -4037,7 +4037,7 @@
       "context": null,
       "request_type": "code_understanding",
       "complexity": 4,
-      "split": "train",
+      "split": "validation",
       "is_derived": false
     },
     {
@@ -4107,7 +4107,7 @@
       "context": null,
       "request_type": "technical_design",
       "complexity": 3,
-      "split": "train",
+      "split": "validation",
       "is_derived": false
     },
     {
@@ -4137,7 +4137,7 @@
       "context": null,
       "request_type": "technical_design",
       "complexity": 4,
-      "split": "train",
+      "split": "calibration",
       "is_derived": false
     },
     {
@@ -4187,7 +4187,7 @@
       "context": null,
       "request_type": "technical_design",
       "complexity": 3,
-      "split": "calibration",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -4217,7 +4217,7 @@
       "context": null,
       "request_type": "technical_design",
       "complexity": 3,
-      "split": "calibration",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -4237,7 +4237,7 @@
       "context": null,
       "request_type": "analytical_reasoning",
       "complexity": 3,
-      "split": "train",
+      "split": "validation",
       "is_derived": false
     },
     {
@@ -4307,7 +4307,7 @@
       "context": null,
       "request_type": "analytical_reasoning",
       "complexity": 4,
-      "split": "train",
+      "split": "calibration",
       "is_derived": false
     },
     {
@@ -4377,7 +4377,7 @@
       "context": null,
       "request_type": "writing",
       "complexity": 1,
-      "split": "validation",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -4387,7 +4387,7 @@
       "context": null,
       "request_type": "writing",
       "complexity": 2,
-      "split": "train",
+      "split": "validation",
       "is_derived": false
     },
     {
@@ -4407,7 +4407,7 @@
       "context": null,
       "request_type": "writing",
       "complexity": 3,
-      "split": "train",
+      "split": "validation",
       "is_derived": false
     },
     {
@@ -4417,7 +4417,7 @@
       "context": null,
       "request_type": "writing",
       "complexity": 2,
-      "split": "train",
+      "split": "calibration",
       "is_derived": false
     },
     {
@@ -4437,7 +4437,7 @@
       "context": null,
       "request_type": "writing",
       "complexity": 2,
-      "split": "train",
+      "split": "calibration",
       "is_derived": false
     },
     {
@@ -4467,7 +4467,7 @@
       "context": null,
       "request_type": "writing",
       "complexity": 2,
-      "split": "calibration",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -4477,7 +4477,7 @@
       "context": null,
       "request_type": "writing",
       "complexity": 1,
-      "split": "validation",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -4497,7 +4497,7 @@
       "context": null,
       "request_type": "writing",
       "complexity": 3,
-      "split": "train",
+      "split": "calibration",
       "is_derived": false
     },
     {
@@ -4507,7 +4507,7 @@
       "context": null,
       "request_type": "writing",
       "complexity": 2,
-      "split": "calibration",
+      "split": "validation",
       "is_derived": false
     },
     {
@@ -4527,7 +4527,7 @@
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 1,
-      "split": "validation",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -4537,7 +4537,7 @@
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 1,
-      "split": "calibration",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -4557,7 +4557,7 @@
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 1,
-      "split": "train",
+      "split": "validation",
       "is_derived": false
     },
     {
@@ -4567,7 +4567,7 @@
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 1,
-      "split": "train",
+      "split": "validation",
       "is_derived": false
     },
     {
@@ -4587,7 +4587,7 @@
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 2,
-      "split": "validation",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -4597,7 +4597,7 @@
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 1,
-      "split": "train",
+      "split": "validation",
       "is_derived": false
     },
     {
@@ -4607,7 +4607,7 @@
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 1,
-      "split": "calibration",
+      "split": "validation",
       "is_derived": false
     },
     {
@@ -4657,7 +4657,7 @@
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 1,
-      "split": "train",
+      "split": "validation",
       "is_derived": false
     },
     {
@@ -4677,7 +4677,7 @@
       "context": null,
       "request_type": "general",
       "complexity": 1,
-      "split": "train",
+      "split": "calibration",
       "is_derived": false
     },
     {
@@ -4707,7 +4707,7 @@
       "context": null,
       "request_type": "general",
       "complexity": 2,
-      "split": "calibration",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -4737,7 +4737,7 @@
       "context": null,
       "request_type": "general",
       "complexity": 2,
-      "split": "train",
+      "split": "validation",
       "is_derived": false
     },
     {
@@ -4747,7 +4747,7 @@
       "context": null,
       "request_type": "general",
       "complexity": 2,
-      "split": "train",
+      "split": "validation",
       "is_derived": false
     },
     {
@@ -4767,7 +4767,7 @@
       "context": null,
       "request_type": "general",
       "complexity": 2,
-      "split": "validation",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -4777,7 +4777,7 @@
       "context": null,
       "request_type": "general",
       "complexity": 1,
-      "split": "validation",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -4787,7 +4787,7 @@
       "context": null,
       "request_type": "general",
       "complexity": 1,
-      "split": "train",
+      "split": "validation",
       "is_derived": false
     },
     {
@@ -4837,7 +4837,7 @@
       "context": null,
       "request_type": "code_generation",
       "complexity": 3,
-      "split": "train",
+      "split": "calibration",
       "is_derived": false
     },
     {
@@ -4857,7 +4857,7 @@
       "context": null,
       "request_type": "code_generation",
       "complexity": 3,
-      "split": "validation",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -4867,7 +4867,7 @@
       "context": null,
       "request_type": "code_generation",
       "complexity": 4,
-      "split": "train",
+      "split": "calibration",
       "is_derived": false
     },
     {
@@ -4877,7 +4877,7 @@
       "context": null,
       "request_type": "code_generation",
       "complexity": 3,
-      "split": "train",
+      "split": "calibration",
       "is_derived": false
     },
     {
@@ -4897,7 +4897,7 @@
       "context": null,
       "request_type": "code_generation",
       "complexity": 2,
-      "split": "validation",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -4967,7 +4967,7 @@
       "context": null,
       "request_type": "code_generation",
       "complexity": 2,
-      "split": "train",
+      "split": "validation",
       "is_derived": false
     },
     {
@@ -4997,7 +4997,7 @@
       "context": null,
       "request_type": "code_generation",
       "complexity": 4,
-      "split": "validation",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -5007,7 +5007,7 @@
       "context": null,
       "request_type": "code_generation",
       "complexity": 2,
-      "split": "calibration",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -5027,7 +5027,7 @@
       "context": null,
       "request_type": "code_understanding",
       "complexity": 3,
-      "split": "train",
+      "split": "validation",
       "is_derived": false
     },
     {
@@ -5087,7 +5087,7 @@
       "context": null,
       "request_type": "code_understanding",
       "complexity": 4,
-      "split": "calibration",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -5097,7 +5097,7 @@
       "context": null,
       "request_type": "code_understanding",
       "complexity": 4,
-      "split": "calibration",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -5117,7 +5117,7 @@
       "context": null,
       "request_type": "code_understanding",
       "complexity": 5,
-      "split": "calibration",
+      "split": "validation",
       "is_derived": false
     },
     {
@@ -5157,7 +5157,7 @@
       "context": null,
       "request_type": "code_understanding",
       "complexity": 3,
-      "split": "train",
+      "split": "validation",
       "is_derived": false
     },
     {
@@ -5167,7 +5167,7 @@
       "context": null,
       "request_type": "code_understanding",
       "complexity": 3,
-      "split": "train",
+      "split": "calibration",
       "is_derived": false
     },
     {
@@ -5197,7 +5197,7 @@
       "context": null,
       "request_type": "code_understanding",
       "complexity": 2,
-      "split": "calibration",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -5207,7 +5207,7 @@
       "context": null,
       "request_type": "code_understanding",
       "complexity": 3,
-      "split": "validation",
+      "split": "calibration",
       "is_derived": false
     },
     {
@@ -5217,7 +5217,7 @@
       "context": null,
       "request_type": "code_understanding",
       "complexity": 3,
-      "split": "train",
+      "split": "calibration",
       "is_derived": false
     },
     {
@@ -5237,7 +5237,7 @@
       "context": null,
       "request_type": "technical_design",
       "complexity": 4,
-      "split": "calibration",
+      "split": "validation",
       "is_derived": false
     },
     {
@@ -5257,7 +5257,7 @@
       "context": null,
       "request_type": "technical_design",
       "complexity": 3,
-      "split": "validation",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -5337,7 +5337,7 @@
       "context": null,
       "request_type": "technical_design",
       "complexity": 5,
-      "split": "calibration",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -5347,7 +5347,7 @@
       "context": null,
       "request_type": "technical_design",
       "complexity": 5,
-      "split": "validation",
+      "split": "calibration",
       "is_derived": false
     },
     {
@@ -5407,7 +5407,7 @@
       "context": null,
       "request_type": "technical_design",
       "complexity": 2,
-      "split": "train",
+      "split": "validation",
       "is_derived": false
     },
     {
@@ -5427,7 +5427,7 @@
       "context": null,
       "request_type": "analytical_reasoning",
       "complexity": 3,
-      "split": "train",
+      "split": "validation",
       "is_derived": false
     },
     {
@@ -5437,7 +5437,7 @@
       "context": null,
       "request_type": "analytical_reasoning",
       "complexity": 2,
-      "split": "train",
+      "split": "validation",
       "is_derived": false
     },
     {
@@ -5447,7 +5447,7 @@
       "context": null,
       "request_type": "analytical_reasoning",
       "complexity": 4,
-      "split": "calibration",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -5467,7 +5467,7 @@
       "context": null,
       "request_type": "analytical_reasoning",
       "complexity": 3,
-      "split": "train",
+      "split": "calibration",
       "is_derived": false
     },
     {
@@ -5487,7 +5487,7 @@
       "context": null,
       "request_type": "analytical_reasoning",
       "complexity": 3,
-      "split": "calibration",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -5497,7 +5497,7 @@
       "context": null,
       "request_type": "analytical_reasoning",
       "complexity": 3,
-      "split": "calibration",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -5507,7 +5507,7 @@
       "context": null,
       "request_type": "analytical_reasoning",
       "complexity": 2,
-      "split": "validation",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -5517,7 +5517,7 @@
       "context": null,
       "request_type": "analytical_reasoning",
       "complexity": 3,
-      "split": "train",
+      "split": "validation",
       "is_derived": false
     },
     {
@@ -5547,7 +5547,7 @@
       "context": null,
       "request_type": "analytical_reasoning",
       "complexity": 2,
-      "split": "train",
+      "split": "calibration",
       "is_derived": false
     },
     {
@@ -5567,7 +5567,7 @@
       "context": null,
       "request_type": "analytical_reasoning",
       "complexity": 3,
-      "split": "calibration",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -5577,7 +5577,7 @@
       "context": null,
       "request_type": "analytical_reasoning",
       "complexity": 3,
-      "split": "train",
+      "split": "validation",
       "is_derived": false
     },
     {
@@ -5597,7 +5597,7 @@
       "context": null,
       "request_type": "analytical_reasoning",
       "complexity": 2,
-      "split": "train",
+      "split": "calibration",
       "is_derived": false
     },
     {
@@ -5607,7 +5607,7 @@
       "context": null,
       "request_type": "analytical_reasoning",
       "complexity": 3,
-      "split": "validation",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -5627,7 +5627,7 @@
       "context": null,
       "request_type": "analytical_reasoning",
       "complexity": 5,
-      "split": "calibration",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -5637,7 +5637,7 @@
       "context": null,
       "request_type": "analytical_reasoning",
       "complexity": 5,
-      "split": "calibration",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -5647,7 +5647,7 @@
       "context": null,
       "request_type": "analytical_reasoning",
       "complexity": 4,
-      "split": "calibration",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -5667,7 +5667,7 @@
       "context": null,
       "request_type": "analytical_reasoning",
       "complexity": 3,
-      "split": "validation",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -5687,7 +5687,7 @@
       "context": null,
       "request_type": "analytical_reasoning",
       "complexity": 4,
-      "split": "train",
+      "split": "calibration",
       "is_derived": false
     },
     {
@@ -5707,7 +5707,7 @@
       "context": null,
       "request_type": "analytical_reasoning",
       "complexity": 3,
-      "split": "validation",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -5727,7 +5727,7 @@
       "context": null,
       "request_type": "writing",
       "complexity": 2,
-      "split": "validation",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -5757,7 +5757,7 @@
       "context": null,
       "request_type": "writing",
       "complexity": 3,
-      "split": "train",
+      "split": "validation",
       "is_derived": false
     },
     {
@@ -5767,7 +5767,7 @@
       "context": null,
       "request_type": "writing",
       "complexity": 1,
-      "split": "train",
+      "split": "validation",
       "is_derived": false
     },
     {
@@ -5857,7 +5857,7 @@
       "context": null,
       "request_type": "writing",
       "complexity": 2,
-      "split": "calibration",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -5877,7 +5877,7 @@
       "context": null,
       "request_type": "writing",
       "complexity": 2,
-      "split": "validation",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -5907,7 +5907,7 @@
       "context": null,
       "request_type": "writing",
       "complexity": 1,
-      "split": "validation",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -5917,7 +5917,7 @@
       "context": null,
       "request_type": "writing",
       "complexity": 4,
-      "split": "train",
+      "split": "calibration",
       "is_derived": false
     },
     {
@@ -5947,7 +5947,7 @@
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 1,
-      "split": "train",
+      "split": "calibration",
       "is_derived": false
     },
     {
@@ -5967,7 +5967,7 @@
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 1,
-      "split": "validation",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -5997,7 +5997,7 @@
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 1,
-      "split": "calibration",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -6007,7 +6007,7 @@
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 1,
-      "split": "validation",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -6017,7 +6017,7 @@
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 1,
-      "split": "train",
+      "split": "calibration",
       "is_derived": false
     },
     {
@@ -6027,7 +6027,7 @@
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 2,
-      "split": "calibration",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -6037,7 +6037,7 @@
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 1,
-      "split": "calibration",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -6047,7 +6047,7 @@
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 1,
-      "split": "train",
+      "split": "calibration",
       "is_derived": false
     },
     {
@@ -6067,7 +6067,7 @@
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 1,
-      "split": "calibration",
+      "split": "validation",
       "is_derived": false
     },
     {
@@ -6097,7 +6097,7 @@
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 1,
-      "split": "validation",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -6117,7 +6117,7 @@
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 1,
-      "split": "validation",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -6147,7 +6147,7 @@
       "context": null,
       "request_type": "general",
       "complexity": 1,
-      "split": "train",
+      "split": "validation",
       "is_derived": false
     },
     {
@@ -6157,7 +6157,7 @@
       "context": null,
       "request_type": "general",
       "complexity": 2,
-      "split": "train",
+      "split": "calibration",
       "is_derived": false
     },
     {
@@ -6167,7 +6167,7 @@
       "context": null,
       "request_type": "general",
       "complexity": 1,
-      "split": "validation",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -6217,7 +6217,7 @@
       "context": null,
       "request_type": "general",
       "complexity": 1,
-      "split": "calibration",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -6227,7 +6227,7 @@
       "context": null,
       "request_type": "general",
       "complexity": 2,
-      "split": "train",
+      "split": "calibration",
       "is_derived": false
     },
     {
@@ -6237,7 +6237,7 @@
       "context": null,
       "request_type": "general",
       "complexity": 2,
-      "split": "calibration",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -6267,7 +6267,7 @@
       "context": null,
       "request_type": "general",
       "complexity": 1,
-      "split": "calibration",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -6277,7 +6277,7 @@
       "context": null,
       "request_type": "general",
       "complexity": 2,
-      "split": "train",
+      "split": "validation",
       "is_derived": false
     },
     {
@@ -6287,7 +6287,7 @@
       "context": null,
       "request_type": "general",
       "complexity": 2,
-      "split": "validation",
+      "split": "calibration",
       "is_derived": false
     },
     {
@@ -6297,7 +6297,7 @@
       "context": null,
       "request_type": "general",
       "complexity": 1,
-      "split": "validation",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -6307,7 +6307,7 @@
       "context": null,
       "request_type": "general",
       "complexity": 1,
-      "split": "calibration",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -6322,7 +6322,7 @@
     },
     {
       "id": "ex_0633",
-      "source_group": "instr_151",
+      "source_group": "instr_01",
       "query": "Format this unorganized JSON payload with 2 spaces indentation and alphabetical keys.",
       "context": null,
       "request_type": "code_generation",
@@ -6332,7 +6332,7 @@
     },
     {
       "id": "ex_0634",
-      "source_group": "instr_152",
+      "source_group": "instr_02",
       "query": "Convert this raw curl request into an equivalent Python requests snippet.",
       "context": null,
       "request_type": "code_generation",
@@ -6342,7 +6342,7 @@
     },
     {
       "id": "ex_0635",
-      "source_group": "instr_153",
+      "source_group": "instr_03",
       "query": "Translate this SQL query into a MongoDB aggregation pipeline.",
       "context": null,
       "request_type": "code_generation",
@@ -6352,17 +6352,17 @@
     },
     {
       "id": "ex_0636",
-      "source_group": "instr_154",
+      "source_group": "instr_04",
       "query": "Generate a mock mockito test suite for this Java UserService class.",
       "context": null,
       "request_type": "code_generation",
       "complexity": 3,
-      "split": "calibration",
+      "split": "train",
       "is_derived": false
     },
     {
       "id": "ex_0637",
-      "source_group": "instr_155",
+      "source_group": "instr_05",
       "query": "Write a shell script to kill all orphan zombie processes consuming more than 1GB RAM.",
       "context": null,
       "request_type": "code_generation",
@@ -6372,17 +6372,17 @@
     },
     {
       "id": "ex_0638",
-      "source_group": "instr_156",
+      "source_group": "instr_06",
       "query": "Draft a comprehensive README markdown file for an open-source Rust CLI crate.",
       "context": null,
       "request_type": "writing",
       "complexity": 3,
-      "split": "calibration",
+      "split": "train",
       "is_derived": false
     },
     {
       "id": "ex_0639",
-      "source_group": "instr_157",
+      "source_group": "instr_07",
       "query": "Summarize the key architectural differences between WebRTC and RTMP streaming.",
       "context": null,
       "request_type": "technical_design",
@@ -6392,27 +6392,27 @@
     },
     {
       "id": "ex_0640",
-      "source_group": "instr_158",
+      "source_group": "instr_08",
       "query": "Explain why this variable is getting mutated outside its intended lexical scope.",
       "context": null,
       "request_type": "code_understanding",
       "complexity": 2,
-      "split": "validation",
+      "split": "calibration",
       "is_derived": false
     },
     {
       "id": "ex_0641",
-      "source_group": "instr_159",
+      "source_group": "instr_09",
       "query": "Calculate the probability that at least 2 people share a birthday in a room of 30.",
       "context": null,
       "request_type": "analytical_reasoning",
       "complexity": 3,
-      "split": "validation",
+      "split": "train",
       "is_derived": false
     },
     {
       "id": "ex_0642",
-      "source_group": "instr_160",
+      "source_group": "instr_10",
       "query": "Who was the British Prime Minister during the Suez Crisis in 1956?",
       "context": null,
       "request_type": "factual_lookup",
@@ -6422,17 +6422,17 @@
     },
     {
       "id": "ex_0643",
-      "source_group": "instr_161",
+      "source_group": "instr_11",
       "query": "Give me 5 actionable suggestions to reduce friction during user onboarding.",
       "context": null,
       "request_type": "general",
       "complexity": 2,
-      "split": "calibration",
+      "split": "train",
       "is_derived": false
     },
     {
       "id": "ex_0644",
-      "source_group": "instr_162",
+      "source_group": "instr_12",
       "query": "Extract all IPv4 and IPv6 addresses from this access log using a regex.",
       "context": null,
       "request_type": "code_generation",
@@ -6442,7 +6442,7 @@
     },
     {
       "id": "ex_0645",
-      "source_group": "instr_163",
+      "source_group": "instr_13",
       "query": "Optimize this nested loop to achieve O(N log N) time complexity instead of O(N^2).",
       "context": null,
       "request_type": "code_generation",
@@ -6452,17 +6452,17 @@
     },
     {
       "id": "ex_0646",
-      "source_group": "instr_164",
+      "source_group": "instr_14",
       "query": "Explain the concept of speculative execution vulnerabilities like Spectre and Meltdown.",
       "context": null,
       "request_type": "code_understanding",
       "complexity": 4,
-      "split": "calibration",
+      "split": "train",
       "is_derived": false
     },
     {
       "id": "ex_0647",
-      "source_group": "instr_165",
+      "source_group": "instr_15",
       "query": "Design a distributed lock using Redis Redlock algorithm and discuss its edge cases.",
       "context": null,
       "request_type": "technical_design",
@@ -6472,17 +6472,17 @@
     },
     {
       "id": "ex_0648",
-      "source_group": "instr_166",
+      "source_group": "instr_16",
       "query": "Calculate the total electrical energy consumed in kWh by a 1500W heater run for 8 hours daily for 30 days.",
       "context": null,
       "request_type": "analytical_reasoning",
       "complexity": 1,
-      "split": "train",
+      "split": "calibration",
       "is_derived": false
     },
     {
       "id": "ex_0649",
-      "source_group": "instr_167",
+      "source_group": "instr_17",
       "query": "Write a cold outreach email to prospective B2B clients showcasing our latency reduction.",
       "context": null,
       "request_type": "writing",
@@ -6492,17 +6492,17 @@
     },
     {
       "id": "ex_0650",
-      "source_group": "instr_168",
+      "source_group": "instr_18",
       "query": "What is the primary function of the corpus callosum in the human brain?",
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 1,
-      "split": "train",
+      "split": "calibration",
       "is_derived": false
     },
     {
       "id": "ex_0651",
-      "source_group": "instr_169",
+      "source_group": "instr_19",
       "query": "Can you help me plan a 1-day sightseeing walking tour of Amsterdam?",
       "context": null,
       "request_type": "general",
@@ -6512,7 +6512,7 @@
     },
     {
       "id": "ex_0652",
-      "source_group": "instr_170",
+      "source_group": "instr_20",
       "query": "Refactor this C++ class to follow RAII and eliminate naked `new` and `delete` calls.",
       "context": null,
       "request_type": "code_generation",
@@ -6522,27 +6522,27 @@
     },
     {
       "id": "ex_0653",
-      "source_group": "instr_171",
+      "source_group": "instr_21",
       "query": "Inspect this memory profiling flamegraph and identify where the garbage collection pause originates.",
       "context": null,
       "request_type": "code_understanding",
       "complexity": 4,
-      "split": "train",
+      "split": "calibration",
       "is_derived": false
     },
     {
       "id": "ex_0654",
-      "source_group": "instr_172",
+      "source_group": "instr_22",
       "query": "Architect a zero-trust network access (ZTNA) model for remote engineers accessing production clusters.",
       "context": null,
       "request_type": "technical_design",
       "complexity": 5,
-      "split": "train",
+      "split": "calibration",
       "is_derived": false
     },
     {
       "id": "ex_0655",
-      "source_group": "instr_173",
+      "source_group": "instr_23",
       "query": "Solve this optimization problem: maximize f(x, y) = 4x + 3y subject to 2x + y <= 10 and x + 2y <= 8.",
       "context": null,
       "request_type": "analytical_reasoning",
@@ -6552,7 +6552,7 @@
     },
     {
       "id": "ex_0656",
-      "source_group": "instr_174",
+      "source_group": "instr_24",
       "query": "Proofread and enhance this technical blog post introduction to hook readers immediately.",
       "context": null,
       "request_type": "writing",
@@ -6562,7 +6562,7 @@
     },
     {
       "id": "ex_0657",
-      "source_group": "instr_175",
+      "source_group": "instr_25",
       "query": "What year was the Nobel Prize in Physics first awarded and who was the inaugural recipient?",
       "context": null,
       "request_type": "factual_lookup",
@@ -6572,7 +6572,7 @@
     },
     {
       "id": "ex_0658",
-      "source_group": "instr_176",
+      "source_group": "instr_26",
       "query": "What are some thoughtful questions to ask the interviewer at the end of a software engineering interview?",
       "context": null,
       "request_type": "general",
@@ -6582,7 +6582,7 @@
     },
     {
       "id": "ex_0659",
-      "source_group": "instr_177",
+      "source_group": "instr_27",
       "query": "Implement a rate-limited queue in TypeScript with exponential backoff on retry.",
       "context": null,
       "request_type": "code_generation",
@@ -6592,7 +6592,7 @@
     },
     {
       "id": "ex_0660",
-      "source_group": "instr_178",
+      "source_group": "instr_28",
       "query": "Decompile this byte sequence and explain what the machine code instructions perform.",
       "context": null,
       "request_type": "code_understanding",
@@ -6602,7 +6602,7 @@
     },
     {
       "id": "ex_0661",
-      "source_group": "instr_179",
+      "source_group": "instr_29",
       "query": "Design an automated disaster recovery failover mechanism across AWS us-east-1 and eu-west-1.",
       "context": null,
       "request_type": "technical_design",
@@ -6612,27 +6612,27 @@
     },
     {
       "id": "ex_0662",
-      "source_group": "instr_180",
+      "source_group": "instr_30",
       "query": "Calculate the expected loss in a portfolio with normal distribution VaR at 95% confidence.",
       "context": null,
       "request_type": "analytical_reasoning",
       "complexity": 4,
-      "split": "train",
-      "is_derived": false
-    },
-    {
-      "id": "ex_0663",
-      "source_group": "instr_181",
-      "query": "Write a diplomatic memo explaining why a requested feature has been deprioritized.",
-      "context": null,
-      "request_type": "writing",
-      "complexity": 2,
       "split": "calibration",
       "is_derived": false
     },
     {
+      "id": "ex_0663",
+      "source_group": "instr_31",
+      "query": "Write a diplomatic memo explaining why a requested feature has been deprioritized.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
       "id": "ex_0664",
-      "source_group": "instr_182",
+      "source_group": "instr_32",
       "query": "Name the four Galilean moons of Jupiter in order of orbital distance.",
       "context": null,
       "request_type": "factual_lookup",
@@ -6642,7 +6642,7 @@
     },
     {
       "id": "ex_0665",
-      "source_group": "instr_183",
+      "source_group": "instr_33",
       "query": "How do noise-isolating earplugs differ mechanically from active noise-cancelling headphones?",
       "context": null,
       "request_type": "general",
@@ -6652,37 +6652,37 @@
     },
     {
       "id": "ex_0666",
-      "source_group": "instr_184",
+      "source_group": "instr_34",
       "query": "Write a Prometheus alerting rule in YAML that fires when 5xx HTTP error rates exceed 2% over 5 minutes.",
       "context": null,
       "request_type": "code_generation",
       "complexity": 2,
-      "split": "calibration",
+      "split": "validation",
       "is_derived": false
     },
     {
       "id": "ex_0667",
-      "source_group": "instr_185",
+      "source_group": "instr_35",
       "query": "Walk me through the difference between level-triggered and edge-triggered interrupts in OS kernels.",
       "context": null,
       "request_type": "code_understanding",
       "complexity": 4,
-      "split": "train",
+      "split": "validation",
       "is_derived": false
     },
     {
       "id": "ex_0668",
-      "source_group": "instr_186",
+      "source_group": "instr_36",
       "query": "Architect an event-driven telemetry pipeline ingesting 500,000 IoT messages per second.",
       "context": null,
       "request_type": "technical_design",
       "complexity": 5,
-      "split": "train",
+      "split": "calibration",
       "is_derived": false
     },
     {
       "id": "ex_0669",
-      "source_group": "instr_187",
+      "source_group": "instr_37",
       "query": "Determine the winning strategy for a two-player subtraction game where players take 1, 2, or 3 coins from 21.",
       "context": null,
       "request_type": "analytical_reasoning",
@@ -6692,17 +6692,17 @@
     },
     {
       "id": "ex_0670",
-      "source_group": "instr_188",
+      "source_group": "instr_38",
       "query": "Draft an internal engineering wiki page documenting our production deployment checklist.",
       "context": null,
       "request_type": "writing",
       "complexity": 3,
-      "split": "validation",
+      "split": "train",
       "is_derived": false
     },
     {
       "id": "ex_0671",
-      "source_group": "instr_189",
+      "source_group": "instr_39",
       "query": "What is the speed of sound through sea water at 20 degrees Celsius?",
       "context": null,
       "request_type": "factual_lookup",
@@ -6712,11 +6712,521 @@
     },
     {
       "id": "ex_0672",
-      "source_group": "instr_190",
+      "source_group": "instr_40",
       "query": "Can you suggest some productive habits to decompress after an intense coding session?",
       "context": null,
       "request_type": "general",
       "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0673",
+      "source_group": "instr_41",
+      "query": "hey could u look at this weird error in my logs idk what happened: connection reset by peer 10.0.4.12",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0674",
+      "source_group": "instr_42",
+      "query": "make me something cool in three.js with neon floating cubes",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 3,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0675",
+      "source_group": "instr_43",
+      "query": "is redis or postgres better for this? we have like 50k users doing live upvotes",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 3,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0676",
+      "source_group": "instr_44",
+      "query": "so if i invest 200 bucks every week with 7% returns where am i at in 15 yrs?",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0677",
+      "source_group": "instr_45",
+      "query": "how do i tell my coworker politely that their PR is completely unreadable?",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0678",
+      "source_group": "instr_46",
+      "query": "where was the first computer bug actually found? like the physical moth one",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0679",
+      "source_group": "instr_47",
+      "query": "feeling super burnt out today, any advice on getting through a sprint?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0680",
+      "source_group": "instr_48",
+      "query": "can you fix this json its giving unexpected token at pos 44: {name: 'john', age: 30,}",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0681",
+      "source_group": "instr_49",
+      "query": "why does my docker container die immediately with exit code 137?",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0682",
+      "source_group": "instr_50",
+      "query": "we need to shard our database. what's the least painful strategy here?",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0683",
+      "source_group": "instr_51",
+      "query": "estimate how many ping pong balls fit into a Boeing 747 roughly",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 3,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0684",
+      "source_group": "instr_52",
+      "query": "rewrite this email so my boss doesn't think i'm blaming the ops team",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0685",
+      "source_group": "instr_53",
+      "query": "what is the half life of caffeine in human metabolism?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0686",
+      "source_group": "instr_54",
+      "query": "im bored, give me a weird paradox that will blow my mind",
+      "context": null,
+      "request_type": "general",
+      "complexity": 1,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0687",
+      "source_group": "instr_55",
+      "query": "quick regex to strip all html tags except <a> and <b> please",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0688",
+      "source_group": "instr_56",
+      "query": "what does this crazy bash one-liner do: :(){ :|:& };: ?",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0689",
+      "source_group": "instr_57",
+      "query": "architecture question: should auth tokens be stored in httpOnly cookies or localStorage?",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0690",
+      "source_group": "instr_58",
+      "query": "what are the odds of flipping 10 heads in a row with a biased coin at 0.6 probability?",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0691",
+      "source_group": "instr_59",
+      "query": "make this cover letter sound less desperate and more like i know my worth",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 2,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0692",
+      "source_group": "instr_60",
+      "query": "who directed the movie 2001 a space odyssey?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0693",
+      "source_group": "instr_61",
+      "query": "whats the best way to brew v60 coffee if i only have supermarket beans?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 1,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0694",
+      "source_group": "instr_62",
+      "query": "turn this python dict into a typescript type definition real quick",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0695",
+      "source_group": "instr_63",
+      "query": "why on earth is python's round(2.5) equal to 2 instead of 3?",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0696",
+      "source_group": "instr_64",
+      "query": "kafka vs sqs for a tiny startup with 3 devs? keep it realistic",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 3,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0697",
+      "source_group": "instr_65",
+      "query": "how much water would evaporate from an Olympic swimming pool on a 35C dry day?",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0698",
+      "source_group": "instr_66",
+      "query": "help me decline a job offer nicely because the salary is too low",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0699",
+      "source_group": "instr_67",
+      "query": "what year was the python programming language first released by guido?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0700",
+      "source_group": "instr_68",
+      "query": "is it bad to drink green tea right before going to bed?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0701",
+      "source_group": "instr_69",
+      "query": "can u write a simple webhook receiver in express js that logs headers and body",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0702",
+      "source_group": "instr_70",
+      "query": "why does git status show modified files when i literally just ran git checkout main?",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 2,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0703",
+      "source_group": "instr_71",
+      "query": "design a resilient background worker system that handles spot instance terminations gracefully",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0704",
+      "source_group": "instr_72",
+      "query": "calculate the compound annual growth rate if revenue grew from 1.2M to 4.8M over 4 years",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0705",
+      "source_group": "instr_73",
+      "query": "draft a slack message letting the team know i have a dentist appointment at 2pm",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 1,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0706",
+      "source_group": "instr_74",
+      "query": "whats the boiling temperature of olive oil vs canola oil?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0707",
+      "source_group": "instr_75",
+      "query": "any fun gift ideas under 25 dollars for a secret santa exchange?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 1,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0708",
+      "source_group": "instr_76",
+      "query": "give me a curl command to upload a multipart file with an auth bearer token",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 1,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0709",
+      "source_group": "instr_77",
+      "query": "what does `cargo check` do that `cargo build` doesn't?",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 1,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0710",
+      "source_group": "instr_78",
+      "query": "how do we prevent race conditions in our shopping cart checkout without locking the entire table?",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0711",
+      "source_group": "instr_79",
+      "query": "if 3 cats catch 3 mice in 3 minutes how many cats are needed to catch 100 mice in 100 minutes?",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0712",
+      "source_group": "instr_80",
+      "query": "rephrase this linkedin update so it doesnt sound cringe or braggy",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0713",
+      "source_group": "instr_81",
+      "query": "who holds the world record for the 100 meter sprint?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0714",
+      "source_group": "instr_82",
+      "query": "can you help me come up with team name ideas for a pub trivia night?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0715",
+      "source_group": "instr_83",
+      "query": "write a small tampermonkey script that skips youtube ads automatically",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 3,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0716",
+      "source_group": "instr_84",
+      "query": "why did rust give me error[E0382]: use of moved value here?",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0717",
+      "source_group": "instr_85",
+      "query": "high level plan: migrating 10TB of s3 buckets to cloudflare r2 without downtime",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0718",
+      "source_group": "instr_86",
+      "query": "whats the expected payout in roulette if i bet 10 dollars on black?",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 2,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0719",
+      "source_group": "instr_87",
+      "query": "write a polite reply to a recruiter saying im happy in my current role but want to stay in touch",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0720",
+      "source_group": "instr_88",
+      "query": "what is the highest recorded temperature on earth and where was it?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0721",
+      "source_group": "instr_89",
+      "query": "any ideas for quick healthy meals when you have zero energy to cook?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 1,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0722",
+      "source_group": "instr_90",
+      "query": "write a github actions yaml that cancels previous in-progress runs on new commit",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0723",
+      "source_group": "instr_91",
+      "query": "explain what `stty raw -echo` actually does to the terminal driver",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 3,
       "split": "train",
       "is_derived": false
     }
