@@ -41,7 +41,7 @@ pub mod resolver;
 pub mod routing;
 mod savings;
 pub mod usage;
-
+pub mod compact;
 pub use config::GatewayConfig;
 pub use error::GatewayError;
 pub use inbound::InboundFormat;
