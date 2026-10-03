@@ -425,7 +425,18 @@ fn assistant_to_gemini(m: &Message) -> Value {
         for tc in tool_calls {
             let args: Value =
                 serde_json::from_str(&tc.function.arguments).unwrap_or_else(|_| json!({}));
-            parts.push(json!({ "functionCall": { "name": tc.function.name, "args": args } }));
+            let mut function_call = json!({
+                "name": tc.function.name,
+                "args": args
+            });
+
+            if let Some(signature) = tc.extra.get("gemini_thought_signature") {
+                function_call["thought_signature"] = signature.clone();
+            }
+
+            parts.push(json!({
+                "functionCall": function_call
+            }));
         }
     }
     if parts.is_empty() {
@@ -477,11 +488,17 @@ fn from_gemini_response(body: &Value, model: &str) -> Result<ChatResponse, Provi
                     .map(|v| v.to_string())
                     .unwrap_or_else(|| "{}".to_string());
                 // Gemini supplies no call id; synthesize a stable-within-response one.
+                let mut extra = Map::new();
+
+                if let Some(signature) = fc.get("thought_signature") {
+                    extra.insert("gemini_thought_signature".to_string(), signature.clone());
+                }
+
                 tool_calls.push(ToolCall {
                     id: format!("call_{name}_{call_index}"),
                     kind: "function".to_string(),
                     function: FunctionCall { name, arguments },
-                    extra: Map::new(),
+                    extra,
                 });
                 call_index += 1;
             }
@@ -712,6 +729,63 @@ mod tests {
         assert_eq!(usage.prompt_tokens, Some(20));
         assert_eq!(usage.completion_tokens, Some(8));
         assert_eq!(usage.total_tokens, Some(28));
+    }
+
+    #[test]
+    fn thought_signature_round_trips_through_tool_call() {
+        let gemini = json!({
+            "candidates": [{
+                "content": {
+                    "role": "model",
+                    "parts": [{
+                        "functionCall": {
+                            "name": "search_wikipedia",
+                            "args": { "query": "Gemini" },
+                            "thought_signature": "test-signature-123"
+                        }
+                    }]
+                },
+                "finishReason": "STOP"
+            }]
+        });
+
+        let resp = from_gemini_response(&gemini, "gemini-3.8-flash").unwrap();
+        let tc = &resp.choices[0].message.tool_calls.as_ref().unwrap()[0];
+
+        assert_eq!(
+            tc.extra.get("gemini_thought_signature"),
+            Some(&json!("test-signature-123"))
+        );
+
+        let req: ChatRequest = serde_json::from_value(json!({
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "search"
+                },
+                {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": "search_wikipedia",
+                            "arguments": "{\"query\":\"Gemini\"}"
+                        },
+                        "gemini_thought_signature": "test-signature-123"
+                    }]
+                }
+            ]
+        }))
+        .unwrap();
+
+        let body = to_gemini_request(&req, &resolved());
+
+        assert_eq!(
+            body["contents"][1]["parts"][0]["functionCall"]["thought_signature"],
+            "test-signature-123"
+        );
     }
 
     #[test]
