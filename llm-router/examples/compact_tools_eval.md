@@ -19,6 +19,9 @@ $env:OUT = "$PWD\target\compact-tools-local.out.jsonl"
 cargo run --release -p nasiko-llm-router --example compact_tools_eval
 ```
 
+Schemas outside the crate's documented JSON Schema subset are sent in the native `tools`
+form and reported as `compacted: false`; the evaluator continues with the remaining cases.
+
 For an optional live adherence check, set `PROVIDER_BASE_URL` and `MODEL`. Set
 `PROVIDER_API_KEY` only when the configured endpoint needs bearer authentication. The
 evaluator adds `raw_output` and a decoded `live_calls` object to each normal case.

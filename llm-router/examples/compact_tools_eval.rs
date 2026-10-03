@@ -35,7 +35,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .flatten()
     {
         let selected = case_tools(case, &tool_index)?;
-        let compact = encode_tools(&selected)?;
+        let compact = match encode_tools(&selected) {
+            Ok(compact) => compact,
+            // The library deliberately rejects schema features it cannot preserve. The
+            // evaluator mirrors router behavior: retain native tools and report a bypass
+            // instead of failing the entire evaluation run.
+            Err(CompactError::UnsupportedSchema { .. }) => {
+                write_row(
+                    &mut out,
+                    &json!({
+                        "id": case_id(case)?,
+                        "compact_request": native_request(case, &selected),
+                        "compacted": false,
+                        "rendered_calls": "",
+                        "roundtrip_calls": [],
+                    }),
+                )?;
+                continue;
+            }
+            Err(error) => return Err(error.into()),
+        };
         let expected = expected_calls(case)?;
         let rendered_calls = render_calls(&expected)?;
         let roundtrip_calls = decode_calls(&rendered_calls, &selected)?;
