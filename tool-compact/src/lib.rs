@@ -70,8 +70,15 @@ pub fn encode_tools(tools: &[ToolDef]) -> Result<CompactTools> {
         "?: optional; [T]: array; !: no extra keys; dt: ISO-8601 datetime.".to_string(),
     ];
 
+    let mut names = BTreeSet::new();
     for tool in tools {
         ensure_tool_supported(tool)?;
+        if !names.insert(&tool.function.name) {
+            return Err(Error::UnsupportedSchema {
+                tool: tool.function.name.clone(),
+                reason: "duplicate tool name".into(),
+            });
+        }
         let parameters = match &tool.function.parameters {
             Some(schema) => render_root_schema(schema, &tool.function.name)?,
             None => String::new(),
@@ -444,7 +451,7 @@ fn render_root_schema(schema: &Value, tool: &str) -> Result<String> {
         .iter()
         .map(|(name, schema)| {
             let optional = (!required.contains(name)).then_some("?").unwrap_or("");
-            Ok(format!("{name}{optional}:{}", render_schema(schema, tool)?))
+            Ok(render_field(name, optional, schema, tool)?)
         })
         .collect::<Result<Vec<_>>>()
         .map(|fields| fields.join(","))
@@ -498,10 +505,7 @@ fn render_schema(schema: &Value, tool: &str) -> Result<String> {
                         .iter()
                         .map(|(name, property)| {
                             let optional = (!required.contains(name)).then_some("?").unwrap_or("");
-                            Ok(format!(
-                                "{name}{optional}:{}",
-                                render_schema(property, tool)?
-                            ))
+                            render_field(name, optional, property, tool)
                         })
                         .collect::<Result<Vec<_>>>()?
                         .join(",");
@@ -517,6 +521,20 @@ fn render_schema(schema: &Value, tool: &str) -> Result<String> {
         })
         .collect::<Result<Vec<_>>>()?;
     Ok(rendered.join("|"))
+}
+
+fn render_field(name: &str, optional: &str, schema: &Value, tool: &str) -> Result<String> {
+    let description = schema
+        .get("description")
+        .and_then(Value::as_str)
+        .filter(|description| !description.trim().is_empty())
+        .map(|description| format!(" ({description})"))
+        .unwrap_or_default();
+    Ok(format!(
+        "{name}{optional}:{}{}",
+        render_schema(schema, tool)?,
+        description
+    ))
 }
 
 fn required_names(schema: &Value, tool: &str) -> Result<BTreeSet<String>> {
@@ -689,6 +707,7 @@ mod tests {
         let tools = vec![calendar()];
         let compact = encode_tools(&tools).unwrap();
         assert!(compact.prompt.contains("title:str"));
+        assert!(compact.prompt.contains("title:str (Event title)"));
         assert!(compact.prompt.contains("visibility?:public|private"));
         assert_eq!(decode_tools(&compact).unwrap(), tools);
 
@@ -700,6 +719,15 @@ mod tests {
                 arguments: json!({"title":"Retro","start":"2026-10-04T10:00:00+05:30","attendees":["riya@example.com"],"metadata":{"room":"A"}})
             }]
         );
+    }
+
+    #[test]
+    fn rejects_duplicate_tool_names() {
+        let tool = calendar();
+        assert!(matches!(
+            encode_tools(&[tool.clone(), tool]),
+            Err(Error::UnsupportedSchema { reason, .. }) if reason == "duplicate tool name"
+        ));
     }
 
     #[test]
