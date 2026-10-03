@@ -40,7 +40,7 @@ def extract(query: str, context):
     d = [0.0]*NUM_DENSE
     d[0]=math.log1p(len(tokens)); d[1]=math.log1p(len(list(query)))
     d[2]=1.0 if "?" in query else 0.0
-    d[3]=1.0 if ("\u0060\u0060\u0060" in query or "\u0060" in query) else 0.0
+    d[3]=1.0 if ("\u0060\u0060\u0060" in combined or "\u0060" in combined) else 0.0
     d[4]=1.0 if (tq and tq[0] in OPENERS) else 0.0
     d[5]=math.log1p(len(list(context)) if context else 0)
     d[6]=1.0 if any(c.isascii() and c.isdigit() for c in query) else 0.0
@@ -63,19 +63,38 @@ def softmax(ls):
     return [e/s for e in es]
 def main():
     ap = argparse.ArgumentParser(); ap.add_argument("--train", required=True)
-    ap.add_argument("--out", required=True); ap.add_argument("--epochs", type=int, default=400)
-    ap.add_argument("--lr", type=float, default=0.5); ap.add_argument("--l2", type=float, default=1e-4)
+    ap.add_argument("--val", help="held-out JSONL; else a stratified 80/20 split of --train is used")
+    ap.add_argument("--out", required=True); ap.add_argument("--epochs", type=int, default=600)
+    ap.add_argument("--lr", type=float, default=0.6); ap.add_argument("--l2", type=float, default=1e-3)
     a = ap.parse_args()
-    rows = [json.loads(l) for l in open(a.train) if l.strip()]
-    by_cls = defaultdict(list)
-    for r in rows: by_cls[r["request_type"]].append(r)
-    tr_rows, va_rows = [], []
-    for c in CLASSES:
-        for i, r in enumerate(sorted(by_cls[c], key=lambda r: r["id"])):
-            (tr_rows if i % 5 < 4 else va_rows).append(r)
+    tr_rows = [json.loads(l) for l in open(a.train) if l.strip()]
+    if a.val:
+        va_rows = [json.loads(l) for l in open(a.val) if l.strip()]
+        split_note = "explicit-val=%s" % a.val
+    else:
+        by_cls = defaultdict(list)
+        for r in tr_rows: by_cls[r["request_type"]].append(r)
+        tr_rows, va_rows = [], []
+        for c in CLASSES:
+            for i, r in enumerate(sorted(by_cls[c], key=lambda r: r["id"])):
+                (tr_rows if i % 5 < 4 else va_rows).append(r)
+        split_note = "stratified-idmod5"
     rng = random.Random(SEED); rng.shuffle(tr_rows)
     tr = [(r,)+extract(r["query"], r.get("context")) for r in tr_rows]
     va = [(r,)+extract(r["query"], r.get("context")) for r in va_rows]
+    # Standardize dense features with fit-set statistics, matching request_model.rs
+    # (WeightsFile v2). Without this the unbounded log-length dense features dominate the
+    # unit-norm hashed block and the model degenerates into a length classifier.
+    n_fit = len(tr)
+    dmean = [sum(x[2][j] for x in tr) / n_fit for j in range(NUM_DENSE)]
+    dstd = []
+    for j in range(NUM_DENSE):
+        var = sum((x[2][j] - dmean[j]) ** 2 for x in tr) / n_fit
+        dstd.append(math.sqrt(var) if var > 1e-12 else 1.0)
+    for rows in (tr, va):
+        for _, _, d in rows:
+            for j in range(NUM_DENSE):
+                d[j] = (d[j] - dmean[j]) / dstd[j]
     K = len(CLASSES)
     tb=[0.0]*K; td=[[0.0]*NUM_DENSE for _ in range(K)]; th=[defaultdict(float) for _ in range(K)]
     cb=[0.0]*N_COMPLEXITY; cd=[[0.0]*NUM_DENSE for _ in range(N_COMPLEXITY)]; ch=[defaultdict(float) for _ in range(N_COMPLEXITY)]
@@ -123,7 +142,7 @@ def main():
         t+=0.05
     T=round(best_t,3)
     dh=hashlib.sha256(open(a.train,"rb").read()).hexdigest()
-    wire={"version":1,"provenance":{"trained_at_utc":datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),"train_count":len(tr),"val_count":len(va),"feature":"word1-2+char3-5 fnv1a/8192 signed l2norm +8dense (request_model.rs)","seed":SEED,"notes":"train_acc=%.3f val_acc=%.3f cxmae_tr=%.3f cxmae_va=%.3f T-nll=%.3f split=stratified-idmod5 sha=%s"%(tr_acc,va_acc,tr_mae,va_mae,best_nll,dh[:16])},"num_buckets":NUM_BUCKETS,"num_dense":NUM_DENSE,"request_types":CLASSES,"temperature":T,"type_bias":tb,"type_dense":td,"type_hashed":[{str(b):w for b,w in sorted(m.items()) if abs(w)>1e-12} for m in th],"complexity_bias":cb,"complexity_dense":cd,"complexity_hashed":[{str(b):w for b,w in sorted(m.items()) if abs(w)>1e-12} for m in ch]}
+    wire={"version":2,"provenance":{"trained_at_utc":datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),"train_count":len(tr),"val_count":len(va),"feature":"word1-2+char3-5 fnv1a/8192 signed l2norm +8dense z-scored (request_model.rs v2)","seed":SEED,"notes":"train_acc=%.3f val_acc=%.3f cxmae_tr=%.3f cxmae_va=%.3f T-nll=%.3f split=%s sha=%s"%(tr_acc,va_acc,tr_mae,va_mae,best_nll,split_note,dh[:16])},"num_buckets":NUM_BUCKETS,"num_dense":NUM_DENSE,"request_types":CLASSES,"temperature":T,"dense_mean":dmean,"dense_std":dstd,"type_bias":tb,"type_dense":td,"type_hashed":[{str(b):w for b,w in sorted(m.items()) if abs(w)>1e-12} for m in th],"complexity_bias":cb,"complexity_dense":cd,"complexity_hashed":[{str(b):w for b,w in sorted(m.items()) if abs(w)>1e-12} for m in ch]}
     json.dump(wire, open(a.out,"w"))
     print("train_acc=%.3f cxmae=%.3f | val_acc=%.3f cxmae=%.3f | T=%.3f nll=%.3f"%(tr_acc,tr_mae,va_acc,va_mae,T,best_nll))
     print("train=%d val=%d wrote %s"%(len(tr),len(va),a.out))

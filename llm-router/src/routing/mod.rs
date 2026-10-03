@@ -40,7 +40,12 @@ mod text_features;
 pub use boundary::{BoundarySignals, Mode, Phase};
 pub use cache::{CachedDecision, DecisionCache, NoopCache, RedisCache};
 pub use cells::{CellStore, InMemoryCellStore, PgCellStore};
-pub use classifier::{RequestType, Tier, classify, classify_request_type, signal};
+pub use classifier::{
+    BackendKind, Classification, ClassifierConfig, ClassifierRuntime, ClassifyError, ClassifyInput,
+    LocalClassifier, RegexClassifier, RequestClassifier, Tier, TimeoutClassifier,
+    build_request_classifier, classify, classify_request_type, regex_classification, signal,
+    RequestType,
+};
 pub use registry::{PgTierRegistry, TierRegistry};
 pub use salience::{AllowAllGate, ClassifierSalienceGate, SalienceGate};
 

@@ -69,6 +69,47 @@ Reuses the platform's `SECRETS_ENCRYPTION_KEY` (per-user HKDF AES-256-GCM) and
 Storage: `agents.llm_config` (JSONB; NULL → defaults), `user_secrets` (decrypt via
 `SecretsCrypto::try_for_user`), `token_usage` (written), `model_pricing` (cost trigger).
 
+## Request classifier (cost-aware routing)
+
+The router decides *how much model* a turn needs before it is sent. A pluggable
+`routing::RequestClassifier` maps a query to `{request_type, complexity (1–5), confidence}`
+at a safe boundary (`cold_start` / `switch`); the tier is then Thompson-sampled on the
+learned cells exactly as before, and stays sticky across `continue` tool-loop steps. Nothing
+about the routing precedence changed.
+
+Three backends, selected by configuration (the library never reads env; `config.rs` does):
+
+| Backend | `CLASSIFIER_BACKEND` | Needs | Notes |
+|---|---|---|---|
+| regex (default) | `regex` *(default)* | nothing | Behaviour identical to pre-classifier routing. Fixed `complexity=3`, `confidence=0.35`. |
+| local | `local` | nothing | Embedded hashed n-gram logistic-regression model (`assets/classifier_weights.json`). No network, no runtime file. |
+| hosted | `hosted` | `CLASSIFIER_ENDPOINT` | OpenAI-compatible chat endpoint emitting one JSON object; `temperature: 0`. |
+
+Env: `CLASSIFIER_BACKEND`, `CLASSIFIER_MODEL_PATH` (local weights override),
+`CLASSIFIER_ENDPOINT` / `CLASSIFIER_API_KEY` / `CLASSIFIER_MODEL` (hosted),
+`CLASSIFIER_TIMEOUT_MS` (`0` = no deadline), `CLASSIFIER_LOW_CONFIDENCE`.
+
+**Safe fallback.** Any backend error, timeout, or a verdict below `CLASSIFIER_LOW_CONFIDENCE`
+(0.55) makes the router use the **regex** result and counts a *fallback* — a broken or unsure
+model can cost routing quality, never availability. Fallback counters are process-wide
+(`ClassifierRuntime::stats`). The regex path is the out-of-the-box default, so no deployment
+makes a network call unless an operator opts in.
+
+`examples/classifier_eval.rs` runs the **same trait** the router uses, so the eval exercises
+production's code path (fallback included). See `data/classifier/README.md` for the labelling
+rubric and split policy.
+
+```sh
+curl -fsSL https://registry.nasiko.dev/r/nasiko/classifier-eval -o /tmp/classifier-eval.json
+EVAL_SET=/tmp/classifier-eval.json OUT=/tmp/classifier-out.jsonl \
+  cargo run --release -p nasiko-llm-router --example classifier_eval   # defaults to `local`
+CLASSIFIER_BACKEND=regex EVAL_SET=/tmp/classifier-eval.json OUT=/tmp/regex-out.jsonl \
+  cargo run --release -p nasiko-llm-router --example classifier_eval   # the baseline
+```
+
+Output is one JSONL line per case: `{"id", "request_type", "complexity", "confidence",
+"latency_us"}` (the per-call time excludes the one-time model load).
+
 ## Tests
 
 ```sh

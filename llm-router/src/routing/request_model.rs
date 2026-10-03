@@ -139,7 +139,7 @@ impl Features {
         dense[DENSE_TOKEN_COUNT] = (tokens.len() as f64).ln_1p();
         dense[DENSE_CHAR_LENGTH] = (char_count as f64).ln_1p();
         dense[DENSE_HAS_QUESTION_MARK] = if query.contains('?') { 1.0 } else { 0.0 };
-        dense[DENSE_HAS_CODE_MARKER] = if query.contains("```") || query.contains('`') {
+        dense[DENSE_HAS_CODE_MARKER] = if combined.contains("```") || combined.contains('`') {
             1.0
         } else {
             0.0
@@ -180,9 +180,16 @@ pub struct Provenance {
     pub notes: String,
 }
 
-/// The on-disk / embedded weights schema (version 1). Deliberately a separate type from
+/// The on-disk / embedded weights schema (version 2). Deliberately a separate type from
 /// [`RequestModel`]: this is the untrusted wire format (string-keyed sparse maps,
 /// unvalidated dimensions); [`RequestModel`] is the validated in-memory form.
+///
+/// **Version 2 adds `dense_mean`/`dense_std`.** The dense features include unbounded
+/// log-lengths, so without standardization a model can latch onto query length as a
+/// shortcut and otherwise ignore the hashed n-grams. The trainer emits the fit-set mean and
+/// standard deviation per dense feature; [`RequestModel`] z-scores the dense vector with
+/// them before the dot product. Version 1 (unstandardized) is rejected rather than
+/// silently mismatched.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WeightsFile {
     pub version: u32,
@@ -193,6 +200,10 @@ pub struct WeightsFile {
     pub request_types: Vec<String>,
     /// Softmax temperature for the request-type head (calibration).
     pub temperature: f64,
+    /// Per-dense-feature standardization mean (fit-set). Length `num_dense`.
+    pub dense_mean: Vec<f64>,
+    /// Per-dense-feature standardization stddev (fit-set, > 0). Length `num_dense`.
+    pub dense_std: Vec<f64>,
     pub type_bias: Vec<f64>,
     pub type_dense: Vec<Vec<f64>>,
     /// Sparse hashed weights per request-type class; keys are bucket indices as strings.
@@ -207,6 +218,10 @@ pub struct WeightsFile {
 pub struct RequestModel {
     provenance: Provenance,
     temperature: f64,
+    /// Per-dense-feature standardization (fit-set mean/stddev) applied before the dot
+    /// product — see [`WeightsFile`]. Without it the unbounded log-length features dominate.
+    dense_mean: [f64; NUM_DENSE],
+    dense_std: [f64; NUM_DENSE],
     type_classes: Vec<RequestType>,
     type_bias: Vec<f64>,
     type_dense: Vec<Vec<f64>>,
@@ -233,7 +248,7 @@ impl RequestModel {
     /// or duplicate class is an error rather than a silently degraded model. A caller that
     /// cannot load the model must fall back to the regex classifier — never guess.
     pub fn from_wire(w: WeightsFile) -> Result<Self, String> {
-        if w.version != 1 {
+        if w.version != 2 {
             return Err(format!("unsupported weights version {}", w.version));
         }
         if w.num_buckets != NUM_BUCKETS {
@@ -261,9 +276,30 @@ impl RequestModel {
         let cx_dense = check_dense(&w.complexity_dense, N_COMPLEXITY)?;
         let cx_hashed = check_hashed(&w.complexity_hashed, N_COMPLEXITY, w.num_buckets)?;
 
+        // Standardization stats are required in v2 and must be usable: one entry per dense
+        // feature, all finite, and every stddev strictly positive.
+        if w.dense_mean.len() != NUM_DENSE || w.dense_std.len() != NUM_DENSE {
+            return Err(format!(
+                "weights dense stats must have {NUM_DENSE} entries (mean={}, std={})",
+                w.dense_mean.len(),
+                w.dense_std.len()
+            ));
+        }
+        if !w.dense_mean.iter().all(|v| v.is_finite())
+            || !w.dense_std.iter().all(|v| v.is_finite() && *v > 0.0)
+        {
+            return Err("invalid dense standardization stats (non-finite or std <= 0)".to_string());
+        }
+        let mut dense_mean = [0.0; NUM_DENSE];
+        let mut dense_std = [1.0; NUM_DENSE];
+        dense_mean.copy_from_slice(&w.dense_mean);
+        dense_std.copy_from_slice(&w.dense_std);
+
         Ok(Self {
             provenance: w.provenance,
             temperature: w.temperature,
+            dense_mean,
+            dense_std,
             type_classes,
             type_bias,
             type_dense,
@@ -311,8 +347,11 @@ impl RequestModel {
         let mut logits = vec![0.0; bias.len()];
         for (k, logit) in logits.iter_mut().enumerate() {
             let mut acc = bias[k];
-            for (value, weight) in f.dense.iter().zip(dense_w[k].iter()) {
-                acc += value * weight;
+            // Z-score the dense features with the fit-set stats so the unbounded
+            // log-length features cannot dominate the (unit-norm) hashed block.
+            for (j, (value, weight)) in f.dense.iter().zip(dense_w[k].iter()).enumerate() {
+                let z = (value - self.dense_mean[j]) / self.dense_std[j];
+                acc += z * weight;
             }
             // `f.hashed` is sorted by bucket, so this accumulation order is fixed.
             for (bucket, value) in &f.hashed {
@@ -339,7 +378,7 @@ impl From<&RequestModel> for WeightsFile {
                 .collect()
         };
         WeightsFile {
-            version: 1,
+            version: 2,
             provenance: m.provenance.clone(),
             num_buckets: NUM_BUCKETS,
             num_dense: NUM_DENSE,
@@ -349,6 +388,8 @@ impl From<&RequestModel> for WeightsFile {
                 .map(|c| c.as_str().to_string())
                 .collect(),
             temperature: m.temperature,
+            dense_mean: m.dense_mean.to_vec(),
+            dense_std: m.dense_std.to_vec(),
             type_bias: m.type_bias.clone(),
             type_dense: m.type_dense.clone(),
             type_hashed: to_sparse(&m.type_hashed),
@@ -366,6 +407,8 @@ impl From<&RequestModel> for WeightsFile {
 pub fn build_model(
     provenance: Provenance,
     temperature: f64,
+    dense_mean: Vec<f64>,
+    dense_std: Vec<f64>,
     type_classes: Vec<RequestType>,
     type_bias: Vec<f64>,
     type_dense: Vec<Vec<f64>>,
@@ -380,7 +423,7 @@ pub fn build_model(
             .collect()
     };
     let wire = WeightsFile {
-        version: 1,
+        version: 2,
         provenance,
         num_buckets: NUM_BUCKETS,
         num_dense: NUM_DENSE,
@@ -389,6 +432,8 @@ pub fn build_model(
             .map(|c| c.as_str().to_string())
             .collect(),
         temperature,
+        dense_mean,
+        dense_std,
         type_bias,
         type_dense,
         type_hashed: to_sparse(&type_hashed),
@@ -590,6 +635,22 @@ mod tests {
     fn from_wire_rejects_unknown_class() {
         let mut wire = WeightsFile::from(&embedded_model().unwrap());
         wire.request_types[0] = "not_a_real_class".into();
+        assert!(RequestModel::from_wire(wire).is_err());
+    }
+
+    #[test]
+    fn from_wire_rejects_legacy_version_1() {
+        // v1 weights carry no dense standardization; loading them as v2 would silently
+        // mismatch the feature engine, so the version bump must fail closed.
+        let mut wire = WeightsFile::from(&embedded_model().unwrap());
+        wire.version = 1;
+        assert!(RequestModel::from_wire(wire).is_err());
+    }
+
+    #[test]
+    fn from_wire_rejects_degenerate_dense_stats() {
+        let mut wire = WeightsFile::from(&embedded_model().unwrap());
+        wire.dense_std[0] = 0.0; // a zero stddev would divide by zero at inference
         assert!(RequestModel::from_wire(wire).is_err());
     }
 
