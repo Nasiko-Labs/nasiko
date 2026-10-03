@@ -1,0 +1,15 @@
+[package]
+name = "nasiko-tool-compact"
+edition.workspace = true
+version.workspace = true
+description = "Compact tool-definition encoding and call decoding for LLM tool use"
+license = "MIT"
+repository = "https://github.com/Nasiko-Labs/nasiko"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
