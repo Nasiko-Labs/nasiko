@@ -5,9 +5,7 @@
 //!   cargo run -p nasiko-llm-router --example compact_tools_eval
 //! ```
 //!
-//! The adapter functions at the end of this file are intentionally temporary.
-//! Their signatures use the public `nasiko_tool_compact` types so replacing their
-//! bodies after Checkpoint 2 does not alter evaluation I/O or JSONL output.
+//! It calls the public `nasiko_tool_compact` encoder and decoders directly.
 
 use std::{
     collections::BTreeMap,
@@ -18,8 +16,8 @@ use std::{
 };
 
 use nasiko_tool_compact::{
-    CompactError, CompactTools, Result as CompactResult, StreamEvent, ToolCall, ToolDef,
-    render_call,
+    CompactError, CompactTools, Result as CompactResult, StreamDecoder, ToolCall, ToolDef,
+    decode_calls, encode_tools, render_call,
 };
 use serde_json::{Map, Value, json};
 use tiktoken_rs::{CoreBPE, o200k_base};
@@ -245,13 +243,13 @@ fn normal_record(
     let calls = expected_calls(case).map_err(compact_error_message)?;
     let rendered_calls = calls.iter().map(render_call).collect::<Vec<_>>().join("\n");
 
-    let (compact_request, compacted) = match compact_tools_adapter(&tools) {
+    let (compact_request, compacted) = match encode_tools(&tools) {
         Ok(compact) if tool_choice_allows_compaction(&native_request) => {
             (post_compaction_request(&native_request, &compact), true)
         }
         Ok(_) | Err(_) => (native_request, false),
     };
-    let roundtrip_calls = decode_calls_adapter(&rendered_calls, &tools)
+    let roundtrip_calls = decode_calls(&rendered_calls, &tools)
         .map_err(compact_error_message)
         .map(tool_calls_json)?;
 
@@ -277,7 +275,7 @@ fn decoder_record(id: Value, case: &Map<String, Value>) -> AppResult<Value> {
     let native_request = native_openai_request(case, None);
     let tools = tool_defs_from_request(&native_request).map_err(compact_error_message)?;
     let chunks = decoder_chunks(case)?;
-    let decoded = match decode_chunks_adapter(&chunks, &tools) {
+    let decoded = match decode_stream_chunks(&chunks, &tools) {
         Ok(calls) => json!({ "calls": tool_calls_json(calls) }),
         Err(error) => json!({ "error": decoder_error_code(&error) }),
     };
@@ -492,99 +490,8 @@ fn decoder_error_code(error: &CompactError) -> &'static str {
     }
 }
 
-// --- Temporary A/B adapters. Replace bodies after Checkpoint 2. ---
-
-/// Same result type as `nasiko_tool_compact::encode_tools`.
-fn compact_tools_adapter(tools: &[ToolDef]) -> CompactResult<CompactTools> {
-    let definitions =
-        serde_json::to_string(tools).map_err(|error| CompactError::InvalidSchema {
-            tool: "<tools>".into(),
-            reason: error.to_string(),
-        })?;
-    Ok(CompactTools {
-        definitions,
-        instructions: "Emit each call as <<call NAME JSON_OBJECT>>.".into(),
-    })
-}
-
-/// Same result type as `nasiko_tool_compact::decode_calls`.
-fn decode_calls_adapter(text: &str, tools: &[ToolDef]) -> CompactResult<Vec<ToolCall>> {
-    let mut decoder = FixtureStreamDecoder::new(tools);
-    decoder.push(text)?;
-    decoder.finish()
-}
-
-/// Drop-in-shaped temporary replacement for `StreamDecoder`.
-struct FixtureStreamDecoder {
-    tools: Vec<ToolDef>,
-    pending: String,
-    calls: Vec<ToolCall>,
-}
-
-impl FixtureStreamDecoder {
-    fn new(tools: &[ToolDef]) -> Self {
-        Self {
-            tools: tools.to_vec(),
-            pending: String::new(),
-            calls: Vec::new(),
-        }
-    }
-
-    fn push(&mut self, chunk: &str) -> CompactResult<Vec<StreamEvent>> {
-        self.pending.push_str(chunk);
-        let mut events = Vec::new();
-        loop {
-            let Some(start) = self.pending.find("<<call ") else {
-                break;
-            };
-            let Some(end) = self.pending[start + 7..].find(">>") else {
-                break;
-            };
-            let end = start + 7 + end;
-            let body = &self.pending[start + 7..end];
-            let (name, arguments) = body.split_once(char::is_whitespace).ok_or_else(|| {
-                CompactError::InvalidArguments {
-                    tool: "<unknown>".into(),
-                    reason: "call is missing JSON arguments".into(),
-                }
-            })?;
-            let arguments = serde_json::from_str(arguments.trim()).map_err(|error| {
-                CompactError::InvalidArguments {
-                    tool: name.into(),
-                    reason: error.to_string(),
-                }
-            })?;
-            if !arguments.is_object() {
-                return Err(CompactError::InvalidArguments {
-                    tool: name.into(),
-                    reason: "arguments must be a JSON object".into(),
-                });
-            }
-            if !self.tools.iter().any(|tool| tool.name == name) {
-                return Err(CompactError::UnknownTool(name.into()));
-            }
-            let call = ToolCall {
-                name: name.into(),
-                arguments,
-            };
-            self.calls.push(call.clone());
-            events.push(StreamEvent::Call(call));
-            self.pending.drain(..end + 2);
-        }
-        Ok(events)
-    }
-
-    fn finish(self) -> CompactResult<Vec<ToolCall>> {
-        if self.pending.contains("<<call ") {
-            Err(CompactError::IncompleteStream)
-        } else {
-            Ok(self.calls)
-        }
-    }
-}
-
-fn decode_chunks_adapter(chunks: &[String], tools: &[ToolDef]) -> CompactResult<Vec<ToolCall>> {
-    let mut decoder = FixtureStreamDecoder::new(tools);
+fn decode_stream_chunks(chunks: &[String], tools: &[ToolDef]) -> CompactResult<Vec<ToolCall>> {
+    let mut decoder = StreamDecoder::new(tools);
     for chunk in chunks {
         decoder.push(chunk)?;
     }
@@ -638,7 +545,7 @@ mod tests {
             "tools": [{"type": "function", "function": {"name": "lookup"}}],
             "tool_choice": "auto"
         });
-        let compact = compact_tools_adapter(&tool_defs_from_request(&native).unwrap()).unwrap();
+        let compact = encode_tools(&tool_defs_from_request(&native).unwrap()).unwrap();
         let request = post_compaction_request(&native, &compact);
         assert!(request.get("tools").is_none());
         assert!(request.get("tool_choice").is_none());
@@ -646,14 +553,14 @@ mod tests {
     }
 
     #[test]
-    fn stream_adapter_decodes_calls_across_ordered_chunks() {
+    fn stream_decoder_decodes_calls_across_ordered_chunks() {
         let tools = vec![ToolDef {
             name: "lookup".into(),
             description: None,
             parameters: None,
         }];
         let calls =
-            decode_chunks_adapter(&["<<call look".into(), "up {\"q\":\"x\"}>>".into()], &tools)
+            decode_stream_chunks(&["<<call look".into(), "up {\"q\":\"x\"}>>".into()], &tools)
                 .unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "lookup");
