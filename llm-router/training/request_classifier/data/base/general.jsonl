@@ -1,0 +1,50 @@
+{"t":"ge","c":1,"s":"clear","q":"thanks, that's all for today!"}
+{"t":"ge","c":1,"s":"clear","q":"hi there"}
+{"t":"ge","c":1,"s":"clear","q":"Good morning! How's it going?"}
+{"t":"ge","c":2,"s":"clear","q":"Any tips for staying focused when working from home?"}
+{"t":"ge","c":2,"s":"clear","q":"How do I deal with a coworker who keeps interrupting me in meetings?"}
+{"t":"ge","c":1,"s":"clear","q":"Can you remember what we talked about earlier?"}
+{"t":"ge","c":1,"s":"clear","q":"What can you help me with?"}
+{"t":"ge","c":2,"s":"clear","q":"I'm feeling burned out. What are some ways to recover?"}
+{"t":"ge","c":2,"s":"clear","q":"Should I learn the guitar or the piano first?"}
+{"t":"ge","c":2,"s":"clear","q":"What should I cook tonight with chicken, rice and spinach?"}
+{"t":"ge","c":1,"s":"clear","q":"lol that's hilarious"}
+{"t":"ge","c":2,"s":"clear","q":"How can I get better at public speaking?"}
+{"t":"ge","c":1,"s":"clear","q":"ok cool"}
+{"t":"ge","c":2,"s":"clear","q":"What's a good way to plan a weekend trip on a budget?"}
+{"t":"ge","c":1,"s":"clear","q":"Are you a real person?"}
+{"t":"ge","c":2,"s":"clear","q":"Give me some ideas for a team-building activity for 10 people."}
+{"t":"ge","c":2,"s":"clear","q":"How do I politely say no to extra work without hurting my career?"}
+{"t":"ge","c":1,"s":"clear","q":"Never mind, I figured it out."}
+{"t":"ge","c":2,"s":"clear","q":"What are some good habits for sleeping better?"}
+{"t":"ge","c":2,"s":"clear","q":"I can't decide between two job offers, one pays more and the other has better people. How should I think about it?"}
+{"t":"ge","c":1,"s":"clear","q":"Tell me a joke."}
+{"t":"ge","c":2,"s":"clear","q":"Recommend a few sci-fi books for someone who loved 'The Martian'."}
+{"t":"ge","c":1,"s":"clear","q":"See you tomorrow!"}
+{"t":"ge","c":2,"s":"clear","q":"How do I keep my houseplants alive while I'm away for two weeks?"}
+{"t":"ge","c":2,"s":"clear","q":"What's the best way to start running if I've never exercised?"}
+{"t":"ge","c":1,"s":"clear","q":"Can you speak more slowly next time?"}
+{"t":"ge","c":2,"s":"clear","q":"My cat keeps scratching the couch. What can I do?"}
+{"t":"ge","c":1,"s":"clear","q":"hmm"}
+{"t":"ge","c":2,"s":"clear","q":"How do I prepare for a salary negotiation?"}
+{"t":"ge","c":1,"s":"clear","q":"Is it going to rain where you are?"}
+{"t":"ge","c":2,"s":"clear","q":"What are some fun things to do with kids on a rainy day?"}
+{"t":"ge","c":1,"s":"clear","q":"Which do you like better, cats or dogs?"}
+{"t":"ge","c":2,"s":"clear","q":"I just got promoted to team lead. Any advice for the first month?"}
+{"t":"ge","c":1,"s":"clear","q":"you're awesome"}
+{"t":"ge","c":2,"s":"clear","q":"How should I organize my week to make time for side projects?"}
+{"t":"ge","c":1,"s":"boundary","q":"Can you write more concisely from now on?"}
+{"t":"ge","c":2,"s":"boundary","q":"How should I approach a difficult conversation with my landlord about repairs?"}
+{"t":"ge","c":2,"s":"boundary","q":"Is it worth learning to code at 40?"}
+{"t":"ge","c":1,"s":"boundary","tags":["mis"],"q":"My code finally compiled, I'm so happy!"}
+{"t":"ge","c":2,"s":"boundary","tags":["mis"],"q":"How do I debug my sourdough starter? It isn't rising."}
+{"t":"ge","c":2,"s":"boundary","tags":["mis"],"q":"Any advice on designing my small vegetable garden layout?"}
+{"t":"ge","c":1,"s":"boundary","tags":["mis"],"q":"I'm going to architecture school next year, wish me luck!"}
+{"t":"ge","c":1,"s":"boundary","q":"What's your name?"}
+{"t":"ge","c":2,"s":"boundary","q":"Do you think remote work is here to stay?"}
+{"t":"ge","c":1,"s":"clear","tags":["very_short"],"q":"yo"}
+{"t":"ge","c":1,"s":"clear","tags":["very_short"],"q":"thanks!!"}
+{"t":"ge","c":1,"s":"clear","tags":["very_short"],"q":"brb"}
+{"t":"ge","c":2,"s":"clear","q":"How do I stop procrastinating on things I actually care about?"}
+{"t":"ge","c":2,"s":"clear","q":"What's a thoughtful gift for a friend who just moved abroad?"}
+{"t":"ge","c":1,"s":"clear","q":"Sorry, wrong chat."}

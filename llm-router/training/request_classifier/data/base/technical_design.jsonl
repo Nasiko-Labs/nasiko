@@ -1,0 +1,50 @@
+{"t":"td","c":3,"s":"clear","q":"How should I structure the folders for a medium-sized Flask app with an API, background jobs and an admin panel?"}
+{"t":"td","c":3,"s":"clear","q":"Design a REST API for a library system: books, members, loans and reservations. Include endpoints and status codes."}
+{"t":"td","c":4,"s":"clear","q":"How should we shard our events table as traffic grows from 1M to 1B rows per day? Cover shard keys, rebalancing and query patterns.","x":"Queries: per-tenant time ranges, global daily aggregates. Postgres today."}
+{"t":"td","c":4,"s":"clear","q":"Design a notification service that supports email, SMS and push with per-user preferences, retries, and rate limits."}
+{"t":"td","c":5,"s":"clear","q":"Design multi-region active-active session storage with conflict resolution, failover, data residency constraints, and a migration path from our single-region Redis.","x":"EU users' data must stay in EU; 40k req/s peak; sessions are mutated on every request."}
+{"t":"td","c":4,"s":"clear","q":"Propose a schema for a multi-tenant SaaS billing system with plans, usage-based add-ons, proration and invoices."}
+{"t":"td","c":3,"s":"clear","q":"Should we use a message queue or direct HTTP calls between our order and inventory services? Discuss the trade-offs for our case.","x":"5 services, 200 orders/min, inventory must not oversell, team of 4."}
+{"t":"td","c":4,"s":"clear","q":"Design a feature flag system with gradual rollouts, per-tenant overrides, audit history and a kill switch."}
+{"t":"td","c":5,"s":"clear","q":"Plan the migration of our monolith's payments module into a separate service: boundaries, data ownership, dual writes, cutover, rollback and observability."}
+{"t":"td","c":3,"s":"clear","q":"What caching strategy would you recommend for our product catalog API, and where should invalidation happen?","x":"Catalog changes ~100 times/day; reads 3k/s; prices vary by region."}
+{"t":"td","c":4,"s":"clear","q":"Design the data pipeline that ingests clickstream events, deduplicates them, and serves near-real-time dashboards plus daily batch reports."}
+{"t":"td","c":2,"s":"clear","q":"What's a sensible way to version our public REST API?"}
+{"t":"td","c":3,"s":"clear","q":"Design the database tables for a simple blog with posts, tags, comments and authors."}
+{"t":"td","c":4,"s":"clear","q":"Design an authorization model for a document editor with orgs, teams, folders, per-document sharing and inherited permissions."}
+{"t":"td","c":5,"s":"clear","q":"Design a globally distributed rate limiter for our API gateway that enforces per-customer quotas within 1% accuracy across 6 regions without adding more than 2ms of latency."}
+{"t":"td","c":3,"s":"clear","q":"How should we organize our monorepo so that three teams can release independently?"}
+{"t":"td","c":4,"s":"clear","q":"Design a job scheduler that runs millions of user-defined cron jobs reliably with at-least-once execution and visibility into failures."}
+{"t":"td","c":3,"s":"clear","q":"Propose an event schema and topic layout for our Kafka cluster covering orders, payments and shipments."}
+{"t":"td","c":4,"s":"clear","q":"How would you design search for an e-commerce site with typo tolerance, facets, synonyms and personalized ranking?"}
+{"t":"td","c":3,"s":"clear","q":"Design a URL shortener: API, storage, ID generation, and how to handle 10k redirects per second."}
+{"t":"td","c":4,"s":"clear","q":"Design the offline-first sync architecture for a mobile note-taking app, including conflict handling and schema migrations on device."}
+{"t":"td","c":2,"s":"clear","q":"Monolith or microservices for a two-person startup building a booking app?"}
+{"t":"td","c":4,"s":"clear","q":"Design an audit logging subsystem that is tamper-evident, queryable by auditors, and retains data for 7 years cheaply."}
+{"t":"td","c":3,"s":"clear","q":"What's the right way to model recurring calendar events with exceptions in a relational database?"}
+{"t":"td","c":5,"s":"clear","q":"Design a zero-downtime migration from MySQL to PostgreSQL for a 4TB database with continuous writes, including validation, backfill, dual reads and rollback criteria."}
+{"t":"td","c":4,"s":"clear","q":"Design the architecture for a video transcoding service that accepts uploads up to 10GB and delivers HLS renditions, with cost controls."}
+{"t":"td","c":3,"s":"clear","q":"How should we handle secrets for our services across dev, staging and prod? Compare a couple of approaches."}
+{"t":"td","c":4,"s":"clear","q":"Design an idempotent webhook delivery system with retries, signing, ordering guarantees per subscriber, and a replay UI."}
+{"t":"td","c":3,"s":"clear","q":"Propose a caching layer design for our GraphQL API that avoids serving one user's data to another.","x":"Some fields are user-specific, most are public; Apollo Server; CDN in front."}
+{"t":"td","c":4,"s":"clear","q":"Design how our LLM gateway should route requests across providers with fallbacks, budgets per team, and observability."}
+{"t":"td","c":3,"s":"clear","q":"Design the state machine and API for an order lifecycle from cart to refund."}
+{"t":"td","c":4,"s":"clear","q":"We need a plugin system for our desktop app. Design the extension API, sandboxing, versioning and distribution."}
+{"t":"td","c":2,"s":"clear","q":"Which primary key type should we use for a new table: UUID v4, UUID v7 or bigint? Short recommendation please."}
+{"t": "td", "c": 5, "s": "clear", "q": "Design a cross-datacenter inventory reservation system for flash sales that never oversells, tolerates a datacenter loss, and keeps checkout latency under 300ms.", "x": "Peak 50k reservations/s for 10 minutes; 2 datacenters 40ms apart; reservations expire after 15 minutes if unpaid."}
+{"t":"td","c":3,"s":"boundary","q":"Before we write any code, how should the modules of our CLI be split so plugins can add subcommands?"}
+{"t":"td","c":4,"s":"boundary","q":"Plan the rollout of our new auth service: phases, metrics to watch, rollback triggers and communication with client teams."}
+{"t":"td","c":3,"s":"boundary","q":"Sketch the classes and interfaces for a payment processing module that supports Stripe and PayPal, but don't implement them yet."}
+{"t":"td","c":4,"s":"boundary","q":"Given these requirements, design the schema and indexes; I'll write the migrations myself.","x":"Track device telemetry: 50k devices, a reading every 10s, queries by device and time range, retain 13 months, downsample after 30 days."}
+{"t":"td","c":3,"s":"boundary","tags":["neg"],"q":"Don't write the implementation; I just need the API contract and error model for a file-upload service with resumable uploads."}
+{"t":"td","c":4,"s":"boundary","q":"Our current queue setup can't keep up. Propose a new architecture for the ingestion path and explain the trade-offs versus scaling what we have.","x":"Single RabbitMQ node, 3k msg/s peaks, consumers do DB writes, messages must be processed in order per account."}
+{"t":"td","c":3,"s":"boundary","q":"What would a good error-handling strategy look like across our microservices: error codes, retries and user-facing messages?"}
+{"t":"td","c":2,"s":"clear","tags":["very_short"],"q":"best way to structure a react app folder"}
+{"t":"td","c":3,"s":"clear","q":"Design a leaderboard for a mobile game with 5M daily players showing global and friends rankings."}
+{"t":"td","c":4,"s":"clear","q":"Design a data retention and deletion system that satisfies GDPR erasure requests across our databases, backups, logs and analytics warehouse."}
+{"t":"td","c":3,"s":"clear","q":"How should I design the tables for an inventory system that tracks stock per warehouse and reservations?"}
+{"t":"td","c":4,"s":"clear","q":"Propose the architecture for a real-time collaborative whiteboard: transport, conflict resolution, persistence and scaling rooms."}
+{"t":"td","c":3,"s":"clear","q":"What should the interface between our ML model service and the product backend look like so we can swap models without downtime?"}
+{"t":"td","c":5,"s":"clear","q":"Design a multi-tenant Kubernetes platform for 40 internal teams: isolation, quotas, networking policies, cost attribution, upgrades and incident boundaries."}
+{"t":"td","c":3,"s":"clear","q":"Design a simple CI/CD pipeline for a Python service: stages, environments, and promotion rules."}
+{"t":"td","c":4,"s":"clear","q":"Design a caching and precomputation strategy so our analytics dashboard loads in under one second for tenants with up to 500M rows."}

@@ -1,0 +1,54 @@
+{"t":"cg","c":1,"s":"trap","tags":["neg","mis"],"q":"The ticket says 'migrate the whole auth system', but don't do that. Just bump the session timeout constant from 15 to 30.","x":"SESSION_TIMEOUT_MIN = 15"}
+{"t":"cg","c":1,"s":"trap","tags":["neg","mis"],"q":"No architecture discussion please. Only rename `getUsr` to `getUser` everywhere in this file.","x":"function getUsr(id) { return db.find(id) }\nconst u = getUsr(3)"}
+{"t":"cg","c":1,"s":"trap","tags":["neg","mis"],"q":"I wrote 'design new caching layer' in a comment as a reminder. Leave the design alone; just delete that comment line.","x":"// design new caching layer\nconst cache = new Map()"}
+{"t":"cg","c":2,"s":"trap","tags":["neg"],"q":"Without explaining the theory, write the SQL to get each user's most recent order.","x":"orders(id, user_id, created_at, total)"}
+{"t":"cg","c":1,"s":"trap","tags":["neg","mis"],"q":"Don't analyze the performance, just change the loop to use `enumerate`.","x":"for i in range(len(items)):\n    print(i, items[i])"}
+{"t":"cg","c":2,"s":"trap","tags":["neg"],"q":"Skip the explanation. Give me a Python script that renames files to lowercase in the current directory."}
+{"t":"cg","c":1,"s":"trap","tags":["mis"],"q":"Fix the typo in the error message: 'Proabbility must be between 0 and 1'.","x":"raise ValueError('Proabbility must be between 0 and 1')"}
+{"t":"cg","c":2,"s":"trap","tags":["mis"],"q":"Write a short poem generator function in Python that picks random words from three lists."}
+{"t":"cg","c":2,"s":"trap","tags":["mis"],"q":"Add a `summary` field to this TypeScript interface and update the two places that construct it.","x":"interface Report { id: string; title: string }\nconst a: Report = { id: '1', title: 'Q1' }\nconst b: Report = { id: '2', title: 'Q2' }"}
+{"t":"cg","c":1,"s":"trap","tags":["mis","neg"],"q":"Please don't rewrite the email template prose, just change the variable `{{name}}` to `{{first_name}}`.","x":"Hello {{name}}, your order has shipped."}
+{"t":"cu","c":2,"s":"trap","tags":["neg"],"q":"Don't fix it, I only want to understand why this crashes with an index error.","x":"nums = [1, 2, 3]\nfor i in range(len(nums) + 1):\n    print(nums[i])"}
+{"t":"cu","c":2,"s":"trap","tags":["neg"],"q":"No code please. Explain in words what this function does with the cache keys.","x":"def key(user, page):\n    return f\"{user.id}:{page}:{int(time.time() // 60)}\""}
+{"t":"cu","c":3,"s":"trap","tags":["mis"],"q":"Explain what this 'design token' build script does; I'm not a frontend dev.","x":"const tokens = require('./tokens.json');\nfor (const [k, v] of Object.entries(tokens.color)) out += `--color-${k}: ${v};\\n`;\nfs.writeFileSync('vars.css', `:root{\\n${out}}`);"}
+{"t":"cu","c":2,"s":"trap","tags":["mis"],"q":"What does this 'calculate' function actually do? The name is misleading.","x":"def calculate(xs):\n    return sorted(set(xs))[:3]"}
+{"t":"cu","c":3,"s":"trap","tags":["neg","mis"],"q":"I'm not asking for a redesign. Explain how this existing retry architecture decides when to give up.","x":"def call(fn, attempts=5):\n    for i in range(attempts):\n        try:\n            return fn()\n        except Transient:\n            sleep(2 ** i)\n    raise GiveUp()"}
+{"t":"td","c":3,"s":"trap","tags":["neg"],"q":"Don't write any code yet; propose how the services should communicate for the new order tracking feature."}
+{"t":"td","c":3,"s":"trap","tags":["mis"],"q":"How should we structure the data model for a recipe app where users can 'fix' and fork other people's recipes?"}
+{"t":"td","c":4,"s":"trap","tags":["neg"],"q":"Not looking for a code review. I need a design for how our mobile and web clients should share session state securely."}
+{"t":"td","c":3,"s":"trap","tags":["mis"],"q":"Explain the trade-offs between storing user uploads in S3 versus our database, and recommend one for our setup.","x":"Uploads are 1-20MB images; 50k per day; we need per-user access control and thumbnails."}
+{"t":"ar","c":3,"s":"trap","tags":["mis"],"q":"Explain why the query cache didn't help here, based on these numbers.","x":"Query cache hit rate 2%; each query includes NOW() in the WHERE clause; 4k distinct queries per minute."}
+{"t":"ar","c":3,"s":"trap","tags":["neg"],"q":"Don't suggest fixes yet. From these measurements, tell me what's saturated.","x":"CPU 35%, memory 60%, disk IOPS 99% of provisioned, network 10%, queue depth growing."}
+{"t":"ar","c":2,"s":"trap","tags":["mis"],"q":"How many API requests per second does this imply? We log 4.3 million requests a day."}
+{"t":"ar","c":4,"s":"trap","tags":["mis"],"q":"Explain why lowering the cache TTL wouldn't stop these stale reads, using the evidence below.","x":"Writes go to primary; reads go to a replica with 2-8s lag; cache TTL 60s but cache is populated from replica reads; stale data appears even right after cache misses."}
+{"t":"ar","c":3,"s":"trap","tags":["mis"],"q":"My design team says the new layout increased signups. Based on these numbers, is that claim supported?","x":"Old layout: 2.0% of 12,000 visitors. New layout: 2.3% of 1,100 visitors, measured the week of a marketing campaign."}
+{"t":"wr","c":2,"s":"trap","tags":["mis"],"q":"Write a short announcement that our API is now faster; mention the 40% latency improvement but no technical details."}
+{"t":"wr","c":2,"s":"trap","tags":["mis"],"q":"Compose an email to the design agency asking for the final logo files by Thursday."}
+{"t":"wr","c":2,"s":"trap","tags":["mis"],"q":"Rewrite this commit message so it's clear and follows conventional style.","x":"fixed stuff w/ the cache thing, also some cleanup"}
+{"t":"wr","c":3,"s":"trap","tags":["mis","neg"],"q":"Do not change the meaning or add new claims; edit this architecture overview for clarity and concision.","x":"Our system is basically composed of a number of different services that talk to each other in various ways, mostly HTTP but sometimes queues, and it is deployed on Kubernetes which handles scaling more or less automatically."}
+{"t":"wr","c":2,"s":"trap","tags":["mis"],"q":"Write an email to IT explaining that my laptop's Python install is broken and I need admin rights to fix it."}
+{"t":"wr","c":2,"s":"trap","tags":["neg"],"q":"Don't make it longer. Make this Slack message sound less passive-aggressive.","x":"As I already mentioned twice, the PR needs review today."}
+{"t":"fl","c":1,"s":"trap","tags":["mis"],"q":"What does the term 'technical debt' mean?"}
+{"t":"fl","c":1,"s":"trap","tags":["mis"],"q":"What is the probability distribution called that models the number of events in a fixed interval?"}
+{"t":"fl","c":1,"s":"trap","tags":["mis"],"q":"Which company created the Rust programming language?"}
+{"t":"fl","c":1,"s":"trap","tags":["mis"],"q":"What does 'idempotent' mean in the context of HTTP?"}
+{"t":"fl","c":1,"s":"trap","tags":["mis"],"q":"What's the name of the design pattern where an object notifies subscribers of changes?"}
+{"t":"fl","c":1,"s":"trap","tags":["mis"],"q":"What does the Python function `sorted` return when given a dict?"}
+{"t":"ge","c":1,"s":"trap","tags":["mis"],"q":"Haha, I just broke production and fixed it in 5 minutes. What a day."}
+{"t":"ge","c":2,"s":"trap","tags":["mis"],"q":"My manager wants me to 'own the architecture' but I feel out of my depth. How do I handle the imposter syndrome?"}
+{"t":"ge","c":1,"s":"trap","tags":["mis"],"q":"Do you think writing code is an art or a science?"}
+{"t":"ge","c":2,"s":"trap","tags":["mis"],"q":"How do I calculate how much I should save for an emergency fund? I'm not great with money."}
+{"t":"cg","c":2,"s":"trap","tags":["mis"],"q":"Explain nothing, just output a docker-compose file with postgres and redis services for local development."}
+{"t":"cu","c":2,"s":"trap","tags":["mis"],"q":"What does this function that writes the email do? I need to know before I change it.","x":"def build_email(user):\n    return render('welcome.html', name=user.first or 'there', link=sign(user.id))"}
+{"t":"td","c":4,"s":"trap","tags":["mis"],"q":"We keep writing the same report queries by hand. Design a reporting layer so analysts can self-serve without hitting production."}
+{"t":"ar","c":3,"s":"trap","tags":["mis"],"q":"Is this refactor actually faster? Benchmark results below.","x":"Old: mean 41ms, sd 9ms, n=30. New: mean 38ms, sd 11ms, n=30. Runs on a shared CI machine."}
+{"t":"wr","c":3,"s":"trap","tags":["mis"],"q":"Write documentation prose (no code) explaining to customers how our rate limits work and what to do when they hit one.","x":"100 requests/min per API key, burst 20, 429 with Retry-After header; enterprise plans can request increases."}
+{"t":"cg","c":2,"s":"trap","tags":["neg"],"q":"Not a design question: I need the actual implementation of a function that merges two sorted arrays in C."}
+{"t":"cu","c":3,"s":"trap","tags":["neg"],"q":"Without proposing alternatives, explain how this rate limiter counts requests and where the window boundaries fall.","x":"bucket = int(now // 60)\nkey = f'rl:{api_key}:{bucket}'\nif redis.incr(key) == 1: redis.expire(key, 60)\nallowed = redis.get(key) <= 100"}
+{"t":"fl","c":1,"s":"trap","tags":["neg"],"q":"No examples needed, just tell me what `Symbol.iterator` is in JavaScript."}
+{"t":"ar","c":2,"s":"trap","tags":["neg"],"q":"Don't write code for it. What is the expected value of a fair six-sided die roll?"}
+{"t":"wr","c":2,"s":"trap","tags":["neg"],"q":"I don't need a summary. Translate this paragraph into Spanish exactly.","x":"Our office will be closed on Monday for the holiday. Support remains available by email."}
+{"t":"cg","c":1,"s":"trap","tags":["mis"],"q":"In this proof-of-concept script, change the sleep from 5 seconds to 1 second.","x":"import time\ntime.sleep(5)\nrun()"}
+{"t":"td","c":3,"s":"trap","tags":["mis"],"q":"What's a good way to design our error messages and codes so support can triage tickets faster? Propose a scheme."}
+{"t":"ar","c":4,"s":"trap","tags":["mis","neg"],"q":"Not asking you to rewrite the code: given this output, explain why the 'optimized' version returns different totals.","x":"Original sums floats in insertion order: 1000000.1. Optimized version sums in parallel chunks: 1000000.0998. Values range from 1e-6 to 1e6."}
+{"t":"fl","c":1,"s":"trap","tags":["mis"],"q":"Who wrote the book 'Designing Data-Intensive Applications'?"}

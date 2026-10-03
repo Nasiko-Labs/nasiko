@@ -1,0 +1,101 @@
+{"t":"wr","c":2,"s":"boundary","train_only":true,"q":"Write a short welcome message for new members joining our community Slack."}
+{"t":"wr","c":2,"s":"boundary","train_only":true,"q":"Write the description for our GitHub repository in two sentences: what the library does and who it helps."}
+{"t":"wr","c":2,"s":"boundary","train_only":true,"q":"Write a limerick about a deploy that went wrong on a Friday."}
+{"t":"wr","c":2,"s":"boundary","train_only":true,"q":"Write an out-of-office reply saying I'm at a conference until Wednesday and will answer emails after that."}
+{"t":"wr","c":2,"s":"boundary","train_only":true,"q":"Write a short announcement for the changelog page that dark mode is now generally available."}
+{"t":"wr","c":3,"s":"boundary","train_only":true,"q":"Write the 'Getting started' prose section of our docs explaining, in plain sentences, how to sign up, create a workspace and invite colleagues."}
+{"t":"wr","c":2,"s":"boundary","train_only":true,"q":"Write a toast for my friend's retirement party, about one minute long."}
+{"t":"wr","c":2,"s":"boundary","train_only":true,"q":"Write a short note to parents explaining that the school trip is postponed because of the weather."}
+{"t":"wr","c":2,"s":"boundary","train_only":true,"q":"Write a product update email subject line and preview text for our new calendar sync feature."}
+{"t":"wr","c":3,"s":"boundary","train_only":true,"q":"Write a short story for kids, about 150 words, about a robot who learns to garden."}
+{"t":"wr","c":2,"s":"boundary","train_only":true,"q":"Write a Slack status message for when I'm heads-down and only checking messages twice a day."}
+{"t":"wr","c":2,"s":"boundary","train_only":true,"q":"Write a polite reminder to a client that their invoice is 15 days overdue."}
+{"t":"wr","c":3,"s":"boundary","train_only":true,"q":"Write a postmortem summary paragraph for the team wiki from these notes, in a blameless tone.","x":"Search was down 35 minutes; an expired TLS certificate on the internal load balancer; renewal job failed silently; added alerting on cert expiry."}
+{"t":"wr","c":2,"s":"boundary","train_only":true,"q":"Write a short poem about debugging at 2am."}
+{"t":"wr","c":2,"s":"boundary","train_only":true,"q":"Write alt text for a screenshot of our dashboard showing weekly active users rising."}
+{"t":"cg","c":1,"s":"boundary","train_only":true,"q":"Convert this var declaration to const.","x":"var maxRetries = 5;"}
+{"t":"cg","c":2,"s":"boundary","train_only":true,"q":"Convert this for loop into a list comprehension.","x":"squares = []\nfor n in nums:\n    if n > 0:\n        squares.append(n * n)"}
+{"t":"cg","c":2,"s":"boundary","train_only":true,"q":"Add docstrings to these two functions.","x":"def area(r):\n    return 3.14159 * r * r\n\ndef perimeter(r):\n    return 2 * 3.14159 * r"}
+{"t":"cg","c":1,"s":"boundary","train_only":true,"q":"Change the timeout in this config from 30 seconds to 10 seconds.","x":"client:\n  timeout_seconds: 30\n  retries: 3"}
+{"t":"cg","c":2,"s":"boundary","train_only":true,"q":"Make this function async and await the database call.","x":"def get_user(id):\n    return db.fetch_one('SELECT * FROM users WHERE id = $1', id)"}
+{"t":"cg","c":2,"s":"boundary","train_only":true,"q":"Rewrite this class component as a React function component with hooks.","x":"class Clock extends React.Component {\n  state = { now: new Date() };\n  componentDidMount() { this.t = setInterval(() => this.setState({ now: new Date() }), 1000); }\n  componentWillUnmount() { clearInterval(this.t); }\n  render() { return <span>{this.state.now.toLocaleTimeString()}</span>; }\n}"}
+{"t":"cg","c":2,"s":"boundary","train_only":true,"q":"Add logging to this function so we can see the input size and how long it took.","x":"def process(batch):\n    return [transform(x) for x in batch]"}
+{"t":"cg","c":1,"s":"boundary","train_only":true,"q":"Increase the retry count in this snippet from 3 to 5.","x":"for attempt in range(3):\n    if try_send(): break"}
+{"t":"cg","c":2,"s":"boundary","train_only":true,"q":"Write a Helm values file that sets 2 replicas, a CPU limit of 500m and an ingress host of api.example.com."}
+{"t":"cg","c":2,"s":"boundary","train_only":true,"q":"Write a function that computes the median of a list of numbers."}
+{"t":"cg","c":2,"s":"boundary","train_only":true,"q":"Write a Python function that calculates compound interest given principal, rate, years and compounding frequency."}
+{"t":"cg","c":2,"s":"boundary","train_only":true,"q":"Implement a function that returns the probability mass of a binomial distribution for k successes in n trials."}
+{"t":"cg","c":3,"s":"boundary","train_only":true,"q":"Write a docker-compose file for a Django app with Postgres, Redis and a Celery worker, using environment variables for secrets."}
+{"t":"cg","c":2,"s":"boundary","train_only":true,"q":"Generate the boilerplate for a new Rust CLI with clap: a 'sync' subcommand with --dry-run and --verbose flags."}
+{"t":"cg","c":2,"s":"boundary","train_only":true,"q":"Update this SQL to also return the customer's email.","x":"SELECT o.id, o.total FROM orders o JOIN customers c ON c.id = o.customer_id;"}
+{"t":"cg","c":3,"s":"boundary","train_only":true,"q":"Rewrite this nested callback code with promises and add proper error propagation.","x":"getUser(id, (e, u) => { if (e) return cb(e); getOrders(u, (e2, os) => { if (e2) return cb(e2); cb(null, os); }); });"}
+{"t":"cg","c":1,"s":"boundary","train_only":true,"q":"Comment out the debug print statements in this file.","x":"print('debug: start')\nresult = run()\nprint('debug: result', result)\nsave(result)"}
+{"t":"cu","c":2,"s":"boundary","train_only":true,"q":"Walk me through what happens step by step when this function is called with an empty dict.","x":"def flatten(d, prefix=''):\n    out = {}\n    for k, v in d.items():\n        key = prefix + k\n        if isinstance(v, dict): out.update(flatten(v, key + '.'))\n        else: out[key] = v\n    return out"}
+{"t":"cu","c":2,"s":"boundary","train_only":true,"q":"Why does this component re-render on every keystroke? Just explain, I'll optimize it.","x":"function Search({ onSearch }) {\n  const [q, setQ] = useState('');\n  const options = { debounce: 300 };\n  return <Input value={q} onChange={e => setQ(e.target.value)} options={options} />;\n}"}
+{"t":"cu","c":2,"s":"boundary","train_only":true,"q":"What does this Excel formula return when the lookup value is missing?","x":"=IFNA(INDEX(B:B, MATCH(E2, A:A, 0)), \"none\")"}
+{"t":"cu","c":3,"s":"boundary","train_only":true,"q":"Explain why this function keeps returning stale values after the config file changes on disk.","x":"_config = None\ndef config():\n    global _config\n    if _config is None:\n        _config = json.load(open('config.json'))\n    return _config"}
+{"t":"cu","c":2,"s":"boundary","train_only":true,"q":"Can you explain what this error means and which line causes it? No fix needed.","x":"KeyError: 'user_id'\n  File \"handlers.py\", line 41, in create\n    uid = payload['user_id']"}
+{"t":"cu","c":2,"s":"boundary","train_only":true,"q":"What is this shell function doing with $@ and shift?","x":"run() {\n  local name=$1; shift\n  echo \"running $name with $# args\"\n  \"$name\" \"$@\"\n}"}
+{"t":"cu","c":3,"s":"boundary","train_only":true,"q":"Explain how these two SQL queries can return different counts on the same data.","x":"-- A\nSELECT COUNT(*) FROM orders o LEFT JOIN refunds r ON r.order_id = o.id;\n-- B\nSELECT COUNT(DISTINCT o.id) FROM orders o LEFT JOIN refunds r ON r.order_id = o.id;"}
+{"t":"td","c":3,"s":"boundary","train_only":true,"q":"What's the right way to model user roles and permissions in a relational database for a small SaaS app?"}
+{"t":"td","c":3,"s":"boundary","train_only":true,"q":"What's the best way to store a product catalog where each category has different attributes?"}
+{"t":"td","c":3,"s":"boundary","train_only":true,"q":"How should we model time-series sensor data so both recent dashboards and yearly reports are fast?"}
+{"t":"td","c":3,"s":"boundary","train_only":true,"q":"Which approach should we take for soft deletes across our tables, and how does it affect unique constraints and queries?"}
+{"t":"td","c":4,"s":"boundary","train_only":true,"q":"Propose how our mobile app and backend should handle API versioning so old app versions keep working for a year."}
+{"t":"td","c":3,"s":"boundary","train_only":true,"q":"What should the module boundaries be for a payroll system that handles employees, timesheets, taxes and payouts?"}
+{"t":"td","c":3,"s":"boundary","train_only":true,"q":"Should session data live in JWTs or in a server-side store for our app? Recommend one for our constraints.","x":"Need instant logout across devices; 200k daily users; single region."}
+{"t":"td","c":4,"s":"boundary","train_only":true,"q":"Outline the architecture for a document-processing pipeline that extracts text from PDFs, classifies them and routes them to reviewers."}
+{"t":"td","c":2,"s":"boundary","train_only":true,"q":"REST or GraphQL for a small internal admin tool? Give a short recommendation."}
+{"t":"ar","c":2,"s":"boundary","train_only":true,"q":"Solve: 5x - 3 = 2x + 9. Show the steps."}
+{"t":"ar","c":2,"s":"boundary","train_only":true,"q":"What's the probability of drawing two aces in a row from a standard deck without replacement?"}
+{"t":"ar","c":2,"s":"boundary","train_only":true,"q":"If I flip three fair coins, what is the probability of getting exactly two heads?"}
+{"t":"ar","c":2,"s":"boundary","train_only":true,"q":"A rectangle's length is twice its width and the perimeter is 36 cm. What are its dimensions?"}
+{"t":"ar","c":3,"s":"boundary","train_only":true,"q":"Find the derivative of x^3 * ln(x) and explain each step."}
+{"t":"ar","c":3,"s":"boundary","train_only":true,"q":"Prove that there are infinitely many prime numbers."}
+{"t":"ar","c":2,"s":"boundary","train_only":true,"q":"What's the average speed for a round trip if I drive there at 60 km/h and back at 40 km/h?"}
+{"t":"ar","c":3,"s":"boundary","train_only":true,"q":"From these replica lag numbers, tell me which explanation fits better: network congestion or a long-running transaction.","x":"Lag rises from 0 to 40s between 01:00 and 01:30 every night, drops instantly at 01:31. Network throughput flat. A nightly report query runs 01:00-01:31 on the replica."}
+{"t":"ar","c":3,"s":"boundary","train_only":true,"q":"Is the logic here sound? 'If the cache is warm, latency is low. Latency is low. So the cache is warm.'"}
+{"t":"ar","c":2,"s":"boundary","train_only":true,"q":"How many seconds are there in a non-leap year? Show the calculation."}
+{"t":"ar","c":4,"s":"boundary","train_only":true,"q":"Given these numbers, work out whether the new onboarding flow actually improved retention or whether seasonality explains it.","x":"Day-30 retention: Jan 31%, Feb 30%, Mar (new flow) 36%. Last year: Jan 30%, Feb 31%, Mar 35%."}
+{"t":"fl","c":1,"s":"boundary","train_only":true,"q":"Who painted the Mona Lisa?"}
+{"t":"fl","c":1,"s":"boundary","train_only":true,"q":"Who wrote the novel 'Pride and Prejudice'?"}
+{"t":"fl","c":1,"s":"boundary","train_only":true,"q":"Which planet is known as the Red Planet?"}
+{"t":"fl","c":1,"s":"boundary","train_only":true,"q":"What is the default HTTPS port?"}
+{"t":"fl","c":1,"s":"boundary","train_only":true,"q":"What does REST stand for?"}
+{"t":"fl","c":1,"s":"boundary","train_only":true,"q":"In what year did humans first land on the Moon?"}
+{"t":"ge","c":2,"s":"boundary","train_only":true,"q":"Give me some ideas for a fun office party theme."}
+{"t":"ge","c":2,"s":"boundary","train_only":true,"q":"Suggest a few hobbies I could pick up that don't involve screens."}
+{"t":"ge","c":2,"s":"boundary","train_only":true,"q":"What are some icebreaker questions for a first team meeting?"}
+{"t":"ge","c":2,"s":"boundary","train_only":true,"q":"I keep going back and forth about adopting a dog while living in a small flat. What should I consider?"}
+{"t":"ge","c":2,"s":"boundary","train_only":true,"q":"Give me ideas for a relaxing Sunday at home."}
+{"t":"ge","c":1,"s":"boundary","train_only":true,"q":"Happy Friday everyone!"}
+{"t":"cg","c":2,"s":"clear","train_only":true,"tags":["ne"],"q":"Escribe una consulta SQL que devuelva los productos con stock menor a 10.","x":"productos(id, nombre, stock)"}
+{"t":"cg","c":2,"s":"clear","train_only":true,"tags":["ne"],"q":"Écris une fonction JavaScript qui met en majuscule la première lettre de chaque mot."}
+{"t":"cg","c":2,"s":"clear","train_only":true,"tags":["ne"],"q":"Schreibe ein Bash-Skript, das alle .log-Dateien älter als 7 Tage löscht."}
+{"t":"cg","c":2,"s":"clear","train_only":true,"tags":["ne"],"q":"Escreva uma consulta SQL que conte usuários ativos por mês.","x":"usuarios(id, ativo, criado_em)"}
+{"t":"cu","c":2,"s":"clear","train_only":true,"tags":["ne"],"q":"¿Puedes explicarme qué hace esta expresión regular?","x":"^\\d{3}-\\d{2}-\\d{4}$"}
+{"t":"cu","c":2,"s":"clear","train_only":true,"tags":["ne"],"q":"Que fait ce code exactement ?","x":"const unique = arr.filter((v, i) => arr.indexOf(v) === i);"}
+{"t":"cu","c":2,"s":"clear","train_only":true,"tags":["ne"],"q":"Was macht diese Funktion? Bitte erklären.","x":"def f(xs): return {x: xs.count(x) for x in set(xs)}"}
+{"t":"cu","c":2,"s":"clear","train_only":true,"tags":["ne"],"q":"这个函数返回什么？请解释一下。","x":"def g(s): return s[::-1] == s"}
+{"t":"td","c":3,"s":"clear","train_only":true,"tags":["ne"],"q":"¿Cómo estructurarías la base de datos para una aplicación de reservas de restaurantes?"}
+{"t":"td","c":3,"s":"clear","train_only":true,"tags":["ne"],"q":"Comment concevoir l'architecture d'une application de messagerie pour 100 000 utilisateurs ?"}
+{"t":"td","c":3,"s":"clear","train_only":true,"tags":["ne"],"q":"Como você projetaria a arquitetura de um sistema de pagamentos com alta disponibilidade?"}
+{"t":"td","c":3,"s":"clear","train_only":true,"tags":["ne"],"q":"如何设计一个支持百万用户的消息推送系统？"}
+{"t":"ar","c":2,"s":"clear","train_only":true,"tags":["ne"],"q":"¿Cuál es la probabilidad de sacar dos caras al lanzar dos monedas?"}
+{"t":"ar","c":3,"s":"clear","train_only":true,"tags":["ne"],"q":"Analiza estos datos y dime por qué bajaron las ventas en marzo.","x":"Febrero: 500 pedidos. Marzo: 380 pedidos. El sitio estuvo caído 3 días en marzo. Precios sin cambios."}
+{"t":"ar","c":2,"s":"clear","train_only":true,"tags":["ne"],"q":"Wenn ein Zug 300 km in 2,5 Stunden fährt, wie hoch ist seine Durchschnittsgeschwindigkeit?"}
+{"t":"ar","c":3,"s":"clear","train_only":true,"tags":["ne"],"q":"Analise estes dados e explique por que o tempo de resposta aumentou.","x":"Antes: 120ms. Depois do deploy: 480ms. O novo código faz uma consulta ao banco para cada item da lista."}
+{"t":"wr","c":2,"s":"clear","train_only":true,"tags":["ne"],"q":"Escribe un mensaje breve para felicitar a mi equipo por el lanzamiento."}
+{"t":"wr","c":2,"s":"clear","train_only":true,"tags":["ne"],"q":"Écris un court e-mail pour remercier un client de sa fidélité."}
+{"t":"wr","c":2,"s":"clear","train_only":true,"tags":["ne"],"q":"Schreibe eine kurze Einladung zum Teamessen am Freitag."}
+{"t":"wr","c":2,"s":"clear","train_only":true,"tags":["ne"],"q":"Escreva uma mensagem curta pedindo desculpas pelo atraso na entrega."}
+{"t":"wr","c":2,"s":"clear","train_only":true,"tags":["ne"],"q":"Could you write a short birthday message en español for my abuela?"}
+{"t":"fl","c":1,"s":"clear","train_only":true,"tags":["ne"],"q":"¿Qué significa la sigla HTML?"}
+{"t":"fl","c":1,"s":"clear","train_only":true,"tags":["ne"],"q":"Quelle est la capitale de l'Australie ?"}
+{"t":"fl","c":1,"s":"clear","train_only":true,"tags":["ne"],"q":"Wer hat die Relativitätstheorie entwickelt?"}
+{"t":"fl","c":1,"s":"clear","train_only":true,"tags":["ne"],"q":"什么是HTTP？"}
+{"t":"ge","c":1,"s":"clear","train_only":true,"tags":["ne"],"q":"Bonjour, comment ça va ?"}
+{"t":"ge","c":1,"s":"clear","train_only":true,"tags":["ne"],"q":"Guten Morgen! Wie geht's?"}
+{"t":"ge","c":2,"s":"clear","train_only":true,"tags":["ne"],"q":"¿Qué puedo hacer para dormir mejor?"}
+{"t":"ge","c":1,"s":"clear","train_only":true,"tags":["ne"],"q":"Obrigado pela ajuda!"}
+{"t":"ge","c":1,"s":"clear","train_only":true,"tags":["ne"],"q":"你好！"}

@@ -469,12 +469,13 @@ pub const REGEX_COMPLEXITY: u8 = 3;
 
 /// [`RegexClassifier`]'s confidence when at least one pattern fired: the regex's measured
 /// request-type accuracy on that case of our validation split, so it is calibrated in
-/// aggregate by construction.
-pub const REGEX_CONFIDENCE_MATCHED: f32 = 0.60;
+/// aggregate by construction (0.76 = 45/59 on the split described in
+/// `training/request_classifier/DATASHEET.md`).
+pub const REGEX_CONFIDENCE_MATCHED: f32 = 0.76;
 
 /// [`RegexClassifier`]'s confidence when no pattern fired and it defaulted to `General`:
-/// the regex's measured accuracy on that case of our validation split.
-pub const REGEX_CONFIDENCE_DEFAULTED: f32 = 0.15;
+/// the regex's measured accuracy on that case of our validation split (0.12 = 18/154).
+pub const REGEX_CONFIDENCE_DEFAULTED: f32 = 0.12;
 
 /// Per-category regex vote counts, indexed by [`RequestType::ALL`] (`General` is always 0).
 /// The same votes [`classify_request_type`] counts; exposed so the local classifier can use
@@ -1086,7 +1087,10 @@ mod tests {
         .expect("guard never errs");
         assert_eq!(got, RegexClassifier::classify_sync(q));
         let snap = stats.snapshot();
-        assert_eq!((snap.calls, snap.fallback_error, snap.fallback_timeout), (1, 1, 0));
+        assert_eq!(
+            (snap.calls, snap.fallback_error, snap.fallback_timeout),
+            (1, 1, 0)
+        );
         assert_eq!(guard.name(), "failing");
     }
 

@@ -1,0 +1,81 @@
+{"t":"cg","c":2,"s":"noisy","q":"heyyy so um i need like a python thing that reads a json file and prints all the keys?? nothing fancy lol"}
+{"t":"cg","c":2,"s":"noisy","q":"plz write js func sum array numbers ignore non numbers thx"}
+{"t":"cg","c":3,"s":"noisy","q":"ok so long story short my boss wants a script, bash i guess, that checks if the website is up every 5 min and emails me when its not. also it should not spam me if its down for an hour, just once. can u do that"}
+{"t":"cu","c":2,"s":"noisy","q":"wat does this even do???? 😩","x":"x = [i for i in range(10) if i % 2][::-1]"}
+{"t":"cu","c":3,"s":"noisy","q":"sorry if this is dumb, im new to all this, but could someone explain like whats going on in this code, specifically the yield part, i read the docs and still dont get it","x":"def gen(n):\n    for i in range(n):\n        yield i * i\n\nfor v in gen(3): print(v)"}
+{"t":"td","c":3,"s":"noisy","q":"so we're a tiny team (3 ppl) and everyone says microservices but idk... how should we split our app?? its a marketplace w/ buyers, sellers, payments, chat"}
+{"t":"ar","c":3,"s":"noisy","q":"quick q!! if i invest 200/month at 7% yearly for 15 yrs how much do i end up with roughly? show work pls"}
+{"t":"ar","c":4,"s":"noisy","q":"ugh our site goes down every day at like 3am and nobody knows why. here's what we have, any idea whats going on??","x":"03:00 backup job starts (pg_dump full); 03:02 DB CPU 100%; 03:03 API p99 30s; 03:20 backup done; 03:21 recovered. Backup runs on primary."}
+{"t":"wr","c":2,"s":"noisy","q":"can u make this sound less angry b4 i send it to my landlord lol","x":"THE HEATER IS STILL BROKEN. I TOLD YOU 3 WEEKS AGO. FIX IT."}
+{"t":"wr","c":2,"s":"noisy","q":"need a quick msg 4 my team saying im out sick today, keep it short"}
+{"t":"fl","c":1,"s":"noisy","q":"waht is teh default port for ssh again"}
+{"t":"fl","c":1,"s":"noisy","q":"hey quick one, what does 'grep -v' do? thx!!"}
+{"t":"ge","c":1,"s":"noisy","q":"heyyyyy 👋👋 whats up"}
+{"t":"ge","c":2,"s":"noisy","q":"so i've been thinking a lot lately, like, about whether i should move to a new city or not, my friends are here but jobs are there, idk, what would you do"}
+{"t":"ge","c":1,"s":"noisy","q":"🙏🙏🙏"}
+{"t":"cg","c":2,"s":"noisy","q":"Hi! Hope you're having a wonderful day. I was wondering, if it's not too much trouble, whether you could possibly help me write a small SQL query that counts how many orders each customer has made. Thank you so much in advance!","x":"orders(id, customer_id, created_at)"}
+{"t":"cu","c":2,"s":"noisy","q":"Hello, good afternoon. I apologize for bothering you. My colleague left this code and I would be very grateful if you could explain what it does. Kind regards, Tomasz","x":"fetch(url).then(r => r.ok ? r.json() : Promise.reject(r.status)).catch(console.error)"}
+{"t":"ar","c":2,"s":"noisy","q":"ok math time 😅 if 3 painters paint a house in 6 days how long for 4 painters?"}
+{"t":"td","c":3,"s":"noisy","q":"Hey folks!! Long-time lurker, first post. We're building a small IoT thing (like 500 sensors) and I'm wondering how to architect the backend, MQTT? HTTP? what DB? Any guidance appreciated, cheers!"}
+{"t":"wr","c":3,"s":"noisy","q":"ok so i need to write a speech for my grandma's 90th bday party, she loves gardening and her old dog Biscuit, maybe 2 mins? make it sweet but not too sappy pls 🥹"}
+{"t":"fl","c":1,"s":"noisy","q":"what year did the iphone come out... asking for a trivia night lol"}
+{"t":"ge","c":2,"s":"noisy","q":"ive had the worst week ever, everything at work went wrong. any advice on how to unwind this weekend?"}
+{"t":"cg","c":1,"s":"noisy","q":"git cmd to see what changed in last commit pls"}
+{"t":"ar","c":3,"s":"noisy","q":"hmm so if our error rate is 0.2% and we do 3M requests a day, how many errors per hour is that on average, and is 400 in one hour weird?"}
+{"t":"ge","c":1,"s":"ood","q":"asdkjh qwe zxcmn poiuy"}
+{"t":"ge","c":1,"s":"ood","q":"...."}
+{"t":"ge","c":1,"s":"ood","q":"test test 123"}
+{"t":"ge","c":2,"s":"ood","q":"What's a good stretching routine for lower back pain? I sit all day."}
+{"t":"fl","c":1,"s":"ood","q":"What is the statute of limitations for breach of contract in California?"}
+{"t":"fl","c":1,"s":"ood","q":"What is the normal resting heart rate range for adults?"}
+{"t":"fl","c":1,"s":"ood","q":"What does EBITDA stand for?"}
+{"t":"fl","c":1,"s":"ood","q":"What's the difference between a Roth IRA and a traditional IRA, briefly?"}
+{"t":"ar","c":3,"s":"ood","q":"A company's revenue grew from $2.4M to $3.1M while costs grew from $1.9M to $2.2M. What happened to the profit margin?"}
+{"t":"ar","c":4,"s":"ood","q":"Using these clinic wait-time numbers, figure out which step is the bottleneck and how much adding one nurse would help.","x":"Check-in 3 min (1 clerk), triage 8 min (1 nurse), doctor 12 min (2 doctors), checkout 4 min (1 clerk). Patients arrive every 6 minutes."}
+{"t":"ar","c":3,"s":"ood","q":"A recipe for 4 needs 300g flour and 2 eggs. How much do I need for 10 people, and how should I handle the eggs?"}
+{"t":"ar","c":4,"s":"ood","q":"Our warehouse shipped 18% fewer orders this week. Given these facts, what's the most likely explanation?","x":"Inbound stock arrived 2 days late; picker headcount unchanged; order volume up 5%; 22% of orders waiting on out-of-stock items."}
+{"t":"wr","c":3,"s":"ood","q":"Draft a polite letter to my insurance company disputing a denied claim for a broken window.","x":"Policy covers accidental glass damage; claim denied as 'wear and tear'; window broke during a storm on March 3; I have photos and a repair quote of $640."}
+{"t":"wr","c":2,"s":"ood","q":"Write a short product description for a handmade ceramic coffee mug for my Etsy shop."}
+{"t":"wr","c":3,"s":"ood","q":"Summarize this lease clause in plain English for a tenant.","x":"Lessee shall be responsible for all repairs and maintenance of the Premises, excepting structural elements and such repairs as are necessitated by the negligence of Lessor, its agents or employees."}
+{"t":"td","c":3,"s":"ood","q":"How should I design the data tables for tracking patients, appointments and prescriptions in a small clinic app?"}
+{"t":"td","c":4,"s":"ood","q":"Design the order flow and inventory sync between our three retail stores and the online shop so stock counts stay accurate."}
+{"t":"cg","c":2,"s":"ood","q":"Write an Excel formula that returns 'Late' if the date in B2 is after the due date in C2, otherwise 'On time'."}
+{"t":"cg","c":3,"s":"ood","q":"Write a Google Apps Script that copies new form responses into a separate sheet per region."}
+{"t":"cu","c":2,"s":"ood","q":"What does this spreadsheet formula do? My accountant left it.","x":"=IFERROR(VLOOKUP(A2, Rates!A:C, 3, FALSE) * B2, 0)"}
+{"t":"ge","c":2,"s":"ood","q":"How do I talk to my teenager about spending less time on their phone?"}
+{"t":"fl","c":1,"s":"ood","q":"How many teaspoons are in a tablespoon?"}
+{"t":"ar","c":2,"s":"ood","q":"If a car uses 6.5 litres per 100 km and fuel costs 1.80 per litre, what does a 420 km trip cost?"}
+{"t":"ge","c":2,"s":"ood","q":"What are some ways to make a small apartment feel bigger?"}
+{"t":"fl","c":1,"s":"ood","q":"What's the tallest mountain in Africa?"}
+{"t":"cg","c":2,"s":"clear","tags":["ne"],"q":"Escribe una función en Python que devuelva los números pares de una lista."}
+{"t":"cu","c":2,"s":"clear","tags":["ne"],"q":"¿Qué hace este código? No lo entiendo.","x":"const total = items.reduce((s, i) => s + i.price * i.qty, 0);"}
+{"t":"td","c":4,"s":"clear","tags":["ne"],"q":"¿Cómo diseñarías la arquitectura de un sistema de reservas de hoteles con alta disponibilidad?"}
+{"t":"ar","c":2,"s":"clear","tags":["ne"],"q":"Si un producto cuesta 80 euros y tiene un descuento del 15%, ¿cuánto pago?"}
+{"t":"wr","c":2,"s":"clear","tags":["ne"],"q":"Escribe un correo breve para pedir a mi jefe un día libre el viernes."}
+{"t":"fl","c":1,"s":"clear","tags":["ne"],"q":"¿Cuál es la capital de Canadá?"}
+{"t":"ge","c":1,"s":"clear","tags":["ne"],"q":"¡Hola! ¿Qué tal?"}
+{"t":"cg","c":2,"s":"clear","tags":["ne"],"q":"Écris une requête SQL qui compte le nombre de commandes par client.","x":"commandes(id, client_id, date)"}
+{"t":"cu","c":3,"s":"clear","tags":["ne"],"q":"Peux-tu m'expliquer ce que fait cette fonction récursive ?","x":"def h(n, a, b, c):\n    if n == 0: return\n    h(n-1, a, c, b)\n    print(a, '->', c)\n    h(n-1, b, a, c)"}
+{"t":"wr","c":2,"s":"clear","tags":["ne"],"q":"Réécris ce message pour qu'il soit plus poli.","x":"Envoie-moi le rapport maintenant."}
+{"t":"fl","c":1,"s":"clear","tags":["ne"],"q":"Qu'est-ce que le protocole HTTP ?"}
+{"t":"ar","c":3,"s":"clear","tags":["ne"],"q":"Combien de façons y a-t-il de choisir 3 personnes parmi 10 ? Montre le calcul."}
+{"t":"cg","c":2,"s":"clear","tags":["ne"],"q":"Schreibe eine Java-Methode, die prüft, ob eine Zahl eine Primzahl ist."}
+{"t":"td","c":3,"s":"clear","tags":["ne"],"q":"Wie sollte ich die Datenbank für einen kleinen Onlineshop mit Produkten, Kunden und Bestellungen entwerfen?"}
+{"t":"wr","c":2,"s":"clear","tags":["ne"],"q":"Schreib eine kurze Absage für ein Vorstellungsgespräch, freundlich formuliert."}
+{"t":"ge","c":2,"s":"clear","tags":["ne"],"q":"Wie kann ich mich besser auf eine Prüfung konzentrieren?"}
+{"t":"cg","c":2,"s":"clear","tags":["ne"],"q":"Escreva uma função em JavaScript que remova itens duplicados de um array."}
+{"t":"ar","c":3,"s":"clear","tags":["ne"],"q":"Analise estes números e diga por que as vendas caíram em abril.","x":"Março: 1.200 pedidos, preço médio R$90. Abril: 900 pedidos, preço médio R$110 após aumento de preço em 1º de abril. Tráfego estável."}
+{"t":"fl","c":1,"s":"clear","tags":["ne"],"q":"O que significa a sigla API?"}
+{"t":"cg","c":2,"s":"clear","tags":["ne"],"q":"Python mein ek function likho jo string ko reverse kare."}
+{"t":"cu","c":2,"s":"clear","tags":["ne"],"q":"Yeh code kya karta hai? Samjhao please.","x":"for i in range(1, 16):\n    print('FizzBuzz' if i % 15 == 0 else 'Fizz' if i % 3 == 0 else 'Buzz' if i % 5 == 0 else i)"}
+{"t":"ge","c":1,"s":"clear","tags":["ne"],"q":"Namaste, kaise ho?"}
+{"t":"fl","c":1,"s":"clear","tags":["ne"],"q":"भारत की राजधानी क्या है?"}
+{"t":"wr","c":2,"s":"clear","tags":["ne"],"q":"मेरे बॉस को छुट्टी के लिए एक छोटा ईमेल लिखो।"}
+{"t":"cg","c":2,"s":"clear","tags":["ne"],"q":"リストの重複を削除するPythonの関数を書いてください。"}
+{"t":"fl","c":1,"s":"clear","tags":["ne"],"q":"TCPとUDPの違いは何ですか？簡単に教えてください。"}
+{"t":"cu","c":2,"s":"clear","tags":["ne"],"q":"这段代码是做什么的？","x":"print(sorted(set(words), key=len)[-1])"}
+{"t":"td","c":3,"s":"clear","tags":["ne"],"q":"我们的电商网站应该如何设计缓存层？请说明主要的权衡。"}
+{"t":"wr","c":2,"s":"clear","tags":["ne"],"q":"帮我写一封简短的邮件，感谢客户的支持。"}
+{"t":"ar","c":2,"s":"clear","tags":["ne"],"q":"Se ho 3 camicie e 4 pantaloni, quanti abbinamenti diversi posso fare?"}
+{"t":"cg","c":2,"s":"clear","tags":["ne"],"q":"Hola, can you write me una función en Go que cuente las vocales in a string?"}
+{"t":"wr","c":2,"s":"clear","tags":["ne"],"q":"Bonjour! Could you help me write a short thank-you note en français for my host family?"}
