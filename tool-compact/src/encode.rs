@@ -15,10 +15,13 @@ use crate::schema::{self, Additional, Bounds, Kind, Node, ObjectShape, ToolSchem
 
 /// The call-format instruction placed before the definitions.
 ///
-/// Every token here is paid on every request, so it is as short as models were measured to
-/// follow reliably. The optional-argument and multiple-call conventions are carried by the
-/// definitions themselves (`?`, one call per marker).
-pub const INSTRUCTION: &str = "Call tools with <<call NAME {JSON args}>>.";
+/// Every token here is paid on every request, so it is the shortest wording that was measured to
+/// work. The quoted-key example is not decoration: with a bare `{JSON args}` placeholder, a small
+/// model mirrored the definitions' `key: type` style and wrote `{city: "Paris"}` (rejected, since
+/// decoding never repairs JSON), or dropped the closing `>>`. Optionality is carried by the
+/// definitions themselves (`?`).
+pub const INSTRUCTION: &str =
+    r#"Call tools with <<call NAME {"key": value}>> (strict JSON, quoted keys), one per line."#;
 
 /// Render `tools` as compact definitions.
 ///

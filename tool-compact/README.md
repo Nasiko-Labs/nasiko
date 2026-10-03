@@ -71,7 +71,7 @@ annotations = annotation { ", " annotation } ;
 Example, as `create_calendar_event` renders:
 
 ```text
-Call tools with <<call NAME {JSON args}>>.
+Call tools with <<call NAME {"key": value}>> (strict JSON, quoted keys), one per line.
 create_calendar_event: Create an event in the user's calendar.
  title: string # Event title
  start: datetime # Start time, ISO 8601

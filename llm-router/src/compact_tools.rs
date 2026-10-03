@@ -350,7 +350,7 @@ mod tests {
         assert!(req.tools.is_none() && req.tool_choice.is_none());
         let block = req.messages[0].text().unwrap();
         assert!(
-            block.starts_with("Call tools with <<call NAME {JSON args}>>."),
+            block.starts_with(nasiko_tool_compact::INSTRUCTION),
             "{block}"
         );
         assert!(block.contains("get_weather: Current weather for a city."));
