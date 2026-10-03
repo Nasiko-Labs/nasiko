@@ -288,6 +288,9 @@ async fn chat_core(
         "brevity: directive decision"
     );
 
+    // ── compact tools seam (Track P1) ─────────────────────────────────────────────────────
+    let compact_ctx = crate::compact_tools::apply_compact_tools(&mut req, &ctx.cfg);
+
     // ── savings ledger inputs ─────────────────────────────────────────────────────────────
     // Measured here, after both seams, because this is the payload the provider will actually
     // bill for — which is what makes `sent_bytes / reported_input_tokens` a calibration rather
@@ -367,13 +370,18 @@ async fn chat_core(
             compress_bytes,
             request_bytes: Some(sent_bytes),
             span: llm_span.clone(),
+            compact_ctx: compact_ctx.clone(),
         });
     }
 
     // Non-streaming: run with ordered fallbacks; usage records the effective provider/model.
-    let (resp, (provider, model)) = fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
-        .instrument(llm_span.clone())
-        .await?;
+    let (mut resp, (provider, model)) =
+        fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
+            .instrument(llm_span.clone())
+            .await?;
+    if let Some(ref c_ctx) = compact_ctx {
+        crate::compact_tools::decode_chat_response(&mut resp, c_ctx);
+    }
     let latency_ms = started.elapsed().as_millis() as i64;
 
     // Record effective model and token usage on the server-side gen_ai span.
@@ -576,6 +584,7 @@ struct StreamChatArgs<'a> {
     /// `compress_metadata` is: on this path the `UsageRecord` is only built once the stream ends.
     compress_bytes: Option<(usize, usize)>,
     request_bytes: Option<usize>,
+    compact_ctx: Option<crate::compact_tools::CompactContext>,
 }
 
 /// Stream provider chunks back as OpenAI SSE: `data: <chunk>\n\n` … `data: [DONE]\n\n`.
@@ -600,6 +609,7 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
         brevity_metadata,
         compress_bytes,
         request_bytes,
+        compact_ctx,
     } = args;
     let state = Arc::new(Mutex::new(StreamState::default()));
     let guard = UsageGuard {
@@ -628,6 +638,9 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
         // `event:` sequences for Anthropic) and its terminal events.
         let _guard = guard;
         let mut renderer = renderer;
+        let mut compact_filter = compact_ctx.map(|c| {
+            crate::compact_tools::CompactStreamFilter::new(c.original_tools, model.clone())
+        });
         futures::pin_mut!(provider_stream);
         while let Some(item) = provider_stream.next().await {
             match item {
@@ -642,8 +655,28 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
                             st.finish_reason = Some(fr);
                         }
                     }
-                    for frame in renderer.render(chunk) {
-                        yield Ok::<String, std::io::Error>(frame);
+                    let mut emit_chunk = true;
+                    if let Some(ref mut filter) = compact_filter {
+                        if let Some(tool_chunk) = filter.process_chunk(&mut chunk) {
+                            for frame in renderer.render(tool_chunk) {
+                                yield Ok::<String, std::io::Error>(frame);
+                            }
+                        }
+                        if let Some(c) = chunk.choices.first() {
+                            if c.delta.content.is_none()
+                                && c.delta.tool_calls.is_none()
+                                && c.delta.role.is_none()
+                                && c.finish_reason.is_none()
+                                && chunk.usage.is_none()
+                            {
+                                emit_chunk = false;
+                            }
+                        }
+                    }
+                    if emit_chunk {
+                        for frame in renderer.render(chunk) {
+                            yield Ok::<String, std::io::Error>(frame);
+                        }
                     }
                 }
                 Err(e) => {

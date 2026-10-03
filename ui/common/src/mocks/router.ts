@@ -212,6 +212,29 @@ export function buildRouterState(
         deleted: false,
         models: ['custom-local'],
       },
+      {
+        id: customId(2),
+        label: 'bedrock',
+        display_name: 'bedrock',
+        base_url: 'https://bedrock-mantle.us-east-1.api.aws/v1',
+        kind: 'openai',
+        api_version: null,
+        default_model: 'openai.gpt-5.6-luna',
+        catalog_sync_enabled: true,
+        api_key_set: true,
+        last_sync_at: new Date(now - 60_000).toISOString(),
+        last_sync_status: 'ok',
+        last_sync_error: null,
+        created_at: iso,
+        deleted: false,
+        models: [
+          'openai.gpt-5.6-luna',
+          'openai.gpt-5.4',
+          'openai.gpt-6-luna',
+          'mistral.devstral-2-123b',
+          'qwen.qwen3-coder-30b-a3b-instruct',
+        ],
+      },
     ],
     registry: [
       { provider: 'anthropic', tier: 1, model: 'claude-sonnet-4' },
@@ -567,9 +590,40 @@ export function createCustom(s: RouterState, body: CreateCustomProviderBody, now
   if (!body.api_key?.trim()) throw new MockHttpError(400, 'api_key is required')
   let label = slugify(display)
   if (['openai', 'anthropic', 'gemini'].includes(label)) label = `${label}-custom`
+  const existing = s.custom.find(
+    (p) => !p.deleted && (p.label === label || p.display_name.toLowerCase() === display.toLowerCase()),
+  )
+  if (existing) {
+    existing.display_name = display
+    existing.base_url = base
+    existing.kind = dialect.kind
+    existing.api_version = dialect.api_version
+    existing.catalog_sync_enabled = body.catalog_sync_enabled
+    existing.api_key_set = true
+    if (base.includes('bedrock') && !existing.models.includes('openai.gpt-5.6-luna')) {
+      existing.models.unshift('openai.gpt-5.6-luna')
+    }
+    return {
+      id: existing.id,
+      label: existing.label,
+      discovered_models: existing.models.length,
+      priced_models: 0,
+    }
+  }
   let candidate = label
   for (let i = 2; s.custom.some((p) => !p.deleted && p.label === candidate); i++)
     candidate = `${label}-${i}`
+  const models = base.includes('bedrock')
+    ? [
+        'openai.gpt-5.6-luna',
+        'openai.gpt-5.4',
+        'openai.gpt-6-luna',
+        'mistral.devstral-2-123b',
+        'qwen.qwen3-coder-30b-a3b-instruct',
+      ]
+    : body.default_model
+      ? [body.default_model]
+      : ['custom-local']
   const p: MockCustomProvider = {
     id: customId(100 + s.custom.length),
     label: candidate,
@@ -581,15 +635,15 @@ export function createCustom(s: RouterState, body: CreateCustomProviderBody, now
     default_model: null,
     catalog_sync_enabled: body.catalog_sync_enabled,
     api_key_set: true,
-    last_sync_at: null,
-    last_sync_status: null,
+    last_sync_at: new Date(now).toISOString(),
+    last_sync_status: 'ok',
     last_sync_error: null,
     created_at: new Date(now).toISOString(),
     deleted: false,
-    models: [],
+    models,
   }
   s.custom.push(p)
-  return { id: p.id, label: p.label, discovered_models: 0, priced_models: 0 }
+  return { id: p.id, label: p.label, discovered_models: p.models.length, priced_models: 0 }
 }
 
 export function updateCustom(s: RouterState, id: string, body: UpdateCustomProviderBody) {
@@ -603,7 +657,10 @@ export function updateCustom(s: RouterState, id: string, body: UpdateCustomProvi
   if (body.base_url) p.base_url = normalizeBase(kind, body.base_url)
   if (kind === 'azure-openai' && version) p.api_version = version
   if (body.api_key) p.api_key_set = true
-  if (body.default_model) p.default_model = body.default_model
+  if (body.default_model) {
+    p.default_model = body.default_model
+    if (!p.models.includes(body.default_model)) p.models.unshift(body.default_model)
+  }
   if (body.catalog_sync_enabled !== undefined) p.catalog_sync_enabled = body.catalog_sync_enabled
   return { id }
 }

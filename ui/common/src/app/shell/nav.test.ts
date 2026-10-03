@@ -24,6 +24,7 @@ describe('nav items', () => {
       { to: '/workflows', label: 'Workflows', shared: false },
       { to: '/router', label: 'LLM router', shared: false },
       { to: '/mcp', label: 'MCP servers', shared: false },
+      { to: '/compact-tools', label: 'Compact Tools', shared: false },
     ])
   })
 
@@ -42,6 +43,7 @@ describe('nav items', () => {
       'Workflows',
       'LLM router',
       'MCP servers',
+      'Compact Tools',
       'Sessions',
       'TokenOps',
       'Harnesses',
@@ -78,6 +80,7 @@ describe('nav items', () => {
     expect(activeItem('/sessions/abc')?.label).toBe('Sessions')
     expect(activeItem('/chat/abc')?.label).toBe('Chat')
     expect(activeItem('/tokenops')?.label).toBe('TokenOps')
+    expect(activeItem('/compact-tools')?.label).toBe('Compact Tools')
     expect(activeItem('/')?.label).toBe('Overview')
     expect(activeItem('/status')).toBeUndefined()
     expect(activeItem('/chatter')).toBeUndefined()
