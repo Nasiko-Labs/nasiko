@@ -48,8 +48,9 @@ pub use inbound::InboundFormat;
 pub use inject::{LlmInjectCtx, inject_llm_env};
 pub use resolver::{ConfigCache, ResolvedConfig};
 pub use routing::{
-    AllowAllGate, CellStore, ClassifierSalienceGate, DecisionCache, InMemoryCellStore, NoopCache,
-    PgCellStore, PgTierRegistry, RedisCache, SalienceGate, TierRegistry,
+    AllowAllGate, CellStore, ClassifyError, ClassifyInput, Classification, ClassifierSalienceGate,
+    DecisionCache, InMemoryCellStore, NoopCache, PgCellStore, PgTierRegistry, RedisCache,
+    RequestClassifier, RegexRequestClassifier, SalienceGate, TierRegistry,
 };
 
 /// Shared context for the LLM router.
@@ -78,6 +79,9 @@ pub struct LlmRouterCtx {
     /// [`PgCellStore`] (durable, cross-instance) in production; tests use
     /// [`InMemoryCellStore`].
     pub cell_store: Arc<dyn CellStore>,
+    /// Request classifier used at routing boundaries. Defaults to the regex implementation,
+    /// but can be swapped to a local or hosted backend through the environment.
+    pub request_classifier: Arc<dyn RequestClassifier>,
     /// Level 2.5 salience gate — decides whether a boundary turn is substantive enough to
     /// classify + pin. [`ClassifierSalienceGate`] when `SALIENCE_GATE_ENABLED`; else [`AllowAllGate`]
     /// (classify at every boundary, i.e. behaviour before the gate existed).
@@ -126,6 +130,11 @@ impl LlmRouterCtx {
         );
         let router_cache = build_router_cache(&cfg);
         let cfg = Arc::new(cfg);
+        let request_classifier = routing::build_request_classifier(
+            &cfg.classifier_backend,
+            &cfg.classifier_endpoint,
+            cfg.classifier_timeout_ms,
+        );
         let salience_gate = build_salience_gate(&cfg);
         let pricing = Arc::new(PricingEngine::new(db.clone()));
         Self {
@@ -136,6 +145,7 @@ impl LlmRouterCtx {
             router_cache,
             tier_registry,
             cell_store,
+            request_classifier,
             salience_gate,
             pricing,
         }

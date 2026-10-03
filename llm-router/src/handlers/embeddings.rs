@@ -191,6 +191,7 @@ mod tests {
             pricing: Arc::new(nasiko_pricing::PricingEngine::new(
                 PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
             )),
+            request_classifier: crate::routing::build_request_classifier("regex", "", 2000),
         }
     }
 
