@@ -1,0 +1,134 @@
+{
+  "model_choice": {
+    "C": 10.0,
+    "class_weight_balanced": false,
+    "cv_accuracy": 0.8222,
+    "cv_log_loss": 0.6132
+  },
+  "temperature": 0.75,
+  "splits": {
+    "train": {
+      "accuracy": 1.0,
+      "macro_recall": 1.0,
+      "per_class_recall": {
+        "code_generation": {
+          "support": 52,
+          "recall": 1.0
+        },
+        "code_understanding": {
+          "support": 40,
+          "recall": 1.0
+        },
+        "technical_design": {
+          "support": 31,
+          "recall": 1.0
+        },
+        "analytical_reasoning": {
+          "support": 33,
+          "recall": 1.0
+        },
+        "writing": {
+          "support": 33,
+          "recall": 1.0
+        },
+        "factual_lookup": {
+          "support": 39,
+          "recall": 1.0
+        },
+        "general": {
+          "support": 42,
+          "recall": 1.0
+        }
+      },
+      "ece_top1": 0.0393
+    },
+    "val": {
+      "accuracy": 0.7407,
+      "macro_recall": 0.7457,
+      "per_class_recall": {
+        "code_generation": {
+          "support": 13,
+          "recall": 0.6923
+        },
+        "code_understanding": {
+          "support": 6,
+          "recall": 0.8333
+        },
+        "technical_design": {
+          "support": 6,
+          "recall": 1.0
+        },
+        "analytical_reasoning": {
+          "support": 6,
+          "recall": 0.6667
+        },
+        "writing": {
+          "support": 6,
+          "recall": 0.5
+        },
+        "factual_lookup": {
+          "support": 8,
+          "recall": 0.75
+        },
+        "general": {
+          "support": 9,
+          "recall": 0.7778
+        }
+      },
+      "ece_top1": 0.1154
+    },
+    "test": {
+      "accuracy": 0.746,
+      "macro_recall": 0.8081,
+      "per_class_recall": {
+        "code_generation": {
+          "support": 8,
+          "recall": 0.75
+        },
+        "code_understanding": {
+          "support": 6,
+          "recall": 1.0
+        },
+        "technical_design": {
+          "support": 6,
+          "recall": 1.0
+        },
+        "analytical_reasoning": {
+          "support": 6,
+          "recall": 1.0
+        },
+        "writing": {
+          "support": 10,
+          "recall": 0.4
+        },
+        "factual_lookup": {
+          "support": 19,
+          "recall": 0.6316
+        },
+        "general": {
+          "support": 8,
+          "recall": 0.875
+        }
+      },
+      "ece_top1": 0.1682
+    }
+  },
+  "complexity": {
+    "train": {
+      "mae": 0.1185,
+      "exact_match": 0.8815,
+      "within_one": 1.0
+    },
+    "val": {
+      "mae": 0.5185,
+      "exact_match": 0.4815,
+      "within_one": 1.0
+    },
+    "test": {
+      "mae": 0.3651,
+      "exact_match": 0.6667,
+      "within_one": 0.9683
+    }
+  },
+  "baseline_note": "Regex baseline is measured by the Rust example (CLASSIFIER_BACKEND=regex) on the same eval_sets, not reimplemented here."
+}

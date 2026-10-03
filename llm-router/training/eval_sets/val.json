@@ -1,0 +1,389 @@
+{
+  "schema_version": "h4-public-eval-v1",
+  "purpose": "Contributor-authored val split for the H4 request classifier.",
+  "source": "Synthetic examples authored for the hackathon; no private user data.",
+  "labels": {
+    "request_type": "One of code_generation, code_understanding, technical_design, analytical_reasoning, writing, factual_lookup, general.",
+    "complexity": "1 trivial .. 5 intricate cross-component reasoning."
+  },
+  "examples": [
+    {
+      "id": "co-cg-async-0",
+      "query": "Convert this callback-based code to async/await.",
+      "context": "```js\nfs.readFile(p, (err, data) => { if (err) throw err; handle(data); });\n```",
+      "request_type": "code_generation",
+      "complexity": 3
+    },
+    {
+      "id": "co-cg-async-1",
+      "query": "Rewrite this promise-chain-free callback code using async/await.",
+      "context": "Node fs callback style.",
+      "request_type": "code_generation",
+      "complexity": 3
+    },
+    {
+      "id": "co-cg-merge-0",
+      "query": "Implement a Rust function that merges two sorted slices into a new Vec.",
+      "context": "No external crates.",
+      "request_type": "code_generation",
+      "complexity": 2
+    },
+    {
+      "id": "co-cg-merge-1",
+      "query": "Write Rust code to merge two sorted arrays into one sorted vector.",
+      "context": "",
+      "request_type": "code_generation",
+      "complexity": 2
+    },
+    {
+      "id": "co-cg-nullcheck-0",
+      "query": "Add a null check before dereferencing user.profile.",
+      "context": "`const city = user.profile.address.city;`",
+      "request_type": "code_generation",
+      "complexity": 1
+    },
+    {
+      "id": "co-cg-nullcheck-1",
+      "query": "Guard against a missing profile before reading profile.address.",
+      "context": "Optional chaining is allowed.",
+      "request_type": "code_generation",
+      "complexity": 1
+    },
+    {
+      "id": "co-cg-small-edits-0",
+      "query": "Rename the variable `data` to `payload`.",
+      "context": "",
+      "request_type": "code_generation",
+      "complexity": 1
+    },
+    {
+      "id": "co-cg-small-edits-1",
+      "query": "Update the copyright year to 2026.",
+      "context": "",
+      "request_type": "code_generation",
+      "complexity": 1
+    },
+    {
+      "id": "co-cg-small-edits-2",
+      "query": "Change the log level from info to debug.",
+      "context": "",
+      "request_type": "code_generation",
+      "complexity": 1
+    },
+    {
+      "id": "co-cg-small-edits-3",
+      "query": "Add a trailing newline to this file.",
+      "context": "",
+      "request_type": "code_generation",
+      "complexity": 1
+    },
+    {
+      "id": "co-cg-small-edits-4",
+      "query": "Remove the unused import.",
+      "context": "",
+      "request_type": "code_generation",
+      "complexity": 1
+    },
+    {
+      "id": "co-cg-small-edits-5",
+      "query": "Bump the version in package.json to 2.1.0.",
+      "context": "",
+      "request_type": "code_generation",
+      "complexity": 1
+    },
+    {
+      "id": "co-cg-small-edits-6",
+      "query": "Sort the imports alphabetically.",
+      "context": "",
+      "request_type": "code_generation",
+      "complexity": 1
+    },
+    {
+      "id": "co-cu-branches-0",
+      "query": "Explain the difference between this branch and the else branch.",
+      "context": "```rust\nif x > 0 { y } else { -y }\n```",
+      "request_type": "code_understanding",
+      "complexity": 2
+    },
+    {
+      "id": "co-cu-branches-1",
+      "query": "What changes between the if and else paths here?",
+      "context": "Small conditional returning different signs.",
+      "request_type": "code_understanding",
+      "complexity": 2
+    },
+    {
+      "id": "co-cu-looponce-0",
+      "query": "Why does this loop only run once?",
+      "context": "```js\nfor (let i = 0; i < arr.length; i++) { arr.splice(i, 1); }\n```",
+      "request_type": "code_understanding",
+      "complexity": 2
+    },
+    {
+      "id": "co-cu-looponce-1",
+      "query": "This while loop exits immediately; explain why.",
+      "context": "Loop mutates the collection it iterates.",
+      "request_type": "code_understanding",
+      "complexity": 2
+    },
+    {
+      "id": "co-cu-terraform-0",
+      "query": "Can you tell me what this Terraform resource creates?",
+      "context": "resource \"aws_s3_bucket\" with versioning enabled.",
+      "request_type": "code_understanding",
+      "complexity": 2
+    },
+    {
+      "id": "co-cu-terraform-1",
+      "query": "Explain what this Terraform block provisions.",
+      "context": "S3 bucket + lifecycle rule.",
+      "request_type": "code_understanding",
+      "complexity": 2
+    },
+    {
+      "id": "te-td-api-versioning-0",
+      "query": "Propose an API design for versioned public endpoints.",
+      "context": "Breaking changes must be rollout-able over months.",
+      "request_type": "technical_design",
+      "complexity": 4
+    },
+    {
+      "id": "te-td-api-versioning-1",
+      "query": "Design a versioning scheme for a public REST API.",
+      "context": "Multiple client generations in the wild.",
+      "request_type": "technical_design",
+      "complexity": 4
+    },
+    {
+      "id": "te-td-bus-0",
+      "query": "What's the trade-off between Kafka and SQS for our event bus?",
+      "context": "Moderate volume, multiple consumer groups.",
+      "request_type": "technical_design",
+      "complexity": 3
+    },
+    {
+      "id": "te-td-bus-1",
+      "query": "Compare Kafka and SQS for event distribution here.",
+      "context": "Team has little ops capacity.",
+      "request_type": "technical_design",
+      "complexity": 3
+    },
+    {
+      "id": "te-td-pg-migration-0",
+      "query": "Recommend an approach for zero-downtime Postgres migrations.",
+      "context": "Large tables; online traffic.",
+      "request_type": "technical_design",
+      "complexity": 3
+    },
+    {
+      "id": "te-td-pg-migration-1",
+      "query": "How should we run schema changes without locking the table?",
+      "context": "Postgres 16, 500M-row table.",
+      "request_type": "technical_design",
+      "complexity": 3
+    },
+    {
+      "id": "an-ar-401-0",
+      "query": "Diagnose intermittent 401s and occasional permanent session loss after refresh. Reconstruct at least two distinct failure interleavings, identify which evidence supports each, then propose a concurrency-safe fix across two app instances.",
+      "context": "Provider invalidates R1 on exchange. Two instances read R1; X refreshes, Y gets invalid_grant. X stores A2/R2 but Redis serves A1 for 15m. Locks are process-local; clocks differ by 20ms.",
+      "request_type": "analytical_reasoning",
+      "complexity": 5
+    },
+    {
+      "id": "an-ar-401-1",
+      "query": "Users are logged out permanently after a token refresh under load. Work out the race conditions and propose an ordering-safe fix.",
+      "context": "Refresh tokens are single-use; two instances share a session row.",
+      "request_type": "analytical_reasoning",
+      "complexity": 5
+    },
+    {
+      "id": "an-ar-equation-0",
+      "query": "Solve for x: 3x + 7 = 22, and check the answer.",
+      "context": "",
+      "request_type": "analytical_reasoning",
+      "complexity": 2
+    },
+    {
+      "id": "an-ar-equation-1",
+      "query": "Find x in 2(x - 3) = 10 and verify by substitution.",
+      "context": "",
+      "request_type": "analytical_reasoning",
+      "complexity": 2
+    },
+    {
+      "id": "an-ar-p99-0",
+      "query": "Given these latencies, find the p99 and explain the tail.",
+      "context": "[12, 15, 14, 900, 13, 16, 15, 11, 14, 13] ms",
+      "request_type": "analytical_reasoning",
+      "complexity": 3
+    },
+    {
+      "id": "an-ar-p99-1",
+      "query": "Compute p95 from this sample and say what drives the tail.",
+      "context": "Mostly ~15ms with a few 900ms outliers.",
+      "request_type": "analytical_reasoning",
+      "complexity": 3
+    },
+    {
+      "id": "wr-wr-changelog-0",
+      "query": "Draft a changelog entry for the new export feature.",
+      "context": "Feature lets users export reports over 10k rows.",
+      "request_type": "writing",
+      "complexity": 2
+    },
+    {
+      "id": "wr-wr-changelog-1",
+      "query": "Write a short changelog note about paginated export.",
+      "context": "",
+      "request_type": "writing",
+      "complexity": 2
+    },
+    {
+      "id": "wr-wr-linkedin-0",
+      "query": "Write a LinkedIn post about our new open-source release.",
+      "context": "Keep it under 150 words; no hashtags.",
+      "request_type": "writing",
+      "complexity": 3
+    },
+    {
+      "id": "wr-wr-linkedin-1",
+      "query": "Draft a short social post announcing the OSS project.",
+      "context": "",
+      "request_type": "writing",
+      "complexity": 3
+    },
+    {
+      "id": "wr-wr-tone-0",
+      "query": "Make this paragraph sound less apologetic.",
+      "context": "\"Sorry to bother you again, I just wanted to maybe ask...\"",
+      "request_type": "writing",
+      "complexity": 1
+    },
+    {
+      "id": "wr-wr-tone-1",
+      "query": "Rewrite this sentence to be direct instead of over-apologetic.",
+      "context": "",
+      "request_type": "writing",
+      "complexity": 1
+    },
+    {
+      "id": "fa-fact-429-0",
+      "query": "What does HTTP status 429 mean?",
+      "context": "",
+      "request_type": "factual_lookup",
+      "complexity": 1
+    },
+    {
+      "id": "fa-fact-429-1",
+      "query": "Explain the meaning of a 429 response.",
+      "context": "",
+      "request_type": "factual_lookup",
+      "complexity": 1
+    },
+    {
+      "id": "fa-fact-defaults-0",
+      "query": "What is the default branch name in Git?",
+      "context": "",
+      "request_type": "factual_lookup",
+      "complexity": 1
+    },
+    {
+      "id": "fa-fact-defaults-1",
+      "query": "What is the default timeout for this HTTP client?",
+      "context": "Library docs say 30 seconds.",
+      "request_type": "factual_lookup",
+      "complexity": 1
+    },
+    {
+      "id": "fa-fact-pgport-0",
+      "query": "What is the default port for PostgreSQL?",
+      "context": "",
+      "request_type": "factual_lookup",
+      "complexity": 1
+    },
+    {
+      "id": "fa-fact-pgport-1",
+      "query": "Which port does Postgres listen on by default?",
+      "context": "",
+      "request_type": "factual_lookup",
+      "complexity": 1
+    },
+    {
+      "id": "fa-fact-relational-0",
+      "query": "Who invented the relational model?",
+      "context": "",
+      "request_type": "factual_lookup",
+      "complexity": 1
+    },
+    {
+      "id": "fa-fact-relational-1",
+      "query": "Who proposed the relational database model?",
+      "context": "",
+      "request_type": "factual_lookup",
+      "complexity": 1
+    },
+    {
+      "id": "ge-gen-ambiguous-0",
+      "query": "Can you take a look and let me know?",
+      "context": "No artifact attached.",
+      "request_type": "general",
+      "complexity": 2
+    },
+    {
+      "id": "ge-gen-ambiguous-1",
+      "query": "Thoughts?",
+      "context": "",
+      "request_type": "general",
+      "complexity": 2
+    },
+    {
+      "id": "ge-gen-ambiguous-2",
+      "query": "Make it production ready.",
+      "context": "Unclear which component or what standard.",
+      "request_type": "general",
+      "complexity": 2
+    },
+    {
+      "id": "ge-gen-joke-0",
+      "query": "Tell me a joke.",
+      "context": "",
+      "request_type": "general",
+      "complexity": 1
+    },
+    {
+      "id": "ge-gen-joke-1",
+      "query": "Say something funny.",
+      "context": "",
+      "request_type": "general",
+      "complexity": 1
+    },
+    {
+      "id": "ge-gen-outofscope-0",
+      "query": "Book me a flight to Delhi.",
+      "context": "",
+      "request_type": "general",
+      "complexity": 1
+    },
+    {
+      "id": "ge-gen-outofscope-1",
+      "query": "Order a pizza.",
+      "context": "",
+      "request_type": "general",
+      "complexity": 1
+    },
+    {
+      "id": "ge-gen-weather-0",
+      "query": "What's the weather in Bangalore?",
+      "context": "",
+      "request_type": "general",
+      "complexity": 1
+    },
+    {
+      "id": "ge-gen-weather-1",
+      "query": "Will it rain tomorrow in Pune?",
+      "context": "",
+      "request_type": "general",
+      "complexity": 1
+    }
+  ]
+}

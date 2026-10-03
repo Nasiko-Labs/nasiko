@@ -21,20 +21,36 @@ pub mod cache;
 pub mod catalog;
 pub mod cells;
 pub mod classifier;
+// Hosted (OpenAI-compatible) classifier backend.
+pub mod classifier_hosted;
+// Shared deterministic text featurization for the in-process linear models (the salience
+// gate's and the request classifier's). Private: an implementation detail of `routing`.
+mod features;
 // The salience classifier itself — feature engine, weight loading, scoring, banding.
 // Private to `routing`: only `salience.rs` (a sibling module) uses it directly, via
 // `ClassifierSalienceGate`.
 mod patterns;
 pub mod pricing_sync;
 pub mod registry;
+// Local (embedded linear model) classifier backend.
+pub mod request_classifier;
 pub mod salience;
 mod salience_classifier;
 
 pub use boundary::{BoundarySignals, Mode, Phase};
 pub use cache::{CachedDecision, DecisionCache, NoopCache, RedisCache};
 pub use cells::{CellStore, InMemoryCellStore, PgCellStore};
-pub use classifier::{RequestType, Tier, classify, classify_request_type, signal};
+pub use classifier::{
+    Classification, ClassifyError, ClassifyInput, RegexClassifier, RequestClassifier, RequestType,
+    ResilientClassifier, Tier, classify, classify_request_type, signal,
+};
+// Internal helpers `route_model` needs: the bandit tier draw that the classifier doesn't own.
+// (`classify_request_type` is re-exported above; it is the regex verdict used for the default
+// backend and the fallback.)
+use classifier::{DEFAULT_W_COST, DEFAULT_W_QUALITY, pick_model_thompson};
+pub use classifier_hosted::HostedClassifier;
 pub use registry::{PgTierRegistry, TierRegistry};
+pub use request_classifier::LocalRequestClassifier;
 pub use salience::{AllowAllGate, ClassifierSalienceGate, SalienceGate};
 
 /// Which precedence level produced a routing decision — emitted as a structured tag so we
@@ -109,9 +125,10 @@ pub struct RouteDecision {
 ///      [`RouteSource::SmallTalk`] and the cache is **not** written, so a greeting can never
 ///      pin the session. Only substantive turns fall through to Level 3.
 /// 3. **Classify** — only at a fireable boundary (`switch`/`cold_start` + `free_flowing`)
-///    with a query present and a registry entry for `(provider, tier)`. Loads the provider's
-///    learned cells, Thompson-samples a tier, and writes the decision (incl. request type)
-///    through to the cache so the next turn short-circuits at Level 2.
+///    with a query present and a registry entry for `(provider, tier)`. The pluggable
+///    [`RequestClassifier`] picks the request type (regex by default), then the provider's
+///    learned cells are loaded and Thompson-sampled into a tier; the decision (incl. request
+///    type) is written through to the cache so the next turn short-circuits at Level 2.
 /// 4. **Config** — the agent's configured model (`has_llm_config`).
 /// 5. **Default** — no `llm_config`: the resolver's `fallback_model`, which is the request's
 ///    own provider/model (passthrough) or the platform default as the last-resort safety net.
@@ -124,6 +141,7 @@ pub async fn route_model(
     registry: &dyn TierRegistry,
     cell_store: &dyn CellStore,
     gate: &dyn SalienceGate,
+    classifier: &dyn RequestClassifier,
     inputs: &RouteInputs<'_>,
 ) -> RouteDecision {
     tracing::info!(
@@ -250,9 +268,43 @@ pub async fn route_model(
             // (`ThreadRng`) is `!Send`, so it is scoped to drop before the next `.await` — the
             // handler future must stay `Send`.
             let learned = cell_store.load(inputs.provider).await;
-            let (tier, request_type) = {
+            // Request type comes from the pluggable classifier. The default `RegexClassifier`
+            // returns exactly `classify_request_type(query)`, so the tier draw below is
+            // unchanged when no model is configured. A backend error is handled defensively
+            // here as well as inside `ResilientClassifier`: on any `Err` we use the regex
+            // verdict, never a guessed one.
+            let request_type = match classifier
+                .classify(&ClassifyInput {
+                    query,
+                    context: None,
+                })
+                .await
+            {
+                Ok(classification) => classification.request_type,
+                Err(e) => {
+                    tracing::warn!(
+                        target: "nasiko::llm_router::routing",
+                        agent_id = %inputs.agent_id, %conv_id,
+                        backend = classifier.name(),
+                        error = %e,
+                        "route_model: LEVEL 3 — request classifier returned an error; using the regex classifier"
+                    );
+                    classify_request_type(query)
+                }
+            };
+            // Tier selection is deliberately still `pick_model_thompson` over the *same*
+            // request type: the classifier decides the kind of work, the bandit decides the
+            // tier. Splitting `classify()` this way keeps the RNG draw count and order
+            // identical to before, so the regex default is behaviour-preserving.
+            let tier = {
                 let mut rng = rand::rng();
-                classify(query, inputs.provider, &learned, &mut rng)
+                pick_model_thompson(
+                    &learned,
+                    request_type,
+                    DEFAULT_W_QUALITY,
+                    DEFAULT_W_COST,
+                    &mut rng,
+                )
             };
             // Per-config tier override takes priority over the global registry.
             let config_override = match tier {
@@ -546,6 +598,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &RegexClassifier,
             &inputs("anthropic", &s, Some("pinned-model")),
         )
         .await;
@@ -563,6 +616,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &RegexClassifier,
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -582,6 +636,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &RegexClassifier,
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -612,6 +667,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &DenyGate,
+            &RegexClassifier,
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -638,6 +694,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &DenyGate,
+            &RegexClassifier,
             &i,
         )
         .await;
@@ -658,6 +715,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &DenyGate,
+            &RegexClassifier,
             &i,
         )
         .await;
@@ -677,6 +735,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &DenyGate,
+            &RegexClassifier,
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -699,6 +758,7 @@ mod tests {
             &test_support::StubRegistry,
             &cells,
             &AllowAllGate,
+            &RegexClassifier,
             &i,
         )
         .await;
@@ -726,6 +786,7 @@ mod tests {
             &test_support::StubRegistry,
             &cells,
             &AllowAllGate,
+            &RegexClassifier,
             &i,
         )
         .await;
@@ -743,6 +804,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &RegexClassifier,
             &inputs("gemini", &s, None),
         )
         .await;
@@ -761,6 +823,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &RegexClassifier,
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -777,6 +840,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &RegexClassifier,
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -795,6 +859,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &RegexClassifier,
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -814,6 +879,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &RegexClassifier,
             &i,
         )
         .await;
@@ -919,5 +985,151 @@ mod tests {
         ]));
         assert!(!is_tool_continuation(&[msg("user"), msg("assistant")]));
         assert!(!is_tool_continuation(&[]));
+    }
+
+    // ── Level 3 pluggable classifier ────────────────────────────────────────
+
+    /// Counts calls and returns a scripted verdict (or error), so the tests can prove when
+    /// the classifier runs and that an error falls back instead of failing the request.
+    struct CountingClassifier {
+        calls: std::sync::atomic::AtomicUsize,
+        result: Result<RequestType, ()>,
+    }
+
+    impl CountingClassifier {
+        fn new(result: Result<RequestType, ()>) -> Self {
+            Self {
+                calls: std::sync::atomic::AtomicUsize::new(0),
+                result,
+            }
+        }
+        fn calls(&self) -> usize {
+            self.calls.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait]
+    impl RequestClassifier for CountingClassifier {
+        fn name(&self) -> &str {
+            "counting"
+        }
+        async fn classify(
+            &self,
+            _input: &ClassifyInput<'_>,
+        ) -> Result<Classification, ClassifyError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            match self.result {
+                Ok(request_type) => Ok(Classification {
+                    request_type,
+                    complexity: 2,
+                    confidence: 0.9,
+                }),
+                Err(()) => Err(ClassifyError::Inference("simulated failure".into())),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn boundary_uses_the_configured_classifier() {
+        let cache = FakeCache::empty();
+        let s = signals(Some("c1"), Phase::Switch, Mode::FreeFlowing);
+        let classifier = CountingClassifier::new(Ok(RequestType::Writing));
+        let d = route_model(
+            &cache,
+            &test_support::StubRegistry,
+            &InMemoryCellStore::new(),
+            &AllowAllGate,
+            &classifier,
+            &inputs("anthropic", &s, None),
+        )
+        .await;
+        assert_eq!(d.source, RouteSource::Classified);
+        assert_eq!(
+            classifier.calls(),
+            1,
+            "the classifier must run at a fireable boundary"
+        );
+    }
+
+    #[tokio::test]
+    async fn continue_turn_never_invokes_the_classifier() {
+        // Sticky invariant: a tool-loop `continue` turn with a cache miss must not classify.
+        let cache = FakeCache::empty();
+        let s = signals(Some("c1"), Phase::Continue, Mode::FreeFlowing);
+        let classifier = CountingClassifier::new(Ok(RequestType::Writing));
+        let d = route_model(
+            &cache,
+            &test_support::StubRegistry,
+            &InMemoryCellStore::new(),
+            &AllowAllGate,
+            &classifier,
+            &inputs("anthropic", &s, None),
+        )
+        .await;
+        assert_eq!(d.source, RouteSource::Config);
+        assert_eq!(
+            classifier.calls(),
+            0,
+            "a continuation turn must stay sticky"
+        );
+    }
+
+    #[tokio::test]
+    async fn pinned_flow_never_invokes_the_classifier() {
+        let cache = FakeCache::empty();
+        let s = signals(Some("c1"), Phase::Switch, Mode::PinnedFlow);
+        let classifier = CountingClassifier::new(Ok(RequestType::Writing));
+        let _ = route_model(
+            &cache,
+            &test_support::StubRegistry,
+            &InMemoryCellStore::new(),
+            &AllowAllGate,
+            &classifier,
+            &inputs("anthropic", &s, None),
+        )
+        .await;
+        assert_eq!(classifier.calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn classifier_error_falls_back_to_regex_and_still_routes() {
+        // A bare (unwrapped) failing backend must not break routing: route_model falls back to
+        // the regex verdict and still classifies at the boundary.
+        let cache = FakeCache::empty();
+        let s = signals(Some("c1"), Phase::Switch, Mode::FreeFlowing);
+        let classifier = CountingClassifier::new(Err(()));
+        let d = route_model(
+            &cache,
+            &test_support::StubRegistry,
+            &InMemoryCellStore::new(),
+            &AllowAllGate,
+            &classifier,
+            &inputs("anthropic", &s, None),
+        )
+        .await;
+        assert_eq!(classifier.calls(), 1);
+        assert_eq!(d.source, RouteSource::Classified);
+    }
+
+    #[tokio::test]
+    async fn regex_backend_is_the_behaviour_preserving_default() {
+        // With the default regex backend, Level 3 produces exactly the request type the old
+        // `classify_request_type` would have, so the tier draw is unchanged.
+        let cache = FakeCache::empty();
+        let s = signals(Some("c1"), Phase::Switch, Mode::FreeFlowing);
+        let mut i = inputs("anthropic", &s, None);
+        i.query = Some("write a python function that sorts a list");
+        let d = route_model(
+            &cache,
+            &test_support::StubRegistry,
+            &InMemoryCellStore::new(),
+            &AllowAllGate,
+            &RegexClassifier,
+            &i,
+        )
+        .await;
+        assert_eq!(d.source, RouteSource::Classified);
+        assert!(d.tier.is_some());
+        assert_eq!(cache.puts.lock().unwrap().len(), 1);
     }
 }

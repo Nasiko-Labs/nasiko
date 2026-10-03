@@ -42,14 +42,16 @@ pub mod routing;
 mod savings;
 pub mod usage;
 
-pub use config::GatewayConfig;
+pub use config::{ClassifierBackend, GatewayConfig};
 pub use error::GatewayError;
 pub use inbound::InboundFormat;
 pub use inject::{LlmInjectCtx, inject_llm_env};
 pub use resolver::{ConfigCache, ResolvedConfig};
 pub use routing::{
-    AllowAllGate, CellStore, ClassifierSalienceGate, DecisionCache, InMemoryCellStore, NoopCache,
-    PgCellStore, PgTierRegistry, RedisCache, SalienceGate, TierRegistry,
+    AllowAllGate, CellStore, Classification, ClassifierSalienceGate, ClassifyError, ClassifyInput,
+    DecisionCache, HostedClassifier, InMemoryCellStore, LocalRequestClassifier, NoopCache,
+    PgCellStore, PgTierRegistry, RedisCache, RegexClassifier, RequestClassifier,
+    ResilientClassifier, SalienceGate, TierRegistry,
 };
 
 /// Shared context for the LLM router.
@@ -82,6 +84,11 @@ pub struct LlmRouterCtx {
     /// classify + pin. [`ClassifierSalienceGate`] when `SALIENCE_GATE_ENABLED`; else [`AllowAllGate`]
     /// (classify at every boundary, i.e. behaviour before the gate existed).
     pub salience_gate: Arc<dyn SalienceGate>,
+    /// Level 3 request classifier — buckets a boundary query into a [`RequestType`](crate::routing::RequestType).
+    /// [`RegexClassifier`] by default (identical to pre-trait behaviour); a configured
+    /// [`LocalRequestClassifier`] or [`HostedClassifier`] is wrapped in a
+    /// [`ResilientClassifier`] that falls back to regex and counts it.
+    pub request_classifier: Arc<dyn RequestClassifier>,
     /// The platform's single cost engine. Every `token_usage` row is priced
     /// through this — the DB trigger that used to do it returned NULL for any
     /// model missing from `model_pricing`, which booked 92.8% of calls at $0.
@@ -127,6 +134,7 @@ impl LlmRouterCtx {
         let router_cache = build_router_cache(&cfg);
         let cfg = Arc::new(cfg);
         let salience_gate = build_salience_gate(&cfg);
+        let request_classifier = build_request_classifier(&cfg);
         let pricing = Arc::new(PricingEngine::new(db.clone()));
         Self {
             db,
@@ -137,6 +145,7 @@ impl LlmRouterCtx {
             tier_registry,
             cell_store,
             salience_gate,
+            request_classifier,
             pricing,
         }
     }
@@ -201,6 +210,100 @@ fn build_salience_gate(cfg: &Arc<GatewayConfig>) -> Arc<dyn SalienceGate> {
                 "llm-router: salience model failed to load; falling back to AllowAllGate (classify at every fireable boundary)"
             );
             Arc::new(AllowAllGate)
+        }
+    }
+}
+
+/// Build the Level 3 request classifier from config.
+///
+/// [`ClassifierBackend::Regex`] (the default) returns a bare [`RegexClassifier`] — no
+/// wrapper, no timeout, no counter — so behaviour is exactly as it was before the trait
+/// existed. `Local` and `Hosted` load their backend and wrap it in a [`ResilientClassifier`]
+/// (timeout + confidence floor + counted regex fallback).
+///
+/// A backend that cannot be constructed (a missing/corrupt weights file, an unset host
+/// endpoint) logs a warning and degrades to [`RegexClassifier`]: the same fail-safe
+/// direction as the salience gate, and the same outcome as leaving the flag off. This
+/// function is `pub` so the eval example and any host build the classifier through exactly
+/// the same path the router uses.
+pub fn build_request_classifier(cfg: &GatewayConfig) -> Arc<dyn RequestClassifier> {
+    let timeout = Duration::from_millis(cfg.classifier_timeout_ms);
+    match cfg.classifier_backend {
+        ClassifierBackend::Regex => {
+            tracing::info!(
+                target: "nasiko::llm_router::startup",
+                backend = "regex",
+                "llm-router: request classifier = RegexClassifier (default; Level 3 behaviour unchanged)"
+            );
+            Arc::new(RegexClassifier)
+        }
+        ClassifierBackend::Local => {
+            let loaded = if cfg.classifier_model_path.is_empty() {
+                LocalRequestClassifier::embedded()
+            } else {
+                LocalRequestClassifier::from_path(std::path::Path::new(&cfg.classifier_model_path))
+            };
+            match loaded {
+                Ok(model) => {
+                    tracing::info!(
+                        target: "nasiko::llm_router::startup",
+                        backend = "local",
+                        weights_source = if cfg.classifier_model_path.is_empty() { "embedded" } else { cfg.classifier_model_path.as_str() },
+                        model_trained_at = %model.trained_at,
+                        dataset_sha256 = %model.dataset_sha256,
+                        train_examples = model.train_examples,
+                        timeout_ms = cfg.classifier_timeout_ms,
+                        min_confidence = cfg.classifier_min_confidence,
+                        "llm-router: request classifier = LocalRequestClassifier (embedded linear model; regex fallback on error/timeout/low confidence)"
+                    );
+                    Arc::new(ResilientClassifier::new(
+                        Arc::new(model.classifier),
+                        timeout,
+                        cfg.classifier_min_confidence as f32,
+                    ))
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        target: "nasiko::llm_router::startup",
+                        error = %e,
+                        "llm-router: local request classifier failed to load; falling back to RegexClassifier (Level 3 behaves as before)"
+                    );
+                    Arc::new(RegexClassifier)
+                }
+            }
+        }
+        ClassifierBackend::Hosted => {
+            match HostedClassifier::new(
+                &cfg.classifier_endpoint,
+                &cfg.classifier_model,
+                &cfg.classifier_api_key,
+                timeout,
+            ) {
+                Ok(classifier) => {
+                    tracing::info!(
+                        target: "nasiko::llm_router::startup",
+                        backend = "hosted",
+                        endpoint = %cfg.classifier_endpoint,
+                        model = %cfg.classifier_model,
+                        timeout_ms = cfg.classifier_timeout_ms,
+                        min_confidence = cfg.classifier_min_confidence,
+                        "llm-router: request classifier = HostedClassifier (OpenAI-compatible endpoint; regex fallback on error/timeout/low confidence)"
+                    );
+                    Arc::new(ResilientClassifier::new(
+                        Arc::new(classifier),
+                        timeout,
+                        cfg.classifier_min_confidence as f32,
+                    ))
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        target: "nasiko::llm_router::startup",
+                        error = %e,
+                        "llm-router: hosted request classifier could not be built; falling back to RegexClassifier (Level 3 behaves as before)"
+                    );
+                    Arc::new(RegexClassifier)
+                }
+            }
         }
     }
 }
@@ -307,5 +410,90 @@ mod transport_tests {
         assert_eq!(response.status(), StatusCode::OK);
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap(), expected);
+    }
+}
+
+#[cfg(test)]
+mod classifier_wiring_tests {
+    use super::*;
+    use crate::routing::RequestClassifier;
+
+    #[tokio::test]
+    async fn default_config_selects_the_regex_backend() {
+        // The opt-in invariant: with no env configuration, Level 3 uses the bare regex
+        // classifier — no wrapper, no timeout, no fallback counter.
+        let classifier = build_request_classifier(&GatewayConfig::default());
+        assert_eq!(classifier.name(), "regex");
+        assert!(classifier.fallback_stats().is_none());
+        assert_eq!(
+            classifier
+                .classify(&ClassifyInput {
+                    query: "write a python function",
+                    context: None
+                })
+                .await
+                .unwrap()
+                .request_type,
+            crate::routing::RequestType::CodeGeneration
+        );
+    }
+
+    #[tokio::test]
+    async fn local_backend_wraps_the_embedded_model() {
+        let cfg = GatewayConfig {
+            classifier_backend: ClassifierBackend::Local,
+            ..Default::default()
+        };
+        let classifier = build_request_classifier(&cfg);
+        assert_eq!(classifier.name(), "local_linear");
+        // The resilient wrapper is present and reporting stats.
+        assert_eq!(classifier.fallback_stats(), Some((0, 0)));
+        let out = classifier
+            .classify(&ClassifyInput {
+                query: "Explain what this function does.",
+                context: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            out.request_type,
+            crate::routing::RequestType::CodeUnderstanding
+        );
+    }
+
+    #[tokio::test]
+    async fn local_backend_with_a_bad_model_path_degrades_to_regex() {
+        // Fail closed: an unloadable model must not break routing — it selects regex.
+        let cfg = GatewayConfig {
+            classifier_backend: ClassifierBackend::Local,
+            classifier_model_path: "/nonexistent/weights.json".into(),
+            ..Default::default()
+        };
+        let classifier = build_request_classifier(&cfg);
+        assert_eq!(classifier.name(), "regex");
+    }
+
+    #[tokio::test]
+    async fn hosted_backend_without_an_endpoint_degrades_to_regex() {
+        let cfg = GatewayConfig {
+            classifier_backend: ClassifierBackend::Hosted,
+            ..Default::default()
+        };
+        let classifier = build_request_classifier(&cfg);
+        assert_eq!(classifier.name(), "regex");
+    }
+
+    #[tokio::test]
+    async fn hosted_backend_builds_into_a_resilient_wrapper() {
+        let cfg = GatewayConfig {
+            classifier_backend: ClassifierBackend::Hosted,
+            classifier_endpoint: "https://example.test/v1/chat/completions".into(),
+            classifier_model: "test-model".into(),
+            classifier_timeout_ms: 250,
+            ..Default::default()
+        };
+        let classifier = build_request_classifier(&cfg);
+        assert_eq!(classifier.name(), "hosted");
+        assert_eq!(classifier.fallback_stats(), Some((0, 0)));
     }
 }

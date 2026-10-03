@@ -28,7 +28,12 @@
 //! it an entropy RNG; tests inject a seeded one.
 
 use std::collections::HashMap;
+use std::fmt;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
+use async_trait::async_trait;
 use rand::Rng;
 use rand_distr::{Beta, Distribution};
 
@@ -88,6 +93,210 @@ impl RequestType {
             "general" => RequestType::General,
             _ => return None,
         })
+    }
+}
+
+// --------------------------------------------------------------------------
+// Pluggable request classifier — the model-agnostic decision interface
+// --------------------------------------------------------------------------
+
+/// The text a classifier decides on: the latest user query plus optional context (surrounding
+/// transcript, attached snippet, system framing). Borrowed so a call allocates nothing on the
+/// hot path.
+#[derive(Debug, Clone, Copy)]
+pub struct ClassifyInput<'a> {
+    pub query: &'a str,
+    pub context: Option<&'a str>,
+}
+
+/// A classifier's verdict: the request type, a complexity band, and how confident the
+/// classifier is in the (request_type) label.
+///
+/// `confidence` is the classifier's own probability that `request_type` is correct, in
+/// `[0, 1]`. It is *not* a calibrated guarantee — a caller that cares (see
+/// [`ResilientClassifier`]) decides what to do with a low value.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Classification {
+    pub request_type: RequestType,
+    /// 1–5, per [`super::request_classifier`]'s rubric (mirrors the public eval rubric).
+    pub complexity: u8,
+    /// In `[0, 1]`.
+    pub confidence: f32,
+}
+
+/// Why a classifier could not produce a verdict. Every variant is recoverable: the router
+/// treats any `Err` as "use the regex fallback and count it", never as a request failure.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ClassifyError {
+    /// The model or endpoint is not configured or could not be loaded.
+    ModelUnavailable(String),
+    /// The model ran but failed (bad input, internal error).
+    Inference(String),
+    /// The backend exceeded its timeout.
+    Timeout,
+    /// The backend answered in a shape we can't trust (e.g. an unknown label).
+    InvalidResponse(String),
+    /// The model's top label did not clear the configured confidence floor. The caller is
+    /// expected to fall back rather than act on a guess.
+    LowConfidence(f32),
+}
+
+impl fmt::Display for ClassifyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ClassifyError::ModelUnavailable(m) => write!(f, "classifier model unavailable: {m}"),
+            ClassifyError::Inference(m) => write!(f, "classifier inference failed: {m}"),
+            ClassifyError::Timeout => write!(f, "classifier timed out"),
+            ClassifyError::InvalidResponse(m) => {
+                write!(f, "classifier returned an invalid response: {m}")
+            }
+            ClassifyError::LowConfidence(p) => {
+                write!(f, "classifier confidence {p:.3} below the floor")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ClassifyError {}
+
+/// A backend that maps `(query, context)` to a [`Classification`].
+///
+/// Implementations must be `Send + Sync` (the router holds one behind an `Arc` and calls it
+/// from request handlers) and deterministic for identical input and state. Async because a
+/// hosted backend makes a network call; a local backend simply doesn't await anything.
+#[async_trait]
+pub trait RequestClassifier: Send + Sync {
+    /// A short, stable identifier for logs and the eval output (e.g. `"regex"`,
+    /// `"local_linear"`, `"hosted"`).
+    fn name(&self) -> &str;
+
+    /// Classify one input. `Err` means "no trustworthy verdict" — never a guessed one.
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError>;
+
+    /// `(fallbacks, total_calls)` when this classifier tracks a fallback path; `None`
+    /// otherwise. Lets a caller report the fallback rate without downcasting. The default
+    /// is `None`, which is correct for backends with no fallback of their own.
+    fn fallback_stats(&self) -> Option<(u64, u64)> {
+        None
+    }
+}
+
+/// The out-of-the-box backend: wraps the existing keyword/regex
+/// [`classify_request_type`], so behaviour is unchanged unless an operator opts into another
+/// backend.
+///
+/// It has no complexity signal, so it reports [`REGEX_COMPLEXITY`] (the neutral midpoint) for
+/// every input, and [`REGEX_CONFIDENCE`] — deliberately low, because a regex vote count is a
+/// weak signal. The low confidence is also what makes the regex safe as the *fallback*: a
+/// caller that gates on confidence will never prefer regex over a confident model.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct RegexClassifier;
+
+/// Complexity the regex backend reports for every input (it has no complexity signal).
+pub const REGEX_COMPLEXITY: u8 = 3;
+/// Confidence the regex backend reports for every input (fixed, deliberately unconfident).
+pub const REGEX_CONFIDENCE: f32 = 0.5;
+
+#[async_trait]
+impl RequestClassifier for RegexClassifier {
+    fn name(&self) -> &str {
+        "regex"
+    }
+
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+        Ok(Classification {
+            request_type: classify_request_type(input.query),
+            complexity: REGEX_COMPLEXITY,
+            confidence: REGEX_CONFIDENCE,
+        })
+    }
+}
+
+/// Wraps a backend with a timeout, a confidence floor, and a regex fallback, counting every
+/// fallback so the rate is observable.
+///
+/// This is where "fail closed" lives for the classifier. Any of:
+/// - the backend returns `Err`,
+/// - it exceeds `timeout`,
+/// - it returns a verdict whose `confidence` is below `min_confidence`,
+///
+/// produces the regex verdict instead and increments the fallback counter. The wrapper itself
+/// never returns `Err` — the regex backend cannot fail — so downstream routing always has a
+/// usable answer.
+///
+/// When the configured backend *is* regex, the builder returns a bare [`RegexClassifier`]
+/// rather than wrapping it: a fallback-to-self would double-count every low-confidence regex
+/// verdict and add a pointless timeout around a synchronous computation.
+pub struct ResilientClassifier {
+    inner: Arc<dyn RequestClassifier>,
+    fallback: RegexClassifier,
+    timeout: Duration,
+    min_confidence: f32,
+    calls: AtomicU64,
+    fallbacks: AtomicU64,
+}
+
+impl ResilientClassifier {
+    /// Wrap `inner`. `min_confidence` is a floor in `[0, 1]`.
+    pub fn new(inner: Arc<dyn RequestClassifier>, timeout: Duration, min_confidence: f32) -> Self {
+        Self {
+            inner,
+            fallback: RegexClassifier,
+            timeout,
+            min_confidence,
+            calls: AtomicU64::new(0),
+            fallbacks: AtomicU64::new(0),
+        }
+    }
+
+    /// `(fallbacks, total_calls)` observed so far.
+    pub fn stats(&self) -> (u64, u64) {
+        (
+            self.fallbacks.load(Ordering::Relaxed),
+            self.calls.load(Ordering::Relaxed),
+        )
+    }
+
+    /// Fraction of calls that fell back to regex, or `0.0` before any call.
+    pub fn fallback_rate(&self) -> f64 {
+        let (fallbacks, calls) = self.stats();
+        if calls == 0 {
+            0.0
+        } else {
+            fallbacks as f64 / calls as f64
+        }
+    }
+}
+
+#[async_trait]
+impl RequestClassifier for ResilientClassifier {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn fallback_stats(&self) -> Option<(u64, u64)> {
+        Some(self.stats())
+    }
+
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        let error = match tokio::time::timeout(self.timeout, self.inner.classify(input)).await {
+            Ok(Ok(c)) if c.confidence >= self.min_confidence => return Ok(c),
+            Ok(Ok(c)) => ClassifyError::LowConfidence(c.confidence),
+            Ok(Err(e)) => e,
+            Err(_) => ClassifyError::Timeout,
+        };
+
+        self.fallbacks.fetch_add(1, Ordering::Relaxed);
+        tracing::warn!(
+            target: "nasiko::llm_router::classifier",
+            backend = self.inner.name(),
+            error = %error,
+            min_confidence = self.min_confidence,
+            fallback_rate = self.fallback_rate(),
+            "request classifier: falling back to the regex classifier"
+        );
+        self.fallback.classify(input).await
     }
 }
 
@@ -530,5 +739,160 @@ mod tests {
         );
         assert_eq!(rt, RequestType::CodeGeneration);
         assert!(matches!(tier, Tier::Tier1 | Tier::Tier2 | Tier::Tier3));
+    }
+}
+
+#[cfg(test)]
+mod backend_tests {
+    use super::*;
+
+    /// Returns a fixed verdict with a chosen confidence.
+    struct Fixed {
+        request_type: RequestType,
+        confidence: f32,
+    }
+
+    #[async_trait]
+    impl RequestClassifier for Fixed {
+        fn name(&self) -> &str {
+            "fixed"
+        }
+        async fn classify(
+            &self,
+            _input: &ClassifyInput<'_>,
+        ) -> Result<Classification, ClassifyError> {
+            Ok(Classification {
+                request_type: self.request_type,
+                complexity: 2,
+                confidence: self.confidence,
+            })
+        }
+    }
+
+    struct Failing;
+    #[async_trait]
+    impl RequestClassifier for Failing {
+        fn name(&self) -> &str {
+            "failing"
+        }
+        async fn classify(
+            &self,
+            _input: &ClassifyInput<'_>,
+        ) -> Result<Classification, ClassifyError> {
+            Err(ClassifyError::Inference("boom".into()))
+        }
+    }
+
+    struct Slow;
+    #[async_trait]
+    impl RequestClassifier for Slow {
+        fn name(&self) -> &str {
+            "slow"
+        }
+        async fn classify(
+            &self,
+            _input: &ClassifyInput<'_>,
+        ) -> Result<Classification, ClassifyError> {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            Ok(Classification {
+                request_type: RequestType::Writing,
+                complexity: 2,
+                confidence: 0.99,
+            })
+        }
+    }
+
+    fn input<'a>(query: &'a str) -> ClassifyInput<'a> {
+        ClassifyInput {
+            query,
+            context: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn regex_classifier_is_exactly_the_legacy_classifier() {
+        // The default backend must be behaviour-preserving: same request type, fixed
+        // complexity 3 and confidence 0.5.
+        for query in [
+            "write a python function that sorts a list",
+            "explain what this function does",
+            "what is the capital of France?",
+            "hello there",
+        ] {
+            let c = RegexClassifier.classify(&input(query)).await.unwrap();
+            assert_eq!(c.request_type, classify_request_type(query));
+            assert_eq!(c.complexity, REGEX_COMPLEXITY);
+            assert_eq!(c.confidence, REGEX_CONFIDENCE);
+        }
+    }
+
+    #[tokio::test]
+    async fn confident_model_verdict_passes_through_and_is_counted() {
+        let inner = Arc::new(Fixed {
+            request_type: RequestType::CodeUnderstanding,
+            confidence: 0.9,
+        });
+        let c = ResilientClassifier::new(inner, Duration::from_millis(50), 0.35);
+        let out = c.classify(&input("anything")).await.unwrap();
+        assert_eq!(out.request_type, RequestType::CodeUnderstanding);
+        assert_eq!(c.stats(), (0, 1));
+        assert_eq!(c.fallback_rate(), 0.0);
+    }
+
+    #[tokio::test]
+    async fn inference_error_falls_back_to_regex_and_counts() {
+        let c = ResilientClassifier::new(Arc::new(Failing), Duration::from_millis(50), 0.35);
+        let out = c.classify(&input("write a python function")).await.unwrap();
+        assert_eq!(out.request_type, RequestType::CodeGeneration); // regex verdict
+        assert_eq!(out.confidence, REGEX_CONFIDENCE);
+        assert_eq!(c.stats(), (1, 1));
+    }
+
+    #[tokio::test]
+    async fn timeout_falls_back_to_regex_and_counts() {
+        let c = ResilientClassifier::new(Arc::new(Slow), Duration::from_millis(1), 0.35);
+        let out = c.classify(&input("hello")).await.unwrap();
+        assert_eq!(out.request_type, classify_request_type("hello"));
+        assert_eq!(c.stats(), (1, 1));
+    }
+
+    #[tokio::test]
+    async fn low_confidence_falls_back_to_regex() {
+        let inner = Arc::new(Fixed {
+            request_type: RequestType::TechnicalDesign,
+            confidence: 0.10,
+        });
+        let c = ResilientClassifier::new(inner, Duration::from_millis(50), 0.35);
+        let out = c
+            .classify(&input("what is the capital of France?"))
+            .await
+            .unwrap();
+        assert_eq!(out.request_type, RequestType::FactualLookup); // regex, not the model's guess
+        assert_eq!(c.stats(), (1, 1));
+    }
+
+    #[tokio::test]
+    async fn fallback_rate_reflects_the_mix() {
+        let c = ResilientClassifier::new(Arc::new(Failing), Duration::from_millis(50), 0.35);
+        assert_eq!(c.fallback_rate(), 0.0, "no calls yet");
+        c.classify(&input("a")).await.unwrap();
+        c.classify(&input("b")).await.unwrap();
+        assert_eq!(c.stats(), (2, 2));
+        assert_eq!(c.fallback_rate(), 1.0);
+    }
+
+    #[tokio::test]
+    async fn classification_is_deterministic() {
+        let c = ResilientClassifier::new(
+            Arc::new(Fixed {
+                request_type: RequestType::Writing,
+                confidence: 0.8,
+            }),
+            Duration::from_millis(50),
+            0.35,
+        );
+        let a = c.classify(&input("draft an email")).await.unwrap();
+        let b = c.classify(&input("draft an email")).await.unwrap();
+        assert_eq!(a, b);
     }
 }
