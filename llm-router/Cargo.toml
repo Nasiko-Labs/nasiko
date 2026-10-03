@@ -67,3 +67,5 @@ base64 = { workspace = true }
 mockito = { workspace = true }
 tower = { workspace = true }
 zstd.workspace = true
+nasiko-tool-compact = { workspace = true }
+tiktoken-rs = { workspace = true }
