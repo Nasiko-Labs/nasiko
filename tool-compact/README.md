@@ -175,11 +175,11 @@ fields only need to be strings).
 
 | Model | Compact exact | Native exact | Compact valid-format | False calls |
 |---|---|---|---|---|
-| openai/gpt-4o-mini | **6/11** | 4/11 | 8/11 | 0 |
-| openai/gpt-4.1-mini | **7/11** | 6/11 | 11/11 | 0 |
-| google/gemini-2.5-flash | **7/11** | 3/11 | 11/11 | 0 |
+| openai/gpt-4o-mini | 5/11 | 6/11 | 8/11 | 0 |
+| openai/gpt-4.1-mini | 7/11 | 6/11 | 11/11 | 0 |
+| google/gemini-2.5-flash | 7/11 | 3/11 | 11/11 | 0 |
 
-Token reduction with these instructions: **32.2%** public, 30.4% extra (o200k_base, vs
+Token reduction with these instructions: **32.2%** public, 30.0% extra (o200k_base, vs
 compact-JSON native body).
 
 How the instruction line was chosen (gpt-4o-mini unless noted):
