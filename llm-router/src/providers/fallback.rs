@@ -318,6 +318,7 @@ pub(crate) fn build_attempts(primary: &ResolvedConfig, cfg: &GatewayConfig) -> V
             custom_endpoint,
             is_coding_agent: primary.is_coding_agent,
             compress_enabled: primary.compress_enabled,
+            compact_tools_enabled: primary.compact_tools_enabled,
         });
     }
     attempts
@@ -361,6 +362,7 @@ mod tests {
             custom_endpoint: None,
             is_coding_agent: false,
             compress_enabled: false,
+            compact_tools_enabled: false,
         }
     }
 
@@ -524,6 +526,24 @@ mod tests {
     }
 
     #[test]
+    fn every_attempt_carries_the_compact_tools_opt_in() {
+        let mut p = primary(
+            "anthropic",
+            vec!["anthropic/claude-haiku", "openai/gpt-4o-mini"],
+        );
+        p.compact_tools_enabled = true;
+        let attempts = build_attempts(&p, &cfg("sk-platform"));
+        assert_eq!(attempts.len(), 3);
+        assert!(attempts.iter().all(|a| a.compact_tools_enabled));
+        p.compact_tools_enabled = false;
+        assert!(
+            build_attempts(&p, &cfg("sk-platform"))
+                .iter()
+                .all(|a| !a.compact_tools_enabled)
+        );
+    }
+
+    #[test]
     fn cross_provider_fallback_skipped_without_platform_key() {
         let p = primary("anthropic", vec!["openai/gpt-4o-mini"]);
         let attempts = build_attempts(&p, &cfg("")); // no platform key
@@ -616,6 +636,7 @@ mod tests {
             custom_endpoint: None,
             is_coding_agent: false,
             compress_enabled: false,
+            compact_tools_enabled: false,
         };
         let req: ChatRequest =
             serde_json::from_value(json!({ "messages": [{ "role": "user", "content": "hi" }] }))
@@ -671,6 +692,7 @@ mod tests {
             custom_endpoint: None,
             is_coding_agent: false,
             compress_enabled: false,
+            compact_tools_enabled: false,
         };
         let req: EmbeddingsRequest =
             serde_json::from_value(json!({ "model": "x", "input": "hi" })).unwrap();
@@ -750,6 +772,7 @@ mod tests {
             custom_endpoint: None,
             is_coding_agent: false,
             compress_enabled: false,
+            compact_tools_enabled: false,
         };
         let req: ChatRequest =
             serde_json::from_value(json!({ "messages": [{ "role": "user", "content": "hi" }] }))
@@ -827,6 +850,7 @@ mod tests {
             custom_endpoint: None,
             is_coding_agent: false,
             compress_enabled: false,
+            compact_tools_enabled: false,
         };
         let req: ChatRequest = serde_json::from_value(json!({
             "temperature": 0.7,
@@ -877,6 +901,7 @@ mod tests {
             custom_endpoint: None,
             is_coding_agent: false,
             compress_enabled: false,
+            compact_tools_enabled: false,
         };
         let req: ChatRequest =
             serde_json::from_value(json!({ "messages": [{ "role": "user", "content": "hi" }] }))

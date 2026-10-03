@@ -230,6 +230,9 @@ export const MOCK_VARIANTS = [
   // /api/me/onboarding (bare 404), or a user who already picked a persona.
   'onboarding-absent',
   'onboarding-done',
+  // Agent settings: the operator has not enabled compact tool definitions (TOKEN_COMPACT_TOOLS unset),
+  // so the detail reports compact_tools_available: false and the switch is disabled.
+  'compact-tools-off',
   ...CHAT_PAGE_VARIANTS,
   ...ROUTER_PAGE_VARIANTS,
 ] as const
@@ -734,7 +737,8 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
       const a = findAgent(String(prm.id))
       // get_one: a bare 404 with an empty body for unknown and deleted agents.
       if (!a) return new HttpResponse(null, { status: 404 })
-      const body = detailBody(a, canManage(a))
+      // `compact-tools-off`: a server whose operator has not set TOKEN_COMPACT_TOOLS.
+      const body = detailBody(a, canManage(a), !hasVariant('compact-tools-off'))
       // Partial-live mode: the seed admin's agents are the live user's (as in the `owner=` list above).
       return envelope(
         personaLocked && liveOwner && a.owner_id === ADMIN_ID
@@ -750,6 +754,7 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
         description?: string
         metadata?: Record<string, unknown>
         compress_enabled?: boolean
+        compact_tools_enabled?: boolean
         minimal_code_enabled?: boolean
       }
       // COALESCE per field (catalog/routes.rs update); `metadata` replaces the whole column.
@@ -757,6 +762,8 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
       if (typeof body.description === 'string') a.description = body.description
       if (body.metadata && typeof body.metadata === 'object') a.metadata = body.metadata
       if (typeof body.compress_enabled === 'boolean') a.compress_enabled = body.compress_enabled
+      if (typeof body.compact_tools_enabled === 'boolean')
+        a.compact_tools_enabled = body.compact_tools_enabled
       if (typeof body.minimal_code_enabled === 'boolean')
         a.minimal_code_enabled = body.minimal_code_enabled
       a.updated_at = new Date(nowFn()).toISOString()

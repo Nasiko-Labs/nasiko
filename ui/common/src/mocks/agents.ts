@@ -47,6 +47,7 @@ export interface MockAgent {
   /** Written by `PUT /api/agents/{id}`; absent reads as the column defaults (`metadataOf`, false, false). */
   metadata?: Record<string, unknown>
   compress_enabled?: boolean
+  compact_tools_enabled?: boolean
   minimal_code_enabled?: boolean
 }
 
@@ -329,7 +330,7 @@ function metadataOf(a: MockAgent): Record<string, unknown> {
 const CODING = /^(cod|program|software|refactor|debug|bug|lint|compil)/i
 const mentionsCoding = (text: string) => text.split(/[^a-z0-9]+/i).some((w) => CODING.test(w))
 
-export function detailBody(a: MockAgent, canManage: boolean) {
+export function detailBody(a: MockAgent, canManage: boolean, compactToolsAvailable = true) {
   return {
     id: a.id,
     name: a.name,
@@ -359,6 +360,8 @@ export function detailBody(a: MockAgent, canManage: boolean) {
     is_coding_agent: a.harness !== null,
     coding_agent_integration_id: a.harness,
     compress_enabled: a.compress_enabled ?? false,
+    compact_tools_enabled: a.compact_tools_enabled ?? false,
+    compact_tools_available: compactToolsAvailable,
     minimal_code_enabled: a.minimal_code_enabled ?? false,
     has_coding_skills: a.skills.some((k) =>
       [k.id, k.name, ...(k.tags ?? [])].some((t) => mentionsCoding(t)),

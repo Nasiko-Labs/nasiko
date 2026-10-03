@@ -42,6 +42,7 @@ export const HARNESS_MOCK_VARIANTS = [
   'workflows-planner-fails',
   'onboarding-absent',
   'onboarding-done',
+  'compact-tools-off',
   // Chat page variants (v1c DX1); harmless here, listed so the lists stay equal.
   'no-agents',
   'many-chats',

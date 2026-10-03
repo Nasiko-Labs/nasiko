@@ -220,6 +220,13 @@ export const copy = {
   tokenOptimizationIntro:
     'One switch over the whole stack: shrinks large tool results (JSON, logs and diffs) before they reach the model, trims the reply instruction, and compresses what the Orchestrator keeps between turns. Errors and structure are kept, and a counted note is left wherever something was removed. Turning it off stops every part of it.',
   tokenOptimizationHint: 'Off by default. Your own messages are never changed.',
+  compactTools: 'Compact tool definitions',
+  compactToolsHint:
+    'Reduce the size of tool instructions sent to the model. Unsupported requests continue using their original format.',
+  compactToolsCoverage:
+    'Applies to OpenAI-style chat requests that are not streamed. Streamed requests, forced tool choices and JSON response formats keep their original format. Applies immediately.',
+  compactToolsUnavailable:
+    'Not enabled on this server. An operator can turn it on with TOKEN_COMPACT_TOOLS=true.',
   codingBehavior: 'Coding agent behavior',
   minimalCode: 'Minimal-code mode',
   minimalCodeHint:

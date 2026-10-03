@@ -1,0 +1,12 @@
+-- Per-agent opt-in for compact tool definitions (see `nasiko-tool-compact` and
+-- `llm-router/src/compact_tools.rs`).
+--
+-- A column on `agents`, like `compress_enabled` (0037), and for the same reason: the attached
+-- LLM config is a shared `llm_configs` row, and this switch changes the wire protocol between
+-- the router and the model for one agent's requests, so its blast radius has to be one agent.
+-- It is a separate column rather than a reuse of `compress_enabled`: that switch was consented
+-- to for payload compression, not for rewriting how tools are presented.
+--
+-- Default false: existing agents keep sending native tool definitions until an owner turns this
+-- on, and even then the fleet flag `TOKEN_COMPACT_TOOLS` has to be set by the operator.
+ALTER TABLE agents ADD COLUMN compact_tools_enabled BOOLEAN NOT NULL DEFAULT false;

@@ -447,6 +447,7 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         savings_factor_min_samples: 1_600,
         savings_factor_window_days: 30,
         react_compress_enabled: false,
+        compact_tools_enabled: false,
         react_compress_min_bytes: 2048,
         history_compress_enabled: false,
         history_compress_min_bytes: 2048,

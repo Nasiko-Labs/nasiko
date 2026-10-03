@@ -33,6 +33,10 @@ export interface AgentView {
   promptComments: boolean
   /** `compress_enabled`: token optimization across the stack. */
   compress: boolean
+  /** `compact_tools_enabled`: this agent's opt-in to compact tool definitions (its own column, not `compress`). */
+  compactTools: boolean
+  /** `compact_tools_available`: whether the operator enabled the feature on this server (`TOKEN_COMPACT_TOOLS`). */
+  compactToolsAvailable: boolean
   /** `minimal_code_enabled`, offered only when `has_coding_skills` (the server's own gate). */
   minimalCode: boolean
   codingSkills: boolean
@@ -125,6 +129,8 @@ export function normalizeDetail(d: AgentDetailResponse): AgentView {
     metadata,
     promptComments: record(metadata.features).prompt_comments === 'enabled',
     compress: bool(raw.compress_enabled),
+    compactTools: bool(raw.compact_tools_enabled),
+    compactToolsAvailable: bool(raw.compact_tools_available),
     minimalCode: bool(raw.minimal_code_enabled),
     codingSkills: bool(raw.has_coding_skills),
     createdAt: str(raw.created_at),

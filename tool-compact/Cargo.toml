@@ -1,0 +1,17 @@
+[package]
+name = "nasiko-tool-compact"
+edition.workspace = true
+version.workspace = true
+description = "Compact, reversible tool-definition notation and a fail-closed decoder for `<<call …>>` tool calls"
+
+[dependencies]
+# The crate's only data model is JSON: tool parameters arrive as JSON Schema values and call
+# arguments leave as JSON objects. `serde` is needed for the derive on the public types.
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# Independent oracle for the hand-written validator (tests/oracle.rs); pin and features live in
+# the workspace. Schemas here never contain `$ref`.
+jsonschema.workspace = true

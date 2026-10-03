@@ -21,6 +21,7 @@ members = [
     "hitl",
     "agent-proxy",
     "llm-router",
+    "tool-compact",
     "mcp-gateway",
     "cli",
     "github",
@@ -55,10 +56,20 @@ nasiko-server = { path = "server" }
 nasiko-coding-policy = { path = "coding-policy" }
 nasiko-oci = { path = "oci" }
 nasiko-llm-router = { path = "llm-router" }
+nasiko-tool-compact = { path = "tool-compact" }
 nasiko-bench-support = { path = "bench-support" }
 
 # ─── Testing ────────────────────────────────────────────────────────────────
 serial_test = "3"
+# Independent JSON Schema oracle for nasiko-tool-compact's hand-written validator. Default
+# features off: no file or network `$ref` resolution is compiled in.
+jsonschema = { version = "=0.58.5", default-features = false }
+
+# ─── Token measurement (llm-router compact-tools examples only) ─────────────
+# Exact pins because the measurement report quotes these versions. toon-format's default `cli`
+# feature would pull ratatui, crossterm 0.28 and an older tiktoken-rs into the lockfile.
+tiktoken-rs = { version = "=0.12.1", default-features = false }
+toon-format = { version = "=0.5.0", default-features = false }
 
 # ─── Async runtime & web ────────────────────────────────────────────────────
 tokio = { version = "1", features = ["full"] }

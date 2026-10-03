@@ -758,6 +758,7 @@ export interface AgentUpdate {
   description?: string
   metadata?: Record<string, unknown>
   compress_enabled?: boolean
+  compact_tools_enabled?: boolean
   minimal_code_enabled?: boolean
 }
 

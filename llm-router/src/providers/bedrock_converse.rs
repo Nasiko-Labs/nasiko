@@ -1190,6 +1190,7 @@ mod tests {
             custom_endpoint: None,
             is_coding_agent: false,
             compress_enabled: false,
+            compact_tools_enabled: false,
         }
     }
 

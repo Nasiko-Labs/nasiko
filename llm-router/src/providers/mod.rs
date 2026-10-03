@@ -272,6 +272,7 @@ mod tests {
     ) -> ResolvedConfig {
         ResolvedConfig {
             compress_enabled: false,
+            compact_tools_enabled: false,
             provider: provider.into(),
             model: "m".into(),
             litellm_model: format!("{provider}/m"),

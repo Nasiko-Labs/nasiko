@@ -1,0 +1,914 @@
+{
+ "schema_version": "compact-tools-eval-v1",
+ "purpose": "Development fixtures for the compact tool notation: tiny, nested, nullable, annotated, multilingual and unsupported schemas. Not held out.",
+ "tools": [
+  {
+   "type": "function",
+   "function": {
+    "name": "get_time",
+    "description": "Current UTC time.",
+    "parameters": {
+     "type": "object",
+     "properties": {},
+     "required": []
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "get_weather",
+    "description": "Current weather for a city.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "city": {
+       "type": "string",
+       "description": "City name"
+      },
+      "unit": {
+       "type": "string",
+       "enum": [
+        "celsius",
+        "fahrenheit"
+       ],
+       "description": "Temperature unit"
+      }
+     },
+     "required": [
+      "city"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "create_order",
+    "description": "Create a purchase order with one or more line items.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "customer_id": {
+       "type": "string",
+       "description": "Customer identifier"
+      },
+      "items": {
+       "type": "array",
+       "items": {
+        "type": "object",
+        "properties": {
+         "sku": {
+          "type": "string",
+          "description": "Stock keeping unit"
+         },
+         "quantity": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+         },
+         "note": {
+          "type": "string",
+          "description": "Optional free text",
+          "maxLength": 200
+         }
+        },
+        "required": [
+         "sku",
+         "quantity"
+        ],
+        "additionalProperties": false
+       },
+       "minItems": 1,
+       "description": "Line items"
+      },
+      "shipping": {
+       "type": "object",
+       "properties": {
+        "method": {
+         "type": "string",
+         "enum": [
+          "standard",
+          "express",
+          "pickup"
+         ]
+        },
+        "address": {
+         "type": "object",
+         "properties": {
+          "line1": {
+           "type": "string"
+          },
+          "city": {
+           "type": "string"
+          },
+          "country": {
+           "type": "string",
+           "minLength": 2,
+           "maxLength": 2,
+           "description": "ISO 3166-1 alpha-2"
+          }
+         },
+         "required": [
+          "line1",
+          "city",
+          "country"
+         ]
+        }
+       },
+       "required": [
+        "method"
+       ],
+       "description": "Where and how to ship"
+      },
+      "gift": {
+       "type": "boolean",
+       "description": "Wrap as a gift",
+       "default": false
+      }
+     },
+     "required": [
+      "customer_id",
+      "items"
+     ],
+     "additionalProperties": false
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "search_docs",
+    "description": "Search the knowledge base.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "query": {
+       "type": "string",
+       "minLength": 1,
+       "maxLength": 500,
+       "title": "Query",
+       "description": "Search terms"
+      },
+      "limit": {
+       "type": "integer",
+       "minimum": 1,
+       "maximum": 50,
+       "default": 10,
+       "title": "Limit"
+      },
+      "lang": {
+       "type": "string",
+       "enum": [
+        "en",
+        "de",
+        "ja",
+        "zh-Hans"
+       ],
+       "default": "en"
+      },
+      "since": {
+       "type": "string",
+       "format": "date",
+       "description": "Only documents updated on or after this date"
+      }
+     },
+     "required": [
+      "query"
+     ],
+     "title": "SearchDocsArgs"
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "translate",
+    "description": "テキストを翻訳します。Translate text between languages; the source language is detected automatically.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "text": {
+       "type": "string",
+       "description": "Text to translate — any script, including emoji 🎉"
+      },
+      "target": {
+       "type": "string",
+       "enum": [
+        "en",
+        "ja",
+        "hi",
+        "de"
+       ],
+       "description": "Target language"
+      },
+      "formal": {
+       "type": [
+        "boolean",
+        "null"
+       ],
+       "description": "Formal register, or null for the model's choice"
+      }
+     },
+     "required": [
+      "text",
+      "target"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "set_flag",
+    "description": "Set or clear a feature flag.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "name": {
+       "type": "string"
+      },
+      "value": {
+       "type": [
+        "boolean",
+        "null"
+       ],
+       "description": "null clears the flag"
+      },
+      "percentage": {
+       "type": [
+        "integer",
+        "null"
+       ],
+       "minimum": 0,
+       "maximum": 100
+      }
+     },
+     "required": [
+      "name",
+      "value"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "run_query",
+    "description": "Run a read-only SQL query.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "sql": {
+       "type": "string",
+       "pattern": "^SELECT",
+       "description": "Must start with SELECT"
+      },
+      "limit": {
+       "type": "integer",
+       "minimum": 1,
+       "maximum": 1000
+      }
+     },
+     "required": [
+      "sql"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "archive_project",
+    "description": "Archive a project (strict mode).",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "project_id": {
+       "type": "string"
+      },
+      "reason": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "project_id",
+      "reason"
+     ],
+     "additionalProperties": false
+    },
+    "strict": true
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "lookup_ref",
+    "description": "Look up by reference.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "item": {
+       "$ref": "#/$defs/Item"
+      }
+     },
+     "$defs": {
+      "Item": {
+       "type": "object"
+      }
+     }
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "choose",
+    "description": "Choose one of two shapes.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "value": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "integer"
+        }
+       ]
+      }
+     },
+     "required": [
+      "value"
+     ]
+    }
+   }
+  }
+ ],
+ "cases": [
+  {
+   "id": "dev-001",
+   "tools": [
+    "get_weather"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "What's the weather in Mumbai, in celsius?"
+    }
+   ],
+   "expected": [
+    {
+     "name": "get_weather",
+     "arguments": {
+      "city": "Mumbai",
+      "unit": "celsius"
+     }
+    }
+   ]
+  },
+  {
+   "id": "dev-002",
+   "tools": [
+    "get_weather",
+    "get_time",
+    "translate"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "Thanks, that's all for today!"
+    }
+   ],
+   "expected": []
+  },
+  {
+   "id": "dev-003",
+   "tools": [
+    "get_time",
+    "get_weather"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "What time is it right now (UTC)?"
+    }
+   ],
+   "expected": [
+    {
+     "name": "get_time",
+     "arguments": {}
+    }
+   ]
+  },
+  {
+   "id": "dev-004",
+   "tools": [
+    "create_order",
+    "search_docs",
+    "get_weather"
+   ],
+   "messages": [
+    {
+     "role": "system",
+     "content": "You are an order assistant for customer cust_42."
+    },
+    {
+     "role": "user",
+     "content": "Order 3 of SKU AB-12 and 1 of SKU ZZ-9, express shipping to 1 Main St, Pune, IN."
+    }
+   ],
+   "expected": [
+    {
+     "name": "create_order",
+     "arguments": {
+      "customer_id": "cust_42",
+      "items": [
+       {
+        "sku": "AB-12",
+        "quantity": 3
+       },
+       {
+        "sku": "ZZ-9",
+        "quantity": 1
+       }
+      ],
+      "shipping": {
+       "method": "express",
+       "address": {
+        "line1": "1 Main St",
+        "city": "Pune",
+        "country": "IN"
+       }
+      }
+     }
+    }
+   ],
+   "match": {
+    "free_text_fields": [
+     "customer_id"
+    ]
+   }
+  },
+  {
+   "id": "dev-005",
+   "tools": [
+    "search_docs",
+    "translate"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "Find the 5 most relevant German docs about 'Rechnung' updated since 2026-01-01, then translate the word 'Rechnung' to English."
+    }
+   ],
+   "expected": [
+    {
+     "name": "search_docs",
+     "arguments": {
+      "query": "Rechnung",
+      "limit": 5,
+      "lang": "de",
+      "since": "2026-01-01"
+     }
+    },
+    {
+     "name": "translate",
+     "arguments": {
+      "text": "Rechnung",
+      "target": "en"
+     }
+    }
+   ]
+  },
+  {
+   "id": "dev-006",
+   "tools": [
+    "translate"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "「おはようございます」をヒンディー語に翻訳してください。丁寧な言い方で。"
+    }
+   ],
+   "expected": [
+    {
+     "name": "translate",
+     "arguments": {
+      "text": "おはようございます",
+      "target": "hi",
+      "formal": true
+     }
+    }
+   ]
+  },
+  {
+   "id": "dev-007",
+   "tools": [
+    "set_flag",
+    "get_time"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "Clear the flag new_checkout entirely."
+    }
+   ],
+   "expected": [
+    {
+     "name": "set_flag",
+     "arguments": {
+      "name": "new_checkout",
+      "value": null
+     }
+    }
+   ]
+  },
+  {
+   "id": "dev-008",
+   "tools": [
+    "run_query",
+    "get_time"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "How many users signed up today? Use SQL."
+    }
+   ],
+   "expected": [
+    {
+     "name": "run_query",
+     "arguments": {
+      "sql": "SELECT count(*) FROM users WHERE created_at >= current_date",
+      "limit": 1
+     }
+    }
+   ],
+   "match": {
+    "free_text_fields": [
+     "sql"
+    ]
+   }
+  },
+  {
+   "id": "dev-009",
+   "tools": [
+    "archive_project"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "Archive project P-7, reason: completed."
+    }
+   ],
+   "expected": [
+    {
+     "name": "archive_project",
+     "arguments": {
+      "project_id": "P-7",
+      "reason": "completed"
+     }
+    }
+   ],
+   "match": {
+    "free_text_fields": [
+     "reason"
+    ]
+   }
+  },
+  {
+   "id": "dev-010",
+   "tools": [
+    "lookup_ref",
+    "choose"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "Choose 7."
+    }
+   ],
+   "expected": [
+    {
+     "name": "choose",
+     "arguments": {
+      "value": 7
+     }
+    }
+   ]
+  }
+ ],
+ "decoder_cases": [
+  {
+   "id": "ddc-001",
+   "note": "two calls with prose between",
+   "tools": [
+    "search_docs",
+    "translate"
+   ],
+   "chunks": [
+    "Searching first.\n<<call search_docs {\"query\":\"Rechnung\",\"lang\":\"de\",\"limit\":5}>>\nThen translating.\n<<call translate {\"text\":\"Rechnung\",\"target\":\"en\"}>>"
+   ],
+   "expected": {
+    "calls": [
+     {
+      "name": "search_docs",
+      "arguments": {
+       "query": "Rechnung",
+       "lang": "de",
+       "limit": 5
+      }
+     },
+     {
+      "name": "translate",
+      "arguments": {
+       "text": "Rechnung",
+       "target": "en"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "id": "ddc-002",
+   "note": "marker split one byte at a time",
+   "tools": [
+    "get_time"
+   ],
+   "chunks": [
+    "<",
+    "<",
+    "c",
+    "a",
+    "l",
+    "l",
+    " ",
+    "get_time",
+    " ",
+    "{",
+    "}",
+    ">",
+    ">"
+   ],
+   "expected": {
+    "calls": [
+     {
+      "name": "get_time",
+      "arguments": {}
+     }
+    ]
+   }
+  },
+  {
+   "id": "ddc-003",
+   "note": ">> and } inside a string, unicode split mid-codepoint boundary of chunks",
+   "tools": [
+    "translate"
+   ],
+   "chunks": [
+    "<<call translate {\"text\":\"a }>> b 🎉",
+    " c\",\"target\":\"ja\"}>>"
+   ],
+   "expected": {
+    "calls": [
+     {
+      "name": "translate",
+      "arguments": {
+       "text": "a }>> b 🎉 c",
+       "target": "ja"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "id": "ddc-004",
+   "note": "nested object and array arguments",
+   "tools": [
+    "create_order"
+   ],
+   "chunks": [
+    "<<call create_order {\"customer_id\":\"c1\",\"items\":[{\"sku\":\"A\",\"quantity\":2}],\"shipping\":{\"method\":\"pickup\"}}>>"
+   ],
+   "expected": {
+    "calls": [
+     {
+      "name": "create_order",
+      "arguments": {
+       "customer_id": "c1",
+       "items": [
+        {
+         "sku": "A",
+         "quantity": 2
+        }
+       ],
+       "shipping": {
+        "method": "pickup"
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "id": "ddc-005",
+   "note": "nested required missing (shipping.method)",
+   "tools": [
+    "create_order"
+   ],
+   "chunks": [
+    "<<call create_order {\"customer_id\":\"c1\",\"items\":[{\"sku\":\"A\",\"quantity\":2}],\"shipping\":{}}>>"
+   ],
+   "expected": {
+    "error": "invalid_arguments"
+   }
+  },
+  {
+   "id": "ddc-006",
+   "note": "forbidden extra property in a closed object",
+   "tools": [
+    "create_order"
+   ],
+   "chunks": [
+    "<<call create_order {\"customer_id\":\"c1\",\"items\":[{\"sku\":\"A\",\"quantity\":2,\"color\":\"red\"}]}>>"
+   ],
+   "expected": {
+    "error": "invalid_arguments"
+   }
+  },
+  {
+   "id": "ddc-007",
+   "note": "integer given as string",
+   "tools": [
+    "search_docs"
+   ],
+   "chunks": [
+    "<<call search_docs {\"query\":\"x\",\"limit\":\"5\"}>>"
+   ],
+   "expected": {
+    "error": "invalid_arguments"
+   }
+  },
+  {
+   "id": "ddc-008",
+   "note": "bound violated",
+   "tools": [
+    "search_docs"
+   ],
+   "chunks": [
+    "<<call search_docs {\"query\":\"x\",\"limit\":51}>>"
+   ],
+   "expected": {
+    "error": "invalid_arguments"
+   }
+  },
+  {
+   "id": "ddc-009",
+   "note": "null where not nullable",
+   "tools": [
+    "get_weather"
+   ],
+   "chunks": [
+    "<<call get_weather {\"city\":null}>>"
+   ],
+   "expected": {
+    "error": "invalid_arguments"
+   }
+  },
+  {
+   "id": "ddc-010",
+   "note": "null where nullable",
+   "tools": [
+    "set_flag"
+   ],
+   "chunks": [
+    "<<call set_flag {\"name\":\"f\",\"value\":null,\"percentage\":null}>>"
+   ],
+   "expected": {
+    "calls": [
+     {
+      "name": "set_flag",
+      "arguments": {
+       "name": "f",
+       "value": null,
+       "percentage": null
+      }
+     }
+    ]
+   }
+  },
+  {
+   "id": "ddc-011",
+   "note": "duplicate key",
+   "tools": [
+    "get_weather"
+   ],
+   "chunks": [
+    "<<call get_weather {\"city\":\"A\",\"city\":\"B\"}>>"
+   ],
+   "expected": {
+    "error": "malformed_call"
+   }
+  },
+  {
+   "id": "ddc-012",
+   "note": "unterminated call",
+   "tools": [
+    "get_weather"
+   ],
+   "chunks": [
+    "<<call get_weather {\"city\":\"A\""
+   ],
+   "expected": {
+    "error": "incomplete_call"
+   }
+  },
+  {
+   "id": "ddc-013",
+   "note": "valid then unknown: nothing released",
+   "tools": [
+    "get_weather"
+   ],
+   "chunks": [
+    "<<call get_weather {\"city\":\"A\"}>>\n<<call get_wether {\"city\":\"A\"}>>"
+   ],
+   "expected": {
+    "error": "unknown_tool"
+   }
+  },
+  {
+   "id": "ddc-014",
+   "note": "plain answer with a lone << in prose",
+   "tools": [
+    "get_weather"
+   ],
+   "chunks": [
+    "The temperature is << 20 degrees, no tool needed."
+   ],
+   "expected": {
+    "calls": []
+   }
+  },
+  {
+   "id": "ddc-015",
+   "note": "depth limit exceeded",
+   "tools": [
+    "get_time"
+   ],
+   "chunks": [
+    "<<call get_time {\"a\":[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]}>>"
+   ],
+   "expected": {
+    "error": "limit_exceeded"
+   }
+  },
+  {
+   "id": "ddc-016",
+   "note": "unsupported schema: decoder refuses the catalog",
+   "tools": [
+    "run_query"
+   ],
+   "chunks": [
+    "<<call run_query {\"sql\":\"DROP TABLE users\"}>>"
+   ],
+   "expected": {
+    "error": "unsupported_schema"
+   }
+  },
+  {
+   "id": "ddc-017",
+   "note": "no-argument tool called the way models copy its signature line; equals {}",
+   "tools": [
+    "get_time"
+   ],
+   "chunks": [
+    "<<call get_ti",
+    "me()>>"
+   ],
+   "expected": {
+    "calls": [
+     {
+      "name": "get_time",
+      "arguments": {}
+     }
+    ]
+   }
+  },
+  {
+   "id": "ddc-018",
+   "note": "the empty-argument spellings are still validated: required arguments missing",
+   "tools": [
+    "get_weather"
+   ],
+   "chunks": [
+    "<<call get_weather>>"
+   ],
+   "expected": {
+    "error": "invalid_arguments"
+   }
+  }
+ ]
+}

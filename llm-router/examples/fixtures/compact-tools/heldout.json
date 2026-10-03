@@ -1,0 +1,1699 @@
+{
+ "schema_version": "compact-tools-eval-v1",
+ "purpose": "Held-out fixtures: a 28-tool catalog with similar names, long descriptions, closed and open nested objects, nullable fields, multilingual text and three unsupported schemas. Different content from dev.json, not only different ids.",
+ "tools": [
+  {
+   "type": "function",
+   "function": {
+    "name": "get_user",
+    "description": "Get user. Retrieve the record from the primary store, honouring the caller's tenant scope and row-level permissions. Results are read-after-write consistent within a region; cross-region reads may lag by up to a few seconds. Pass `fields` to limit the returned columns, which lowers latency on wide rows. Deleted records are returned only when `include_deleted` is set, and then carry a `deleted_at` timestamp. This operation is idempotent and safe to retry; it never mutates state and emits an audit event of type READ. Rate limits apply per API key and are documented in the operations handbook under 'Read quotas'. ",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "id": {
+       "type": "string",
+       "description": "The user identifier"
+      },
+      "fields": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       },
+       "description": "Columns to return",
+       "maxItems": 20
+      },
+      "include_deleted": {
+       "type": "boolean",
+       "default": false
+      }
+     },
+     "required": [
+      "id"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "get_users",
+    "description": "Get users. ",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "id": {
+       "type": "string",
+       "description": "The users identifier"
+      },
+      "fields": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       },
+       "description": "Columns to return",
+       "maxItems": 20
+      },
+      "include_deleted": {
+       "type": "boolean",
+       "default": false
+      }
+     },
+     "required": [
+      "id"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "get_user_by_id",
+    "description": "Get user by id. ",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "id": {
+       "type": "string",
+       "description": "The user_by_id identifier"
+      },
+      "fields": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       },
+       "description": "Columns to return",
+       "maxItems": 20
+      },
+      "include_deleted": {
+       "type": "boolean",
+       "default": false
+      }
+     },
+     "required": [
+      "id"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "get_invoice",
+    "description": "Get invoice. Retrieve the record from the primary store, honouring the caller's tenant scope and row-level permissions. Results are read-after-write consistent within a region; cross-region reads may lag by up to a few seconds. Pass `fields` to limit the returned columns, which lowers latency on wide rows. Deleted records are returned only when `include_deleted` is set, and then carry a `deleted_at` timestamp. This operation is idempotent and safe to retry; it never mutates state and emits an audit event of type READ. Rate limits apply per API key and are documented in the operations handbook under 'Read quotas'. ",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "id": {
+       "type": "string",
+       "description": "The invoice identifier"
+      },
+      "fields": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       },
+       "description": "Columns to return",
+       "maxItems": 20
+      },
+      "include_deleted": {
+       "type": "boolean",
+       "default": false
+      }
+     },
+     "required": [
+      "id"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "get_invoices",
+    "description": "Get invoices. ",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "id": {
+       "type": "string",
+       "description": "The invoices identifier"
+      },
+      "fields": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       },
+       "description": "Columns to return",
+       "maxItems": 20
+      },
+      "include_deleted": {
+       "type": "boolean",
+       "default": false
+      }
+     },
+     "required": [
+      "id"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "get_invoice_by_number",
+    "description": "Get invoice by number. ",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "id": {
+       "type": "string",
+       "description": "The invoice_by_number identifier"
+      },
+      "fields": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       },
+       "description": "Columns to return",
+       "maxItems": 20
+      },
+      "include_deleted": {
+       "type": "boolean",
+       "default": false
+      }
+     },
+     "required": [
+      "id"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "get_payment",
+    "description": "Get payment. ",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "id": {
+       "type": "string",
+       "description": "The payment identifier"
+      },
+      "fields": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       },
+       "description": "Columns to return",
+       "maxItems": 20
+      },
+      "include_deleted": {
+       "type": "boolean",
+       "default": false
+      }
+     },
+     "required": [
+      "id"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "get_payments",
+    "description": "Get payments. ",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "id": {
+       "type": "string",
+       "description": "The payments identifier"
+      },
+      "fields": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       },
+       "description": "Columns to return",
+       "maxItems": 20
+      },
+      "include_deleted": {
+       "type": "boolean",
+       "default": false
+      }
+     },
+     "required": [
+      "id"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "get_subscription",
+    "description": "Get subscription. ",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "id": {
+       "type": "string",
+       "description": "The subscription identifier"
+      },
+      "fields": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       },
+       "description": "Columns to return",
+       "maxItems": 20
+      },
+      "include_deleted": {
+       "type": "boolean",
+       "default": false
+      }
+     },
+     "required": [
+      "id"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "get_subscriptions",
+    "description": "Get subscriptions. ",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "id": {
+       "type": "string",
+       "description": "The subscriptions identifier"
+      },
+      "fields": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       },
+       "description": "Columns to return",
+       "maxItems": 20
+      },
+      "include_deleted": {
+       "type": "boolean",
+       "default": false
+      }
+     },
+     "required": [
+      "id"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "get_plan",
+    "description": "Get plan. ",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "id": {
+       "type": "string",
+       "description": "The plan identifier"
+      },
+      "fields": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       },
+       "description": "Columns to return",
+       "maxItems": 20
+      },
+      "include_deleted": {
+       "type": "boolean",
+       "default": false
+      }
+     },
+     "required": [
+      "id"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "get_plans",
+    "description": "Get plans. ",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "id": {
+       "type": "string",
+       "description": "The plans identifier"
+      },
+      "fields": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       },
+       "description": "Columns to return",
+       "maxItems": 20
+      },
+      "include_deleted": {
+       "type": "boolean",
+       "default": false
+      }
+     },
+     "required": [
+      "id"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "list_users",
+    "description": "List users with paging and filters.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "page": {
+       "type": "integer",
+       "minimum": 1,
+       "default": 1
+      },
+      "page_size": {
+       "type": "integer",
+       "minimum": 1,
+       "maximum": 200,
+       "default": 50
+      },
+      "filter": {
+       "type": "object",
+       "properties": {
+        "status": {
+         "type": "string",
+         "enum": [
+          "active",
+          "past_due",
+          "cancelled",
+          "trial"
+         ]
+        },
+        "created_after": {
+         "type": "string",
+         "format": "date-time"
+        },
+        "tags": {
+         "type": "array",
+         "items": {
+          "type": "string"
+         },
+         "maxItems": 10
+        }
+       }
+      },
+      "sort": {
+       "type": "string",
+       "enum": [
+        "created_at",
+        "-created_at",
+        "amount",
+        "-amount"
+       ]
+      }
+     },
+     "required": []
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "update_user",
+    "description": "Update a user. Only the provided fields change.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "id": {
+       "type": "string"
+      },
+      "patch": {
+       "type": "object",
+       "properties": {
+        "email": {
+         "type": "string",
+         "format": "email"
+        },
+        "display_name": {
+         "type": "string",
+         "maxLength": 120
+        },
+        "amount_cents": {
+         "type": "integer",
+         "minimum": 0
+        },
+        "currency": {
+         "type": "string",
+         "minLength": 3,
+         "maxLength": 3
+        },
+        "metadata": {
+         "type": "object",
+         "properties": {},
+         "required": [],
+         "additionalProperties": true
+        }
+       },
+       "required": [],
+       "additionalProperties": false
+      },
+      "expected_version": {
+       "type": [
+        "integer",
+        "null"
+       ],
+       "description": "Optimistic concurrency token; null skips the check"
+      }
+     },
+     "required": [
+      "id",
+      "patch"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "delete_user",
+    "description": "Soft-delete a user.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "id": {
+       "type": "string"
+      },
+      "reason": {
+       "type": "string",
+       "maxLength": 500
+      }
+     },
+     "required": [
+      "id"
+     ],
+     "additionalProperties": false
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "list_invoices",
+    "description": "List invoices with paging and filters.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "page": {
+       "type": "integer",
+       "minimum": 1,
+       "default": 1
+      },
+      "page_size": {
+       "type": "integer",
+       "minimum": 1,
+       "maximum": 200,
+       "default": 50
+      },
+      "filter": {
+       "type": "object",
+       "properties": {
+        "status": {
+         "type": "string",
+         "enum": [
+          "active",
+          "past_due",
+          "cancelled",
+          "trial"
+         ]
+        },
+        "created_after": {
+         "type": "string",
+         "format": "date-time"
+        },
+        "tags": {
+         "type": "array",
+         "items": {
+          "type": "string"
+         },
+         "maxItems": 10
+        }
+       }
+      },
+      "sort": {
+       "type": "string",
+       "enum": [
+        "created_at",
+        "-created_at",
+        "amount",
+        "-amount"
+       ]
+      }
+     },
+     "required": []
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "update_invoice",
+    "description": "Update a invoice. Only the provided fields change.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "id": {
+       "type": "string"
+      },
+      "patch": {
+       "type": "object",
+       "properties": {
+        "email": {
+         "type": "string",
+         "format": "email"
+        },
+        "display_name": {
+         "type": "string",
+         "maxLength": 120
+        },
+        "amount_cents": {
+         "type": "integer",
+         "minimum": 0
+        },
+        "currency": {
+         "type": "string",
+         "minLength": 3,
+         "maxLength": 3
+        },
+        "metadata": {
+         "type": "object",
+         "properties": {},
+         "required": [],
+         "additionalProperties": true
+        }
+       },
+       "required": [],
+       "additionalProperties": false
+      },
+      "expected_version": {
+       "type": [
+        "integer",
+        "null"
+       ],
+       "description": "Optimistic concurrency token; null skips the check"
+      }
+     },
+     "required": [
+      "id",
+      "patch"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "delete_invoice",
+    "description": "Soft-delete a invoice.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "id": {
+       "type": "string"
+      },
+      "reason": {
+       "type": "string",
+       "maxLength": 500
+      }
+     },
+     "required": [
+      "id"
+     ],
+     "additionalProperties": false
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "list_subscriptions",
+    "description": "List subscriptions with paging and filters.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "page": {
+       "type": "integer",
+       "minimum": 1,
+       "default": 1
+      },
+      "page_size": {
+       "type": "integer",
+       "minimum": 1,
+       "maximum": 200,
+       "default": 50
+      },
+      "filter": {
+       "type": "object",
+       "properties": {
+        "status": {
+         "type": "string",
+         "enum": [
+          "active",
+          "past_due",
+          "cancelled",
+          "trial"
+         ]
+        },
+        "created_after": {
+         "type": "string",
+         "format": "date-time"
+        },
+        "tags": {
+         "type": "array",
+         "items": {
+          "type": "string"
+         },
+         "maxItems": 10
+        }
+       }
+      },
+      "sort": {
+       "type": "string",
+       "enum": [
+        "created_at",
+        "-created_at",
+        "amount",
+        "-amount"
+       ]
+      }
+     },
+     "required": []
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "update_subscription",
+    "description": "Update a subscription. Only the provided fields change.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "id": {
+       "type": "string"
+      },
+      "patch": {
+       "type": "object",
+       "properties": {
+        "email": {
+         "type": "string",
+         "format": "email"
+        },
+        "display_name": {
+         "type": "string",
+         "maxLength": 120
+        },
+        "amount_cents": {
+         "type": "integer",
+         "minimum": 0
+        },
+        "currency": {
+         "type": "string",
+         "minLength": 3,
+         "maxLength": 3
+        },
+        "metadata": {
+         "type": "object",
+         "properties": {},
+         "required": [],
+         "additionalProperties": true
+        }
+       },
+       "required": [],
+       "additionalProperties": false
+      },
+      "expected_version": {
+       "type": [
+        "integer",
+        "null"
+       ],
+       "description": "Optimistic concurrency token; null skips the check"
+      }
+     },
+     "required": [
+      "id",
+      "patch"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "delete_subscription",
+    "description": "Soft-delete a subscription.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "id": {
+       "type": "string"
+      },
+      "reason": {
+       "type": "string",
+       "maxLength": 500
+      }
+     },
+     "required": [
+      "id"
+     ],
+     "additionalProperties": false
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "refund_payment",
+    "description": "Refund a payment, fully or partially. Montant en centimes; devise identique au paiement d'origine.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "payment_id": {
+       "type": "string"
+      },
+      "amount_cents": {
+       "type": [
+        "integer",
+        "null"
+       ],
+       "minimum": 1,
+       "description": "null refunds the full amount"
+      },
+      "reason": {
+       "type": "string",
+       "enum": [
+        "duplicate",
+        "fraudulent",
+        "requested_by_customer"
+       ]
+      }
+     },
+     "required": [
+      "payment_id",
+      "reason"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "send_notification",
+    "description": "Notify a user through one channel.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "user_id": {
+       "type": "string"
+      },
+      "channel": {
+       "type": "string",
+       "enum": [
+        "email",
+        "sms",
+        "push"
+       ]
+      },
+      "title": {
+       "type": "string",
+       "maxLength": 100
+      },
+      "body": {
+       "type": "string",
+       "maxLength": 2000
+      },
+      "schedule_at": {
+       "type": [
+        "string",
+        "null"
+       ],
+       "format": "date-time"
+      }
+     },
+     "required": [
+      "user_id",
+      "channel",
+      "body"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "export_report",
+    "description": "Export a report asynchronously and return a job id.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "report": {
+       "type": "string",
+       "enum": [
+        "revenue",
+        "churn",
+        "aging",
+        "कर_रिपोर्ट"
+       ]
+      },
+      "period": {
+       "type": "object",
+       "properties": {
+        "from": {
+         "type": "string",
+         "format": "date"
+        },
+        "to": {
+         "type": "string",
+         "format": "date"
+        }
+       },
+       "required": [
+        "from",
+        "to"
+       ]
+      },
+      "format": {
+       "type": "string",
+       "enum": [
+        "csv",
+        "xlsx",
+        "json"
+       ],
+       "default": "csv"
+      },
+      "recipients": {
+       "type": "array",
+       "items": {
+        "type": "string",
+        "format": "email"
+       },
+       "minItems": 1,
+       "maxItems": 5
+      }
+     },
+     "required": [
+      "report",
+      "period"
+     ],
+     "title": "ExportReportArgs"
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "schedule_job",
+    "description": "Schedule a background job with a nested retry policy.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "name": {
+       "type": "string"
+      },
+      "cron": {
+       "type": "string",
+       "pattern": "^[0-9*/ ,-]+$",
+       "description": "Five-field cron"
+      },
+      "retry": {
+       "type": "object",
+       "properties": {
+        "attempts": {
+         "type": "integer",
+         "minimum": 0,
+         "maximum": 10
+        },
+        "backoff_seconds": {
+         "type": "number",
+         "exclusiveMinimum": 0
+        }
+       }
+      }
+     },
+     "required": [
+      "name",
+      "cron"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "evaluate_rule",
+    "description": "Evaluate a pricing rule expressed as a discriminated union.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "rule": {
+       "oneOf": [
+        {
+         "type": "object"
+        },
+        {
+         "type": "string"
+        }
+       ]
+      }
+     },
+     "required": [
+      "rule"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "tag_items",
+    "description": "Attach tags to many items at once.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "item_ids": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       },
+       "minItems": 1,
+       "maxItems": 100
+      },
+      "tags": {
+       "type": "array",
+       "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 32
+       },
+       "minItems": 1,
+       "uniqueItems": true
+      }
+     },
+     "required": [
+      "item_ids",
+      "tags"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "ping",
+    "description": "Health check.",
+    "parameters": {
+     "type": "object",
+     "properties": {}
+    }
+   }
+  }
+ ],
+ "cases": [
+  {
+   "id": "ho-001",
+   "tools": [
+    "get_user",
+    "get_users",
+    "get_user_by_id",
+    "get_invoice",
+    "get_invoices",
+    "get_invoice_by_number",
+    "get_payment",
+    "get_payments",
+    "get_subscription",
+    "get_subscriptions",
+    "get_plan",
+    "get_plans",
+    "list_users",
+    "update_user",
+    "delete_user",
+    "list_invoices",
+    "update_invoice",
+    "delete_invoice",
+    "list_subscriptions",
+    "update_subscription",
+    "delete_subscription",
+    "refund_payment",
+    "send_notification",
+    "export_report",
+    "ping"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "Show me user u_881, only email and display_name."
+    }
+   ],
+   "expected": [
+    {
+     "name": "get_user",
+     "arguments": {
+      "id": "u_881",
+      "fields": [
+       "email",
+       "display_name"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "ho-002",
+   "tools": [
+    "get_user",
+    "get_users",
+    "get_user_by_id",
+    "get_invoice",
+    "get_invoices",
+    "get_invoice_by_number",
+    "get_payment",
+    "get_payments",
+    "get_subscription",
+    "get_subscriptions",
+    "get_plan",
+    "get_plans",
+    "list_users",
+    "update_user",
+    "delete_user",
+    "list_invoices",
+    "update_invoice",
+    "delete_invoice",
+    "list_subscriptions",
+    "update_subscription",
+    "delete_subscription",
+    "refund_payment",
+    "send_notification",
+    "export_report",
+    "ping"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "List active subscriptions, newest first, 20 per page."
+    }
+   ],
+   "expected": [
+    {
+     "name": "list_subscriptions",
+     "arguments": {
+      "page_size": 20,
+      "filter": {
+       "status": "active"
+      },
+      "sort": "-created_at"
+     }
+    }
+   ]
+  },
+  {
+   "id": "ho-003",
+   "tools": [
+    "get_user",
+    "get_users",
+    "get_user_by_id",
+    "get_invoice",
+    "get_invoices",
+    "get_invoice_by_number",
+    "get_payment",
+    "get_payments",
+    "get_subscription",
+    "get_subscriptions",
+    "get_plan",
+    "get_plans",
+    "list_users",
+    "update_user",
+    "delete_user",
+    "list_invoices",
+    "update_invoice",
+    "delete_invoice",
+    "list_subscriptions",
+    "update_subscription",
+    "delete_subscription",
+    "refund_payment",
+    "send_notification",
+    "export_report",
+    "ping"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "Refund payment pay_9 in full because the customer asked, then notify user u_1 by email that the refund is on its way."
+    }
+   ],
+   "expected": [
+    {
+     "name": "refund_payment",
+     "arguments": {
+      "payment_id": "pay_9",
+      "amount_cents": null,
+      "reason": "requested_by_customer"
+     }
+    },
+    {
+     "name": "send_notification",
+     "arguments": {
+      "user_id": "u_1",
+      "channel": "email",
+      "body": "Your refund is on its way."
+     }
+    }
+   ],
+   "match": {
+    "free_text_fields": [
+     "body"
+    ]
+   }
+  },
+  {
+   "id": "ho-004",
+   "tools": [
+    "get_user",
+    "get_users",
+    "get_user_by_id",
+    "get_invoice",
+    "get_invoices",
+    "get_invoice_by_number",
+    "get_payment",
+    "get_payments",
+    "get_subscription",
+    "get_subscriptions",
+    "get_plan",
+    "get_plans",
+    "list_users",
+    "update_user",
+    "delete_user",
+    "list_invoices",
+    "update_invoice",
+    "delete_invoice",
+    "list_subscriptions",
+    "update_subscription",
+    "delete_subscription",
+    "refund_payment",
+    "send_notification",
+    "export_report",
+    "ping"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "Export the revenue report for September 2026 as xlsx to finance@example.com."
+    }
+   ],
+   "expected": [
+    {
+     "name": "export_report",
+     "arguments": {
+      "report": "revenue",
+      "period": {
+       "from": "2026-09-01",
+       "to": "2026-09-30"
+      },
+      "format": "xlsx",
+      "recipients": [
+       "finance@example.com"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "ho-005",
+   "tools": [
+    "get_user",
+    "get_users",
+    "get_user_by_id",
+    "get_invoice",
+    "get_invoices",
+    "get_invoice_by_number",
+    "get_payment",
+    "get_payments",
+    "get_subscription",
+    "get_subscriptions",
+    "get_plan",
+    "get_plans",
+    "list_users",
+    "update_user",
+    "delete_user",
+    "list_invoices",
+    "update_invoice",
+    "delete_invoice",
+    "list_subscriptions",
+    "update_subscription",
+    "delete_subscription",
+    "refund_payment",
+    "send_notification",
+    "export_report",
+    "ping"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "Change invoice inv_5's amount to 12050 cents, currency EUR, if it is still at version 3."
+    }
+   ],
+   "expected": [
+    {
+     "name": "update_invoice",
+     "arguments": {
+      "id": "inv_5",
+      "patch": {
+       "amount_cents": 12050,
+       "currency": "EUR"
+      },
+      "expected_version": 3
+     }
+    }
+   ]
+  },
+  {
+   "id": "ho-006",
+   "tools": [
+    "get_user",
+    "get_users",
+    "get_user_by_id",
+    "get_invoice",
+    "get_invoices",
+    "get_invoice_by_number",
+    "get_payment",
+    "get_payments",
+    "get_subscription",
+    "get_subscriptions",
+    "get_plan",
+    "get_plans",
+    "list_users",
+    "update_user",
+    "delete_user",
+    "list_invoices",
+    "update_invoice",
+    "delete_invoice",
+    "list_subscriptions",
+    "update_subscription",
+    "delete_subscription",
+    "refund_payment",
+    "send_notification",
+    "export_report",
+    "ping"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "Is the service up?"
+    }
+   ],
+   "expected": [
+    {
+     "name": "ping",
+     "arguments": {}
+    }
+   ]
+  },
+  {
+   "id": "ho-007",
+   "tools": [
+    "get_user",
+    "get_users",
+    "get_user_by_id",
+    "get_invoice",
+    "get_invoices",
+    "get_invoice_by_number",
+    "get_payment",
+    "get_payments",
+    "get_subscription",
+    "get_subscriptions",
+    "get_plan",
+    "get_plans",
+    "list_users",
+    "update_user",
+    "delete_user",
+    "list_invoices",
+    "update_invoice",
+    "delete_invoice",
+    "list_subscriptions",
+    "update_subscription",
+    "delete_subscription",
+    "refund_payment",
+    "send_notification",
+    "export_report",
+    "ping"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "What does 'past_due' mean for a subscription?"
+    }
+   ],
+   "expected": []
+  },
+  {
+   "id": "ho-008",
+   "tools": [
+    "get_user",
+    "get_users",
+    "get_user_by_id",
+    "get_invoice",
+    "get_invoices",
+    "get_invoice_by_number",
+    "get_payment",
+    "get_payments",
+    "get_subscription",
+    "get_subscriptions",
+    "get_plan",
+    "get_plans",
+    "list_users",
+    "update_user",
+    "delete_user",
+    "list_invoices",
+    "update_invoice",
+    "delete_invoice",
+    "list_subscriptions",
+    "update_subscription",
+    "delete_subscription",
+    "refund_payment",
+    "send_notification",
+    "export_report",
+    "ping"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "कर रिपोर्ट को 2026-04-01 से 2026-06-30 तक json में tax@example.com और cfo@example.com को भेजें।"
+    }
+   ],
+   "expected": [
+    {
+     "name": "export_report",
+     "arguments": {
+      "report": "कर_रिपोर्ट",
+      "period": {
+       "from": "2026-04-01",
+       "to": "2026-06-30"
+      },
+      "format": "json",
+      "recipients": [
+       "tax@example.com",
+       "cfo@example.com"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "ho-009",
+   "tools": [
+    "get_user",
+    "get_users",
+    "get_user_by_id"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "Fetch the users record with id grp_7 including deleted ones."
+    }
+   ],
+   "expected": [
+    {
+     "name": "get_users",
+     "arguments": {
+      "id": "grp_7",
+      "include_deleted": true
+     }
+    }
+   ]
+  },
+  {
+   "id": "ho-010",
+   "tools": [
+    "schedule_job",
+    "ping"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "Schedule nightly-cleanup at 0 3 * * * with 3 retries."
+    }
+   ],
+   "expected": [
+    {
+     "name": "schedule_job",
+     "arguments": {
+      "name": "nightly-cleanup",
+      "cron": "0 3 * * *",
+      "retry": {
+       "attempts": 3
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "ho-011",
+   "tools": [
+    "tag_items",
+    "ping"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "Tag items a and b with 'vip'."
+    }
+   ],
+   "expected": [
+    {
+     "name": "tag_items",
+     "arguments": {
+      "item_ids": [
+       "a",
+       "b"
+      ],
+      "tags": [
+       "vip"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "ho-012",
+   "tools": [
+    "delete_user",
+    "delete_invoice",
+    "delete_subscription"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "Delete subscription sub_3, reason: duplicate account."
+    }
+   ],
+   "expected": [
+    {
+     "name": "delete_subscription",
+     "arguments": {
+      "id": "sub_3",
+      "reason": "duplicate account"
+     }
+    }
+   ],
+   "match": {
+    "free_text_fields": [
+     "reason"
+    ]
+   }
+  }
+ ],
+ "decoder_cases": [
+  {
+   "id": "hdc-001",
+   "note": "long catalog, similar names, correct pick",
+   "tools": [
+    "get_user",
+    "get_users",
+    "get_user_by_id"
+   ],
+   "chunks": [
+    "<<call get_user_by_id {\"id\":\"u1\"}>>"
+   ],
+   "expected": {
+    "calls": [
+     {
+      "name": "get_user_by_id",
+      "arguments": {
+       "id": "u1"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "id": "hdc-002",
+   "note": "near-miss name",
+   "tools": [
+    "get_user",
+    "get_users"
+   ],
+   "chunks": [
+    "<<call get_usr {\"id\":\"u1\"}>>"
+   ],
+   "expected": {
+    "error": "unknown_tool"
+   }
+  },
+  {
+   "id": "hdc-003",
+   "note": "nullable integer with bound",
+   "tools": [
+    "refund_payment"
+   ],
+   "chunks": [
+    "<<call refund_payment {\"payment_id\":\"p\",\"amount_cents\":0,\"reason\":\"duplicate\"}>>"
+   ],
+   "expected": {
+    "error": "invalid_arguments"
+   }
+  },
+  {
+   "id": "hdc-004",
+   "note": "closed patch object rejects extras",
+   "tools": [
+    "update_user"
+   ],
+   "chunks": [
+    "<<call update_user {\"id\":\"u\",\"patch\":{\"email\":\"a@b.c\",\"role\":\"admin\"}}>>"
+   ],
+   "expected": {
+    "error": "invalid_arguments"
+   }
+  },
+  {
+   "id": "hdc-005",
+   "note": "open metadata object accepts extras",
+   "tools": [
+    "update_user"
+   ],
+   "chunks": [
+    "<<call update_user {\"id\":\"u\",\"patch\":{\"metadata\":{\"anything\":[1,2]}}}>>"
+   ],
+   "expected": {
+    "calls": [
+     {
+      "name": "update_user",
+      "arguments": {
+       "id": "u",
+       "patch": {
+        "metadata": {
+         "anything": [
+          1,
+          2
+         ]
+        }
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "id": "hdc-006",
+   "note": "three-way split inside the closing marker and a Devanagari enum member",
+   "tools": [
+    "export_report"
+   ],
+   "chunks": [
+    "<<call export_report {\"report\":\"कर_रिपोर्ट\",\"period\":{\"from\":\"2026-04-01\",\"to\":\"2026-06-30\"}}",
+    ">",
+    ">"
+   ],
+   "expected": {
+    "calls": [
+     {
+      "name": "export_report",
+      "arguments": {
+       "report": "कर_रिपोर्ट",
+       "period": {
+        "from": "2026-04-01",
+        "to": "2026-06-30"
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "id": "hdc-007",
+   "note": "minItems violated",
+   "tools": [
+    "export_report"
+   ],
+   "chunks": [
+    "<<call export_report {\"report\":\"churn\",\"period\":{\"from\":\"a\",\"to\":\"b\"},\"recipients\":[]}>>"
+   ],
+   "expected": {
+    "error": "invalid_arguments"
+   }
+  },
+  {
+   "id": "hdc-008",
+   "note": "trailing garbage after a call",
+   "tools": [
+    "ping"
+   ],
+   "chunks": [
+    "<<call ping {}>> and then <<call ping {"
+   ],
+   "expected": {
+    "error": "incomplete_call"
+   }
+  },
+  {
+   "id": "hdc-009",
+   "note": "too many calls",
+   "tools": [
+    "ping"
+   ],
+   "chunks": [
+    "<<call ping {}>><<call ping {}>><<call ping {}>><<call ping {}>><<call ping {}>><<call ping {}>><<call ping {}>><<call ping {}>><<call ping {}>><<call ping {}>><<call ping {}>><<call ping {}>><<call ping {}>><<call ping {}>><<call ping {}>><<call ping {}>><<call ping {}>><<call ping {}>><<call ping {}>><<call ping {}>><<call ping {}>><<call ping {}>><<call ping {}>><<call ping {}>><<call ping {}>><<call ping {}>><<call ping {}>><<call ping {}>><<call ping {}>><<call ping {}>><<call ping {}>><<call ping {}>><<call ping {}>>"
+   ],
+   "expected": {
+    "error": "limit_exceeded"
+   }
+  },
+  {
+   "id": "hdc-010",
+   "note": "uniqueItems is unsupported: catalog refused",
+   "tools": [
+    "tag_items"
+   ],
+   "chunks": [
+    "<<call tag_items {\"item_ids\":[\"a\"],\"tags\":[\"x\",\"x\"]}>>"
+   ],
+   "expected": {
+    "error": "unsupported_schema"
+   }
+  }
+ ]
+}

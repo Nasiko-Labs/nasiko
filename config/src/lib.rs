@@ -160,6 +160,12 @@ pub struct Config {
     pub react_compress_enabled: bool,
     /// Skip tool results below this size.
     pub react_compress_min_bytes: usize,
+    /// Whether the LLM router's compact tool definitions are enabled on this deployment
+    /// (`TOKEN_COMPACT_TOOLS`). The router reads the same variable for itself
+    /// (`nasiko_llm_router::GatewayConfig::compact_tools_enabled`); the server reads it only to
+    /// tell the UI whether an agent's switch can do anything (`compact_tools_available`). Parsed
+    /// with [`flag_from`], the router's rule, so the two never disagree.
+    pub compact_tools_enabled: bool,
     /// Structurally compress each history message before context selection
     /// (PRD §9 IP-4). On by default — gated by the agent's own switch, so this
     /// is a fleet kill switch rather than an enabler.
@@ -477,6 +483,10 @@ impl Config {
             savings_factor_min_samples: env_parse("SAVINGS_FACTOR_MIN_SAMPLES", 1_600),
             savings_factor_window_days: env_parse("SAVINGS_FACTOR_WINDOW_DAYS", 30),
             react_compress_enabled: env_parse("TOKEN_COMPRESS_TOOL_RESULTS", true),
+            compact_tools_enabled: flag_from(
+                std::env::var("TOKEN_COMPACT_TOOLS").ok().as_deref(),
+                false,
+            ),
             react_compress_min_bytes: env_parse("TOKEN_COMPRESS_TOOL_RESULTS_MIN_BYTES", 2048),
             history_compress_enabled: env_parse("TOKEN_COMPRESS_HISTORY", true),
             history_compress_min_bytes: env_parse("TOKEN_COMPRESS_HISTORY_MIN_BYTES", 2048),
@@ -732,5 +742,18 @@ mod storage_provider_tests {
         // A typo must not silently waive the S3 requirement — the provider
         // parser is what reports it.
         assert!(uses_s3_storage("azureblob"));
+    }
+}
+
+/// The LLM router's rule for its `TOKEN_*` boolean flags: `"true"`/`"1"` is on, `"false"`/`"0"`
+/// is off, anything else (including unset) is `default`. Kept identical to
+/// `nasiko_llm_router::config::flag_from`, which a server test asserts, because
+/// `TOKEN_COMPACT_TOOLS` is read by both and the UI must never report a feature unavailable
+/// while the router is applying it.
+pub fn flag_from(value: Option<&str>, default: bool) -> bool {
+    match value {
+        Some("true" | "1") => true,
+        Some("false" | "0") => false,
+        _ => default,
     }
 }

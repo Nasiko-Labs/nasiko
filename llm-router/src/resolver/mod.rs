@@ -106,6 +106,9 @@ pub struct ResolvedConfig {
     /// Whether this agent opted into payload compression. Per-agent by design: compression
     /// changes what the model sees, so its blast radius is one agent. See `crate::compress`.
     pub compress_enabled: bool,
+    /// Whether this agent opted into compact tool definitions (`agents.compact_tools_enabled`).
+    /// The fleet flag `GatewayConfig::compact_tools_enabled` is the gate; this is the choice.
+    pub compact_tools_enabled: bool,
 }
 
 /// What the incoming request itself asked for, used **only** when the agent has no
@@ -139,6 +142,8 @@ pub struct AgentConfigResult {
     pub is_coding_agent: bool,
     /// Per-agent opt-in for payload compression (`agents.compress_enabled`).
     pub compress_enabled: bool,
+    /// Per-agent opt-in for compact tool definitions (`agents.compact_tools_enabled`).
+    pub compact_tools_enabled: bool,
 }
 
 /// Where a custom endpoint lives and how it wants to be addressed. Carried on
@@ -286,17 +291,23 @@ impl RegistryStore for PgRegistry {
         // The agent's attached config id, owner, agent-level pin, and server-managed
         // coding-agent identity. Generic agent metadata must never grant this exemption.
         // A missing row → NoRegistryEntry upstream.
-        let agent: Option<(Option<Uuid>, Uuid, Option<String>, bool, bool)> = sqlx::query_as(
+        let agent: Option<(Option<Uuid>, Uuid, Option<String>, bool, bool, bool)> = sqlx::query_as(
             "SELECT llm_config_id, owner_id, pinned_model, \
-                    coding_agent_integration_id IS NOT NULL, \
-                    compress_enabled \
-             FROM agents WHERE id = $1",
+                        coding_agent_integration_id IS NOT NULL, \
+                        compress_enabled, compact_tools_enabled \
+                 FROM agents WHERE id = $1",
         )
         .bind(agent_id)
         .fetch_optional(&self.db)
         .await?;
-        let Some((config_id, owner_id, agent_pinned_model, is_coding_agent, compress_enabled)) =
-            agent
+        let Some((
+            config_id,
+            owner_id,
+            agent_pinned_model,
+            is_coding_agent,
+            compress_enabled,
+            compact_tools_enabled,
+        )) = agent
         else {
             return Ok(None);
         };
@@ -315,6 +326,7 @@ impl RegistryStore for PgRegistry {
             agent_pinned_model,
             is_coding_agent,
             compress_enabled,
+            compact_tools_enabled,
         }))
     }
 
@@ -410,6 +422,7 @@ pub async fn resolve(
     let agent_pinned_model = agent_result.agent_pinned_model;
     let is_coding_agent = agent_result.is_coding_agent;
     let compress_enabled = agent_result.compress_enabled;
+    let compact_tools_enabled = agent_result.compact_tools_enabled;
     let has_llm_config = llm_config.is_some();
     let secret_name = plan_secret_name(&llm_config);
 
@@ -477,6 +490,7 @@ pub async fn resolve(
         }),
         is_coding_agent,
         compress_enabled,
+        compact_tools_enabled,
     };
     tracing::info!(
         target: "nasiko::llm_router::resolver",
@@ -535,12 +549,14 @@ async fn load_llm_config(
             .as_ref()
             .and_then(|r| r.agent_pinned_model.clone());
         let compress_enabled = agent_row.as_ref().is_some_and(|r| r.compress_enabled);
+        let compact_tools_enabled = agent_row.as_ref().is_some_and(|r| r.compact_tools_enabled);
         let is_coding_agent = agent_row.is_some_and(|r| r.is_coding_agent);
         return Ok(AgentConfigResult {
             config: hit,
             agent_pinned_model: agent_pin,
             is_coding_agent,
             compress_enabled,
+            compact_tools_enabled,
         });
     }
     tracing::debug!(
@@ -747,6 +763,7 @@ mod tests {
         secret: Option<String>,
         agent_pinned_model: Option<String>,
         custom_provider: Option<CustomProvider>,
+        compact_tools_enabled: bool,
     }
 
     #[async_trait]
@@ -762,6 +779,7 @@ mod tests {
                 // handler level (handlers::chat), where they're actually consumed.
                 is_coding_agent: false,
                 compress_enabled: false,
+                compact_tools_enabled: self.compact_tools_enabled,
             }))
         }
         async fn fetch_user_secret(&self, _: Uuid, _: &str) -> Result<Option<String>, sqlx::Error> {
@@ -825,6 +843,7 @@ mod tests {
             secret: None,
             agent_pinned_model: None,
             custom_provider: None,
+            compact_tools_enabled: false,
         };
         let r = resolve(
             &store,
@@ -851,6 +870,7 @@ mod tests {
             secret: None,
             agent_pinned_model: None,
             custom_provider: None,
+            compact_tools_enabled: false,
         };
         let err = resolve(
             &store,
@@ -876,6 +896,7 @@ mod tests {
             secret: None,
             agent_pinned_model: None,
             custom_provider: None,
+            compact_tools_enabled: false,
         };
         let err = resolve(
             &store,
@@ -906,6 +927,7 @@ mod tests {
             secret: None,
             agent_pinned_model: None,
             custom_provider: None,
+            compact_tools_enabled: false,
         };
         let r = resolve(
             &store,
@@ -936,6 +958,7 @@ mod tests {
             secret: None,
             agent_pinned_model: None,
             custom_provider: None,
+            compact_tools_enabled: false,
         };
         let err = resolve(
             &store,
@@ -963,6 +986,7 @@ mod tests {
             secret: None,
             agent_pinned_model: None,
             custom_provider: None,
+            compact_tools_enabled: false,
         };
         let hint = RequestHint {
             provider: Some("openai"),
@@ -1003,6 +1027,7 @@ mod tests {
             secret: None,
             agent_pinned_model: None,
             custom_provider: None,
+            compact_tools_enabled: false,
         };
         let hint = RequestHint {
             provider: Some("anthropic"),
@@ -1027,6 +1052,7 @@ mod tests {
             secret: None,
             agent_pinned_model: None,
             custom_provider: None,
+            compact_tools_enabled: false,
         };
         let hint = RequestHint {
             provider: Some("openai"),
@@ -1057,6 +1083,7 @@ mod tests {
             secret: None,
             agent_pinned_model: None,
             custom_provider: None,
+            compact_tools_enabled: false,
         };
         let err = resolve(
             &store,
@@ -1098,6 +1125,7 @@ mod tests {
             secret: Some(ciphertext),
             agent_pinned_model: None,
             custom_provider: None,
+            compact_tools_enabled: false,
         };
         let r = resolve(
             &store,
@@ -1123,6 +1151,7 @@ mod tests {
             secret: None,
             agent_pinned_model: None,
             custom_provider: None,
+            compact_tools_enabled: false,
         };
         let r = resolve(
             &store,
@@ -1149,6 +1178,7 @@ mod tests {
             secret: None,
             agent_pinned_model: None,
             custom_provider: None,
+            compact_tools_enabled: false,
         };
         let r = resolve(
             &store,
@@ -1170,6 +1200,7 @@ mod tests {
             secret: None,
             agent_pinned_model: None,
             custom_provider: None,
+            compact_tools_enabled: false,
         };
         let r = resolve(
             &store,
@@ -1194,6 +1225,7 @@ mod tests {
             secret: None,
             agent_pinned_model: None,
             custom_provider: None,
+            compact_tools_enabled: false,
         };
         let cache = cache();
         let cfg = cfg("openai", "gpt-4o-mini", "platform-key");
@@ -1206,6 +1238,44 @@ mod tests {
         assert_eq!(a.model, b.model);
         // Config is cached, so the cache should have an entry.
         assert!(cache.get(Uuid::parse_str(AGENT).unwrap()).is_some());
+    }
+
+    #[tokio::test]
+    async fn compact_tools_opt_in_is_read_on_the_cache_miss_and_hit_paths() {
+        // The config row is cached; the agent's own flags are re-read from the store on every
+        // resolve. A hit that forgot to copy the flag would make the Settings switch look dead
+        // for the cache TTL.
+        let store = MockRegistry {
+            config: Some(Some(llm_config("openai", "gpt-4o-mini", None))),
+            compact_tools_enabled: true,
+            ..Default::default()
+        };
+        let cache = cache();
+        let cfg = cfg("openai", "gpt-4o-mini", "platform-key");
+        let miss = resolve(&store, &cache, &cfg, AGENT, OWNER, RequestHint::default())
+            .await
+            .unwrap();
+        assert!(miss.compact_tools_enabled);
+        assert!(cache.get(Uuid::parse_str(AGENT).unwrap()).is_some());
+        let hit = resolve(&store, &cache, &cfg, AGENT, OWNER, RequestHint::default())
+            .await
+            .unwrap();
+        assert!(hit.compact_tools_enabled);
+        let opted_out = MockRegistry {
+            config: Some(Some(llm_config("openai", "gpt-4o-mini", None))),
+            ..Default::default()
+        };
+        let r = resolve(
+            &opted_out,
+            &cache,
+            &cfg,
+            AGENT,
+            OWNER,
+            RequestHint::default(),
+        )
+        .await
+        .unwrap();
+        assert!(!r.compact_tools_enabled);
     }
 
     fn custom(base_url: &str, api_key: &str, default_model: &str) -> CustomProvider {
@@ -1230,6 +1300,7 @@ mod tests {
                 "sk-gateway",
                 "llama-3.1-8b",
             )),
+            compact_tools_enabled: false,
         };
         let r = resolve(
             &store,
@@ -1267,6 +1338,7 @@ mod tests {
                 "sk-gateway",
                 "llama-3.1-8b",
             )),
+            compact_tools_enabled: false,
         };
         let r = resolve(
             &store,
@@ -1291,6 +1363,7 @@ mod tests {
             secret: None,
             agent_pinned_model: None,
             custom_provider: None,
+            compact_tools_enabled: false,
         };
         let err = resolve(
             &store,

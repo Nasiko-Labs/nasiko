@@ -212,6 +212,7 @@ mod tests {
     fn resolved(model: &str, temperature: Option<f64>) -> ResolvedConfig {
         ResolvedConfig {
             compress_enabled: false,
+            compact_tools_enabled: false,
             provider: "openrouter".into(),
             model: model.into(),
             litellm_model: format!("openrouter/{model}"),

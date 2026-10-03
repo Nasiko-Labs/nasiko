@@ -299,6 +299,7 @@ async fn translated_call(
 
     let resolved = ResolvedConfig {
         compress_enabled: false,
+        compact_tools_enabled: false,
         provider: backend.label().to_string(),
         model: backend_model.to_string(),
         litellm_model: format!("{}/{}", backend.label(), backend_model),

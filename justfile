@@ -76,6 +76,7 @@ test-unit:
       -p nasiko \
       -p nasiko-auth \
       -p nasiko-compress \
+      -p nasiko-tool-compact \
       -p nasiko-secrets \
       -p nasiko-config \
       -p nasiko-utils \

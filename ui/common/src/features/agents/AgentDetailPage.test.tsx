@@ -787,3 +787,99 @@ describe('access on both editions (grants.ts)', () => {
     expect(screen.queryByRole('checkbox')).toBeNull()
   })
 })
+
+describe('compact tool definitions', () => {
+  const tokens = () => screen.findByRole('region', { name: 'Token optimization' })
+  const compactSwitch = (section: HTMLElement) =>
+    within(section).getByRole('switch', { name: 'Compact tool definitions' })
+  const compressSwitch = (section: HTMLElement) =>
+    within(section).getByRole('switch', { name: 'Token optimization' })
+
+  it('saves at once with a PUT that carries only that flag, and leaves the neighbouring switch alone', async () => {
+    const rec = recordRequestBodies()
+    renderApp(url(1, 'settings'))
+    const section = await tokens()
+    const compact = compactSwitch(section)
+    const compress = compressSwitch(section)
+    expect(compact).not.toBeChecked()
+    expect(compress).not.toBeChecked()
+    await userEvent.click(compact)
+    await waitFor(() => expect(compact).toBeChecked())
+    // The two switches have their own mutations: saving one never shows the other as moving.
+    expect(compress).not.toBeChecked()
+    await rec.flush()
+    rec.stop()
+    const puts = rec.requests.filter((r) => r.method === 'PUT')
+    expect(puts).toHaveLength(1)
+    expect(puts[0]?.body).toEqual({ compact_tools_enabled: true })
+  })
+
+  it('a saved choice is what a reload shows, and the row explains what it covers', async () => {
+    renderApp(url(1, 'settings'))
+    let section = await tokens()
+    await userEvent.click(compactSwitch(section))
+    await waitFor(() => expect(compactSwitch(section)).toBeChecked())
+    // Mock state outlives the render: a fresh mount reads the saved value back from the detail.
+    renderApp(url(1, 'settings'))
+    await waitFor(() => expect(screen.getAllByRole('region', { name: 'Token optimization' })).toHaveLength(2))
+    section = screen.getAllByRole('region', { name: 'Token optimization' })[1]!
+    expect(compactSwitch(section)).toBeChecked()
+    expect(compactSwitch(section)).toBeEnabled()
+    expect(
+      within(section).getByText(/Applies to OpenAI-style chat requests that are not streamed\./),
+    ).toBeInTheDocument()
+    expect(within(section).queryByText(/Not enabled on this server/)).toBeNull()
+  })
+
+  it('is disabled with a hint when the operator has not enabled it, and still shows the stored value', async () => {
+    renderApp(url(1, 'settings'))
+    const first = await tokens()
+    await userEvent.click(compactSwitch(first))
+    await waitFor(() => expect(compactSwitch(first)).toBeChecked())
+    // The operator turns the fleet flag off: the stored choice is served, the switch cannot act.
+    configureMocks({ variant: 'compact-tools-off' })
+    renderApp(url(1, 'settings'))
+    await waitFor(() => expect(screen.getAllByRole('region', { name: 'Token optimization' })).toHaveLength(2))
+    const section = screen.getAllByRole('region', { name: 'Token optimization' })[1]!
+    const compact = compactSwitch(section)
+    expect(compact).toBeDisabled()
+    expect(compact).toBeChecked()
+    expect(
+      within(section).getByText(
+        /Not enabled on this server\. An operator can turn it on with TOKEN_COMPACT_TOOLS=true\./,
+      ),
+    ).toBeInTheDocument()
+    // The sibling switch is unaffected by the operator gate.
+    expect(compressSwitch(section)).toBeEnabled()
+  })
+
+  it('a refused save shows the manage error and the switch returns to its saved value', async () => {
+    server.use(
+      http.put('/api/agents/:id', () => new HttpResponse('forbidden', { status: 403 })),
+    )
+    renderApp(url(1, 'settings'))
+    const section = await tokens()
+    const compact = compactSwitch(section)
+    await userEvent.click(compact)
+    expect(await within(section).findByRole('alert')).toBeInTheDocument()
+    await waitFor(() => expect(compact).not.toBeChecked())
+    expect(compact).toBeEnabled()
+  })
+
+  it('a failed save recovers the same way', async () => {
+    server.use(http.put('/api/agents/:id', () => new HttpResponse('boom', { status: 500 })))
+    renderApp(url(1, 'settings'))
+    const section = await tokens()
+    const compact = compactSwitch(section)
+    await userEvent.click(compact)
+    expect(await within(section).findByRole('alert')).toBeInTheDocument()
+    await waitFor(() => expect(compact).not.toBeChecked())
+  })
+
+  it('lives inside the beta-badged Token optimization region alongside the existing switch', async () => {
+    renderApp(url(1, 'settings'))
+    const section = await tokens()
+    expect(within(section).getAllByRole('switch')).toHaveLength(2)
+    expect(within(section).getByLabelText(/^Beta\./)).toBeInTheDocument()
+  })
+})

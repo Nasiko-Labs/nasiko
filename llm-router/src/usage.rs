@@ -73,8 +73,23 @@ pub struct UsageRecord {
 
 /// Spawn the usage write so it never blocks the response.
 pub fn spawn_log(db: PgPool, pricing: Arc<PricingEngine>, record: UsageRecord) {
+    spawn_log_with(db, pricing, record, None);
+}
+
+/// [`spawn_log`] plus the pre-serialized `metadata.compact_tools` block (`compact_tools.rs`).
+///
+/// The block travels beside the record rather than on it so `UsageRecord`'s shape stays what
+/// every other writer (and every test that builds one) already knows. `None` leaves the row
+/// byte-identical to one written through [`spawn_log`]; once the fleet flag is on the chat
+/// handler always passes `Some`, recording "applied" or "bypassed, and why" like the brevity block.
+pub fn spawn_log_with(
+    db: PgPool,
+    pricing: Arc<PricingEngine>,
+    record: UsageRecord,
+    compact_tools: Option<serde_json::Value>,
+) {
     tokio::spawn(async move {
-        if let Err(e) = log_usage(db, pricing.as_ref(), record).await {
+        if let Err(e) = log_usage_with(db, pricing.as_ref(), record, compact_tools).await {
             tracing::warn!(error = %e, "llm_usage write failed (swallowed)");
         }
     });
@@ -85,6 +100,16 @@ pub async fn log_usage(
     db: PgPool,
     pricing: &PricingEngine,
     record: UsageRecord,
+) -> Result<(), String> {
+    log_usage_with(db, pricing, record, None).await
+}
+
+/// [`log_usage`] with the optional `metadata.compact_tools` block (see [`spawn_log_with`]).
+pub async fn log_usage_with(
+    db: PgPool,
+    pricing: &PricingEngine,
+    record: UsageRecord,
+    compact_tools: Option<serde_json::Value>,
 ) -> Result<(), String> {
     // token_usage.user_id is NOT NULL + FK to users(id); without a valid owner we
     // cannot write a row, so skip (best-effort logging must never surface an error).
@@ -161,6 +186,7 @@ pub async fn log_usage(
         cache_creation: serde_json::to_value(&cache_details).unwrap_or(serde_json::Value::Null),
         compress: record.compress_metadata,
         brevity: record.brevity_metadata,
+        compact_tools,
     });
 
     sqlx::query(
@@ -281,6 +307,8 @@ struct MetadataInputs {
     compress: Option<serde_json::Value>,
     /// Always `Some` once the brevity layer exists: it records "skipped, and why" too.
     brevity: Option<serde_json::Value>,
+    /// `None` while compact tool definitions are off for the deployment.
+    compact_tools: Option<serde_json::Value>,
 }
 
 /// The row's `metadata` JSONB.
@@ -300,6 +328,9 @@ fn build_metadata(inputs: MetadataInputs) -> serde_json::Value {
     }
     if let Some(brevity) = inputs.brevity {
         metadata["brevity"] = brevity;
+    }
+    if let Some(compact_tools) = inputs.compact_tools {
+        metadata["compact_tools"] = compact_tools;
     }
     metadata
 }
@@ -321,6 +352,7 @@ mod tests {
             cache_creation: serde_json::Value::Null,
             compress: None,
             brevity: None,
+            compact_tools: None,
         }
     }
 
@@ -345,6 +377,18 @@ mod tests {
             })
         );
         assert_eq!(build_metadata(inputs(false))["key_source"], "user_secret");
+    }
+
+    #[test]
+    fn compact_tools_block_is_added_under_its_own_key_only_when_present() {
+        let block = serde_json::json!({ "applied": true, "bypass": null, "calls": 1 });
+        let metadata = build_metadata(MetadataInputs {
+            compact_tools: Some(block.clone()),
+            ..inputs(true)
+        });
+        assert_eq!(metadata["compact_tools"], block);
+        assert_eq!(metadata["key_source"], "platform");
+        assert!(build_metadata(inputs(true)).get("compact_tools").is_none());
     }
 
     #[test]

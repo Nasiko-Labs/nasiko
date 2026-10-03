@@ -926,7 +926,7 @@ fn error_code(error: &GatewayError) -> &'static str {
         GatewayError::NoRegistryEntry(_)
         | GatewayError::SecretNotFound(_, _)
         | GatewayError::NoApiKey => "routing_configuration_error",
-        GatewayError::Upstream(_) => "upstream_error",
+        GatewayError::Upstream(_) | GatewayError::CompactToolDecode(_) => "upstream_error",
         GatewayError::Internal(_) => "internal_error",
     }
 }
@@ -999,6 +999,7 @@ mod tests {
         ) -> Result<Option<AgentConfigResult>, sqlx::Error> {
             Ok(Some(AgentConfigResult {
                 compress_enabled: false,
+                compact_tools_enabled: false,
                 config: Some(LLMConfig {
                     provider: self.provider.into(),
                     model: Some("resolved-model".into()),
@@ -1490,6 +1491,7 @@ mod tests {
             custom_endpoint: None,
             is_coding_agent: false,
             compress_enabled: false,
+            compact_tools_enabled: false,
         };
         let routed = RoutedRequest {
             agent_id: AGENT.into(),
@@ -1878,6 +1880,7 @@ mod tests {
                 custom_endpoint: None,
                 is_coding_agent: false,
                 compress_enabled: false,
+                compact_tools_enabled: false,
             },
             flow_id: None,
             attribution_source: None,

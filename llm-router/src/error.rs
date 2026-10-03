@@ -44,6 +44,14 @@ pub enum GatewayError {
     // ── 502 — upstream provider (steps 4+) ──────────────────────────────────
     #[error("Upstream LLM error: {0}")]
     Upstream(String),
+    /// A compacted request's reply could not be turned into tool calls (`compact_tools.rs`).
+    /// The payload is one of the fixed decode kinds, never model text or prompt content. It
+    /// shares `Upstream`'s class because the client's request was valid and the model's output
+    /// was not; SDKs that retry 5xx will re-sample, which is the right remedy. The router itself
+    /// never retries a decode failure, and usage for the billed call is recorded before this
+    /// is returned.
+    #[error("compact tool call decoding failed: {0}")]
+    CompactToolDecode(String),
 
     // ── 500 — server-side fault (DB/crypto/config integrity) ─────────────────
     // Not client-actionable; the detail is logged but not exposed in the body.
@@ -65,7 +73,9 @@ impl GatewayError {
             | GatewayError::NoRegistryEntry(_)
             | GatewayError::SecretNotFound(_, _)
             | GatewayError::NoApiKey => StatusCode::BAD_REQUEST,
-            GatewayError::Upstream(_) => StatusCode::BAD_GATEWAY,
+            GatewayError::Upstream(_) | GatewayError::CompactToolDecode(_) => {
+                StatusCode::BAD_GATEWAY
+            }
             GatewayError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }

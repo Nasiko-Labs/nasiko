@@ -154,6 +154,24 @@ pub struct GatewayConfig {
     pub compress_recovery_min_bytes: usize,
     /// How long an original stays recoverable. Sized to outlive the flow that produced it.
     pub compress_recovery_ttl_secs: u64,
+
+    /// Replace native `tools` with a compact system-message catalog and decode `<<call …>>`
+    /// replies back into native tool calls (`compact_tools.rs`). OpenAI chat-completions
+    /// inbound, non-streaming requests only; everything else bypasses to the native path.
+    ///
+    /// Defaults **off**, unlike the other layers: this changes the wire protocol between the
+    /// router and the model rather than shrinking a payload, so it is opt-in per deployment
+    /// until adherence has been measured for the models in use. The per-agent `compress_enabled`
+    /// switch is deliberately NOT consulted: it was consented to for payload compression, not
+    /// for this; each agent opts in separately (`agents.compact_tools_enabled`).
+    pub compact_tools_enabled: bool,
+
+    /// When a compacted reply cannot be decoded into valid tool calls, re-send the original
+    /// (uncompacted) request once through the same provider chain instead of failing the call.
+    /// The failed attempt was billed and keeps its own usage row; the retry gets a second row.
+    /// The retried reply's native tool calls are still validated against the original schemas,
+    /// so no invalid call is released either way. Defaults on; `false` restores the strict 502.
+    pub compact_tools_native_retry: bool,
 }
 
 impl Default for GatewayConfig {
@@ -196,6 +214,8 @@ impl Default for GatewayConfig {
             compress_recovery_enabled: true,
             compress_recovery_min_bytes: 8192,
             compress_recovery_ttl_secs: 86_400,
+            compact_tools_enabled: false,
+            compact_tools_native_retry: true,
         }
     }
 }
@@ -308,6 +328,11 @@ impl GatewayConfig {
                 "TOKEN_COMPRESS_RECOVERY_TTL_SECS",
                 d.compress_recovery_ttl_secs as usize,
             ) as u64,
+            compact_tools_enabled: env_flag("TOKEN_COMPACT_TOOLS", d.compact_tools_enabled),
+            compact_tools_native_retry: env_flag(
+                "TOKEN_COMPACT_TOOLS_NATIVE_RETRY",
+                d.compact_tools_native_retry,
+            ),
         }
     }
 
@@ -345,7 +370,14 @@ fn env_parse_first<T: std::str::FromStr>(keys: &[&str], default: T) -> T {
 
 /// `"true"`/`"1"` is on, `"false"`/`"0"` is off, anything else (including unset) is `default`.
 fn env_flag(key: &str, default: bool) -> bool {
-    match std::env::var(key).ok().as_deref() {
+    flag_from(std::env::var(key).ok().as_deref(), default)
+}
+
+/// The parsing rule behind every `TOKEN_*` boolean flag, separated from the environment read
+/// so it can be tested without mutating the process environment and reused by any other
+/// component that must agree with the router on what "on" means.
+pub fn flag_from(value: Option<&str>, default: bool) -> bool {
+    match value {
         Some("true" | "1") => true,
         Some("false" | "0") => false,
         _ => default,
@@ -408,6 +440,26 @@ fn env_first(keys: &[&str], default: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compact_tools_defaults_off_and_follows_the_shared_flag_rule() {
+        assert!(!GatewayConfig::default().compact_tools_enabled);
+        // The retry only matters once the feature is on; it is the safer default there.
+        assert!(GatewayConfig::default().compact_tools_native_retry);
+        for (value, default, expected) in [
+            (Some("true"), false, true),
+            (Some("1"), false, true),
+            (Some("false"), true, false),
+            (Some("0"), true, false),
+            (Some("yes"), false, false),
+            (Some("TRUE"), false, false),
+            (Some(""), true, true),
+            (None, false, false),
+            (None, true, true),
+        ] {
+            assert_eq!(flag_from(value, default), expected, "{value:?} / {default}");
+        }
+    }
 
     #[test]
     fn platform_key_for_built_ins() {

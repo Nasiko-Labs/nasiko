@@ -270,21 +270,43 @@ function Features({ agent }: { agent: AgentView }) {
 }
 
 function TokenOptimization({ agent }: { agent: AgentView }) {
-  const update = useUpdateAgent(agent.id)
+  // One mutation per switch: `shown` reads the pending state, and a shared mutation would make
+  // the neighbouring switch flip while this one saves.
+  const compress = useUpdateAgent(agent.id)
+  const compact = useUpdateAgent(agent.id)
   return (
     <Section
       title={copy.tokenOptimization}
       subtitle={copy.tokenOptimizationIntro}
       action={<BetaBadge />}
     >
-      <FlagRow
-        label={copy.tokenOptimization}
-        hint={copy.tokenOptimizationHint}
-        checked={shown(agent.compress, update.isPending)}
-        disabled={update.isPending}
-        onCheckedChange={(on) => update.mutate({ compress_enabled: on })}
-      />
-      {update.isError ? <ErrorNote error={update.error} context="manage" /> : null}
+      <FieldGroup className="gap-5">
+        <FlagRow
+          label={copy.tokenOptimization}
+          hint={copy.tokenOptimizationHint}
+          checked={shown(agent.compress, compress.isPending)}
+          disabled={compress.isPending}
+          onCheckedChange={(on) => compress.mutate({ compress_enabled: on })}
+        />
+        <FlagRow
+          label={copy.compactTools}
+          hint={
+            <>
+              <span className="block">{copy.compactToolsHint}</span>
+              <span className="block">{copy.compactToolsCoverage}</span>
+              {/* Disabled, not hidden, so a stored "on" never reads as off and the feature stays discoverable. */}
+              {agent.compactToolsAvailable ? null : (
+                <span className="block">{copy.compactToolsUnavailable}</span>
+              )}
+            </>
+          }
+          checked={shown(agent.compactTools, compact.isPending)}
+          disabled={!agent.compactToolsAvailable || compact.isPending}
+          onCheckedChange={(on) => compact.mutate({ compact_tools_enabled: on })}
+        />
+      </FieldGroup>
+      {compress.isError ? <ErrorNote error={compress.error} context="manage" /> : null}
+      {compact.isError ? <ErrorNote error={compact.error} context="manage" /> : null}
     </Section>
   )
 }

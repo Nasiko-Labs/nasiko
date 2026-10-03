@@ -646,6 +646,14 @@ pub(crate) struct AgentDetailResponse {
     /// projection that omits it shows the switch off however the column reads.
     #[serde(rename = "compress_enabled")]
     compress_enabled: bool,
+    /// Per-agent compact-tool-definitions opt-in. Same projection trap as `compress_enabled`.
+    #[serde(rename = "compact_tools_enabled")]
+    compact_tools_enabled: bool,
+    /// Whether the operator enabled compact tool definitions on this server
+    /// (`TOKEN_COMPACT_TOOLS`). The Settings switch is disabled while this is false; the stored
+    /// choice above is still served so it never reads as off when it is on.
+    #[serde(rename = "compact_tools_available")]
+    compact_tools_available: bool,
     /// Drives the control plane's minimal-code ladder injection at A2A dispatch
     /// time (a2a_dispatch.rs). Same reasoning as compress_enabled above — omit
     /// it here and the Settings toggle shows off regardless of the real value.
@@ -790,6 +798,8 @@ pub(crate) async fn get_one(
         is_coding_agent: coding_agent_integration_id.is_some(),
         coding_agent_integration_id,
         compress_enabled: agent.compress_enabled,
+        compact_tools_enabled: agent.compact_tools_enabled,
+        compact_tools_available: state.config.compact_tools_enabled,
         minimal_code_enabled: agent.minimal_code_enabled,
         has_coding_skills: super::models::has_coding_skills(&agent.skills),
         metadata: agent.metadata.0.clone(),
@@ -1018,6 +1028,7 @@ pub(crate) async fn update(
              image = COALESCE($13, image),
              minimal_code_enabled = COALESCE($14, minimal_code_enabled),
              compress_enabled = COALESCE($15, compress_enabled),
+             compact_tools_enabled = COALESCE($16, compact_tools_enabled),
              updated_at = now()
            WHERE id = $1
            RETURNING *"#,
@@ -1041,6 +1052,7 @@ pub(crate) async fn update(
     .bind(&agent_image)
     .bind(body.minimal_code_enabled)
     .bind(body.compress_enabled)
+    .bind(body.compact_tools_enabled)
     .fetch_optional(&mut *tx)
     .await;
 

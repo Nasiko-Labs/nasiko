@@ -46,6 +46,11 @@ pub struct Agent {
     /// (`nasiko-compress`, applied in the LLM router). Off unless explicitly enabled.
     #[serde(default)]
     pub compress_enabled: bool,
+    /// Per-agent opt-in for compact tool definitions on this agent's LLM calls
+    /// (`nasiko-tool-compact`, applied in the LLM router behind `TOKEN_COMPACT_TOOLS`). Off
+    /// unless explicitly enabled; deliberately separate from `compress_enabled`.
+    #[serde(default)]
+    pub compact_tools_enabled: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -142,6 +147,8 @@ pub struct UpdateAgent {
     pub image: Option<String>,
     /// Toggle payload compression for this agent. Omitted = leave as-is.
     pub compress_enabled: Option<bool>,
+    /// Toggle compact tool definitions for this agent. Omitted = leave as-is.
+    pub compact_tools_enabled: Option<bool>,
     /// `true` (the default) for a real deploy — the new version becomes
     /// active, archiving whatever was running before. `nasiko push` sets
     /// this `false`: it only makes an image available in the registry
