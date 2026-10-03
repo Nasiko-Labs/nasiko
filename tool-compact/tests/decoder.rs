@@ -307,7 +307,7 @@ fn compact_prompt_is_smaller_than_native_tools() {
 #[test]
 fn unsupported_schemas_are_reported_not_approximated() {
     let mut t = tools();
-    t[0].parameters.as_mut().unwrap()["properties"]["duration_min"]["minimum"] = json!(1);
+    t[0].parameters.as_mut().unwrap()["properties"]["duration_min"]["multipleOf"] = json!(5);
     let err = encode_tools(&t).unwrap_err();
     assert_eq!(err.code(), "unsupported_schema");
     assert!(err.to_string().contains("create_calendar_event"));
@@ -354,11 +354,23 @@ fn tricky_schemas_survive_the_round_trip() {
         json!({"unexpected": 1}),
     ];
     for (n, schema) in schemas.iter().enumerate() {
-        let original = vec![ToolDef { name: format!("tool_{n}"), description: Some("Do (it).".into()), parameters: Some(schema.clone()) }];
+        let original = vec![ToolDef {
+            name: format!("tool_{n}"),
+            description: Some("Do (it).".into()),
+            parameters: Some(schema.clone()),
+        }];
         let compact = encode_tools(&original).unwrap();
         let normalized = decode_tools(&compact).unwrap();
-        assert_eq!(encode_tools(&normalized).unwrap(), compact, "not a fixed point:\n{}", compact.definitions);
-        assert_eq!(decode_tools(&encode_tools(&normalized).unwrap()).unwrap(), normalized);
+        assert_eq!(
+            encode_tools(&normalized).unwrap(),
+            compact,
+            "not a fixed point:\n{}",
+            compact.definitions
+        );
+        assert_eq!(
+            decode_tools(&encode_tools(&normalized).unwrap()).unwrap(),
+            normalized
+        );
         let mut accepted = 0;
         for args in &probes {
             let text = format!("<<call tool_{n} {args}>>");
@@ -374,12 +386,92 @@ fn tricky_schemas_survive_the_round_trip() {
         // The probes must exercise both outcomes where the schema allows it, or the comparison
         // proves nothing. Schema 1 takes no arguments; schema 2 takes any object.
         match n {
-            0 => assert!(accepted > 1 && accepted < probes.len() - 1, "{accepted} accepted"),
+            0 => assert!(
+                accepted > 1 && accepted < probes.len() - 1,
+                "{accepted} accepted"
+            ),
             1 => assert_eq!(accepted, 1),
             _ => assert_eq!(accepted, probes.len()),
         }
         if n == 0 {
             println!("{}", compact.definitions);
         }
+    }
+}
+
+/// Defaults and limits: shown compactly, preserved by `decode_tools`, limits enforced, and a
+/// default never filled into a call.
+#[test]
+fn defaults_and_limits() {
+    let tools: Vec<ToolDef> = serde_json::from_value(json!([{
+        "name": "search_flights",
+        "parameters": {"type": "object", "properties": {
+            "from": {"type": "string", "minLength": 3, "maxLength": 3},
+            "passengers": {"type": "integer", "minimum": 1, "maximum": 9, "default": 1},
+            "max_price": {"type": "number", "exclusiveMinimum": 0},
+            "cabin": {"enum": ["economy", "business"], "default": "economy"},
+            "tags": {"type": "array", "items": {"type": "string"}, "maxItems": 2, "default": []},
+            "note": {"type": ["string", "null"], "default": null},
+            "nonstop": {"type": "boolean", "default": false},
+            "api": {"const": "v2"}
+        }, "required": ["from"]}
+    }]))
+    .unwrap();
+    let compact = encode_tools(&tools).unwrap();
+    for part in [
+        "search_flights(from:string(3..3), ",
+        "passengers?:int(1..9)=1",
+        "max_price?:number(>0..)",
+        "cabin?:economy|business=economy",
+        "tags?:string[](..2)=[]",
+        "note?:string|null=null",
+        "nonstop?:bool=false",
+        "api?:v2",
+    ] {
+        assert!(
+            compact.definitions.contains(part),
+            "missing {part:?} in {}",
+            compact.definitions
+        );
+    }
+
+    let back = decode_tools(&compact).unwrap();
+    assert_eq!(encode_tools(&back).unwrap(), compact);
+    let p = &back[0].parameters.as_ref().unwrap()["properties"];
+    assert_eq!(
+        p["passengers"],
+        json!({"type": "integer", "minimum": 1, "maximum": 9, "default": 1})
+    );
+    assert_eq!(
+        p["max_price"],
+        json!({"type": "number", "exclusiveMinimum": 0})
+    );
+    assert_eq!(
+        p["from"],
+        json!({"type": "string", "minLength": 3, "maxLength": 3})
+    );
+    assert_eq!(p["note"]["default"], Value::Null);
+
+    let call = |args: Value| {
+        decode_calls(&format!("<<call search_flights {args}>>"), &tools).map_err(|e| e.code())
+    };
+    // A default is information for the model; the call stays exactly as written.
+    assert_eq!(
+        call(json!({"from": "BLR"})).unwrap()[0].arguments,
+        json!({"from": "BLR"}).as_object().unwrap().clone()
+    );
+    assert!(
+        call(json!({"from": "BLR", "passengers": 9, "max_price": 0.5, "tags": ["a", "b"]})).is_ok()
+    );
+    for bad in [
+        json!({"from": "BLRX"}),
+        json!({"from": "BL"}),
+        json!({"from": "BLR", "passengers": 0}),
+        json!({"from": "BLR", "passengers": 10}),
+        json!({"from": "BLR", "max_price": 0}),
+        json!({"from": "BLR", "tags": ["a", "b", "c"]}),
+        json!({"from": "BLR", "api": "v1"}),
+    ] {
+        assert_eq!(call(bad.clone()), Err("invalid_arguments"), "{bad}");
     }
 }

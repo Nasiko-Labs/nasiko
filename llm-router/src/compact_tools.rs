@@ -231,7 +231,7 @@ mod tests {
             (
                 cfg(true),
                 json!({"tools": [{"type": "function", "function": {"name": "f",
-                    "parameters": {"type": "object", "properties": {"n": {"type": "integer", "minimum": 1}}}}}]}),
+                    "parameters": {"type": "object", "properties": {"n": {"type": "integer", "multipleOf": 5}}}}}]}),
                 Skipped::Unsupported,
             ),
         ];

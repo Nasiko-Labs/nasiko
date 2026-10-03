@@ -1,8 +1,8 @@
 //! Argument validation against [`Ty`]. Strict and fail-closed: nothing is coerced or dropped.
 
-use serde_json::Value;
+use serde_json::{Number, Value};
 
-use crate::ty::{Format, Obj, Ty};
+use crate::ty::{Bounds, Format, Obj, Ty};
 
 /// Check `args` against a tool's parameters. The error names the offending path.
 pub(crate) fn check_args(params: &Obj, args: &Value) -> Result<(), String> {
@@ -79,6 +79,17 @@ fn check(ty: &Ty, v: &Value, path: &str) -> Result<(), String> {
         },
         Ty::Nullable(_) if v.is_null() => true,
         Ty::Nullable(inner) => return check(inner, v, path),
+        Ty::Bounded(inner, b) => {
+            check(inner, v, path)?;
+            // A value for numbers; a length for strings (in characters) and arrays.
+            let (measure, what) = match v {
+                Value::String(s) => (s.chars().count() as f64, "length "),
+                Value::Array(a) => (a.len() as f64, "length "),
+                _ => (v.as_f64().unwrap_or(f64::NAN), ""),
+            };
+            return check_bounds(measure, b)
+                .map_err(|limit| format!("{}: {what}{measure} is not {limit}", at()));
+        }
     };
     if ok {
         Ok(())
@@ -90,6 +101,29 @@ fn check(ty: &Ty, v: &Value, path: &str) -> Result<(), String> {
             kind(v)
         ))
     }
+}
+
+/// `Err` names the violated limit, e.g. `>= 1`.
+fn check_bounds(x: f64, b: &Bounds) -> Result<(), String> {
+    if let Some(min) = b.min.as_ref().and_then(Number::as_f64) {
+        let ok = if b.min_exclusive { x > min } else { x >= min };
+        if !ok {
+            return Err(format!(
+                "{} {min}",
+                if b.min_exclusive { ">" } else { ">=" }
+            ));
+        }
+    }
+    if let Some(max) = b.max.as_ref().and_then(Number::as_f64) {
+        let ok = if b.max_exclusive { x < max } else { x <= max };
+        if !ok {
+            return Err(format!(
+                "{} {max}",
+                if b.max_exclusive { "<" } else { "<=" }
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn join(path: &str, key: &str) -> String {
@@ -129,6 +163,7 @@ fn expected(ty: &Ty) -> &'static str {
         Ty::Arr(_) => "an array",
         Ty::Obj(_) => "an object",
         Ty::Nullable(_) => "a value or null",
+        Ty::Bounded(inner, _) => expected(inner),
     }
 }
 

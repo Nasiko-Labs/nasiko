@@ -1,9 +1,9 @@
 //! Compact definitions text → [`Ty`]. The inverse of `render`, used by `decode_tools`.
 
-use serde_json::Value;
+use serde_json::{Number, Value};
 
 use crate::render::KEYWORDS;
-use crate::ty::{Field, Format, Obj, Ty, is_valid_name};
+use crate::ty::{Bounds, Field, Format, Obj, Ty, is_valid_name};
 
 pub(crate) struct ParsedTool {
     pub name: String,
@@ -113,6 +113,11 @@ impl<'a> Parser<'a> {
         let required = !self.eat("?");
         self.expect(":")?;
         let ty = self.ty()?;
+        let default = if self.eat("=") {
+            Some(self.default_value()?)
+        } else {
+            None
+        };
         let desc = if self.rest().starts_with(" (") || self.rest().starts_with(" \"") {
             self.i += 1;
             Some(self.desc()?)
@@ -124,6 +129,33 @@ impl<'a> Parser<'a> {
             ty,
             required,
             desc,
+            default,
+        })
+    }
+
+    /// A default: JSON (`10`, `"a b"`, `[1]`, `{"k":1}`, `true`, `null`) or a bare word.
+    fn default_value(&mut self) -> Result<Value, String> {
+        let rest = self.rest();
+        if rest.starts_with(['[', '{']) {
+            // Arrays and objects are self-delimiting, so the stream reader stops exactly at
+            // their end.
+            let mut values = serde_json::Deserializer::from_str(rest).into_iter::<Value>();
+            return match values.next() {
+                Some(Ok(v)) => {
+                    self.i += values.byte_offset();
+                    Ok(v)
+                }
+                _ => Err(format!("invalid default at `{rest}`")),
+            };
+        }
+        if rest.starts_with(|c: char| c == '"' || c == '-' || c.is_ascii_digit()) {
+            return self.literal();
+        }
+        Ok(match self.name()? {
+            "true" => Value::Bool(true),
+            "false" => Value::Bool(false),
+            "null" => Value::Null,
+            word => Value::String(word.to_string()),
         })
     }
 
@@ -181,17 +213,83 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// `atom ("[]")*`
+    /// `atom [bounds] ("[]" [bounds])*`
     fn alt(&mut self) -> Result<Alt, String> {
-        let mut alt = self.atom()?;
+        let atom = self.atom()?;
+        let mut alt = self.maybe_bounds(atom)?;
         while self.eat("[]") {
             let inner = match alt {
                 Alt::Lit(v) => Ty::Enum(vec![v]),
                 Alt::Ty(t) => t,
             };
-            alt = Alt::Ty(Ty::Arr(Box::new(inner)));
+            alt = self.maybe_bounds(Alt::Ty(Ty::Arr(Box::new(inner))))?;
         }
         Ok(alt)
+    }
+
+    /// Limits written straight after a number, string or array type. (A `(` here can only be
+    /// limits: grouping parentheses open an atom, and a description follows a space.)
+    fn maybe_bounds(&mut self, alt: Alt) -> Result<Alt, String> {
+        if !self.rest().starts_with('(') {
+            return Ok(alt);
+        }
+        let ty = match alt {
+            Alt::Ty(ty @ (Ty::Int | Ty::Num | Ty::Str(_) | Ty::Arr(_))) => ty,
+            _ => return Err(format!("limits are not valid at `{}`", self.rest())),
+        };
+        let b = self.bounds()?;
+        let counts_only = matches!(ty, Ty::Str(_) | Ty::Arr(_));
+        let whole = |n: &Option<Number>| n.as_ref().is_none_or(Number::is_u64);
+        if counts_only && (b.min_exclusive || b.max_exclusive || !whole(&b.min) || !whole(&b.max)) {
+            return Err("length limits must be whole, inclusive numbers".into());
+        }
+        Ok(Alt::Ty(Ty::Bounded(Box::new(ty), b)))
+    }
+
+    /// `(lo..hi)`, either side optional; `>` / `<` mark an exclusive limit.
+    fn bounds(&mut self) -> Result<Bounds, String> {
+        self.expect("(")?;
+        let min_exclusive = self.eat(">");
+        let min = self.bound_number()?;
+        self.expect("..")?;
+        let max_exclusive = self.eat("<");
+        let max = self.bound_number()?;
+        self.expect(")")?;
+        if (min.is_none() && max.is_none())
+            || (min_exclusive && min.is_none())
+            || (max_exclusive && max.is_none())
+        {
+            return Err("empty limits".into());
+        }
+        Ok(Bounds {
+            min,
+            max,
+            min_exclusive,
+            max_exclusive,
+        })
+    }
+
+    /// A JSON number, stopping before `..` (so `1..480` reads as `1`).
+    fn bound_number(&mut self) -> Result<Option<Number>, String> {
+        let rest = self.rest();
+        let b = rest.as_bytes();
+        let mut len = 0;
+        while let Some(&c) = b.get(len) {
+            let part_of_number = c.is_ascii_digit()
+                || matches!(c, b'-' | b'+' | b'e' | b'E')
+                || (c == b'.' && b.get(len + 1).is_some_and(u8::is_ascii_digit));
+            if !part_of_number {
+                break;
+            }
+            len += 1;
+        }
+        if len == 0 {
+            return Ok(None);
+        }
+        let n = serde_json::from_str::<Number>(&rest[..len])
+            .map_err(|_| format!("invalid limit `{}`", &rest[..len]))?;
+        self.i += len;
+        Ok(Some(n))
     }
 
     fn atom(&mut self) -> Result<Alt, String> {
@@ -287,13 +385,34 @@ mod tests {
         assert_eq!(ty("1|-2.5"), Ty::Enum(vec![json!(1), json!(-2.5)]));
         assert_eq!(ty("\"null\""), Ty::Enum(vec![json!("null")]));
         assert_eq!(
+            ty("number(>-1.5..<1e3)[](1..)"),
+            Ty::Bounded(
+                Box::new(Ty::Arr(Box::new(Ty::Bounded(
+                    Box::new(Ty::Num),
+                    Bounds {
+                        min: Some(serde_json::from_str("-1.5").unwrap()),
+                        max: Some(serde_json::from_str("1e3").unwrap()),
+                        min_exclusive: true,
+                        max_exclusive: true,
+                    }
+                )))),
+                Bounds {
+                    min: Some(1.into()),
+                    max: None,
+                    min_exclusive: false,
+                    max_exclusive: false
+                }
+            )
+        );
+        assert_eq!(
             ty("({a:int}|null)[]"),
             Ty::Arr(Box::new(Ty::Nullable(Box::new(Ty::Obj(Obj {
                 fields: vec![Field {
                     name: "a".into(),
                     ty: Ty::Int,
                     required: true,
-                    desc: None
+                    desc: None,
+                    default: None,
                 }],
                 open: false,
             })))))
@@ -323,6 +442,10 @@ mod tests {
             "t(a:string|int)",
             "t(a:int (open)",
             "t(a:int) trailing",
+            "t(a:int())",
+            "t(a:string(>1..))",
+            "t(a:bool(1..2))",
+            "t(a:int=)",
             "bad name(a:int)",
         ] {
             assert!(parse_tool(bad).is_err(), "accepted {bad:?}");

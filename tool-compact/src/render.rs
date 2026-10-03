@@ -1,8 +1,8 @@
 //! Encoder: [`Ty`] → one compact signature line per tool, plus the call instructions.
 
-use serde_json::Value;
+use serde_json::{Number, Value};
 
-use crate::ty::{Field, Obj, Ty, is_valid_name};
+use crate::ty::{Bounds, Field, Obj, Ty, is_valid_name};
 use crate::types::ToolCall;
 
 /// Told to the model once per request. Kept short: it is paid on every request.
@@ -45,6 +45,10 @@ fn render_field(f: &Field, tool: &str) -> String {
         if f.required { "" } else { "?" },
         render_type(&f.ty, tool)
     );
+    if let Some(d) = &f.default {
+        out.push('=');
+        out.push_str(&render_default(d));
+    }
     if let Some(d) = f
         .desc
         .as_deref()
@@ -92,6 +96,30 @@ pub(crate) fn render_type(ty: &Ty, tool: &str) -> String {
         Ty::Obj(o) if o.fields.is_empty() => if o.open { "object" } else { "{}" }.into(),
         Ty::Obj(o) => format!("{{{}}}", render_params(o, tool)),
         Ty::Nullable(inner) => format!("{}|null", wrap(inner, tool)),
+        Ty::Bounded(inner, b) => format!("{}{}", render_type(inner, tool), render_bounds(b)),
+    }
+}
+
+/// `(lo..hi)` directly after the type, either side optional; `>` / `<` mark an exclusive limit.
+/// On a string or array the limits are its length.
+fn render_bounds(b: &Bounds) -> String {
+    let side = |n: &Option<Number>, exclusive: bool, mark: &str| match n {
+        Some(n) if exclusive => format!("{mark}{n}"),
+        Some(n) => n.to_string(),
+        None => String::new(),
+    };
+    format!(
+        "({}..{})",
+        side(&b.min, b.min_exclusive, ">"),
+        side(&b.max, b.max_exclusive, "<")
+    )
+}
+
+/// A default renders bare when unambiguous (`celsius`), as JSON otherwise (`10`, `true`, `"a b"`).
+fn render_default(v: &Value) -> String {
+    match v.as_str() {
+        Some(s) if is_bare_literal(s) && !matches!(s, "true" | "false") => s.to_string(),
+        _ => v.to_string(),
     }
 }
 
