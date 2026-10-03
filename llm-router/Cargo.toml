@@ -66,3 +66,7 @@ base64 = { workspace = true }
 mockito = { workspace = true }
 tower = { workspace = true }
 zstd.workspace = true
+# examples/compact_tools_eval.rs only.
+nasiko-tool-compact = { path = "../tool-compact" }
+# Local token measurement in that example; pinned so counts are reproducible.
+tiktoken-rs = "=0.12.1"

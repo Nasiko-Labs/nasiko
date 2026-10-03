@@ -2043,6 +2043,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4443176a9f2c162692bd3d352d745ef9413eec5782a80d8fd6f8a1ac692a07f7"
 
 [[package]]
+name = "fancy-regex"
+version = "0.19.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d301f5bf187b3c295fce6468d3875037a0bccc5f6b151c63cac2f85babf21912"
+dependencies = [
+ "bit-set",
+ "regex-automata",
+ "regex-syntax",
+]
+
+[[package]]
 name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3549,6 +3560,7 @@ dependencies = [
  "jsonwebtoken",
  "mockito",
  "nasiko-secrets",
+ "nasiko-tool-compact",
  "rand 0.9.5",
  "rand_distr",
  "redis",
@@ -3559,6 +3571,7 @@ dependencies = [
  "serial_test",
  "sqlx",
  "thiserror 2.0.20",
+ "tiktoken-rs",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -6168,6 +6181,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ad99c4c6d32803332c548b1af0540b357b3f5fc0be8f6c6bfe8b2e6ae784070"
 dependencies = [
  "cfg-if",
+]
+
+[[package]]
+name = "tiktoken-rs"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2aeff724640cfe13037336ddf35befdffd2909cbdb65cf041cc8a4cf8c584cfa"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "bstr",
+ "fancy-regex",
+ "regex",
+ "rustc-hash",
 ]
 
 [[package]]
