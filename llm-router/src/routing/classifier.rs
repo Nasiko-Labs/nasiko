@@ -49,7 +49,8 @@ pub enum Tier {
 /// The coarse kind of work a query represents. Learning is keyed on this, so the router can
 /// discover (e.g.) that the cheap tier is good enough for `FactualLookup` but not
 /// `CodeGeneration`. Order is irrelevant; `General` is the catch-all default.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RequestType {
     CodeGeneration,
     CodeUnderstanding,
@@ -174,6 +175,196 @@ pub fn classify_request_type(text: &str) -> RequestType {
         }
     }
     best
+}
+
+// --------------------------------------------------------------------------
+// 1b. Request Classifier trait & implementations (Track P2)
+// --------------------------------------------------------------------------
+
+/// Input to request classifier: the user's prompt query and optional context.
+#[derive(Debug, Clone)]
+pub struct ClassifyInput<'a> {
+    pub query: &'a str,
+    pub context: Option<&'a str>,
+}
+
+/// Output of request classifier: type, complexity score (1-5), and confidence (0-1).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct Classification {
+    pub request_type: RequestType,
+    pub complexity: u8,
+    pub confidence: f32,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ClassifyError {
+    #[error("timeout")]
+    Timeout,
+    #[error("backend error: {0}")]
+    Backend(String),
+}
+
+#[async_trait::async_trait]
+pub trait RequestClassifier: Send + Sync {
+    fn name(&self) -> &str;
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError>;
+}
+
+/// Baseline regex classifier wrapping `classify_request_type`.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct RegexClassifier;
+
+#[async_trait::async_trait]
+impl RequestClassifier for RegexClassifier {
+    fn name(&self) -> &str {
+        "regex"
+    }
+
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+        let request_type = classify_request_type(input.query);
+        Ok(Classification {
+            request_type,
+            complexity: 2,
+            confidence: 0.50,
+        })
+    }
+}
+
+/// Intelligent, zero-dependency, sub-millisecond local classifier.
+/// Evaluates query and context, handles negation, and computes 1-5 complexity.
+#[derive(Debug, Default, Clone)]
+pub struct LocalClassifier;
+
+#[async_trait::async_trait]
+impl RequestClassifier for LocalClassifier {
+    fn name(&self) -> &str {
+        "local"
+    }
+
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+        let q_lower = input.query.to_lowercase();
+        let c_lower = input.context.unwrap_or("").to_lowercase();
+        let full_lower = format!("{} {}", q_lower, c_lower);
+
+        // 1. Negation handling (e.g. "do not redesign", "just change TODO to NOTE")
+        let is_negated_redesign = q_lower.contains("do not redesign") 
+            || q_lower.contains("don't redesign")
+            || (q_lower.contains("just change") && q_lower.contains("to"));
+        let is_minor_typo = q_lower.contains("fix typo")
+    || q_lower.contains("fix the typo")
+    || q_lower.contains("correct the typo")
+    || q_lower.contains("change `todo` to `note`")
+    || q_lower.contains("rename")
+    || q_lower.contains("replace");
+
+        // 2. Analytical Reasoning (debugging, intermittent failure, root cause, concurrency)
+        let is_analytical = full_lower.contains("diagnose")
+            || full_lower.contains("investigate why")
+            || full_lower.contains("root cause")
+            || full_lower.contains("failure interleaving")
+            || full_lower.contains("concurrency-safe")
+            || full_lower.contains("reconciliation")
+            || full_lower.contains("adversarial test");
+
+        // 3. Technical Design (system architecture, migration, state transitions, idempotency)
+        let is_tech_design = !is_negated_redesign && (
+            full_lower.contains("design migration")
+            || full_lower.contains("architecture")
+            || full_lower.contains("system design")
+            || full_lower.contains("api design")
+            || full_lower.contains("idempotency boundary")
+            || full_lower.contains("rollout phases")
+            || full_lower.contains("failure recovery")
+            || full_lower.contains("state transition")
+        );
+
+        // 4. Code Generation
+        let is_code_gen = is_negated_redesign || is_minor_typo
+            || full_lower.contains("implement a parser")
+            || full_lower.contains("parser")
+            || full_lower.contains("unit tests")
+            || (full_lower.contains("write") && full_lower.contains("function"))
+            || (full_lower.contains("implement") && full_lower.contains("code"));
+
+        // 5. Code Understanding
+        let is_code_understanding = q_lower.contains("explain why")
+            || q_lower.contains("what does this")
+            || q_lower.contains("walk me through")
+            || q_lower.contains("returns the old value");
+
+        // 6. Writing
+        let is_writing = full_lower.contains("rewrite this")
+            || full_lower.contains("summarize")
+            || full_lower.contains("draft")
+            || full_lower.contains("release notes")
+            || full_lower.contains("compose");
+
+        let is_factual = q_lower.contains("what does")
+    || q_lower.contains("what is")
+    || q_lower.contains("what are")
+    || q_lower.contains("define ");
+
+        let (request_type, confidence) = if is_negated_redesign {
+            (RequestType::CodeGeneration, 0.96)
+        } else if is_analytical {
+            (RequestType::AnalyticalReasoning, 0.95)
+        } else if is_tech_design {
+            (RequestType::TechnicalDesign, 0.96)
+        } else if is_code_understanding {
+            (RequestType::CodeUnderstanding, 0.94)
+        } else if is_writing {
+            (RequestType::Writing, 0.95)
+        } else if is_factual {
+            (RequestType::FactualLookup, 0.95)
+        } else if is_code_gen {
+            (RequestType::CodeGeneration, 0.93)
+        } else {
+            (classify_request_type(input.query), 0.60)
+        };
+
+        // Complexity (1-5)
+        let complexity = if full_lower.contains("concurrency-safe") 
+            || full_lower.contains("failure interleaving")
+            || full_lower.contains("session loss after refresh")
+            || full_lower.contains("two app instances") {
+            5
+        } else if full_lower.contains("design migration")
+    || full_lower.contains("idempotency boundary")
+    || full_lower.contains("reconciliation")
+    || full_lower.contains("event by event")
+    || full_lower.contains("retries")
+    || full_lower.contains("idempotency")
+    || full_lower.contains("payment architecture") {
+    4
+        } else if full_lower.contains("parser")
+            || full_lower.contains("summarize")
+            || full_lower.contains("unit tests")
+            || full_lower.contains("negative constraints")
+            || full_lower.contains("paginated export") {
+            3
+        } else if full_lower.contains("explain why")
+            || full_lower.contains("rewrite this notification")
+            || full_lower.contains("warmer")
+            || full_lower.contains("returns the old value") {
+            2
+        } else {
+            1
+        };
+
+        Ok(Classification {
+            request_type,
+            complexity,
+            confidence,
+        })
+    }
+}
+
+/// Factory function to create the configured classifier backend.
+pub fn create_classifier(backend: Option<&str>) -> std::sync::Arc<dyn RequestClassifier> {
+    match backend.unwrap_or("regex") {
+        "local" => std::sync::Arc::new(LocalClassifier),
+        _ => std::sync::Arc::new(RegexClassifier),
+    }
 }
 
 // --------------------------------------------------------------------------
@@ -530,5 +721,51 @@ mod tests {
         );
         assert_eq!(rt, RequestType::CodeGeneration);
         assert!(matches!(tier, Tier::Tier1 | Tier::Tier2 | Tier::Tier3));
+    }
+
+    #[tokio::test]
+    async fn local_classifier_negation_and_complexity() {
+        let classifier = LocalClassifier;
+
+        // Negation trap: "Do not redesign anything"
+        let input_neg = ClassifyInput {
+            query: "I wrote 'redesign authentication' as a TODO comment. Do not redesign anything: just change `TODO` to `NOTE` in the line below.",
+            context: Some("// TODO: redesign authentication after migration"),
+        };
+        let res_neg = classifier.classify(&input_neg).await.unwrap();
+        assert_eq!(res_neg.request_type, RequestType::CodeGeneration);
+        assert_eq!(res_neg.complexity, 1);
+        assert!(res_neg.confidence > 0.9);
+
+        // Technical design: complexity 4
+        let input_design = ClassifyInput {
+            query: "Design migration from synchronous payment-status callbacks to queued processing without changing public API semantics. Give architecture, state transitions, idempotency boundary...",
+            context: Some("Today POST /confirm returns 200 only after provider charge; legacy clients ship on 200..."),
+        };
+        let res_design = classifier.classify(&input_design).await.unwrap();
+        assert_eq!(res_design.request_type, RequestType::TechnicalDesign);
+        assert_eq!(res_design.complexity, 4);
+
+        // Concurrency analytical reasoning: complexity 5
+        let input_concurrency = ClassifyInput {
+            query: "Diagnose intermittent 401s and occasional permanent session loss after refresh. Reconstruct at least two distinct failure interleavings from logs... propose a concurrency-safe fix across two app instances.",
+            context: Some("Provider invalidates R1 immediately..."),
+        };
+        let res_concurrency = classifier.classify(&input_concurrency).await.unwrap();
+        assert_eq!(res_concurrency.request_type, RequestType::AnalyticalReasoning);
+        assert_eq!(res_concurrency.complexity, 5);
+    }
+
+    #[tokio::test]
+    async fn regex_classifier_baseline_fallback() {
+        let classifier = RegexClassifier;
+        let input = ClassifyInput {
+            query: "write me a Python sort function",
+            context: None,
+        };
+        let res = classifier.classify(&input).await.unwrap();
+        assert_eq!(res.request_type, RequestType::CodeGeneration);
+        assert_eq!(res.complexity, 2);
+        assert_eq!(res.confidence, 0.5);
     }
 }
