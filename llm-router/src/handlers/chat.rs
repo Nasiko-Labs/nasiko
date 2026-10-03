@@ -288,6 +288,19 @@ async fn chat_core(
         "brevity: directive decision"
     );
 
+    // ── compact tool schemas (opt-in; off by default) ─────────────────────────────────────
+    // After brevity so the directive still lands on the transcript; strips native `tools` only
+    // when TOKEN_TOOL_COMPACT=true and the schemas are supported.
+    let tool_compact = crate::tool_compact::apply(&mut req, &ctx.cfg);
+    tracing::debug!(
+        target: "nasiko::llm_router::tool_compact",
+        %agent_id,
+        applied = tool_compact.is_ok(),
+        skipped = ?tool_compact.err(),
+        "tool_compact: decision"
+    );
+    let _tool_compact_metadata = crate::tool_compact::to_metadata(&tool_compact);
+
     tracing::info!(
         target: "nasiko::llm_router::chat",
         %agent_id,
