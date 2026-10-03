@@ -37,13 +37,11 @@ pub struct CompactToolsContext {
 pub enum BypassReason {
     Disabled,
     NoTools,
+    ToolChoiceNone,
     ToolChoiceForced,
     ToolContinuation,
     UnsupportedSchema(String),
 }
-
-/// Fixed reference time required by the contract.
-pub const REFERENCE_TIME_NOTICE: &str = "Today is 2026-10-02 (Asia/Kolkata).";
 
 /// Convert IR ToolDef to nasiko_tool_compact ToolDef.
 fn to_compact_tool_def(tool: &crate::ir::chat::ToolDef) -> CompactToolDef {
@@ -73,6 +71,7 @@ pub fn apply_egress(
     // Check tool_choice
     if let Some(ref choice) = req.tool_choice {
         match choice {
+            Value::String(s) if s == "none" => return Err(BypassReason::ToolChoiceNone),
             Value::String(s) if s == "required" => return Err(BypassReason::ToolChoiceForced),
             Value::Object(map) if !map.is_empty() => return Err(BypassReason::ToolChoiceForced),
             _ => {}
@@ -111,13 +110,12 @@ pub fn apply_egress(
 
     // Compaction is eligible and succeeded: mutate request
     req.tools = None;
+    req.tool_choice = None;
+    req.extra.remove("parallel_tool_calls");
 
-    // Inject system message with reference time, signatures, and grammar instructions
+    // Inject system message with signatures and grammar instructions
     let instruction = InstructionVariant::Concise.text();
-    let prompt = format!(
-        "{}\n\n{}\n\n{}",
-        REFERENCE_TIME_NOTICE, encoded.text, instruction
-    );
+    let prompt = format!("{}\n\n{}", encoded.text, instruction);
 
     // Prepend as initial system message if none exists, or append
     let injected = Message {
@@ -146,7 +144,7 @@ pub fn apply_ingress(
             _ => continue,
         };
 
-        if !content_str.contains("<<call ") {
+        if !content_str.contains("<<call") {
             continue;
         }
 
@@ -185,23 +183,23 @@ pub fn apply_ingress(
     Ok(())
 }
 
-/// Helper to strip <<call ...>> occurrences from text.
+/// Helper to strip <<call ...>> occurrences from text using exact JSON-aware call spans.
 fn strip_calls(text: &str) -> String {
-    let mut out = String::new();
-    let mut remainder = text;
-
-    while let Some(start) = remainder.find("<<call ") {
-        out.push_str(&remainder[..start]);
-        let after_marker = &remainder[start..];
-        if let Some(end) = after_marker.find(">>") {
-            remainder = &after_marker[end + 2..];
-        } else {
-            // Unclosed call marker; leave remainder
-            remainder = "";
-            break;
-        }
+    let spans = nasiko_tool_compact::scan_call_spans(text);
+    if spans.is_empty() {
+        return text.to_string();
     }
-    out.push_str(remainder);
+    let mut out = String::with_capacity(text.len());
+    let mut last = 0;
+    for (start, end) in spans {
+        if start > last {
+            out.push_str(&text[last..start]);
+        }
+        last = end;
+    }
+    if last < text.len() {
+        out.push_str(&text[last..]);
+    }
     out
 }
 
@@ -397,5 +395,105 @@ mod tests {
 
         let res = apply_ingress(&mut resp, &ctx);
         assert!(res.is_err(), "Must fail closed on unknown tool");
+    }
+
+    #[test]
+    fn test_bypass_when_tool_choice_is_none() {
+        let mut req = ChatRequest {
+            model: Some("gpt-4o".into()),
+            messages: vec![Message {
+                role: "user".into(),
+                content: Some(json!("hello")),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+                extra: Default::default(),
+            }],
+            tools: Some(vec![sample_tool()]),
+            tool_choice: Some(json!("none")),
+            temperature: None,
+            max_tokens: None,
+            stream: None,
+            extra: Default::default(),
+        };
+
+        let cfg = GatewayConfig {
+            compact_tools_enabled: true,
+            ..Default::default()
+        };
+
+        let res = apply_egress(&mut req, &cfg);
+        assert_eq!(res, Err(BypassReason::ToolChoiceNone));
+        assert!(req.tools.is_some());
+    }
+
+    #[test]
+    fn test_tools_cleared_removes_tool_choice_and_parallel_tool_calls() {
+        let mut extra = serde_json::Map::new();
+        extra.insert("parallel_tool_calls".to_string(), json!(true));
+
+        let mut req = ChatRequest {
+            model: Some("gpt-4o".into()),
+            messages: vec![Message {
+                role: "user".into(),
+                content: Some(json!("hello")),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+                extra: Default::default(),
+            }],
+            tools: Some(vec![sample_tool()]),
+            tool_choice: Some(json!("auto")),
+            temperature: None,
+            max_tokens: None,
+            stream: None,
+            extra,
+        };
+
+        let cfg = GatewayConfig {
+            compact_tools_enabled: true,
+            ..Default::default()
+        };
+
+        let res = apply_egress(&mut req, &cfg);
+        assert!(res.is_ok());
+        assert!(req.tools.is_none());
+        assert!(req.tool_choice.is_none());
+        assert!(!req.extra.contains_key("parallel_tool_calls"));
+    }
+
+    #[test]
+    fn test_strip_calls_with_embedded_markers_in_arguments() {
+        let text = "Result: <<call send_email {\"to\":[\"a@b.co\"],\"subject\":\"a >> b\",\"body\":\"c >> d <<call x>>\"}>> and done!";
+        let cleaned = strip_calls(text);
+        assert_eq!(cleaned, "Result:  and done!");
+    }
+
+    #[test]
+    fn test_serde_json_preserves_canonical_lexicographical_ordering() {
+        let mut extra = serde_json::Map::new();
+        extra.insert("zebra".to_string(), json!(1));
+        extra.insert("apple".to_string(), json!(2));
+        extra.insert("mango".to_string(), json!(3));
+
+        let req = ChatRequest {
+            model: Some("gpt-4o".into()),
+            messages: vec![],
+            tools: None,
+            tool_choice: None,
+            temperature: None,
+            max_tokens: None,
+            stream: None,
+            extra,
+        };
+
+        let serialized = serde_json::to_string(&req).unwrap();
+        let apple_pos = serialized.find("\"apple\":2").unwrap();
+        let mango_pos = serialized.find("\"mango\":3").unwrap();
+        let zebra_pos = serialized.find("\"zebra\":1").unwrap();
+        assert!(
+            apple_pos < mango_pos && mango_pos < zebra_pos,
+            "Keys in extra must follow upstream BTreeMap sorted ordering without preserve_order"
+        );
     }
 }

@@ -94,6 +94,81 @@ proptest! {
     }
 
     #[test]
+    fn prop_roundtrip_complex_schemas_with_enums_and_nested_additional_props(
+        tool_name in "[a-zA-Z_][a-zA-Z0-9_]{1,12}",
+        enum_vals in proptest::collection::vec("[a-z]{2,8}", 2..4),
+        nested_field in "[a-z]{2,8}",
+        top_additional in any::<bool>(),
+        nested_additional in any::<bool>(),
+    ) {
+        let mut dedup_enums = enum_vals;
+        dedup_enums.sort();
+        dedup_enums.dedup();
+        if dedup_enums.len() < 2 {
+            dedup_enums.push("fallback".to_string());
+        }
+
+        let mut nested_obj = json!({
+            "type": "object",
+            "properties": {
+                nested_field: { "type": "string" }
+            }
+        });
+        if !nested_additional {
+            nested_obj["additionalProperties"] = json!(false);
+        }
+
+        let mut root_schema = json!({
+            "type": "object",
+            "properties": {
+                "tag": { "type": "string", "enum": dedup_enums },
+                "meta": nested_obj
+            },
+            "required": ["tag"]
+        });
+        if !top_additional {
+            root_schema["additionalProperties"] = json!(false);
+        }
+
+        let tools = vec![ToolDef::new(
+            &tool_name,
+            Some("Complex tool description".to_string()),
+            Some(root_schema.clone()),
+        )];
+
+        let compact = encode_tools(&tools).unwrap();
+        let decoded = decode_tools(&compact).unwrap();
+        prop_assert_eq!(decoded.len(), 1);
+        prop_assert_eq!(&decoded[0].name, &tool_name);
+
+        fn strip_descriptions(v: &serde_json::Value) -> serde_json::Value {
+            let mut v = v.clone();
+            fn walk(val: &mut serde_json::Value) {
+                match val {
+                    serde_json::Value::Object(map) => {
+                        map.remove("description");
+                        for (_, nested) in map.iter_mut() {
+                            walk(nested);
+                        }
+                    }
+                    serde_json::Value::Array(arr) => {
+                        for item in arr.iter_mut() {
+                            walk(item);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            walk(&mut v);
+            v
+        }
+
+        let decoded_params = strip_descriptions(decoded[0].parameters.as_ref().unwrap());
+        let expected_params = strip_descriptions(&root_schema);
+        prop_assert_eq!(decoded_params, expected_params);
+    }
+
+    #[test]
     fn prop_invalid_args_never_yield_call(invalid_num in "[a-zA-Z]{1,10}") {
         let tools = vec![ToolDef::new(
             "calc",

@@ -34,9 +34,15 @@ pub fn decode_tool_signature(sig: &str) -> Result<ToolDef, CompactError> {
 
     let params_str = safe_slice(sig, paren_open + 1, paren_close).trim();
 
-    let description = if paren_close + 1 < sig.len() {
-        let rest = safe_slice_from(sig, paren_close + 1).trim();
-        if let Some(desc) = rest.strip_prefix('-') {
+    let after_paren = safe_slice_from(sig, paren_close + 1).trim();
+    let (is_strict, after_strict) = if let Some(stripped) = after_paren.strip_prefix('!') {
+        (true, stripped.trim())
+    } else {
+        (false, after_paren)
+    };
+
+    let description = if !after_strict.is_empty() {
+        if let Some(desc) = after_strict.strip_prefix('-') {
             let d = desc.trim();
             if !d.is_empty() {
                 Some(d.to_string())
@@ -51,10 +57,14 @@ pub fn decode_tool_signature(sig: &str) -> Result<ToolDef, CompactError> {
     };
 
     let parameters = if params_str.is_empty() {
-        Some(json!({
+        let mut obj = json!({
             "type": "object",
             "properties": {}
-        }))
+        });
+        if is_strict && let Some(m) = obj.as_object_mut() {
+            m.insert("additionalProperties".to_string(), Value::Bool(false));
+        }
+        Some(obj)
     } else {
         let (properties, required) = parse_parameter_list(params_str)?;
         let mut obj = Map::new();
@@ -65,6 +75,9 @@ pub fn decode_tool_signature(sig: &str) -> Result<ToolDef, CompactError> {
                 "required".to_string(),
                 Value::Array(required.into_iter().map(Value::String).collect()),
             );
+        }
+        if is_strict {
+            obj.insert("additionalProperties".to_string(), Value::Bool(false));
         }
         Some(Value::Object(obj))
     };
@@ -161,6 +174,8 @@ fn parse_single_type(s: &str) -> Result<Value, CompactError> {
     if trimmed.contains('|') {
         let variants = split_top_level(trimmed, '|')?;
         let mut enum_vals = Vec::new();
+        let mut all_strings = true;
+        let mut all_ints = true;
         for v in variants {
             let v_trim = v.trim();
             if (v_trim.starts_with('"') && v_trim.ends_with('"'))
@@ -170,15 +185,27 @@ fn parse_single_type(s: &str) -> Result<Value, CompactError> {
                     let unquoted = unescape_string(safe_slice(v_trim, 1, v_trim.len() - 1));
                     enum_vals.push(Value::String(unquoted));
                 }
+                all_ints = false;
             } else if let Ok(num) = v_trim.parse::<i64>() {
                 enum_vals.push(json!(num));
+                all_strings = false;
             } else if v_trim == "true" || v_trim == "false" {
                 enum_vals.push(json!(v_trim == "true"));
+                all_strings = false;
+                all_ints = false;
             } else {
                 enum_vals.push(Value::String(v_trim.to_string()));
+                all_ints = false;
             }
         }
-        return Ok(json!({ "enum": enum_vals }));
+        let mut obj = Map::new();
+        if all_strings && !enum_vals.is_empty() {
+            obj.insert("type".to_string(), Value::String("string".to_string()));
+        } else if all_ints && !enum_vals.is_empty() {
+            obj.insert("type".to_string(), Value::String("integer".to_string()));
+        }
+        obj.insert("enum".to_string(), Value::Array(enum_vals));
+        return Ok(Value::Object(obj));
     }
 
     // Array check: [T]
@@ -195,16 +222,31 @@ fn parse_single_type(s: &str) -> Result<Value, CompactError> {
         }));
     }
 
-    // Object check: {k: T, ...}
-    if trimmed.starts_with('{') && trimmed.ends_with('}') && trimmed.len() >= 2 {
-        let inner = safe_slice(trimmed, 1, trimmed.len() - 1).trim();
-        if inner.is_empty() {
-            return Ok(json!({
+    // Object check: {k: T, ...} or {k: T, ...}!
+    let (is_object, is_strict_obj, obj_inner) = if trimmed.starts_with('{') {
+        if let Some(inner) = trimmed.strip_prefix('{').and_then(|s| s.strip_suffix("}!")) {
+            (true, true, inner.trim())
+        } else if let Some(inner) = trimmed.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
+            (true, false, inner.trim())
+        } else {
+            (false, false, "")
+        }
+    } else {
+        (false, false, "")
+    };
+
+    if is_object {
+        if obj_inner.is_empty() {
+            let mut obj = json!({
                 "type": "object",
                 "properties": {}
-            }));
+            });
+            if is_strict_obj && let Some(m) = obj.as_object_mut() {
+                m.insert("additionalProperties".to_string(), Value::Bool(false));
+            }
+            return Ok(obj);
         }
-        let (properties, required) = parse_parameter_list(inner)?;
+        let (properties, required) = parse_parameter_list(obj_inner)?;
         let mut obj = Map::new();
         obj.insert("type".to_string(), Value::String("object".to_string()));
         obj.insert("properties".to_string(), Value::Object(properties));
@@ -213,6 +255,9 @@ fn parse_single_type(s: &str) -> Result<Value, CompactError> {
                 "required".to_string(),
                 Value::Array(required.into_iter().map(Value::String).collect()),
             );
+        }
+        if is_strict_obj {
+            obj.insert("additionalProperties".to_string(), Value::Bool(false));
         }
         return Ok(Value::Object(obj));
     }

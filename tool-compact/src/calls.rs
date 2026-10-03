@@ -59,9 +59,18 @@ pub fn scan_raw_calls(text: &str) -> Result<Vec<(String, String)>, CompactError>
     let mut i = 0;
 
     while i < len {
-        if i + 7 <= len && &bytes[i..i + 7] == b"<<call " {
-            i += 7;
-            while i < len && (bytes[i] == b' ' || bytes[i] == b'\t') {
+        if i + 6 <= len
+            && &bytes[i..i + 6] == b"<<call"
+            && (i + 6 == len
+                || bytes[i + 6] == b' '
+                || bytes[i + 6] == b'\t'
+                || bytes[i + 6] == b'\r'
+                || bytes[i + 6] == b'\n')
+        {
+            i += 6;
+            while i < len
+                && (bytes[i] == b' ' || bytes[i] == b'\t' || bytes[i] == b'\r' || bytes[i] == b'\n')
+            {
                 i += 1;
             }
 
@@ -74,13 +83,18 @@ pub fn scan_raw_calls(text: &str) -> Result<Vec<(String, String)>, CompactError>
             let name = match std::str::from_utf8(&bytes[name_start..i]) {
                 Ok(s) => s.to_string(),
                 Err(_) => {
-                    i += 1;
-                    continue;
+                    return Err(CompactError::InvalidArguments {
+                        tool: "unknown".to_string(),
+                        reason: "Tool name in call is not valid UTF-8".to_string(),
+                    });
                 }
             };
 
             if name.is_empty() {
-                continue;
+                return Err(CompactError::InvalidArguments {
+                    tool: "".to_string(),
+                    reason: "Missing tool name in call".to_string(),
+                });
             }
 
             while i < len
@@ -90,7 +104,10 @@ pub fn scan_raw_calls(text: &str) -> Result<Vec<(String, String)>, CompactError>
             }
 
             if i >= len || bytes[i] != b'{' {
-                continue;
+                return Err(CompactError::InvalidArguments {
+                    tool: name,
+                    reason: "Expected JSON object after tool name in call".to_string(),
+                });
             }
 
             let json_start = i;
@@ -135,7 +152,10 @@ pub fn scan_raw_calls(text: &str) -> Result<Vec<(String, String)>, CompactError>
             }
 
             let Some(end_idx) = json_end else {
-                continue;
+                return Err(CompactError::InvalidArguments {
+                    tool: name,
+                    reason: "Unclosed JSON object in call".to_string(),
+                });
             };
 
             while i < len
@@ -149,6 +169,11 @@ pub fn scan_raw_calls(text: &str) -> Result<Vec<(String, String)>, CompactError>
                 if let Ok(json_str) = std::str::from_utf8(&bytes[json_start..end_idx]) {
                     calls.push((name, json_str.to_string()));
                 }
+            } else {
+                return Err(CompactError::InvalidArguments {
+                    tool: name,
+                    reason: "Missing closing '>>' after call arguments".to_string(),
+                });
             }
         } else {
             i += 1;
@@ -156,6 +181,109 @@ pub fn scan_raw_calls(text: &str) -> Result<Vec<(String, String)>, CompactError>
     }
 
     Ok(calls)
+}
+
+/// Find byte ranges (start, end) of all valid `<<call NAME {...}>>` in text.
+pub fn scan_call_spans(text: &str) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+
+    while i < len {
+        if i + 6 <= len
+            && &bytes[i..i + 6] == b"<<call"
+            && (i + 6 == len
+                || bytes[i + 6] == b' '
+                || bytes[i + 6] == b'\t'
+                || bytes[i + 6] == b'\r'
+                || bytes[i + 6] == b'\n')
+        {
+            let call_start = i;
+            i += 6;
+            while i < len
+                && (bytes[i] == b' ' || bytes[i] == b'\t' || bytes[i] == b'\r' || bytes[i] == b'\n')
+            {
+                i += 1;
+            }
+
+            let name_start = i;
+            while i < len
+                && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' || bytes[i] == b'-')
+            {
+                i += 1;
+            }
+            if name_start == i {
+                continue;
+            }
+
+            while i < len
+                && (bytes[i] == b' ' || bytes[i] == b'\t' || bytes[i] == b'\r' || bytes[i] == b'\n')
+            {
+                i += 1;
+            }
+
+            if i >= len || bytes[i] != b'{' {
+                continue;
+            }
+
+            let mut brace_depth = 0;
+            let mut in_str = false;
+            let mut in_escape = false;
+            let mut json_end = None;
+
+            while i < len {
+                let b = bytes[i];
+                if in_escape {
+                    in_escape = false;
+                    i += 1;
+                    continue;
+                }
+                if b == b'\\' && in_str {
+                    in_escape = true;
+                    i += 1;
+                    continue;
+                }
+                if b == b'"' {
+                    in_str = !in_str;
+                    i += 1;
+                    continue;
+                }
+                if !in_str {
+                    if b == b'{' {
+                        brace_depth += 1;
+                    } else if b == b'}' {
+                        brace_depth -= 1;
+                        if brace_depth == 0 {
+                            json_end = Some(i + 1);
+                            i += 1;
+                            break;
+                        }
+                    }
+                }
+                i += 1;
+            }
+
+            let Some(_) = json_end else {
+                continue;
+            };
+
+            while i < len
+                && (bytes[i] == b' ' || bytes[i] == b'\t' || bytes[i] == b'\r' || bytes[i] == b'\n')
+            {
+                i += 1;
+            }
+
+            if i + 2 <= len && &bytes[i..i + 2] == b">>" {
+                i += 2;
+                spans.push((call_start, i));
+            }
+        } else {
+            i += 1;
+        }
+    }
+
+    spans
 }
 
 /// Validate arguments against tool JSON Schema (fail closed).
@@ -350,8 +478,15 @@ fn validate_value_against_schema(
                 }
             }
         }
-        if let Some(props) = schema.get("properties").and_then(Value::as_object) {
-            for (k, v) in obj {
+
+        let properties = schema.get("properties").and_then(Value::as_object);
+        let additional_props_allowed = schema
+            .get("additionalProperties")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+
+        for (k, v) in obj {
+            if let Some(props) = properties {
                 if let Some(sub_schema) = props.get(k) {
                     validate_value_against_schema(
                         tool_name,
@@ -359,7 +494,17 @@ fn validate_value_against_schema(
                         v,
                         sub_schema,
                     )?;
+                } else if !additional_props_allowed {
+                    return Err(CompactError::InvalidArguments {
+                        tool: tool_name.to_string(),
+                        reason: format!("Unexpected property '{field_name}.{k}'"),
+                    });
                 }
+            } else if !additional_props_allowed {
+                return Err(CompactError::InvalidArguments {
+                    tool: tool_name.to_string(),
+                    reason: format!("Unexpected property '{field_name}.{k}'"),
+                });
             }
         }
     }
@@ -423,35 +568,16 @@ fn validate_string_format(
 }
 
 fn is_rfc3339_datetime(s: &str) -> bool {
-    if s.len() < 19 {
-        return false;
-    }
-    let bytes = s.as_bytes();
-    if bytes[4] != b'-'
-        || bytes[7] != b'-'
-        || (bytes[10] != b'T' && bytes[10] != b't')
-        || bytes[13] != b':'
-        || bytes[16] != b':'
-    {
-        return false;
-    }
-    true
+    chrono::DateTime::parse_from_rfc3339(s).is_ok()
 }
 
 fn is_iso_date(s: &str) -> bool {
-    if s.len() != 10 {
-        return false;
-    }
-    let bytes = s.as_bytes();
-    bytes[4] == b'-' && bytes[7] == b'-'
+    chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok()
 }
 
 fn is_iso_time(s: &str) -> bool {
-    if s.len() < 8 {
-        return false;
-    }
-    let bytes = s.as_bytes();
-    bytes[2] == b':' && bytes[5] == b':'
+    chrono::NaiveTime::parse_from_str(s, "%H:%M:%S").is_ok()
+        || chrono::NaiveTime::parse_from_str(s, "%H:%M:%S%.f").is_ok()
 }
 
 fn is_uuid(s: &str) -> bool {

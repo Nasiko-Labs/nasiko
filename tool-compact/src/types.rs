@@ -34,7 +34,10 @@ impl ToolDef {
             let name = func
                 .get("name")
                 .and_then(Value::as_str)
-                .ok_or_else(|| CompactError::Malformed("Tool function missing 'name'".to_string()))?
+                .ok_or_else(|| CompactError::InvalidArguments {
+                    tool: "unknown".to_string(),
+                    reason: "Tool function missing 'name'".to_string(),
+                })?
                 .to_string();
             let description = func
                 .get("description")
@@ -58,9 +61,10 @@ impl ToolDef {
                 parameters,
             })
         } else {
-            Err(CompactError::Malformed(
-                "Invalid tool definition value".to_string(),
-            ))
+            Err(CompactError::InvalidArguments {
+                tool: "unknown".to_string(),
+                reason: "Invalid tool definition value".to_string(),
+            })
         }
     }
 }
@@ -123,10 +127,7 @@ impl InstructionVariant {
     pub fn text(&self) -> &'static str {
         match self {
             Self::Concise => {
-                "To invoke a tool, output exactly <<call tool_name {\"arg\": \"val\"}>>. \
-Arguments must strictly be valid JSON matching the tool schema. \
-Multiple calls are permitted sequentially. \
-If no tool applies, output your plain answer without any <<call ...>> syntax."
+                "Call tools: <<call tool_name {\"arg\": val}>> (valid JSON). Plain text if no tool applies."
             }
             Self::Detailed => {
                 "## Tool Calling Instructions\n\
@@ -138,9 +139,7 @@ Rules:\n\
 3. Any text outside <<call ...>> blocks is presented directly to the user.\n\
 4. If no tool is needed to answer the request, do not use the <<call ...>> syntax; respond directly."
             }
-            Self::Minimal => {
-                "Call tools via <<call tool_name {\"arg\": val}>>. Strict JSON. Multiple calls allowed."
-            }
+            Self::Minimal => "Call tools: <<call tool_name {\"arg\": val}>> (valid JSON).",
         }
     }
 }

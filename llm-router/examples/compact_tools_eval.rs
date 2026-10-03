@@ -19,7 +19,7 @@ struct EvalDataset {
     schema_version: Option<String>,
     #[allow(dead_code)]
     purpose: Option<String>,
-    tools: Vec<ToolDef>,
+    tools: Vec<Value>,
     cases: Vec<EvalCase>,
     decoder_cases: Vec<DecoderCase>,
 }
@@ -60,54 +60,32 @@ struct ExpectedDecoderResult {
 fn resolve_eval_path() -> PathBuf {
     if let Ok(env_path) = std::env::var("EVAL_SET") {
         let p = PathBuf::from(&env_path);
-        if p.exists() {
-            return p;
-        }
-        #[cfg(windows)]
-        {
-            if env_path.starts_with("/tmp/") || env_path.starts_with("\\tmp\\") {
-                let stripped = env_path.trim_start_matches('/').trim_start_matches('\\');
-                let win_tmp = PathBuf::from("C:\\").join(stripped);
-                if win_tmp.exists() {
-                    return win_tmp;
-                }
-            }
-        }
-    }
-
-    let candidates = [
-        PathBuf::from("/tmp/compact-tools-eval.json"),
-        PathBuf::from("C:\\tmp\\compact-tools-eval.json"),
-        PathBuf::from("compact-tools-eval.json"),
-        PathBuf::from("../nasiko-work/compact-tools-eval.json"),
-    ];
-
-    for c in candidates {
-        if c.exists() {
-            return c;
-        }
-    }
-
-    PathBuf::from("compact-tools-eval.json")
-}
-
-fn resolve_out_path() -> PathBuf {
-    if let Ok(env_out) = std::env::var("OUT") {
-        let p = PathBuf::from(&env_out);
-        #[cfg(windows)]
-        {
-            if env_out.starts_with("/tmp/") || env_out.starts_with("\\tmp\\") {
-                let stripped = env_out.trim_start_matches('/').trim_start_matches('\\');
-                return PathBuf::from("C:\\").join(stripped);
-            }
+        if !p.exists() {
+            eprintln!(
+                "[compact_tools_eval] EVAL_SET path does not exist: {}",
+                p.display()
+            );
+            std::process::exit(1);
         }
         return p;
     }
 
-    #[cfg(windows)]
-    return PathBuf::from("C:\\tmp\\out.jsonl");
-    #[cfg(not(windows))]
-    return PathBuf::from("/tmp/out.jsonl");
+    let default_path = PathBuf::from("compact-tools-eval.json");
+    if default_path.exists() {
+        return default_path;
+    }
+
+    eprintln!(
+        "[compact_tools_eval] EVAL_SET not set and default compact-tools-eval.json not found"
+    );
+    std::process::exit(1);
+}
+
+fn resolve_out_path() -> PathBuf {
+    if let Ok(env_out) = std::env::var("OUT") {
+        return PathBuf::from(&env_out);
+    }
+    PathBuf::from("out.jsonl")
 }
 
 #[tokio::main]
@@ -140,7 +118,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // BPE tokenizer for o200k_base token measurement
     let bpe = tiktoken_rs::o200k_base().ok();
 
-    let reference_time = "Reference time: today is 2026-10-02, timezone Asia/Kolkata.\n";
+    let reference_time = "2026-10-02 (Asia/Kolkata)\n";
+
+    let parsed_tools: Vec<ToolDef> = dataset
+        .tools
+        .iter()
+        .filter_map(|t_val| ToolDef::from_value(t_val).ok())
+        .collect();
 
     let mut total_baseline_tokens = 0usize;
     let mut total_compact_tokens = 0usize;
@@ -161,7 +145,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let selected_tool_defs: Vec<ToolDef> = case
             .tools
             .iter()
-            .filter_map(|t_name| dataset.tools.iter().find(|t| &t.name == t_name).cloned())
+            .filter_map(|t_name| parsed_tools.iter().find(|t| &t.name == t_name).cloned())
             .collect();
 
         // Check if compaction succeeds or bypasses
@@ -300,7 +284,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let selected_tools: Vec<ToolDef> = d_case
             .tools
             .iter()
-            .filter_map(|t_name| dataset.tools.iter().find(|t| &t.name == t_name).cloned())
+            .filter_map(|t_name| parsed_tools.iter().find(|t| &t.name == t_name).cloned())
             .collect();
 
         let mut decoder = StreamDecoder::new(selected_tools);
@@ -312,9 +296,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let decoded_val = match decode_result {
             Ok(calls) => json!({ "calls": calls }),
             Err(CompactError::UnknownTool(_)) => json!({ "error": "unknown_tool" }),
-            Err(CompactError::InvalidArguments { .. }) => json!({ "error": "invalid_arguments" }),
-            Err(CompactError::Malformed(_)) => json!({ "error": "malformed" }),
-            Err(CompactError::Unsupported { .. }) => json!({ "error": "unsupported" }),
+            Err(_) => json!({ "error": "invalid_arguments" }),
         };
 
         // Check if decoder result matches expected

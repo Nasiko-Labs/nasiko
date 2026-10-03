@@ -45,7 +45,9 @@ pub(crate) mod slice;
 pub mod stream;
 pub mod types;
 
-pub use calls::{decode_calls, render_calls, scan_raw_calls, validate_tool_arguments};
+pub use calls::{
+    decode_calls, render_calls, scan_call_spans, scan_raw_calls, validate_tool_arguments,
+};
 pub use decode_schema::{decode_tool_signature, decode_tools};
 pub use encode::{
     encode_tools, encode_tools_with_variant, extract_first_sentence, render_tool_signature,
@@ -220,7 +222,7 @@ mod tests {
         let mut decoder = StreamDecoder::new(tools);
         let _ = decoder.push("Starting <<call get_weather {\"city\": \"Ber");
         let err = decoder.finish().unwrap_err();
-        assert!(matches!(err, CompactError::Malformed(_)));
+        assert!(matches!(err, CompactError::InvalidArguments { .. }));
     }
 
     #[test]

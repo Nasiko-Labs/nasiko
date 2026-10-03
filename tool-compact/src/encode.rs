@@ -41,7 +41,7 @@ pub fn encode_tools_with_variant(
 
     let text = signatures.join("\n");
     let instructions = variant.text().to_string();
-    let full_prompt = format!("{instructions}\n\n[Tools]\n{text}");
+    let full_prompt = format!("{instructions}\n\n{text}");
 
     Ok(CompactTools {
         text,
@@ -63,6 +63,12 @@ pub fn render_tool_signature(tool: &ToolDef) -> Result<String, CompactError> {
     }
 
     out.push(')');
+
+    if let Some(params) = &tool.parameters
+        && params.get("additionalProperties") == Some(&Value::Bool(false))
+    {
+        out.push('!');
+    }
 
     if let Some(desc) = &tool.description {
         let first_sentence = extract_first_sentence(desc);
@@ -95,15 +101,30 @@ fn render_parameters(
         .map(|arr| arr.iter().filter_map(Value::as_str).collect())
         .unwrap_or_default();
 
+    let mut ordered_keys: Vec<&str> = Vec::new();
+    // 1. Required parameters first (in the order listed in `required`)
+    for req_key in &required {
+        if properties.contains_key(*req_key) && !ordered_keys.contains(req_key) {
+            ordered_keys.push(req_key);
+        }
+    }
+    // 2. Remaining (optional) parameters in deterministic alphabetical order
+    for prop_key in properties.keys() {
+        if !ordered_keys.contains(&prop_key.as_str()) {
+            ordered_keys.push(prop_key.as_str());
+        }
+    }
+
     let mut first = true;
-    for (prop_name, prop_schema) in properties {
+    for prop_name in ordered_keys {
+        let prop_schema = &properties[prop_name];
         if !first {
             out.push_str(", ");
         }
         first = false;
 
         out.push_str(prop_name);
-        let is_required = required.contains(&prop_name.as_str());
+        let is_required = required.contains(&prop_name);
         if !is_required {
             out.push('?');
         }
@@ -119,10 +140,17 @@ fn render_parameters(
 
         // Parameter description (if informative)
         if let Some(desc) = prop_schema.get("description").and_then(Value::as_str) {
-            let type_str = prop_schema
-                .get("type")
-                .and_then(Value::as_str)
-                .unwrap_or("");
+            let type_str = if prop_schema.get("format").and_then(Value::as_str) == Some("date-time")
+            {
+                "datetime"
+            } else if let Some(fmt) = prop_schema.get("format").and_then(Value::as_str) {
+                fmt
+            } else {
+                prop_schema
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+            };
             if should_keep_param_desc(prop_name, type_str, desc) {
                 let cleaned_desc = normalize_whitespace(desc);
                 let _ = write!(out, " /* {cleaned_desc} */");
@@ -337,6 +365,9 @@ fn render_object_type(
         }
     }
     out.push('}');
+    if schema.get("additionalProperties") == Some(&Value::Bool(false)) {
+        out.push('!');
+    }
     Ok(())
 }
 
@@ -425,42 +456,97 @@ pub fn extract_first_sentence(text: &str) -> String {
 pub fn should_keep_param_desc(name: &str, type_str: &str, desc: &str) -> bool {
     let lower_desc = desc.trim().to_ascii_lowercase();
     let lower_name = name.trim().to_ascii_lowercase();
+    let lower_type = type_str.trim().to_ascii_lowercase();
+
+    if lower_desc.is_empty() {
+        return false;
+    }
 
     // Check trivial descriptions
     if lower_desc == lower_name
         || lower_desc == format!("the {lower_name}")
         || lower_desc == format!("{lower_name} to use")
-        || lower_desc == type_str
-        || lower_desc == format!("the {type_str}")
-        || lower_desc.is_empty()
+        || lower_desc == lower_type
+        || lower_desc == format!("the {lower_type}")
     {
         return false;
     }
 
-    // Always keep if contains distinguishing information (units, constraints, formats, examples)
-    let indicators = [
+    // Specific restatements of datetime / ISO 8601
+    if (lower_type == "datetime" || lower_type == "date-time")
+        && (lower_desc.contains("iso")
+            || lower_desc.contains("8601")
+            || lower_desc.contains("time")
+            || lower_desc.contains("date"))
+        && !lower_desc.contains("zone")
+        && !lower_desc.contains("offset")
+    {
+        return false;
+    }
+
+    let name_tokens: Vec<&str> = lower_name.split('_').collect();
+    let desc_words: Vec<&str> = lower_desc
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+
+    let filler = [
+        "the",
+        "a",
+        "an",
+        "of",
+        "in",
+        "for",
+        "to",
+        "and",
+        "or",
+        "is",
+        "event",
+        "email",
+        "recipient",
+        "user",
+        "item",
+        "value",
+        "string",
+        "number",
+        "integer",
+        "boolean",
+        "array",
+        "list",
+        "emails",
+        "minutes",
+        "min",
+        "sec",
+        "seconds",
+        "hours",
+        "time",
+        "date",
+        "attendee",
+        "attendees",
+    ];
+
+    let all_restatements = desc_words.iter().all(|w| {
+        filler.contains(w)
+            || name_tokens.contains(w)
+            || *w == lower_type
+            || (lower_type == "datetime" && (*w == "iso" || *w == "8601"))
+    });
+
+    if all_restatements {
+        return false;
+    }
+
+    // Keep if description contains genuine disambiguating units/constraints
+    let disambiguating = [
         "celsius",
         "fahrenheit",
         "kelvin",
-        "seconds",
-        "minutes",
-        "hours",
-        "days",
-        "ms",
         "bytes",
         "kb",
         "mb",
         "gb",
-        "iso",
-        "rfc",
-        "format",
-        "comma",
-        "separated",
-        "url",
-        "http",
-        "id",
-        "slug",
-        "email",
+        "regex",
+        "pattern",
         "example",
         "e.g.",
         "such as",
@@ -468,24 +554,18 @@ pub fn should_keep_param_desc(name: &str, type_str: &str, desc: &str) -> bool {
         "range",
         "between",
         "unique",
-        "regex",
         "timezone",
-        "utc",
-        "gmt",
+        "temperature",
     ];
 
-    for ind in indicators {
+    for ind in disambiguating {
         if lower_desc.contains(ind) {
             return true;
         }
     }
 
     // If description is significantly longer and detailed, keep it
-    if lower_desc.len() > lower_name.len() + 15 {
-        return true;
-    }
-
-    false
+    lower_desc.len() > lower_name.len() + 25
 }
 
 fn normalize_whitespace(s: &str) -> String {
