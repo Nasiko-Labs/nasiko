@@ -4,6 +4,32 @@
 //! can be promoted to a standalone binary later without dragging in the platform's
 //! full `Config`. Env-var *names* match the platform for deployment consistency.
 
+/// Which [`RequestClassifier`](crate::routing::classifier::RequestClassifier) backend
+/// classifies request types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClassifierBackend {
+    /// The regex vote-count baseline (default).
+    Regex,
+    /// The in-process linear model (embedded weights, or `CLASSIFIER_MODEL_PATH`).
+    Local,
+    /// An OpenAI-compatible hosted endpoint.
+    Hosted,
+}
+
+impl ClassifierBackend {
+    /// Parse a `CLASSIFIER_BACKEND` value (case-insensitive).
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "regex" => Ok(Self::Regex),
+            "local" => Ok(Self::Local),
+            "hosted" => Ok(Self::Hosted),
+            other => Err(format!(
+                "unknown classifier backend {other:?} (expected regex|local|hosted)"
+            )),
+        }
+    }
+}
+
 /// Configuration for the LLM router, read from the environment.
 ///
 /// See `RUST_PLAN_V1.md` §5. All fields have sane defaults so `from_env` never fails;
@@ -101,6 +127,32 @@ pub struct GatewayConfig {
     /// retuned. Default 0.80.
     pub salience_high_threshold: f64,
 
+    /// Request-type classifier backend (`CLASSIFIER_BACKEND`): `regex` (default — the
+    /// keyword baseline, routing unchanged), `local` (in-process linear model, no network),
+    /// or `hosted` (an OpenAI-compatible endpoint).
+    /// An unknown value warns and keeps `regex`, so a typo never changes routing.
+    pub classifier_backend: ClassifierBackend,
+    /// Weights file for the `local` backend (`CLASSIFIER_MODEL_PATH`). Empty (default) ⇒
+    /// the model embedded in the binary.
+    pub classifier_model_path: String,
+    /// Full chat-completions URL for the `hosted` backend (`CLASSIFIER_ENDPOINT`).
+    pub classifier_endpoint: String,
+    /// Bearer key for the `hosted` backend (`CLASSIFIER_API_KEY`). Empty ⇒ no auth header.
+    pub classifier_api_key: String,
+    /// Model id the `hosted` backend requests (`CLASSIFIER_MODEL`).
+    pub classifier_model: String,
+    /// Per-decision budget (`CLASSIFIER_TIMEOUT_MS`). A slower backend answer is dropped
+    /// for the regex result and counted as a fallback. Default 1000.
+    pub classifier_timeout_ms: u64,
+    /// Below this confidence a backend answer is not routed on: the turn gets the agent's
+    /// configured model and nothing is pinned (`CLASSIFIER_MIN_CONFIDENCE`). Default 0.5.
+    /// Never applies to the regex backend, whose confidence is a fixed placeholder.
+    pub classifier_min_confidence: f32,
+    /// Seed for Thompson tier sampling (`ROUTER_TIER_SEED`). Unset (default) ⇒ entropy, as
+    /// before. Set ⇒ the tier is a deterministic function of (seed, provider, query,
+    /// request type, learned cells), so identical inputs and state route identically.
+    pub router_tier_seed: Option<u64>,
+
     /// Fleet-wide kill switch for payload compression. Compression is opted into **per agent**
     /// (`agents.compress_enabled`); this only lets an operator stop all of it at once without
     /// editing every agent's row. Default on, so a UI toggle takes effect without a deploy.
@@ -185,6 +237,14 @@ impl Default for GatewayConfig {
             salience_weights_path: String::new(),
             salience_low_threshold: 0.20,
             salience_high_threshold: 0.80,
+            classifier_backend: ClassifierBackend::Regex,
+            classifier_model_path: String::new(),
+            classifier_endpoint: String::new(),
+            classifier_api_key: String::new(),
+            classifier_model: "gpt-4o-mini".into(),
+            classifier_timeout_ms: 1000,
+            classifier_min_confidence: 0.5,
+            router_tier_seed: None,
             compress_kill_switch: true,
             compress_min_bytes: 2048,
             compress_types: nasiko_compress::TypeMask::DEFAULT,
@@ -274,6 +334,28 @@ impl GatewayConfig {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(d.salience_high_threshold),
+            classifier_backend: parse_or_warn(
+                "CLASSIFIER_BACKEND",
+                ClassifierBackend::parse,
+                d.classifier_backend,
+            ),
+            classifier_model_path: env_or("CLASSIFIER_MODEL_PATH", &d.classifier_model_path),
+            classifier_endpoint: env_or("CLASSIFIER_ENDPOINT", &d.classifier_endpoint),
+            classifier_api_key: env_or("CLASSIFIER_API_KEY", &d.classifier_api_key),
+            classifier_model: env_or("CLASSIFIER_MODEL", &d.classifier_model),
+            classifier_timeout_ms: env_usize(
+                "CLASSIFIER_TIMEOUT_MS",
+                d.classifier_timeout_ms as usize,
+            ) as u64,
+            // Out-of-range or NaN would silently turn every answer low-confidence.
+            classifier_min_confidence: parse_or_warn(
+                "CLASSIFIER_MIN_CONFIDENCE",
+                parse_probability,
+                d.classifier_min_confidence,
+            ),
+            router_tier_seed: std::env::var("ROUTER_TIER_SEED")
+                .ok()
+                .and_then(|v| v.parse().ok()),
             compress_kill_switch: env_flag("TOKEN_COMPRESS_ENABLED", true),
             compress_min_bytes: env_usize("TOKEN_COMPRESS_MIN_BYTES", 2048),
             // A bad label must not silently widen or narrow what gets rewritten, so an
@@ -388,6 +470,14 @@ fn parse_or_warn<T, E: std::fmt::Display>(
     }
 }
 
+/// A probability: a finite number in `[0, 1]`.
+fn parse_probability(raw: &str) -> Result<f32, String> {
+    match raw.trim().parse::<f32>() {
+        Ok(p) if (0.0..=1.0).contains(&p) => Ok(p),
+        _ => Err(format!("{raw:?} is not a probability in [0, 1]")),
+    }
+}
+
 fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
 }
@@ -434,5 +524,38 @@ mod tests {
         assert_eq!(cfg.platform_key_for("my-gateway"), "");
         assert_eq!(cfg.platform_key_for("deepseek"), "");
         assert_eq!(cfg.platform_key_for(""), "");
+    }
+
+    #[test]
+    fn classifier_backend_parses_known_values_only() {
+        assert_eq!(
+            ClassifierBackend::parse("regex"),
+            Ok(ClassifierBackend::Regex)
+        );
+        assert_eq!(
+            ClassifierBackend::parse(" Hosted "),
+            Ok(ClassifierBackend::Hosted)
+        );
+        assert_eq!(
+            ClassifierBackend::parse("LOCAL"),
+            Ok(ClassifierBackend::Local)
+        );
+        assert!(ClassifierBackend::parse("bert").is_err());
+        assert!(ClassifierBackend::parse("").is_err());
+    }
+
+    #[test]
+    fn min_confidence_accepts_only_probabilities() {
+        assert_eq!(parse_probability("0.7"), Ok(0.7));
+        assert!(parse_probability("nan").is_err());
+        assert!(parse_probability("50").is_err());
+        assert!(parse_probability("-0.1").is_err());
+    }
+
+    #[test]
+    fn classifier_defaults_keep_regex_routing() {
+        let cfg = GatewayConfig::default();
+        assert_eq!(cfg.classifier_backend, ClassifierBackend::Regex);
+        assert_eq!(cfg.router_tier_seed, None);
     }
 }

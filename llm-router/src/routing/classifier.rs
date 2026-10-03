@@ -26,9 +26,22 @@
 //! feedback accumulates the posterior tightens and selection converges. Thompson's
 //! stochasticity is the exploration that makes that learning possible, so production feeds
 //! it an entropy RNG; tests inject a seeded one.
+//!
+//! ## Pluggable request-type backends
+//!
+//! Step 1 sits behind the [`RequestClassifier`] trait so a stronger decision model can
+//! replace the regex without touching tier selection. [`RegexClassifier`] is the default
+//! and reproduces the vote-count result exactly; [`fallback::FallbackClassifier`] wraps any
+//! backend with a timeout, regex fallback, and the low-confidence rule the router applies.
+
+pub mod fallback;
+pub mod hosted;
+pub mod linear;
 
 use std::collections::HashMap;
+use std::time::Duration;
 
+use async_trait::async_trait;
 use rand::Rng;
 use rand_distr::{Beta, Distribution};
 
@@ -290,11 +303,15 @@ pub fn pick_model_thompson<R: Rng + ?Sized>(
 }
 
 // --------------------------------------------------------------------------
-// 4. Public entry point
+// 4. Regex-only convenience entry point
 // --------------------------------------------------------------------------
 
 /// Classify a `query` into a model [`Tier`] (and the [`RequestType`] it was bucketed as) for
-/// the destination `provider`.
+/// the destination `provider`, using the regex baseline.
+///
+/// The router itself goes through the configured [`RequestClassifier`] (see
+/// `super::route_model`); this one-call form is kept for callers that want the regex path
+/// directly, and its result matches the router's under the default `regex` backend.
 ///
 /// `provider` is the **destination** provider the request will be routed to (already
 /// resolved), not the agent's client SDK — the tier is later looked up in *that* provider's
@@ -322,6 +339,144 @@ pub fn classify<R: Rng + ?Sized>(
         "classifier: classified query into request type and Thompson-sampled a model tier"
     );
     (tier, request_type)
+}
+
+// --------------------------------------------------------------------------
+// 5. RequestClassifier interface — pluggable request-type backends
+// --------------------------------------------------------------------------
+
+/// Lowest valid complexity score (trivial single operation).
+pub const MIN_COMPLEXITY: u8 = 1;
+/// Highest valid complexity score (intricate cross-component reasoning and validation).
+pub const MAX_COMPLEXITY: u8 = 5;
+
+/// What a backend classifies: the latest user query plus optional surrounding context
+/// (code under discussion, prior turn, constraints). Context often decides the label —
+/// "explain why this returns the old value" is code understanding only because of the
+/// code next to it.
+#[derive(Debug, Clone, Copy)]
+pub struct ClassifyInput<'a> {
+    /// The latest user request.
+    pub query: &'a str,
+    /// Supporting material (code, logs, prior turn, constraints), if any.
+    pub context: Option<&'a str>,
+}
+
+/// One backend decision.
+///
+/// - `request_type` — the [`RequestType`] the bandit keys learning on.
+/// - `complexity` — 1–5 on the published rubric: 1 trivial single operation, 2
+///   straightforward, 3 multi-step with limited constraints, 4 substantial reasoning or
+///   design, 5 intricate cross-component reasoning and validation.
+/// - `confidence` — the backend's probability, in `[0, 1]`, that `request_type` is correct.
+///   A calibrated backend is right about `confidence` of the time; the router routes
+///   answers below its threshold to the safe default rather than trusting them.
+///
+/// Construct through [`Classification::new`], which rejects out-of-range values so a
+/// misbehaving backend surfaces as an error (and a regex fallback), never as a bad route.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Classification {
+    /// The kind of work requested.
+    pub request_type: RequestType,
+    /// Effort, [`MIN_COMPLEXITY`]..=[`MAX_COMPLEXITY`], on the rubric above.
+    pub complexity: u8,
+    /// Probability in `[0, 1]` that `request_type` is correct.
+    pub confidence: f32,
+}
+
+impl Classification {
+    /// Validate and build a classification; out-of-range complexity or a confidence outside
+    /// `[0, 1]` (including NaN) is [`ClassifyError::InvalidOutput`].
+    pub fn new(
+        request_type: RequestType,
+        complexity: u8,
+        confidence: f32,
+    ) -> Result<Self, ClassifyError> {
+        if !(MIN_COMPLEXITY..=MAX_COMPLEXITY).contains(&complexity) {
+            return Err(ClassifyError::InvalidOutput(format!(
+                "complexity {complexity} outside {MIN_COMPLEXITY}..={MAX_COMPLEXITY}"
+            )));
+        }
+        if !(0.0..=1.0).contains(&confidence) {
+            return Err(ClassifyError::InvalidOutput(format!(
+                "confidence {confidence} outside [0, 1]"
+            )));
+        }
+        Ok(Self {
+            request_type,
+            complexity,
+            confidence,
+        })
+    }
+}
+
+/// Why a backend could not classify. Every variant makes the router fall back to the regex
+/// result and count a fallback — none of them is ever user-visible.
+#[derive(Debug, thiserror::Error)]
+pub enum ClassifyError {
+    /// The model could not be loaded (missing/corrupt weights, bad configuration).
+    #[error("classifier model unavailable: {0}")]
+    ModelLoad(String),
+    /// The model ran but failed.
+    #[error("classifier inference failed: {0}")]
+    Inference(String),
+    /// A hosted backend could not be reached or returned a non-success status.
+    #[error("classifier endpoint error: {0}")]
+    Network(String),
+    /// The backend answered, but not with a usable classification.
+    #[error("classifier returned invalid output: {0}")]
+    InvalidOutput(String),
+    /// The backend did not answer within the configured budget.
+    #[error("classifier timed out after {0:?}")]
+    Timeout(Duration),
+}
+
+/// A request-type decision backend. Async because hosted backends make network calls;
+/// local backends simply return immediately.
+#[async_trait]
+pub trait RequestClassifier: Send + Sync {
+    /// Stable backend name, used in logs and eval reports.
+    fn name(&self) -> &str;
+    /// Classify one request.
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError>;
+}
+
+/// The regex vote-count baseline as a [`RequestClassifier`] — the out-of-the-box default.
+///
+/// It reads the query only (exactly what [`classify_request_type`] always did, so routing
+/// is unchanged) and reports fixed values for what it cannot measure:
+/// [`RegexClassifier::COMPLEXITY`] and [`RegexClassifier::CONFIDENCE`]. Those constants are
+/// placeholders, not estimates, so the low-confidence rule never applies to regex results.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RegexClassifier;
+
+impl RegexClassifier {
+    /// Backend name reported in logs and eval output.
+    pub const NAME: &'static str = "regex";
+    /// Fixed complexity: the rubric midpoint, since keyword votes carry no effort signal.
+    pub const COMPLEXITY: u8 = 3;
+    /// Fixed confidence: an uninformative 0.5 — the regex has no probability to report.
+    pub const CONFIDENCE: f32 = 0.5;
+
+    /// The regex decision, synchronously — infallible, which is what makes it the fallback.
+    pub fn classify_now(input: &ClassifyInput<'_>) -> Classification {
+        Classification {
+            request_type: classify_request_type(input.query),
+            complexity: Self::COMPLEXITY,
+            confidence: Self::CONFIDENCE,
+        }
+    }
+}
+
+#[async_trait]
+impl RequestClassifier for RegexClassifier {
+    fn name(&self) -> &str {
+        Self::NAME
+    }
+
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+        Ok(Self::classify_now(input))
+    }
 }
 
 #[cfg(test)]

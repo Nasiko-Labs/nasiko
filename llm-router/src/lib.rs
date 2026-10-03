@@ -26,6 +26,11 @@ use serde_json::{Value, json};
 use sqlx::PgPool;
 use tower_http::decompression::RequestDecompressionLayer;
 
+use routing::classifier::fallback::FallbackClassifier;
+use routing::classifier::hosted::{HostedClassifier, HostedConfig};
+use routing::classifier::linear::LinearClassifier;
+use routing::classifier::{ClassifyError, RequestClassifier};
+
 pub mod auth;
 mod brevity;
 mod compress;
@@ -42,7 +47,7 @@ pub mod routing;
 mod savings;
 pub mod usage;
 
-pub use config::GatewayConfig;
+pub use config::{ClassifierBackend, GatewayConfig};
 pub use error::GatewayError;
 pub use inbound::InboundFormat;
 pub use inject::{LlmInjectCtx, inject_llm_env};
@@ -82,6 +87,11 @@ pub struct LlmRouterCtx {
     /// classify + pin. [`ClassifierSalienceGate`] when `SALIENCE_GATE_ENABLED`; else [`AllowAllGate`]
     /// (classify at every boundary, i.e. behaviour before the gate existed).
     pub salience_gate: Arc<dyn SalienceGate>,
+    /// Request-type classifier used at Level 3 — the configured
+    /// [`RequestClassifier`](routing::classifier::RequestClassifier) backend behind a
+    /// timeout and regex fallback. The regex baseline unless `CLASSIFIER_BACKEND` says
+    /// otherwise; see [`build_request_classifier`].
+    pub request_classifier: Arc<FallbackClassifier>,
     /// The platform's single cost engine. Every `token_usage` row is priced
     /// through this — the DB trigger that used to do it returned NULL for any
     /// model missing from `model_pricing`, which booked 92.8% of calls at $0.
@@ -127,6 +137,7 @@ impl LlmRouterCtx {
         let router_cache = build_router_cache(&cfg);
         let cfg = Arc::new(cfg);
         let salience_gate = build_salience_gate(&cfg);
+        let request_classifier = Arc::new(build_request_classifier(&cfg, &http));
         let pricing = Arc::new(PricingEngine::new(db.clone()));
         Self {
             db,
@@ -137,6 +148,7 @@ impl LlmRouterCtx {
             tier_registry,
             cell_store,
             salience_gate,
+            request_classifier,
             pricing,
         }
     }
@@ -203,6 +215,81 @@ fn build_salience_gate(cfg: &Arc<GatewayConfig>) -> Arc<dyn SalienceGate> {
             Arc::new(AllowAllGate)
         }
     }
+}
+
+/// Build the request-type classifier from config — the one constructor shared by the router
+/// and the `classifier_eval` example, so the eval exercises the router's code path.
+///
+/// `regex` (the default) wraps the keyword baseline and changes nothing. `hosted` wraps an
+/// OpenAI-compatible endpoint with `CLASSIFIER_TIMEOUT_MS` and `CLASSIFIER_MIN_CONFIDENCE`.
+/// A backend that cannot be built (e.g. no endpoint) logs a warning and degrades to regex:
+/// a misconfigured classifier costs routing quality, never availability.
+pub fn build_request_classifier(cfg: &GatewayConfig, http: &reqwest::Client) -> FallbackClassifier {
+    // Every backend can fall back to regex, so compile its lazily-built patterns now rather
+    // than on the first routed request (~10 ms otherwise).
+    routing::classify_request_type("");
+    let backend: Result<Arc<dyn RequestClassifier>, ClassifyError> = match cfg.classifier_backend {
+        ClassifierBackend::Regex => {
+            tracing::info!(
+                target: "nasiko::llm_router::startup",
+                "llm-router: request classifier = regex (default keyword baseline)"
+            );
+            return FallbackClassifier::regex_only();
+        }
+        ClassifierBackend::Local => build_local_classifier(cfg),
+        ClassifierBackend::Hosted => HostedClassifier::new(
+            http.clone(),
+            HostedConfig {
+                endpoint: cfg.classifier_endpoint.clone(),
+                api_key: cfg.classifier_api_key.clone(),
+                model: cfg.classifier_model.clone(),
+            },
+        )
+        .map(|b| Arc::new(b) as Arc<dyn RequestClassifier>),
+    };
+    match backend {
+        Ok(backend) => {
+            tracing::info!(
+                target: "nasiko::llm_router::startup",
+                backend = %backend.name(),
+                timeout_ms = cfg.classifier_timeout_ms,
+                min_confidence = cfg.classifier_min_confidence,
+                "llm-router: request classifier = configured backend with regex fallback"
+            );
+            FallbackClassifier::new(
+                backend,
+                Duration::from_millis(cfg.classifier_timeout_ms),
+                cfg.classifier_min_confidence,
+            )
+        }
+        Err(e) => {
+            tracing::warn!(
+                target: "nasiko::llm_router::startup",
+                backend = ?cfg.classifier_backend,
+                error = %e,
+                "llm-router: request classifier backend failed to build; using regex"
+            );
+            FallbackClassifier::regex_only()
+        }
+    }
+}
+
+/// The `local` backend: the embedded model, or `CLASSIFIER_MODEL_PATH` when set.
+fn build_local_classifier(
+    cfg: &GatewayConfig,
+) -> Result<Arc<dyn RequestClassifier>, ClassifyError> {
+    let model = if cfg.classifier_model_path.is_empty() {
+        LinearClassifier::embedded()?
+    } else {
+        LinearClassifier::from_path(&cfg.classifier_model_path)?
+    };
+    tracing::info!(
+        target: "nasiko::llm_router::startup",
+        model_path = %cfg.classifier_model_path,
+        provenance = %model.provenance(),
+        "llm-router: local request classifier loaded"
+    );
+    Ok(Arc::new(model))
 }
 
 /// Choose the model-routing decision cache from config: a [`RedisCache`] when `REDIS_URL`
@@ -307,5 +394,74 @@ mod transport_tests {
         assert_eq!(response.status(), StatusCode::OK);
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap(), expected);
+    }
+}
+
+#[cfg(test)]
+mod classifier_selection_tests {
+    use super::*;
+
+    fn build(backend: ClassifierBackend, endpoint: &str) -> FallbackClassifier {
+        let cfg = GatewayConfig {
+            classifier_backend: backend,
+            classifier_endpoint: endpoint.into(),
+            ..Default::default()
+        };
+        build_request_classifier(&cfg, &reqwest::Client::new())
+    }
+
+    /// Port 9 (discard) refuses connections, so every hosted call fails fast.
+    const UNREACHABLE: &str = "http://127.0.0.1:9/v1/chat/completions";
+
+    #[test]
+    fn default_config_selects_regex() {
+        let classifier =
+            build_request_classifier(&GatewayConfig::default(), &reqwest::Client::new());
+        assert_eq!(classifier.backend_name(), "regex");
+    }
+
+    #[test]
+    fn hosted_backend_is_selected_when_configured() {
+        assert_eq!(
+            build(ClassifierBackend::Hosted, UNREACHABLE).backend_name(),
+            "hosted"
+        );
+    }
+
+    #[test]
+    fn local_backend_loads_the_embedded_model() {
+        assert_eq!(build(ClassifierBackend::Local, "").backend_name(), "local");
+    }
+
+    #[test]
+    fn local_backend_with_a_missing_model_file_degrades_to_regex() {
+        let cfg = GatewayConfig {
+            classifier_backend: ClassifierBackend::Local,
+            classifier_model_path: "/nonexistent/weights.json".into(),
+            ..Default::default()
+        };
+        let classifier = build_request_classifier(&cfg, &reqwest::Client::new());
+        assert_eq!(classifier.backend_name(), "regex");
+    }
+
+    #[test]
+    fn hosted_backend_without_endpoint_degrades_to_regex() {
+        assert_eq!(build(ClassifierBackend::Hosted, "").backend_name(), "regex");
+    }
+
+    #[tokio::test]
+    async fn unreachable_hosted_backend_falls_back_per_decision() {
+        let classifier = build(ClassifierBackend::Hosted, UNREACHABLE);
+        let input = routing::ClassifyInput {
+            query: "what is the capital of France?",
+            context: None,
+        };
+        let d = classifier.decide(&input).await;
+        assert_eq!(d.source, routing::DecisionSource::Fallback);
+        assert_eq!(
+            d.classification,
+            routing::RegexClassifier::classify_now(&input)
+        );
+        assert_eq!(classifier.stats().fallbacks, 1);
     }
 }
