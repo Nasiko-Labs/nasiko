@@ -148,6 +148,12 @@ pub struct GatewayConfig {
     /// `tools` arrays are replaced with a compact prompt block for the model hop; decoded
     /// `<<call>>` markers are rehydrated into standard OpenAI `tool_calls` for the client.
     pub compact_tools_enabled: bool,
+    /// Optional reference calendar date injected into the compact system prompt
+    /// (e.g. `2026-10-02`) so models resolve relative dates consistently.
+    /// Empty / unset → no reference preamble (library stays generic).
+    pub compact_tools_ref_date: Option<String>,
+    /// Optional IANA timezone for relative date resolution (e.g. `Asia/Kolkata`).
+    pub compact_tools_ref_tz: Option<String>,
 }
 
 impl Default for GatewayConfig {
@@ -190,6 +196,8 @@ impl Default for GatewayConfig {
             compress_recovery_min_bytes: 8192,
             compress_recovery_ttl_secs: 86_400,
             compact_tools_enabled: false,
+            compact_tools_ref_date: None,
+            compact_tools_ref_tz: None,
         }
     }
 }
@@ -297,6 +305,8 @@ impl GatewayConfig {
                 d.compress_recovery_ttl_secs as usize,
             ) as u64,
             compact_tools_enabled: env_flag("TOKEN_COMPACT_TOOLS", d.compact_tools_enabled),
+            compact_tools_ref_date: env_opt("TOKEN_COMPACT_TOOLS_REF_DATE"),
+            compact_tools_ref_tz: env_opt("TOKEN_COMPACT_TOOLS_REF_TZ"),
         }
     }
 
@@ -379,6 +389,18 @@ fn parse_or_warn<T, E: std::fmt::Display>(
 
 fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
+}
+
+/// Non-empty env var, else `None`.
+fn env_opt(key: &str) -> Option<String> {
+    std::env::var(key).ok().and_then(|v| {
+        let t = v.trim();
+        if t.is_empty() {
+            None
+        } else {
+            Some(t.to_string())
+        }
+    })
 }
 
 /// First non-empty env var among `keys`, else `default`. Lets a `PLATFORM_*` key take

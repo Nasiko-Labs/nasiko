@@ -65,8 +65,12 @@ Additional properties are **rejected** unless the original schema sets `"additio
 | Setting | Default | Env |
 |---------|---------|-----|
 | `GatewayConfig::compact_tools_enabled` | `false` | `TOKEN_COMPACT_TOOLS=true` |
+| Reference date (optional) | unset | `TOKEN_COMPACT_TOOLS_REF_DATE` |
+| Reference timezone (optional) | unset | `TOKEN_COMPACT_TOOLS_REF_TZ` |
 
-When disabled, the chat request path is unchanged (regression-tested). When enabled, eligible `tools` are replaced with the compact prompt; decoded `<<call>>` markers become standard OpenAI `tool_calls` for the client (non-streaming path).
+When disabled, the chat request path is unchanged (regression-tested). When enabled, eligible `tools` are replaced with the compact prompt; decoded `<<call>>` markers become standard OpenAI `tool_calls` for the client (non-streaming path). Streaming requests bypass compaction until response rehydration is wired.
+
+Eval harness reference defaults (overridable): `COMPACT_REF_DATE=2026-10-02`, `COMPACT_REF_TZ=Asia/Kolkata`.
 
 ## Tests
 
@@ -88,17 +92,18 @@ Optional live mode (never required): set `PROVIDER_BASE_URL`, `MODEL`, and optio
 
 ## Measured token reduction (public eval, o200k_base)
 
-| Case | Native tokens | Compact tokens | Reduction |
-|------|---------------|----------------|-----------|
-| ct-001 | 446 | 149 | **66.6%** |
-| ct-002 | 455 | 158 | **65.3%** |
-| ct-003 | 240 | 113 | **52.9%** |
+| Case | Native → Compact | Reduction |
+|------|------------------|-----------|
+| ct-001 | 446 → 214 | **52.0%** |
+| ct-002 | 455 → 223 | **51.0%** |
+| ct-003 | 240 → 165 | **31.3%** |
+| Aggregate | 1141 → 602 | **47.2%** |
 
-All cases exceed the ≥30% target. Decoder cases dc-001…dc-005 match expected calls / error labels. Output is deterministic across repeated runs. Live provider evaluation was not performed.
+Prior baseline (shorter instructions, no param hints): 66.6% / 65.3% / 52.9%. Current prompt trades some savings for clearer live call instructions + reference-time context (reference preamble excluded from the reduction metric).
 
 ## Limitations
 
 - Only string enums are supported in compact form.
-- `anyOf` / `oneOf` / `allOf` / `$ref` / recursive schemas are unsupported (bypass).
-- Descriptions are preserved on the signature line; nested property descriptions may be omitted from the one-liner (structure retained via `decode_tools`).
-- Router streaming response → native `tool_calls` rehydration is not wired yet; the library `StreamDecoder` is fully streaming-safe. Compact mode defaults off.
+- `anyOf` / `oneOf` / `allOf` / `$ref` / constraint keywords (`pattern`, `minimum`, …) / `additionalProperties` schema objects are unsupported (bypass).
+- Tool/param descriptions are clipped in the signature line; full structure is retained via `decode_tools`.
+- Router streaming response → native `tool_calls` rehydration is not wired yet; streaming requests bypass compaction. The library `StreamDecoder` is streaming-safe. Compact mode defaults off.

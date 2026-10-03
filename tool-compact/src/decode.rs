@@ -52,9 +52,11 @@ pub(crate) fn parse_one_call(input: &str, tools: &[ToolDef]) -> Result<(ToolCall
     let json_len = scan_json_object(rest)?;
     let json_str = &rest[..json_len];
     let after_json = &rest[json_len..];
-    if !after_json.starts_with(CALL_SUFFIX) {
+    let suffix_ws = trailing_ws_len(after_json);
+    let after_ws = &after_json[suffix_ws..];
+    if !after_ws.starts_with(CALL_SUFFIX) {
         return Err(CompactError::MalformedCall(
-            "call must end with >> immediately after JSON".into(),
+            "call must end with >> after the JSON object".into(),
         ));
     }
 
@@ -65,7 +67,7 @@ pub(crate) fn parse_one_call(input: &str, tools: &[ToolDef]) -> Result<(ToolCall
     validate_arguments(tool, &arguments)?;
 
     let ws = after_prefix[name_end..].len() - rest.len();
-    let consumed = CALL_PREFIX.len() + name_end + ws + json_len + CALL_SUFFIX.len();
+    let consumed = CALL_PREFIX.len() + name_end + ws + json_len + suffix_ws + CALL_SUFFIX.len();
 
     Ok((
         ToolCall {
@@ -74,6 +76,14 @@ pub(crate) fn parse_one_call(input: &str, tools: &[ToolDef]) -> Result<(ToolCall
         },
         consumed,
     ))
+}
+
+/// Length of leading ASCII whitespace (space/tab/CR/LF) before `>>`.
+fn trailing_ws_len(s: &str) -> usize {
+    s.chars()
+        .take_while(|c| matches!(c, ' ' | '\t' | '\n' | '\r'))
+        .map(|c| c.len_utf8())
+        .sum()
 }
 
 /// Scan a JSON object starting at `{`, respecting strings/escapes. Returns byte length.
@@ -169,16 +179,18 @@ pub(crate) fn try_parse_complete(
         Err(e) => Err(e),
         Ok(json_len) => {
             let after_json = &rest[json_len..];
-            if after_json.is_empty() {
+            let suffix_ws = trailing_ws_len(after_json);
+            let after_ws = &after_json[suffix_ws..];
+            if after_ws.is_empty() {
                 return Ok(None);
             }
-            if after_json == ">" {
+            if after_ws == ">" {
                 // Partial `>>`
                 return Ok(None);
             }
-            if !after_json.starts_with(CALL_SUFFIX) {
+            if !after_ws.starts_with(CALL_SUFFIX) {
                 return Err(CompactError::MalformedCall(
-                    "call must end with >> immediately after JSON".into(),
+                    "call must end with >> after the JSON object".into(),
                 ));
             }
             let json_str = &rest[..json_len];
@@ -191,6 +203,7 @@ pub(crate) fn try_parse_complete(
                 + name_end
                 + (after_prefix[name_end..].len() - rest.len())
                 + json_len
+                + suffix_ws
                 + CALL_SUFFIX.len();
             Ok(Some((
                 ToolCall {
@@ -281,5 +294,28 @@ mod tests {
         let text = "I will create the event now.\n\n<<call create_calendar_event {\"title\":\"T\",\"start\":\"2026-10-05T15:00:00+05:30\"}>>\nDone.";
         let calls = decode_calls(text, &tools()).unwrap();
         assert_eq!(calls.len(), 1);
+    }
+
+    #[test]
+    fn whitespace_before_closing_marker() {
+        let text = "<<call create_calendar_event {\"title\":\"T\",\"start\":\"2026-10-05T15:00:00+05:30\"} \n>>";
+        let calls = decode_calls(text, &tools()).unwrap();
+        assert_eq!(calls.len(), 1);
+    }
+
+    #[test]
+    fn multiple_calls() {
+        let text = r#"<<call send_email {"to":["a@b.c"],"subject":"s","body":"b"}>><<call create_calendar_event {"title":"T","start":"2026-10-05T15:00:00+05:30"}>>"#;
+        let calls = decode_calls(text, &tools()).unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].name, "send_email");
+        assert_eq!(calls[1].name, "create_calendar_event");
+    }
+
+    #[test]
+    fn escaped_quotes_in_json() {
+        let text = r#"<<call send_email {"to":["a@b.c"],"subject":"say \"hi\"","body":"x"}>>"#;
+        let calls = decode_calls(text, &tools()).unwrap();
+        assert_eq!(calls[0].arguments["subject"], json!("say \"hi\""));
     }
 }

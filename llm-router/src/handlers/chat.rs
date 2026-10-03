@@ -272,10 +272,30 @@ async fn chat_core(
         }
     }
 
+    // ── compact tool schemas (P1, opt-in) ─────────────────────────────────────────────────
+    // Default off. When enabled, replaces native `tools` JSON Schema with a compact prompt and
+    // later rehydrates `<<call>>` markers into standard OpenAI tool_calls for the client.
+    // Applied before brevity: the brevity directive fights `<<call>>` emission on tool turns.
+    let compact_tools = crate::tool_compact::apply(&mut req, &ctx.cfg);
+    let compact_tools_metadata = crate::tool_compact::to_metadata(&compact_tools);
+    tracing::debug!(
+        target: "nasiko::llm_router::tool_compact",
+        %agent_id,
+        applied = compact_tools.is_ok(),
+        skipped = ?compact_tools.as_ref().err(),
+        metadata = %compact_tools_metadata,
+        "tool_compact: schema decision"
+    );
+
     // ── brevity seam (IP-2) ───────────────────────────────────────────────────────────────
     // After compression, so the size floor is judged on the bytes actually being sent, and so a
     // compressed tool result cannot push a turn over the floor it would otherwise miss.
-    let brevity = crate::brevity::apply(&mut req, &ctx.cfg, &resolved);
+    // Skip when compact tools applied — “answer concisely” conflicts with marker-only calls.
+    let brevity = if compact_tools.is_ok() {
+        Err(crate::brevity::Skipped::CompactTools)
+    } else {
+        crate::brevity::apply(&mut req, &ctx.cfg, &resolved)
+    };
     let brevity_metadata = Some(crate::brevity::to_metadata(
         &brevity,
         crate::brevity::DIRECTIVE.len(),
@@ -286,20 +306,6 @@ async fn chat_core(
         applied = brevity.is_ok(),
         skipped = ?brevity.err(),
         "brevity: directive decision"
-    );
-
-    // ── compact tool schemas (P1, opt-in) ─────────────────────────────────────────────────
-    // Default off. When enabled, replaces native `tools` JSON Schema with a compact prompt and
-    // later rehydrates `<<call>>` markers into standard OpenAI tool_calls for the client.
-    let compact_tools = crate::tool_compact::apply(&mut req, &ctx.cfg);
-    let compact_tools_metadata = crate::tool_compact::to_metadata(&compact_tools);
-    tracing::debug!(
-        target: "nasiko::llm_router::tool_compact",
-        %agent_id,
-        applied = compact_tools.is_ok(),
-        skipped = ?compact_tools.as_ref().err(),
-        metadata = %compact_tools_metadata,
-        "tool_compact: schema decision"
     );
 
     tracing::info!(

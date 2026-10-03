@@ -55,7 +55,10 @@ mod types;
 mod validate;
 
 pub use decode::{CALL_PREFIX, CALL_SUFFIX, decode_calls};
-pub use encode::{CALL_INSTRUCTIONS, decode_tools, encode_tools, render_call, render_calls};
+pub use encode::{
+    CALL_INSTRUCTIONS, decode_tools, encode_tools, reference_time_preamble, render_call,
+    render_calls,
+};
 pub use error::{CompactError, Result};
 pub use stream::StreamDecoder;
 pub use types::{CompactToolEntry, CompactTools, ParamSpec, ToolCall, ToolDef, TypeExpr};

@@ -46,7 +46,36 @@ fn multiple_tools_encode() {
     let c = encode_tools(&[calendar(), email()]).unwrap();
     assert!(c.prompt.contains("create_calendar_event"));
     assert!(c.prompt.contains("send_email"));
-    assert!(c.prompt.contains("<<call TOOL_NAME JSON_ARGUMENTS>>"));
+    assert!(c.prompt.contains("<<call TOOL_NAME {\"key\":\"value\"}>>"));
+    assert!(c.prompt.contains("COMPACT TOOL MODE"));
+}
+
+#[test]
+fn rejects_pattern_constraint() {
+    let tool = ToolDef {
+        name: "lookup".into(),
+        description: None,
+        parameters: Some(json!({
+            "type": "object",
+            "properties": {
+                "id": { "type": "string", "pattern": "^[0-9]+$" }
+            },
+            "required": ["id"]
+        })),
+    };
+    let err = encode_tools(&[tool]).unwrap_err();
+    assert!(matches!(
+        err,
+        nasiko_tool_compact::CompactError::UnsupportedSchema(_)
+    ));
+}
+
+#[test]
+fn whitespace_before_suffix_roundtrip() {
+    let tools = vec![calendar()];
+    let text = "<<call create_calendar_event {\"title\":\"T\",\"start\":\"2026-10-05T15:00:00+05:30\"}\n>>";
+    let calls = decode_calls(text, &tools).unwrap();
+    assert_eq!(calls.len(), 1);
 }
 
 #[test]

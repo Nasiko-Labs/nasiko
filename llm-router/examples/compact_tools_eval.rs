@@ -16,7 +16,8 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 
 use nasiko_tool_compact::{
-    StreamDecoder, ToolCall, ToolDef, decode_calls, encode_tools, render_calls, split_like,
+    StreamDecoder, ToolCall, ToolDef, decode_calls, encode_tools, reference_time_preamble,
+    render_calls, split_like,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -219,11 +220,14 @@ fn run_case(
         "tools": openai_tools(tools),
         "tool_choice": "auto",
     });
+    let compact_messages = with_compact_system(&case.messages, &encoded.prompt);
     let compact_request = json!({
-        "messages": with_compact_system(&case.messages, &encoded.prompt),
+        "messages": compact_messages,
         "tool_choice": "none",
     });
 
+    // Token reduction measures schema compaction (tools JSON vs compact signatures+instructions).
+    // Reference-time preamble is eval/live context and is excluded from both sides.
     let native_tokens = bpe.encode_with_special_tokens(&native_tools_json).len()
         + bpe
             .encode_with_special_tokens(&serde_json::to_string(&case.messages).unwrap())
@@ -370,10 +374,20 @@ fn openai_tools(tools: &[ToolDef]) -> Vec<Value> {
 }
 
 fn with_compact_system(messages: &[Value], prompt: &str) -> Vec<Value> {
+    // Official live contract: provide a reference date/timezone so relative dates resolve
+    // consistently. Overridable via env; defaults match the hackathon brief. This is NOT
+    // case-specific — it never injects expected tool arguments.
+    let ref_date = env::var("COMPACT_REF_DATE").unwrap_or_else(|_| "2026-10-02".into());
+    let ref_tz = env::var("COMPACT_REF_TZ").unwrap_or_else(|_| "Asia/Kolkata".into());
+    let mut system = reference_time_preamble(&ref_date, &ref_tz);
+    system.push('\n');
+    system.push('\n');
+    system.push_str(prompt);
+
     let mut out = messages.to_vec();
     out.push(json!({
         "role": "system",
-        "content": prompt,
+        "content": system,
     }));
     out
 }

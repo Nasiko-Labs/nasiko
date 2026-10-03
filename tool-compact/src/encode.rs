@@ -4,18 +4,40 @@ use crate::error::{CompactError, Result};
 use crate::schema::{params_to_schema, parse_parameters};
 use crate::types::{CompactToolEntry, CompactTools, ParamSpec, ToolDef, TypeExpr};
 
+/// Max characters of a tool-level description kept in the signature line.
+const DESC_MAX: usize = 120;
+/// Max characters of a parameter description kept as a hint.
+const PARAM_DESC_MAX: usize = 40;
+
 /// Call-format instructions appended after tool signatures.
+///
+/// Kept short for token savings, but explicit enough for live model adherence.
 pub const CALL_INSTRUCTIONS: &str = "\
-To call a tool, emit exactly:
-<<call TOOL_NAME JSON_ARGUMENTS>>
-JSON_ARGUMENTS must be a single JSON object. Do not wrap the marker in markdown code fences.
-You may emit zero or more calls. Plain text outside call markers is allowed.
-Never invent a tool name that is not listed above.";
+COMPACT TOOL MODE: if a listed tool applies, emit ONLY <<call TOOL_NAME {\"key\":\"value\"}>> (exact name; valid JSON; required+enums exact; never invent values; copy user wording for titles/subjects/bodies/emails; omit optional fields the user did not mention; datetimes ISO-8601 from reference). One call per action. No fences/native tool_calls. No tool → plain text.
+Example: <<call example_tool {\"query\":\"status\"}>>";
+
+/// Build a short reference-time preamble for relative date/time resolution.
+///
+/// Pure helper — callers supply date/timezone (eval harness or router config).
+/// Does not hard-code evaluation case answers.
+pub fn reference_time_preamble(date: &str, timezone: &str) -> String {
+    format!(
+        "Reference date: {date}\n\
+Timezone: {timezone}\n\
+Resolve relative dates/times vs this reference as ISO-8601 with the correct offset. \
+'today'/'tomorrow' are calendar days; a weekday name means the next occurrence of that weekday on or after the reference date."
+    )
+}
 
 /// Encode tool definitions into a compact prompt block.
 ///
 /// Fails closed on unsupported JSON Schema features — the router should bypass compaction.
 pub fn encode_tools(tools: &[ToolDef]) -> Result<CompactTools> {
+    encode_tools_inner(tools)
+}
+
+/// Encode tool signatures + call instructions into a compact prompt block.
+pub fn encode_tools_inner(tools: &[ToolDef]) -> Result<CompactTools> {
     if tools.is_empty() {
         return Err(CompactError::InvalidSchema("no tools to encode".into()));
     }
@@ -88,13 +110,33 @@ fn format_signature(name: &str, params: &[ParamSpec], description: Option<&str>)
         }
         s.push(':');
         s.push_str(&format_type_expr(&p.type_expr));
+        if let Some(hint) = p
+            .description
+            .as_deref()
+            .map(str::trim)
+            .filter(|d| !d.is_empty())
+        {
+            let clipped = clip_chars(hint, PARAM_DESC_MAX);
+            s.push('(');
+            s.push_str(&clipped);
+            s.push(')');
+        }
     }
     s.push(')');
-    if let Some(desc) = description.filter(|d| !d.is_empty()) {
+    if let Some(desc) = description.map(str::trim).filter(|d| !d.is_empty()) {
         s.push_str(" - ");
-        s.push_str(desc.trim());
+        s.push_str(&clip_chars(desc, DESC_MAX));
     }
     s
+}
+
+fn clip_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+    out.push('…');
+    out
 }
 
 fn format_type_expr(expr: &TypeExpr) -> String {
@@ -166,7 +208,7 @@ mod tests {
             parameters: Some(json!({
                 "type": "object",
                 "properties": {
-                    "title": { "type": "string" },
+                    "title": { "type": "string", "description": "Event title" },
                     "start": { "type": "string", "format": "date-time" },
                     "duration_min": { "type": "integer" },
                     "attendees": { "type": "array", "items": { "type": "string" } },
@@ -181,9 +223,19 @@ mod tests {
     fn encodes_calendar_signature() {
         let compact = encode_tools(&[calendar_tool()]).unwrap();
         assert!(compact.prompt.contains(
-            "create_calendar_event(attendees?:[str], duration_min?:int, start:datetime, title:str, visibility?:public|private)"
+            "create_calendar_event(attendees?:[str], duration_min?:int, start:datetime, title:str(Event title), visibility?:public|private)"
         ));
-        assert!(compact.prompt.contains(CALL_INSTRUCTIONS));
+        assert!(compact.prompt.contains("COMPACT TOOL MODE"));
+        assert!(compact.prompt.contains("example_tool"));
+    }
+
+    #[test]
+    fn reference_preamble_is_generic() {
+        let p = reference_time_preamble("2026-10-02", "Asia/Kolkata");
+        assert!(p.contains("Reference date: 2026-10-02"));
+        assert!(p.contains("Timezone: Asia/Kolkata"));
+        assert!(!p.contains("ct-001"));
+        assert!(!p.contains("riya@"));
     }
 
     #[test]

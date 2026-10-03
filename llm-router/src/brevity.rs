@@ -49,6 +49,8 @@ pub(crate) enum Skipped {
     /// The agent has token optimization switched off. The per-agent switch governs the whole
     /// stack, not just payload compression, so one control starts and stops every layer.
     AgentOptedOut,
+    /// Compact tool schemas are active — the brevity directive fights `<<call>>` emission.
+    CompactTools,
 }
 
 /// What IP-2 decided for one request, for `token_usage.metadata.brevity`.
@@ -78,6 +80,7 @@ impl Skipped {
             Self::CodingAgent => "coding_agent",
             Self::RequestTooSmall => "request_too_small",
             Self::AgentOptedOut => "agent_opted_out",
+            Self::CompactTools => "compact_tools",
         }
     }
 }
@@ -264,6 +267,7 @@ mod tests {
             (Skipped::CodingAgent, "coding_agent"),
             (Skipped::RequestTooSmall, "request_too_small"),
             (Skipped::AgentOptedOut, "agent_opted_out"),
+            (Skipped::CompactTools, "compact_tools"),
         ] {
             let m = to_metadata(&Err(reason), DIRECTIVE.len());
             assert_eq!(m["applied"], serde_json::json!(false));

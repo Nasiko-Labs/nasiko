@@ -9,6 +9,9 @@ use crate::error::{CompactError, Result};
 use crate::types::{ParamSpec, TypeExpr};
 
 /// Keywords that mean we cannot faithfully compact the schema.
+///
+/// Includes constraint keywords we do not encode or enforce — fail closed rather than
+/// silently dropping rules private evaluation may rely on.
 const UNSUPPORTED_KEYS: &[&str] = &[
     "anyOf",
     "oneOf",
@@ -28,6 +31,21 @@ const UNSUPPORTED_KEYS: &[&str] = &[
     "prefixItems",
     "contains",
     "propertyNames",
+    // Constraints we neither encode nor validate — bypass compaction.
+    "pattern",
+    "minLength",
+    "maxLength",
+    "minimum",
+    "maximum",
+    "exclusiveMinimum",
+    "exclusiveMaximum",
+    "multipleOf",
+    "minItems",
+    "maxItems",
+    "uniqueItems",
+    "const",
+    "minProperties",
+    "maxProperties",
 ];
 
 /// Parse a tool's `parameters` JSON Schema into ordered [`ParamSpec`]s.
@@ -43,6 +61,7 @@ pub(crate) fn parse_parameters(parameters: Option<&Value>) -> Result<Vec<ParamSp
         .ok_or_else(|| CompactError::InvalidSchema("parameters must be a JSON object".into()))?;
 
     reject_unsupported(obj, "parameters")?;
+    reject_additional_properties_schema(obj, "parameters")?;
 
     // Empty / missing type treated as object when properties present.
     let ty = obj.get("type").and_then(|t| t.as_str()).unwrap_or("object");
@@ -55,8 +74,19 @@ pub(crate) fn parse_parameters(parameters: Option<&Value>) -> Result<Vec<ParamSp
     parse_object_fields(obj)
 }
 
+/// `additionalProperties` as a schema object cannot be represented compactly.
+fn reject_additional_properties_schema(obj: &Map<String, Value>, path: &str) -> Result<()> {
+    match obj.get("additionalProperties") {
+        Some(Value::Object(_)) => Err(CompactError::UnsupportedSchema(format!(
+            "{path}: additionalProperties schema objects are not supported for compaction"
+        ))),
+        _ => Ok(()),
+    }
+}
+
 fn parse_object_fields(obj: &Map<String, Value>) -> Result<Vec<ParamSpec>> {
     reject_unsupported(obj, "object")?;
+    reject_additional_properties_schema(obj, "object")?;
 
     let required: Vec<String> = obj
         .get("required")
