@@ -15,6 +15,7 @@ path = "src/bin/llm-router.rs"
 [dependencies]
 # Internal — AES-GCM (per-user HKDF) decrypt of user_secrets via try_for_user
 nasiko-secrets.workspace = true
+nasiko-tool-compact = { workspace = true }
 nasiko-pricing.workspace = true
 nasiko-savings.workspace = true
 # Internal — structural payload compression at the egress seam (src/compress.rs)
@@ -65,5 +66,6 @@ serde_json = { workspace = true }
 serial_test = { workspace = true }
 base64 = { workspace = true }
 mockito = { workspace = true }
+tiktoken-rs = "0.12.1"
 tower = { workspace = true }
 zstd.workspace = true

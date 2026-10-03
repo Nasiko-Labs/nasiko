@@ -197,7 +197,6 @@ impl LlmClient {
             .json()
             .await
             .map_err(|e| format!("LLM response parse error: {e}"))?;
-
         let latency_ms = started.elapsed().as_millis() as i64;
         let usage = match parsed.usage {
             Some(u) => LlmUsage {

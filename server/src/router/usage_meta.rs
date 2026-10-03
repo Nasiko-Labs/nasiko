@@ -199,8 +199,7 @@ async fn platform_paid_agent_usage(db: &PgPool, flow_id: &str) -> AgentUsage {
                   COALESCE(SUM(cost_usd), 0)::FLOAT8
            FROM token_usage
            WHERE session_id = $1
-             AND operation_type = 'direct_llm'
-             AND metadata->>'key_source' = 'platform'"#,
+             AND operation_type = 'direct_llm'"#,
     )
     .bind(flow_id)
     .fetch_one(db)
