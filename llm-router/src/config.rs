@@ -154,6 +154,11 @@ pub struct GatewayConfig {
     pub compress_recovery_min_bytes: usize,
     /// How long an original stays recoverable. Sized to outlive the flow that produced it.
     pub compress_recovery_ttl_secs: u64,
+
+    /// Enable compact tool schemas (P1 track).
+    /// Off by default. When enabled, tool definitions are compacted and injected
+    /// into prompt messages, and model responses are decoded back to standard tool calls.
+    pub compact_tools_enabled: bool,
 }
 
 impl Default for GatewayConfig {
@@ -196,6 +201,7 @@ impl Default for GatewayConfig {
             compress_recovery_enabled: true,
             compress_recovery_min_bytes: 8192,
             compress_recovery_ttl_secs: 86_400,
+            compact_tools_enabled: false,
         }
     }
 }
@@ -308,6 +314,10 @@ impl GatewayConfig {
                 "TOKEN_COMPRESS_RECOVERY_TTL_SECS",
                 d.compress_recovery_ttl_secs as usize,
             ) as u64,
+            compact_tools_enabled: env_flag(
+                "NASIKO_COMPACT_TOOLS_ENABLED",
+                env_flag("COMPACT_TOOLS_ENABLED", d.compact_tools_enabled),
+            ),
         }
     }
 
