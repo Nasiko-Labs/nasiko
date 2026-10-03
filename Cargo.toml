@@ -21,6 +21,7 @@ members = [
     "hitl",
     "agent-proxy",
     "llm-router",
+    "tool-compact",
     "mcp-gateway",
     "cli",
     "github",

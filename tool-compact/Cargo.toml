@@ -1,0 +1,10 @@
+[package]
+name = "nasiko-tool-compact"
+version = "0.1.0"
+edition = "2021"
+description = "Compact tool-schema encoder and fail-closed tool-call decoder (pure library, no IO)"
+
+# If the root Cargo.toml defines [workspace.dependencies] for these, switch to `{ workspace = true }`.
+[dependencies]
+serde_json = "1"
+thiserror = "1"
