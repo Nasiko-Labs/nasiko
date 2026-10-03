@@ -381,8 +381,24 @@ impl RequestClassifier for ModelClassifier {
 }
 
 pub fn validate_classification(value: Classification) -> Result<Classification, ClassifyError> {
-    if !(1..=5).contains(&value.complexity) { return Err(ClassifyError::InvalidOutput("complexity must be 1..=5".into())); }
-    if !value.confidence.is_finite() || !(0.0..=1.0).contains(&value.confidence) { return Err(ClassifyError::InvalidOutput("confidence must be finite and 0..=1".into())); }
+    if !matches!(
+        value.request_type,
+        RequestType::CodeGeneration
+            | RequestType::CodeUnderstanding
+            | RequestType::TechnicalDesign
+            | RequestType::AnalyticalReasoning
+            | RequestType::Writing
+            | RequestType::FactualLookup
+            | RequestType::General
+    ) {
+        return Err(ClassifyError::InvalidOutput("unknown request_type".into()));
+    }
+    if !(1..=5).contains(&value.complexity) {
+        return Err(ClassifyError::InvalidOutput("complexity must be 1..=5".into()));
+    }
+    if !value.confidence.is_finite() || !(0.0..=1.0).contains(&value.confidence) {
+        return Err(ClassifyError::InvalidOutput("confidence must be finite and 0..=1".into()));
+    }
     Ok(value)
 }
 
