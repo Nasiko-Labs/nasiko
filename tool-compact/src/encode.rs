@@ -3,7 +3,7 @@
 use crate::types::{CompactTools, EncodeError, ToolDef};
 use serde_json::Value;
 
-pub const DEFAULT_CALL_INSTRUCTIONS: &str = "Call tool: <<call name {json}>>";
+pub const DEFAULT_CALL_INSTRUCTIONS: &str = "To call a tool, emit: <<call name {json args}>>";
 
 /// Encodes a list of tool definitions into the high-density TOON compact format.
 pub fn encode_tools(tools: &[ToolDef]) -> Result<CompactTools, EncodeError> {
