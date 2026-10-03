@@ -69,6 +69,9 @@ struct Case {
     expected_calls: Option<Vec<ExpectedCall>>,
     #[serde(default)]
     expected: Option<Expected>,
+    /// When true, a decoder error is the correct outcome.
+    #[serde(default)]
+    expect_error: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -97,12 +100,21 @@ struct RequestLine {
     live_calls: Option<Vec<Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     live_error: Option<String>,
+    tool_names: Vec<String>,
+    baseline_tokens: usize,
+    compact_tokens: usize,
+    tokens_saved: i64,
+    reduction_percent: f64,
+    roundtrip_success: bool,
 }
 
 #[derive(Serialize)]
 struct DecoderLine {
     id: Value,
     decoded: Decoded,
+    tool_names: Vec<String>,
+    decoder_ok: bool,
+    expected_error: bool,
 }
 
 #[derive(Serialize)]
@@ -164,15 +176,23 @@ async fn main() -> ExitCode {
             );
             continue;
         }
-        let line = request_case(case, &tools, file_model.as_deref()).await;
+        let mut line = request_case(case, &tools, file_model.as_deref()).await;
         if line.compacted
             && let Some(bpe) = &bpe
         {
             let baseline = baseline_body(case, &tools, file_model.as_deref());
-            baseline_tokens += bpe.encode_with_special_tokens(&baseline.to_string()).len();
-            compact_tokens += bpe
+            line.baseline_tokens = bpe.encode_with_special_tokens(&baseline.to_string()).len();
+            line.compact_tokens = bpe
                 .encode_with_special_tokens(&line.compact_request.to_string())
                 .len();
+            line.tokens_saved = line.baseline_tokens as i64 - line.compact_tokens as i64;
+            line.reduction_percent = if line.baseline_tokens == 0 {
+                0.0
+            } else {
+                line.tokens_saved as f64 / line.baseline_tokens as f64 * 100.0
+            };
+            baseline_tokens += line.baseline_tokens;
+            compact_tokens += line.compact_tokens;
             measured += 1;
         }
         lines
@@ -289,41 +309,47 @@ fn tools_for(case: &Case, file_tools: &[ToolDef]) -> Vec<ToolDef> {
 }
 
 fn decode_case(case: &Case, tools: &[ToolDef]) -> DecoderLine {
+    let names = tool_names(tools);
     let mut decoder = StreamDecoder::new(tools);
     let mut items = Vec::new();
     for chunk in chunks_of(case) {
         match decoder.push(&chunk) {
             Ok(next) => items.extend(next),
             Err(err) => {
-                return DecoderLine {
-                    id: case.id.clone(),
-                    decoded: Decoded {
-                        calls: None,
-                        error: Some(err.to_string()),
-                    },
-                };
+                return decoder_line(case, names, None, Some(err.to_string()));
             }
         }
     }
     match decoder.finish() {
         Ok(next) => {
             items.extend(next);
-            DecoderLine {
-                id: case.id.clone(),
-                decoded: Decoded {
-                    calls: Some(calls_of(&items)),
-                    error: None,
-                },
-            }
+            decoder_line(case, names, Some(calls_of(&items)), None)
         }
-        Err(err) => DecoderLine {
-            id: case.id.clone(),
-            decoded: Decoded {
-                calls: None,
-                error: Some(err.to_string()),
-            },
-        },
+        Err(err) => decoder_line(case, names, None, Some(err.to_string())),
     }
+}
+
+fn decoder_line(
+    case: &Case,
+    tool_names: Vec<String>,
+    calls: Option<Vec<Value>>,
+    error: Option<String>,
+) -> DecoderLine {
+    let rejected = error.is_some();
+    DecoderLine {
+        id: case.id.clone(),
+        decoded: Decoded { calls, error },
+        tool_names,
+        decoder_ok: rejected == case.expect_error,
+        expected_error: case.expect_error,
+    }
+}
+
+fn tool_names(tools: &[ToolDef]) -> Vec<String> {
+    tools
+        .iter()
+        .map(|tool| tool.function.name.clone())
+        .collect()
 }
 
 fn chunks_of(case: &Case) -> Vec<String> {
@@ -363,15 +389,19 @@ async fn request_case(case: &Case, tools: &[ToolDef], file_model: Option<&str>) 
     let compact_request = compact_body(case, tools, &encoded, file_model);
     let expected = expected_calls(case);
     let rendered_calls = render_expected(&expected).unwrap_or_default();
-    let roundtrip_calls = if rendered_calls.is_empty() {
-        Vec::new()
+    let (roundtrip_calls, roundtrip_success) = if rendered_calls.is_empty() {
+        (Vec::new(), expected.is_empty())
     } else {
         match decode_calls(&rendered_calls, tools) {
-            Ok(calls) => calls
-                .iter()
-                .filter_map(|call| serde_json::to_value(call).ok())
-                .collect(),
-            Err(_) => Vec::new(),
+            Ok(calls) => {
+                let values: Vec<Value> = calls
+                    .iter()
+                    .filter_map(|call| serde_json::to_value(call).ok())
+                    .collect();
+                let ok = calls_match(&expected, &values);
+                (values, ok)
+            }
+            Err(_) => (Vec::new(), false),
         }
     };
     let mut line = RequestLine {
@@ -383,6 +413,12 @@ async fn request_case(case: &Case, tools: &[ToolDef], file_model: Option<&str>) 
         raw_output: None,
         live_calls: None,
         live_error: None,
+        tool_names: tool_names(tools),
+        baseline_tokens: 0,
+        compact_tokens: 0,
+        tokens_saved: 0,
+        reduction_percent: 0.0,
+        roundtrip_success,
     };
     if encoded.compacted
         && let Some(live) = live_config()
@@ -416,6 +452,37 @@ fn expected_calls(case: &Case) -> Vec<ExpectedCall> {
         .as_ref()
         .map(|expected| expected.calls.clone())
         .unwrap_or_default()
+}
+
+fn calls_match(expected: &[ExpectedCall], calls: &[Value]) -> bool {
+    if expected.len() != calls.len() {
+        return false;
+    }
+    expected.iter().zip(calls).all(|(want, got)| {
+        let Some(function) = got.get("function") else {
+            return false;
+        };
+        function.get("name").and_then(Value::as_str) == Some(want.name.as_str())
+            && args_match(&want.arguments, function.get("arguments"))
+    })
+}
+
+fn args_match(want: &Value, got: Option<&Value>) -> bool {
+    let want = if want.is_null() {
+        json!({})
+    } else {
+        want.clone()
+    };
+    let Some(got) = got else {
+        return false;
+    };
+    let parsed = match got {
+        Value::String(text) => {
+            serde_json::from_str::<Value>(text).unwrap_or_else(|_| Value::String(text.clone()))
+        }
+        other => other.clone(),
+    };
+    parsed == want
 }
 
 fn render_expected(calls: &[ExpectedCall]) -> Result<String, nasiko_tool_compact::Error> {

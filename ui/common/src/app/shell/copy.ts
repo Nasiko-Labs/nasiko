@@ -27,6 +27,7 @@ export const copy = {
     workflows: 'Workflows',
     sessions: 'Sessions',
     tokenops: 'TokenOps',
+    compactTools: 'Compact tools',
     harnesses: 'Harnesses',
     settings: 'Settings',
   },

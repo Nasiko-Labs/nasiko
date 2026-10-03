@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Nasiko Compact Tool Schemas</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --card: #1a2332;
+      --line: #2a3848;
+      --text: #e7eef6;
+      --muted: #8ea0b5;
+      --accent: #7ee0b0;
+      --accent-dim: #163528;
+      --warn: #f0c36a;
+      --bad: #f07178;
+      --bar: #3d8bfd;
+      --bar-2: #7ee0b0;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font: 15px/1.45 ui-sans-serif, system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    header, main { max-width: 1080px; margin: 0 auto; padding: 28px 20px; }
+    header { padding-bottom: 0; }
+    h1 { margin: 0 0 4px; font-size: 28px; font-weight: 650; }
+    .sub { color: var(--muted); margin: 0 0 8px; }
+    .story { margin: 0; font-size: 16px; }
+    .load { margin-top: 14px; color: var(--muted); font-size: 13px; }
+    input[type="file"] { color: var(--muted); }
+    .kpis {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 12px;
+      margin: 22px 0;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 14px 14px 12px;
+    }
+    .card.hero {
+      background: var(--accent-dim);
+      border-color: #2f6b4f;
+    }
+    .label { color: var(--muted); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; }
+    .value { margin-top: 6px; font-size: 26px; font-weight: 680; font-variant-numeric: tabular-nums; }
+    .hero .value { font-size: 34px; color: var(--accent); }
+    h2 { font-size: 16px; margin: 28px 0 10px; }
+    table { width: 100%; border-collapse: collapse; background: var(--card); border-radius: 10px; overflow: hidden; }
+    th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+    th { color: var(--muted); font-size: 12px; font-weight: 600; }
+    td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+    .pass { color: var(--accent); }
+    .fail { color: var(--bad); }
+    .neutral { color: var(--warn); }
+    .bars { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+    .row { display: grid; grid-template-columns: 88px 1fr auto; gap: 10px; align-items: center; margin: 8px 0; }
+    .track { background: #101820; border-radius: 6px; height: 18px; }
+    .fill { height: 18px; border-radius: 6px; }
+    .fill.base { background: var(--bar); }
+    .fill.compact { background: var(--bar-2); }
+    .checks { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .check { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+    .note { color: var(--muted); font-size: 13px; }
+    .call { white-space: pre-wrap; color: var(--muted); font-size: 12px; max-width: 420px; }
+    @media (max-width: 900px) {
+      .kpis { grid-template-columns: 1fr 1fr; }
+      .checks { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Nasiko Compact Tool Schemas</h1>
+    <p class="sub">Prompt Token Optimization</p>
+    <p class="story">Compact tool schemas reduce prompt token usage while preserving correct tool calls.</p>
+    <p class="load">Loads <span class="mono">out.jsonl</span> beside this page. Or choose a file: <input id="file" type="file" accept=".jsonl,.json,text/plain" /></p>
+    <p id="status" class="note"></p>
+  </header>
+  <main id="app" hidden>
+    <section class="kpis" id="kpis"></section>
+    <h2>Baseline vs compact</h2>
+    <div class="bars" id="bars"></div>
+    <h2>Tool token usage</h2>
+    <div id="tools"></div>
+    <h2>Cases</h2>
+    <div id="cases"></div>
+    <h2>Tool call correctness</h2>
+    <div class="checks" id="checks"></div>
+    <h2>Evaluation mode</h2>
+    <div class="card" id="mode"></div>
+  </main>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const fmt = (n) => Number(n || 0).toLocaleString();
+    const pct = (n) => (Number.isFinite(n) ? n.toFixed(1) + "%" : "—");
+
+    function parsePayload(text) {
+      const trimmed = text.trim();
+      if (!trimmed) return [];
+      if (trimmed.startsWith("[")) return JSON.parse(trimmed);
+      return trimmed.split(/\n/).filter(Boolean).map((line) => JSON.parse(line));
+    }
+
+    function isDecoder(row) {
+      return row && Object.prototype.hasOwnProperty.call(row, "decoded");
+    }
+
+    function toolLabel(row) {
+      const names = row.tool_names || [];
+      if (!names.length) return "No tool";
+      return names.join(" + ");
+    }
+
+    function caseId(row) {
+      return typeof row.id === "string" ? row.id : JSON.stringify(row.id);
+    }
+
+    function resultLabel(row) {
+      if (isDecoder(row)) {
+        if (row.decoder_ok && row.expected_error) return { text: "PASS — rejected correctly", cls: "neutral" };
+        if (row.decoder_ok) return { text: "PASS", cls: "pass" };
+        return { text: "FAIL", cls: "fail" };
+      }
+      if (row.roundtrip_success) return { text: "PASS", cls: "pass" };
+      return { text: "FAIL", cls: "fail" };
+    }
+
+    function render(rows) {
+      const requests = rows.filter((row) => !isDecoder(row) && row.baseline_tokens);
+      const baseline = requests.reduce((sum, row) => sum + (row.baseline_tokens || 0), 0);
+      const compact = requests.reduce((sum, row) => sum + (row.compact_tokens || 0), 0);
+      const saved = baseline - compact;
+      const reduction = baseline ? (saved / baseline) * 100 : 0;
+      const ok = rows.filter((row) => resultLabel(row).text.startsWith("PASS")).length;
+      const failed = rows.length - ok;
+
+      const cards = [
+        ["Total cases", fmt(rows.length), false],
+        ["Baseline tokens", fmt(baseline), false],
+        ["Compact tokens", fmt(compact), false],
+        ["Tokens saved", fmt(saved), false],
+        ["Token reduction", pct(reduction), true],
+        ["Success rate", pct(rows.length ? (ok / rows.length) * 100 : 0), false],
+      ];
+      $("kpis").innerHTML = cards.map(([label, value, hero]) =>
+        `<div class="card${hero ? " hero" : ""}"><div class="label">${label}</div><div class="value">${value}</div></div>`
+      ).join("");
+
+      const max = Math.max(baseline, compact, 1);
+      $("bars").innerHTML = [
+        ["Baseline", baseline, "base"],
+        ["Compact", compact, "compact"],
+      ].map(([name, value, cls]) => `
+        <div class="row">
+          <div>${name}</div>
+          <div class="track"><div class="fill ${cls}" style="width:${(value / max) * 100}%"></div></div>
+          <div class="mono">${fmt(value)}</div>
+        </div>`).join("") +
+        `<p class="note">Aggregate reduction is (baseline − compact) / baseline, counted with o200k_base on compacted request cases. ${fmt(failed)} unexpected failure${failed === 1 ? "" : "s"}.</p>`;
+
+      const groups = new Map();
+      for (const row of requests) {
+        const key = toolLabel(row);
+        const g = groups.get(key) || { baseline: 0, compact: 0 };
+        g.baseline += row.baseline_tokens || 0;
+        g.compact += row.compact_tokens || 0;
+        groups.set(key, g);
+      }
+      const toolRows = [...groups.entries()].map(([name, g]) => {
+        const savedN = g.baseline - g.compact;
+        const red = g.baseline ? (savedN / g.baseline) * 100 : 0;
+        return `<tr><td class="mono">${name}</td><td>${fmt(g.baseline)}</td><td>${fmt(g.compact)}</td><td>${fmt(savedN)}</td><td>${pct(red)}</td></tr>`;
+      }).join("");
+      $("tools").innerHTML = `<table><thead><tr><th>Tool</th><th>Baseline tokens</th><th>Compact tokens</th><th>Tokens saved</th><th>Reduction</th></tr></thead><tbody>${toolRows || `<tr><td colspan="5">No compacted request cases.</td></tr>`}</tbody></table>`;
+
+      $("cases").innerHTML = `<table><thead><tr><th>Case</th><th>Tool(s)</th><th>Baseline</th><th>Compact</th><th>Saved</th><th>Reduction</th><th>Result</th><th>Call</th></tr></thead><tbody>` +
+        rows.map((row) => {
+          const res = resultLabel(row);
+          const call = isDecoder(row)
+            ? (row.decoded && row.decoded.error) || JSON.stringify((row.decoded && row.decoded.calls) || [])
+            : (row.rendered_calls || "—");
+          const base = row.baseline_tokens ? fmt(row.baseline_tokens) : "—";
+          const comp = row.baseline_tokens ? fmt(row.compact_tokens) : "—";
+          const sav = row.baseline_tokens ? fmt(row.tokens_saved) : "—";
+          const red = row.baseline_tokens ? pct(row.reduction_percent) : "—";
+          return `<tr><td class="mono">${caseId(row)}</td><td class="mono">${toolLabel(row)}</td><td>${base}</td><td>${comp}</td><td>${sav}</td><td>${red}</td><td class="${res.cls}">${res.text}</td><td class="mono call">${escapeHtml(String(call))}</td></tr>`;
+        }).join("") + `</tbody></table>`;
+
+      const reqOk = rows.filter((row) => !isDecoder(row) && row.roundtrip_success).length;
+      const reqN = rows.filter((row) => !isDecoder(row)).length;
+      const streamOk = rows.filter((row) => isDecoder(row) && row.decoder_ok && !row.expected_error).length;
+      const streamN = rows.filter((row) => isDecoder(row) && !row.expected_error).length;
+      const rejectOk = rows.filter((row) => isDecoder(row) && row.expected_error && row.decoder_ok).length;
+      const rejectN = rows.filter((row) => isDecoder(row) && row.expected_error).length;
+      $("checks").innerHTML = [
+        check("Valid tool calls", reqOk, reqN),
+        check("Round-trip successful", reqOk, reqN),
+        check("Streaming decoder successful", streamOk, streamN),
+        check("Invalid calls rejected", rejectOk, rejectN),
+      ].join("");
+
+      const live = rows.filter((row) => row.raw_output != null || row.live_calls || row.live_error);
+      if (!live.length) {
+        $("mode").innerHTML = `<div class="label">Offline evaluation</div><p>No live model output in this file. <span class="mono">PROVIDER_BASE_URL</span> and <span class="mono">MODEL</span> were not used.</p>`;
+      } else {
+        const valid = live.filter((row) => row.live_calls && row.live_calls.length && !row.live_error).length;
+        const invalid = live.length - valid;
+        const model = (live.find((row) => row.compact_request && row.compact_request.model) || {}).compact_request;
+        $("mode").innerHTML = `<div class="label">Live model</div><p class="mono">${escapeHtml((model && model.model) || "unknown")}</p><p>Valid compact calls: ${valid}<br>Invalid calls: ${invalid}<br>Adherence rate: ${pct(live.length ? (valid / live.length) * 100 : 0)}</p>`;
+      }
+
+      $("app").hidden = false;
+      $("status").textContent = `${rows.length} records loaded.`;
+    }
+
+    function check(label, ok, total) {
+      if (!total) return `<div class="check"><span class="neutral">—</span> ${label}<div class="note">Not in this run</div></div>`;
+      const good = ok === total;
+      return `<div class="check"><span class="${good ? "pass" : "fail"}">${good ? "✓" : "✗"}</span> ${label}<div class="note">${ok} / ${total}</div></div>`;
+    }
+
+    function escapeHtml(text) {
+      return text.replace(/[&<>]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[ch]));
+    }
+
+    async function boot() {
+      try {
+        const res = await fetch("out.jsonl");
+        if (!res.ok) throw new Error(String(res.status));
+        render(parsePayload(await res.text()));
+      } catch (err) {
+        $("status").textContent = "Could not fetch out.jsonl. Choose the evaluation JSONL file.";
+      }
+    }
+
+    $("file").addEventListener("change", async (event) => {
+      const file = event.target.files && event.target.files[0];
+      if (!file) return;
+      render(parsePayload(await file.text()));
+    });
+
+    boot();
+  </script>
+</body>
+</html>

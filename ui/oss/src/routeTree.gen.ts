@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './../../common/src/routes/__root'
 import { Route as AppRouteImport } from './../../common/src/routes/_app'
 import { Route as LoginRouteImport } from './../../common/src/routes/login'
 import { Route as AppIndexRouteImport } from './../../common/src/routes/_app/index'
+import { Route as AppCompactToolsRouteImport } from './../../common/src/routes/_app/compact-tools'
 import { Route as AppDeployRouteImport } from './../../common/src/routes/_app/deploy'
 import { Route as AppHarnessesRouteImport } from './../../common/src/routes/_app/harnesses'
 import { Route as AppRouterRouteImport } from './../../common/src/routes/_app/router'
@@ -51,6 +52,11 @@ const LoginRoute = LoginRouteImport.update({
 const AppIndexRoute = AppIndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppCompactToolsRoute = AppCompactToolsRouteImport.update({
+  id: '/compact-tools',
+  path: '/compact-tools',
   getParentRoute: () => AppRoute,
 } as any)
 const AppDeployRoute = AppDeployRouteImport.update({
@@ -187,6 +193,7 @@ const AppWorkflowsRunsRoute = AppWorkflowsRunsRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
   '/login': typeof LoginRoute
+  '/compact-tools': typeof AppCompactToolsRoute
   '/deploy': typeof AppDeployRoute
   '/harnesses': typeof AppHarnessesRoute
   '/router': typeof AppRouterRoute
@@ -216,6 +223,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/login': typeof LoginRoute
+  '/compact-tools': typeof AppCompactToolsRoute
   '/deploy': typeof AppDeployRoute
   '/harnesses': typeof AppHarnessesRoute
   '/router': typeof AppRouterRoute
@@ -248,6 +256,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_app': typeof AppRouteWithChildren
   '/login': typeof LoginRoute
+  '/_app/compact-tools': typeof AppCompactToolsRoute
   '/_app/deploy': typeof AppDeployRoute
   '/_app/harnesses': typeof AppHarnessesRoute
   '/_app/router': typeof AppRouterRoute
@@ -281,6 +290,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/login'
+    | '/compact-tools'
     | '/deploy'
     | '/harnesses'
     | '/router'
@@ -310,6 +320,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/login'
+    | '/compact-tools'
     | '/deploy'
     | '/harnesses'
     | '/router'
@@ -341,6 +352,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/_app'
     | '/login'
+    | '/_app/compact-tools'
     | '/_app/deploy'
     | '/_app/harnesses'
     | '/_app/router'
@@ -396,6 +408,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof AppIndexRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/compact-tools': {
+      id: '/_app/compact-tools'
+      path: '/compact-tools'
+      fullPath: '/compact-tools'
+      preLoaderRoute: typeof AppCompactToolsRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/deploy': {
@@ -584,6 +603,7 @@ declare module '@tanstack/react-router' {
 }
 
 interface AppRouteChildren {
+  AppCompactToolsRoute: typeof AppCompactToolsRoute
   AppDeployRoute: typeof AppDeployRoute
   AppHarnessesRoute: typeof AppHarnessesRoute
   AppRouterRoute: typeof AppRouterRoute
@@ -614,6 +634,7 @@ interface AppRouteChildren {
 }
 
 const AppRouteChildren: AppRouteChildren = {
+  AppCompactToolsRoute: AppCompactToolsRoute,
   AppDeployRoute: AppDeployRoute,
   AppHarnessesRoute: AppHarnessesRoute,
   AppRouterRoute: AppRouterRoute,
