@@ -110,6 +110,8 @@ async fn responses_core(
         turn_ordinal: user_turn_ordinal(body.get("input")),
         is_tool_continuation: is_tool_continuation(body.get("input")),
         query,
+        // The Responses API carries history server-side; classify on the query alone.
+        context: None,
     };
     let routed = resolve_routed_request(
         ctx,
@@ -1061,6 +1063,7 @@ mod tests {
             pricing: Arc::new(nasiko_pricing::PricingEngine::new(
                 PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
             )),
+            classifier: Arc::new(crate::routing::ClassifierChain::regex()),
         }
     }
 

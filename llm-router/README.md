@@ -56,6 +56,8 @@ src/
   usage.rs      token_usage writer (fire-and-forget; cost via DB trigger)
   handlers/     chat / embeddings / models / health
 examples/mint_token.rs   dev/test JWT minter
+examples/classifier_eval.rs    request classifier eval (JSONL outputs)
+examples/classifier_train.rs   trains assets/classifier/linear-v1.json
 ```
 
 ## Configuration (env)
@@ -65,6 +67,14 @@ examples/mint_token.rs   dev/test JWT minter
 `LLM_CONFIG_CACHE_TTL` (30s), `{OPENAI,ANTHROPIC,GEMINI}_API_BASE` (test overrides).
 Reuses the platform's `SECRETS_ENCRYPTION_KEY` (per-user HKDF AES-256-GCM) and
 `DATABASE_URL`.
+
+Request classifier (Level 3 routing, `switch`/`cold_start` boundaries only):
+`CLASSIFIER_BACKEND` (`regex`; or `local`, the embedded linear model, or `hosted`, an
+OpenAI-compatible endpoint), `CLASSIFIER_MODEL_PATH` (local; empty = embedded),
+`CLASSIFIER_ENDPOINT` / `CLASSIFIER_MODEL` / `CLASSIFIER_API_KEY` (hosted),
+`CLASSIFIER_TIMEOUT_MS` (800), `CLASSIFIER_MIN_CONFIDENCE` (0.3). Any error, timeout,
+low-confidence answer or load failure falls back to the regex. Data, labelling criteria and
+splits: [`assets/classifier/LABELLING.md`](assets/classifier/LABELLING.md).
 
 Storage: `agents.llm_config` (JSONB; NULL → defaults), `user_secrets` (decrypt via
 `SecretsCrypto::try_for_user`), `token_usage` (written), `model_pricing` (cost trigger).

@@ -28,6 +28,9 @@
 //! it an entropy RNG; tests inject a seeded one.
 
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use rand::Rng;
 use rand_distr::{Beta, Distribution};
@@ -324,6 +327,272 @@ pub fn classify<R: Rng + ?Sized>(
     (tier, request_type)
 }
 
+// --------------------------------------------------------------------------
+// 4. RequestClassifier — the pluggable request-type/complexity decision
+// --------------------------------------------------------------------------
+//
+// `classify_request_type` above takes query text only. The trait below takes the query plus
+// optional context and also answers complexity and confidence, so a model-backed classifier
+// can replace the keyword vote. The router holds one behind a [`ClassifierChain`], which adds
+// the timeout, the regex fallback and the fallback counters; the regex stays the default and
+// the fallback, so routing never depends on a model or a network being up.
+//
+// Semantics every backend must follow:
+// * `request_type` — the main deliverable (see `assets/classifier/LABELLING.md`).
+// * `complexity` — 1 trivial single operation · 2 straightforward · 3 multi-step with limited
+//   constraints · 4 substantial reasoning or design · 5 intricate cross-component reasoning.
+// * `confidence` — the backend's probability that `request_type` is right, in [0, 1]. Below the
+//   chain's `min_confidence` the router treats the answer as unknown and uses the regex.
+
+/// What a classifier sees: the latest user query and optional surrounding context.
+#[derive(Debug, Clone, Copy)]
+pub struct ClassifyInput<'a> {
+    pub query: &'a str,
+    pub context: Option<&'a str>,
+}
+
+/// A classifier's answer. Out-of-range values are rejected by [`ClassifierChain`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Classification {
+    pub request_type: RequestType,
+    /// 1-5, see the rubric above.
+    pub complexity: u8,
+    /// Probability that `request_type` is correct, in [0, 1].
+    pub confidence: f32,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ClassifyError {
+    #[error("model load failed: {0}")]
+    Load(String),
+    #[error("inference failed: {0}")]
+    Inference(String),
+    #[error("network error: {0}")]
+    Network(String),
+    #[error("invalid response: {0}")]
+    InvalidResponse(String),
+}
+
+/// A request classifier backend. Async because hosted backends make network calls.
+#[async_trait::async_trait]
+pub trait RequestClassifier: Send + Sync {
+    /// Stable backend name for logs and eval output (`regex`, `local`, `hosted`).
+    fn name(&self) -> &str;
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError>;
+}
+
+/// The regex classifier's fixed complexity: it has no complexity signal, so it reports the
+/// rubric's most common level ("straightforward").
+pub const REGEX_COMPLEXITY: u8 = 2;
+/// The regex classifier's fixed confidence: its measured request-type accuracy on the held-out
+/// validation split (`examples/classifier_train.rs`), so it is calibrated in aggregate.
+pub const REGEX_CONFIDENCE: f32 = 0.40;
+
+/// [`classify_request_type`] behind the trait. Ignores `context`, like the router always has.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RegexClassifier;
+
+impl RegexClassifier {
+    pub fn classify_now(&self, input: &ClassifyInput<'_>) -> Classification {
+        Classification {
+            request_type: classify_request_type(input.query),
+            complexity: REGEX_COMPLEXITY,
+            confidence: REGEX_CONFIDENCE,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl RequestClassifier for RegexClassifier {
+    fn name(&self) -> &str {
+        "regex"
+    }
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+        Ok(self.classify_now(input))
+    }
+}
+
+/// Why the chain used the regex instead of its primary backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FallbackReason {
+    /// The backend could not be loaded at startup; every call uses the regex.
+    Load,
+    Error,
+    Timeout,
+    LowConfidence,
+}
+
+impl FallbackReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Load => "load",
+            Self::Error => "error",
+            Self::Timeout => "timeout",
+            Self::LowConfidence => "low_confidence",
+        }
+    }
+}
+
+/// The classification the router acts on, and where it came from.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Decision {
+    pub classification: Classification,
+    /// `Some` when the regex answered in place of the primary backend.
+    pub fallback: Option<FallbackReason>,
+    /// The primary backend's own answer, when it gave one (also on a low-confidence fallback).
+    pub primary: Option<Classification>,
+}
+
+/// Fallback counters, readable by tests, the eval and future metrics export.
+#[derive(Debug, Default)]
+pub struct ClassifierStats {
+    calls: AtomicU64,
+    errors: AtomicU64,
+    timeouts: AtomicU64,
+    low_confidence: AtomicU64,
+}
+
+/// A point-in-time copy of [`ClassifierStats`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StatsSnapshot {
+    pub calls: u64,
+    pub errors: u64,
+    pub timeouts: u64,
+    pub low_confidence: u64,
+}
+
+/// The router's classifier: a primary backend with a timeout and the regex as fallback.
+pub struct ClassifierChain {
+    primary: Arc<dyn RequestClassifier>,
+    regex: RegexClassifier,
+    timeout: Duration,
+    min_confidence: f32,
+    load_failed: bool,
+    stats: ClassifierStats,
+}
+
+impl ClassifierChain {
+    /// Today's behaviour: the regex alone, no fallback path.
+    pub fn regex() -> Self {
+        Self::new(Arc::new(RegexClassifier), Duration::from_secs(1), 0.0)
+    }
+
+    pub fn new(
+        primary: Arc<dyn RequestClassifier>,
+        timeout: Duration,
+        min_confidence: f32,
+    ) -> Self {
+        Self {
+            primary,
+            regex: RegexClassifier,
+            timeout,
+            min_confidence,
+            load_failed: false,
+            stats: ClassifierStats::default(),
+        }
+    }
+
+    /// The configured backend failed to load: serve the regex and report it as a fallback.
+    pub fn load_failed() -> Self {
+        Self {
+            load_failed: true,
+            ..Self::regex()
+        }
+    }
+
+    /// The backend that answers when nothing falls back.
+    pub fn backend(&self) -> &str {
+        self.primary.name()
+    }
+
+    pub fn stats(&self) -> StatsSnapshot {
+        let get = |a: &AtomicU64| a.load(Ordering::Relaxed);
+        StatsSnapshot {
+            calls: get(&self.stats.calls),
+            errors: get(&self.stats.errors),
+            timeouts: get(&self.stats.timeouts),
+            low_confidence: get(&self.stats.low_confidence),
+        }
+    }
+
+    /// Classify, falling back to the regex on error, timeout, an out-of-range answer, or a
+    /// confidence below `min_confidence`. Never fails.
+    pub async fn decide(&self, input: &ClassifyInput<'_>) -> Decision {
+        self.stats.calls.fetch_add(1, Ordering::Relaxed);
+        let fallback = |reason, primary| Decision {
+            classification: self.regex.classify_now(input),
+            fallback: Some(reason),
+            primary,
+        };
+        if self.load_failed {
+            return fallback(FallbackReason::Load, None);
+        }
+        match tokio::time::timeout(self.timeout, self.primary.classify(input)).await {
+            Ok(Ok(c)) if !valid(&c) => {
+                self.stats.errors.fetch_add(1, Ordering::Relaxed);
+                tracing::warn!(
+                    target: "nasiko::llm_router::classifier",
+                    backend = self.backend(), ?c,
+                    "classifier: out-of-range answer; using regex"
+                );
+                fallback(FallbackReason::Error, None)
+            }
+            Ok(Ok(c)) if c.confidence < self.min_confidence => {
+                self.stats.low_confidence.fetch_add(1, Ordering::Relaxed);
+                fallback(FallbackReason::LowConfidence, Some(c))
+            }
+            Ok(Ok(c)) => Decision {
+                classification: c,
+                fallback: None,
+                primary: Some(c),
+            },
+            Ok(Err(e)) => {
+                self.stats.errors.fetch_add(1, Ordering::Relaxed);
+                tracing::warn!(
+                    target: "nasiko::llm_router::classifier",
+                    backend = self.backend(), error = %e,
+                    "classifier: backend failed; using regex"
+                );
+                fallback(FallbackReason::Error, None)
+            }
+            Err(_) => {
+                self.stats.timeouts.fetch_add(1, Ordering::Relaxed);
+                tracing::warn!(
+                    target: "nasiko::llm_router::classifier",
+                    backend = self.backend(), timeout_ms = self.timeout.as_millis() as u64,
+                    "classifier: backend timed out; using regex"
+                );
+                fallback(FallbackReason::Timeout, None)
+            }
+        }
+    }
+}
+
+fn valid(c: &Classification) -> bool {
+    (1..=5).contains(&c.complexity)
+        && c.confidence.is_finite()
+        && (0.0..=1.0).contains(&c.confidence)
+}
+
+/// Thompson-sample a tier for an already-decided request type (Level 3's second step).
+pub fn pick_tier<R: Rng + ?Sized>(
+    request_type: RequestType,
+    provider: &str,
+    cells: &CellMap,
+    rng: &mut R,
+) -> Tier {
+    let tier = pick_model_thompson(cells, request_type, DEFAULT_W_QUALITY, DEFAULT_W_COST, rng);
+    tracing::info!(
+        target: "nasiko::llm_router::classifier",
+        provider = %provider,
+        request_type = %request_type.as_str(),
+        learned_cells = cells.len(),
+        classified_tier = ?tier,
+        "classifier: Thompson-sampled a model tier"
+    );
+    tier
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -530,5 +799,119 @@ mod tests {
         );
         assert_eq!(rt, RequestType::CodeGeneration);
         assert!(matches!(tier, Tier::Tier1 | Tier::Tier2 | Tier::Tier3));
+    }
+
+    // --- RequestClassifier / ClassifierChain ---
+
+    struct Fixed(Result<Classification, ()>, Duration);
+    #[async_trait::async_trait]
+    impl RequestClassifier for Fixed {
+        fn name(&self) -> &str {
+            "fixed"
+        }
+        async fn classify(&self, _: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+            tokio::time::sleep(self.1).await;
+            self.0.map_err(|()| ClassifyError::Network("down".into()))
+        }
+    }
+
+    fn answer(rt: RequestType, complexity: u8, confidence: f32) -> Classification {
+        Classification {
+            request_type: rt,
+            complexity,
+            confidence,
+        }
+    }
+
+    const Q: ClassifyInput<'static> = ClassifyInput {
+        query: "build me a python script that parses CSV",
+        context: None,
+    };
+
+    fn chain(c: Result<Classification, ()>, delay_ms: u64) -> ClassifierChain {
+        ClassifierChain::new(
+            Arc::new(Fixed(c, Duration::from_millis(delay_ms))),
+            Duration::from_millis(50),
+            0.3,
+        )
+    }
+
+    #[tokio::test]
+    async fn regex_chain_is_todays_behaviour() {
+        let d = ClassifierChain::regex().decide(&Q).await;
+        assert_eq!(
+            d.classification.request_type,
+            classify_request_type(Q.query)
+        );
+        assert_eq!(d.classification.complexity, REGEX_COMPLEXITY);
+        assert_eq!(d.classification.confidence, REGEX_CONFIDENCE);
+        assert_eq!(d.fallback, None);
+    }
+
+    #[tokio::test]
+    async fn confident_answers_pass_through() {
+        let c = answer(RequestType::Writing, 4, 0.9);
+        let ch = chain(Ok(c), 0);
+        let d = ch.decide(&Q).await;
+        assert_eq!((d.classification, d.fallback), (c, None));
+        assert_eq!(ch.stats().calls, 1);
+    }
+
+    #[tokio::test]
+    async fn error_timeout_low_confidence_and_bad_values_fall_back_to_regex() {
+        let regex = RegexClassifier.classify_now(&Q);
+
+        let ch = chain(Err(()), 0);
+        let d = ch.decide(&Q).await;
+        assert_eq!(
+            (d.classification, d.fallback),
+            (regex, Some(FallbackReason::Error))
+        );
+        assert_eq!(ch.stats().errors, 1);
+
+        let ch = chain(Ok(answer(RequestType::Writing, 2, 0.9)), 500);
+        let d = ch.decide(&Q).await;
+        assert_eq!(
+            (d.classification, d.fallback),
+            (regex, Some(FallbackReason::Timeout))
+        );
+        assert_eq!(ch.stats().timeouts, 1);
+
+        let low = answer(RequestType::Writing, 2, 0.1);
+        let ch = chain(Ok(low), 0);
+        let d = ch.decide(&Q).await;
+        assert_eq!(d.fallback, Some(FallbackReason::LowConfidence));
+        assert_eq!(d.classification, regex);
+        assert_eq!(d.primary, Some(low));
+        assert_eq!(ch.stats().low_confidence, 1);
+
+        for bad in [
+            answer(RequestType::Writing, 9, 0.9),
+            answer(RequestType::Writing, 2, f32::NAN),
+        ] {
+            let d = chain(Ok(bad), 0).decide(&Q).await;
+            assert_eq!(d.fallback, Some(FallbackReason::Error));
+        }
+
+        let d = ClassifierChain::load_failed().decide(&Q).await;
+        assert_eq!(
+            (d.classification, d.fallback),
+            (regex, Some(FallbackReason::Load))
+        );
+    }
+
+    #[tokio::test]
+    async fn local_backend_is_deterministic_and_beats_keywords_on_a_negated_request() {
+        let local = crate::routing::linear_classifier::LocalClassifier::embedded().unwrap();
+        let input = ClassifyInput {
+            query: "Do not redesign anything, just rename the variable `cnt` to `count`.",
+            context: Some("`let cnt = 0;`"),
+        };
+        let a = local.classify(&input).await.unwrap();
+        for _ in 0..10 {
+            assert_eq!(local.classify(&input).await.unwrap(), a);
+        }
+        assert_eq!(a.request_type, RequestType::CodeGeneration);
+        assert!((0.0..=1.0).contains(&a.confidence) && (1..=5).contains(&a.complexity));
     }
 }
