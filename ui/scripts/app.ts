@@ -15,7 +15,8 @@ const editions = findEditions(ROOT)
 const [cmd, name, ...rest] = process.argv.slice(2)
 
 function run(bin: string, args: string[]) {
-  const r = spawnSync(bin, args, { cwd: ROOT, stdio: 'inherit' })
+  const r = spawnSync(bin, args, { cwd: ROOT, stdio: 'inherit', shell: true })
+  if (r.error) console.error(r.error)
   if (r.status !== 0) process.exit(r.status ?? 1)
 }
 function pick(fallback: 'oss' | 'all') {

@@ -1,0 +1,8 @@
+{"id":"ct-001","compact_request":{"injected_prompt":"\nTo call a tool, emit: <<call name {json args}>>","messages":[{"content":"Book a design review Monday 3pm IST with riya@example.com","role":"user"}]},"compacted":true,"rendered_calls":"<<call create_calendar_event {\"attendees\":[\"riya@example.com\"],\"start\":\"2026-10-05T15:00:00+05:30\",\"title\":\"Design review\"}>>","roundtrip_calls":[]}
+{"id":"ct-002","compact_request":{"injected_prompt":"\nTo call a tool, emit: <<call name {json args}>>","messages":[{"content":"Email sam@example.com that the build is green, and add a private 30 min retro tomorrow 10am IST","role":"user"}]},"compacted":true,"rendered_calls":"<<call send_email {\"body\":\"The build is green.\",\"subject\":\"Build status\",\"to\":[\"sam@example.com\"]}>> <<call create_calendar_event {\"duration_min\":30,\"start\":\"2026-10-04T10:00:00+05:30\",\"title\":\"Retro\",\"visibility\":\"private\"}>>","roundtrip_calls":[]}
+{"id":"ct-003","compact_request":{"injected_prompt":"\nTo call a tool, emit: <<call name {json args}>>","messages":[{"content":"What's the weather?","role":"user"}]},"compacted":true,"rendered_calls":"","roundtrip_calls":[]}
+{"id":"dc-001","decoded":{"error":"unknown_tool"}}
+{"id":"dc-002","decoded":{"error":"unknown_tool"}}
+{"id":"dc-003","decoded":{"error":"unknown_tool"}}
+{"id":"dc-004","decoded":{"error":"unknown_tool"}}
+{"id":"dc-005","decoded":{"error":"unknown_tool"}}
