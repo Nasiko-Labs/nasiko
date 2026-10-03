@@ -19,6 +19,8 @@ nasiko-pricing.workspace = true
 nasiko-savings.workspace = true
 # Internal — structural payload compression at the egress seam (src/compress.rs)
 nasiko-compress.workspace = true
+# Internal — compact tool schemas (opt-in) at the egress seam (src/tool_compact.rs)
+nasiko-tool-compact.workspace = true
 
 # Web / async
 axum = { workspace = true }
@@ -59,6 +61,10 @@ tracing = { workspace = true }
 # Used only by the standalone `llm-router` binary for log output.
 tracing-subscriber = { workspace = true }
 
+[[example]]
+name = "compact_tools_eval"
+path = "examples/compact_tools_eval.rs"
+
 [dev-dependencies]
 tokio = { workspace = true }
 serde_json = { workspace = true }
@@ -67,3 +73,6 @@ base64 = { workspace = true }
 mockito = { workspace = true }
 tower = { workspace = true }
 zstd.workspace = true
+# Eval example only — never a runtime dependency of the router.
+tiktoken-rs = "0.6"
+reqwest = { workspace = true, features = ["json", "blocking"] }

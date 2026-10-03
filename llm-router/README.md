@@ -55,8 +55,24 @@ src/
   providers/    ProviderClient + openai / anthropic / gemini, sse, fallback
   usage.rs      token_usage writer (fire-and-forget; cost via DB trigger)
   handlers/     chat / embeddings / models / health
-examples/mint_token.rs   dev/test JWT minter
+examples/mint_token.rs           dev/test JWT minter
+examples/compact_tools_eval.rs   P1 compact tool schemas eval harness
+tool_compact.rs                  opt-in compact tool schemas (TOKEN_COMPACT_TOOLS)
 ```
+
+## Compact tool schemas (opt-in)
+
+Set `TOKEN_COMPACT_TOOLS=true` to replace native `tools` JSON Schema with a compact
+prompt for the model hop (`nasiko-tool-compact`). Decoded `<<call …>>` markers are
+rehydrated into standard OpenAI `tool_calls` before the response reaches the client.
+
+Default is **off** (byte-identical to prior behaviour).
+
+```bash
+EVAL_SET=/tmp/compact-tools-eval.json OUT=/tmp/out.jsonl \
+  cargo run --release -p nasiko-llm-router --example compact_tools_eval
+```
+
 
 ## Configuration (env)
 
