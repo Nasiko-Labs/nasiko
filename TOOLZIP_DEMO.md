@@ -16,8 +16,8 @@ lexical selection is optional and disabled in official P1 evaluation.
 
 **0:40–1:00 — ZIP.** Show `compact_grammar`. Required fields, optional `?`, enums,
 nested arrays/objects, closed `!` objects and useful descriptions remain visible.
-ZIP alone measures 2754 tokens, a 48.48% reduction on this synthetic fixture.
-SCOPE+ZIP measures 178 tokens, a 96.67% reduction; label these as custom results.
+ZIP alone measures 2365 tokens, a 55.75% reduction on this synthetic fixture.
+SCOPE+ZIP measures 157 tokens, a 97.06% reduction; label these as custom results.
 
 **1:00–1:20 — Valid call.** Show `rendered_call` with `Build >> deployed` inside the
 JSON string, then `standard_tool_calls`. Arguments remain a JSON string in the
@@ -31,7 +31,10 @@ until successful `finish()`.
 **1:40–2:00 — Evidence and limits.** `schema_roundtrip_equal` is true because
 decode_tools parses the actual rendered grammar. Public P1 results are separate:
 3/3 round trips, 5/5 decoder cases, byte-identical offline runs, 656 native versus
-527 compact tokens (19.66% reduction). No real-model adherence has been measured.
+451 compact tokens (31.25% reduction). All description text is preserved;
+parenthesized annotations and one call instruction reduce overhead.
+Real-model adherence not measured locally; organizer live evaluation remains
+authoritative. The available local credential returned HTTP 401.
 Router integration is skipped, keeping default provider behavior unchanged.
 
 To reproduce public results:

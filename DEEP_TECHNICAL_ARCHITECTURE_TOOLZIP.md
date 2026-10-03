@@ -3501,7 +3501,14 @@ round trips: enums keep their primitive type (`str=public|private`, `num=1|2`),
 including singleton enums; `!` marks `additionalProperties:false`; `(...)`
 distinguishes an empty open object from a zero-argument `()` tool. Other string
 formats are JSON-quoted inside `str<"format">`. Object/array/root descriptions
-use the same escaped `#"description"` annotation. Property identifiers exclude
+use the same reversible `(description)` annotation, with bare grammar-safe text
+or a JSON-escaped string for parentheses, quotes, backslashes, control characters
+and empty descriptions. Tool descriptions use ` - ` followed by the same bare or
+quoted text. The `TOOLS` header remains, while the call instruction lives once
+in the evaluator's system message. Conditional notation explanations are based
+on the canonical schemas, never on incidental punctuation in descriptions.
+The parser still reads the original quoted annotations and trailing CALL line.
+Property identifiers exclude
 `:` to avoid separator ambiguity; unusual names bypass rather than being renamed.
 
 Function-level unknown metadata is retained alongside tool-level metadata so

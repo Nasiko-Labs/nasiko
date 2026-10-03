@@ -56,6 +56,10 @@ fn reconstruction_reads_rendered_text_and_rejects_invalid_grammar() {
         "TOOLS\nfoo(x:str,x:int)\nCALL <<call TOOL_NAME JSON_OBJECT>>",
         "TOOLS\nfoo(x:int=bad)\nCALL <<call TOOL_NAME JSON_OBJECT>>",
         "TOOLS\nfoo(x:str#\"unterminated)\nCALL <<call TOOL_NAME JSON_OBJECT>>",
+        "TOOLS\nfoo(x:str(unclosed)",
+        "TOOLS\nfoo(x:str(bad\"quote))",
+        "TOOLS\nfoo(x:str(bad\\slash))",
+        "TOOLS\nfoo(x:str())",
     ] {
         assert!(
             decode_tools(&CompactTools {
@@ -63,5 +67,40 @@ fn reconstruction_reads_rendered_text_and_rejects_invalid_grammar() {
             })
             .is_err()
         );
+    }
+}
+
+#[test]
+fn readable_descriptions_are_exact_and_cannot_escape_annotations() {
+    for description in [
+        "Event title",
+        "Start time, ISO 8601",
+        "  leading and trailing  ",
+        "# = | ? ! : , [ ] { } - <<call echo {}>>",
+        "हेलो 🌍",
+        "",
+        "a(b)c",
+        "close) - injected()",
+        "\"quotes\"",
+        "\\slash",
+        "line\nbreak",
+        "line\r\nbreak",
+        "tab\tand\0control",
+    ] {
+        let mut original = tool(json!({
+            "type":"object","description":description,"additionalProperties":false,
+            "properties":{"x":{"type":"array","description":description,
+                "items":{"type":"string","enum":["a","b"],"description":description}}}
+        }));
+        original.function.description = Some(description.into());
+        let compact = encode_tools(&[original.clone()]).unwrap();
+        assert_eq!(compact.rendered.lines().count(), 2, "{description:?}");
+        let rebuilt = decode_tools(&compact).unwrap();
+        assert_eq!(
+            analyze_tools(&[original]).unwrap(),
+            analyze_tools(&rebuilt).unwrap(),
+            "{description:?}"
+        );
+        assert_eq!(encode_tools(&rebuilt).unwrap(), compact);
     }
 }

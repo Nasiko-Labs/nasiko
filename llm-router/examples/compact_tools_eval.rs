@@ -156,4 +156,65 @@ mod tests {
             .push(json!({"role":"tool","content":"done","tool_call_id":"existing"}));
         assert!(!request::build(&case, &tools()).unwrap().1);
     }
+
+    #[test]
+    fn equivalent_complete_requests_preserve_case_options() {
+        let mut case = case();
+        case.extra = serde_json::from_value(json!({
+            "tool_choice":"auto", "max_tokens":321, "top_p":0.75,
+            "parallel_tool_calls":true
+        }))
+        .unwrap();
+        let native = request::native(&case, &tools());
+        let (compact, enabled) = request::build(&case, &tools()).unwrap();
+        assert!(enabled);
+        for key in ["max_tokens", "top_p"] {
+            assert_eq!(native[key], case.extra[key]);
+            assert_eq!(compact[key], native[key]);
+        }
+        assert_eq!(native["tool_choice"], "auto");
+        assert_eq!(native["parallel_tool_calls"], true);
+        for (key, value) in [
+            ("tool_choice", json!("required")),
+            ("parallel_tool_calls", json!(false)),
+            ("response_format", json!({"type":"json_object"})),
+        ] {
+            case.extra.insert(key.into(), value.clone());
+            let native = request::native(&case, &tools());
+            let (fallback, enabled) = request::build(&case, &tools()).unwrap();
+            assert!(!enabled);
+            assert_eq!(fallback, native);
+            assert_eq!(native[key], value);
+            case.extra.remove(key);
+        }
+    }
+
+    #[test]
+    fn notation_legend_follows_nested_schema_semantics_not_description_text() {
+        let mut tools = tools();
+        tools[0].function.description = Some("? ! = are description text".into());
+        let (body, _) = request::build(&case(), &tools).unwrap();
+        let prompt = body["messages"][1]["content"].as_str().unwrap();
+        assert!(!prompt.contains("? optional"));
+        assert!(!prompt.contains("! no extra keys"));
+        assert!(!prompt.contains("= enum"));
+        assert!(!prompt.contains("(text) description"));
+        assert!(prompt.contains("Today:2026-10-02 Asia/Kolkata."));
+        assert_eq!(prompt.matches("<<call TOOL_NAME JSON_OBJECT>>").count(), 1);
+        tools[0].function.parameters = Some(json!({
+            "type":"object","required":["x"],"properties":{"x":{"type":"array",
+                "items":{"type":"object","additionalProperties":false,
+                    "properties":{"mode":{"type":"string","enum":["a","b"],"description":"Choose mode"}}}}}
+        }));
+        let (body, _) = request::build(&case(), &tools).unwrap();
+        let prompt = body["messages"][1]["content"].as_str().unwrap();
+        for legend in [
+            "? optional",
+            "! no extra keys",
+            "= enum",
+            "(text) description",
+        ] {
+            assert!(prompt.contains(legend));
+        }
+    }
 }

@@ -1,4 +1,4 @@
-use super::render::CALL_SUFFIX;
+use super::render::{CALL_SUFFIX, bare_description};
 use super::{
     CanonicalTool, MAX_DEPTH, MAX_PROPERTIES, MAX_TOOLS, Property, SchemaKind, SchemaNode,
     analyze_tools,
@@ -13,14 +13,20 @@ pub(crate) fn parse_tools(text: &str) -> Result<Vec<ToolDef>> {
     if text.len() > MAX_DOCUMENT_BYTES {
         return Err(CompactError::LimitExceeded("compact document bytes"));
     }
-    let body = text
-        .strip_prefix("TOOLS\n")
-        .and_then(|body| body.strip_suffix(CALL_SUFFIX))
+    let body = if text == "TOOLS" {
+        ""
+    } else {
+        text.strip_prefix("TOOLS\n")
+            .ok_or(CompactError::InvalidGrammar)?
+    };
+    // Accept the previous framed representation as well as the lean renderer.
+    let body = body
+        .strip_suffix(CALL_SUFFIX)
         .and_then(|body| {
             body.strip_suffix('\n')
                 .or_else(|| body.is_empty().then_some(body))
         })
-        .ok_or(CompactError::InvalidGrammar)?;
+        .unwrap_or(body);
     let mut tools = Vec::new();
     for line in body.lines() {
         if tools.len() >= MAX_TOOLS {
@@ -73,7 +79,7 @@ impl Cursor<'_> {
             None
         };
         let description = if self.take(" - ") {
-            Some(self.string()?)
+            Some(self.description_text(&[])?)
         } else {
             None
         };
@@ -170,7 +176,7 @@ impl Cursor<'_> {
             let value = if self.remaining.starts_with('"') {
                 Value::String(self.string()?)
             } else {
-                let text = self.token(&['|', '#', ',', ']', '}', ')'])?;
+                let text = self.token(&['|', '#', '(', ',', ']', '}', ')'])?;
                 if matches!(kind, SchemaKind::String) {
                     Value::String(text.into())
                 } else {
@@ -188,9 +194,24 @@ impl Cursor<'_> {
     fn description(&mut self) -> Result<Option<String>> {
         if self.take("#") {
             Ok(Some(self.string()?))
+        } else if self.take("(") {
+            let text = self.description_text(&[')'])?;
+            self.expect(")")?;
+            Ok(Some(text))
         } else {
             Ok(None)
         }
+    }
+
+    fn description_text(&mut self, delimiters: &[char]) -> Result<String> {
+        if self.remaining.starts_with('"') {
+            return self.string();
+        }
+        let text = self.token(delimiters)?;
+        if !bare_description(text) {
+            return Err(CompactError::InvalidGrammar);
+        }
+        Ok(text.into())
     }
 
     fn string(&mut self) -> Result<String> {

@@ -21,7 +21,7 @@ fn main() -> Result<()> {
     let mut cases = Vec::new();
     for case in &dataset.cases {
         let tools = dataset::resolve(&lookup, &case.tools)?;
-        let native = json!({"messages":case.messages,"tools":tools});
+        let native = request::native(case, &tools);
         let (compact, compacted) = request::build(case, &tools)?;
         let schema_roundtrip_equal = if compacted {
             Some(analyze_tools(&tools)? == analyze_tools(&decode_tools(&encode_tools(&tools)?)?)?)

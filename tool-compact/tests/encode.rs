@@ -16,7 +16,7 @@ fn exact_model_readable_rendering_preserves_semantics() {
     let rendered = encode_tools(&tools).unwrap().rendered;
     assert_eq!(
         rendered,
-        "TOOLS\nevent(count?:int,nested?:[{flag:bool}],start:datetime,title:str#\"Event title\",visibility?:str=public|\"needs review\")! - \"Create event\"\nCALL <<call TOOL_NAME JSON_OBJECT>>"
+        "TOOLS\nevent(count?:int,nested?:[{flag:bool}],start:datetime,title:str(Event title),visibility?:str=public|\"needs review\")! - Create event"
     );
     assert_eq!(rendered, encode_tools(&tools).unwrap().rendered);
 }
@@ -29,7 +29,7 @@ fn descriptions_and_formats_cannot_escape_grammar() {
     )];
     let rendered = encode_tools(&tools).unwrap().rendered;
     assert!(rendered.contains(&serde_json::to_string(description).unwrap()));
-    assert_eq!(rendered.lines().count(), 3);
+    assert_eq!(rendered.lines().count(), 2);
 }
 
 #[test]

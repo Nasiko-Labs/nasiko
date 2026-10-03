@@ -32,11 +32,10 @@ pub(crate) fn render(tools: &[CanonicalTool]) -> Result<String> {
         }
         if let Some(description) = &tool.description {
             line.push_str(" - ");
-            line.push_str(&quote(description)?);
+            line.push_str(&render_description(description)?);
         }
         lines.push(line);
     }
-    lines.push(CALL_SUFFIX.into());
     Ok(lines.join("\n"))
 }
 
@@ -103,12 +102,31 @@ fn render_enum_value(value: &Value) -> Result<String> {
 
 fn annotation(text: &mut String, node: &SchemaNode) -> Result<()> {
     if let Some(description) = &node.description {
-        text.push('#');
-        text.push_str(&quote(description)?);
+        text.push('(');
+        text.push_str(&render_description(description)?);
+        text.push(')');
     }
     Ok(())
 }
 
 pub(crate) fn quote(text: &str) -> Result<String> {
     serde_json::to_string(text).map_err(|_| CompactError::InvalidGrammar)
+}
+
+// Bare text is bounded by parentheses in schema annotations and by the end of
+// the line in tool descriptions. Anything that could escape either boundary
+// remains an ordinary JSON string, including explicitly empty descriptions.
+pub(crate) fn bare_description(text: &str) -> bool {
+    !text.is_empty()
+        && text
+            .chars()
+            .all(|c| !c.is_control() && !matches!(c, '(' | ')' | '"' | '\\'))
+}
+
+fn render_description(text: &str) -> Result<String> {
+    if bare_description(text) {
+        Ok(text.into())
+    } else {
+        quote(text)
+    }
 }

@@ -60,7 +60,7 @@ fn main() -> Result<()> {
         expected: calls,
         extra: Default::default(),
     };
-    let native = json!({"messages":case.messages,"tools":tools});
+    let native = request::native(&case, &tools);
     let (zip, _) = request::build(&case, &tools)?;
     let (scoped, _) = request::build(&case, &selected)?;
     let tokenizer = tiktoken_rs::o200k_base()?;

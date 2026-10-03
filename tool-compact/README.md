@@ -64,8 +64,7 @@ native tools. There is no mixed native/compact representation.
 
 ```text
 TOOLS
-echo(text:str#"Text to echo",mode?:str=public|private)! - "Echo text"
-CALL <<call TOOL_NAME JSON_OBJECT>>
+echo(text:str(Text to echo),mode?:str=public|private)! - Echo text
 ```
 
 ```text
@@ -81,9 +80,19 @@ forbids extra keys; its absence permits them.
 Enums carry their primitive type: `str=public|private`, `int=1|2`, `num=1|2.5`,
 `bool=true|false`. Single-value enums also retain the type. String enum members
 use safe bare words or JSON quoting. This prevents losing the distinction between
-an integer and a number enum. Descriptions follow `#` and are JSON strings; tool
-descriptions follow ` - `. Array/object/root-schema descriptions also survive.
-Quotes, slashes, line breaks and delimiters in descriptions are escaped.
+an integer and a number enum. Schema descriptions use `(description)`; tool
+descriptions follow ` - `. Nonempty text without parentheses, quotes, backslashes
+or control characters is written verbatim. All other text uses a JSON string,
+including empty descriptions: `str("")` or `str("text with (parentheses)")`.
+Array/object/root-schema descriptions also survive. Leading/trailing whitespace,
+Unicode, punctuation and every description word are preserved exactly.
+
+The rendered schema keeps its `TOOLS` header. The evaluator supplies the call
+syntax once in the surrounding system instruction, together with the fixed
+reference date/timezone and ordinary-answer behavior. Notation explanations are
+included only when the canonical schemas use optional fields, closed objects,
+enums or descriptions. `decode_tools` also accepts the previous
+`#"description"` annotations and trailing `CALL` instruction for compatibility.
 
 `ping()` means absent/null parameters and only accepts `{}`. `ping(...)` is an
 explicit empty open object; `ping()!` is an explicit empty closed object. These
@@ -188,25 +197,31 @@ Decoder chunks are processed one at a time. Errors use `unknown_tool` and
 leading system messages, and omit native tools. Unsupported schemas, non-auto
 tool choices, tool history and response-format constraints keep native requests.
 Requests forbidding parallel tool calls also use native fallback.
+Native and compact measurements share request construction, preserving case
+options such as `max_tokens` and `top_p`, including all native fallback fields.
 The evaluator uses the fixed challenge date `2026-10-02`, `Asia/Kolkata`, never
 the machine clock.
 
 Public sample: 3/3 expected call round trips and 5/5 decoder cases matched; two
 offline release runs were byte-identical. Pinned `tiktoken-rs=0.12.1/o200k_base`
 measures serialized **complete request bodies**, including instruction overhead:
-656 native tokens versus 527 compact tokens, **19.66% reduction**. This small sample
-does not meet the approximate 30% target. No useful descriptions were removed.
+656 native tokens versus 451 compact tokens, **31.25% reduction**. Per case:
+253→164, 262→173 and 141→114. This exceeds the approximate 30% target on the small
+public sample; it does not establish savings on unseen datasets. No descriptions
+were summarized or removed. All public schemas retain equal canonical semantics.
 
 Separate synthetic demo: 48 candidate tools, 2 retained for the explicit multi-tool
 query; no-signal and ambiguous queries retain all 48. Native 5345 tokens; ZIP-only
-2754 (**48.48% reduction**); SCOPE+ZIP 178 (**96.67% reduction**). These synthetic
+2365 (**55.75% reduction**); SCOPE+ZIP 157 (**97.06% reduction**). These synthetic
 selection savings are not official P1 scores or evidence of general relevance.
 
 Live mode requires both `PROVIDER_BASE_URL` and `MODEL`; the base should be an
 OpenAI-compatible `/v1` URL (a full `/chat/completions` URL also works). Optional
 `PROVIDER_API_KEY` or `OPENAI_API_KEY` supplies bearer auth. Requests use temperature
-0 and a 60-second timeout. Local mock-provider tests pass; real-model adherence is
-**not measured**. Raw text and decoded calls/errors are reported. Native fallback
+0 and a 60-second timeout. Local mock-provider tests pass. Real-model adherence
+not measured locally; organizer live evaluation remains authoritative. The
+available local OpenAI credential returned HTTP 401 during model discovery, so
+no real-model cases ran. Raw text and decoded calls/errors are reported. Native fallback
 schemas outside this library's subset cannot be validated here; their round-trip
 or live validation output is an explicit `invalid_arguments` error rather than a
 claimed successful reconstruction. Such requests still preserve their native
