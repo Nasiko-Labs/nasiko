@@ -327,7 +327,6 @@ pub fn classify<R: Rng + ?Sized>(
 }
 
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy)]
