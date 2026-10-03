@@ -22,12 +22,14 @@
 mod compact;
 mod error;
 mod schema;
+mod validate;
 
 pub use compact::{
     CompactTools, HEADER, INSTRUCTION, canonical_schema, decode_tools, encode_tools,
 };
 pub use error::Error;
 pub use schema::{Format, Kind, Node, Object, normalize_tool};
+pub use validate::validate_arguments;
 
 use serde_json::Value;
 
