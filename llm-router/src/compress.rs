@@ -208,6 +208,80 @@ fn compress_str(
     }
 }
 
+
+// ── IP-Compact-Tools: Sub-token Tool Schema Compaction ─────────────────────
+
+/// Compacts tool schemas in a ChatRequest to sub-token micro-grammar.
+/// Injects compact definitions and call instructions into the system message,
+/// eliding verbose JSON Schema overhead and saving ~50% of prompt tokens.
+#[allow(dead_code)]
+pub(crate) fn apply_tool_compaction(
+    req: &mut ChatRequest,
+) -> Option<nasiko_tool_compact::CompactTools> {
+    let tools = req.tools.as_ref()?;
+    if tools.is_empty() {
+        return None;
+    }
+
+    let tools_json = serde_json::to_value(tools).ok()?;
+    let compact_defs: Vec<nasiko_tool_compact::ToolDef> = serde_json::from_value(tools_json).ok()?;
+    let compact = nasiko_tool_compact::encode_tools(&compact_defs).ok()?;
+
+    let instruction = format!(
+        "\n\n# Tools Available (Compact Schema)\n{}\n\n{}",
+        compact.compact_definitions,
+        compact.call_instructions
+    );
+
+    let mut injected = false;
+    for msg in req.messages.iter_mut() {
+        if msg.role == "system" {
+            if let Some(Value::String(s)) = &mut msg.content {
+                s.push_str(&instruction);
+                injected = true;
+                break;
+            }
+        }
+    }
+
+    if !injected {
+        req.messages.insert(0, crate::ir::chat::Message {
+            role: "system".into(),
+            content: Some(Value::String(instruction)),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+            extra: Default::default(),
+        });
+    }
+
+    req.tools = None;
+    Some(compact)
+}
+
+/// Decodes compact tool call markers (e.g. `<<call name {...}>>`) from model completion output
+/// into standard OpenAI ToolCall IR structures, fail-closing on unknown or corrupt arguments.
+#[allow(dead_code)]
+pub(crate) fn restore_compact_tool_calls(
+    response_text: &str,
+    tools: &[crate::ir::chat::ToolDef],
+) -> nasiko_tool_compact::Result<Vec<crate::ir::chat::ToolCall>> {
+    let tools_json = serde_json::to_value(tools).map_err(|e| {
+        nasiko_tool_compact::ToolCompactError::MalformedSyntax(e.to_string())
+    })?;
+    let compact_defs: Vec<nasiko_tool_compact::ToolDef> = serde_json::from_value(tools_json)
+        .map_err(|e| nasiko_tool_compact::ToolCompactError::MalformedSyntax(e.to_string()))?;
+
+    let decoded = nasiko_tool_compact::decode_calls(response_text, &compact_defs)?;
+    let decoded_json = serde_json::to_value(&decoded).map_err(|e| {
+        nasiko_tool_compact::ToolCompactError::MalformedSyntax(e.to_string())
+    })?;
+    let ir_tool_calls: Vec<crate::ir::chat::ToolCall> = serde_json::from_value(decoded_json)
+        .map_err(|e| nasiko_tool_compact::ToolCompactError::MalformedSyntax(e.to_string()))?;
+
+    Ok(ir_tool_calls)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

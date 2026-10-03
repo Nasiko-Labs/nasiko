@@ -21,6 +21,8 @@ pub mod cache;
 pub mod catalog;
 pub mod cells;
 pub mod classifier;
+pub mod p2_classifier;
+pub use p2_classifier::{P2ClassifierConfig, P2FastClassifier, P2RouteDecision, TargetModelTier};
 // The salience classifier itself — feature engine, weight loading, scoring, banding.
 // Private to `routing`: only `salience.rs` (a sibling module) uses it directly, via
 // `ClassifierSalienceGate`.
