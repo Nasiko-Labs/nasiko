@@ -56,13 +56,14 @@ All descriptions, enums, annotations, field names and required-array order survi
 ```text
 output := (text | call)*
 call   := '<<call' WS name WS JSON_OBJECT WS? '>>'
+        | '<<' name WS JSON_OBJECT WS? '>>'
 ```
 
 Text before, between and after calls is ignored by `decode_calls`. Plain answers return no calls. `>>` and `<<call` inside a JSON string belong to that argument and do not terminate/start calls. JSON quotes and backslashes use normal JSON escaping. Extra whitespace around arguments and before the closing marker is accepted. Tool markers are reserved syntax: malformed markers and trailing partial markers starting `<<` cause `malformed_output`.
 
 `StreamDecoder::push` accepts arbitrary UTF-8 string chunks, including split opening/closing markers and split escaped JSON strings. Calls are staged as complete values arrive. `finish` releases all calls only after the entire output succeeds. A later bad call rejects the whole result. Once `push` fails, that error remains until `finish`; pushing or finishing after completion returns `decoder_finished`.
 
-The call grammar matches the official evaluation set, so decoder cases are fed unchanged. There is no per-case grammar conversion.
+The published `<<call ...>>` form remains canonical and is rendered by the offline example. Live models can also emit the explicitly supported `<<NAME {...}>>` form. Both are validated identically; names and arguments are never repaired. Official decoder cases are fed unchanged because their original grammar is directly supported; no conversion or expected-outcome lookup is needed.
 
 ## Validation and bypass policy
 

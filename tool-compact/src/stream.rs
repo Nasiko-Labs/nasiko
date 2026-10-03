@@ -58,20 +58,14 @@ impl StreamDecoder {
     fn parse(&mut self, final_chunk: bool) -> Result<()> {
         loop {
             let rest = &self.buffer[self.cursor..];
-            let Some(relative) = rest.find("<<call") else {
+            let Some(relative) = rest.find("<<") else {
                 // Retain at most a marker-prefix suffix for the next chunk.
-                let pending = (1.."<<call".len())
-                    .rev()
-                    .find(|&n| rest.ends_with(&"<<call"[..n]))
-                    .unwrap_or(0);
-                if final_chunk && pending >= 2 {
-                    return Err(CompactError::MalformedOutput);
-                }
+                let pending = usize::from(rest.ends_with('<'));
                 self.cursor = self.buffer.len() - pending;
                 return Ok(());
             };
             let start = self.cursor + relative;
-            let tail = &self.buffer[start + 6..];
+            let tail = &self.buffer[start + 2..];
             if tail.is_empty() {
                 return if final_chunk {
                     Err(CompactError::MalformedOutput)
@@ -79,9 +73,6 @@ impl StreamDecoder {
                     self.cursor = start;
                     Ok(())
                 };
-            }
-            if !tail.starts_with(char::is_whitespace) {
-                return Err(CompactError::MalformedOutput);
             }
             let tail = tail.trim_start();
             let Some(space) = tail.find(char::is_whitespace) else {
@@ -92,11 +83,26 @@ impl StreamDecoder {
                     Ok(())
                 };
             };
-            let name = &tail[..space];
+            let mut name = &tail[..space];
+            let mut json = tail[space..].trim_start();
+            // Published form: <<call NAME {...}>>. Some models omit the
+            // introducer; accept <<NAME {...}>> as an explicit second grammar.
+            // A tool literally named "call" is unambiguous when JSON follows it.
+            if name == "call" && !json.starts_with('{') {
+                let Some(space) = json.find(char::is_whitespace) else {
+                    return if final_chunk {
+                        Err(CompactError::MalformedOutput)
+                    } else {
+                        self.cursor = start;
+                        Ok(())
+                    };
+                };
+                name = &json[..space];
+                json = json[space..].trim_start();
+            }
             if !crate::valid_name(name) {
                 return Err(CompactError::MalformedOutput);
             }
-            let json = tail[space..].trim_start();
             let mut values = serde_json::Deserializer::from_str(json).into_iter::<StrictValue>();
             let args = match values.next() {
                 Some(Ok(value)) => value.0,

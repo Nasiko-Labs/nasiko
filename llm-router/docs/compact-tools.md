@@ -48,11 +48,11 @@ On Apple M3 / macOS, using the published `compact-tools-eval-v1` sample:
 | Offline normal-case roundtrips | 3/3 exact matches |
 | Stream decoder cases | 5/5 exact matches |
 | Full native request tokens | 656 |
-| Full compact request tokens | 459 |
-| Reduction | 30.03% |
+| Full compact request tokens | 477 |
+| Reduction | 27.29% |
 | Schema reconstruction | Exact for every selected tool |
 
-Two offline runs are compared byte-for-byte. These three public cases are development evidence only. There is no private-set result or live-model adherence claim. No downstream task quality or production cost savings are claimed. Small tool catalogs can grow once the instruction overhead is included; this format does not guarantee savings for every request.
+Two offline runs are compared byte-for-byte. These three public cases are development evidence only. There is no private-set result. A live Bedrock run on `qwen.qwen3-coder-30b-a3b-instruct` decoded all three public responses, but only the plain-answer case exactly matched expected calls. The model added unspecified optional fields. `ct-002` also uses October 3 for tomorrow under the mandated October 2 reference, while the published expected call says October 4. These are limitations, not accuracy wins. No downstream task quality or production cost savings are claimed. Small tool catalogs can grow once the instruction overhead is included; this format does not guarantee savings for every request.
 
 ## Verify and demo
 
@@ -74,3 +74,9 @@ A short demo:
 5. Run `cargo test -p nasiko-llm-router compact_tools_http` to show actual router behavior.
 
 A judge can see Nasiko's role in 30 seconds: the router changes provider-facing tool definitions, validates compact output and restores the client's standard tool API. Agents need no protocol changes. Before broad adoption, measure live adherence across providers and real tool catalogs, strengthen schema/numeric coverage and optimize adversarial stream-chunk handling. Full streaming/fallback/history/forced-choice support remains future work.
+
+## Live development checks
+
+Bedrock Mantle endpoint: `https://bedrock-mantle.us-east-1.api.aws/v1`. Tested model: `qwen.qwen3-coder-30b-a3b-instruct`. The decoder explicitly accepts both `<<call NAME {JSON arguments}>>` and `<<NAME {JSON arguments}>>`, validating both against the same original schema. The renderer uses the published long form and official decoder chunks are fed unchanged. Reserved malformed `<<` markers fail instead of silently becoming empty calls.
+
+Negative checks: `openai.gpt-5.6-luna` was listed by the endpoint but rejected on its Chat Completions route. `openai.gpt-oss-120b` returned reasoning-only/null-content responses for two tool cases. A Mistral Ministral 14B trial included malformed JSON. A placeholder OpenAI key produced HTTP 401. No accuracy or provider reliability claims are based on those trials. Successful parsing does not validate inferred dates or prevent schema-valid optional guesses; semantic task evaluation remains necessary.

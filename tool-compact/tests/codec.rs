@@ -307,3 +307,52 @@ fn numeric_precision_limits_fail_closed() {
         Err(CompactError::UnsupportedSchema(_))
     ));
 }
+
+#[test]
+fn short_form_is_explicit_and_validated() {
+    let t = tools();
+    assert_eq!(
+        decode_calls("<<send {\"text\":\"hello >>\"}>>", &t).unwrap(),
+        vec![call("hello >>")]
+    );
+    assert_eq!(
+        decode_calls("<<unknown {}>>", &t).unwrap_err(),
+        CompactError::UnknownTool
+    );
+    assert_eq!(
+        decode_calls("<<send {}>>", &t).unwrap_err(),
+        CompactError::InvalidArguments
+    );
+    assert_eq!(
+        decode_calls("<<send {not-json}>>", &t).unwrap_err(),
+        CompactError::MalformedOutput
+    );
+}
+#[test]
+fn every_short_form_utf8_split() {
+    let t = tools();
+    let text = "<<send {\"text\":\"नमस्ते\"}>>";
+    for i in (0..=text.len()).filter(|&i| text.is_char_boundary(i)) {
+        let mut d = StreamDecoder::new(&t).unwrap();
+        d.push(&text[..i]).unwrap();
+        d.push(&text[i..]).unwrap();
+        assert_eq!(d.finish().unwrap(), vec![call("नमस्ते")]);
+    }
+}
+#[test]
+fn tool_named_call_works_in_both_forms() {
+    let mut t = tools();
+    t[0].function.name = "call".into();
+    for text in [
+        "<<call call {\"text\":\"hello\"}>>",
+        "<<call {\"text\":\"hello\"}>>",
+    ] {
+        assert_eq!(
+            decode_calls(text, &t).unwrap(),
+            vec![ToolCall {
+                name: "call".into(),
+                arguments: json!({"text":"hello"})
+            }]
+        );
+    }
+}

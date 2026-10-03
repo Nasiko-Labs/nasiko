@@ -57,8 +57,7 @@ pub struct CompactTools {
     pub definitions: String,
 }
 
-pub const INSTRUCTIONS: &str =
-    "Tools (!required). Call with <<call NAME {JSON arguments}>>, or answer normally.";
+pub const INSTRUCTIONS: &str = "Tools (!required). Call with <<call NAME {JSON arguments}>>, or answer normally. Omit unspecified optional fields.";
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum CompactError {
