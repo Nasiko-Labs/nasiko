@@ -154,6 +154,25 @@ pub struct GatewayConfig {
     pub compress_recovery_min_bytes: usize,
     /// How long an original stays recoverable. Sized to outlive the flow that produced it.
     pub compress_recovery_ttl_secs: u64,
+    // ── P2: request classifier backend ──────────────────────────────────────
+    /// Which classifier backend to use.
+    /// `"regex"` (default) — in-process, no network, always available.
+    /// `"hosted"` — calls `CLASSIFIER_ENDPOINT` with `CLASSIFIER_API_KEY`.
+    pub classifier_backend: String,
+    /// Only for `hosted` backend: the API endpoint URL.
+    /// e.g. `https://api.deepseek.com/v1/chat/completions`
+    /// Named in the PR so the judges' egress proxy can allow it.
+    pub classifier_endpoint: String,
+    /// Only for `hosted` backend: API key (read from env, NEVER hard-coded).
+    /// Judges supply their own key via `CLASSIFIER_API_KEY`; you use yours
+    /// in your local `.env` file which is git-ignored.
+    pub classifier_api_key: String,
+    /// Timeout in ms before falling back to regex. Default 3000.
+    pub classifier_timeout_ms: u64,
+    /// Model name sent in the request body.
+    /// DeepSeek direct: `"deepseek-chat"`
+    /// Vercel AI Gateway: `"deepseek/deepseek-v4-flash-0731"`
+    pub classifier_model: String,
 }
 
 impl Default for GatewayConfig {
@@ -196,6 +215,13 @@ impl Default for GatewayConfig {
             compress_recovery_enabled: true,
             compress_recovery_min_bytes: 8192,
             compress_recovery_ttl_secs: 86_400,
+            // P2 classifier defaults — regex is the out-of-the-box default,
+            // no network unless the user opts in via CLASSIFIER_BACKEND=hosted.
+            classifier_backend: "regex".into(),
+            classifier_endpoint: String::new(),
+            classifier_api_key: String::new(),
+            classifier_timeout_ms: 3000,
+            classifier_model: "deepseek-chat".into(),
         }
     }
 }
@@ -308,6 +334,14 @@ impl GatewayConfig {
                 "TOKEN_COMPRESS_RECOVERY_TTL_SECS",
                 d.compress_recovery_ttl_secs as usize,
             ) as u64,
+            classifier_backend: env_or("CLASSIFIER_BACKEND", &d.classifier_backend),
+            classifier_endpoint: env_or("CLASSIFIER_ENDPOINT", &d.classifier_endpoint),
+            classifier_api_key: env_or("CLASSIFIER_API_KEY", &d.classifier_api_key),
+            classifier_model: env_or("CLASSIFIER_MODEL", &d.classifier_model),
+            classifier_timeout_ms: std::env::var("CLASSIFIER_TIMEOUT_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(d.classifier_timeout_ms),
         }
     }
 
