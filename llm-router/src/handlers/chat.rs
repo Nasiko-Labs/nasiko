@@ -48,6 +48,8 @@ pub(crate) struct RequestSignals {
     /// Latest user turn's text — the classifier's `query` input (Level 3) for every agent,
     /// and (for a coding-agent integration) also the `conv_id` anchor for *this* turn.
     pub query: Option<String>,
+    /// User-message context only; assistant and tool output are excluded.
+    pub user_context: Vec<String>,
     /// Count of top-level user turns so far. Combined with `query`, anchors a coding-agent's
     /// `conv_id` to the current turn rather than the whole session — see
     /// `BoundarySignals::for_coding_agent`'s doc comment for why that distinction matters.
@@ -194,6 +196,7 @@ async fn chat_core(
     };
     let signals = RequestSignals {
         query: routing::latest_user_query(&req.messages),
+        user_context: routing::classifier_user_context(&req.messages),
         turn_ordinal: routing::user_turn_ordinal(&req.messages),
         is_tool_continuation: routing::is_tool_continuation(&req.messages),
     };
@@ -483,6 +486,7 @@ pub(crate) async fn resolve_routed_request(
             tier3_model: resolved.tier3_model.as_deref(),
             signals: &boundary,
             query: signals.query.as_deref(),
+            user_context: &signals.user_context,
         },
     )
     .await;
@@ -1441,6 +1445,7 @@ mod tests {
             },
             RequestSignals {
                 query: Some("write a function that reverses a string".into()),
+                user_context: vec![],
                 turn_ordinal: 1,
                 is_tool_continuation: false,
             },
@@ -1487,6 +1492,7 @@ mod tests {
             },
             RequestSignals {
                 query: Some("write a function that reverses a string".into()),
+                user_context: vec![],
                 turn_ordinal: 1,
                 is_tool_continuation: false,
             },

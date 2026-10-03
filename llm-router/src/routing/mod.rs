@@ -10,10 +10,9 @@
 //! query + provider ──► classify() ──► Tier ──► registry::model_for(provider, Tier) ──► model
 //! ```
 //!
-//! The [classifier](classifier::classify) buckets the query into a request type and
-//! Thompson-samples a [`Tier`] over the provider's learned quality [cells](cells); feedback
-//! from the user's next turn ([`classifier::signal`]) is folded back into those cells, so the
-//! router learns which tier suffices for which kind of query. See [`route_model`].
+//! The hosted classifier returns a request type and complexity-derived [`Tier`], with bounded
+//! user-only context. If hosting fails or returns an untrusted result, a local regex classifier
+//! supplies the same fields. See [`route_model`].
 
 pub mod attribution;
 pub mod boundary;
@@ -24,6 +23,7 @@ pub mod classifier;
 // The salience classifier itself — feature engine, weight loading, scoring, banding.
 // Private to `routing`: only `salience.rs` (a sibling module) uses it directly, via
 // `ClassifierSalienceGate`.
+pub mod hosted_classifier;
 mod patterns;
 pub mod pricing_sync;
 pub mod registry;
@@ -83,6 +83,8 @@ pub struct RouteInputs<'a> {
     pub signals: &'a BoundarySignals,
     /// The query to classify (latest user message text). `None` disables classification.
     pub query: Option<&'a str>,
+    /// Bounded by hosted_classifier before transmission; only caller-filtered user text.
+    pub user_context: &'a [String],
 }
 
 /// The outcome of routing: the model to call and how it was chosen.
@@ -249,11 +251,17 @@ pub async fn route_model(
             // uses an entropy RNG (exploration drives learning); tests seed it. The RNG
             // (`ThreadRng`) is `!Send`, so it is scoped to drop before the next `.await` — the
             // handler future must stay `Send`.
-            let learned = cell_store.load(inputs.provider).await;
-            let (tier, request_type) = {
-                let mut rng = rand::rng();
-                classify(query, inputs.provider, &learned, &mut rng)
-            };
+            let hosted = hosted_classifier::classify(query, inputs.user_context).await;
+            let (tier, request_type) = (hosted.tier(), hosted.request_type);
+            tracing::info!(
+                target: "nasiko::llm_router::classifier",
+                hosted = hosted.hosted,
+                confidence = hosted.confidence,
+                complexity = hosted.complexity,
+                request_type = %request_type.as_str(),
+                tier = ?tier,
+                "request classification result"
+            );
             // Per-config tier override takes priority over the global registry.
             let config_override = match tier {
                 Tier::Tier1 => inputs.tier1_model.map(str::to_string),
@@ -437,6 +445,18 @@ pub fn latest_user_query(messages: &[crate::ir::Message]) -> Option<String> {
     Some(text)
 }
 
+/// Context passed to hosted classification. Only user messages are included; assistant and
+/// tool messages may contain generated or untrusted output and are deliberately excluded.
+pub fn classifier_user_context(messages: &[crate::ir::Message]) -> Vec<String> {
+    let mut context: Vec<String> = messages
+        .iter()
+        .filter(|m| m.role == "user")
+        .filter_map(crate::ir::Message::text)
+        .collect();
+    context.pop(); // current turn is supplied separately as `query`
+    context
+}
+
 /// Number of top-level user turns so far (count of `role == "user"` messages). Tool results
 /// normalize to `role == "tool"` (see `inbound::anthropic`'s doc comment on `tool_result` →
 /// `{role:"tool"}`), so this counts only genuine new prompts, not tool-loop continuations.
@@ -532,6 +552,7 @@ mod tests {
             tier3_model: None,
             signals,
             query: Some("hello"),
+            user_context: &[],
         }
     }
 
@@ -839,6 +860,28 @@ mod tests {
         ];
         assert_eq!(latest_user_query(&messages).as_deref(), Some("second"));
         assert_eq!(latest_user_query(&[msg("system", "only")]), None);
+    }
+
+    #[test]
+    fn classifier_context_excludes_assistant_and_tool_messages() {
+        let msg = |role: &str, content: &str| Message {
+            role: role.into(),
+            content: Some(Value::String(content.into())),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+            extra: Map::new(),
+        };
+        let messages = vec![
+            msg("user", "prior request"),
+            msg("assistant", "assistant answer"),
+            msg("tool", "sensitive tool output"),
+            msg("user", "current request"),
+        ];
+        assert_eq!(
+            classifier_user_context(&messages),
+            vec!["prior request".to_string()]
+        );
     }
 
     #[test]

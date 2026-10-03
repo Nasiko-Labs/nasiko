@@ -109,6 +109,7 @@ async fn responses_core(
     let signals = RequestSignals {
         turn_ordinal: user_turn_ordinal(body.get("input")),
         is_tool_continuation: is_tool_continuation(body.get("input")),
+        user_context: user_texts(body.get("input")),
         query,
     };
     let routed = resolve_routed_request(
@@ -872,6 +873,18 @@ fn latest_user_text(input: Option<&Value>) -> Option<String> {
         .find(|item| item.get("role").and_then(Value::as_str) == Some("user"))
         .and_then(|item| item.get("content"))
         .and_then(content_text)
+}
+
+fn user_texts(input: Option<&Value>) -> Vec<String> {
+    let mut texts: Vec<String> = input
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|item| item.get("role").and_then(Value::as_str) == Some("user"))
+        .filter_map(|item| item.get("content").and_then(content_text))
+        .collect();
+    texts.pop(); // current turn is passed separately as the classifier query
+    texts
 }
 
 /// Number of top-level user turns so far in a Responses-API `input` array — the

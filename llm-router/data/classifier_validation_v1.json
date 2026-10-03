@@ -1,0 +1,12 @@
+{
+  "version": "classifier_validation_v1",
+  "examples": [
+    {"id":"code-generation-1","query":"Write a Python function that parses a CSV file and handles malformed rows.","expected_request_type":"code_generation","expected_complexity":3},
+    {"id":"code-understanding-1","query":"Explain what this Rust function does and why it borrows the value.","expected_request_type":"code_understanding","expected_complexity":2},
+    {"id":"design-1","query":"How should I design a scalable API with retries and idempotency?","expected_request_type":"technical_design","expected_complexity":3},
+    {"id":"analysis-1","query":"Compare these two experiments and calculate whether the difference is statistically significant.","expected_request_type":"analytical_reasoning","expected_complexity":3},
+    {"id":"writing-1","query":"Draft a concise email to my team announcing the maintenance window.","expected_request_type":"writing","expected_complexity":2},
+    {"id":"fact-1","query":"What is the capital of France?","expected_request_type":"factual_lookup","expected_complexity":1},
+    {"id":"general-1","query":"Hello there!","expected_request_type":"general","expected_complexity":1}
+  ]
+}
