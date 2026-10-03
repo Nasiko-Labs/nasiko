@@ -32,10 +32,7 @@ use types::not_built;
 /// Every tool is classified first. One unsupported schema fails the batch so
 /// the caller can send the native tools instead of a simplified form.
 pub fn encode_tools(tools: &[ToolDef]) -> Result<CompactTools, CompactError> {
-    for tool in tools {
-        schema::classify(tool)?;
-    }
-    Err(not_built())
+    encode::render(tools)
 }
 
 /// Decode compact call text into tool calls.
