@@ -1,0 +1,1691 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Aetheris Cortex — Cognitive Request Classifier & Adaptive Router</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-base: #070a12;
+      --bg-surface: #0e1526;
+      --bg-card: rgba(15, 23, 42, 0.75);
+      --bg-card-hover: rgba(26, 37, 65, 0.85);
+      --border-subtle: rgba(255, 255, 255, 0.08);
+      --border-accent: rgba(99, 102, 241, 0.35);
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --text-dim: #64748b;
+      --accent-primary: #6366f1;
+      --accent-primary-hover: #4f46e5;
+      --accent-cyan: #06b6d4;
+      --accent-emerald: #10b981;
+      --accent-amber: #f59e0b;
+      --accent-rose: #f43f5e;
+      --accent-purple: #a855f7;
+      --radius-sm: 8px;
+      --radius-md: 12px;
+      --radius-lg: 16px;
+      --radius-full: 9999px;
+      --shadow-glow: 0 0 30px -5px rgba(99, 102, 241, 0.3);
+      --shadow-glow-cyan: 0 0 25px -5px rgba(6, 182, 212, 0.3);
+      --shadow-glow-emerald: 0 0 25px -5px rgba(16, 185, 129, 0.3);
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background-color: var(--bg-base);
+      background-image: 
+        radial-gradient(at 0% 0%, rgba(99, 102, 241, 0.14) 0px, transparent 45%),
+        radial-gradient(at 100% 0%, rgba(6, 182, 212, 0.12) 0px, transparent 45%),
+        radial-gradient(at 50% 100%, rgba(168, 85, 247, 0.10) 0px, transparent 55%);
+      color: var(--text-main);
+      font-family: 'Inter', -apple-system, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      line-height: 1.5;
+    }
+
+    header {
+      border-bottom: 1px solid var(--border-subtle);
+      background: rgba(11, 16, 28, 0.85);
+      backdrop-filter: blur(20px);
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      padding: 0.85rem 2rem;
+    }
+
+    .nav-container {
+      max-width: 1440px;
+      margin: 0 auto;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 1rem;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.85rem;
+      text-decoration: none;
+      color: inherit;
+    }
+
+    .logo-badge {
+      width: 40px;
+      height: 40px;
+      border-radius: var(--radius-md);
+      background: linear-gradient(135deg, #6366f1, #06b6d4);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 0 22px rgba(99, 102, 241, 0.45);
+      font-family: 'Outfit', sans-serif;
+      font-weight: 800;
+      font-size: 1.3rem;
+      color: white;
+    }
+
+    .brand-title {
+      font-family: 'Outfit', sans-serif;
+      font-weight: 700;
+      font-size: 1.25rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .brand-tag {
+      font-size: 0.7rem;
+      background: rgba(99, 102, 241, 0.15);
+      border: 1px solid rgba(99, 102, 241, 0.35);
+      color: #a5b4fc;
+      padding: 0.18rem 0.6rem;
+      border-radius: var(--radius-full);
+      font-family: 'JetBrains Mono', monospace;
+      font-weight: 600;
+      letter-spacing: 0.03em;
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 0.85rem;
+    }
+
+    .tab-nav {
+      display: flex;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-full);
+      padding: 0.25rem;
+      gap: 0.25rem;
+    }
+
+    .tab-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      font-size: 0.84rem;
+      font-weight: 500;
+      padding: 0.45rem 1.05rem;
+      border-radius: var(--radius-full);
+      cursor: pointer;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+
+    .tab-btn:hover {
+      color: var(--text-main);
+      background: rgba(255, 255, 255, 0.05);
+    }
+
+    .tab-btn.active {
+      background: rgba(99, 102, 241, 0.22);
+      color: #a5b4fc;
+      font-weight: 600;
+      box-shadow: 0 0 16px rgba(99, 102, 241, 0.25);
+    }
+
+    .btn-icon {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border-subtle);
+      color: var(--text-muted);
+      padding: 0.45rem 0.85rem;
+      border-radius: var(--radius-md);
+      cursor: pointer;
+      font-size: 0.82rem;
+      font-weight: 500;
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      transition: all 0.2s;
+    }
+
+    .btn-icon:hover {
+      border-color: var(--border-accent);
+      color: var(--text-main);
+      background: rgba(255, 255, 255, 0.08);
+    }
+
+    .live-pulse {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--accent-emerald);
+      box-shadow: 0 0 10px var(--accent-emerald);
+      animation: pulse 1.5s infinite;
+    }
+
+    @keyframes pulse {
+      0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
+      70% { transform: scale(1.15); box-shadow: 0 0 0 8px rgba(16, 185, 129, 0); }
+      100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+    }
+
+    main {
+      flex: 1;
+      max-width: 1440px;
+      width: 100%;
+      margin: 0 auto;
+      padding: 1.75rem 2rem 3rem;
+    }
+
+    .view-panel { display: none; }
+    .view-panel.active { display: block; animation: fadeIn 0.25s ease-out; }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .grid-2col {
+      display: grid;
+      grid-template-columns: 1.05fr 1fr;
+      gap: 1.75rem;
+      align-items: start;
+    }
+
+    @media (max-width: 1080px) {
+      .grid-2col { grid-template-columns: 1fr; }
+    }
+
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-lg);
+      backdrop-filter: blur(24px);
+      padding: 1.5rem;
+      box-shadow: 0 10px 35px 0 rgba(0, 0, 0, 0.4);
+      position: relative;
+    }
+
+    .card-title {
+      font-family: 'Outfit', sans-serif;
+      font-size: 1.1rem;
+      font-weight: 600;
+      margin-bottom: 1.15rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      color: var(--text-main);
+    }
+
+    .preset-pills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.45rem;
+      margin-bottom: 1.25rem;
+    }
+
+    .pill-btn {
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid var(--border-subtle);
+      color: var(--text-muted);
+      font-size: 0.76rem;
+      padding: 0.32rem 0.75rem;
+      border-radius: var(--radius-full);
+      cursor: pointer;
+      transition: all 0.18s ease;
+      white-space: nowrap;
+    }
+
+    .pill-btn:hover {
+      background: rgba(99, 102, 241, 0.15);
+      border-color: rgba(99, 102, 241, 0.4);
+      color: #cbd5e1;
+      transform: translateY(-1px);
+    }
+
+    .label-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 0.45rem;
+    }
+
+    label {
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    select, textarea, input[type="text"], input[type="password"], input[type="number"] {
+      width: 100%;
+      background: rgba(12, 19, 36, 0.75);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      color: var(--text-main);
+      padding: 0.7rem 0.9rem;
+      font-family: inherit;
+      font-size: 0.88rem;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    select:focus, textarea:focus, input:focus {
+      outline: none;
+      border-color: var(--accent-primary);
+      box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.22);
+      background: rgba(15, 23, 42, 0.95);
+    }
+
+    textarea { resize: vertical; min-height: 90px; line-height: 1.45; }
+    .textarea-query { min-height: 110px; font-size: 0.95rem; }
+    .form-group { margin-bottom: 1.25rem; }
+
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.65rem 0.85rem;
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      margin-bottom: 1.15rem;
+    }
+
+    .switch {
+      position: relative;
+      display: inline-block;
+      width: 44px;
+      height: 24px;
+    }
+
+    .switch input { opacity: 0; width: 0; height: 0; }
+
+    .slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background-color: rgba(255, 255, 255, 0.15);
+      transition: .25s;
+      border-radius: 24px;
+    }
+
+    .slider:before {
+      position: absolute;
+      content: "";
+      height: 18px;
+      width: 18px;
+      left: 3px;
+      bottom: 3px;
+      background-color: white;
+      transition: .25s;
+      border-radius: 50%;
+    }
+
+    input:checked + .slider {
+      background-color: var(--accent-primary);
+      box-shadow: 0 0 12px rgba(99, 102, 241, 0.5);
+    }
+
+    input:checked + .slider:before {
+      transform: translateX(20px);
+    }
+
+    .backend-switch {
+      display: flex;
+      background: rgba(12, 19, 36, 0.85);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 0.25rem;
+      gap: 0.25rem;
+      margin-bottom: 1.25rem;
+    }
+
+    .backend-opt {
+      flex: 1;
+      text-align: center;
+      padding: 0.55rem;
+      border-radius: var(--radius-sm);
+      font-size: 0.82rem;
+      font-weight: 600;
+      cursor: pointer;
+      color: var(--text-muted);
+      transition: all 0.2s;
+    }
+
+    .backend-opt.active {
+      background: linear-gradient(135deg, rgba(99, 102, 241, 0.25), rgba(6, 182, 212, 0.2));
+      color: #38bdf8;
+      border: 1px solid rgba(56, 189, 248, 0.35);
+      box-shadow: 0 0 15px rgba(6, 182, 212, 0.15);
+    }
+
+    .btn-classify {
+      width: 100%;
+      padding: 0.85rem 1.25rem;
+      background: linear-gradient(135deg, var(--accent-primary), #4f46e5);
+      border: none;
+      border-radius: var(--radius-md);
+      color: white;
+      font-family: 'Outfit', sans-serif;
+      font-weight: 600;
+      font-size: 0.98rem;
+      cursor: pointer;
+      transition: all 0.2s;
+      box-shadow: var(--shadow-glow);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+    }
+
+    .btn-classify:hover {
+      background: linear-gradient(135deg, #7073ff, var(--accent-primary));
+      transform: translateY(-1px);
+    }
+
+    .classification-hero {
+      background: linear-gradient(135deg, rgba(14, 22, 41, 0.95), rgba(24, 34, 58, 0.7));
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-lg);
+      padding: 1.25rem;
+      margin-bottom: 1.25rem;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .classification-hero::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0; height: 3px;
+      background: linear-gradient(90deg, var(--accent-primary), var(--accent-cyan), var(--accent-emerald));
+    }
+
+    .type-badge-container {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 0.75rem;
+    }
+
+    .type-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.45rem 1rem;
+      border-radius: var(--radius-full);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.95rem;
+      font-weight: 700;
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .type-code_generation { background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.4); box-shadow: 0 0 15px rgba(16, 185, 129, 0.2); }
+    .type-code_understanding { background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.4); box-shadow: 0 0 15px rgba(56, 189, 248, 0.2); }
+    .type-technical_design { background: rgba(168, 85, 247, 0.15); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.4); box-shadow: 0 0 15px rgba(168, 85, 247, 0.2); }
+    .type-analytical_reasoning { background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4); box-shadow: 0 0 15px rgba(245, 158, 11, 0.2); }
+    .type-writing { background: rgba(244, 63, 94, 0.15); color: #fb7185; border: 1px solid rgba(244, 63, 94, 0.4); box-shadow: 0 0 15px rgba(244, 63, 94, 0.2); }
+    .type-factual_lookup { background: rgba(6, 182, 212, 0.15); color: #22d3ee; border: 1px solid rgba(6, 182, 212, 0.4); box-shadow: 0 0 15px rgba(6, 182, 212, 0.2); }
+    .type-general { background: rgba(148, 163, 184, 0.15); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.4); box-shadow: 0 0 15px rgba(148, 163, 184, 0.2); }
+
+    .type-desc { font-size: 0.86rem; color: var(--text-muted); line-height: 1.45; }
+
+    .kpi-row {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1rem;
+      margin-bottom: 1.25rem;
+    }
+
+    .kpi-card {
+      background: rgba(15, 23, 42, 0.65);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 0.9rem;
+      text-align: center;
+      transition: transform 0.2s;
+    }
+
+    .kpi-card:hover { transform: translateY(-2px); }
+
+    .kpi-label { font-size: 0.72rem; text-transform: uppercase; color: var(--text-dim); margin-bottom: 0.35rem; font-weight: 600; letter-spacing: 0.05em; }
+    .kpi-val { font-family: 'Outfit', sans-serif; font-size: 1.4rem; font-weight: 700; color: var(--text-main); }
+
+    .complexity-bar { display: flex; gap: 4px; margin-top: 0.5rem; }
+    .comp-step { flex: 1; height: 6px; border-radius: var(--radius-full); background: rgba(255, 255, 255, 0.08); transition: all 0.3s; }
+    .comp-step.active { background: var(--accent-amber); box-shadow: 0 0 10px rgba(245, 158, 11, 0.6); }
+
+    .tier-box {
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 1.15rem;
+      background: rgba(15, 23, 42, 0.55);
+      margin-bottom: 1.25rem;
+    }
+
+    .tier-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.85rem; }
+    .tier-badge { font-family: 'Outfit', sans-serif; font-weight: 700; font-size: 1.1rem; color: #a78bfa; }
+
+    .provider-models {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 0.75rem;
+    }
+
+    .p-model {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid var(--border-subtle);
+      padding: 0.65rem;
+      border-radius: var(--radius-sm);
+      font-size: 0.78rem;
+    }
+
+    .p-model-name {
+      color: var(--text-main);
+      font-weight: 600;
+      font-family: 'JetBrains Mono', monospace;
+      margin-top: 0.2rem;
+      word-break: break-all;
+    }
+
+    .raw-code {
+      background: #060911;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 0.85rem;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.8rem;
+      color: #94a3b8;
+      overflow-x: auto;
+      white-space: pre-wrap;
+    }
+
+    /* SESSION & CACHE SIMULATOR TAB */
+    .chat-timeline {
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .turn-bubble {
+      background: rgba(15, 23, 42, 0.8);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 1rem 1.25rem;
+      position: relative;
+      animation: fadeIn 0.2s ease-out;
+    }
+
+    .turn-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 0.5rem;
+      font-size: 0.78rem;
+    }
+
+    .turn-badge {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.75rem;
+      padding: 0.2rem 0.6rem;
+      border-radius: var(--radius-full);
+      font-weight: 600;
+    }
+
+    .badge-cache-hit {
+      background: rgba(16, 185, 129, 0.2);
+      color: #34d399;
+      border: 1px solid rgba(16, 185, 129, 0.4);
+      box-shadow: 0 0 10px rgba(16, 185, 129, 0.2);
+    }
+
+    .badge-switch {
+      background: rgba(245, 158, 11, 0.2);
+      color: #fbbf24;
+      border: 1px solid rgba(245, 158, 11, 0.4);
+    }
+
+    .badge-cold {
+      background: rgba(99, 102, 241, 0.2);
+      color: #818cf8;
+      border: 1px solid rgba(99, 102, 241, 0.4);
+    }
+
+    .turn-query {
+      font-size: 0.92rem;
+      color: var(--text-main);
+      margin-bottom: 0.5rem;
+    }
+
+    .turn-footer {
+      display: flex;
+      align-items: center;
+      gap: 1.5rem;
+      font-size: 0.76rem;
+      color: var(--text-muted);
+      border-top: 1px solid rgba(255, 255, 255, 0.05);
+      padding-top: 0.45rem;
+    }
+
+    /* THOMPSON SAMPLING ARENA */
+    .bandit-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 1.25rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .arm-card {
+      background: rgba(15, 23, 42, 0.7);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-lg);
+      padding: 1.25rem;
+      transition: all 0.2s;
+      position: relative;
+    }
+
+    .arm-card.winner {
+      border-color: var(--accent-emerald);
+      box-shadow: 0 0 20px rgba(16, 185, 129, 0.25);
+    }
+
+    .arm-title {
+      font-family: 'JetBrains Mono', monospace;
+      font-weight: 700;
+      font-size: 0.95rem;
+      color: var(--text-main);
+      margin-bottom: 0.25rem;
+    }
+
+    .arm-metrics {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 0.5rem;
+      margin: 0.75rem 0;
+      font-size: 0.78rem;
+    }
+
+    .arm-bar-container {
+      height: 8px;
+      background: rgba(255, 255, 255, 0.08);
+      border-radius: var(--radius-full);
+      overflow: hidden;
+      margin-top: 0.5rem;
+    }
+
+    .arm-bar {
+      height: 100%;
+      background: linear-gradient(90deg, var(--accent-primary), var(--accent-cyan));
+      border-radius: var(--radius-full);
+      transition: width 0.3s ease;
+    }
+
+    .eval-table-container {
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+      background: var(--bg-card);
+      margin-top: 1.25rem;
+    }
+
+    table { width: 100%; border-collapse: collapse; text-align: left; font-size: 0.85rem; }
+    th { background: rgba(15, 23, 42, 0.95); padding: 0.85rem 1rem; color: var(--text-muted); font-size: 0.75rem; text-transform: uppercase; font-weight: 600; letter-spacing: 0.05em; }
+    td { padding: 0.85rem 1rem; border-bottom: 1px solid rgba(255, 255, 255, 0.04); }
+    tr:hover td { background: rgba(255, 255, 255, 0.02); }
+
+    .modal-backdrop {
+      display: none; position: fixed; inset: 0; background: rgba(0, 0, 0, 0.75);
+      backdrop-filter: blur(10px); z-index: 100; align-items: center; justify-content: center;
+    }
+    .modal-backdrop.open { display: flex; }
+    .modal { background: #0f172a; border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); max-width: 520px; width: 92%; padding: 1.75rem; box-shadow: 0 20px 50px rgba(0, 0, 0, 0.7); }
+    .modal-title { font-family: 'Outfit', sans-serif; font-size: 1.25rem; font-weight: 700; margin-bottom: 1.25rem; }
+    .modal-footer { display: flex; justify-content: flex-end; gap: 0.75rem; margin-top: 1.75rem; }
+    .btn-secondary { background: rgba(255, 255, 255, 0.06); border: 1px solid var(--border-subtle); color: var(--text-main); padding: 0.55rem 1.1rem; border-radius: var(--radius-md); cursor: pointer; font-size: 0.86rem; }
+    .btn-primary { background: var(--accent-primary); border: none; color: white; padding: 0.55rem 1.3rem; border-radius: var(--radius-md); font-weight: 600; cursor: pointer; font-size: 0.86rem; }
+
+    .action-btn-row {
+      display: flex;
+      gap: 0.75rem;
+      margin-top: 1rem;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="nav-container">
+      <a href="#" class="brand">
+        <div class="logo-badge">Æ</div>
+        <div>
+          <div class="brand-title">Aetheris <span style="font-weight: 300; opacity: 0.85;">Cortex</span> <span class="brand-tag">Autonomous Dispatch • P2</span></div>
+        </div>
+      </a>
+
+      <div class="tab-nav">
+        <button class="tab-btn active" onclick="switchTab('playground')">
+          <span>⚡</span> Live Playground
+        </button>
+        <button class="tab-btn" onclick="switchTab('multiturn')">
+          <span>💬</span> Multi-Turn &amp; L2 Cache
+        </button>
+        <button class="tab-btn" onclick="switchTab('thompson')">
+          <span>🎯</span> Thompson Bandit Arena
+        </button>
+        <button class="tab-btn" onclick="switchTab('evaluator')">
+          <span>📊</span> Benchmark Suite
+        </button>
+        <button class="tab-btn" onclick="switchTab('architecture')">
+          <span>⚙️</span> Architecture Guide
+        </button>
+      </div>
+
+      <div class="header-actions">
+        <button class="btn-icon" id="btn-sound" onclick="toggleSound()">
+          <span id="sound-icon">🔔</span> Sound: <span id="sound-status">ON</span>
+        </button>
+        <button class="btn-icon" onclick="openConfigModal()">
+          <span>⚙️</span> Settings
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <!-- 1. LIVE PLAYGROUND VIEW -->
+    <section id="tab-playground" class="view-panel active">
+      <div class="grid-2col">
+        <div class="card">
+          <div class="card-title">
+            <span>Input Request</span>
+            <div style="display: flex; align-items: center; gap: 0.5rem;">
+              <div class="live-pulse"></div>
+              <span style="font-size: 0.76rem; color: #34d399; font-weight: 600;">ACTIVE REACTIVE</span>
+            </div>
+          </div>
+
+          <div class="toggle-row">
+            <div>
+              <div style="font-size: 0.84rem; font-weight: 600; color: var(--text-main);">Auto-Classify as you type</div>
+              <div style="font-size: 0.74rem; color: var(--text-dim);">Runs reactive evaluation dynamically with 120ms debounce</div>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="auto-classify-toggle" checked onchange="toggleAutoClassify()">
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div class="preset-group">
+            <div class="label-row">
+              <label>Quick Prompt Presets</label>
+              <span style="font-size: 0.74rem; color: #818cf8; cursor: pointer;" onclick="loadRandomPreset()">Surprise Me 🎲</span>
+            </div>
+            <div class="preset-pills">
+              <button class="pill-btn" onclick="setQueryText('Implement a generic red-black tree with deletion in Rust')">Red-Black Tree</button>
+              <button class="pill-btn" onclick="setQueryText('Explain why this code deadlocks with tokio::sync::Mutex')">Tokio Deadlock</button>
+              <button class="pill-btn" onclick="setQueryText('Design a fault-tolerant multi-region raft consensus cluster')">Raft Architecture</button>
+              <button class="pill-btn" onclick="setQueryText('Calculate the stationary distribution of this Markov chain matrix')">Markov Math</button>
+              <button class="pill-btn" onclick="setQueryText('Write an executive summary email announcing our SOC-2 compliance')">SOC-2 Email</button>
+              <button class="pill-btn" onclick="setQueryText('What is the default TCP receive window buffer size in Linux?')">TCP Window</button>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <div class="label-row">
+              <label for="query-input">Query</label>
+              <span id="query-char-count" style="font-size: 0.75rem; color: var(--text-dim); font-family: 'JetBrains Mono', monospace;">0 chars</span>
+            </div>
+            <textarea id="query-input" class="textarea-query" placeholder="Type or paste any query to watch classification react in real time..." oninput="onQueryInput()"></textarea>
+          </div>
+
+          <div class="form-group">
+            <label for="context-input">Context (Optional)</label>
+            <textarea id="context-input" placeholder="Optional conversation context..." oninput="onContextInput()"></textarea>
+          </div>
+
+          <div class="form-group">
+            <label>Classifier Backend</label>
+            <div class="backend-switch">
+              <div id="btn-backend-regex" class="backend-opt active" onclick="setBackend('regex')">Fast Regex Engine (Sub-ms)</div>
+              <div id="btn-backend-hosted" class="backend-opt" onclick="setBackend('hosted')">Hosted Model (Groq API)</div>
+            </div>
+          </div>
+
+          <button id="btn-classify" class="btn-classify" onclick="manualRunClassification()">
+            <span>⚡</span> Classify Request Now
+          </button>
+        </div>
+
+        <div class="card">
+          <div class="card-title">
+            <span>Classification &amp; Route Telemetry</span>
+            <span id="backend-status-pill" class="brand-tag">Regex Engine</span>
+          </div>
+
+          <div class="classification-hero">
+            <div class="type-badge-container">
+              <span id="result-type-badge" class="type-badge type-general">
+                <span id="result-type-text">general</span>
+              </span>
+              <span id="result-latency" style="font-family: 'JetBrains Mono', monospace; font-size: 0.88rem; color: #38bdf8; font-weight: 600;">0 μs</span>
+            </div>
+            <div id="result-type-desc" class="type-desc">
+              Type or select a prompt on the left to see live classification.
+            </div>
+          </div>
+
+          <div class="kpi-row">
+            <div class="kpi-card">
+              <div class="kpi-label">Complexity (1..=5)</div>
+              <div id="result-complexity-val" class="kpi-val">3</div>
+              <div class="complexity-bar">
+                <div id="cstep-1" class="comp-step active"></div>
+                <div id="cstep-2" class="comp-step active"></div>
+                <div id="cstep-3" class="comp-step active"></div>
+                <div id="cstep-4" class="comp-step"></div>
+                <div id="cstep-5" class="comp-step"></div>
+              </div>
+            </div>
+
+            <div class="kpi-card">
+              <div class="kpi-label">Confidence Score</div>
+              <div id="result-confidence-val" class="kpi-val" style="color: #38bdf8;">0.0%</div>
+              <div id="confidence-status" style="font-size: 0.68rem; color: var(--text-dim); margin-top: 0.35rem;">Fallback Baseline</div>
+            </div>
+
+            <div class="kpi-card">
+              <div class="kpi-label">Bandit Tier</div>
+              <div id="result-tier-val" class="kpi-val" style="color: #c084fc;">Tier2</div>
+              <div style="font-size: 0.68rem; color: var(--text-dim); margin-top: 0.35rem;">Balanced Mid-Weight</div>
+            </div>
+          </div>
+
+          <div class="tier-box">
+            <div class="tier-header">
+              <span style="font-size: 0.78rem; text-transform: uppercase; color: var(--text-muted); font-weight: 600;">Candidate Target Models</span>
+              <span id="tier-badge-label" class="tier-badge">Tier 2 Models</span>
+            </div>
+            <div class="provider-models">
+              <div class="p-model">
+                <span style="color: var(--text-dim); font-size: 0.68rem; text-transform: uppercase;">Anthropic</span>
+                <div id="model-anthropic" class="p-model-name">claude-sonnet-4-6</div>
+              </div>
+              <div class="p-model">
+                <span style="color: var(--text-dim); font-size: 0.68rem; text-transform: uppercase;">OpenAI</span>
+                <div id="model-openai" class="p-model-name">gpt-4o</div>
+              </div>
+              <div class="p-model">
+                <span style="color: var(--text-dim); font-size: 0.68rem; text-transform: uppercase;">Google Gemini</span>
+                <div id="model-gemini" class="p-model-name">gemini-2.5-flash</div>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <div class="label-row">
+              <label>Classification JSON Payload</label>
+              <span style="font-size: 0.74rem; color: #818cf8; cursor: pointer;" onclick="copyRawOutput()">Copy JSON 📋</span>
+            </div>
+            <pre id="raw-json-output" class="raw-code">{\n  "request_type": "general",\n  "complexity": 3,\n  "confidence": 0.0\n}</pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 2. MULTI-TURN & L2 CACHE SIMULATOR -->
+    <section id="tab-multiturn" class="view-panel">
+      <div class="card" style="margin-bottom: 1.5rem;">
+        <div class="card-title">
+          <span>Level 2 Sticky Continuation Cache Simulator</span>
+          <span class="brand-tag">Phase State Machine</span>
+        </div>
+        <p style="font-size: 0.88rem; color: var(--text-muted); margin-bottom: 1.25rem;">
+          In Aetheris Cortex's router architecture, <strong style="color: white;">Phase::Continue</strong> (e.g. tool execution loops, follow-up code edits) hits the 
+          <span style="color: #34d399; font-weight: 600;">Level 2 Sticky Session Cache</span>. The classifier is bypassed completely to eliminate re-classification latency and maintain model stability.
+          When a topic shifts (<strong style="color: #fbbf24;">Phase::Switch</strong>) or cold starts (<strong style="color: #818cf8;">Phase::ColdStart</strong>), the classifier runs fresh.
+        </p>
+
+        <div class="kpi-row">
+          <div class="kpi-card">
+            <div class="kpi-label">Cumulative Turns</div>
+            <div id="sim-turns-count" class="kpi-val">0</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label">L2 Cache Hit Rate</div>
+            <div id="sim-hit-rate" class="kpi-val" style="color: #34d399;">0%</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label">Classification Time Saved</div>
+            <div id="sim-time-saved" class="kpi-val" style="color: #38bdf8;">0.0 ms</div>
+          </div>
+        </div>
+
+        <div class="action-btn-row">
+          <button class="pill-btn" style="padding: 0.55rem 1rem; font-weight: 600;" onclick="stepScenario(1)">
+            ➕ Turn 1: Cold Start ("Write Axum server")
+          </button>
+          <button class="pill-btn" style="padding: 0.55rem 1rem; font-weight: 600;" onclick="stepScenario(2)">
+            ⚡ Turn 2: Sticky Continue ("Now add graceful shutdown")
+          </button>
+          <button class="pill-btn" style="padding: 0.55rem 1rem; font-weight: 600;" onclick="stepScenario(3)">
+            ⚡ Turn 3: Tool Execution Turn (Tool result returned)
+          </button>
+          <button class="pill-btn" style="padding: 0.55rem 1rem; font-weight: 600;" onclick="stepScenario(4)">
+            🔄 Turn 4: Topic Switch ("Write poem about autumn")
+          </button>
+          <button class="pill-btn" style="padding: 0.55rem 1rem; font-weight: 600; color: #f43f5e;" onclick="resetScenario()">
+            🗑️ Clear History
+          </button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">
+          <span>Active Session History</span>
+          <span id="session-key-display" style="font-family: 'JetBrains Mono', monospace; font-size: 0.78rem; color: var(--text-dim);">session-9a8f4b</span>
+        </div>
+        <div id="chat-timeline-container" class="chat-timeline">
+          <div style="text-align: center; color: var(--text-dim); padding: 2rem 0; font-size: 0.88rem;">
+            No conversation turns in active session. Click one of the scenario buttons above!
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 3. THOMPSON SAMPLING ARENA -->
+    <section id="tab-thompson" class="view-panel">
+      <div class="card" style="margin-bottom: 1.5rem;">
+        <div class="card-title">
+          <span>Cost-Aware Thompson Sampling Multi-Armed Bandit Arena</span>
+          <div style="display: flex; gap: 0.5rem;">
+            <button class="pill-btn" onclick="runBanditTrial(1)">Run 1 Trial</button>
+            <button class="pill-btn" onclick="runBanditTrial(50)">Run 50 Trials</button>
+            <button id="btn-stream-trials" class="pill-btn" onclick="toggleStreamTrials()">▶ Start Live Stream</button>
+            <button class="pill-btn" onclick="resetBandit()">Reset Arms</button>
+          </div>
+        </div>
+        <p style="font-size: 0.88rem; color: var(--text-muted); margin-bottom: 1rem;">
+          Thompson sampling continuously updates the posterior belief Beta(α, β) for each model based on output quality, factoring in cost penalties.
+          High-performance, cost-efficient models earn higher exploration win rates.
+        </p>
+        <div class="bandit-grid" id="bandit-arms-container">
+          <!-- Dynamic Bandit Arms Injected Here -->
+        </div>
+      </div>
+    </section>
+
+    <!-- 4. BENCHMARK SUITE -->
+    <section id="tab-evaluator" class="view-panel">
+      <div class="card" style="margin-bottom: 1.5rem;">
+        <div class="card-title">
+          <span>Benchmark Dataset Evaluator (classifier-eval.json)</span>
+          <div style="display: flex; gap: 0.5rem;">
+            <button class="btn-primary" onclick="runBatchEvaluation()">▶ Run Full Benchmark</button>
+            <button class="btn-secondary" onclick="exportJsonl()">⬇ Export classifier-out.jsonl</button>
+          </div>
+        </div>
+        <div class="kpi-row">
+          <div class="kpi-card">
+            <div class="kpi-label">Dataset Size</div>
+            <div id="eval-kpi-total" class="kpi-val">20</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label">Classification Accuracy</div>
+            <div id="eval-kpi-accuracy" class="kpi-val" style="color: #34d399;">Pending</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label">Average Latency</div>
+            <div id="eval-kpi-latency" class="kpi-val" style="color: #38bdf8;">Pending</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">
+          <span>Evaluation Test Matrix</span>
+        </div>
+        <div class="eval-table-container">
+          <table>
+            <thead>
+              <tr>
+                <th style="width: 80px;">ID</th>
+                <th>Query</th>
+                <th>Predicted Type</th>
+                <th>Ground Truth</th>
+                <th>Complexity</th>
+                <th>Confidence</th>
+                <th>Latency</th>
+              </tr>
+            </thead>
+            <tbody id="eval-table-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- 5. ARCHITECTURE & PRECEDENCE GUIDE -->
+    <section id="tab-architecture" class="view-panel">
+      <div class="card" style="margin-bottom: 1.5rem;">
+        <div class="card-title">
+          <span>Architecture &amp; Precedence Matrix</span>
+          <span class="brand-tag">P2 System Specification</span>
+        </div>
+        <div style="font-size: 0.9rem; line-height: 1.65; color: var(--text-muted);">
+          <h3 style="color: var(--text-main); margin-bottom: 0.5rem; font-size: 1.05rem;">1. Single Classification at Fireable Boundaries</h3>
+          <p style="margin-bottom: 1rem;">
+            The router invokes <code style="color: #a5b4fc; background: rgba(255,255,255,0.06); padding: 0.1rem 0.4rem; border-radius: 4px;">request_classifier.classify(input)</code> exactly once 
+            during <strong style="color: white;">Phase::Switch</strong> and <strong style="color: white;">Phase::ColdStart</strong> in <strong style="color: white;">Mode::FreeFlowing</strong>. 
+            Continuation and tool-turn sequences (<strong style="color: #34d399;">Phase::Continue</strong>) hit the Level 2 sticky cache and never trigger classification.
+          </p>
+
+          <h3 style="color: var(--text-main); margin-bottom: 0.5rem; font-size: 1.05rem;">2. Thompson Sampling Consumption</h3>
+          <p style="margin-bottom: 1rem;">
+            The resulting <code style="color: #38bdf8;">Classification.request_type</code> is passed directly into <code style="color: #a5b4fc; background: rgba(255,255,255,0.06); padding: 0.1rem 0.4rem; border-radius: 4px;">classifier::pick_model_thompson</code>. 
+            The legacy regex classification call has been removed from the hot path.
+          </p>
+
+          <h3 style="color: var(--text-main); margin-bottom: 0.5rem; font-size: 1.05rem;">3. Automatic Fallback Guarantee</h3>
+          <p style="margin-bottom: 1.5rem;">
+            When using <code style="color: #c084fc;">HostedClassifier</code>, any HTTP timeout, network disconnect, malformed JSON, or non-200 status code automatically degrades to <code style="color: #34d399;">RegexClassifier</code>. 
+            The system never panics or aborts a request.
+          </p>
+
+          <h3 style="color: var(--text-main); margin-bottom: 0.5rem; font-size: 1.05rem;">4. CLI Evaluation Command</h3>
+          <div style="background: #060911; padding: 0.85rem; border-radius: 8px; border: 1px solid var(--border-subtle); display: flex; justify-content: space-between; align-items: center;">
+            <code style="font-family: 'JetBrains Mono', monospace; font-size: 0.84rem; color: #34d399;">cargo run --release -p nasiko-llm-router --example classifier_eval</code>
+            <button class="pill-btn" onclick="navigator.clipboard.writeText('cargo run --release -p nasiko-llm-router --example classifier_eval'); alert('Copied CLI command!');">Copy</button>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- CONFIG MODAL -->
+  <div id="config-modal" class="modal-backdrop">
+    <div class="modal">
+      <div class="modal-title">Hosted Classifier Settings</div>
+      <div class="form-group">
+        <label for="cfg-endpoint">OpenAI / Groq API Endpoint</label>
+        <input type="text" id="cfg-endpoint" value="https://api.groq.com/openai/v1/chat/completions">
+      </div>
+      <div class="form-group">
+        <label for="cfg-model">Model ID</label>
+        <input type="text" id="cfg-model" value="llama-3.3-70b-versatile">
+      </div>
+      <div class="form-group">
+        <label for="cfg-api-key">API Key (Stored in Session Only)</label>
+        <input type="password" id="cfg-api-key" placeholder="gsk_... or sk-...">
+      </div>
+      <div class="form-group">
+        <label for="cfg-timeout">Timeout (Seconds)</label>
+        <input type="number" id="cfg-timeout" value="5" min="1" max="30">
+      </div>
+      <div class="modal-footer">
+        <button class="btn-secondary" onclick="closeConfigModal()">Cancel</button>
+        <button class="btn-primary" onclick="saveConfigModal()">Save Changes</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // AUDIO SYNTHESIZER
+    let audioCtx = null;
+    let soundEnabled = true;
+
+    function playSound(type) {
+      if (!soundEnabled) return;
+      try {
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+
+        const now = audioCtx.currentTime;
+        if (type === 'click') {
+          osc.frequency.setValueAtTime(600, now);
+          osc.frequency.exponentialRampToValueAtTime(300, now + 0.04);
+          gain.gain.setValueAtTime(0.08, now);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + 0.04);
+          osc.start(now);
+          osc.stop(now + 0.04);
+        } else if (type === 'cache_hit') {
+          osc.frequency.setValueAtTime(520, now);
+          osc.frequency.exponentialRampToValueAtTime(880, now + 0.08);
+          gain.gain.setValueAtTime(0.1, now);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + 0.08);
+          osc.start(now);
+          osc.stop(now + 0.08);
+        } else if (type === 'classify') {
+          osc.frequency.setValueAtTime(440, now);
+          osc.frequency.exponentialRampToValueAtTime(660, now + 0.06);
+          gain.gain.setValueAtTime(0.06, now);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + 0.06);
+          osc.start(now);
+          osc.stop(now + 0.06);
+        }
+      } catch (e) {}
+    }
+
+    function toggleSound() {
+      soundEnabled = !soundEnabled;
+      document.getElementById('sound-icon').textContent = soundEnabled ? '🔔' : '🔕';
+      document.getElementById('sound-status').textContent = soundEnabled ? 'ON' : 'OFF';
+      if (soundEnabled) playSound('click');
+    }
+
+    // EVALUATION DATASET
+    const EVAL_DATASET = [
+      { id: "eval-01", query: "Write a Rust function to merge two sorted iterators into one sorted iterator.", request_type: "code_generation" },
+      { id: "eval-02", query: "Can you explain what this SQL execution plan means? Hash Join (cost=21.5..45.2)", request_type: "code_understanding" },
+      { id: "eval-03", query: "Design an event-driven system for order processing handling 100k events/sec with Kafka.", request_type: "technical_design" },
+      { id: "eval-04", query: "If an urn has 5 red and 7 blue balls, calculate the probability of picking 3 blue without replacement.", request_type: "analytical_reasoning" },
+      { id: "eval-05", query: "Draft a polite email to a client explaining that their feature request is delayed by two weeks.", request_type: "writing" },
+      { id: "eval-06", query: "What is the capital city of Australia?", request_type: "factual_lookup" },
+      { id: "eval-07", query: "Hello! How are you doing today?", request_type: "general" },
+      { id: "eval-08", query: "Refactor this TypeScript function to use async/await instead of nested promises.", request_type: "code_generation" },
+      { id: "eval-09", query: "Why am I getting 'cannot borrow as mutable more than once at a time' in this Rust snippet?", request_type: "code_understanding" },
+      { id: "eval-10", query: "Compare monolithic vs microservices architectures for an early-stage B2B SaaS startup.", request_type: "technical_design" },
+      { id: "eval-11", query: "Solve for x: 3x^2 - 12x + 9 = 0.", request_type: "analytical_reasoning" },
+      { id: "eval-12", query: "Rewrite this technical paragraph so that a non-technical marketing executive can understand it.", request_type: "writing" },
+      { id: "eval-13", query: "When was the Python programming language first released?", request_type: "factual_lookup" },
+      { id: "eval-14", query: "Tell me a joke about distributed systems.", request_type: "general" },
+      { id: "eval-15", query: "Implement a rate limiter in Go using the token bucket algorithm.", request_type: "code_generation" },
+      { id: "eval-16", query: "Trace this recursive Fibonacci function and list the call stack for n=4.", request_type: "code_understanding" },
+      { id: "eval-17", query: "Propose a database schema for a multi-tenant healthcare scheduling platform.", request_type: "technical_design" },
+      { id: "eval-18", query: "A car travels at 60 mph for 2 hours and 45 mph for 3 hours. What is its average speed?", request_type: "analytical_reasoning" },
+      { id: "eval-19", query: "Compose a cover letter for a Senior Site Reliability Engineer position.", request_type: "writing" },
+      { id: "eval-20", query: "Who invented the transformer neural network architecture?", request_type: "factual_lookup" }
+    ];
+
+    const CATEGORY_PATTERNS = [
+      { type: "code_generation", patterns: [/\b(write|create|implement|build|code|generate|add|refactor)\b.*\b(function|method|class|struct|code|script|api|component|endpoint|service|algorithm|tests?)\b/i, /```/, /\bfn\s+[a-z_]/, /\bdef\s+[a-z_]/, /\bclass\s+[A-Z]/] },
+      { type: "code_understanding", patterns: [/\b(explain|understand|debug|trace|why does|what does|how does)\b.*\b(code|function|error|stack|trace|snippet|panic|issue|bug|segfault)\b/i, /\bcannot borrow\b/i, /\bdeadlock\b/i] },
+      { type: "technical_design", patterns: [/\b(design|architecture|architect|system design|schema|migration|infrastructure|scalab(le|ility))\b/i, /\bmicroservices?\b/i, /\bevent-driven\b/i] },
+      { type: "analytical_reasoning", patterns: [/\b(calculate|probability|solve|prove|proof|how many|sum|product|average|result)\b/i, /[0-9]+\s*[+\-*/]\s*[0-9]+/] },
+      { type: "writing", patterns: [/\b(draft|write (an?|the)|compose|rewrite|make this sound)\b.*\b(email|blog|article|essay|post|letter|story|poem|paragraph)\b/i] },
+      { type: "factual_lookup", patterns: [/\bwhat is (the )?capital of\b/i, /^\s*(who|what|when|where) (is|was|are|were)\b/i, /\bdefine\b/i, /\bwhen was\b/i, /\bwho invented\b/i] }
+    ];
+
+    const TYPE_DESCRIPTIONS = {
+      code_generation: "Code generation: Implementation, modification, bugfix, or unit test creation.",
+      code_understanding: "Code understanding: Code explanation, error diagnosis, tracing, or debugging.",
+      technical_design: "Technical design: Architecture, schema modeling, distributed patterns, or scalability.",
+      analytical_reasoning: "Analytical reasoning: Mathematical deduction, algorithmic proofs, or calculations.",
+      writing: "Writing & Prose: Creative drafting, email composition, editing, or summarization.",
+      factual_lookup: "Factual lookup: Specific historical, geographical, or factual query.",
+      general: "General conversation or open-ended dialogue."
+    };
+
+    const TIER_MODELS = {
+      Tier1: { label: "Tier 1 (Flagship / Heavy)", anthropic: "claude-opus-4-8", openai: "o3", gemini: "gemini-2.5-pro" },
+      Tier2: { label: "Tier 2 (Balanced / Mid)", anthropic: "claude-sonnet-4-6", openai: "gpt-4o", gemini: "gemini-2.5-flash" },
+      Tier3: { label: "Tier 3 (Fast / Cheap)", anthropic: "claude-haiku-4-5", openai: "gpt-4o-mini", gemini: "gemini-2.5-flash-lite" }
+    };
+
+    let currentBackend = "regex";
+    let autoClassify = true;
+    let debounceTimer = null;
+    let config = {
+      endpoint: "https://api.groq.com/openai/v1/chat/completions",
+      model: "llama-3.3-70b-versatile",
+      apiKey: "",
+      timeoutSecs: 5
+    };
+    let lastEvaluatedOutputs = [];
+
+    // THOMPSON BANDIT STATE
+    let banditArms = [
+      { id: "qwen-2.5-coder-32b", label: "Qwen 2.5 Coder 32B", alpha: 14, beta: 2, cost: 0.15, pulls: 45, wins: 38 },
+      { id: "deepseek-r1-distill-70b", label: "DeepSeek R1 Distill 70B", alpha: 18, beta: 3, cost: 0.59, pulls: 52, wins: 44 },
+      { id: "llama-3.3-70b-versatile", label: "Llama 3.3 70B Versatile", alpha: 12, beta: 4, cost: 0.59, pulls: 34, wins: 26 },
+      { id: "claude-3-5-sonnet", label: "Claude 3.5 Sonnet", alpha: 22, beta: 2, cost: 3.00, pulls: 40, wins: 36 }
+    ];
+    let streamInterval = null;
+
+    // MULTI-TURN SESSION STATE
+    let sessionHistory = [];
+    let cumulativeTurns = 0;
+    let cacheHits = 0;
+    let timeSavedUs = 0;
+
+    window.addEventListener("DOMContentLoaded", () => {
+      renderBanditArms();
+      renderEvalTable();
+      setQueryText("Implement a generic red-black tree with deletion in Rust");
+    });
+
+    function setQueryText(text) {
+      const qInput = document.getElementById("query-input");
+      qInput.value = text;
+      updateCharCount();
+      playSound('click');
+      runClassificationImmediate();
+    }
+
+    function onQueryInput() {
+      updateCharCount();
+      if (!autoClassify) return;
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        runClassificationImmediate();
+      }, 120);
+    }
+
+    function onContextInput() {
+      if (!autoClassify) return;
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        runClassificationImmediate();
+      }, 120);
+    }
+
+    function toggleAutoClassify() {
+      autoClassify = document.getElementById("auto-classify-toggle").checked;
+      playSound('click');
+      if (autoClassify) runClassificationImmediate();
+    }
+
+    function updateCharCount() {
+      const len = document.getElementById("query-input").value.length;
+      document.getElementById("query-char-count").textContent = `${len} chars`;
+    }
+
+    function setBackend(b) {
+      currentBackend = b;
+      document.getElementById("btn-backend-regex").classList.toggle("active", b === "regex");
+      document.getElementById("btn-backend-hosted").classList.toggle("active", b === "hosted");
+      document.getElementById("backend-status-pill").textContent = b === "regex" ? "Regex Engine" : "Hosted (Groq)";
+      playSound('click');
+      runClassificationImmediate();
+    }
+
+    function loadRandomPreset() {
+      const rand = EVAL_DATASET[Math.floor(Math.random() * EVAL_DATASET.length)];
+      setQueryText(rand.query);
+    }
+
+    function classifyRegex(query) {
+      let best = "general";
+      let bestScore = 0;
+      for (const item of CATEGORY_PATTERNS) {
+        let score = 0;
+        for (const pat of item.patterns) {
+          if (pat.test(query)) score++;
+        }
+        if (score > bestScore) {
+          bestScore = score;
+          best = item.type;
+        }
+      }
+      const complexity = (best === "technical_design" || best === "analytical_reasoning") ? 4 : (best === "general" || best === "factual_lookup" ? 2 : 3);
+      return { request_type: best, complexity: complexity, confidence: 0.0 };
+    }
+
+    async function classifyHosted(query, context) {
+      if (!config.apiKey) {
+        alert("Please set your Groq API Key in Settings to run live hosted classification.");
+        return classifyRegex(query);
+      }
+      const systemPrompt = `You are a deterministic request classifier for an LLM router.\\n\\nClassify the user's PRIMARY task into exactly one request_type:\\n- code_generation\\n- code_understanding\\n- technical_design\\n- analytical_reasoning\\n- writing\\n- factual_lookup\\n- general\\n\\nReturn ONLY a JSON object:\\n{\\n  "request_type": "...",\\n  "complexity": 1,\\n  "confidence": 0.0\\n}`;
+      const userContent = context ? `Context:\\n${context}\\n\\nUser request:\\n${query}` : `User request:\\n${query}`;
+
+      const res = await fetch(config.endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${config.apiKey}`
+        },
+        body: JSON.stringify({
+          model: config.model,
+          temperature: 0,
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userContent }
+          ]
+        })
+      });
+
+      if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+      const data = await res.json();
+      const content = data.choices[0].message.content.trim();
+      const cleanJson = content.replace(/^```json/i, '').replace(/^```/, '').replace(/```$/, '').trim();
+      const parsed = JSON.parse(cleanJson);
+
+      return {
+        request_type: parsed.request_type || "general",
+        complexity: Math.max(1, Math.min(5, Number(parsed.complexity) || 3)),
+        confidence: Math.max(0.0, Math.min(1.0, Number(parsed.confidence) || 0.0))
+      };
+    }
+
+    function simulateThompson(requestType, complexity) {
+      if (complexity >= 4 || ["technical_design", "analytical_reasoning"].includes(requestType)) {
+        return "Tier1";
+      } else if (complexity === 3 || ["code_generation", "code_understanding"].includes(requestType)) {
+        return "Tier2";
+      } else {
+        return "Tier3";
+      }
+    }
+
+    async function runClassificationImmediate() {
+      const query = document.getElementById("query-input").value.trim();
+      const context = document.getElementById("context-input").value.trim();
+      if (!query) return;
+
+      const started = performance.now();
+      let res;
+
+      try {
+        if (currentBackend === "hosted") {
+          res = await classifyHosted(query, context);
+        } else {
+          res = classifyRegex(query);
+        }
+      } catch (err) {
+        console.warn("Fallback to regex:", err);
+        res = classifyRegex(query);
+      }
+
+      const elapsedUs = Math.round((performance.now() - started) * 1000);
+      playSound('classify');
+      updateResultUI(res, elapsedUs);
+    }
+
+    function manualRunClassification() {
+      playSound('click');
+      runClassificationImmediate();
+    }
+
+    function updateResultUI(res, latencyUs) {
+      const badge = document.getElementById("result-type-badge");
+      badge.className = `type-badge type-${res.request_type}`;
+      document.getElementById("result-type-text").textContent = res.request_type;
+      document.getElementById("result-type-desc").textContent = TYPE_DESCRIPTIONS[res.request_type] || "";
+      document.getElementById("result-latency").textContent = `${latencyUs.toLocaleString()} μs`;
+
+      document.getElementById("result-complexity-val").textContent = res.complexity;
+      for (let i = 1; i <= 5; i++) {
+        document.getElementById(`cstep-${i}`).classList.toggle("active", i <= res.complexity);
+      }
+
+      const confPct = (res.confidence * 100).toFixed(1);
+      document.getElementById("result-confidence-val").textContent = `${confPct}%`;
+      document.getElementById("confidence-status").textContent = res.confidence > 0.8 ? "High Confidence" : (res.confidence > 0.4 ? "Moderate Confidence" : "Fallback Baseline");
+
+      const tier = simulateThompson(res.request_type, res.complexity);
+      document.getElementById("result-tier-val").textContent = tier;
+      document.getElementById("tier-badge-label").textContent = `Selected: ${TIER_MODELS[tier].label}`;
+      document.getElementById("model-anthropic").textContent = TIER_MODELS[tier].anthropic;
+      document.getElementById("model-openai").textContent = TIER_MODELS[tier].openai;
+      document.getElementById("model-gemini").textContent = TIER_MODELS[tier].gemini;
+
+      document.getElementById("raw-json-output").textContent = JSON.stringify(res, null, 2);
+    }
+
+    function copyRawOutput() {
+      const text = document.getElementById("raw-json-output").textContent;
+      navigator.clipboard.writeText(text);
+      playSound('click');
+      alert("Classification JSON copied to clipboard!");
+    }
+
+    // MULTI-TURN & L2 CACHE SIMULATION
+    function stepScenario(step) {
+      cumulativeTurns++;
+      const timeline = document.getElementById("chat-timeline-container");
+      if (sessionHistory.length === 0) timeline.innerHTML = "";
+
+      let turn = {};
+      if (step === 1) {
+        turn = {
+          role: "user",
+          phase: "Phase::ColdStart",
+          query: "Implement a production-grade Axum HTTP server with connection limits and metrics.",
+          status: "COLD_START",
+          type: "code_generation",
+          latency: "420 μs",
+          model: "qwen-2.5-coder-32b",
+          cacheHit: false
+        };
+        playSound('classify');
+      } else if (step === 2) {
+        cacheHits++;
+        timeSavedUs += 415;
+        turn = {
+          role: "user",
+          phase: "Phase::Continue",
+          query: "Now add graceful shutdown on SIGINT and SIGTERM.",
+          status: "L2_CACHE_HIT",
+          type: "code_generation (cached)",
+          latency: "0.01 μs (0 μs classifier overhead)",
+          model: "qwen-2.5-coder-32b (sticky)",
+          cacheHit: true
+        };
+        playSound('cache_hit');
+      } else if (step === 3) {
+        cacheHits++;
+        timeSavedUs += 420;
+        turn = {
+          role: "system",
+          phase: "Phase::Continue",
+          query: "[Tool Result] Cargo build finished with 0 errors.",
+          status: "L2_CACHE_HIT",
+          type: "continuation (cached)",
+          latency: "0.01 μs (0 μs classifier overhead)",
+          model: "qwen-2.5-coder-32b (sticky)",
+          cacheHit: true
+        };
+        playSound('cache_hit');
+      } else if (step === 4) {
+        turn = {
+          role: "user",
+          phase: "Phase::Switch",
+          query: "Write a short contemplative poem about autumn leaves.",
+          status: "PHASE_SWITCH",
+          type: "writing",
+          latency: "385 μs",
+          model: "llama-3.3-70b-versatile",
+          cacheHit: false
+        };
+        playSound('classify');
+      }
+
+      sessionHistory.push(turn);
+      updateSessionMetrics();
+
+      const bubble = document.createElement("div");
+      bubble.className = "turn-bubble";
+      const badgeClass = turn.cacheHit ? "badge-cache-hit" : (turn.status === "PHASE_SWITCH" ? "badge-switch" : "badge-cold");
+
+      bubble.innerHTML = `
+        <div class="turn-header">
+          <span style="font-weight: 700; color: #a5b4fc;">Turn ${sessionHistory.length} (${turn.role})</span>
+          <span class="turn-badge ${badgeClass}">${turn.status} • ${turn.phase}</span>
+        </div>
+        <div class="turn-query">${turn.query}</div>
+        <div class="turn-footer">
+          <span>Target Model: <strong style="color: white;">${turn.model}</strong></span>
+          <span>Category: <strong style="color: #38bdf8;">${turn.type}</strong></span>
+          <span>Latency: <strong style="color: ${turn.cacheHit ? '#34d399' : '#fbbf24'};">${turn.latency}</strong></span>
+        </div>
+      `;
+      timeline.appendChild(bubble);
+    }
+
+    function resetScenario() {
+      sessionHistory = [];
+      cumulativeTurns = 0;
+      cacheHits = 0;
+      timeSavedUs = 0;
+      updateSessionMetrics();
+      document.getElementById("chat-timeline-container").innerHTML = `
+        <div style="text-align: center; color: var(--text-dim); padding: 2rem 0; font-size: 0.88rem;">
+          No conversation turns in active session. Click one of the scenario buttons above!
+        </div>
+      `;
+      playSound('click');
+    }
+
+    function updateSessionMetrics() {
+      document.getElementById("sim-turns-count").textContent = cumulativeTurns;
+      const rate = cumulativeTurns > 0 ? Math.round((cacheHits / cumulativeTurns) * 100) : 0;
+      document.getElementById("sim-hit-rate").textContent = `${rate}%`;
+      document.getElementById("sim-time-saved").textContent = `${(timeSavedUs / 1000).toFixed(2)} ms`;
+    }
+
+    // THOMPSON BANDIT LOGIC
+    function sampleBeta(alpha, beta) {
+      // Marsaglia-Tsang Gamma method
+      function sampleGamma(a) {
+        if (a < 1) return sampleGamma(a + 1) * Math.pow(Math.random(), 1 / a);
+        const d = a - 1 / 3;
+        const c = 1 / Math.sqrt(9 * d);
+        while (true) {
+          let z, v;
+          do {
+            z = normalRandom();
+            v = 1 + c * z;
+          } while (v <= 0);
+          v = v * v * v;
+          const u = Math.random();
+          if (u < 1 - 0.0331 * z * z * z * z) return d * v;
+          if (Math.log(u) < 0.5 * z * z + d * (1 - v + Math.log(v))) return d * v;
+        }
+      }
+      function normalRandom() {
+        let u = 0, v = 0;
+        while (u === 0) u = Math.random();
+        while (v === 0) v = Math.random();
+        return Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
+      }
+
+      const u = sampleGamma(alpha);
+      const v = sampleGamma(beta);
+      return u / (u + v);
+    }
+
+    function runBanditTrial(count = 1) {
+      for (let c = 0; c < count; c++) {
+        let bestScore = -Infinity;
+        let bestIndex = 0;
+
+        for (let i = 0; i < banditArms.length; i++) {
+          const arm = banditArms[i];
+          const qualitySample = sampleBeta(arm.alpha, arm.beta);
+          // Cost-aware score: reward / (cost^0.15)
+          const costFactor = Math.pow(arm.cost, 0.15);
+          const score = qualitySample / costFactor;
+
+          if (score > bestScore) {
+            bestScore = score;
+            bestIndex = i;
+          }
+        }
+
+        // Simulate reward
+        const wonArm = banditArms[bestIndex];
+        wonArm.pulls++;
+        const successProb = wonArm.alpha / (wonArm.alpha + wonArm.beta);
+        const isSuccess = Math.random() < successProb;
+
+        if (isSuccess) {
+          wonArm.alpha += 1;
+          wonArm.wins++;
+        } else {
+          wonArm.beta += 1;
+        }
+      }
+      playSound('click');
+      renderBanditArms();
+    }
+
+    function toggleStreamTrials() {
+      const btn = document.getElementById("btn-stream-trials");
+      if (streamInterval) {
+        clearInterval(streamInterval);
+        streamInterval = null;
+        btn.textContent = "▶ Start Live Stream";
+        btn.classList.remove("badge-cache-hit");
+      } else {
+        btn.textContent = "⏹ Stop Live Stream";
+        btn.classList.add("badge-cache-hit");
+        streamInterval = setInterval(() => {
+          runBanditTrial(1);
+        }, 120);
+      }
+    }
+
+    function resetBandit() {
+      banditArms = [
+        { id: "qwen-2.5-coder-32b", label: "Qwen 2.5 Coder 32B", alpha: 14, beta: 2, cost: 0.15, pulls: 45, wins: 38 },
+        { id: "deepseek-r1-distill-70b", label: "DeepSeek R1 Distill 70B", alpha: 18, beta: 3, cost: 0.59, pulls: 52, wins: 44 },
+        { id: "llama-3.3-70b-versatile", label: "Llama 3.3 70B Versatile", alpha: 12, beta: 4, cost: 0.59, pulls: 34, wins: 26 },
+        { id: "claude-3-5-sonnet", label: "Claude 3.5 Sonnet", alpha: 22, beta: 2, cost: 3.00, pulls: 40, wins: 36 }
+      ];
+      renderBanditArms();
+      playSound('click');
+    }
+
+    function renderBanditArms() {
+      const container = document.getElementById("bandit-arms-container");
+      container.innerHTML = "";
+      const totalPulls = banditArms.reduce((sum, a) => sum + a.pulls, 0) || 1;
+
+      banditArms.forEach(arm => {
+        const winRate = ((arm.wins / (arm.pulls || 1)) * 100).toFixed(1);
+        const trafficShare = ((arm.pulls / totalPulls) * 100).toFixed(1);
+        const card = document.createElement("div");
+        card.className = "arm-card";
+        card.innerHTML = `
+          <div class="arm-title">${arm.label}</div>
+          <div style="font-size: 0.72rem; color: var(--text-dim); margin-bottom: 0.4rem;">Input Cost: $${arm.cost.toFixed(2)} / M tokens</div>
+          <div class="arm-metrics">
+            <div>Posterior: <strong style="color: #38bdf8;">Beta(${arm.alpha}, ${arm.beta})</strong></div>
+            <div>Win Rate: <strong style="color: #34d399;">${winRate}%</strong></div>
+            <div>Total Trials: <strong style="color: white;">${arm.pulls}</strong></div>
+            <div>Traffic: <strong style="color: #a5b4fc;">${trafficShare}%</strong></div>
+          </div>
+          <div class="arm-bar-container">
+            <div class="arm-bar" style="width: ${trafficShare}%;"></div>
+          </div>
+        `;
+        container.appendChild(card);
+      });
+    }
+
+    // BENCHMARK EVALUATOR
+    function renderEvalTable() {
+      const tbody = document.getElementById("eval-table-body");
+      tbody.innerHTML = "";
+      EVAL_DATASET.forEach(ex => {
+        const tr = document.createElement("tr");
+        tr.id = `eval-row-${ex.id}`;
+        tr.innerHTML = `
+          <td style="font-family: 'JetBrains Mono', monospace; font-weight: 600;">${ex.id}</td>
+          <td style="max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${ex.query}</td>
+          <td id="eval-pred-${ex.id}"><span style="color: var(--text-dim);">-</span></td>
+          <td><span class="type-badge type-${ex.request_type}" style="padding: 0.2rem 0.6rem; font-size: 0.78rem;">${ex.request_type}</span></td>
+          <td id="eval-comp-${ex.id}">-</td>
+          <td id="eval-conf-${ex.id}">-</td>
+          <td id="eval-lat-${ex.id}" style="font-family: 'JetBrains Mono', monospace;">-</td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+
+    async function runBatchEvaluation() {
+      playSound('click');
+      lastEvaluatedOutputs = [];
+      let matches = 0;
+      let totalLatency = 0;
+
+      for (const ex of EVAL_DATASET) {
+        const started = performance.now();
+        let res;
+        try {
+          if (currentBackend === "hosted" && config.apiKey) {
+            res = await classifyHosted(ex.query, ex.context);
+          } else {
+            res = classifyRegex(ex.query);
+          }
+        } catch (e) {
+          res = classifyRegex(ex.query);
+        }
+        const latencyUs = Math.round((performance.now() - started) * 1000);
+        totalLatency += latencyUs;
+
+        const isMatch = res.request_type === ex.request_type;
+        if (isMatch) matches++;
+
+        document.getElementById(`eval-pred-${ex.id}`).innerHTML = `
+          <span class="type-badge type-${res.request_type}" style="padding: 0.2rem 0.6rem; font-size: 0.78rem;">
+            ${res.request_type} ${isMatch ? '✓' : ''}
+          </span>
+        `;
+        document.getElementById(`eval-comp-${ex.id}`).textContent = res.complexity;
+        document.getElementById(`eval-conf-${ex.id}`).textContent = `${(res.confidence * 100).toFixed(0)}%`;
+        document.getElementById(`eval-lat-${ex.id}`).textContent = `${latencyUs.toLocaleString()} μs`;
+
+        lastEvaluatedOutputs.push({
+          id: ex.id,
+          request_type: res.request_type,
+          complexity: res.complexity,
+          confidence: res.confidence,
+          latency_us: latencyUs
+        });
+      }
+
+      const acc = ((matches / EVAL_DATASET.length) * 100).toFixed(0);
+      document.getElementById("eval-kpi-accuracy").textContent = `${acc}% (${matches}/${EVAL_DATASET.length})`;
+      const avgLat = Math.round(totalLatency / EVAL_DATASET.length);
+      document.getElementById("eval-kpi-latency").textContent = `${avgLat.toLocaleString()} μs`;
+      playSound('cache_hit');
+    }
+
+    function exportJsonl() {
+      playSound('click');
+      if (!lastEvaluatedOutputs.length) {
+        runBatchEvaluation().then(downloadJsonl);
+      } else {
+        downloadJsonl();
+      }
+    }
+
+    function downloadJsonl() {
+      const lines = lastEvaluatedOutputs.map(o => JSON.stringify(o)).join('\n');
+      const blob = new Blob([lines], { type: 'application/x-ndjson' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'classifier-out.jsonl';
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    function switchTab(tab) {
+      playSound('click');
+      document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+      document.querySelectorAll(".view-panel").forEach(p => p.classList.remove("active"));
+      const targetBtn = Array.from(document.querySelectorAll(".tab-btn")).find(b => b.getAttribute("onclick").includes(tab));
+      if (targetBtn) targetBtn.classList.add("active");
+      document.getElementById(`tab-${tab}`).classList.add("active");
+    }
+
+    function openConfigModal() { playSound('click'); document.getElementById("config-modal").classList.add("open"); }
+    function closeConfigModal() { playSound('click'); document.getElementById("config-modal").classList.remove("open"); }
+    function saveConfigModal() {
+      playSound('click');
+      config.endpoint = document.getElementById("cfg-endpoint").value.trim();
+      config.model = document.getElementById("cfg-model").value.trim();
+      config.apiKey = document.getElementById("cfg-api-key").value.trim();
+      config.timeoutSecs = Number(document.getElementById("cfg-timeout").value) || 5;
+      closeConfigModal();
+    }
+  </script>
+</body>
+</html>

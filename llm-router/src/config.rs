@@ -80,21 +80,47 @@ pub struct GatewayConfig {
     /// the injector skips LLM wiring (fail closed — no broken base URL without a key).
     pub llm_gateway_base_url: String,
 
+    // -------------------------------------------------------------------------
+    // P2 — Request classifier configuration
+    // -------------------------------------------------------------------------
+    /// Request classifier backend.
+    ///
+    /// `regex` is the safe default and preserves the existing behaviour.
+    /// `groq` enables the hosted model-backed classifier.
+    pub classifier_backend: String,
+
+    /// Hosted classifier model name.
+    pub classifier_model: String,
+
+    /// Hosted classifier endpoint.
+    pub classifier_endpoint: String,
+
+    /// Maximum time allowed for one hosted classifier request.
+    pub classifier_timeout_secs: u64,
+
+    /// API key for the hosted classifier.
+    ///
+    /// This value comes from the environment and must never be logged or committed.
+    pub classifier_api_key: String,
+
     /// Level 2.5 salience gate: an in-process classifier decides whether a boundary turn
     /// is substantive enough to classify + pin, or is small talk to be served cheaply
     /// without pinning. Enabled by default. When `false`, the router classifies at every
     /// fireable boundary (behaviour before the gate existed).
     pub salience_gate_enabled: bool,
+
     /// Optional override: path to a trained weights JSON (same schema as the embedded
     /// asset) to load *instead of* the model embedded in the binary. Empty (the
     /// default) ⇒ use the embedded model, which needs no deployment step. Exists so a
     /// candidate model can be trialled without a rebuild; a load failure falls back to
     /// classifying every boundary, never to an outage.
     pub salience_weights_path: String,
+
     /// Below this probability the classifier confidently judges the turn small talk and
     /// the gate defers. This is the only threshold that changes a routing outcome —
     /// raising it defers more turns. Default 0.20; tune against validation data.
     pub salience_low_threshold: f64,
+
     /// Above this probability the classifier is confidently substantive. Turns between the
     /// thresholds route too, so this does not change routing on its own — it marks the
     /// uncertain band in the gate's logs so its size can be measured before `low` is
@@ -105,11 +131,15 @@ pub struct GatewayConfig {
     /// (`agents.compress_enabled`); this only lets an operator stop all of it at once without
     /// editing every agent's row. Default on, so a UI toggle takes effect without a deploy.
     pub compress_kill_switch: bool,
+
     /// Skip payloads below this size — compressing them costs more than it saves.
     pub compress_min_bytes: usize,
+
     /// Which detected content types may be compressed.
     pub compress_types: nasiko_compress::TypeMask,
+
     pub compress_level: nasiko_compress::Level,
+
     /// Measure without mutating: stats are recorded, the request is sent untouched.
     pub compress_dry_run: bool,
 
@@ -119,6 +149,7 @@ pub struct GatewayConfig {
     /// `compress_enabled` switch is set, so the fleet default is a kill switch, never the thing
     /// that turns a layer on. An operator sets this to `false` to stop IP-2 everywhere at once.
     pub brevity_enabled: bool,
+
     /// Skip the directive below this transcript size. **Defaults to 0 — every turn gets it.**
     ///
     /// The directive is ~114 tokens of input. Output bills at 4x input on the default model, so
@@ -137,6 +168,7 @@ pub struct GatewayConfig {
     /// Raise it only if real traffic turns out to be dominated by very short replies (under
     /// ~250 output tokens), where the fixed cost stops being repaid.
     pub brevity_min_bytes: usize,
+
     /// Percent of otherwise-eligible calls the directive is withheld from, to keep a control arm.
     ///
     /// This is a real, accepted cost: that slice forgoes the optimization. It buys the only
@@ -149,9 +181,11 @@ pub struct GatewayConfig {
     /// Defaults **on**; only ever writes a row when compression actually elided something, which
     /// requires the agent's switch, so an opted-out fleet stores nothing.
     pub compress_recovery_enabled: bool,
+
     /// Only mint a handle for payloads above this size. Below it the elided content is small
     /// enough that a recovery round-trip costs more than re-sending would have.
     pub compress_recovery_min_bytes: usize,
+
     /// How long an original stays recoverable. Sized to outlive the flow that produced it.
     pub compress_recovery_ttl_secs: u64,
 }
@@ -164,35 +198,50 @@ impl Default for GatewayConfig {
             agent_jwt_algorithm: "HS256".into(),
             default_provider: "openai".into(),
             default_model: "gpt-4o-mini".into(),
+
             platform_openai_api_key: String::new(),
             platform_anthropic_api_key: String::new(),
             platform_gemini_api_key: String::new(),
             platform_openrouter_api_key: String::new(),
+
             llm_config_cache_ttl_secs: 30,
             redis_url: String::new(),
             router_decision_ttl_secs: 3600,
             attribution_window_secs: 600,
             model_catalog_sync_interval_secs: 86_400,
             pricing_sync_interval_secs: 86_400,
+
             openai_api_base: "https://api.openai.com/v1".into(),
             anthropic_api_base: "https://api.anthropic.com/v1".into(),
             gemini_api_base: "https://generativelanguage.googleapis.com/v1beta".into(),
             openrouter_api_base: "https://openrouter.ai/api/v1".into(),
+
             openrouter_http_referer: String::new(),
             openrouter_x_title: String::new(),
             llm_gateway_base_url: String::new(),
+
+            // P2 classifier defaults.
+            classifier_backend: "regex".into(),
+            classifier_model: "openai/gpt-oss-20b".into(),
+            classifier_endpoint: "https://api.groq.com/openai/v1/chat/completions".into(),
+            classifier_timeout_secs: 5,
+            classifier_api_key: String::new(),
+
             salience_gate_enabled: true,
             salience_weights_path: String::new(),
             salience_low_threshold: 0.20,
             salience_high_threshold: 0.80,
+
             compress_kill_switch: true,
             compress_min_bytes: 2048,
             compress_types: nasiko_compress::TypeMask::DEFAULT,
             compress_level: nasiko_compress::Level::Conservative,
             compress_dry_run: false,
+
             brevity_enabled: true,
             brevity_min_bytes: 0,
             brevity_holdout_pct: 5,
+
             compress_recovery_enabled: true,
             compress_recovery_min_bytes: 8192,
             compress_recovery_ttl_secs: 86_400,
@@ -205,11 +254,14 @@ impl GatewayConfig {
     /// per key.
     pub fn from_env() -> Self {
         let d = Self::default();
+
         Self {
             agent_jwt_secret: env_or("AGENT_JWT_SECRET", &d.agent_jwt_secret),
             agent_jwt_algorithm: env_or("AGENT_JWT_ALGORITHM", &d.agent_jwt_algorithm),
+
             default_provider: env_or("DEFAULT_PROVIDER", &d.default_provider),
             default_model: env_or("DEFAULT_MODEL", &d.default_model),
+
             // Per-provider platform keys. Prefer the explicit `PLATFORM_*` name, then
             // fall back to the generic provider key env var (which agents/orchestrator
             // already set), so a single provider key "just works" without duplication.
@@ -229,24 +281,30 @@ impl GatewayConfig {
                 &["PLATFORM_OPENROUTER_API_KEY", "OPENROUTER_API_KEY"],
                 &d.platform_openrouter_api_key,
             ),
+
             llm_config_cache_ttl_secs: std::env::var("LLM_CONFIG_CACHE_TTL")
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(d.llm_config_cache_ttl_secs),
+
             redis_url: env_or("REDIS_URL", &d.redis_url),
+
             router_decision_ttl_secs: std::env::var("ROUTER_DECISION_TTL_SECS")
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(d.router_decision_ttl_secs),
+
             attribution_window_secs: std::env::var("LLM_ATTRIBUTION_WINDOW_SECS")
                 .or_else(|_| std::env::var("NASIKO_FLOW_TIMEOUT_SECS"))
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(d.attribution_window_secs),
+
             model_catalog_sync_interval_secs: std::env::var("MODEL_CATALOG_SYNC_INTERVAL_SECS")
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(d.model_catalog_sync_interval_secs),
+
             pricing_sync_interval_secs: env_parse_first(
                 &[
                     "PRICING_SYNC_INTERVAL_SECS",
@@ -254,28 +312,54 @@ impl GatewayConfig {
                 ],
                 d.pricing_sync_interval_secs,
             ),
+
             openai_api_base: env_or("OPENAI_API_BASE", &d.openai_api_base),
             anthropic_api_base: env_or("ANTHROPIC_API_BASE", &d.anthropic_api_base),
             gemini_api_base: env_or("GEMINI_API_BASE", &d.gemini_api_base),
             openrouter_api_base: env_or("OPENROUTER_API_BASE", &d.openrouter_api_base),
+
             openrouter_http_referer: env_or("OPENROUTER_HTTP_REFERER", &d.openrouter_http_referer),
             openrouter_x_title: env_or("OPENROUTER_X_TITLE", &d.openrouter_x_title),
+
             llm_gateway_base_url: env_or("LLM_GATEWAY_BASE_URL", &d.llm_gateway_base_url),
+
+            // -----------------------------------------------------------------
+            // P2 classifier configuration
+            // -----------------------------------------------------------------
+            classifier_backend: env_or("CLASSIFIER_BACKEND", &d.classifier_backend),
+
+            classifier_model: env_or("CLASSIFIER_MODEL", &d.classifier_model),
+
+            classifier_endpoint: env_or("CLASSIFIER_ENDPOINT", &d.classifier_endpoint),
+
+            classifier_timeout_secs: std::env::var("CLASSIFIER_TIMEOUT_SECS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(d.classifier_timeout_secs),
+
+            classifier_api_key: env_or("GROQ_API_KEY", &d.classifier_api_key),
+
             salience_gate_enabled: std::env::var("SALIENCE_GATE_ENABLED")
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(d.salience_gate_enabled),
+
             salience_weights_path: env_or("SALIENCE_WEIGHTS_PATH", &d.salience_weights_path),
+
             salience_low_threshold: std::env::var("SALIENCE_LOW_THRESHOLD")
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(d.salience_low_threshold),
+
             salience_high_threshold: std::env::var("SALIENCE_HIGH_THRESHOLD")
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(d.salience_high_threshold),
+
             compress_kill_switch: env_flag("TOKEN_COMPRESS_ENABLED", true),
+
             compress_min_bytes: env_usize("TOKEN_COMPRESS_MIN_BYTES", 2048),
+
             // A bad label must not silently widen or narrow what gets rewritten, so an
             // unparseable value falls back to the shipped default and says so.
             compress_types: parse_or_warn(
@@ -283,27 +367,35 @@ impl GatewayConfig {
                 nasiko_compress::TypeMask::from_labels,
                 nasiko_compress::TypeMask::DEFAULT,
             ),
+
             compress_level: parse_or_warn(
                 "TOKEN_COMPRESS_LEVEL",
                 nasiko_compress::Level::parse,
                 nasiko_compress::Level::Conservative,
             ),
+
             compress_dry_run: env_flag("TOKEN_COMPRESS_DRY_RUN", false),
+
             brevity_enabled: env_flag("TOKEN_BREVITY", d.brevity_enabled),
+
             brevity_min_bytes: env_usize("TOKEN_BREVITY_MIN_BYTES", d.brevity_min_bytes),
+
             brevity_holdout_pct: env_usize(
                 "TOKEN_BREVITY_HOLDOUT_PCT",
                 d.brevity_holdout_pct as usize,
             )
             .min(100) as u8,
+
             compress_recovery_enabled: env_flag(
                 "TOKEN_COMPRESS_RECOVERY",
                 d.compress_recovery_enabled,
             ),
+
             compress_recovery_min_bytes: env_usize(
                 "TOKEN_COMPRESS_RECOVERY_MIN_BYTES",
                 d.compress_recovery_min_bytes,
             ),
+
             compress_recovery_ttl_secs: env_usize(
                 "TOKEN_COMPRESS_RECOVERY_TTL_SECS",
                 d.compress_recovery_ttl_secs as usize,
@@ -314,9 +406,9 @@ impl GatewayConfig {
     /// The platform-owned fallback key for a **built-in** `provider`, used when an
     /// agent sets no per-user `api_key_secret_name`. An unknown provider (e.g. a
     /// DB-registered custom provider, or a mistyped name) returns `""` — never the
-    /// OpenAI key: handing the platform's real OpenAI key to an arbitrary admin-typed
-    /// base URL would leak it. Custom providers supply their own key via the resolved
-    /// config (see `resolver::resolve`).
+    /// OpenAI key: handing the platform's real OpenAI key to an arbitrary
+    /// admin-typed base URL would leak it. Custom providers supply their own key via
+    /// the resolved config (see `resolver::resolve`).
     pub fn platform_key_for(&self, provider: &str) -> &str {
         match provider {
             "openai" => &self.platform_openai_api_key,
@@ -362,8 +454,8 @@ fn env_usize(key: &str, default: usize) -> usize {
 /// Parse an env var with `f`, warning loudly and falling back on a bad value.
 ///
 /// Silently defaulting would be worse than usual here: these values decide how much of a
-/// request gets rewritten, so a typo that quietly widened the set would be invisible until a
-/// model started answering from elided data.
+/// request gets rewritten, so a typo that quietly widened the set would be invisible until
+/// a model started answering from elided data.
 fn parse_or_warn<T, E: std::fmt::Display>(
     key: &str,
     f: impl Fn(&str) -> Result<T, E>,
@@ -372,15 +464,19 @@ fn parse_or_warn<T, E: std::fmt::Display>(
     let Ok(raw) = std::env::var(key) else {
         return default;
     };
+
     if raw.trim().is_empty() {
         return default;
     }
+
     match f(&raw) {
         Ok(parsed) => parsed,
         Err(e) => {
             tracing::warn!(
                 target: "nasiko::llm_router::startup",
-                env = key, value = %raw, error = %e,
+                env = key,
+                value = %raw,
+                error = %e,
                 "llm-router: unparseable value; using the built-in default"
             );
             default
@@ -417,6 +513,7 @@ mod tests {
             platform_gemini_api_key: "sk-gem".into(),
             ..Default::default()
         };
+
         assert_eq!(cfg.platform_key_for("openai"), "sk-openai");
         assert_eq!(cfg.platform_key_for("anthropic"), "sk-ant");
         assert_eq!(cfg.platform_key_for("gemini"), "sk-gem");
@@ -431,6 +528,7 @@ mod tests {
             platform_openai_api_key: "sk-openai".into(),
             ..Default::default()
         };
+
         assert_eq!(cfg.platform_key_for("my-gateway"), "");
         assert_eq!(cfg.platform_key_for("deepseek"), "");
         assert_eq!(cfg.platform_key_for(""), "");

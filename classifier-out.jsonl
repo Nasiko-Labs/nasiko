@@ -1,0 +1,10 @@
+{"complexity":1,"confidence":0.9900000095367432,"id":"pub-01","latency_us":457192,"request_type":"code_generation"}
+{"complexity":3,"confidence":0.0,"id":"pub-02","latency_us":467634,"request_type":"general"}
+{"complexity":3,"confidence":0.0,"id":"pub-03","latency_us":532538,"request_type":"code_understanding"}
+{"complexity":1,"confidence":0.949999988079071,"id":"pub-04","latency_us":544288,"request_type":"writing"}
+{"complexity":4,"confidence":0.949999988079071,"id":"pub-05","latency_us":724629,"request_type":"technical_design"}
+{"complexity":5,"confidence":0.949999988079071,"id":"pub-06","latency_us":627558,"request_type":"analytical_reasoning"}
+{"complexity":3,"confidence":0.9900000095367432,"id":"pub-07","latency_us":542837,"request_type":"code_generation"}
+{"complexity":1,"confidence":0.9900000095367432,"id":"pub-08","latency_us":288749,"request_type":"code_generation"}
+{"complexity":3,"confidence":0.949999988079071,"id":"pub-09","latency_us":439610,"request_type":"writing"}
+{"complexity":4,"confidence":0.949999988079071,"id":"pub-10","latency_us":883540,"request_type":"analytical_reasoning"}
