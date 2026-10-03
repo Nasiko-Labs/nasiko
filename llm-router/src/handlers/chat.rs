@@ -272,6 +272,15 @@ async fn chat_core(
         }
     }
 
+    // Compact tool schemas sit between compression and brevity. The flag defaults off,
+    // so an unset process leaves the request byte-identical.
+    let compact = crate::compact_tools::apply(
+        &mut req,
+        ctx.cfg.compact_tools_enabled,
+        &resolved.provider,
+    );
+    let _ = compact;
+
     // ── brevity seam (IP-2) ───────────────────────────────────────────────────────────────
     // After compression, so the size floor is judged on the bytes actually being sent, and so a
     // compressed tool result cannot push a turn over the floor it would otherwise miss.

@@ -154,6 +154,9 @@ pub struct GatewayConfig {
     pub compress_recovery_min_bytes: usize,
     /// How long an original stays recoverable. Sized to outlive the flow that produced it.
     pub compress_recovery_ttl_secs: u64,
+    /// Compact tool schemas on the OpenAI non-streaming path. Off unless the process
+    /// sets `COMPACT_TOOLS_ENABLED`. The tool-compact crate never reads this.
+    pub compact_tools_enabled: bool,
 }
 
 impl Default for GatewayConfig {
@@ -196,6 +199,7 @@ impl Default for GatewayConfig {
             compress_recovery_enabled: true,
             compress_recovery_min_bytes: 8192,
             compress_recovery_ttl_secs: 86_400,
+            compact_tools_enabled: false,
         }
     }
 }
@@ -308,6 +312,7 @@ impl GatewayConfig {
                 "TOKEN_COMPRESS_RECOVERY_TTL_SECS",
                 d.compress_recovery_ttl_secs as usize,
             ) as u64,
+            compact_tools_enabled: env_flag("COMPACT_TOOLS_ENABLED", false),
         }
     }
 
@@ -434,5 +439,12 @@ mod tests {
         assert_eq!(cfg.platform_key_for("my-gateway"), "");
         assert_eq!(cfg.platform_key_for("deepseek"), "");
         assert_eq!(cfg.platform_key_for(""), "");
+    }
+
+    #[test]
+    fn from_env_defaults_compact_tools_off_when_unset() {
+        // Rust 2024 makes env mutation unsafe. This test only clears the flag.
+        unsafe { std::env::remove_var("COMPACT_TOOLS_ENABLED") };
+        assert!(!GatewayConfig::from_env().compact_tools_enabled);
     }
 }
