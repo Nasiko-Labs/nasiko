@@ -288,6 +288,18 @@ async fn chat_core(
         "brevity: directive decision"
     );
 
+    // ── compact tools seam (opt-in) ───────────────────────────────────────────────────────
+    // After brevity, so the directive lands in the request either way, and before the savings
+    // measurement, so `sent_bytes` is the payload the provider actually receives.
+    let tool_compact = crate::tool_compact::apply(&mut req, &ctx.cfg, &resolved);
+    tracing::debug!(
+        target: "nasiko::llm_router::tool_compact",
+        %agent_id,
+        applied = tool_compact.is_ok(),
+        skipped = tool_compact.as_ref().err().map(|s| s.as_label()),
+        "tool_compact: decision"
+    );
+
     // ── savings ledger inputs ─────────────────────────────────────────────────────────────
     // Measured here, after both seams, because this is the payload the provider will actually
     // bill for — which is what makes `sent_bytes / reported_input_tokens` a calibration rather
@@ -371,9 +383,26 @@ async fn chat_core(
     }
 
     // Non-streaming: run with ordered fallbacks; usage records the effective provider/model.
-    let (resp, (provider, model)) = fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
-        .instrument(llm_span.clone())
-        .await?;
+    let (mut resp, (mut provider, mut model)) =
+        fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
+            .instrument(llm_span.clone())
+            .await?;
+    if let Ok(compacted) = &tool_compact
+        && let Err(error) = crate::tool_compact::restore(&mut resp, compacted)
+    {
+        // Fail-closed: a reply that does not decode is never returned or repaired. The
+        // original native request goes out instead, so the client still gets real tool calls.
+        tracing::warn!(
+            target: "nasiko::llm_router::tool_compact",
+            %agent_id,
+            error = error.as_label(),
+            "tool_compact: reply did not decode; re-sending the native request"
+        );
+        (resp, (provider, model)) =
+            fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &compacted.native)
+                .instrument(llm_span.clone())
+                .await?;
+    }
     let latency_ms = started.elapsed().as_millis() as i64;
 
     // Record effective model and token usage on the server-side gen_ai span.
@@ -1080,6 +1109,161 @@ mod tests {
         let body = seen.lock().unwrap_or_else(|e| e.into_inner()).clone();
         assert!(!body.is_empty(), "provider was never called");
         body
+    }
+
+    // ── compact tools wiring ──────────────────────────────────────────────────────────────
+    // `tool_compact::tests` covers the transform. These cover the seam: what the provider is
+    // actually sent, and what the client actually gets back.
+
+    fn calendar_request() -> serde_json::Value {
+        json!({
+            "model": "gpt-4o",
+            "messages": [{ "role": "user", "content": "Book a design review Monday 3pm" }],
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "create_calendar_event",
+                    "description": "Create an event in the user's calendar.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "title": { "type": "string" },
+                            "start": { "type": "string", "format": "date-time" }
+                        },
+                        "required": ["title", "start"]
+                    }
+                }
+            }]
+        })
+    }
+
+    /// Runs one request through `chat_core` against a mock provider. A compacted request (one
+    /// carrying the compact prompt) is answered with `compact_reply`; a native one with a real
+    /// `tool_calls` reply. Returns every body the provider received and the client's response.
+    async fn compact_round(enabled: bool, compact_reply: &str) -> (Vec<String>, Value) {
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let capture = Arc::clone(&seen);
+        let compact_reply = compact_reply.to_string();
+
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/chat/completions")
+            .expect_at_least(1)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body_from_request(move |request| {
+                let body =
+                    String::from_utf8_lossy(request.body().map(Vec::as_slice).unwrap_or_default())
+                        .into_owned();
+                let message = if body.contains("<<call name {json args}>>") {
+                    json!({ "role": "assistant", "content": compact_reply })
+                } else {
+                    json!({ "role": "assistant", "content": null, "tool_calls": [{
+                        "id": "call_native", "type": "function",
+                        "function": { "name": "create_calendar_event",
+                                      "arguments": "{\"title\":\"native\",\"start\":\"s\"}" }
+                    }]})
+                };
+                capture.lock().unwrap_or_else(|e| e.into_inner()).push(body);
+                json!({
+                    "id": "chatcmpl-x", "object": "chat.completion", "model": "gpt-4o",
+                    "choices": [{ "index": 0, "message": message, "finish_reason": "stop" }],
+                    "usage": { "prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7 }
+                })
+                .to_string()
+                .into_bytes()
+            })
+            .create_async()
+            .await;
+
+        let mut ctx = ctx_with(server.url());
+        ctx.cfg = Arc::new(GatewayConfig {
+            tool_compact_enabled: enabled,
+            brevity_enabled: false,
+            ..(*ctx.cfg).clone()
+        });
+        let store = Store {
+            config: None,
+            is_coding_agent: false,
+            compress_enabled: true,
+        };
+        let resp = chat_core(
+            &ctx,
+            &store,
+            &auth_headers(&token()),
+            calendar_request(),
+            InboundFormat::OpenAi,
+            None,
+        )
+        .await
+        .unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let bodies = seen.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        (bodies, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    #[tokio::test]
+    async fn tool_compact_off_sends_native_tools_unchanged() {
+        let (sent, client) = compact_round(false, "unused").await;
+        assert_eq!(sent.len(), 1);
+        let body: Value = serde_json::from_str(&sent[0]).unwrap();
+        assert_eq!(body["tools"], calendar_request()["tools"]);
+        assert!(!sent[0].contains("<<call"));
+        assert_eq!(
+            client["choices"][0]["message"]["tool_calls"][0]["id"],
+            "call_native"
+        );
+    }
+
+    #[tokio::test]
+    async fn tool_compact_on_sends_the_compact_form_and_returns_real_tool_calls() {
+        let args = r#"{"title":"Design review","start":"2026-10-05T15:00:00+05:30"}"#;
+        let (sent, client) =
+            compact_round(true, &format!("<<call create_calendar_event {args}>>")).await;
+
+        assert_eq!(sent.len(), 1, "a decodable reply needs no second call");
+        let body: Value = serde_json::from_str(&sent[0]).unwrap();
+        assert!(
+            body.get("tools").is_none(),
+            "native tools still sent: {body}"
+        );
+        assert!(sent[0].contains("create_calendar_event(title:str, start:datetime)"));
+
+        let choice = &client["choices"][0];
+        assert_eq!(choice["finish_reason"], "tool_calls");
+        let call = &choice["message"]["tool_calls"][0];
+        assert_eq!(call["type"], "function");
+        assert!(call["id"].as_str().unwrap().starts_with("call_"));
+        assert_eq!(call["function"]["name"], "create_calendar_event");
+        assert_eq!(call["function"]["arguments"], args);
+        assert!(
+            !client.to_string().contains("<<call"),
+            "compact form leaked"
+        );
+    }
+
+    #[tokio::test]
+    async fn tool_compact_falls_back_to_native_when_the_reply_does_not_decode() {
+        // Missing the required `start`: the decoder refuses it, so the router re-sends the
+        // original request with native tools rather than return a bad or guessed call.
+        let (sent, client) =
+            compact_round(true, r#"<<call create_calendar_event {"title":"x"}>>"#).await;
+
+        assert_eq!(
+            sent.len(),
+            2,
+            "expected the compact attempt, then the native one"
+        );
+        assert!(sent[0].contains("<<call name {json args}>>"));
+        let native: Value = serde_json::from_str(&sent[1]).unwrap();
+        assert_eq!(native["tools"], calendar_request()["tools"]);
+        assert_eq!(
+            client["choices"][0]["message"]["tool_calls"][0]["id"],
+            "call_native"
+        );
+        assert!(!client.to_string().contains("<<call"));
     }
 
     #[tokio::test]

@@ -3611,6 +3611,7 @@ dependencies = [
  "mockito",
  "nasiko-compress",
  "nasiko-pricing",
+ "nasiko-savings",
  "nasiko-secrets",
  "nasiko-tool-compact",
  "rand 0.9.5",
@@ -3807,6 +3808,15 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.20",
  "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "nasiko-savings"
+version = "0.1.0"
+dependencies = [
+ "sqlx",
  "tracing",
  "uuid",
 ]

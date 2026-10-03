@@ -108,6 +108,17 @@ pub struct StreamDecoder { /* incremental; handles markers split across chunks *
 
 `ToolDef { name, description, parameters }` and `ToolCall { name, arguments }` are this crate's own types — `arguments` is a JSON string, exactly as OpenAI's wire format expects. `CompactTools::prompt()` returns the full block to prepend to the model: a header line, one definition line per tool, and the call-format instruction.
 
+## Router Integration (opt-in)
+
+`llm-router/src/tool_compact.rs` applies this crate to live traffic at the egress seam, after the brevity layer. It is **off by default**: set `TOKEN_TOOL_COMPACT=true`, and the agent's own `compress_enabled` switch must also be on.
+
+- **Request.** Native `tools` (and `tool_choice: "auto"`, `parallel_tool_calls`) are replaced by one leading system message holding `CompactTools::prompt()`. The author's messages are left byte-identical.
+- **Response.** Compact calls in the reply become standard `tool_calls` with router-assigned `call_…` ids and `finish_reason: "tool_calls"`; any text outside the calls stays as the message content. A plain answer passes through unchanged. The client never sees `<<call`.
+- **Fail-closed.** If the reply does not decode — unknown tool, invalid arguments, malformed marker — the router re-sends the original native request and returns that answer. It never returns a guessed or repaired call.
+- **Steps aside (request sent natively, reason logged):** flag off; agent opted out; coding agent; streaming; no tools; `tool_choice` other than `auto`; `parallel_tool_calls: false`; earlier tool calls or results in the transcript; a non-function tool or one with extra fields; any unsupported schema.
+
+Tests: `cargo test -p nasiko-llm-router tool_compact` runs the unit tests (off leaves the request byte-identical, every carve-out leaves it untouched, decode and error paths) and three end-to-end tests through `chat_core` against a mock provider (off sends native tools unchanged; on sends the compact form and returns real `tool_calls`; an undecodable reply falls back to native).
+
 ## Running the Tests
 
 ```sh
@@ -183,6 +194,7 @@ Six models from six providers on the hackathon's OpenAI-compatible Bedrock route
 
 ## Known Limits
 
-- **Not wired into the router.** This crate is a standalone library plus the eval example (`llm-router/examples/compact_tools_eval.rs`); `nasiko-llm-router` depends on it but nothing in `llm-router/src/` calls it yet. Encoding/decoding tool calls on real requests is a bonus item, not done.
+- **Router wiring covers non-streaming requests only.** Streaming requests, tool-loop turns (earlier calls or results in the transcript), forced `tool_choice` and `parallel_tool_calls: false` go out natively. The seam runs on the shared request IR, but only the OpenAI inbound path has an end-to-end test; Anthropic and Gemini inbound requests reach the same code without one.
+- **A fallback costs a second call.** When a compacted reply does not decode, the router re-sends the native request; only the second call's usage is logged.
 - **Small live sample size.** Live results cover the three public cases on six models, one run each.
 - **Schema coverage is deliberately partial.** `pattern`, `oneOf`, `$ref`, and the other unsupported features are refused rather than approximated — by design.
