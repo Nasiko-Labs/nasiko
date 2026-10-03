@@ -1,7 +1,9 @@
 //! Compact definition lines → tools. The inverse of [`crate::encode`].
 
 use crate::error::{CompactError, Result};
-use crate::schema::{self, Field, Fields, MAX_DEPTH, Node, Tool, Ty};
+use serde_json::{Number, Value};
+
+use crate::schema::{self, Field, Fields, MAX_DEPTH, Node, Range, Tool, Ty};
 use crate::text::{self, Cursor};
 use crate::types::{CompactTools, ToolDef};
 
@@ -111,13 +113,79 @@ fn node(c: &mut Cursor, depth: usize) -> std::result::Result<Node, String> {
         return Err(format!("types nest deeper than {MAX_DEPTH} levels"));
     }
     let ty = ty(c, depth)?;
+    let range = if c.peek() == Some('(') {
+        Some(range(c, &ty)?)
+    } else {
+        None
+    };
+    let nullable = c.eat_null();
+    let default = if c.eat('=') { Some(default(c)?) } else { None };
     let description = if c.peek() == Some(' ') && c.peek_at(1) == Some('\'') {
         c.bump();
         Some(c.quoted()?)
     } else {
         None
     };
-    Ok(Node { ty, description })
+    Ok(Node {
+        ty,
+        nullable,
+        range,
+        default,
+        description,
+    })
+}
+
+/// `(min..max)`, either side optional.
+fn range(c: &mut Cursor, ty: &Ty) -> std::result::Result<Range, String> {
+    let (_, _, counts) = schema::range_keys(ty).ok_or("this type takes no range")?;
+    c.expect('(')?;
+    let inner = c.take_while(|ch| ch != ')');
+    c.expect(')')?;
+    let (min, max) = inner.split_once("..").ok_or("range has no `..`")?;
+    let bound = |s: &str| {
+        if s.is_empty() {
+            return Ok(None);
+        }
+        serde_json::from_str::<Number>(s)
+            .ok()
+            .filter(|n| !counts || n.is_u64())
+            .map(Some)
+            .ok_or_else(|| format!("bad range bound `{s}`"))
+    };
+    let range = Range {
+        min: bound(min)?,
+        max: bound(max)?,
+    };
+    if range.min.is_none() && range.max.is_none() {
+        return Err("empty range".into());
+    }
+    Ok(range)
+}
+
+/// A scalar default: a quoted string, or a bare JSON number, `true`, `false` or `null`.
+fn default(c: &mut Cursor) -> std::result::Result<Value, String> {
+    if c.peek() == Some('\'') {
+        return Ok(Value::String(c.quoted()?));
+    }
+    let raw = c.take_while(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '+' | '.'));
+    match serde_json::from_str::<Value>(&raw) {
+        Ok(scalar @ (Value::Null | Value::Bool(_) | Value::Number(_))) => Ok(scalar),
+        _ => Err(format!("bad default `{raw}`")),
+    }
+}
+
+/// The `|`-separated choices inside `num(..)` and `bool(..)`.
+fn wrapped<T>(
+    c: &mut Cursor,
+    parse: impl Fn(&str) -> Option<T>,
+) -> std::result::Result<Vec<T>, String> {
+    c.expect('(')?;
+    let inner = c.take_while(|ch| ch != ')');
+    c.expect(')')?;
+    inner
+        .split('|')
+        .map(|s| parse(s).ok_or_else(|| format!("bad enum value `{s}`")))
+        .collect()
 }
 
 fn ty(c: &mut Cursor, depth: usize) -> std::result::Result<Ty, String> {
@@ -145,10 +213,20 @@ fn ty(c: &mut Cursor, depth: usize) -> std::result::Result<Ty, String> {
             if atom.is_empty() {
                 return Err("missing type".into());
             }
-            if c.peek() == Some('|') || text::is_int_like(&atom) {
+            // A bare type keyword is never an enum value (those are quoted), so `str|null` is
+            // a nullable string and not a two-value enum.
+            let keyword = text::KEYWORDS.contains(&atom.as_str());
+            if text::is_int_like(&atom) || (c.peek() == Some('|') && !keyword) {
                 return enumeration(c, EnumValue::Bare(atom));
             }
             match atom.as_str() {
+                // `num(1|2.5)` is an enum; `num(0..1)` is a range and is left for the caller.
+                "num" if c.peek() == Some('(') && !c.peek_until(')').contains("..") => {
+                    wrapped(c, |s| serde_json::from_str::<Number>(s).ok()).map(Ty::NumEnum)
+                }
+                "bool" if c.peek() == Some('(') => {
+                    wrapped(c, |s| s.parse::<bool>().ok()).map(Ty::BoolEnum)
+                }
                 "str" if c.eat('<') => {
                     let format = c.take_while(text::is_ident_char);
                     c.expect('>')?;
@@ -180,7 +258,9 @@ enum EnumValue {
 
 fn enumeration(c: &mut Cursor, first: EnumValue) -> std::result::Result<Ty, String> {
     let mut values = vec![first];
-    while c.eat('|') {
+    // A trailing `|null` marks the node nullable and is left for the caller; an enum value
+    // spelled "null" is always quoted.
+    while !c.at_null() && c.eat('|') {
         if c.peek() == Some('\'') {
             values.push(EnumValue::Quoted(c.quoted()?));
         } else {

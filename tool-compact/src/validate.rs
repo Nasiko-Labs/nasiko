@@ -52,7 +52,41 @@ fn node(node: &Node, value: &Value, path: &str) -> Result<(), String> {
             Err(format!("{path} must be {what}"))
         }
     };
+    if node.nullable && value.is_null() {
+        return Ok(());
+    }
+    if let Some(range) = &node.range {
+        // What the range measures: a string's length in characters, an array's item count, or
+        // the number itself. A value of the wrong type has no measure and fails the type check.
+        let measure = match &node.ty {
+            Ty::Str { .. } => value.as_str().map(|s| s.chars().count() as f64),
+            Ty::Array(_) => value.as_array().map(|a| a.len() as f64),
+            _ => value.as_f64(),
+        };
+        let bound =
+            |b: &Option<serde_json::Number>| b.as_ref().and_then(serde_json::Number::as_f64);
+        if let Some(measure) = measure {
+            expect(
+                bound(&range.min).is_none_or(|min| measure >= min),
+                "at or above its minimum",
+            )?;
+            expect(
+                bound(&range.max).is_none_or(|max| measure <= max),
+                "at or below its maximum",
+            )?;
+        }
+    }
     match &node.ty {
+        Ty::NumEnum(allowed) => expect(
+            value
+                .as_f64()
+                .is_some_and(|f| allowed.iter().any(|a| a.as_f64() == Some(f))),
+            &format!("one of {allowed:?}"),
+        ),
+        Ty::BoolEnum(allowed) => expect(
+            value.as_bool().is_some_and(|b| allowed.contains(&b)),
+            &format!("one of {allowed:?}"),
+        ),
         Ty::Str { .. } => expect(value.is_string(), "a string"),
         Ty::Int => expect(is_integer(value), "an integer"),
         Ty::Num => expect(value.is_number(), "a number"),

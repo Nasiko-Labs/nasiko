@@ -37,24 +37,35 @@
 //! tool    = name [ "(" [ fields ] ")" [ "!" ] ] [ " - " ( quoted | rest-of-line ) ]
 //! fields  = field { "," " " field }
 //! field   = key [ "?" ] ":" typed
-//! typed   = type [ " " quoted ]                    ; quoted = the description
+//! typed   = type [ range ] [ "|null" ] [ "=" default ] [ " " quoted ]
 //! type    = "str" | "str<" format ">" | "datetime" | "int" | "num" | "bool" | "obj"
 //!         | "[" typed "]"                          ; array
 //!         | "{" [ fields ] "}" [ "!" ]             ; object
-//!         | value "|" value { "|" value }          ; enum
+//!         | value "|" value { "|" value }          ; string or integer enum
 //!         | quoted | integer                       ; enum with one value
+//!         | "num(" number { "|" number } ")"       ; number enum
+//!         | "bool(" boolean { "|" boolean } ")"    ; boolean enum
+//! range   = "(" [ number ] ".." [ number ] ")"     ; inclusive, at least one bound
+//! default = quoted | number | boolean | "null"
 //! value   = ident | quoted | integer
 //! key     = ident | quoted
 //! name    = 1*( ALPHA | DIGIT | "_" | "-" | "." )
 //! ident   = ( ALPHA | "_" ) *( ALPHA | DIGIT | "_" | "-" )
 //! format  = 1*( ALPHA | DIGIT | "_" | "-" )
 //! integer = [ "-" ] 1*DIGIT
+//! number  = a JSON number
+//! boolean = "true" | "false"
 //! quoted  = "'" *( char | "\\" | "\'" | "\n" | "\r" | "\t" | "\u{" 1*HEX "}" ) "'"
 //! ```
 //!
 //! * `?` marks an optional field; every other field is required.
 //! * `!` is `additionalProperties: false`.
 //! * `datetime` is `str<date-time>`; `obj` is an object with no declared properties.
+//! * A range bounds a number's value (`minimum`/`maximum`), a string's length
+//!   (`minLength`/`maxLength`) or an array's item count (`minItems`/`maxItems`):
+//!   `int(1..10)`, `str(..80)`, `[str](1..)`.
+//! * `|null` is `type: [T, "null"]`; on an enum, `null` is also its last listed value.
+//! * `=` gives the schema's `default`, which must be a scalar: `limit?:int(1..100)=20`.
 //! * A tool with no `parameters` has no parentheses; `name()` is an object with no properties.
 //! * An enum of bare integers is an integer enum. String values that are not plain identifiers,
 //!   or that spell a type keyword or an integer, are quoted.
@@ -76,11 +87,17 @@
 //!
 //! # Unsupported schema features
 //!
-//! Any keyword outside `type`, `description`, `properties`, `required`, `items`, `enum`,
-//! `format` and `additionalProperties: false` — so `$ref`, `oneOf`/`anyOf`/`allOf`, `not`,
-//! `pattern`, `default`, `title`, numeric and length bounds — along with union and `null` types,
-//! arrays without `items`, non-integer numeric enums and mixed-type enums. One unsupported tool
-//! fails the whole [`encode_tools`] call; the caller sends the native definitions instead.
+//! Supported keywords: `type`, `description`, `properties`, `required`, `items`, `enum`,
+//! `format`, `default` (scalars), `minimum`/`maximum`, `minLength`/`maxLength`,
+//! `minItems`/`maxItems`, and `additionalProperties: false`. Decoding enforces all of them except
+//! `format` and `default`, which describe a value without constraining its JSON type.
+//!
+//! Everything else is refused: `$ref`/`$defs`, `oneOf`/`anyOf`/`allOf`, `not`, `const`,
+//! `pattern`, `title`, `exclusiveMinimum`/`exclusiveMaximum`, `multipleOf`, `uniqueItems`,
+//! `additionalProperties` set to `true` or a schema, array or object defaults, type unions other
+//! than `[T, "null"]`, a bare `null` type, arrays without `items`, and mixed-type enums. One
+//! unsupported tool fails the whole [`encode_tools`] call; the caller sends the native
+//! definitions instead.
 //!
 //! # Config
 //!

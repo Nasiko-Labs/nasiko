@@ -113,6 +113,22 @@ fn fields(fields: &Fields) -> String {
 
 fn node(node: &Node) -> String {
     let mut out = ty(&node.ty);
+    if let Some(range) = &node.range {
+        let bound = |b: &Option<serde_json::Number>| b.as_ref().map(ToString::to_string);
+        out.push_str(&format!(
+            "({}..{})",
+            bound(&range.min).unwrap_or_default(),
+            bound(&range.max).unwrap_or_default()
+        ));
+    }
+    if node.nullable {
+        out.push_str("|null");
+    }
+    match &node.default {
+        Some(serde_json::Value::String(s)) => out.push_str(&format!("={}", text::quote(s))),
+        Some(scalar) => out.push_str(&format!("={scalar}")),
+        None => {}
+    }
     if let Some(description) = &node.description {
         out.push(' ');
         out.push_str(&text::quote(description));
@@ -142,6 +158,15 @@ fn ty(ty: &Ty) -> String {
         Ty::IntEnum(values) => {
             let parts: Vec<String> = values.iter().map(i64::to_string).collect();
             parts.join("|")
+        }
+        // Wrapped, so a whole-number choice is not read back as an integer enum.
+        Ty::NumEnum(values) => {
+            let parts: Vec<String> = values.iter().map(ToString::to_string).collect();
+            format!("num({})", parts.join("|"))
+        }
+        Ty::BoolEnum(values) => {
+            let parts: Vec<String> = values.iter().map(bool::to_string).collect();
+            format!("bool({})", parts.join("|"))
         }
         Ty::Array(items) => format!("[{}]", node(items)),
         Ty::Object(inner) => {

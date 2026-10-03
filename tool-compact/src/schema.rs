@@ -5,7 +5,7 @@
 //! are held to cannot drift apart. A schema keyword outside the subset is an error here, never
 //! something dropped on the way through.
 
-use serde_json::{Map, Value};
+use serde_json::{Map, Number, Value};
 
 use crate::error::{CompactError, Result};
 use crate::text;
@@ -18,7 +18,19 @@ pub(crate) const MAX_DEPTH: usize = 32;
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Node {
     pub ty: Ty,
+    /// `type: [T, "null"]`.
+    pub nullable: bool,
+    pub range: Option<Range>,
+    /// Always a scalar.
+    pub default: Option<Value>,
     pub description: Option<String>,
+}
+
+/// Inclusive bounds: on a number, on the length of a string, or on the item count of an array.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Range {
+    pub min: Option<Number>,
+    pub max: Option<Number>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -31,6 +43,8 @@ pub(crate) enum Ty {
     Bool,
     StrEnum(Vec<String>),
     IntEnum(Vec<i64>),
+    NumEnum(Vec<Number>),
+    BoolEnum(Vec<bool>),
     Array(Box<Node>),
     Object(Fields),
     /// `{"type":"object"}` with no `properties`: any object.
@@ -92,7 +106,10 @@ pub(crate) fn to_def(tool: &Tool) -> ToolDef {
     ToolDef {
         name: tool.name.clone(),
         description: tool.description.clone(),
-        parameters: tool.params.as_ref().map(fields_to_schema),
+        parameters: tool
+            .params
+            .as_ref()
+            .map(|fields| Value::Object(fields_to_schema(fields))),
     }
 }
 
@@ -123,67 +140,110 @@ fn node_from(schema: &Value, depth: usize) -> std::result::Result<Node, String> 
         Some(Value::String(s)) => Some(s.clone()),
         Some(_) => return Err("`description` is not a string".into()),
     };
-    let kind = match obj.get("type") {
-        Some(Value::String(s)) => s.as_str(),
-        Some(_) => return Err("`type` is not a single type name".into()),
-        None => return Err("schema has no `type`".into()),
+    let (kind, nullable) = match obj.get("type") {
+        Some(Value::String(s)) => (s.as_str(), false),
+        Some(Value::Array(pair)) => match pair.as_slice() {
+            [Value::String(s), Value::String(null)] if null == "null" && s != "null" => {
+                (s.as_str(), true)
+            }
+            _ => return Err("`type` list is not `[T, \"null\"]`".into()),
+        },
+        Some(_) => return Err("`type` is not a type name".into()),
+        // A schema with no `type` is usually a combinator (`oneOf`, `anyOf`, `$ref`); naming it
+        // says more than "no type".
+        None => {
+            only(obj, &["description", "default"])?;
+            return Err("schema has no `type`".into());
+        }
     };
+    let has_enum = obj.contains_key("enum");
+    // Keywords any node may carry; each type adds its own below.
+    let mut allowed = vec!["type", "description", "default"];
     let ty = match kind {
-        "string" => match obj.get("enum") {
-            Some(values) => {
-                only(obj, &["type", "description", "enum"])?;
-                Ty::StrEnum(enum_values(values, |v| v.as_str().map(str::to_string))?)
+        "string" if has_enum => {
+            allowed.push("enum");
+            Ty::StrEnum(enum_values(obj, nullable, |v| {
+                v.as_str().map(str::to_string)
+            })?)
+        }
+        "string" => {
+            allowed.extend(["format", "minLength", "maxLength"]);
+            Ty::Str {
+                format: format_from(obj)?,
             }
-            None => {
-                only(obj, &["type", "description", "format"])?;
-                Ty::Str {
-                    format: format_from(obj)?,
-                }
-            }
-        },
-        "integer" => match obj.get("enum") {
-            Some(values) => {
-                only(obj, &["type", "description", "enum"])?;
-                Ty::IntEnum(enum_values(values, Value::as_i64)?)
-            }
-            None => {
-                only(obj, &["type", "description"])?;
-                Ty::Int
-            }
-        },
+        }
+        "integer" if has_enum => {
+            allowed.push("enum");
+            Ty::IntEnum(enum_values(obj, nullable, Value::as_i64)?)
+        }
+        "integer" => {
+            allowed.extend(["minimum", "maximum"]);
+            Ty::Int
+        }
+        "number" if has_enum => {
+            allowed.push("enum");
+            Ty::NumEnum(enum_values(obj, nullable, |v| v.as_number().cloned())?)
+        }
         "number" => {
-            only(obj, &["type", "description"])?;
+            allowed.extend(["minimum", "maximum"]);
             Ty::Num
         }
-        "boolean" => {
-            only(obj, &["type", "description"])?;
-            Ty::Bool
+        "boolean" if has_enum => {
+            allowed.push("enum");
+            Ty::BoolEnum(enum_values(obj, nullable, Value::as_bool)?)
         }
+        "boolean" => Ty::Bool,
         "array" => {
-            only(obj, &["type", "description", "items"])?;
+            allowed.extend(["items", "minItems", "maxItems"]);
             let items = obj.get("items").ok_or("array has no `items`")?;
             Ty::Array(Box::new(node_from(items, depth + 1)?))
         }
         "object" if obj.contains_key("properties") => {
-            only(
-                obj,
-                &[
-                    "type",
-                    "description",
-                    "properties",
-                    "required",
-                    "additionalProperties",
-                ],
-            )?;
+            allowed.extend(["properties", "required", "additionalProperties"]);
             Ty::Object(fields_from(obj, depth)?)
         }
-        "object" => {
-            only(obj, &["type", "description"])?;
-            Ty::AnyObject
-        }
+        "object" => Ty::AnyObject,
         other => return Err(format!("unsupported type `{other}`")),
     };
-    Ok(Node { ty, description })
+    only(obj, &allowed)?;
+    let default = match obj.get("default") {
+        None => None,
+        Some(Value::Array(_) | Value::Object(_)) => {
+            return Err("`default` is not a scalar".into());
+        }
+        Some(scalar) => Some(scalar.clone()),
+    };
+    Ok(Node {
+        range: range_from(obj, &ty)?,
+        ty,
+        nullable,
+        default,
+        description,
+    })
+}
+
+/// The schema keywords a type's range is written with, and whether they count things (lengths
+/// and item counts, which must be whole and non-negative) rather than bound a value.
+pub(crate) fn range_keys(ty: &Ty) -> Option<(&'static str, &'static str, bool)> {
+    match ty {
+        Ty::Str { .. } => Some(("minLength", "maxLength", true)),
+        Ty::Int | Ty::Num => Some(("minimum", "maximum", false)),
+        Ty::Array(_) => Some(("minItems", "maxItems", true)),
+        _ => None,
+    }
+}
+
+fn range_from(obj: &Map<String, Value>, ty: &Ty) -> std::result::Result<Option<Range>, String> {
+    let Some((min_key, max_key, counts)) = range_keys(ty) else {
+        return Ok(None);
+    };
+    let bound = |key: &str| match obj.get(key) {
+        None => Ok(None),
+        Some(Value::Number(n)) if !counts || n.is_u64() => Ok(Some(n.clone())),
+        Some(_) => Err(format!("`{key}` is not a usable number")),
+    };
+    let (min, max) = (bound(min_key)?, bound(max_key)?);
+    Ok((min.is_some() || max.is_some()).then_some(Range { min, max }))
 }
 
 fn fields_from(obj: &Map<String, Value>, depth: usize) -> std::result::Result<Fields, String> {
@@ -239,10 +299,21 @@ fn fields_from(obj: &Map<String, Value>, depth: usize) -> std::result::Result<Fi
 }
 
 fn enum_values<T>(
-    values: &Value,
+    obj: &Map<String, Value>,
+    nullable: bool,
     pick: impl Fn(&Value) -> Option<T>,
 ) -> std::result::Result<Vec<T>, String> {
-    let values = values.as_array().ok_or("`enum` is not an array")?;
+    let values = obj
+        .get("enum")
+        .and_then(Value::as_array)
+        .ok_or("`enum` is not an array")?;
+    // A nullable enum has to list `null` itself to admit it. Only the last place is accepted,
+    // because that is where it is written back.
+    let values = match (nullable, values.split_last()) {
+        (true, Some((Value::Null, rest))) => rest,
+        (true, _) => return Err("nullable `enum` does not end with `null`".into()),
+        (false, _) => values.as_slice(),
+    };
     if values.is_empty() {
         return Err("`enum` is empty".into());
     }
@@ -274,7 +345,11 @@ fn only(obj: &Map<String, Value>, allowed: &[&str]) -> std::result::Result<(), S
 }
 
 fn node_to_schema(node: &Node) -> Value {
-    let mut out = Map::new();
+    let mut out = match &node.ty {
+        Ty::Object(fields) => fields_to_schema(fields),
+        _ => Map::new(),
+    };
+    let mut choices: Option<Vec<Value>> = None;
     let kind = match &node.ty {
         Ty::Str { format } => {
             if let Some(format) = format {
@@ -286,36 +361,57 @@ fn node_to_schema(node: &Node) -> Value {
         Ty::Num => "number",
         Ty::Bool => "boolean",
         Ty::StrEnum(values) => {
-            let values = values.iter().cloned().map(Value::String).collect();
-            out.insert("enum".into(), Value::Array(values));
+            choices = Some(values.iter().cloned().map(Value::String).collect());
             "string"
         }
         Ty::IntEnum(values) => {
-            let values = values.iter().copied().map(Value::from).collect();
-            out.insert("enum".into(), Value::Array(values));
+            choices = Some(values.iter().copied().map(Value::from).collect());
             "integer"
+        }
+        Ty::NumEnum(values) => {
+            choices = Some(values.iter().cloned().map(Value::Number).collect());
+            "number"
+        }
+        Ty::BoolEnum(values) => {
+            choices = Some(values.iter().copied().map(Value::Bool).collect());
+            "boolean"
         }
         Ty::Array(items) => {
             out.insert("items".into(), node_to_schema(items));
             "array"
         }
-        Ty::Object(fields) => {
-            let mut schema = fields_to_schema(fields);
-            if let (Some(map), Some(description)) = (schema.as_object_mut(), &node.description) {
-                map.insert("description".into(), Value::String(description.clone()));
-            }
-            return schema;
-        }
-        Ty::AnyObject => "object",
+        Ty::Object(_) | Ty::AnyObject => "object",
     };
-    out.insert("type".into(), Value::String(kind.into()));
+    if let Some(mut choices) = choices {
+        if node.nullable {
+            choices.push(Value::Null);
+        }
+        out.insert("enum".into(), Value::Array(choices));
+    }
+    let kind = Value::String(kind.into());
+    let kind = if node.nullable {
+        Value::Array(vec![kind, Value::String("null".into())])
+    } else {
+        kind
+    };
+    out.insert("type".into(), kind);
+    if let (Some(range), Some((min_key, max_key, _))) = (&node.range, range_keys(&node.ty)) {
+        for (key, bound) in [(min_key, &range.min), (max_key, &range.max)] {
+            if let Some(bound) = bound {
+                out.insert(key.into(), Value::Number(bound.clone()));
+            }
+        }
+    }
+    if let Some(default) = &node.default {
+        out.insert("default".into(), default.clone());
+    }
     if let Some(description) = &node.description {
         out.insert("description".into(), Value::String(description.clone()));
     }
     Value::Object(out)
 }
 
-fn fields_to_schema(fields: &Fields) -> Value {
+fn fields_to_schema(fields: &Fields) -> Map<String, Value> {
     let mut out = Map::new();
     out.insert("type".into(), Value::String("object".into()));
     let mut properties = Map::new();
@@ -333,7 +429,7 @@ fn fields_to_schema(fields: &Fields) -> Value {
     if fields.closed {
         out.insert("additionalProperties".into(), Value::Bool(false));
     }
-    Value::Object(out)
+    out
 }
 
 #[cfg(test)]
@@ -411,12 +507,21 @@ mod tests {
     fn unknown_keywords_are_refused_not_dropped() {
         for (schema, keyword) in [
             (json!({"type": "string", "pattern": "^a"}), "pattern"),
-            (json!({"type": "integer", "minimum": 1}), "minimum"),
-            (json!({"type": "string", "default": "x"}), "default"),
+            (
+                json!({"type": "integer", "exclusiveMinimum": 1}),
+                "exclusiveMinimum",
+            ),
+            (json!({"type": "integer", "multipleOf": 5}), "multipleOf"),
+            (json!({"type": "boolean", "minimum": 1}), "minimum"),
+            (
+                json!({"type": "string", "enum": ["a"], "maxLength": 3}),
+                "maxLength",
+            ),
+            (json!({"type": "string", "const": "x"}), "const"),
             (json!({"type": "string", "title": "T"}), "title"),
             (
-                json!({"type": "array", "items": {"type": "string"}, "minItems": 1}),
-                "minItems",
+                json!({"type": "array", "items": {"type": "string"}, "uniqueItems": true}),
+                "uniqueItems",
             ),
         ] {
             let params = json!({"type": "object", "properties": {"p": schema}});
@@ -432,12 +537,17 @@ mod tests {
         for property in [
             json!({"anyOf": [{"type": "string"}, {"type": "integer"}]}),
             json!({"$ref": "#/definitions/x"}),
-            json!({"type": ["string", "null"]}),
+            json!({"type": ["null", "string"]}),
+            json!({"type": ["string", "integer"]}),
+            json!({"type": ["string", "null"], "enum": ["a"]}),
+            json!({"type": "string", "minLength": -1}),
+            json!({"type": "string", "maxLength": 2.5}),
+            json!({"type": "string", "default": ["a"]}),
+            json!({"type": "integer", "enum": [1.5]}),
             json!({"type": "null"}),
             json!({"type": "array"}),
             json!({"type": "string", "enum": []}),
             json!({"type": "string", "enum": ["a", 1]}),
-            json!({"type": "number", "enum": [1.5]}),
             json!({"type": "string", "format": "has space"}),
             json!({"type": "object", "properties": {}, "additionalProperties": true}),
             json!({"type": "object", "properties": {}, "required": ["ghost"]}),

@@ -18,15 +18,77 @@ fn description() -> impl Strategy<Value = Option<String>> {
     proptest::option::of(any::<String>())
 }
 
-fn described(mut schema: Value, description: Option<String>) -> Value {
-    if let (Some(map), Some(description)) = (schema.as_object_mut(), description) {
-        map.insert("description".into(), Value::String(description));
+type Extras = (Option<String>, bool, Option<Value>);
+
+/// What any node may carry besides its type: a description, nullability, a scalar default.
+fn extras() -> impl Strategy<Value = Extras> {
+    let default = prop_oneof![
+        Just(Value::Null),
+        any::<bool>().prop_map(Value::Bool),
+        any::<i64>().prop_map(Value::from),
+        any::<String>().prop_map(Value::String),
+    ];
+    (description(), any::<bool>(), proptest::option::of(default))
+}
+
+fn decorated(mut schema: Value, (description, nullable, default): Extras) -> Value {
+    if let Some(map) = schema.as_object_mut() {
+        if nullable {
+            let kind = map["type"].clone();
+            map.insert("type".into(), json!([kind, "null"]));
+            if let Some(Value::Array(choices)) = map.get_mut("enum") {
+                choices.push(Value::Null);
+            }
+        }
+        if let Some(default) = default {
+            map.insert("default".into(), default);
+        }
+        if let Some(description) = description {
+            map.insert("description".into(), Value::String(description));
+        }
     }
     schema
 }
 
+fn ranged(mut schema: Value, keys: (&str, &str), min: Option<Value>, max: Option<Value>) -> Value {
+    for (key, bound) in [(keys.0, min), (keys.1, max)] {
+        if let (Some(map), Some(bound)) = (schema.as_object_mut(), bound) {
+            map.insert(key.into(), bound);
+        }
+    }
+    schema
+}
+
+fn half(n: i32) -> Value {
+    Value::from(f64::from(n) / 2.0)
+}
+
 fn leaf() -> impl Strategy<Value = Value> {
+    use proptest::option::of;
     prop_oneof![
+        (of(0u64..3), of(3u64..6)).prop_map(|(min, max)| ranged(
+            json!({"type": "string"}),
+            ("minLength", "maxLength"),
+            min.map(Value::from),
+            max.map(Value::from)
+        )),
+        (of(-5i64..0), of(0i64..5)).prop_map(|(min, max)| ranged(
+            json!({"type": "integer"}),
+            ("minimum", "maximum"),
+            min.map(Value::from),
+            max.map(Value::from)
+        )),
+        (of(-10i32..0), of(0i32..10)).prop_map(|(min, max)| ranged(
+            json!({"type": "number"}),
+            ("minimum", "maximum"),
+            min.map(half),
+            max.map(half)
+        )),
+        vec(-20i32..20, 1..4).prop_map(|values| {
+            let values: Vec<Value> = values.into_iter().map(half).collect();
+            json!({"type": "number", "enum": values})
+        }),
+        vec(any::<bool>(), 1..3).prop_map(|values| json!({"type": "boolean", "enum": values})),
         Just(json!({"type": "string"})),
         select(vec!["date-time", "email", "uri", "datetime"])
             .prop_map(|format| json!({"type": "string", "format": format})),
@@ -91,12 +153,22 @@ fn object(inner: impl Strategy<Value = Value>) -> impl Strategy<Value = Value> {
 }
 
 fn node() -> impl Strategy<Value = Value> {
-    let leaf = (leaf(), description()).prop_map(|(schema, d)| described(schema, d));
+    use proptest::option::of;
+    let leaf = (leaf(), extras()).prop_map(|(schema, extras)| decorated(schema, extras));
     leaf.prop_recursive(3, 24, 4, |inner| {
         prop_oneof![
-            (inner.clone(), description())
-                .prop_map(|(items, d)| described(json!({"type": "array", "items": items}), d)),
-            (object(inner), description()).prop_map(|(schema, d)| described(schema, d)),
+            (inner.clone(), extras(), of(0u64..2), of(2u64..4)).prop_map(
+                |(items, extras, min, max)| {
+                    let array = ranged(
+                        json!({"type": "array", "items": items}),
+                        ("minItems", "maxItems"),
+                        min.map(Value::from),
+                        max.map(Value::from),
+                    );
+                    decorated(array, extras)
+                }
+            ),
+            (object(inner), extras()).prop_map(|(schema, extras)| decorated(schema, extras)),
         ]
     })
 }
@@ -123,16 +195,49 @@ fn tools() -> impl Strategy<Value = Vec<ToolDef>> {
 
 /// A value that satisfies `schema`.
 fn instance(schema: &Value) -> BoxedStrategy<Value> {
+    // A nullable type is `[T, "null"]`; its enum, if any, already lists null as a choice.
+    let (kind, nullable) = match &schema["type"] {
+        Value::Array(pair) => (pair[0].as_str(), true),
+        single => (single.as_str(), false),
+    };
+    let value = non_null_instance(schema, kind);
+    if nullable {
+        prop_oneof![Just(Value::Null), value].boxed()
+    } else {
+        value
+    }
+}
+
+fn non_null_instance(schema: &Value, kind: Option<&str>) -> BoxedStrategy<Value> {
     let choices = schema.get("enum").and_then(Value::as_array).cloned();
-    match (schema["type"].as_str(), choices) {
+    let count = |key: &str| schema[key].as_u64().map(|n| n as usize);
+    match (kind, choices) {
         (_, Some(choices)) => select(choices).boxed(),
-        (Some("string"), _) => any::<String>().prop_map(Value::String).boxed(),
-        (Some("integer"), _) => any::<i64>().prop_map(Value::from).boxed(),
-        (Some("number"), _) => (-1.0e9..1.0e9f64).prop_map(Value::from).boxed(),
+        (Some("string"), _) => {
+            let min = count("minLength").unwrap_or(0);
+            let max = count("maxLength").unwrap_or(min + 8);
+            vec(any::<char>(), min..=max)
+                .prop_map(|chars| Value::String(chars.into_iter().collect()))
+                .boxed()
+        }
+        (Some("integer"), _) => {
+            let min = schema["minimum"].as_i64().unwrap_or(i64::MIN);
+            let max = schema["maximum"].as_i64().unwrap_or(i64::MAX);
+            (min..=max).prop_map(Value::from).boxed()
+        }
+        (Some("number"), _) => {
+            let min = schema["minimum"].as_f64().unwrap_or(-1.0e9);
+            let max = schema["maximum"].as_f64().unwrap_or(1.0e9);
+            (min..=max).prop_map(Value::from).boxed()
+        }
         (Some("boolean"), _) => any::<bool>().prop_map(Value::Bool).boxed(),
-        (Some("array"), _) => vec(instance(&schema["items"]), 0..3)
-            .prop_map(Value::Array)
-            .boxed(),
+        (Some("array"), _) => {
+            let min = count("minItems").unwrap_or(0);
+            let max = count("maxItems").unwrap_or(min + 2);
+            vec(instance(&schema["items"]), min..=max)
+                .prop_map(Value::Array)
+                .boxed()
+        }
         _ => match schema.get("properties").and_then(Value::as_object) {
             None => Just(json!({"anything": [1, "goes"]})).boxed(),
             Some(properties) => {

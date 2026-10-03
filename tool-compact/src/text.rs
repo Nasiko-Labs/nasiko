@@ -2,7 +2,7 @@
 //! about what needs quoting.
 
 /// Type keywords. An enum value or key spelled like one is quoted so it cannot be misread.
-pub(crate) const KEYWORDS: [&str; 6] = ["str", "int", "num", "bool", "obj", "datetime"];
+pub(crate) const KEYWORDS: [&str; 7] = ["str", "int", "num", "bool", "obj", "datetime", "null"];
 
 /// Whether `s` can be written bare as a key or enum value.
 pub(crate) fn is_ident(s: &str) -> bool {
@@ -100,6 +100,32 @@ impl Cursor {
                 None => format!("expected `{expected}`, found end of line"),
             })
         }
+    }
+
+    /// Whether the cursor is at a `|null` marker (and not at a longer word such as `|nullable`).
+    pub(crate) fn at_null(&self) -> bool {
+        "|null"
+            .chars()
+            .enumerate()
+            .all(|(i, c)| self.peek_at(i) == Some(c))
+            && !self.peek_at(5).is_some_and(is_ident_char)
+    }
+
+    pub(crate) fn eat_null(&mut self) -> bool {
+        let found = self.at_null();
+        if found {
+            self.pos += 5;
+        }
+        found
+    }
+
+    /// Everything from here up to the next `stop`, without moving.
+    pub(crate) fn peek_until(&self, stop: char) -> String {
+        self.chars
+            .iter()
+            .skip(self.pos)
+            .take_while(|c| **c != stop)
+            .collect()
     }
 
     pub(crate) fn skip_spaces(&mut self) {
