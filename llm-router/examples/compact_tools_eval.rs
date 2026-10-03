@@ -201,6 +201,11 @@ fn cases_from_value(value: Value) -> AppResult<Vec<Value>> {
     match value {
         Value::Array(cases) => Ok(cases),
         Value::Object(mut document) => {
+            if document.contains_key("tools")
+                && (document.contains_key("cases") || document.contains_key("decoder_cases"))
+            {
+                return official_cases(&mut document);
+            }
             let mut tool_registry = std::collections::HashMap::new();
             if let Some(Value::Array(tools)) = document.get("tools") {
                 for tool in tools {
@@ -244,6 +249,71 @@ fn cases_from_value(value: Value) -> AppResult<Vec<Value>> {
         }
         _ => Err("evaluation dataset must be a JSON array, object, or JSONL objects".into()),
     }
+}
+
+/// Resolve official public-eval tool-name references through its top-level full
+/// OpenAI tool catalog before normal/decoder case processing starts.
+fn official_cases(document: &mut Map<String, Value>) -> AppResult<Vec<Value>> {
+    let catalog = tool_catalog(
+        document
+            .remove("tools")
+            .and_then(|tools| tools.as_array().cloned())
+            .ok_or_else(|| "official eval tools must be an array".to_string())?,
+    )?;
+    let normal_cases = match document.remove("cases") {
+        Some(Value::Array(cases)) => cases,
+        Some(_) => return Err("official eval cases must be an array".into()),
+        None => Vec::new(),
+    };
+    let decoder_cases = match document.remove("decoder_cases") {
+        Some(Value::Array(cases)) => cases,
+        Some(_) => return Err("official eval decoder_cases must be an array".into()),
+        None => Vec::new(),
+    };
+
+    normal_cases
+        .into_iter()
+        .chain(decoder_cases)
+        .map(|case| resolve_tool_references(case, &catalog))
+        .collect()
+}
+
+fn tool_catalog(tools: Vec<Value>) -> AppResult<BTreeMap<String, Value>> {
+    let mut catalog = BTreeMap::new();
+    for tool in tools {
+        let name = native_tool_def(&tool).map_err(compact_error_message)?.name;
+        if catalog.insert(name.clone(), tool).is_some() {
+            return Err(format!(
+                "official eval tool catalog contains duplicate tool '{name}'"
+            ));
+        }
+    }
+    Ok(catalog)
+}
+
+fn resolve_tool_references(case: Value, catalog: &BTreeMap<String, Value>) -> AppResult<Value> {
+    let mut case = case
+        .as_object()
+        .cloned()
+        .ok_or_else(|| "official eval case must be an object".to_string())?;
+    let references = case
+        .get("tools")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "official eval case tools must be an array of tool names".to_string())?;
+    let resolved = references
+        .iter()
+        .map(|reference| {
+            let name = reference
+                .as_str()
+                .ok_or_else(|| "official eval tool references must be strings".to_string())?;
+            catalog
+                .get(name)
+                .cloned()
+                .ok_or_else(|| format!("official eval references unknown tool '{name}'"))
+        })
+        .collect::<AppResult<Vec<_>>>()?;
+    case.insert("tools".into(), Value::Array(resolved));
+    Ok(Value::Object(case))
 }
 
 fn eval_record(
@@ -435,6 +505,7 @@ fn expected_calls(case: &Map<String, Value>) -> CompactResult<Vec<ToolCall>> {
     let values = case_value(case, &["expected_calls", "calls", "tool_calls", "expected"])
         .and_then(Value::as_array)
         .cloned()
+        .or_else(|| case.get("expected").and_then(Value::as_array).cloned())
         .or_else(|| {
             case.get("expected")
                 .and_then(Value::as_object)
@@ -556,6 +627,24 @@ fn canonicalize(value: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn official_cases_resolve_tool_references_in_case_order() {
+        let cases = cases_from_value(json!({
+            "schema_version": "v1",
+            "tools": [
+                {"type": "function", "function": {"name": "first"}},
+                {"type": "function", "function": {"name": "second"}}
+            ],
+            "cases": [{"tools": ["second", "first"]}],
+            "decoder_cases": [{"tools": ["first"], "chunks": []}]
+        }))
+        .unwrap();
+        assert_eq!(cases.len(), 2);
+        assert_eq!(cases[0]["tools"][0]["function"]["name"], "second");
+        assert_eq!(cases[0]["tools"][1]["function"]["name"], "first");
+        assert_eq!(cases[1]["tools"][0]["function"]["name"], "first");
+    }
 
     #[test]
     fn canonical_jsonl_output_is_byte_stable() {
