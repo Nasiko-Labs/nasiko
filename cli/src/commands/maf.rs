@@ -529,7 +529,8 @@ pick one way of changing steps"
 }
 
 /// Resolve `--edit-step`'s argument to a 0-based index into `existing`: either the step's own
-/// `step_id` (UUID) or a 1-based position matching what `workflow get`/`--json` displays.
+/// `step_id` (UUID) or a 1-based position matching what `workflow get` displays. `--json` is the
+/// raw server body, so the `step_index` it carries stays 0-based and is not a position.
 fn resolve_step_target(existing: &[Value], target: &str) -> Result<usize> {
     if let Some(idx) = existing
         .iter()
@@ -771,15 +772,25 @@ fn print_workflow(w: &Value) {
         return;
     }
     println!("  steps:");
-    for s in steps {
-        let idx = s.get("step_index").and_then(Value::as_i64).unwrap_or(0);
-        let agent = s.get("agent_name").and_then(Value::as_str).unwrap_or("?");
-        let task = s
-            .get("task_description")
-            .and_then(Value::as_str)
-            .unwrap_or("?");
-        println!("    {idx}. [{agent}] {task}");
+    for (i, s) in steps.iter().enumerate() {
+        println!("{}", step_line(i, s));
     }
+}
+
+/// One line of the `steps:` block. The position is the slice index plus one,
+/// because `resolve_step_target` reads `--edit-step` as a 1-based position into
+/// that same slice — print anything else and `--edit-step N` edits a different
+/// step than the one printed as N.
+fn step_line(slice_index: usize, step: &Value) -> String {
+    let agent = step
+        .get("agent_name")
+        .and_then(Value::as_str)
+        .unwrap_or("?");
+    let task = step
+        .get("task_description")
+        .and_then(Value::as_str)
+        .unwrap_or("?");
+    format!("    {}. [{agent}] {task}", slice_index + 1)
 }
 
 fn print_execution_list(executions: &[Value], total: usize, json_out: bool) -> Result<()> {
@@ -1015,6 +1026,21 @@ mod tests {
 
     fn step(step_id: &str, task: &str) -> Value {
         json!({ "step_id": step_id, "task_description": task, "agent_id": null })
+    }
+
+    #[test]
+    fn printed_position_is_the_one_edit_step_accepts() {
+        let steps = vec![step("aaa", "first"), step("bbb", "second")];
+
+        for (i, s) in steps.iter().enumerate() {
+            let line = step_line(i, s);
+            let shown = line.trim_start().split('.').next().unwrap();
+            assert_eq!(
+                resolve_step_target(&steps, shown).unwrap(),
+                i,
+                "`--edit-step {shown}` must target the step printed as {shown}"
+            );
+        }
     }
 
     #[test]
