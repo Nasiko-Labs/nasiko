@@ -55,7 +55,9 @@ src/
   providers/    ProviderClient + openai / anthropic / gemini, sse, fallback
   usage.rs      token_usage writer (fire-and-forget; cost via DB trigger)
   handlers/     chat / embeddings / models / health
+  compact_tools.rs  opt-in compact tool schemas (TOKEN_COMPACT_TOOLS)
 examples/mint_token.rs   dev/test JWT minter
+examples/compact_tools_eval.rs   compact tool schemas eval (JSONL outputs)
 ```
 
 ## Configuration (env)
@@ -65,6 +67,11 @@ examples/mint_token.rs   dev/test JWT minter
 `LLM_CONFIG_CACHE_TTL` (30s), `{OPENAI,ANTHROPIC,GEMINI}_API_BASE` (test overrides).
 Reuses the platform's `SECRETS_ENCRYPTION_KEY` (per-user HKDF AES-256-GCM) and
 `DATABASE_URL`.
+
+`TOKEN_COMPACT_TOOLS` (false) — experimental: send tools as compact signatures and decode
+`<<call ...>>` replies back into standard `tool_calls` (non-streaming Chat Completions only;
+everything else bypasses). Off, requests and responses are byte-identical. See
+[`tool-compact/README.md`](../tool-compact/README.md).
 
 Storage: `agents.llm_config` (JSONB; NULL → defaults), `user_secrets` (decrypt via
 `SecretsCrypto::try_for_user`), `token_usage` (written), `model_pricing` (cost trigger).

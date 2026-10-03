@@ -288,6 +288,27 @@ async fn chat_core(
         "brevity: directive decision"
     );
 
+    // ── compact tool schemas (experimental, opt-in) ───────────────────────────────────────
+    // After brevity, whose tool-continuation carve-out reads `req.tools`; before the ledger, so
+    // `sent_bytes` measures the compacted payload. Off by default: `apply` returns `Disabled`
+    // and the request is untouched.
+    let compacted = crate::compact_tools::apply(&mut req, &ctx.cfg);
+    match &compacted {
+        Ok(c) => tracing::debug!(
+            target: "nasiko::llm_router::compact_tools",
+            %agent_id,
+            tools = c.tools.len(),
+            prompt_bytes = c.prompt_bytes,
+            "compact_tools: tools replaced by compact signatures"
+        ),
+        Err(reason) => tracing::debug!(
+            target: "nasiko::llm_router::compact_tools",
+            %agent_id,
+            skipped = reason.as_label(),
+            "compact_tools: bypassed"
+        ),
+    }
+
     // ── savings ledger inputs ─────────────────────────────────────────────────────────────
     // Measured here, after both seams, because this is the payload the provider will actually
     // bill for — which is what makes `sent_bytes / reported_input_tokens` a calibration rather
@@ -371,9 +392,10 @@ async fn chat_core(
     }
 
     // Non-streaming: run with ordered fallbacks; usage records the effective provider/model.
-    let (resp, (provider, model)) = fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
-        .instrument(llm_span.clone())
-        .await?;
+    let (mut resp, (provider, model)) =
+        fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
+            .instrument(llm_span.clone())
+            .await?;
     let latency_ms = started.elapsed().as_millis() as i64;
 
     // Record effective model and token usage on the server-side gen_ai span.
@@ -404,6 +426,17 @@ async fn chat_core(
             request_bytes: Some(sent_bytes),
         },
     );
+
+    // Decoded after the usage row is written: the provider billed the call either way. A
+    // response that is not a valid compact call fails closed rather than reaching the client.
+    if let Ok(c) = &compacted {
+        crate::compact_tools::restore(&mut resp, c, || {
+            format!("call_{}", uuid::Uuid::new_v4().simple())
+        })
+        .map_err(|e| {
+            GatewayError::Upstream(format!("model produced an invalid compact tool call: {e}"))
+        })?;
+    }
 
     Ok(Json(inbound.render_chat_response(resp)).into_response())
 }
