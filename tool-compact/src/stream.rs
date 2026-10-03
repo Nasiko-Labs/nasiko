@@ -67,11 +67,26 @@ impl StreamDecoder {
         if let Some(e) = &self.error {
             return Err(e.clone());
         }
-        let result = self
-            .scanner
-            .push(chunk)
-            .and_then(|tokens| self.resolve(tokens));
-        self.record(result)
+        let mut events = Vec::new();
+        let tools = &self.tools;
+        let calls = &mut self.calls;
+        let res = self.scanner.push_with(chunk, |token| match token {
+            Token::Text(text) => {
+                events.push(StreamEvent::Text(text));
+                Ok(())
+            }
+            Token::Call { name, args } => {
+                let call = resolve_call(tools, name, &args)?;
+                calls.push(call.clone());
+                events.push(StreamEvent::Call(call));
+                Ok(())
+            }
+        });
+        if let Err(e) = res {
+            self.error = Some(e.clone());
+            return Err(e);
+        }
+        Ok(events)
     }
 
     /// Signal end of output and return every call, in order. Fails with
@@ -81,51 +96,35 @@ impl StreamDecoder {
             return Err(e);
         }
         let tokens = self.scanner.finish()?;
-        self.resolve(tokens)?;
-        Ok(self.calls)
-    }
-
-    fn record(&mut self, result: Result<Vec<StreamEvent>>) -> Result<Vec<StreamEvent>> {
-        if let Err(e) = &result {
-            self.error = Some(e.clone());
-        }
-        result
-    }
-
-    fn resolve(&mut self, tokens: Vec<Token>) -> Result<Vec<StreamEvent>> {
-        let mut events = Vec::with_capacity(tokens.len());
         for token in tokens {
             match token {
-                Token::Text(text) => events.push(StreamEvent::Text(text)),
+                Token::Text(_) => {}
                 Token::Call { name, args } => {
-                    let call = self.resolve_call(name, &args)?;
-                    self.calls.push(call.clone());
-                    events.push(StreamEvent::Call(call));
+                    let call = resolve_call(&self.tools, name, &args)?;
+                    self.calls.push(call);
                 }
             }
         }
-        Ok(events)
+        Ok(self.calls)
     }
+}
 
-    fn resolve_call(&self, name: String, args: &str) -> Result<ToolCall> {
-        let Some(tool) = self.tools.iter().find(|t| t.name == name) else {
-            return Err(CompactError::UnknownTool(name));
-        };
-        let arguments = parse_arguments(&name, args)?;
-        match &tool.parameters {
-            Some(schema) => {
-                validate_arguments(schema, &arguments).map_err(|e| with_tool(e, &name))?
-            }
-            None if arguments.as_object().is_some_and(Map::is_empty) => {}
-            None => {
-                return Err(CompactError::InvalidArguments {
-                    tool: name,
-                    reason: "tool takes no arguments; expected {}".to_string(),
-                });
-            }
+fn resolve_call(tools: &[ToolDef], name: String, args: &str) -> Result<ToolCall> {
+    let Some(tool) = tools.iter().find(|t| t.name == name) else {
+        return Err(CompactError::UnknownTool(name));
+    };
+    let arguments = parse_arguments(&name, args)?;
+    match &tool.parameters {
+        Some(schema) => validate_arguments(schema, &arguments).map_err(|e| with_tool(e, &name))?,
+        None if arguments.as_object().is_some_and(Map::is_empty) => {}
+        None => {
+            return Err(CompactError::InvalidArguments {
+                tool: name,
+                reason: "tool takes no arguments; expected {}".to_string(),
+            });
         }
-        Ok(ToolCall { name, arguments })
     }
+    Ok(ToolCall { name, arguments })
 }
 
 /// Parse an argument object, rejecting malformed JSON and duplicate keys.
