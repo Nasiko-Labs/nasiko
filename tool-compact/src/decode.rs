@@ -31,7 +31,10 @@ const CALL_CLOSE: &str = ">>";
 ///
 /// Returns decoded tool calls and any text outside of `<<call ...>>` markers.
 /// Returns an error if any marker is malformed or any call fails validation.
-pub fn decode_calls_and_text(text: &str, tools: &[ToolDef]) -> Result<(Vec<ToolCall>, String), DecodeError> {
+pub fn decode_calls_and_text(
+    text: &str,
+    tools: &[ToolDef],
+) -> Result<(Vec<ToolCall>, String), DecodeError> {
     let mut calls = Vec::new();
     let mut remaining = String::new();
     let mut pos = 0;
@@ -93,8 +96,8 @@ fn parse_call_at(text: &str, tools: &[ToolDef]) -> Result<Option<(ToolCall, usiz
     if !rest.starts_with('{') {
         // Check for empty args with immediate close.
         if rest.starts_with(CALL_CLOSE) {
-            let consumed = name_end + (text.len() - text[name_end..].len() - rest.len())
-                + CALL_CLOSE.len();
+            let consumed =
+                name_end + (text.len() - text[name_end..].len() - rest.len()) + CALL_CLOSE.len();
             let call = ToolCall {
                 name: tool_name.to_string(),
                 arguments: Value::Object(serde_json::Map::new()),
@@ -112,10 +115,11 @@ fn parse_call_at(text: &str, tools: &[ToolDef]) -> Result<Option<(ToolCall, usiz
     let json_str = &rest[..json_end];
 
     // Parse the JSON.
-    let arguments: Value = serde_json::from_str(json_str).map_err(|e| DecodeError::InvalidJson {
-        tool: tool_name.to_string(),
-        reason: e.to_string(),
-    })?;
+    let arguments: Value =
+        serde_json::from_str(json_str).map_err(|e| DecodeError::InvalidJson {
+            tool: tool_name.to_string(),
+            reason: e.to_string(),
+        })?;
 
     if !arguments.is_object() {
         return Err(DecodeError::InvalidJson {
@@ -135,8 +139,10 @@ fn parse_call_at(text: &str, tools: &[ToolDef]) -> Result<Option<(ToolCall, usiz
         0 // Tolerate missing close marker at end of output.
     };
 
-    let total_consumed =
-        (text.len() - rest.len()) + json_end + (rest[json_end..].len() - after_json.len()) + close_len;
+    let total_consumed = (text.len() - rest.len())
+        + json_end
+        + (rest[json_end..].len() - after_json.len())
+        + close_len;
 
     Ok(Some((
         ToolCall {
@@ -456,7 +462,7 @@ fn partial_marker_start(text: &str) -> usize {
     // Check if the text ends with any prefix of "<<call " (length 1..marker.len()-1).
     for prefix_len in (1..marker.len()).rev() {
         if text_bytes.len() >= prefix_len
-            && &text_bytes[text_bytes.len() - prefix_len..] == &marker[..prefix_len]
+            && text_bytes[text_bytes.len() - prefix_len..] == marker[..prefix_len]
         {
             return text_bytes.len() - prefix_len;
         }
@@ -618,7 +624,9 @@ mod tests {
         let tools = test_tools();
         let mut decoder = StreamDecoder::new(tools);
         decoder.push("Sure! ");
-        decoder.push(r#"<<call create_calendar_event {"title":"X","start":"2026-10-05T10:00:00+05:30"}>>"#);
+        decoder.push(
+            r#"<<call create_calendar_event {"title":"X","start":"2026-10-05T10:00:00+05:30"}>>"#,
+        );
         decoder.push(" Done!");
         let result = decoder.finish();
         assert_eq!(result.calls.len(), 1);
@@ -640,7 +648,9 @@ mod tests {
         let tools = test_tools();
         let mut decoder = StreamDecoder::new(tools);
         decoder.push(r#"<<call send_email {"to":["a@b.com"],"subject":"Hi","body":"Hello"}>>"#);
-        decoder.push(r#"<<call create_calendar_event {"title":"M","start":"2026-10-05T10:00:00+05:30"}>>"#);
+        decoder.push(
+            r#"<<call create_calendar_event {"title":"M","start":"2026-10-05T10:00:00+05:30"}>>"#,
+        );
         let result = decoder.finish();
         assert_eq!(result.calls.len(), 2);
     }

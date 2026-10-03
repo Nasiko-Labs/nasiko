@@ -26,10 +26,7 @@ pub enum DecodeError {
     /// The model referenced a tool name that does not exist in the tool set.
     UnknownTool(String),
     /// A required parameter is missing from the call arguments.
-    MissingRequired {
-        tool: String,
-        field: String,
-    },
+    MissingRequired { tool: String, field: String },
     /// An argument value does not match the expected type or enum constraint.
     InvalidArgument {
         tool: String,
@@ -39,10 +36,7 @@ pub enum DecodeError {
     /// The `<<call ...>>` marker is syntactically malformed.
     MalformedCall(String),
     /// JSON parsing of arguments failed.
-    InvalidJson {
-        tool: String,
-        reason: String,
-    },
+    InvalidJson { tool: String, reason: String },
 }
 
 impl fmt::Display for DecodeError {
@@ -52,7 +46,11 @@ impl fmt::Display for DecodeError {
             Self::MissingRequired { tool, field } => {
                 write!(f, "{tool}: missing required field '{field}'")
             }
-            Self::InvalidArgument { tool, field, reason } => {
+            Self::InvalidArgument {
+                tool,
+                field,
+                reason,
+            } => {
                 write!(f, "{tool}.{field}: {reason}")
             }
             Self::MalformedCall(detail) => write!(f, "malformed call: {detail}"),

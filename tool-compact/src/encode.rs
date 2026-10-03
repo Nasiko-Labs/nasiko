@@ -51,9 +51,7 @@ pub fn encode_tools(tools: &[ToolDef]) -> Result<CompactTools, CompactError> {
 
     let definitions = lines.join("\n");
 
-    let prompt = format!(
-        "Available tools:\n{definitions}\n\n{CALL_INSTRUCTIONS}"
-    );
+    let prompt = format!("Available tools:\n{definitions}\n\n{CALL_INSTRUCTIONS}");
 
     Ok(CompactTools {
         definitions,
@@ -280,7 +278,11 @@ mod tests {
             })),
         }];
         let compact = encode_tools(&tools).unwrap();
-        assert!(compact.definitions.contains("address?:{city:str, street:str}"));
+        assert!(
+            compact
+                .definitions
+                .contains("address?:{city:str, street:str}")
+        );
     }
 
     #[test]

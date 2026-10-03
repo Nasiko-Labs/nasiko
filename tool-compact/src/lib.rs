@@ -50,16 +50,16 @@
 //! assert_eq!(calls[0].name, "greet");
 //! ```
 
-mod encode;
 mod decode;
+mod encode;
 mod error;
 mod types;
 mod validate;
 
+pub use decode::{DecoderResult, StreamDecoder, StreamEvent, decode_calls, decode_calls_and_text};
 pub use encode::encode_tools;
-pub use decode::{decode_calls, decode_calls_and_text, StreamDecoder, StreamEvent, DecoderResult};
 pub use error::{CompactError, DecodeError};
-pub use types::{ToolDef, ToolCall, CompactTools};
+pub use types::{CompactTools, ToolCall, ToolDef};
 
 /// Decode compact definitions back to `ToolDef` for schema round-trip checks.
 ///

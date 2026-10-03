@@ -10,7 +10,9 @@ use serde_json::Value;
 
 use crate::config::GatewayConfig;
 use crate::error::GatewayError;
-use crate::ir::{ChatRequest, ChatResponse, FunctionCall as IrFunctionCall, ToolCall as IrToolCall};
+use crate::ir::{
+    ChatRequest, ChatResponse, FunctionCall as IrFunctionCall, ToolCall as IrToolCall,
+};
 use nasiko_tool_compact::{ToolDef, decode_calls_and_text, encode_tools};
 
 /// State preserved across a compact-tools request for decoding the response.
@@ -45,10 +47,8 @@ pub fn apply(req: &mut ChatRequest, cfg: &GatewayConfig) -> Option<AppliedCompac
     }
 
     // If tool_choice is explicitly "none", do not compact or inject instructions.
-    if let Some(choice) = &req.tool_choice {
-        if choice.as_str() == Some("none") {
-            return None;
-        }
+    if req.tool_choice.as_ref().and_then(|c| c.as_str()) == Some("none") {
+        return None;
     }
 
     // Convert IR tools to tool-compact definitions.
@@ -69,10 +69,8 @@ pub fn apply(req: &mut ChatRequest, cfg: &GatewayConfig) -> Option<AppliedCompac
 
     // Remove native tools and tool_choice from request.
     req.tools = None;
-    if let Some(choice) = &req.tool_choice {
-        if choice.as_str() == Some("auto") {
-            req.tool_choice = None;
-        }
+    if req.tool_choice.as_ref().and_then(|c| c.as_str()) == Some("auto") {
+        req.tool_choice = None;
     }
 
     // Inject compact prompt as a system message.
@@ -144,7 +142,7 @@ pub fn decode_response(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::chat::{FunctionDef, Message, ToolDef as IrToolDef, Choice};
+    use crate::ir::chat::{Choice, FunctionDef, Message, ToolDef as IrToolDef};
     use serde_json::json;
 
     fn sample_tool() -> IrToolDef {
@@ -206,14 +204,23 @@ mod tests {
     #[test]
     fn enabled_compacts_tools_and_removes_native() {
         let mut req = sample_request();
-        let mut cfg = GatewayConfig::default();
-        cfg.compact_tools_enabled = true;
+        let cfg = GatewayConfig {
+            compact_tools_enabled: true,
+            ..Default::default()
+        };
 
         let applied = apply(&mut req, &cfg);
         assert!(applied.is_some(), "must apply when enabled");
         assert!(req.tools.is_none(), "native tools must be removed");
-        assert!(req.tool_choice.is_none(), "auto tool_choice must be removed");
-        assert_eq!(req.messages.len(), 2, "compact prompt injected as system message");
+        assert!(
+            req.tool_choice.is_none(),
+            "auto tool_choice must be removed"
+        );
+        assert_eq!(
+            req.messages.len(),
+            2,
+            "compact prompt injected as system message"
+        );
 
         let sys_msg = &req.messages[1];
         assert_eq!(sys_msg.role, "system");
@@ -255,7 +262,10 @@ mod tests {
 
         let choice = &resp.choices[0];
         assert_eq!(choice.finish_reason.as_deref(), Some("tool_calls"));
-        assert!(choice.message.content.is_none(), "content stripped when pure call");
+        assert!(
+            choice.message.content.is_none(),
+            "content stripped when pure call"
+        );
         let calls = choice.message.tool_calls.as_ref().unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].function.name, "get_weather");

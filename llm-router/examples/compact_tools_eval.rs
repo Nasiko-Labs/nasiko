@@ -26,7 +26,7 @@
 use std::fs;
 use std::io::{BufWriter, Write};
 
-use nasiko_tool_compact::{CompactTools, StreamDecoder, ToolDef, encode_tools, decode_calls};
+use nasiko_tool_compact::{CompactTools, StreamDecoder, ToolDef, decode_calls, encode_tools};
 use serde_json::{Value, json};
 
 /// Fixed reference time and timezone for deterministic date resolution.
@@ -37,9 +37,9 @@ fn main() {
     let eval_path = std::env::var("EVAL_SET").expect("EVAL_SET env var must be set");
     let out_path = std::env::var("OUT").expect("OUT env var must be set");
 
-    let live_mode = std::env::var("PROVIDER_BASE_URL").ok().and_then(|base| {
-        std::env::var("MODEL").ok().map(|model| (base, model))
-    });
+    let live_mode = std::env::var("PROVIDER_BASE_URL")
+        .ok()
+        .and_then(|base| std::env::var("MODEL").ok().map(|model| (base, model)));
 
     // Read eval set.
     let eval_data: Value =
@@ -212,7 +212,10 @@ fn parse_tool_defs(tools_json: &[Value]) -> Vec<ToolDef> {
             let func = t.get("function")?;
             Some(ToolDef {
                 name: func.get("name")?.as_str()?.to_string(),
-                description: func.get("description").and_then(|d| d.as_str()).map(String::from),
+                description: func
+                    .get("description")
+                    .and_then(|d| d.as_str())
+                    .map(String::from),
                 parameters: func.get("parameters").cloned(),
             })
         })
@@ -257,7 +260,11 @@ fn render_expected_calls(expected: Option<&Vec<Value>>, _tools: &[ToolDef]) -> S
         .filter_map(|call| {
             let name = call.get("name")?.as_str()?;
             let args = call.get("arguments")?;
-            Some(format!("<<call {} {}>>", name, serde_json::to_string(args).ok()?))
+            Some(format!(
+                "<<call {} {}>>",
+                name,
+                serde_json::to_string(args).ok()?
+            ))
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -286,7 +293,9 @@ fn send_live_request(
         .send_json(&request)
         .map_err(|e| format!("HTTP error: {e}"))?;
 
-    let body: Value = response.body_mut().read_json()
+    let body: Value = response
+        .body_mut()
+        .read_json()
         .map_err(|e| format!("JSON parse error: {e}"))?;
 
     let raw_output = body
@@ -336,15 +345,19 @@ fn extract_raw_calls(text: &str) -> Vec<(String, Value)> {
             let after_name = rest[name_end..].trim_start();
 
             // Extract JSON args.
-            if after_name.starts_with('{') {
-                if let Some(json_end) = find_json_end_simple(after_name) {
-                    let json_str = &after_name[..json_end];
-                    if let Ok(args) = serde_json::from_str::<Value>(json_str) {
-                        calls.push((name, args));
-                    }
-                    pos = marker_start + name_end + (rest[name_end..].len() - after_name.len()) + json_end;
-                    continue;
+            if let Some(json_end) = after_name
+                .strip_prefix('{')
+                .and_then(|_| find_json_end_simple(after_name))
+            {
+                let json_str = &after_name[..json_end];
+                if let Ok(args) = serde_json::from_str::<Value>(json_str) {
+                    calls.push((name, args));
                 }
+                pos = marker_start
+                    + name_end
+                    + (rest[name_end..].len() - after_name.len())
+                    + json_end;
+                continue;
             }
             pos = marker_start;
         } else {

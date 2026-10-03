@@ -15,10 +15,7 @@ use crate::types::ToolDef;
 /// 2. No unknown fields (arguments not in `properties`).
 /// 3. Type conformance for each provided field.
 /// 4. Enum value constraints.
-pub fn validate_call(
-    tool: &ToolDef,
-    arguments: &Value,
-) -> Result<(), DecodeError> {
+pub fn validate_call(tool: &ToolDef, arguments: &Value) -> Result<(), DecodeError> {
     let params = match &tool.parameters {
         Some(p) => p,
         // No parameters defined — arguments must be empty or an empty object.
@@ -180,9 +177,10 @@ fn validate_value(
                 });
             }
             // Recursively validate nested object properties.
-            if let (Some(nested_props), Some(obj)) =
-                (schema.get("properties").and_then(|p| p.as_object()), value.as_object())
-            {
+            if let (Some(nested_props), Some(obj)) = (
+                schema.get("properties").and_then(|p| p.as_object()),
+                value.as_object(),
+            ) {
                 // Check nested required fields.
                 let nested_required: Vec<&str> = schema
                     .get("required")
@@ -282,7 +280,9 @@ mod tests {
         let tool = calendar_tool();
         let args = json!({"title": "Review", "start": "2026-10-05T15:00:00+05:30", "visibility": "secret"});
         let err = validate_call(&tool, &args).unwrap_err();
-        assert!(matches!(err, DecodeError::InvalidArgument { ref field, .. } if field == "visibility"));
+        assert!(
+            matches!(err, DecodeError::InvalidArgument { ref field, .. } if field == "visibility")
+        );
     }
 
     #[test]
@@ -290,7 +290,9 @@ mod tests {
         let tool = calendar_tool();
         let args = json!({"title": "Review", "start": "2026-10-05T15:00:00+05:30", "duration_min": "thirty"});
         let err = validate_call(&tool, &args).unwrap_err();
-        assert!(matches!(err, DecodeError::InvalidArgument { ref field, .. } if field == "duration_min"));
+        assert!(
+            matches!(err, DecodeError::InvalidArgument { ref field, .. } if field == "duration_min")
+        );
     }
 
     #[test]
@@ -298,13 +300,16 @@ mod tests {
         let tool = calendar_tool();
         let args = json!({"title": "Review", "start": "2026-10-05T15:00:00+05:30", "attendees": "not-an-array"});
         let err = validate_call(&tool, &args).unwrap_err();
-        assert!(matches!(err, DecodeError::InvalidArgument { ref field, .. } if field == "attendees"));
+        assert!(
+            matches!(err, DecodeError::InvalidArgument { ref field, .. } if field == "attendees")
+        );
     }
 
     #[test]
     fn array_item_type_validation() {
         let tool = calendar_tool();
-        let args = json!({"title": "Review", "start": "2026-10-05T15:00:00+05:30", "attendees": [123]});
+        let args =
+            json!({"title": "Review", "start": "2026-10-05T15:00:00+05:30", "attendees": [123]});
         let err = validate_call(&tool, &args).unwrap_err();
         assert!(matches!(err, DecodeError::InvalidArgument { .. }));
     }
@@ -323,7 +328,8 @@ mod tests {
     fn integer_accepts_whole_float() {
         let tool = calendar_tool();
         // JSON numbers 30.0 and 30 are both valid integers.
-        let args = json!({"title": "x", "start": "2026-10-05T15:00:00+05:30", "duration_min": 30.0});
+        let args =
+            json!({"title": "x", "start": "2026-10-05T15:00:00+05:30", "duration_min": 30.0});
         assert!(validate_call(&tool, &args).is_ok());
     }
 }
