@@ -46,7 +46,6 @@ nasiko-agent-proxy = { path = "agent-proxy" }
 nasiko-mcp-gateway = { path = "mcp-gateway" }
 nasiko-github = { path = "github" }
 nasiko-secrets = { path = "secrets" }
-nasiko-tool-compact = { path = "tool-compact" }
 nasiko-observability = { path = "observability" }
 nasiko-runtime = { path = "runtime", default-features = false }
 nasiko-react-agent = { path = "react-agent" }

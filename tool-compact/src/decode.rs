@@ -13,10 +13,7 @@ pub fn decode_calls(text: &str, tools: &[ToolDef]) -> Result<Vec<ToolCall>, Erro
     let schemas = build_schemas(tools)?;
     let mut calls = Vec::new();
     let mut rest = text;
-    loop {
-        let Some(idx) = find_marker_start(rest) else {
-            break;
-        };
+    while let Some(idx) = find_marker_start(rest) {
         match parse_one_marker(&rest[idx..], &schemas)? {
             Some((call, consumed)) => {
                 calls.push(call);

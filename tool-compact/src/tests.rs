@@ -461,7 +461,7 @@ fn generated_schema_round_trips() {
         let mut props = serde_json::Map::new();
         for k in 0..3 {
             let key = format!("f{depth}_{k}");
-            let v = if depth < 2 && (seed + k) % 3 == 0 {
+            let v = if depth < 2 && (seed + k).is_multiple_of(3) {
                 obj(depth + 1, seed + k)
             } else {
                 atom(seed + k)

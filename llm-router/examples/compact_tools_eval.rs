@@ -71,7 +71,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map(|ts| {
                 ts.iter()
                     .filter_map(Value::as_str)
-                    .filter_map(|n| to_tool_def(n))
+                    .filter_map(to_tool_def)
                     .collect()
             })
             .unwrap_or_default()
