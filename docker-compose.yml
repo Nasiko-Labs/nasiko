@@ -3,10 +3,7 @@
 # Start:  docker compose up -d
 # Stop:   docker compose down
 # Logs:   docker compose logs -f server
-# UI:     http://localhost:8080
-#
-# Copy .env.example to .env and edit before starting:
-#   cp .env.example .env
+# UI:     http://localhost:8085
 
 services:
   postgres:
@@ -90,12 +87,13 @@ services:
       context: .
       dockerfile: server/Dockerfile
     ports:
-      - "8080:8080"
+      - "8085:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     env_file:
       - .env
     environment:
-      # Override connection URLs to use Docker service names.
-      DATABASE_URL: postgres://nasiko:nasiko@postgres:5432/nasiko_dev
+      DATABASE_URL: postgres://nasiko:nasiko@host.docker.internal:5432/nasiko_dev
       REDIS_URL: redis://redis:6379
       S3_ENDPOINT: http://rustfs:9000
       TEMPO_URL: http://tempo:3200
@@ -103,11 +101,11 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
       OTEL_COLLECTOR_ENDPOINT: http://otel-collector:4317
       CODING_AGENT_OTLP_ENDPOINT: http://otel-collector:4318
-      # Agents inside Docker reach the server via this name.
       MCP_GATEWAY_PUBLIC_URL: http://server:8080/api/mcp
       LLM_GATEWAY_BASE_URL: http://server:8080
-      # Shared network so the server can reach agent containers by IP.
       DOCKER_AGENT_NETWORK: nasiko
+      GATEWAY_JWT_SECRET: supersecretnasikogatewaytoken1234567890
+      JWT_SECRET: supersecretnasikogatewaytoken1234567890
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
@@ -122,7 +120,6 @@ services:
 
 networks:
   nasiko:
-    name: nasiko
 
 volumes:
   postgres-data:
