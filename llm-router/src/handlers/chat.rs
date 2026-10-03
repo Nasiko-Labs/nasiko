@@ -288,6 +288,17 @@ async fn chat_core(
         "brevity: directive decision"
     );
 
+    // Compact tool schemas (opt-in). Replaces native `tools` with an injected
+    // system message for non-streaming requests; the original defs are kept so
+    // the response's compact call markers decode back to standard tool calls.
+    let compact_original_tools = crate::compact_tools::apply_request(&mut req, &ctx.cfg);
+    tracing::debug!(
+        target: "nasiko::llm_router::compact_tools",
+        %agent_id,
+        applied = compact_original_tools.is_some(),
+        "compact_tools: request decision"
+    );
+
     // ── savings ledger inputs ─────────────────────────────────────────────────────────────
     // Measured here, after both seams, because this is the payload the provider will actually
     // bill for — which is what makes `sent_bytes / reported_input_tokens` a calibration rather
@@ -375,6 +386,14 @@ async fn chat_core(
         .instrument(llm_span.clone())
         .await?;
     let latency_ms = started.elapsed().as_millis() as i64;
+
+    // Decode compact call markers back into standard tool calls when the
+    // compact-tools seam compacted the request (never touches raw text that
+    // does not parse — fail-closed).
+    let mut resp = resp;
+    if let Some(orig) = &compact_original_tools {
+        crate::compact_tools::apply_response(&mut resp, orig);
+    }
 
     // Record effective model and token usage on the server-side gen_ai span.
     llm_span.record("gen_ai.response.model", model.as_str());

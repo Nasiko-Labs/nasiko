@@ -154,6 +154,11 @@ pub struct GatewayConfig {
     pub compress_recovery_min_bytes: usize,
     /// How long an original stays recoverable. Sized to outlive the flow that produced it.
     pub compress_recovery_ttl_secs: u64,
+
+    /// Opt-in compact tool schemas (nasiko-tool-compact). Default **off**: with it
+    /// off the request path is byte-identical to a build without this flag.
+    /// Non-streaming requests only; streaming and `tool_choice` requests bypass.
+    pub compact_tools_enabled: bool,
 }
 
 impl Default for GatewayConfig {
@@ -196,6 +201,7 @@ impl Default for GatewayConfig {
             compress_recovery_enabled: true,
             compress_recovery_min_bytes: 8192,
             compress_recovery_ttl_secs: 86_400,
+            compact_tools_enabled: false,
         }
     }
 }
@@ -289,6 +295,7 @@ impl GatewayConfig {
                 nasiko_compress::Level::Conservative,
             ),
             compress_dry_run: env_flag("TOKEN_COMPRESS_DRY_RUN", false),
+            compact_tools_enabled: env_flag("TOKEN_COMPACT_TOOLS", d.compact_tools_enabled),
             brevity_enabled: env_flag("TOKEN_BREVITY", d.brevity_enabled),
             brevity_min_bytes: env_usize("TOKEN_BREVITY_MIN_BYTES", d.brevity_min_bytes),
             brevity_holdout_pct: env_usize(
