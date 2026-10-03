@@ -166,7 +166,7 @@ mod tests {
         assert_eq!(req.messages[0].role, "system");
         let sys_content = req.messages[0].text().unwrap();
         assert!(sys_content.contains("create_calendar_event("));
-        assert!(sys_content.contains("<<call name"));
+        assert!(sys_content.contains("<<call"));
     }
 
     #[test]

@@ -13,18 +13,24 @@ pub fn decode_calls(text: &str, tools: &[ToolDef]) -> Result<Vec<ToolCall>, Deco
     let mut call_counter = 1;
 
     while cursor < len {
-        // Look for "<<call" marker
-        if let Some(pos) = text[cursor..].find("<<call") {
-            let start_idx = cursor + pos + 6; // index after "<<call"
+        // Look for "<<" marker
+        if let Some(pos) = text[cursor..].find("<<") {
+            let start_idx = cursor + pos + 2; // index after "<<"
             let remaining = &text[start_idx..];
 
-            // Parse tool name (skip leading whitespaces and optional colon)
-            let trimmed = remaining.trim_start().trim_start_matches(':').trim_start();
-            let leading_ws_count = remaining.len() - trimmed.len();
-            let name_start = start_idx + leading_ws_count;
+            // Parse tool name (skip optional 'call' keyword, whitespace, and colon)
+            let trimmed = remaining.trim_start();
+            let after_call = if let Some(stripped) = trimmed.strip_prefix("call") {
+                stripped.trim_start().trim_start_matches(':').trim_start()
+            } else {
+                trimmed
+            };
+
+            let name_start = len - after_call.len();
 
             if name_start >= len {
-                return Err(DecodeError::MalformedSyntax("incomplete tool call".to_string()));
+                cursor = start_idx;
+                continue;
             }
 
             // Tool name ends at first whitespace, colon, parenthesis, '{', or '>'
@@ -39,7 +45,8 @@ pub fn decode_calls(text: &str, tools: &[ToolDef]) -> Result<Vec<ToolCall>, Deco
 
             let mut tool_name = text[name_start..name_end].trim().trim_end_matches(':').trim_end_matches('>');
             if tool_name.is_empty() {
-                return Err(DecodeError::MalformedSyntax("missing tool name in call".to_string()));
+                cursor = start_idx;
+                continue;
             }
 
             // If the model literally output `<<call name <actual_name> ...` or `<<call tool <actual_name>`, skip the descriptor

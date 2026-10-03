@@ -102,11 +102,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (compact_request, rendered_calls, roundtrip_calls) = if !case_tools.is_empty() {
             let compact = encode_tools(&case_tools)?;
 
-            // Build system message with fixed reference time + compact tool prompt
-            let system_prompt = format!(
-                "Today is 2026-10-02, timezone Asia/Kolkata.\n\n{}",
+            // Build system message (reference time is used in live mode for relative dates)
+            let system_prompt = if live_model.is_some() {
+                format!(
+                    "Today is 2026-10-02, timezone Asia/Kolkata.\n\n{}",
+                    compact.prompt_block()
+                )
+            } else {
                 compact.prompt_block()
-            );
+            };
 
             let mut messages = vec![json!({
                 "role": "system",
@@ -166,10 +170,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             (compact_req, rendered_calls_str, roundtrip)
         } else {
-            let mut messages = vec![json!({
-                "role": "system",
-                "content": "Today is 2026-10-02, timezone Asia/Kolkata."
-            })];
+            let mut messages = Vec::new();
+            if live_model.is_some() {
+                messages.push(json!({
+                    "role": "system",
+                    "content": "Today is 2026-10-02, timezone Asia/Kolkata."
+                }));
+            }
             for msg in &case.messages {
                 messages.push(msg.clone());
             }
