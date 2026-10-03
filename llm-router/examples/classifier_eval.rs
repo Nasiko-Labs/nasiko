@@ -7,17 +7,19 @@
 //! Reads cases from `EVAL_SET` and writes one JSONL line of outputs per case
 //! to `OUT`. It does not compute scores; our scorer does that.
 //!
-//! Backend selection: `CLASSIFIER_BACKEND=regex|heuristic` (default: heuristic).
-//! Both backends are local and deterministic: the run needs no network and
-//! produces byte-identical output across runs.
+//! Backend selection: `CLASSIFIER_BACKEND=regex|heuristic` (default: `regex`,
+//! the baseline). Both backends are local and deterministic: the run needs no
+//! network and produces byte-identical output across runs. To exercise the
+//! heuristic: `CLASSIFIER_BACKEND=heuristic`.
 use std::io::Write;
 use std::time::Instant;
 
-use nasiko_llm_router::routing::{ClassifyInput, classifier_from_backend};
+use nasiko_llm_router::routing::{ClassifyInput, classifier_from_config};
+use nasiko_llm_router::config::GatewayConfig;
 
 fn main() {
-    let backend_name = std::env::var("CLASSIFIER_BACKEND").unwrap_or_else(|_| "heuristic".into());
-    let backend = classifier_from_backend(&backend_name);
+    let config = GatewayConfig::from_env();
+    let backend = classifier_from_config(&config);
     eprintln!("[classifier-eval] backend: {}", backend.name());
 
     let path = std::env::var("EVAL_SET").unwrap_or_else(|_| "/tmp/classifier-eval.json".into());
@@ -72,7 +74,8 @@ fn main() {
             Err(e) => {
                 eprintln!("[classifier-eval] {id}: backend error ({e}), regex fallback");
                 let fallback = rt.block_on(
-                    classifier_from_backend("regex").classify(&ClassifyInput { query, context }),
+                    nasiko_llm_router::routing::classifier_from_backend("regex")
+                        .classify(&ClassifyInput { query, context }),
                 );
                 match fallback {
                     Ok(c) => (
