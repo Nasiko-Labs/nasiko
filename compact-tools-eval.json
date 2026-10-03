@@ -1,0 +1,66 @@
+﻿{
+  "tools": [
+    {
+      "name": "create_calendar_event",
+      "description": "Create a calendar event",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "duration_min": {
+            "type": "integer"
+          }
+        },
+        "required": ["title"]
+      }
+    },
+    {
+      "name": "send_email",
+      "description": "Send an email",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "to": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          }
+        },
+        "required": ["to", "subject", "body"]
+      }
+    }
+  ],
+  "cases": [
+    {
+      "id": "calendar-1",
+      "calls": [
+        {
+          "name": "create_calendar_event",
+          "arguments": {
+            "title": "Team meeting",
+            "duration_min": 30
+          }
+        }
+      ]
+    },
+    {
+      "id": "email-1",
+      "calls": [
+        {
+          "name": "send_email",
+          "arguments": {
+            "to": "team@example.com",
+            "subject": "Meeting",
+            "body": "See you at 10 AM"
+          }
+        }
+      ]
+    }
+  ]
+}
