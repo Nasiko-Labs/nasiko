@@ -52,11 +52,10 @@ pub fn apply_compact_request(
     };
 
     // If forced tool_choice is specified, bypass compaction for reliability
-    if let Some(choice) = &req.tool_choice {
-        if choice.is_object() {
+    if let Some(choice) = &req.tool_choice
+        && choice.is_object() {
             return None;
         }
-    }
 
     let compact_defs: Vec<nasiko_tool_compact::ToolDef> =
         tools.iter().map(to_compact_tool_def).collect();
@@ -106,13 +105,12 @@ pub fn decompact_response(resp: &mut ChatResponse, original_tools: &[ToolDef]) {
             _ => continue,
         };
 
-        if let Ok(decoded) = nasiko_tool_compact::decode_calls(&content_text, &compact_defs) {
-            if !decoded.is_empty() {
+        if let Ok(decoded) = nasiko_tool_compact::decode_calls(&content_text, &compact_defs)
+            && !decoded.is_empty() {
                 let ir_calls: Vec<ToolCall> = decoded.iter().map(from_compact_tool_call).collect();
                 choice.message.tool_calls = Some(ir_calls);
                 choice.finish_reason = Some("tool_calls".into());
             }
-        }
     }
 }
 

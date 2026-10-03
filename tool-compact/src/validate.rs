@@ -137,8 +137,8 @@ fn validate_property_value(
             }
             "array" => {
                 if let Value::Array(items) = val {
-                    if let Some(item_schema) = schema.get("items") {
-                        if let Some(item_type) = item_schema.get("type").and_then(Value::as_str) {
+                    if let Some(item_schema) = schema.get("items")
+                        && let Some(item_type) = item_schema.get("type").and_then(Value::as_str) {
                             for item in items {
                                 match item_type {
                                     "string" if !item.is_string() => {
@@ -163,7 +163,6 @@ fn validate_property_value(
                                 }
                             }
                         }
-                    }
                 } else {
                     return Err(ValidationError::TypeMismatch {
                         name: prop_name.to_string(),
@@ -172,15 +171,14 @@ fn validate_property_value(
                     });
                 }
             }
-            "object" => {
-                if !val.is_object() {
+            "object"
+                if !val.is_object() => {
                     return Err(ValidationError::TypeMismatch {
                         name: prop_name.to_string(),
                         expected: "object".to_string(),
                         actual: value_type_name(val).to_string(),
                     });
                 }
-            }
             _ => {}
         }
     }

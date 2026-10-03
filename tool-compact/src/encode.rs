@@ -96,11 +96,10 @@ fn format_prop_type(schema: &Value) -> String {
         return vals.join("|");
     }
 
-    if let Some(fmt) = schema.get("format").and_then(Value::as_str) {
-        if fmt == "date-time" || fmt == "datetime" {
+    if let Some(fmt) = schema.get("format").and_then(Value::as_str)
+        && (fmt == "date-time" || fmt == "datetime") {
             return "datetime".to_string();
         }
-    }
 
     let ty = schema.get("type").and_then(Value::as_str).unwrap_or("any");
     match ty {
@@ -141,11 +140,7 @@ pub fn decode_tools(compact: &CompactTools) -> Result<Vec<ToolDef>, EncodeError>
         })?;
 
         let params_part = &line[open_paren + 1..close_paren];
-        let description = if let Some(dash_idx) = line[close_paren + 1..].find('-') {
-            Some(line[close_paren + 1 + dash_idx + 1..].trim().to_string())
-        } else {
-            None
-        };
+        let description = line[close_paren + 1..].find('-').map(|dash_idx| line[close_paren + 1 + dash_idx + 1..].trim().to_string());
 
         let mut properties = Map::new();
         let mut required = Vec::new();
