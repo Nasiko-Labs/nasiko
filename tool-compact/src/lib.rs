@@ -6,7 +6,7 @@
 
 use std::collections::BTreeSet;
 
-use chrono::DateTime;
+use chrono::{DateTime, NaiveDate};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use thiserror::Error;
@@ -68,7 +68,7 @@ fn function_kind() -> String {
 pub fn encode_tools(tools: &[ToolDef]) -> Result<CompactTools> {
     let mut lines = vec![
         "Call only: <<call NAME JSON>>".to_string(),
-        "?: optional; [T]: array; !: no extra keys; dt: ISO-8601 datetime.".to_string(),
+        "?: optional; [T]: array; !: no extra keys; dt: RFC3339 datetime; date: YYYY-MM-DD; email: email address; uri: absolute URI.".to_string(),
     ];
 
     let mut names = BTreeSet::new();
@@ -443,7 +443,7 @@ fn validate_schema_shape(schema: &Value, tool: &str) -> Result<()> {
             None => false,
             _ => false,
         };
-        if !has_string_type || format != "date-time" {
+        if !has_string_type || !is_supported_format(format) {
             return Err(Error::UnsupportedSchema {
                 tool: tool.into(),
                 reason: format!("format `{format}` cannot be represented exactly"),
@@ -466,6 +466,10 @@ fn is_supported_type(kind: &str) -> bool {
         kind,
         "object" | "array" | "string" | "integer" | "number" | "boolean" | "null"
     )
+}
+
+fn is_supported_format(format: &str) -> bool {
+    matches!(format, "date-time" | "date" | "email" | "uri")
 }
 
 fn render_root_schema(schema: &Value, tool: &str) -> Result<String> {
@@ -506,6 +510,7 @@ fn render_schema(schema: &Value, tool: &str) -> Result<String> {
                     .and_then(Value::as_str)
                     .map(|format| match format {
                         "date-time" => "dt".into(),
+                        "date" | "email" | "uri" => format.into(),
                         _ => format!("str<{format}>"),
                     })
                     .unwrap_or_else(|| "str".into()),
@@ -643,15 +648,11 @@ fn validate_value(schema: &Value, value: &Value, path: &str, tool: &str) -> Resu
     if !kinds.is_empty() && !kinds.iter().any(|kind| value_has_type(value, kind)) {
         return Err(invalid(tool, format!("{path} has the wrong JSON type")));
     }
-    if schema.get("format").and_then(Value::as_str) == Some("date-time")
-        && value
-            .as_str()
-            .is_none_or(|text| DateTime::parse_from_rfc3339(text).is_err())
+    if let (Some(format), Some(text)) =
+        (schema.get("format").and_then(Value::as_str), value.as_str())
+        && !value_matches_format(format, text)
     {
-        return Err(invalid(
-            tool,
-            format!("{path} must be an RFC 3339 date-time string"),
-        ));
+        return Err(invalid(tool, format!("{path} is not a valid {format}")));
     }
 
     if let Some(properties) = schema.get("properties").and_then(Value::as_object) {
@@ -689,6 +690,24 @@ fn validate_value(schema: &Value, value: &Value, path: &str, tool: &str) -> Resu
         }
     }
     Ok(())
+}
+
+fn value_matches_format(format: &str, text: &str) -> bool {
+    match format {
+        "date-time" => DateTime::parse_from_rfc3339(text).is_ok(),
+        "date" => NaiveDate::parse_from_str(text, "%Y-%m-%d").is_ok(),
+        "email" => text.split_once('@').is_some_and(|(local, host)| {
+            !local.is_empty() && host.contains('.') && !text.contains(char::is_whitespace)
+        }),
+        "uri" => text.split_once(':').is_some_and(|(scheme, rest)| {
+            !rest.is_empty()
+                && scheme.starts_with(|character: char| character.is_ascii_alphabetic())
+                && scheme.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || matches!(character, '+' | '-' | '.')
+                })
+        }),
+        _ => false,
+    }
 }
 
 fn value_has_type(value: &Value, kind: &str) -> bool {
@@ -771,8 +790,7 @@ mod tests {
     #[test]
     fn bypasses_unsupported_formats_and_invalid_required_lists() {
         let mut tool = calendar();
-        tool.function.parameters.as_mut().unwrap()["properties"]["title"]["format"] =
-            json!("email");
+        tool.function.parameters.as_mut().unwrap()["properties"]["title"]["format"] = json!("ipv4");
         assert!(matches!(
             encode_tools(&[tool]),
             Err(Error::UnsupportedSchema { .. })
@@ -784,6 +802,55 @@ mod tests {
             encode_tools(&[tool]),
             Err(Error::UnsupportedSchema { .. })
         ));
+    }
+
+    #[test]
+    fn preserves_and_validates_common_string_formats_and_nullability() {
+        let mut tool = calendar();
+        let properties = &mut tool.function.parameters.as_mut().unwrap()["properties"];
+        properties["day"] = json!({"type": "string", "format": "date"});
+        properties["contact"] = json!({"type": "string", "format": "email"});
+        properties["link"] = json!({"type": "string", "format": "uri"});
+        properties["note"] = json!({"type": ["string", "null"]});
+
+        let compact = encode_tools(&[tool.clone()]).unwrap();
+        assert!(compact.prompt.contains("day?:date"));
+        assert!(compact.prompt.contains("contact?:email"));
+        assert!(compact.prompt.contains("link?:uri"));
+        assert!(compact.prompt.contains("note?:str|null"));
+        assert_eq!(decode_tools(&compact).unwrap(), vec![tool.clone()]);
+
+        let valid = json!({
+            "title": "Retro",
+            "start": "2026-10-04T10:00:00+05:30",
+            "day": "2026-10-04",
+            "contact": "riya@example.com",
+            "link": "https://example.com/calendar",
+            "note": null
+        });
+        assert!(
+            decode_calls(
+                &format!("<<call create_calendar_event {valid}>>"),
+                &[tool.clone()]
+            )
+            .is_ok()
+        );
+
+        for (field, invalid_value) in [
+            ("day", json!("tomorrow")),
+            ("contact", json!("not-an-email")),
+            ("link", json!("example.com")),
+        ] {
+            let mut arguments = valid.clone();
+            arguments[field] = invalid_value;
+            assert!(matches!(
+                decode_calls(
+                    &format!("<<call create_calendar_event {arguments}>>"),
+                    &[tool.clone()]
+                ),
+                Err(Error::InvalidArguments { .. })
+            ));
+        }
     }
 
     #[test]
