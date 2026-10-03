@@ -4,11 +4,13 @@
 //! can be promoted to a standalone binary later without dragging in the platform's
 //! full `Config`. Env-var *names* match the platform for deployment consistency.
 
+use serde::{Deserialize, Serialize};
+
 /// Configuration for the LLM router, read from the environment.
 ///
 /// See `RUST_PLAN_V1.md` §5. All fields have sane defaults so `from_env` never fails;
 /// fail-closed behaviour (e.g. an empty `agent_jwt_secret`) is enforced at use sites.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayConfig {
     /// Shared HS256 secret the orchestrator mints agent-identity JWTs with. Empty ⇒
     /// every request is rejected 401 (fail closed) — never fail open.
@@ -108,7 +110,9 @@ pub struct GatewayConfig {
     /// Skip payloads below this size — compressing them costs more than it saves.
     pub compress_min_bytes: usize,
     /// Which detected content types may be compressed.
+    #[serde(skip, default = "default_type_mask")]
     pub compress_types: nasiko_compress::TypeMask,
+    #[serde(skip, default = "default_level")]
     pub compress_level: nasiko_compress::Level,
     /// Measure without mutating: stats are recorded, the request is sent untouched.
     pub compress_dry_run: bool,
@@ -154,6 +158,11 @@ pub struct GatewayConfig {
     pub compress_recovery_min_bytes: usize,
     /// How long an original stays recoverable. Sized to outlive the flow that produced it.
     pub compress_recovery_ttl_secs: u64,
+
+    /// Opt-in compact tool calling syntax (Track P1).
+    /// Default `false`. Off by default ensures 100% byte-identical behavior.
+    #[serde(default)]
+    pub compact_tools_enabled: bool,
 }
 
 impl Default for GatewayConfig {
@@ -196,6 +205,7 @@ impl Default for GatewayConfig {
             compress_recovery_enabled: true,
             compress_recovery_min_bytes: 8192,
             compress_recovery_ttl_secs: 86_400,
+            compact_tools_enabled: false,
         }
     }
 }
@@ -308,6 +318,7 @@ impl GatewayConfig {
                 "TOKEN_COMPRESS_RECOVERY_TTL_SECS",
                 d.compress_recovery_ttl_secs as usize,
             ) as u64,
+            compact_tools_enabled: env_flag("COMPACT_TOOLS_ENABLED", d.compact_tools_enabled),
         }
     }
 
@@ -326,6 +337,14 @@ impl GatewayConfig {
             _ => "",
         }
     }
+}
+
+fn default_type_mask() -> nasiko_compress::TypeMask {
+    nasiko_compress::TypeMask::DEFAULT
+}
+
+fn default_level() -> nasiko_compress::Level {
+    nasiko_compress::Level::Conservative
 }
 
 /// First parseable env var among `keys`, else `default`. Used where a setting
@@ -434,5 +453,23 @@ mod tests {
         assert_eq!(cfg.platform_key_for("my-gateway"), "");
         assert_eq!(cfg.platform_key_for("deepseek"), "");
         assert_eq!(cfg.platform_key_for(""), "");
+    }
+
+    #[test]
+    fn compact_tools_disabled_by_default() {
+        let cfg = GatewayConfig::default();
+        assert!(!cfg.compact_tools_enabled);
+    }
+
+    #[test]
+    fn compact_tools_serde_default() {
+        let json = r#"{}"#;
+        #[derive(Deserialize)]
+        struct TestSeam {
+            #[serde(default)]
+            compact_tools_enabled: bool,
+        }
+        let parsed: TestSeam = serde_json::from_str(json).unwrap();
+        assert!(!parsed.compact_tools_enabled);
     }
 }
