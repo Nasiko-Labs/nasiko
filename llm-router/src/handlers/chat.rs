@@ -279,7 +279,6 @@ async fn chat_core(
         ctx.cfg.compact_tools_enabled,
         &resolved.provider,
     );
-    let _ = compact;
 
     // ── brevity seam (IP-2) ───────────────────────────────────────────────────────────────
     // After compression, so the size floor is judged on the bytes actually being sent, and so a
@@ -380,9 +379,13 @@ async fn chat_core(
     }
 
     // Non-streaming: run with ordered fallbacks; usage records the effective provider/model.
-    let (resp, (provider, model)) = fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
-        .instrument(llm_span.clone())
-        .await?;
+    let (mut resp, (provider, model)) =
+        fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
+            .instrument(llm_span.clone())
+            .await?;
+    if compact.applied && provider == "openai" {
+        crate::compact_tools::attach_decoded_calls(&mut resp, &compact.originals);
+    }
     let latency_ms = started.elapsed().as_millis() as i64;
 
     // Record effective model and token usage on the server-side gen_ai span.
