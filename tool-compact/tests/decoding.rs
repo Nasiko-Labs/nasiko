@@ -139,19 +139,19 @@ fn argument_faults_fail_closed_never_repaired() {
         // missing required
         r#"<<call create_calendar_event {"start":"2026-10-05T15:00:00+05:30"}>>"#,
         // enum violation (case, whitespace, unknown value)
-        r#"<<call create_calendar_event {"title":"t","start":"s","visibility":"secret"}>>"#,
-        r#"<<call create_calendar_event {"title":"t","start":"s","visibility":"Private"}>>"#,
+        r#"<<call create_calendar_event {"title":"t","start":"2026-10-05T15:00:00+05:30","visibility":"secret"}>>"#,
+        r#"<<call create_calendar_event {"title":"t","start":"2026-10-05T15:00:00+05:30","visibility":"Private"}>>"#,
         // wrong primitive types
-        r#"<<call create_calendar_event {"title":"t","start":"s","duration_min":"30"}>>"#,
-        r#"<<call create_calendar_event {"title":"t","start":"s","duration_min":1.5}>>"#,
-        r#"<<call create_calendar_event {"title":5,"start":"s"}>>"#,
+        r#"<<call create_calendar_event {"title":"t","start":"2026-10-05T15:00:00+05:30","duration_min":"30"}>>"#,
+        r#"<<call create_calendar_event {"title":"t","start":"2026-10-05T15:00:00+05:30","duration_min":1.5}>>"#,
+        r#"<<call create_calendar_event {"title":5,"start":"2026-10-05T15:00:00+05:30"}>>"#,
         r#"<<call send_email {"to":"a@x.io","subject":"s","body":"b"}>>"#,
         // undeclared argument
-        r#"<<call create_calendar_event {"title":"t","start":"s","location":"HQ"}>>"#,
+        r#"<<call create_calendar_event {"title":"t","start":"2026-10-05T15:00:00+05:30","location":"HQ"}>>"#,
         // malformed JSON
-        r#"<<call create_calendar_event {"title":"t","start":"s",}>>"#,
+        r#"<<call create_calendar_event {"title":"t","start":"2026-10-05T15:00:00+05:30",}>>"#,
         r#"<<call create_calendar_event {'title':'t','start':'s'}>>"#,
-        r#"<<call create_calendar_event {"title":"t","title":"u","start":"s"}>>"#,
+        r#"<<call create_calendar_event {"title":"t","title":"u","start":"2026-10-05T15:00:00+05:30"}>>"#,
         r#"<<call create_calendar_event {"title":"t","start":NaN}>>"#,
         // maxItems
         r#"<<call tracker.create_ticket {"title":"t","priority":"low","labels":["a","b","c","d","e","f"]}>>"#,
@@ -164,13 +164,13 @@ fn argument_faults_fail_closed_never_repaired() {
 #[test]
 fn an_integer_written_with_a_zero_fraction_is_accepted_unchanged() {
     let calls = decode_calls(
-        r#"<<call create_calendar_event {"title":"t","start":"s","duration_min":30.0}>>"#,
+        r#"<<call create_calendar_event {"title":"t","start":"2026-10-05T15:00:00+05:30","duration_min":30.0}>>"#,
         &tools(),
     )
     .unwrap();
     assert_eq!(
         calls[0].arguments_json(),
-        r#"{"duration_min":30.0,"start":"s","title":"t"}"#
+        r#"{"duration_min":30.0,"start":"2026-10-05T15:00:00+05:30","title":"t"}"#
     );
 }
 
@@ -200,7 +200,7 @@ fn broken_markers_are_errors_not_text() {
 fn valid_json_without_the_closing_marker_is_not_accepted() {
     assert_eq!(code(r#"<<call ping {}"#), "invalid_arguments");
     assert_eq!(
-        code(r#"<<call create_calendar_event {"title":"t","start":"s"}"#),
+        code(r#"<<call create_calendar_event {"title":"t","start":"2026-10-05T15:00:00+05:30"}"#),
         "invalid_arguments"
     );
 }
@@ -222,7 +222,7 @@ fn look_alike_markers_stay_plain_text() {
 
 #[test]
 fn whitespace_inside_the_marker_may_be_tabs_and_newlines() {
-    let text = "<<call\tcreate_calendar_event\r\n{\"title\": \"t\",\n \"start\": \"s\"}\n>>";
+    let text = "<<call\tcreate_calendar_event\r\n{\"title\": \"t\",\n \"start\": \"2026-10-05T15:00:00+05:30\"}\n>>";
     assert_eq!(decode_calls(text, &tools()).unwrap().len(), 1);
 }
 

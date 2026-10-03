@@ -338,6 +338,8 @@ async fn chat_core(
         nasiko.compress.bytes_out = tracing::field::Empty,
         nasiko.compress.elapsed_us = tracing::field::Empty,
         nasiko.brevity.applied = brevity.is_ok(),
+        nasiko.compact_tools.applied = compact_tools.is_ok(),
+        nasiko.compact_tools.native_retry = tracing::field::Empty,
         // The cache classes are recorded too, or the trace-derived cost of a
         // cached call is wrong in a way nothing downstream can detect: an
         // absent cache attribute is indistinguishable from a cache miss, so the
@@ -399,6 +401,7 @@ async fn chat_core(
             %error,
             "compact_tools: reply did not decode; sending the native request instead"
         );
+        llm_span.record("nasiko.compact_tools.native_retry", true);
         let failed_usage = resp.usage.take();
         let (native, effective) =
             fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, session.native_request())

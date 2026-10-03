@@ -44,8 +44,10 @@ annotations = annotation { ", " annotation } ;
   schema's `required` array, so that order survives the round trip. Optional properties follow
   in key order.
 - **`datetime`, `date` and `time`** stand for `string` with that `format`. Any other format is
-  written `string<email>`, `integer<int64>` and so on. `format` is an annotation, not an
-  assertion.
+  written `string<email>`, `integer<int64>` and so on.
+  - Decoding checks `date-time`, `date` and `time` values for ISO 8601 / RFC 3339 shape, so
+    "next Monday" is rejected. The offset is optional.
+  - Every other format is an annotation, as JSON Schema specifies.
 - **A type is either a union or an enum.**
   - If every alternative is a type keyword, it is a type union: `string|null`, `string[]|null`.
   - Otherwise the alternatives are enum values. A value is written bare when it is a plain word

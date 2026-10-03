@@ -51,6 +51,7 @@ fn check(node: &Node, value: &Value, path: &str) -> Result<(), Violation> {
         return Err(violation(path, ArgumentFault::ConstMismatch));
     }
     check_bounds(&node.bounds, value, path)?;
+    check_format(node.format.as_deref(), value, path)?;
     match value {
         Value::Array(items) => {
             if let Some(item) = &node.items {
@@ -91,6 +92,88 @@ fn kind_matches(kind: Kind, value: &Value) -> bool {
         Kind::Object => value.is_object(),
         Kind::Array => value.is_array(),
     }
+}
+
+/// `date-time`, `date` and `time` are checked for ISO 8601 / RFC 3339 shape, so "next Monday"
+/// can never pass as a timestamp. The offset is optional (a model that omits it wrote a valid
+/// local time, and callers decide how to read it). Every other format is an annotation, as JSON
+/// Schema specifies.
+fn check_format(format: Option<&str>, value: &Value, path: &str) -> Result<(), Violation> {
+    let (Some(format), Value::String(s)) = (format, value) else {
+        return Ok(());
+    };
+    let valid = match format {
+        "date-time" => is_date_time(s),
+        "date" => is_date(s),
+        "time" => is_time(s),
+        _ => true,
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(violation(
+            path,
+            ArgumentFault::Constraint { keyword: "format" },
+        ))
+    }
+}
+
+fn digits(s: &str, from: usize, len: usize) -> Option<u32> {
+    let part = s.get(from..from + len)?;
+    part.bytes()
+        .all(|b| b.is_ascii_digit())
+        .then(|| part.parse().ok())
+        .flatten()
+}
+
+fn is_date(s: &str) -> bool {
+    s.len() == 10
+        && s.as_bytes().get(4) == Some(&b'-')
+        && s.as_bytes().get(7) == Some(&b'-')
+        && digits(s, 0, 4).is_some()
+        && digits(s, 5, 2).is_some_and(|m| (1..=12).contains(&m))
+        && digits(s, 8, 2).is_some_and(|d| (1..=31).contains(&d))
+}
+
+/// `HH:MM[:SS[.fraction]][Z|±HH:MM]`.
+fn is_time(s: &str) -> bool {
+    let hour_minute = s.as_bytes().get(2) == Some(&b':')
+        && digits(s, 0, 2).is_some_and(|h| h <= 23)
+        && digits(s, 3, 2).is_some_and(|m| m <= 59);
+    if !hour_minute {
+        return false;
+    }
+    let mut rest = s.get(5..).unwrap_or_default();
+    if let Some(after) = rest.strip_prefix(':') {
+        if digits(after, 0, 2).is_none_or(|sec| sec > 60) {
+            return false;
+        }
+        rest = after.get(2..).unwrap_or_default();
+        if let Some(fraction) = rest.strip_prefix('.') {
+            let len = fraction.bytes().take_while(u8::is_ascii_digit).count();
+            if len == 0 {
+                return false;
+            }
+            rest = fraction.get(len..).unwrap_or_default();
+        }
+    }
+    match rest {
+        "" | "Z" | "z" => true,
+        offset => {
+            matches!(offset.as_bytes().first(), Some(b'+' | b'-'))
+                && offset.len() == 6
+                && offset.as_bytes().get(3) == Some(&b':')
+                && digits(offset, 1, 2).is_some_and(|h| h <= 23)
+                && digits(offset, 4, 2).is_some_and(|m| m <= 59)
+        }
+    }
+}
+
+fn is_date_time(s: &str) -> bool {
+    let separator = s.as_bytes().get(10);
+    matches!(separator, Some(b'T' | b't' | b' '))
+        && s.get(..10).is_some_and(is_date)
+        && s.get(11..).is_some_and(is_time)
 }
 
 fn check_bounds(b: &Bounds, value: &Value, path: &str) -> Result<(), Violation> {
@@ -543,9 +626,39 @@ mod tests {
     }
 
     #[test]
-    fn format_is_an_annotation_not_an_assertion() {
+    fn date_time_formats_are_checked_for_shape_with_an_optional_offset() {
         let schema = one_prop(json!({"type": "string", "format": "date-time"}));
-        assert_eq!(fault(schema, json!({"v": "next Tuesday"})), None);
+        for ok in [
+            "2026-10-05T15:00:00+05:30",
+            "2026-10-05T15:00:00Z",
+            "2026-10-05T15:00:00.250-07:00",
+            "2026-10-05T15:00",
+            "2026-10-05 15:00:00",
+        ] {
+            assert_eq!(fault(schema.clone(), json!({ "v": ok })), None, "{ok}");
+        }
+        for bad in [
+            "next Tuesday",
+            "2026-13-05T15:00:00",
+            "2026-10-05",
+            "15:00",
+            "2026-10-05T25:00",
+        ] {
+            assert_eq!(
+                fault(schema.clone(), json!({ "v": bad })),
+                Some(("/v".into(), ArgumentFault::Constraint { keyword: "format" })),
+                "{bad}"
+            );
+        }
+        let date = one_prop(json!({"type": "string", "format": "date"}));
+        assert_eq!(fault(date.clone(), json!({"v": "2026-10-04"})), None);
+        assert!(fault(date, json!({"v": "Oct 4"})).is_some());
+    }
+
+    #[test]
+    fn other_formats_are_annotations() {
+        let schema = one_prop(json!({"type": "string", "format": "email"}));
+        assert_eq!(fault(schema, json!({"v": "not an email"})), None);
     }
 
     #[test]

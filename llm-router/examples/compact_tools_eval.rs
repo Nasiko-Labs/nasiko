@@ -47,51 +47,97 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const LIVE_BUDGET: Duration = Duration::from_secs(12 * 60);
 const RATE_LIMIT_RETRIES: [u64; 3] = [2, 5, 10];
 
+/// The eval file. Cases are read one by one, so one malformed case becomes an error line
+/// instead of failing the whole run.
 #[derive(Deserialize)]
 struct EvalSet {
     #[serde(default)]
-    tools: Vec<Value>,
+    tools: Option<Vec<Value>>,
     #[serde(default)]
-    cases: Vec<Case>,
+    cases: Option<Vec<Value>>,
     #[serde(default)]
-    decoder_cases: Vec<DecoderCase>,
+    decoder_cases: Option<Vec<Value>>,
 }
 
 #[derive(Deserialize)]
 struct Case {
+    #[serde(deserialize_with = "id_text")]
     id: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "or_default")]
     tools: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "or_default")]
     messages: Vec<Value>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "or_default")]
     expected: Vec<ExpectedCall>,
-    #[serde(default, rename = "match")]
+    #[serde(default, rename = "match", deserialize_with = "or_default")]
     match_rules: MatchRules,
 }
 
 #[derive(Deserialize)]
 struct ExpectedCall {
     name: String,
+    /// An object, or the OpenAI-style JSON string of one.
     #[serde(default)]
-    arguments: Map<String, Value>,
+    arguments: Value,
+}
+
+impl ExpectedCall {
+    fn to_call(&self) -> Option<ToolCall> {
+        let arguments = match &self.arguments {
+            Value::Object(map) => map.clone(),
+            Value::String(text) => serde_json::from_str(text).ok()?,
+            Value::Null => Map::new(),
+            _ => return None,
+        };
+        Some(ToolCall {
+            name: self.name.clone(),
+            arguments,
+        })
+    }
 }
 
 #[derive(Deserialize, Default)]
 struct MatchRules {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "or_default")]
     free_text_fields: Vec<String>,
 }
 
 #[derive(Deserialize)]
 struct DecoderCase {
+    #[serde(deserialize_with = "id_text")]
     id: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "or_default")]
     tools: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "or_default")]
     chunks: Vec<String>,
     #[serde(default)]
     expected: Option<Value>,
+}
+
+/// `null` reads as the field's default.
+fn or_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    Option::<T>::deserialize(deserializer).map(Option::unwrap_or_default)
+}
+
+/// Ids are echoed as given; a numeric id is accepted and written as text.
+fn id_text<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    Ok(match Value::deserialize(deserializer)? {
+        Value::String(s) => s,
+        other => other.to_string(),
+    })
+}
+
+fn unreadable(item: &Value, error: serde_json::Error) -> Value {
+    let id = match item.get("id") {
+        Some(Value::String(s)) => json!(s),
+        Some(other) => json!(other.to_string()),
+        None => Value::Null,
+    };
+    json!({"id": id, "error": "unreadable_case", "error_detail": error.to_string()})
 }
 
 /// One tool from the file: as the crate reads it, and exactly as written (for native requests).
@@ -117,21 +163,31 @@ async fn main() {
         }
     };
 
-    let tools = index_tools(&set.tools);
+    let tools = index_tools(&set.tools.unwrap_or_default());
     let date_line = reference_date_line();
     let mut live = Live::from_env();
     let mut stats = Stats::default();
-    let mut lines = Vec::with_capacity(set.cases.len() + set.decoder_cases.len());
+    let mut lines = Vec::new();
 
-    for case in &set.cases {
-        let mut line = run_case(case, &tools, &date_line, &mut stats);
+    for item in set.cases.unwrap_or_default() {
+        let case: Case = match serde_json::from_value(item.clone()) {
+            Ok(case) => case,
+            Err(e) => {
+                lines.push(unreadable(&item, e));
+                continue;
+            }
+        };
+        let mut line = run_case(&case, &tools, &date_line, &mut stats);
         if let Some(live) = live.as_mut() {
-            live.run_case(case, &tools, &date_line, &mut line).await;
+            live.run_case(&case, &tools, &date_line, &mut line).await;
         }
         lines.push(line);
     }
-    for case in &set.decoder_cases {
-        lines.push(run_decoder_case(case, &tools, &mut stats));
+    for item in set.decoder_cases.unwrap_or_default() {
+        match serde_json::from_value::<DecoderCase>(item.clone()) {
+            Ok(case) => lines.push(run_decoder_case(&case, &tools, &mut stats)),
+            Err(e) => lines.push(unreadable(&item, e)),
+        }
     }
 
     let body: String = lines.iter().map(|l| format!("{l}\n")).collect();
@@ -211,21 +267,31 @@ fn run_case(
     let expected: Vec<ToolCall> = case
         .expected
         .iter()
-        .map(|c| ToolCall {
-            name: c.name.clone(),
-            arguments: c.arguments.clone(),
-        })
+        .filter_map(ExpectedCall::to_call)
         .collect();
     let rendered = render_calls(&expected);
     let roundtrip = decode_calls(&rendered, &defs);
     stats.roundtrip(&case.id, &roundtrip, &expected, &case.match_rules);
     line.insert("rendered_calls".into(), json!(rendered));
-    line.insert("roundtrip_calls".into(), calls_or_error(&roundtrip));
+    // Always a list, so a consumer can read it without checking its shape; a decode failure is
+    // reported beside it.
+    match &roundtrip {
+        Ok(calls) => {
+            line.insert("roundtrip_calls".into(), calls_json(calls));
+        }
+        Err(e) => {
+            line.insert("roundtrip_calls".into(), json!([]));
+            line.insert("roundtrip_error".into(), error_json(e));
+        }
+    }
     Value::Object(line)
 }
 
 /// Why a case must go out natively before the schemas are even looked at.
 fn compaction_blocker(case: &Case, selected: &[&Tool], defs: &[ToolDef]) -> Option<String> {
+    if case.tools.is_empty() {
+        return Some("no_tools".into());
+    }
     if selected.len() != case.tools.len() || defs.len() != selected.len() {
         return Some("unknown_or_non_function_tool".into());
     }
@@ -253,6 +319,10 @@ fn native_request(messages: &[Value], tools: &[&Tool], date_line: Option<&str>) 
     }
     all.extend(messages.iter().cloned());
     let raw: Vec<Value> = tools.iter().map(|t| t.raw.clone()).collect();
+    if raw.is_empty() {
+        // Providers reject an empty `tools` array; a request without tools simply has none.
+        return json!({ "messages": all });
+    }
     json!({"messages": all, "tools": raw})
 }
 
@@ -278,15 +348,13 @@ fn compact_request(messages: &[Value], compact: &CompactTools, date_line: &str) 
 fn decoded_tools(compact: &CompactTools) -> Value {
     match decode_tools(compact) {
         Ok(tools) => serde_json::to_value(tools).unwrap_or(Value::Null),
-        Err(e) => json!({"error": e.code(), "error_detail": e.to_string()}),
+        Err(e) => error_json(&e),
     }
 }
 
-fn calls_or_error(result: &Result<Vec<ToolCall>, CompactError>) -> Value {
-    match result {
-        Ok(calls) => calls_json(calls),
-        Err(e) => json!({"error": e.code(), "error_detail": e.to_string()}),
-    }
+/// The one error shape this harness writes: the stable code plus a human-readable detail.
+fn error_json(error: &CompactError) -> Value {
+    json!({"error": error.code(), "error_detail": error.to_string()})
 }
 
 fn calls_json(calls: &[ToolCall]) -> Value {
@@ -507,7 +575,10 @@ impl Live {
                 line["live_calls"] = if compacted {
                     match decode_reply(&reply.text, &defs) {
                         Ok(decoded) => json!({ "calls": calls_json(&decoded.calls) }),
-                        Err(e) => json!({"error": e.code(), "error_detail": e.to_string()}),
+                        Err(e) => {
+                            line["live_error_detail"] = json!(e.to_string());
+                            json!({ "error": e.code() })
+                        }
                     }
                 } else {
                     native_calls(&reply.tool_calls)

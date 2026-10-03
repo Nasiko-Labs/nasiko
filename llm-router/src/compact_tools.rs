@@ -120,6 +120,9 @@ pub(crate) fn apply(
     let native = req.clone();
     req.tools = None;
     req.tool_choice = None;
+    // OpenAI rejects `parallel_tool_calls` once `tools` is gone ("only allowed when tools are
+    // specified"). `false` already bypassed above; `true` is what the grammar does anyway.
+    req.extra.remove("parallel_tool_calls");
     // Leading, so the definitions sit in the stable prefix providers cache on; author-written
     // messages are left byte-identical.
     req.messages
@@ -188,6 +191,14 @@ pub(crate) fn add_failed_attempt_usage(usage: &mut Option<Usage>, failed: Option
     total.prompt_tokens = sum(total.prompt_tokens, failed.prompt_tokens);
     total.completion_tokens = sum(total.completion_tokens, failed.completion_tokens);
     total.total_tokens = sum(total.total_tokens, failed.total_tokens);
+    total.cache_read_input_tokens = sum(
+        total.cache_read_input_tokens,
+        failed.cache_read_input_tokens,
+    );
+    total.cache_creation_input_tokens = sum(
+        total.cache_creation_input_tokens,
+        failed.cache_creation_input_tokens,
+    );
 }
 
 fn to_compact_tool(tool: &ToolDef) -> Option<nasiko_tool_compact::ToolDef> {
@@ -460,6 +471,20 @@ mod tests {
     }
 
     #[test]
+    fn parallel_tool_calls_true_is_dropped_with_the_tools_but_kept_for_the_native_retry() {
+        let mut req = request();
+        req.extra.insert("parallel_tool_calls".into(), json!(true));
+
+        let session = apply(&mut req, &cfg(true), &resolved(true)).unwrap();
+
+        assert!(!req.extra.contains_key("parallel_tool_calls"));
+        assert_eq!(
+            session.native_request().extra.get("parallel_tool_calls"),
+            Some(&json!(true))
+        );
+    }
+
+    #[test]
     fn a_compact_call_becomes_a_standard_tool_call() {
         let session = apply(&mut request(), &cfg(true), &resolved(true)).unwrap();
         let mut resp = reply(r#"<<call get_weather {"city":"Paris","unit":"celsius"}>>"#);
@@ -524,6 +549,7 @@ mod tests {
             prompt_tokens: Some(120),
             completion_tokens: Some(15),
             total_tokens: Some(135),
+            cache_read_input_tokens: Some(64),
             ..Default::default()
         });
         add_failed_attempt_usage(&mut usage, failed);
@@ -531,6 +557,11 @@ mod tests {
         assert_eq!(usage.prompt_tokens, Some(420));
         assert_eq!(usage.completion_tokens, Some(35));
         assert_eq!(usage.total_tokens, Some(455));
+        assert_eq!(
+            usage.cache_read_input_tokens,
+            Some(64),
+            "cache reads billed too"
+        );
     }
 
     #[test]

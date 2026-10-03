@@ -19,8 +19,8 @@ fn corpus() -> Vec<&'static str> {
         r#"<<call tracker.create_ticket {"title":"t","priority":"high","assignee":{"name":"D"}}>>"#,
         // failures
         r#"<<call delete_everything {}>>"#,
-        r#"<<call create_calendar_event {"start":"s","visibility":"secret"}>>"#,
-        r#"<<call create_calendar_event {"title":"t","start":"s"}"#,
+        r#"<<call create_calendar_event {"start":"2026-10-05T15:00:00+05:30","visibility":"secret"}>>"#,
+        r#"<<call create_calendar_event {"title":"t","start":"2026-10-05T15:00:00+05:30"}"#,
         r#"<<call ping {"a":1,}>>"#,
         "<<call>>",
         "<<call ping",

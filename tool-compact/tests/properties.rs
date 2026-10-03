@@ -240,7 +240,7 @@ proptest! {
         prop_assume!(value != "public" && value != "private");
         let text = render_calls(&[ToolCall {
             name: "create_calendar_event".into(),
-            arguments: as_args(json!({"title": "t", "start": "s", "visibility": value})),
+            arguments: as_args(json!({"title": "t", "start": "2026-10-05T15:00:00+05:30", "visibility": value})),
         }]);
         prop_assert_eq!(decode_calls(&text, &common::tools()).unwrap_err().code(), "invalid_arguments");
     }
@@ -256,7 +256,7 @@ proptest! {
     ]) {
         let text = render_calls(&[ToolCall {
             name: "create_calendar_event".into(),
-            arguments: as_args(json!({"title": "t", "start": "s", "duration_min": value})),
+            arguments: as_args(json!({"title": "t", "start": "2026-10-05T15:00:00+05:30", "duration_min": value})),
         }]);
         prop_assert_eq!(decode_calls(&text, &common::tools()).unwrap_err().code(), "invalid_arguments");
     }
