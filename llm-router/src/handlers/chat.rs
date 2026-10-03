@@ -288,6 +288,20 @@ async fn chat_core(
         "brevity: directive decision"
     );
 
+    // ── compact tool schemas (P1, opt-in) ─────────────────────────────────────────────────
+    // Default off. When enabled, replaces native `tools` JSON Schema with a compact prompt and
+    // later rehydrates `<<call>>` markers into standard OpenAI tool_calls for the client.
+    let compact_tools = crate::tool_compact::apply(&mut req, &ctx.cfg);
+    let compact_tools_metadata = crate::tool_compact::to_metadata(&compact_tools);
+    tracing::debug!(
+        target: "nasiko::llm_router::tool_compact",
+        %agent_id,
+        applied = compact_tools.is_ok(),
+        skipped = ?compact_tools.as_ref().err(),
+        metadata = %compact_tools_metadata,
+        "tool_compact: schema decision"
+    );
+
     tracing::info!(
         target: "nasiko::llm_router::chat",
         %agent_id,
@@ -359,9 +373,13 @@ async fn chat_core(
     }
 
     // Non-streaming: run with ordered fallbacks; usage records the effective provider/model.
-    let (resp, (provider, model)) = fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
-        .instrument(llm_span.clone())
-        .await?;
+    let (mut resp, (provider, model)) =
+        fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
+            .instrument(llm_span.clone())
+            .await?;
+    if let Ok(ref applied) = compact_tools {
+        crate::tool_compact::materialize_response(&mut resp, applied);
+    }
     let latency_ms = started.elapsed().as_millis() as i64;
 
     // Record effective model and token usage on the server-side gen_ai span.

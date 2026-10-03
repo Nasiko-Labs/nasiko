@@ -39,6 +39,7 @@ pub mod providers;
 pub mod recovery;
 pub mod resolver;
 pub mod routing;
+mod tool_compact;
 pub mod usage;
 
 pub use config::GatewayConfig;
