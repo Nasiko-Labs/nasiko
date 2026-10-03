@@ -572,6 +572,7 @@ mod tests {
             platform_paid: true,
             custom_endpoint: None,
             is_coding_agent: false,
+            tool_compact_enabled: false,
         }
     }
 

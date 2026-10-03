@@ -4,6 +4,7 @@ members = [
     # ─── OSS crates ─────────────────────────────────────────────────────────
     "auth",
     "compress",
+    "tool-compact",
     "config",
     "secrets",
     "observability",
@@ -36,6 +37,7 @@ version = "0.1.0"
 # ─── Internal OSS crates ────────────────────────────────────────────────────
 nasiko-auth = { path = "auth" }
 nasiko-compress = { path = "compress" }
+nasiko-tool-compact = { path = "tool-compact" }
 nasiko-config = { path = "config" }
 nasiko-pricing = { path = "pricing" }
 nasiko-savings = { path = "savings" }
@@ -132,6 +134,9 @@ hmac = "0.12"
 hex = "0.4"
 rand = "0.9"
 rand_distr = "0.5"
+
+# ─── Token measurement (dev only) ──────────────────────────────────────────
+tiktoken-rs = "0.6"
 
 # ─── Temp filesystem ────────────────────────────────────────────────────────
 tempfile = "3"

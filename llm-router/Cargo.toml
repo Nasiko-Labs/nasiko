@@ -12,6 +12,10 @@ path = "src/lib.rs"
 name = "llm-router"
 path = "src/bin/llm-router.rs"
 
+[features]
+default = []
+tool-compact = ["dep:nasiko-tool-compact"]
+
 [dependencies]
 # Internal — AES-GCM (per-user HKDF) decrypt of user_secrets via try_for_user
 nasiko-secrets.workspace = true
@@ -19,6 +23,8 @@ nasiko-pricing.workspace = true
 nasiko-savings.workspace = true
 # Internal — structural payload compression at the egress seam (src/compress.rs)
 nasiko-compress.workspace = true
+# Optional — tool schema compaction (behind feature flag)
+nasiko-tool-compact = { workspace = true, optional = true }
 
 # Web / async
 axum = { workspace = true }
@@ -67,3 +73,4 @@ base64 = { workspace = true }
 mockito = { workspace = true }
 tower = { workspace = true }
 zstd.workspace = true
+nasiko-tool-compact.workspace = true

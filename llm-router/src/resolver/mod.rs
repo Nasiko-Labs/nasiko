@@ -64,6 +64,10 @@ pub struct LLMConfig {
     pub tier2_model: Option<String>,
     #[serde(default)]
     pub tier3_model: Option<String>,
+    /// Whether to compact tool schemas before sending to providers (experimental).
+    /// Default off — opt-in per agent when the tool-compact feature is built.
+    #[serde(default)]
+    pub tool_compact_enabled: bool,
 }
 
 /// The resolved call configuration handed to the provider client.
@@ -106,6 +110,9 @@ pub struct ResolvedConfig {
     /// Whether this agent opted into payload compression. Per-agent by design: compression
     /// changes what the model sees, so its blast radius is one agent. See `crate::compress`.
     pub compress_enabled: bool,
+    /// Whether this agent opted into tool schema compaction (experimental, behind feature flag).
+    /// Like compression, this is per-agent: it changes what the model sees.
+    pub tool_compact_enabled: bool,
 }
 
 /// What the incoming request itself asked for, used **only** when the agent has no
@@ -232,11 +239,13 @@ type ConfigRow = (
     Option<String>,                 // tier1_model
     Option<String>,                 // tier2_model
     Option<String>,                 // tier3_model
+    bool,                           // tool_compact_enabled
 );
 
 /// The `llm_configs` columns the resolver reads, in [`ConfigRow`] order.
 const CONFIG_COLS: &str = "provider, model, fallback_models, temperature, max_tokens, \
-     api_key_secret_name, pinned, pinned_model, tier1_model, tier2_model, tier3_model";
+     api_key_secret_name, pinned, pinned_model, tier1_model, tier2_model, tier3_model, \
+     COALESCE(tool_compact_enabled, false)";
 
 fn row_to_config(r: ConfigRow) -> LLMConfig {
     LLMConfig {
@@ -251,6 +260,7 @@ fn row_to_config(r: ConfigRow) -> LLMConfig {
         tier1_model: r.8,
         tier2_model: r.9,
         tier3_model: r.10,
+        tool_compact_enabled: r.11,
     }
 }
 
@@ -410,6 +420,7 @@ pub async fn resolve(
     let agent_pinned_model = agent_result.agent_pinned_model;
     let is_coding_agent = agent_result.is_coding_agent;
     let compress_enabled = agent_result.compress_enabled;
+    let tool_compact_enabled = llm_config.as_ref().is_some_and(|c| c.tool_compact_enabled);
     let has_llm_config = llm_config.is_some();
     let secret_name = plan_secret_name(&llm_config);
 
@@ -477,6 +488,7 @@ pub async fn resolve(
         }),
         is_coding_agent,
         compress_enabled,
+        tool_compact_enabled,
     };
     tracing::info!(
         target: "nasiko::llm_router::resolver",
@@ -814,6 +826,7 @@ mod tests {
             tier1_model: None,
             tier2_model: None,
             tier3_model: None,
+            tool_compact_enabled: false,
         }
     }
 

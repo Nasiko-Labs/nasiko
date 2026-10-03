@@ -1011,6 +1011,7 @@ mod tests {
                     tier1_model: None,
                     tier2_model: None,
                     tier3_model: None,
+                    tool_compact_enabled: false,
                 }),
                 agent_pinned_model: None,
                 is_coding_agent: true,
@@ -1490,6 +1491,7 @@ mod tests {
             custom_endpoint: None,
             is_coding_agent: false,
             compress_enabled: false,
+            tool_compact_enabled: false,
         };
         let routed = RoutedRequest {
             agent_id: AGENT.into(),
@@ -1878,6 +1880,7 @@ mod tests {
                 custom_endpoint: None,
                 is_coding_agent: false,
                 compress_enabled: false,
+                tool_compact_enabled: false,
             },
             flow_id: None,
             attribution_source: None,

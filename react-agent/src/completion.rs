@@ -105,6 +105,7 @@ impl UsageModel {
                 // This is the orchestrator's own call against the provider, made from
                 // `OrchestratorConfig` with no agent row behind it, so nothing opted in.
                 compress_enabled: false,
+                tool_compact_enabled: false,
             },
             identity,
         })

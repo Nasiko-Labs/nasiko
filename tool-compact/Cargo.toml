@@ -1,0 +1,17 @@
+[package]
+name = "nasiko-tool-compact"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+# Deterministic hashing for cacheable compact IDs (CT-xxxx).
+sha2 = { workspace = true }
+# Hex encoding for compact ID display.
+hex = { workspace = true }
+
+[dev-dependencies]
+# Property-based testing for stream decoder split-marker robustness.
+proptest = "1"

@@ -318,6 +318,7 @@ pub(crate) fn build_attempts(primary: &ResolvedConfig, cfg: &GatewayConfig) -> V
             custom_endpoint,
             is_coding_agent: primary.is_coding_agent,
             compress_enabled: primary.compress_enabled,
+            tool_compact_enabled: primary.tool_compact_enabled,
         });
     }
     attempts
@@ -361,6 +362,7 @@ mod tests {
             custom_endpoint: None,
             is_coding_agent: false,
             compress_enabled: false,
+            tool_compact_enabled: false,
         }
     }
 
@@ -616,6 +618,7 @@ mod tests {
             custom_endpoint: None,
             is_coding_agent: false,
             compress_enabled: false,
+            tool_compact_enabled: false,
         };
         let req: ChatRequest =
             serde_json::from_value(json!({ "messages": [{ "role": "user", "content": "hi" }] }))
@@ -671,6 +674,7 @@ mod tests {
             custom_endpoint: None,
             is_coding_agent: false,
             compress_enabled: false,
+            tool_compact_enabled: false,
         };
         let req: EmbeddingsRequest =
             serde_json::from_value(json!({ "model": "x", "input": "hi" })).unwrap();
@@ -750,6 +754,7 @@ mod tests {
             custom_endpoint: None,
             is_coding_agent: false,
             compress_enabled: false,
+            tool_compact_enabled: false,
         };
         let req: ChatRequest =
             serde_json::from_value(json!({ "messages": [{ "role": "user", "content": "hi" }] }))
@@ -827,6 +832,7 @@ mod tests {
             custom_endpoint: None,
             is_coding_agent: false,
             compress_enabled: false,
+            tool_compact_enabled: false,
         };
         let req: ChatRequest = serde_json::from_value(json!({
             "temperature": 0.7,
@@ -877,6 +883,7 @@ mod tests {
             custom_endpoint: None,
             is_coding_agent: false,
             compress_enabled: false,
+            tool_compact_enabled: false,
         };
         let req: ChatRequest =
             serde_json::from_value(json!({ "messages": [{ "role": "user", "content": "hi" }] }))

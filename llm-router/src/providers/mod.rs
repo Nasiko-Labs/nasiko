@@ -290,6 +290,7 @@ mod tests {
                 dialect,
             }),
             is_coding_agent: false,
+            tool_compact_enabled: false,
         }
     }
 

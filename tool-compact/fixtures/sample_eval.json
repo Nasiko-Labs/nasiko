@@ -1,0 +1,197 @@
+[
+  {
+    "name": "simple_search",
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "search_web",
+          "description": "Search the web for information.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "query": { "type": "string" }
+            },
+            "required": ["query"]
+          }
+        }
+      }
+    ],
+    "simulated_calls": [
+      { "tool": "search_web", "args": { "query": "Rust programming language" } }
+    ]
+  },
+  {
+    "name": "multi_field_with_enum",
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "translate_text",
+          "description": "Translate text between languages. Supports common language pairs.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "text": { "type": "string" },
+              "source_lang": { "type": "string", "enum": ["en", "fr", "de", "es", "ja"] },
+              "target_lang": { "type": "string", "enum": ["en", "fr", "de", "es", "ja"] },
+              "formal": { "type": "boolean" }
+            },
+            "required": ["text", "target_lang"]
+          }
+        }
+      }
+    ],
+    "simulated_calls": [
+      { "tool": "translate_text", "args": { "text": "Hello, world!", "target_lang": "fr" } }
+    ]
+  },
+  {
+    "name": "array_field",
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "batch_delete",
+          "description": "Delete multiple items by their IDs.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "ids": { "type": "array", "items": { "type": "string" } },
+              "force": { "type": "boolean" }
+            },
+            "required": ["ids"]
+          }
+        }
+      }
+    ],
+    "simulated_calls": [
+      { "tool": "batch_delete", "args": { "ids": ["abc-123", "def-456"], "force": true } }
+    ]
+  },
+  {
+    "name": "multiple_tools",
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "get_weather",
+          "description": "Get current weather for a location.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "location": { "type": "string" },
+              "units": { "type": "string", "enum": ["celsius", "fahrenheit"] }
+            },
+            "required": ["location"]
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "set_reminder",
+          "description": "Set a reminder for a specific time.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "message": { "type": "string" },
+              "time": { "type": "string" },
+              "repeat": { "type": "boolean" }
+            },
+            "required": ["message", "time"]
+          }
+        }
+      }
+    ],
+    "simulated_calls": [
+      { "tool": "get_weather", "args": { "location": "Tokyo", "units": "celsius" } }
+    ]
+  },
+  {
+    "name": "no_params_tool",
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "get_server_status",
+          "description": "Check the current server status. Takes no parameters."
+        }
+      }
+    ],
+    "simulated_calls": [
+      { "tool": "get_server_status", "args": {} }
+    ]
+  },
+  {
+    "name": "complex_bypass",
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "dynamic_input",
+          "description": "Accepts either a string or a structured object.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "input": {
+                "oneOf": [
+                  { "type": "string" },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "format": { "type": "string" },
+                      "data": { "type": "string" }
+                    }
+                  }
+                ]
+              }
+            },
+            "required": ["input"]
+          }
+        }
+      }
+    ],
+    "simulated_calls": [
+      { "tool": "dynamic_input", "args": { "input": "raw text" } }
+    ]
+  },
+  {
+    "name": "nested_object",
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "create_user",
+          "description": "Create a new user account with address.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "email": { "type": "string" },
+              "address": {
+                "type": "object",
+                "properties": {
+                  "street": { "type": "string" },
+                  "city": { "type": "string" },
+                  "country": { "type": "string" }
+                }
+              }
+            },
+            "required": ["name", "email"]
+          }
+        }
+      }
+    ],
+    "simulated_calls": [
+      {
+        "tool": "create_user",
+        "args": {
+          "name": "Alice",
+          "email": "alice@example.com",
+          "address": { "street": "123 Main St", "city": "Springfield", "country": "US" }
+        }
+      }
+    ]
+  }
+]
