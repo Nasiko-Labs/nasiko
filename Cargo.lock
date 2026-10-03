@@ -3586,6 +3586,7 @@ dependencies = [
  "nasiko-pricing",
  "nasiko-savings",
  "nasiko-secrets",
+ "nasiko-tool-compact",
  "rand 0.9.5",
  "rand_distr",
  "redis",
@@ -3875,6 +3876,16 @@ dependencies = [
  "utoipa-swagger-ui",
  "uuid",
  "zip 2.4.2",
+]
+
+[[package]]
+name = "nasiko-tool-compact"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "uuid",
 ]
 
 [[package]]

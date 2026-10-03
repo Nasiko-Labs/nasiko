@@ -13,6 +13,7 @@ name = "llm-router"
 path = "src/bin/llm-router.rs"
 
 [dependencies]
+nasiko-tool-compact = { path = "../tool-compact" }
 # Internal — AES-GCM (per-user HKDF) decrypt of user_secrets via try_for_user
 nasiko-secrets.workspace = true
 nasiko-pricing.workspace = true

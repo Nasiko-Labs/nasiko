@@ -1,0 +1,11 @@
+[package]
+name = "nasiko-tool-compact"
+version = "0.1.0"
+edition = "2021"
+description = "Compact tool schema format and streaming-safe <<call>> decoder for nasiko-llm-router"
+
+[dependencies]
+serde      = { workspace = true }
+serde_json = { workspace = true }
+thiserror  = { workspace = true }
+uuid       = { workspace = true }
