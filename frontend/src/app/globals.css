@@ -1,0 +1,129 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --font-mono: 'JetBrains Mono', monospace, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New";
+  }
+
+  html,
+  body {
+    height: 100%;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    background-color: #050505;
+    color: #e5e5e5;
+    font-family: var(--font-mono);
+    overflow: hidden;
+  }
+}
+
+/* Hardware accelerated scroll container */
+.scroll-container {
+  will-change: scroll-position;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+}
+
+/* Custom sleek technical scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(10, 10, 10, 0.8);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 2px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.4);
+}
+
+/* Dither and stars backgrounds */
+.dither-pattern {
+  background-image: 
+    repeating-linear-gradient(0deg, transparent 0px, transparent 1px, rgba(255, 255, 255, 0.3) 1px, rgba(255, 255, 255, 0.3) 2px),
+    repeating-linear-gradient(90deg, transparent 0px, transparent 1px, rgba(255, 255, 255, 0.3) 1px, rgba(255, 255, 255, 0.3) 2px);
+  background-size: 3px 3px;
+}
+
+.stars-bg {
+  background-image: 
+    radial-gradient(1.5px 1.5px at 15% 25%, rgba(255, 255, 255, 0.85), transparent),
+    radial-gradient(2px 2px at 75% 35%, rgba(255, 255, 255, 0.8), transparent),
+    radial-gradient(1.5px 1.5px at 45% 65%, rgba(255, 255, 255, 0.9), transparent),
+    radial-gradient(2px 2px at 85% 15%, rgba(255, 255, 255, 0.75), transparent),
+    radial-gradient(1.5px 1.5px at 25% 85%, rgba(255, 255, 255, 0.85), transparent),
+    radial-gradient(2px 2px at 60% 90%, rgba(255, 255, 255, 0.7), transparent),
+    radial-gradient(1.2px 1.2px at 32% 14%, rgba(255, 255, 255, 0.65), transparent),
+    radial-gradient(1.8px 1.8px at 88% 72%, rgba(255, 255, 255, 0.8), transparent);
+  background-size: 100% 100%;
+  opacity: 0.55;
+}
+
+.grid-matrix-bg {
+  background-size: 32px 32px;
+  background-image: 
+    linear-gradient(to right, rgba(255, 255, 255, 0.05) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.05) 1px, transparent 1px);
+}
+
+/* Unicorn Studio canvas branding suppression */
+[data-us-project] {
+  position: relative !important;
+  overflow: hidden !important;
+}
+
+[data-us-project] canvas {
+  clip-path: inset(0 0 10% 0) !important;
+}
+
+[data-us-project] * {
+  pointer-events: none !important;
+}
+
+[data-us-project] a[href*="unicorn"],
+[data-us-project] button[title*="unicorn"],
+[data-us-project] div[title*="Made with"],
+[data-us-project] .unicorn-brand,
+[data-us-project] [class*="brand"],
+[data-us-project] [class*="credit"],
+[data-us-project] [class*="watermark"] {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+  position: absolute !important;
+  left: -9999px !important;
+  top: -9999px !important;
+}
+
+/* Reduced motion accessibility */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Next.js dev indicator and overlay suppression */
+nextjs-portal,
+#data-devtools-indicator,
+[data-nextjs-dev-tools],
+[data-next-badge],
+[data-nextjs-toast],
+.nextjs-container-build-error,
+div:has(> #data-devtools-indicator) {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
