@@ -26,6 +26,7 @@ members = [
     "github",
     "bench",
     "bench-support",
+    "tool-compact",
 ]
 
 [workspace.package]
@@ -56,8 +57,10 @@ nasiko-coding-policy = { path = "coding-policy" }
 nasiko-oci = { path = "oci" }
 nasiko-llm-router = { path = "llm-router" }
 nasiko-bench-support = { path = "bench-support" }
+nasiko-tool-compact = { path = "tool-compact" }
 
 # ─── Testing ────────────────────────────────────────────────────────────────
+proptest = "1.6"
 serial_test = "3"
 
 # ─── Async runtime & web ────────────────────────────────────────────────────
@@ -97,6 +100,7 @@ rustls = { version = "0.23", features = ["ring"] }
 # (rig-core-0.11.1/src/tool.rs). A `cargo update` under a caret range could silently
 # move that boxing behavior without anything here noticing.
 rig-core = { version = "=0.11.1", default-features = false, features = ["derive"] }
+tiktoken-rs = "=0.7.0"
 
 # ─── CLI ────────────────────────────────────────────────────────────────────
 toml_edit = "0.25"
