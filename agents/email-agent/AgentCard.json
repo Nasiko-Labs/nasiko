@@ -1,0 +1,75 @@
+{
+  "protocolVersion": "0.2.9",
+  "name": "Email Agent",
+  "description": "Email-focused LLM assistant that uses whatever email MCP tools (Gmail, Outlook, etc.) the Nasiko gateway exposes to read, search, draft, send, reply to, and organize email. Asks the user for missing information (TaskState.InputRequired) instead of guessing, and pauses for authorization (TaskState.AuthRequired) when a tool call needs approval it doesn't yet have. Its ask_human tool can also offer the user selectable single-select/multi-select options (with optional free-text custom input) instead of a bare free-text question.",
+  "url": "http://localhost:8011/",
+  "agentFramework": "a2a-sdk",
+  "preferredTransport": "JSONRPC",
+  "provider": { "organization": "Nasiko", "url": "https://nasiko.io" },
+  "version": "1.0.0",
+  "capabilities": {
+    "chat_agent": true,
+    "pushNotifications": false,
+    "stateTransitionHistory": false,
+    "streaming": true,
+    "hitl": true
+  },
+  "securitySchemes": {},
+  "security": [],
+  "defaultInputModes": ["text/plain"],
+  "defaultOutputModes": ["text/plain"],
+  "skills": [
+    {
+      "id": "email-assistant",
+      "name": "Email Assistant",
+      "description": "Reads, searches, drafts, sends, replies to, and organizes email using the email MCP tools available to it. Asks a clarifying question (InputRequired) when required details (recipient, subject, body, which message) are missing, and pauses for authorization (AuthRequired) when a tool call needs approval it doesn't have yet — reply on the same task to resume either way. When the valid answers form a fixed set, it asks with selectable options (single-select or multi-select, optionally with a free-text \"something else\") instead of a bare free-text question.",
+      "tags": ["email", "gmail", "outlook", "mcp", "hitl"],
+      "examples": [
+        "Draft a reply to the latest email from my manager",
+        "Send an email to the design team about tomorrow's review",
+        "Find emails from finance about the Q3 invoice",
+        "Archive all unread newsletters from this week"
+      ],
+      "inputModes": ["text/plain"],
+      "outputModes": ["text/plain"]
+    },
+    {
+      "id": "hitl-input-demo",
+      "name": "HITL Input-Required Fixture",
+      "description": "Deterministic, dependency-free trigger that always returns TaskState::InputRequired with a fixed question — for smoke-testing the platform's HITL wiring without an LLM or MCP gateway.",
+      "tags": ["hitl", "input-required", "test"],
+      "examples": ["hitl input test"],
+      "inputModes": ["text/plain"],
+      "outputModes": ["text/plain"]
+    },
+    {
+      "id": "hitl-auth-demo",
+      "name": "HITL Auth-Required Fixture",
+      "description": "Deterministic, dependency-free trigger that always returns TaskState::AuthRequired with a fixed authorization message — for smoke-testing the platform's HITL wiring without an LLM or MCP gateway.",
+      "tags": ["hitl", "auth-required", "test"],
+      "examples": ["hitl auth test"],
+      "inputModes": ["text/plain"],
+      "outputModes": ["text/plain"]
+    },
+    {
+      "id": "hitl-options-demo",
+      "name": "HITL Selectable-Options Fixture (Single-Select)",
+      "description": "Deterministic, dependency-free trigger that returns TaskState::InputRequired with a single-select question (three predefined options plus free-text custom input allowed) — for smoke-testing the selectable-options HITL extension without an LLM or MCP gateway.",
+      "tags": ["hitl", "input-required", "single-select", "test"],
+      "examples": ["hitl options test"],
+      "inputModes": ["text/plain"],
+      "outputModes": ["text/plain"]
+    },
+    {
+      "id": "hitl-multiselect-demo",
+      "name": "HITL Selectable-Options Fixture (Multi-Select)",
+      "description": "Deterministic, dependency-free trigger that returns TaskState::InputRequired with a multi-select question (four predefined options plus free-text custom input allowed) — for smoke-testing the selectable-options HITL extension without an LLM or MCP gateway.",
+      "tags": ["hitl", "input-required", "multi-select", "test"],
+      "examples": ["hitl multiselect test"],
+      "inputModes": ["text/plain"],
+      "outputModes": ["text/plain"]
+    }
+  ],
+  "supportsAuthenticatedExtendedCard": false,
+  "signatures": []
+}

@@ -1,0 +1,75 @@
+{
+  "protocolVersion": "0.2.9",
+  "name": "Calendar Agent",
+  "description": "Calendar/scheduling-focused LLM assistant that uses whatever calendar MCP tools (Google Calendar, Outlook Calendar, etc.) the Nasiko gateway exposes to view the calendar and create, reschedule, or cancel meetings and events. Asks the user for missing information (TaskState.InputRequired) instead of guessing, and pauses for authorization (TaskState.AuthRequired) when a tool call needs approval it doesn't yet have. Its ask_human tool can also offer the user selectable single-select/multi-select options (with optional free-text custom input) instead of a bare free-text question.",
+  "url": "http://localhost:8010/",
+  "agentFramework": "a2a-sdk",
+  "preferredTransport": "JSONRPC",
+  "provider": { "organization": "Nasiko", "url": "https://nasiko.io" },
+  "version": "1.0.0",
+  "capabilities": {
+    "chat_agent": true,
+    "pushNotifications": false,
+    "stateTransitionHistory": false,
+    "streaming": true,
+    "hitl": true
+  },
+  "securitySchemes": {},
+  "security": [],
+  "defaultInputModes": ["text/plain"],
+  "defaultOutputModes": ["text/plain"],
+  "skills": [
+    {
+      "id": "calendar-assistant",
+      "name": "Calendar Assistant",
+      "description": "Views the calendar, and creates, reschedules, or cancels meetings and events using the calendar MCP tools available to it. Asks a clarifying question (InputRequired) when required details (title, date/time, attendees, location) are missing, and pauses for authorization (AuthRequired) when a tool call needs approval it doesn't have yet — reply on the same task to resume either way. When the valid answers form a fixed set (e.g. open time slots), it asks with selectable options (single-select or multi-select, optionally with a free-text \"something else\") instead of a bare free-text question.",
+      "tags": ["calendar", "scheduling", "meetings", "mcp", "hitl"],
+      "examples": [
+        "Schedule a call with the design team tomorrow at 3pm",
+        "What's on my calendar this week?",
+        "Move my 2pm meeting to Friday morning",
+        "Cancel my 1:1 with Sam next Tuesday"
+      ],
+      "inputModes": ["text/plain"],
+      "outputModes": ["text/plain"]
+    },
+    {
+      "id": "hitl-input-demo",
+      "name": "HITL Input-Required Fixture",
+      "description": "Deterministic, dependency-free trigger that always returns TaskState::InputRequired with a fixed question — for smoke-testing the platform's HITL wiring without an LLM or MCP gateway.",
+      "tags": ["hitl", "input-required", "test"],
+      "examples": ["hitl input test"],
+      "inputModes": ["text/plain"],
+      "outputModes": ["text/plain"]
+    },
+    {
+      "id": "hitl-auth-demo",
+      "name": "HITL Auth-Required Fixture",
+      "description": "Deterministic, dependency-free trigger that always returns TaskState::AuthRequired with a fixed authorization message — for smoke-testing the platform's HITL wiring without an LLM or MCP gateway.",
+      "tags": ["hitl", "auth-required", "test"],
+      "examples": ["hitl auth test"],
+      "inputModes": ["text/plain"],
+      "outputModes": ["text/plain"]
+    },
+    {
+      "id": "hitl-options-demo",
+      "name": "HITL Selectable-Options Fixture (Single-Select)",
+      "description": "Deterministic, dependency-free trigger that returns TaskState::InputRequired with a single-select question (three predefined options plus free-text custom input allowed) — for smoke-testing the selectable-options HITL extension without an LLM or MCP gateway.",
+      "tags": ["hitl", "input-required", "single-select", "test"],
+      "examples": ["hitl options test"],
+      "inputModes": ["text/plain"],
+      "outputModes": ["text/plain"]
+    },
+    {
+      "id": "hitl-multiselect-demo",
+      "name": "HITL Selectable-Options Fixture (Multi-Select)",
+      "description": "Deterministic, dependency-free trigger that returns TaskState::InputRequired with a multi-select question (four predefined options plus free-text custom input allowed) — for smoke-testing the selectable-options HITL extension without an LLM or MCP gateway.",
+      "tags": ["hitl", "input-required", "multi-select", "test"],
+      "examples": ["hitl multiselect test"],
+      "inputModes": ["text/plain"],
+      "outputModes": ["text/plain"]
+    }
+  ],
+  "supportsAuthenticatedExtendedCard": false,
+  "signatures": []
+}
