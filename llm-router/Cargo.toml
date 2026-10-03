@@ -37,7 +37,7 @@ rand_distr = { workspace = true }
 
 # Storage & outbound HTTP (the crate owns these via LlmRouterCtx — no nasiko-server dep)
 sqlx = { workspace = true }
-reqwest = { workspace = true, features = ["json", "stream"] }
+reqwest = { workspace = true, features = ["json", "stream", "blocking"] }
 futures = { workspace = true }
 async-stream = { workspace = true }
 bytes = { workspace = true }
@@ -67,3 +67,5 @@ base64 = { workspace = true }
 mockito = { workspace = true }
 tower = { workspace = true }
 zstd.workspace = true
+nasiko-tool-compact = { path = "../tool-compact" }
+tiktoken-rs = "0.6"
