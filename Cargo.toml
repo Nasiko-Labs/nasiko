@@ -56,15 +56,10 @@ nasiko-server = { path = "server" }
 nasiko-coding-policy = { path = "coding-policy" }
 nasiko-oci = { path = "oci" }
 nasiko-llm-router = { path = "llm-router" }
-nasiko-tool-compact = { path = "tool-compact" }
 nasiko-bench-support = { path = "bench-support" }
 
 # ─── Testing ────────────────────────────────────────────────────────────────
 serial_test = "3"
-proptest = "1"
-# Exact-pinned: `compact_tools_eval` reports o200k_base token counts, and the brief requires a
-# pinned tokenizer so the numbers it prints are reproducible. Dev-only — never a runtime dep.
-tiktoken-rs = "=0.12.1"
 
 # ─── Async runtime & web ────────────────────────────────────────────────────
 tokio = { version = "1", features = ["full"] }

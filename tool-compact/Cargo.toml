@@ -12,4 +12,4 @@ thiserror = { workspace = true }
 regex = { workspace = true }
 
 [dev-dependencies]
-proptest = { workspace = true }
+proptest = "1"

@@ -20,7 +20,7 @@ nasiko-savings.workspace = true
 # Internal — structural payload compression at the egress seam (src/compress.rs)
 nasiko-compress.workspace = true
 # Internal — opt-in compact tool schemas at the egress seam (src/compact_tools.rs)
-nasiko-tool-compact.workspace = true
+nasiko-tool-compact = { path = "../tool-compact" }
 
 # Web / async
 axum = { workspace = true }
@@ -62,8 +62,9 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
-# Exact o200k_base token counts for the eval's diagnostics. Dev-only, never a runtime dep.
-tiktoken-rs = { workspace = true }
+# Exact o200k_base token counts for the eval's diagnostics. Pinned so the printed numbers are
+# reproducible. Dev-only, never a runtime dep.
+tiktoken-rs = "=0.12.1"
 tokio = { workspace = true }
 serde_json = { workspace = true }
 serial_test = { workspace = true }
