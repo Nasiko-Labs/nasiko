@@ -17,6 +17,7 @@ path = "src/bin/llm-router.rs"
 nasiko-secrets.workspace = true
 nasiko-pricing.workspace = true
 nasiko-savings.workspace = true
+nasiko-tool-compact = { path = "../tool-compact" }
 # Internal — structural payload compression at the egress seam (src/compress.rs)
 nasiko-compress.workspace = true
 
