@@ -174,10 +174,6 @@ mockito = "1"
 # ─── Benchmarking ───────────────────────────────────────────────────────────
 criterion = { version = "0.5", features = ["async_tokio"] }
 
-# ─── Tokenization (compact-tools eval only) ─────────────────────────────────
-# Pinned exactly; only used as a dev-dep of nasiko-llm-router's eval example.
-tiktoken-rs = "=0.7.0"
-
 [profile.release]
 strip = true
 # codegen-units = 1

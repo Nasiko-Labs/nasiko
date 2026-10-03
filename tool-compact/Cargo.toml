@@ -8,6 +8,7 @@ description = "Pure compact tool schema encoder, decoder, and streaming parser"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+regex = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
