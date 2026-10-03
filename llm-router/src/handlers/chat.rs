@@ -288,6 +288,20 @@ async fn chat_core(
         "brevity: directive decision"
     );
 
+    // ── compact tool schemas (opt-in; off by default) ─────────────────────────────────────
+    // After brevity so the directive still lands on the transcript; strips native `tools` only
+    // when TOKEN_TOOL_COMPACT=true and the schemas are supported. Runs before the savings
+    // measurement so `sent_bytes` reflects the payload actually dispatched.
+    let tool_compact = crate::tool_compact::apply(&mut req, &ctx.cfg);
+    tracing::debug!(
+        target: "nasiko::llm_router::tool_compact",
+        %agent_id,
+        applied = tool_compact.is_ok(),
+        skipped = ?tool_compact.as_ref().err(),
+        "tool_compact: decision"
+    );
+    let _tool_compact_metadata = crate::tool_compact::to_metadata(&tool_compact);
+
     // ── savings ledger inputs ─────────────────────────────────────────────────────────────
     // Measured here, after both seams, because this is the payload the provider will actually
     // bill for — which is what makes `sent_bytes / reported_input_tokens` a calibration rather
@@ -367,13 +381,22 @@ async fn chat_core(
             compress_bytes,
             request_bytes: Some(sent_bytes),
             span: llm_span.clone(),
+            tool_compact: tool_compact.ok(),
         });
     }
 
     // Non-streaming: run with ordered fallbacks; usage records the effective provider/model.
-    let (resp, (provider, model)) = fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
-        .instrument(llm_span.clone())
-        .await?;
+    let (mut resp, (provider, model)) =
+        fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
+            .instrument(llm_span.clone())
+            .await?;
+
+    // Compact markers → native OpenAI tool_calls before the inbound spoke renders.
+    // Required for agents that use tool_choice="required" with TOKEN_TOOL_COMPACT.
+    if let Ok(applied) = &tool_compact {
+        crate::tool_compact::decode_chat_response(&mut resp, applied);
+    }
+
     let latency_ms = started.elapsed().as_millis() as i64;
 
     // Record effective model and token usage on the server-side gen_ai span.
@@ -576,6 +599,8 @@ struct StreamChatArgs<'a> {
     /// `compress_metadata` is: on this path the `UsageRecord` is only built once the stream ends.
     compress_bytes: Option<(usize, usize)>,
     request_bytes: Option<usize>,
+    /// When set, provider content deltas are fed through compact stream decode.
+    tool_compact: Option<crate::tool_compact::Applied>,
 }
 
 /// Stream provider chunks back as OpenAI SSE: `data: <chunk>\n\n` … `data: [DONE]\n\n`.
@@ -600,6 +625,7 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
         brevity_metadata,
         compress_bytes,
         request_bytes,
+        tool_compact,
     } = args;
     let state = Arc::new(Mutex::new(StreamState::default()));
     let guard = UsageGuard {
@@ -628,28 +654,55 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
         // `event:` sequences for Anthropic) and its terminal events.
         let _guard = guard;
         let mut renderer = renderer;
+        let mut compact_session = tool_compact
+            .as_ref()
+            .map(crate::tool_compact::CompactStreamSession::new);
+        let mut last_chunk: Option<ChatChunk> = None;
         futures::pin_mut!(provider_stream);
         while let Some(item) = provider_stream.next().await {
             match item {
                 Ok(mut chunk) => {
                     chunk.model = model.clone();
-                    {
-                        let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
-                        if chunk.usage.is_some() {
-                            st.usage = chunk.usage.clone();
+                    last_chunk = Some(chunk.clone());
+                    let chunks = if let Some(session) = compact_session.as_mut() {
+                        session.push_chunk(chunk)
+                    } else {
+                        vec![chunk]
+                    };
+                    for chunk in chunks {
+                        {
+                            let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
+                            if chunk.usage.is_some() {
+                                st.usage = chunk.usage.clone();
+                            }
+                            if let Some(fr) =
+                                chunk.choices.first().and_then(|c| c.finish_reason.clone())
+                            {
+                                st.finish_reason = Some(fr);
+                            }
                         }
-                        if let Some(fr) = chunk.choices.first().and_then(|c| c.finish_reason.clone()) {
-                            st.finish_reason = Some(fr);
+                        for frame in renderer.render(chunk) {
+                            yield Ok::<String, std::io::Error>(frame);
                         }
-                    }
-                    for frame in renderer.render(chunk) {
-                        yield Ok::<String, std::io::Error>(frame);
                     }
                 }
                 Err(e) => {
                     // Mid-stream provider failure: log and end the stream cleanly.
                     tracing::error!(error = %e, "provider stream error");
                     break;
+                }
+            }
+        }
+        if let (Some(session), Some(template)) = (compact_session.as_mut(), last_chunk.as_ref()) {
+            for chunk in session.finish(template) {
+                {
+                    let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
+                    if let Some(fr) = chunk.choices.first().and_then(|c| c.finish_reason.clone()) {
+                        st.finish_reason = Some(fr);
+                    }
+                }
+                for frame in renderer.render(chunk) {
+                    yield Ok::<String, std::io::Error>(frame);
                 }
             }
         }
