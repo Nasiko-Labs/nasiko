@@ -28,6 +28,10 @@
 /// `num_buckets` declared by the weights file, which [`load_model_from_json_str`] enforces.
 pub const NUM_BUCKETS: usize = 1 << 16;
 
+// Tokenization / n-gram / hashing primitives are shared with the request-classifier model —
+// see `super::text_features` for why they live in one place.
+use super::text_features::{char_ngrams, fnv1a, hash_sign, sigmoid, word_ngrams, word_tokens};
+
 /// Dense (non-hashed) hand-picked features, in the fixed order `dense_features` produces
 /// them. Kept as named indices so `Weights::dense` stays self-documenting.
 pub const NUM_DENSE_FEATURES: usize = 8;
@@ -112,72 +116,13 @@ impl Weights {
     }
 }
 
-/// FNV-1a over raw bytes — simple, dependency-free, and deterministic across runs/platforms
-/// (unlike `std::collections::hash_map::DefaultHasher`, which is explicitly *not*
-/// guaranteed stable across Rust versions). A trained weight vector is only meaningful if
-/// hashing is stable, so this must never change without retraining.
-fn fnv1a(bytes: &[u8]) -> u64 {
-    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-    const PRIME: u64 = 0x0000_0100_0000_01b3;
-    let mut hash = OFFSET_BASIS;
-    for &b in bytes {
-        hash ^= b as u64;
-        hash = hash.wrapping_mul(PRIME);
-    }
-    hash
-}
-
 /// Hash an n-gram string into `(bucket, sign)` using the standard hashing-trick
 /// construction: one hash picks the bucket, a second (differently-salted) hash picks the
-/// sign, so hash collisions partially cancel instead of only ever adding.
+/// sign, so hash collisions partially cancel instead of only ever adding. The hashing
+/// primitives themselves are shared — see [`super::text_features`].
 fn hash_to_bucket(gram: &str) -> (usize, f64) {
     let bucket = (fnv1a(gram.as_bytes()) as usize) % NUM_BUCKETS;
-    let sign_bit = fnv1a(format!("sign:{gram}").as_bytes()) & 1;
-    let sign = if sign_bit == 0 { 1.0 } else { -1.0 };
-    (bucket, sign)
-}
-
-/// Lowercase word tokens, splitting on anything that isn't alphanumeric. Empty tokens are
-/// dropped, so runs of punctuation/whitespace just act as separators.
-fn word_tokens(text: &str) -> Vec<String> {
-    text.to_lowercase()
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .collect()
-}
-
-/// Word n-grams (`n` consecutive tokens joined by a single space) for `n` in `1..=max_n`.
-fn word_ngrams(tokens: &[String], max_n: usize) -> Vec<String> {
-    let mut grams = Vec::new();
-    for n in 1..=max_n {
-        if n > tokens.len() {
-            break;
-        }
-        for window in tokens.windows(n) {
-            grams.push(window.join(" "));
-        }
-    }
-    grams
-}
-
-/// Character n-grams over the lowercased query, for `n` in `min_n..=max_n`. Whitespace is
-/// lowercased but NOT stripped or collapsed — it stays part of the char stream and can
-/// appear inside a gram. Operates on `char`s (not bytes) so multi-byte UTF-8 isn't split
-/// mid-codepoint — this is what carries the code-switching case (e.g. `"Hola, ..."`)
-/// without a network call.
-fn char_ngrams(text: &str, min_n: usize, max_n: usize) -> Vec<String> {
-    let chars: Vec<char> = text.to_lowercase().chars().collect();
-    let mut grams = Vec::new();
-    for n in min_n..=max_n {
-        if n > chars.len() {
-            break;
-        }
-        for window in chars.windows(n) {
-            grams.push(window.iter().collect());
-        }
-    }
-    grams
+    (bucket, hash_sign(gram))
 }
 
 /// Extract every hashed n-gram feature (word 1-2grams + char 3-5grams) from `query` into a
@@ -411,10 +356,7 @@ impl Band {
     }
 }
 
-/// Standard logistic sigmoid, `1 / (1 + e^-x)`.
-fn sigmoid(x: f64) -> f64 {
-    1.0 / (1.0 + (-x).exp())
-}
+
 
 /// The raw (pre-calibration) logistic-regression logit for `query` under `weights`: bias
 /// plus the hashed-feature dot product plus the dense-feature dot product.

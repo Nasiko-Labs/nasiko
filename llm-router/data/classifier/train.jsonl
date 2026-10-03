@@ -1,0 +1,238 @@
+{"id":"cg-01","query":"Write a Python function that reverses a string.","request_type":"code_generation","complexity":2}
+{"id":"cg-02","query":"Implement binary search over a sorted integer slice in Rust.","request_type":"code_generation","complexity":3}
+{"id":"cg-03","query":"Fix the off-by-one error in this loop: `for (let i = 0; i <= n; i++)`.","request_type":"code_generation","complexity":1}
+{"id":"cg-04","query":"Create a SQL query returning the top five customers by revenue.","request_type":"code_generation","complexity":2}
+{"id":"cg-05","query":"Refactor this handler class to use dependency injection instead of globals.","request_type":"code_generation","complexity":3}
+{"id":"cg-06","query":"Write unit tests for the parse_duration helper, including the empty-input case.","request_type":"code_generation","complexity":3}
+{"id":"cg-07","query":"Add error handling for missing files to this ingestion script.","request_type":"code_generation","complexity":2}
+{"id":"cg-08","query":"Generate a regular expression that matches ISO-8601 dates.","request_type":"code_generation","complexity":2}
+{"id":"cg-09","query":"Write a bash script that rotates log files older than seven days.","request_type":"code_generation","complexity":2}
+{"id":"cg-10","query":"Convert this callback-based helper to async/await without changing its signature.","request_type":"code_generation","complexity":3}
+{"id":"cg-11","query":"Implement a rate limiter middleware for our HTTP API using a token bucket.","request_type":"code_generation","complexity":4}
+{"id":"cg-12","query":"Write a Makefile target that runs the linter and the tests.","request_type":"code_generation","complexity":2}
+{"id":"cg-13","query":"Fix the spelling mistake in the docstring below.","context":"/// Retruns the parsed value.","request_type":"code_generation","complexity":1}
+{"id":"cg-14","query":"Add cursor-based pagination to the users endpoint.","request_type":"code_generation","complexity":3}
+{"id":"cg-15","query":"Write a database migration that adds a unique index on email.","request_type":"code_generation","complexity":3}
+{"id":"cg-16","query":"Implement a function that merges two sorted lists into one sorted list.","request_type":"code_generation","complexity":2}
+{"id":"cg-17","query":"Build a tiny CLI that prints the current git branch.","request_type":"code_generation","complexity":2}
+{"id":"cg-18","query":"Rewrite this loop as a list comprehension.","context":"out = []\nfor x in xs:\n    if x > 0:\n        out.append(x * 2)","request_type":"code_generation","complexity":1}
+{"id":"cg-19","query":"Implement retry with exponential backoff and jitter around the HTTP call.","request_type":"code_generation","complexity":3}
+{"id":"cg-20","query":"Write a script to dedupe a CSV by the id column, keeping the last row.","request_type":"code_generation","complexity":2}
+{"id":"cg-21","query":"Create a multi-stage Dockerfile for this Node service.","request_type":"code_generation","complexity":3}
+{"id":"cg-22","query":"Implement a deep clone for this struct without pulling in external crates.","request_type":"code_generation","complexity":3}
+{"id":"cg-23","query":"Fix the memory leak caused by event listeners never being removed.","request_type":"code_generation","complexity":4}
+{"id":"cg-24","query":"Write a Go function that streams lines from a file and counts words.","request_type":"code_generation","complexity":2}
+{"id":"cg-25","query":"Implement a thread-safe counter using atomics.","request_type":"code_generation","complexity":3}
+{"id":"cg-26","query":"Translate this Python snippet into idiomatic JavaScript.","request_type":"code_generation","complexity":2}
+{"id":"cg-27","query":"Add input validation to the signup form handler.","request_type":"code_generation","complexity":2}
+{"id":"cg-28","query":"Write a recursive-descent parser for arithmetic expressions with parentheses.","request_type":"code_generation","complexity":5}
+{"id":"cg-29","query":"Implement an LRU cache with O(1) get and put.","request_type":"code_generation","complexity":4}
+{"id":"cg-30","query":"Fix the failing test that expects None but receives Some(0).","request_type":"code_generation","complexity":2}
+{"id":"cg-31","query":"Write a function that validates an Indian GST number.","request_type":"code_generation","complexity":2}
+{"id":"cg-32","query":"Optimise this query that is doing a full table scan on a large table.","request_type":"code_generation","complexity":4}
+{"id":"cg-33","query":"Generate TypeScript types from this JSON schema.","request_type":"code_generation","complexity":3}
+{"id":"cg-34","query":"Implement graceful shutdown for the worker pool, draining in-flight jobs.","request_type":"code_generation","complexity":4}
+{"id":"cu-01","query":"Explain what this function does.","context":"fn next(n: &mut u64) -> u64 { let old = *n; *n += 1; old }","request_type":"code_understanding","complexity":2}
+{"id":"cu-02","query":"What does `mem::replace` do in Rust?","request_type":"code_understanding","complexity":1}
+{"id":"cu-03","query":"How does the `@lru_cache` decorator work under the hood?","request_type":"code_understanding","complexity":2}
+{"id":"cu-04","query":"Walk me through this SQL query and what it returns.","context":"SELECT a.id, COUNT(*) FROM a JOIN b ON b.a_id = a.id GROUP BY a.id HAVING COUNT(*) > 2;","request_type":"code_understanding","complexity":2}
+{"id":"cu-05","query":"Why does this function return the old value instead of the incremented one?","request_type":"code_understanding","complexity":2}
+{"id":"cu-06","query":"Explain the difference between `==` and `is` in Python.","request_type":"code_understanding","complexity":1}
+{"id":"cu-07","query":"What is the time complexity of this nested loop?","context":"for i in range(n):\n    for j in range(i, n):\n        work(i, j)","request_type":"code_understanding","complexity":2}
+{"id":"cu-08","query":"Explain how this regular expression matches dates.","request_type":"code_understanding","complexity":2}
+{"id":"cu-09","query":"What does the unsafe block do in this snippet?","request_type":"code_understanding","complexity":2}
+{"id":"cu-10","query":"Describe the data flow through these three functions.","request_type":"code_understanding","complexity":3}
+{"id":"cu-11","query":"Why is this code deadlocking under concurrent load?","request_type":"code_understanding","complexity":4}
+{"id":"cu-12","query":"Explain what this compiler error means and how to fix it.","context":"error[E0502]: cannot borrow `v` as mutable because it is also borrowed as immutable","request_type":"code_understanding","complexity":2}
+{"id":"cu-13","query":"What is the purpose of the derive(Clone) attribute here?","request_type":"code_understanding","complexity":1}
+{"id":"cu-14","query":"Walk me through this state machine implementation step by step.","request_type":"code_understanding","complexity":3}
+{"id":"cu-15","query":"What does this closure capture from the surrounding scope?","request_type":"code_understanding","complexity":2}
+{"id":"cu-16","query":"Explain the lifetime annotation on this function signature.","request_type":"code_understanding","complexity":3}
+{"id":"cu-17","query":"What happens if this promise rejects and nobody awaits it?","request_type":"code_understanding","complexity":2}
+{"id":"cu-18","query":"Explain the difference between the map and filter steps in this chain.","request_type":"code_understanding","complexity":2}
+{"id":"cu-19","query":"Why does this test pass locally but fail in CI?","request_type":"code_understanding","complexity":3}
+{"id":"cu-20","query":"What does this Dockerfile command actually do?","context":"RUN --mount=type=cache,target=/root/.cargo cargo build --release","request_type":"code_understanding","complexity":2}
+{"id":"cu-21","query":"Explain the purpose of this index in the schema.","request_type":"code_understanding","complexity":2}
+{"id":"cu-22","query":"How is this in-memory cache invalidated when the source row changes?","request_type":"code_understanding","complexity":3}
+{"id":"cu-23","query":"Describe what this Kubernetes manifest deploys.","request_type":"code_understanding","complexity":2}
+{"id":"cu-24","query":"Explain why this function is quadratic in the worst case.","request_type":"code_understanding","complexity":3}
+{"id":"cu-25","query":"What does the question-mark operator do in this line?","context":"let value = map.get(key)?;","request_type":"code_understanding","complexity":1}
+{"id":"cu-26","query":"Explain the concurrency model in this actor implementation.","request_type":"code_understanding","complexity":4}
+{"id":"cu-27","query":"What is this assembly instruction doing to the stack pointer?","request_type":"code_understanding","complexity":3}
+{"id":"cu-28","query":"Walk me through the error handling path in this request handler.","request_type":"code_understanding","complexity":3}
+{"id":"cu-29","query":"Explain why the borrow checker rejects this assignment.","request_type":"code_understanding","complexity":3}
+{"id":"cu-30","query":"What does this Terraform plan change in the existing infrastructure?","request_type":"code_understanding","complexity":2}
+{"id":"cu-31","query":"Explain how this pub/sub listener is wired to the message broker.","request_type":"code_understanding","complexity":2}
+{"id":"cu-32","query":"Why does this callback fire twice for a single click?","request_type":"code_understanding","complexity":3}
+{"id":"cu-33","query":"What is the role of this middleware in the request pipeline?","request_type":"code_understanding","complexity":2}
+{"id":"cu-34","query":"Explain what happens to the connection pool when this timeout fires.","request_type":"code_understanding","complexity":3}
+{"id":"td-01","query":"Design a schema for a multi-tenant task tracker.","request_type":"technical_design","complexity":4}
+{"id":"td-02","query":"How should I design the API for versioned resources?","request_type":"technical_design","complexity":3}
+{"id":"td-03","query":"Propose an architecture for an event-driven order pipeline.","request_type":"technical_design","complexity":4}
+{"id":"td-04","query":"What are the trade-offs between gRPC and REST for our internal services?","request_type":"technical_design","complexity":3}
+{"id":"td-05","query":"Design a rate-limiting strategy for a public API with bursty traffic.","request_type":"technical_design","complexity":3}
+{"id":"td-06","query":"Propose a migration path from the monolith to services without a rewrite.","request_type":"technical_design","complexity":5}
+{"id":"td-07","query":"How should we model permissions for teams and projects?","request_type":"technical_design","complexity":4}
+{"id":"td-08","query":"Design the database schema for a booking system that supports cancellations.","request_type":"technical_design","complexity":4}
+{"id":"td-09","query":"Propose a caching architecture for the product catalog.","request_type":"technical_design","complexity":3}
+{"id":"td-10","query":"How should we design idempotent payment processing across retries?","request_type":"technical_design","complexity":5}
+{"id":"td-11","query":"Design a queue-based retry system with dead-letter handling and backoff.","request_type":"technical_design","complexity":4}
+{"id":"td-12","query":"What architecture fits real-time chat with offline message delivery?","request_type":"technical_design","complexity":4}
+{"id":"td-13","query":"Propose a sharding strategy for the events table.","request_type":"technical_design","complexity":4}
+{"id":"td-14","query":"How should we design a feature-flag service with gradual rollout?","request_type":"technical_design","complexity":3}
+{"id":"td-15","query":"Design an audit log that cannot be silently tampered with.","request_type":"technical_design","complexity":4}
+{"id":"td-16","query":"Propose an approach for zero-downtime schema migrations.","request_type":"technical_design","complexity":4}
+{"id":"td-17","query":"How should we structure a plugin system for third-party extensions?","request_type":"technical_design","complexity":4}
+{"id":"td-18","query":"Design the API contract for a webhook delivery system with retries.","request_type":"technical_design","complexity":4}
+{"id":"td-19","query":"Propose a multi-region failover design with bounded data loss.","request_type":"technical_design","complexity":5}
+{"id":"td-20","query":"Design a schema for storing hierarchical comments and their replies.","request_type":"technical_design","complexity":3}
+{"id":"td-21","query":"What trade-offs come with adopting CQRS for this read-heavy domain?","request_type":"technical_design","complexity":4}
+{"id":"td-22","query":"Design a notification fan-out architecture across email, SMS, and push.","request_type":"technical_design","complexity":4}
+{"id":"td-23","query":"How should we version our internal event schemas safely?","request_type":"technical_design","complexity":3}
+{"id":"td-24","query":"Propose a design for strict tenant data isolation in one database.","request_type":"technical_design","complexity":4}
+{"id":"td-25","query":"Design a scheduler for recurring jobs with catch-up after downtime.","request_type":"technical_design","complexity":4}
+{"id":"td-26","query":"How should service boundaries be drawn for billing and invoicing?","request_type":"technical_design","complexity":4}
+{"id":"td-27","query":"Design an approach for gradually shifting traffic to a new backend.","request_type":"technical_design","complexity":3}
+{"id":"td-28","query":"Propose a design for storing and serving large binary blobs.","request_type":"technical_design","complexity":3}
+{"id":"td-29","query":"How should we design the search indexing pipeline for fresh documents?","request_type":"technical_design","complexity":4}
+{"id":"td-30","query":"Design consistent hashing across nodes for our cache cluster.","request_type":"technical_design","complexity":4}
+{"id":"td-31","query":"Propose an architecture for offline-first mobile sync with conflict resolution.","request_type":"technical_design","complexity":5}
+{"id":"td-32","query":"How should we design the authentication token refresh flow?","request_type":"technical_design","complexity":3}
+{"id":"td-33","query":"Design a schema for tagging arbitrary entities with many tags.","request_type":"technical_design","complexity":3}
+{"id":"td-34","query":"What architecture supports pluggable payment providers behind one interface?","request_type":"technical_design","complexity":4}
+{"id":"ar-01","query":"Calculate the probability that it rains tomorrow given these forecast numbers.","request_type":"analytical_reasoning","complexity":3}
+{"id":"ar-02","query":"Work through why two concurrent token refreshes can lose a session.","request_type":"analytical_reasoning","complexity":5}
+{"id":"ar-03","query":"If every request retries three times, how many provider calls does one user action make?","request_type":"analytical_reasoning","complexity":3}
+{"id":"ar-04","query":"Analyse whether these two cache keys can ever collide.","request_type":"analytical_reasoning","complexity":3}
+{"id":"ar-05","query":"Determine which of these two hypotheses best explains the logs.","request_type":"analytical_reasoning","complexity":4}
+{"id":"ar-06","query":"Reconcile the discrepancy between reported and actual revenue.","request_type":"analytical_reasoning","complexity":4}
+{"id":"ar-07","query":"How many unique visitors are there given these session logs?","request_type":"analytical_reasoning","complexity":3}
+{"id":"ar-08","query":"Reason about whether this lock ordering can deadlock.","request_type":"analytical_reasoning","complexity":4}
+{"id":"ar-09","query":"What is the expected number of collisions in this hash table at 80% load?","request_type":"analytical_reasoning","complexity":4}
+{"id":"ar-10","query":"Prove that this scheduling policy is starvation-free.","request_type":"analytical_reasoning","complexity":5}
+{"id":"ar-11","query":"Work out the total monthly cost across these pricing tiers.","request_type":"analytical_reasoning","complexity":3}
+{"id":"ar-12","query":"Analyse the failure interleavings that could produce a duplicate charge.","request_type":"analytical_reasoning","complexity":5}
+{"id":"ar-13","query":"Determine the critical path through this dependency graph.","request_type":"analytical_reasoning","complexity":4}
+{"id":"ar-14","query":"Given these latency numbers, is the p95 breach statistically meaningful?","request_type":"analytical_reasoning","complexity":4}
+{"id":"ar-15","query":"Reason about the consistency guarantees of this read path.","request_type":"analytical_reasoning","complexity":4}
+{"id":"ar-16","query":"How many days until capacity is exhausted at this growth rate?","request_type":"analytical_reasoning","complexity":3}
+{"id":"ar-17","query":"Identify which evidence is inconsistent with the assumed root cause.","request_type":"analytical_reasoning","complexity":4}
+{"id":"ar-18","query":"Compute the probability of a checksum mismatch under this bit-error rate.","request_type":"analytical_reasoning","complexity":3}
+{"id":"ar-19","query":"Reason through the race in this double-checked locking pattern.","request_type":"analytical_reasoning","complexity":4}
+{"id":"ar-20","query":"Which ordering of these events is physically impossible?","request_type":"analytical_reasoning","complexity":3}
+{"id":"ar-21","query":"Evaluate whether the observed error rate exceeds the baseline significantly.","request_type":"analytical_reasoning","complexity":3}
+{"id":"ar-22","query":"Analyse the trade-off between these two queueing policies.","request_type":"analytical_reasoning","complexity":4}
+{"id":"ar-23","query":"Determine the minimal set of permissions needed to complete this task.","request_type":"analytical_reasoning","complexity":3}
+{"id":"ar-24","query":"Work through the recursion depth for this pathological input.","request_type":"analytical_reasoning","complexity":3}
+{"id":"ar-25","query":"Reason about whether this algorithm is guaranteed to terminate.","request_type":"analytical_reasoning","complexity":4}
+{"id":"ar-26","query":"Estimate the storage needed for a year of events at this write rate.","request_type":"analytical_reasoning","complexity":3}
+{"id":"ar-27","query":"Analyse why throughput drops sharply after the third shard is added.","request_type":"analytical_reasoning","complexity":4}
+{"id":"ar-28","query":"Identify the contradiction in these stated requirements.","request_type":"analytical_reasoning","complexity":4}
+{"id":"ar-29","query":"Derive the break-even point between these two options.","request_type":"analytical_reasoning","complexity":3}
+{"id":"ar-30","query":"Reason about the ordering guarantees under this retry policy.","request_type":"analytical_reasoning","complexity":4}
+{"id":"ar-31","query":"Determine the blast radius of this configuration change.","request_type":"analytical_reasoning","complexity":3}
+{"id":"ar-32","query":"Work through the math for this exponential backoff schedule.","request_type":"analytical_reasoning","complexity":2}
+{"id":"ar-33","query":"Analyse whether sampling bias explains this metric drift.","request_type":"analytical_reasoning","complexity":4}
+{"id":"ar-34","query":"What is the probability of at least one duplicate in this batch?","request_type":"analytical_reasoning","complexity":3}
+{"id":"w-01","query":"Draft an email to the team about yesterday's outage.","request_type":"writing","complexity":2}
+{"id":"w-02","query":"Rewrite this notification to be warmer without changing the facts.","request_type":"writing","complexity":2}
+{"id":"w-03","query":"Summarise these release notes in three bullets for customers.","request_type":"writing","complexity":3}
+{"id":"w-04","query":"Write a product announcement for the new analytics dashboard.","request_type":"writing","complexity":3}
+{"id":"w-05","query":"Compose a polite follow-up to a client who has not replied.","request_type":"writing","complexity":2}
+{"id":"w-06","query":"Make this paragraph more concise.","context":"In order to be able to provide assistance, I will need some additional information regarding the matter.","request_type":"writing","complexity":1}
+{"id":"w-07","query":"Draft a job description for a backend engineer.","request_type":"writing","complexity":3}
+{"id":"w-08","query":"Rewrite this error message so end users understand it.","request_type":"writing","complexity":2}
+{"id":"w-09","query":"Write a changelog entry for this bug fix.","request_type":"writing","complexity":2}
+{"id":"w-10","query":"Draft an apology to customers for delayed deliveries.","request_type":"writing","complexity":3}
+{"id":"w-11","query":"Rewrite the introduction of this README.","request_type":"writing","complexity":2}
+{"id":"w-12","query":"Write a blog post about our migration to a new database.","request_type":"writing","complexity":4}
+{"id":"w-13","query":"Summarise this article in a single paragraph.","request_type":"writing","complexity":2}
+{"id":"w-14","query":"Draft talking points for the quarterly business review.","request_type":"writing","complexity":3}
+{"id":"w-15","query":"Rewrite this post to be less confrontational.","request_type":"writing","complexity":2}
+{"id":"w-16","query":"Write a cover letter for this job posting.","request_type":"writing","complexity":3}
+{"id":"w-17","query":"Turn these rough notes into proper meeting minutes.","request_type":"writing","complexity":3}
+{"id":"w-18","query":"Draft a press release for our funding round.","request_type":"writing","complexity":4}
+{"id":"w-19","query":"Rewrite this legal disclaimer in plain language.","request_type":"writing","complexity":3}
+{"id":"w-20","query":"Write a short poem about code reviews.","request_type":"writing","complexity":2}
+{"id":"w-21","query":"Compose a birthday message for a colleague.","request_type":"writing","complexity":1}
+{"id":"w-22","query":"Summarise the customer feedback into common themes.","request_type":"writing","complexity":3}
+{"id":"w-23","query":"Write an onboarding guide for new engineers.","request_type":"writing","complexity":4}
+{"id":"w-24","query":"Rewrite this headline to be clearer.","request_type":"writing","complexity":1}
+{"id":"w-25","query":"Draft a Slack announcement for the maintenance window.","request_type":"writing","complexity":2}
+{"id":"w-26","query":"Write an executive summary of this quarterly report.","request_type":"writing","complexity":3}
+{"id":"w-27","query":"Edit this paragraph to remove jargon.","request_type":"writing","complexity":2}
+{"id":"w-28","query":"Draft a thank-you note to the open-source maintainers.","request_type":"writing","complexity":2}
+{"id":"w-29","query":"Write documentation for this configuration option.","request_type":"writing","complexity":3}
+{"id":"w-30","query":"Rewrite these steps so a beginner can follow them.","request_type":"writing","complexity":3}
+{"id":"w-31","query":"Compose an out-of-office reply.","request_type":"writing","complexity":1}
+{"id":"w-32","query":"Write a customer success story for the website.","request_type":"writing","complexity":3}
+{"id":"w-33","query":"Draft a memo about the new security policy.","request_type":"writing","complexity":3}
+{"id":"w-34","query":"Summarise the incident timeline for non-technical stakeholders.","request_type":"writing","complexity":3}
+{"id":"f-01","query":"What is the capital of France?","request_type":"factual_lookup","complexity":1}
+{"id":"f-02","query":"Who wrote the novel 1984?","request_type":"factual_lookup","complexity":1}
+{"id":"f-03","query":"When was the Eiffel Tower completed?","request_type":"factual_lookup","complexity":1}
+{"id":"f-04","query":"Where is the headquarters of the United Nations?","request_type":"factual_lookup","complexity":1}
+{"id":"f-05","query":"Define photosynthesis in one sentence.","request_type":"factual_lookup","complexity":1}
+{"id":"f-06","query":"What is the boiling point of water at sea level?","request_type":"factual_lookup","complexity":1}
+{"id":"f-07","query":"Who is the current president of France?","request_type":"factual_lookup","complexity":1}
+{"id":"f-08","query":"What does HTTP stand for?","request_type":"factual_lookup","complexity":1}
+{"id":"f-09","query":"When did World War II end?","request_type":"factual_lookup","complexity":1}
+{"id":"f-10","query":"Where is Mount Everest located?","request_type":"factual_lookup","complexity":1}
+{"id":"f-11","query":"What is the capital of Japan?","request_type":"factual_lookup","complexity":1}
+{"id":"f-12","query":"Who painted the Mona Lisa?","request_type":"factual_lookup","complexity":1}
+{"id":"f-13","query":"Define gravity briefly.","request_type":"factual_lookup","complexity":1}
+{"id":"f-14","query":"What is the largest planet in our solar system?","request_type":"factual_lookup","complexity":1}
+{"id":"f-15","query":"When was the first moon landing?","request_type":"factual_lookup","complexity":1}
+{"id":"f-16","query":"Where was the Olympic Games in 2016 held?","request_type":"factual_lookup","complexity":1}
+{"id":"f-17","query":"Who discovered penicillin?","request_type":"factual_lookup","complexity":2}
+{"id":"f-18","query":"What is the currency used in Brazil?","request_type":"factual_lookup","complexity":1}
+{"id":"f-19","query":"Define mitosis in simple terms.","request_type":"factual_lookup","complexity":2}
+{"id":"f-20","query":"What is the capital of Australia?","request_type":"factual_lookup","complexity":1}
+{"id":"f-21","query":"Who was the first person to walk on the moon?","request_type":"factual_lookup","complexity":1}
+{"id":"f-22","query":"When was the United Nations founded?","request_type":"factual_lookup","complexity":2}
+{"id":"f-23","query":"Where does the Amazon River flow?","request_type":"factual_lookup","complexity":1}
+{"id":"f-24","query":"What is the chemical symbol for gold?","request_type":"factual_lookup","complexity":1}
+{"id":"f-25","query":"Define an API for a beginner.","request_type":"factual_lookup","complexity":2}
+{"id":"f-26","query":"Who invented the telephone?","request_type":"factual_lookup","complexity":1}
+{"id":"f-27","query":"What is the speed of light?","request_type":"factual_lookup","complexity":1}
+{"id":"f-28","query":"When is Thanksgiving celebrated in the US?","request_type":"factual_lookup","complexity":1}
+{"id":"f-29","query":"Where is the Sahara Desert?","request_type":"factual_lookup","complexity":1}
+{"id":"f-30","query":"What does DNA stand for?","request_type":"factual_lookup","complexity":1}
+{"id":"f-31","query":"Who wrote Romeo and Juliet?","request_type":"factual_lookup","complexity":1}
+{"id":"f-32","query":"How many days are there in a leap year?","request_type":"factual_lookup","complexity":1}
+{"id":"f-33","query":"What is the capital of Canada?","request_type":"factual_lookup","complexity":1}
+{"id":"f-34","query":"Define democracy in one line.","request_type":"factual_lookup","complexity":1}
+{"id":"g-01","query":"Hi there!","request_type":"general","complexity":1}
+{"id":"g-02","query":"Hello, how are you?","request_type":"general","complexity":1}
+{"id":"g-03","query":"Thanks for the help!","request_type":"general","complexity":1}
+{"id":"g-04","query":"Good morning!","request_type":"general","complexity":1}
+{"id":"g-05","query":"What can you do?","request_type":"general","complexity":1}
+{"id":"g-06","query":"Tell me a joke.","request_type":"general","complexity":1}
+{"id":"g-07","query":"Good evening, nice to meet you.","request_type":"general","complexity":1}
+{"id":"g-08","query":"Thanks, that looks good.","request_type":"general","complexity":1}
+{"id":"g-09","query":"Hey, are you there?","request_type":"general","complexity":1}
+{"id":"g-10","query":"Ok got it, thank you.","request_type":"general","complexity":1}
+{"id":"g-11","query":"Goodbye, see you later!","request_type":"general","complexity":1}
+{"id":"g-12","query":"How is your day going?","request_type":"general","complexity":1}
+{"id":"g-13","query":"Nice work, appreciate it.","request_type":"general","complexity":1}
+{"id":"g-14","query":"Hey there, just checking in.","request_type":"general","complexity":1}
+{"id":"g-15","query":"Cool, sounds good to me.","request_type":"general","complexity":2}
+{"id":"g-16","query":"Alright, let me think about that.","request_type":"general","complexity":1}
+{"id":"g-17","query":"Hmm, interesting point.","request_type":"general","complexity":1}
+{"id":"g-18","query":"Yes, that makes sense.","request_type":"general","complexity":1}
+{"id":"g-19","query":"No worries, take your time.","request_type":"general","complexity":1}
+{"id":"g-20","query":"Sure thing, go ahead.","request_type":"general","complexity":1}
+{"id":"g-21","query":"Welcome back!","request_type":"general","complexity":1}
+{"id":"g-22","query":"Have a great day!","request_type":"general","complexity":1}
+{"id":"g-23","query":"Let me know if you need anything.","request_type":"general","complexity":1}
+{"id":"g-24","query":"Just saying hello.","request_type":"general","complexity":1}
+{"id":"g-25","query":"Testing, can you hear me?","request_type":"general","complexity":1}
+{"id":"g-26","query":"What is up?","request_type":"general","complexity":1}
+{"id":"g-27","query":"Howdy!","request_type":"general","complexity":1}
+{"id":"g-28","query":"Cheers!","request_type":"general","complexity":1}
+{"id":"g-29","query":"See you tomorrow.","request_type":"general","complexity":1}
+{"id":"g-30","query":"All good on my end.","request_type":"general","complexity":1}
+{"id":"g-31","query":"Sounds great, thanks!","request_type":"general","complexity":1}
+{"id":"g-32","query":"Perfect, talk soon.","request_type":"general","complexity":1}
+{"id":"g-33","query":"Hey, quick question about nothing in particular.","request_type":"general","complexity":1}
+{"id":"g-34","query":"Just wanted to say hi.","request_type":"general","complexity":1}

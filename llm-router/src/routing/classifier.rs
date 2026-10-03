@@ -28,7 +28,11 @@
 //! it an entropy RNG; tests inject a seeded one.
 
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
+use async_trait::async_trait;
 use rand::Rng;
 use rand_distr::{Beta, Distribution};
 
@@ -324,6 +328,446 @@ pub fn classify<R: Rng + ?Sized>(
     (tier, request_type)
 }
 
+// ==========================================================================
+// RequestClassifier — the model-agnostic decision interface (P2)
+// ==========================================================================
+//
+// `classify_request_type` above is the historical, keyword-only entry point. The trait
+// below is the pluggable seam the router (and `examples/classifier_eval.rs`) call so a
+// backend can be swapped without touching the routing flow. The regex implementation is the
+// default and reproduces the historical behaviour; a local model and an optional hosted
+// backend are alternative implementations, selected by configuration. See
+// [`ClassifierRuntime`] for how the router turns their results into a tier while preserving
+// the safe-default/fallback contract.
+
+/// The typed input to a [`RequestClassifier`]: the query plus optional surrounding context
+/// (pasted code, prior-turn detail). Context is a hint — the regex backend ignores it, the
+/// local and hosted backends use it.
+#[derive(Debug, Clone, Copy)]
+pub struct ClassifyInput<'a> {
+    pub query: &'a str,
+    pub context: Option<&'a str>,
+}
+
+impl<'a> ClassifyInput<'a> {
+    /// Input with no context — the router's case (it only has the latest user message).
+    pub fn query_only(query: &'a str) -> Self {
+        Self {
+            query,
+            context: None,
+        }
+    }
+}
+
+/// A backend's verdict: the request type, its complexity (1–5), and the backend's
+/// `confidence` in `request_type` (0–1). `confidence` is what the router compares against a
+/// threshold; below it, the decision is treated as the safe default (see
+/// [`ClassifierRuntime::classify_or_fallback`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Classification {
+    pub request_type: RequestType,
+    /// 1 = trivial single operation … 5 = intricate cross-component reasoning.
+    pub complexity: u8,
+    /// Calibrated probability that `request_type` is correct, in `[0, 1]`.
+    pub confidence: f32,
+}
+
+/// Why a [`RequestClassifier`] could not produce a [`Classification`]. Every variant is a
+/// reason the router should fall back to the regex baseline, never a reason to guess.
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum ClassifyError {
+    /// The backend is not configured (e.g. `local` with no model, or `hosted` with no
+    /// endpoint).
+    #[error("classifier backend not configured: {0}")]
+    NotConfigured(String),
+    /// The backend's model could not be loaded.
+    #[error("classifier model load failed: {0}")]
+    Load(String),
+    /// The backend ran but produced unusable output (never a parsed-but-wrong call).
+    #[error("classifier inference failed: {0}")]
+    Inference(String),
+    /// The backend exceeded its decision-latency budget.
+    #[error("classifier timed out after {0:?}")]
+    Timeout(Duration),
+    /// A network / transport failure reaching a hosted backend.
+    #[error("classifier backend error: {0}")]
+    Backend(String),
+}
+
+/// A pluggable request-type classifier. Implementations must be `Send + Sync` (the router
+/// holds an `Arc<dyn RequestClassifier>` across `.await`s) and should be cheap to call
+/// repeatedly (the local model is; a hosted backend is bounded by [`TimeoutClassifier`]).
+#[async_trait]
+pub trait RequestClassifier: Send + Sync {
+    /// Short, stable backend identifier for logs and the eval output (`"regex"`, `"local"`,
+    /// `"hosted"`).
+    fn name(&self) -> &str;
+
+    /// Classify one request. Returning `Err` is a normal outcome — the caller falls back to
+    /// the regex baseline and counts it; it is never a routing failure.
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError>;
+}
+
+/// The regex baseline as a [`RequestClassifier`] — the default backend and the fallback for
+/// every other one.
+///
+/// It wraps [`classify_request_type`] unchanged and reports **fixed** complexity and
+/// confidence, because the keyword vote-count has neither signal:
+/// - [`REGEX_COMPLEXITY`] — the mid-scale value, for every query;
+/// - [`REGEX_CONFIDENCE`] — a deliberately low constant, so the router treats a bare regex
+///   verdict as the safe default rather than a confident decision.
+pub struct RegexClassifier;
+
+/// The regex baseline's fixed complexity (see [`RegexClassifier`]).
+pub const REGEX_COMPLEXITY: u8 = 3;
+/// The regex baseline's fixed confidence (see [`RegexClassifier`]).
+pub const REGEX_CONFIDENCE: f32 = 0.35;
+
+/// The regex baseline's verdict for a query, with its fixed complexity/confidence.
+pub fn regex_classification(query: &str) -> Classification {
+    Classification {
+        request_type: classify_request_type(query),
+        complexity: REGEX_COMPLEXITY,
+        confidence: REGEX_CONFIDENCE,
+    }
+}
+
+#[async_trait]
+impl RequestClassifier for RegexClassifier {
+    fn name(&self) -> &str {
+        "regex"
+    }
+
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+        Ok(regex_classification(input.query))
+    }
+}
+
+/// The in-process model backend (`CLASSIFIER_BACKEND=local`): the hashed n-gram classifier in
+/// [`super::request_model`], embedded in the binary. No network, no runtime file dependency.
+pub struct LocalClassifier {
+    model: super::request_model::RequestModel,
+}
+
+impl LocalClassifier {
+    /// Wrap an already-loaded model.
+    pub fn new(model: super::request_model::RequestModel) -> Self {
+        Self { model }
+    }
+
+    /// Load the model embedded in this binary.
+    pub fn embedded() -> Result<Self, ClassifyError> {
+        super::request_model::embedded_model()
+            .map(Self::new)
+            .map_err(ClassifyError::Load)
+    }
+
+    /// Load a model from a weights file (the `CLASSIFIER_MODEL_PATH` override).
+    pub fn from_path(path: &std::path::Path) -> Result<Self, ClassifyError> {
+        super::request_model::load_from_file(path)
+            .map(Self::new)
+            .map_err(ClassifyError::Load)
+    }
+}
+
+#[async_trait]
+impl RequestClassifier for LocalClassifier {
+    fn name(&self) -> &str {
+        "local"
+    }
+
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+        let (request_type, complexity, confidence) =
+            self.model.classify(input.query, input.context);
+        Ok(Classification {
+            request_type,
+            complexity,
+            confidence,
+        })
+    }
+}
+
+/// Bounds any backend's decision latency. A hosted call without a deadline could stall a
+/// routed request; wrapping the backend here keeps the timeout policy in the routing layer
+/// (one place) rather than in each backend.
+pub struct TimeoutClassifier {
+    inner: Arc<dyn RequestClassifier>,
+    timeout: Duration,
+}
+
+impl TimeoutClassifier {
+    /// Wrap `inner` with a per-decision deadline. A zero timeout is treated as "no
+    /// deadline" — the backend is returned unwrapped by [`build_request_classifier`].
+    pub fn new(inner: Arc<dyn RequestClassifier>, timeout: Duration) -> Self {
+        Self { inner, timeout }
+    }
+}
+
+#[async_trait]
+impl RequestClassifier for TimeoutClassifier {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+        match tokio::time::timeout(self.timeout, self.inner.classify(input)).await {
+            Ok(result) => result,
+            Err(_) => Err(ClassifyError::Timeout(self.timeout)),
+        }
+    }
+}
+
+/// Which classification backend is active. Parsed from `CLASSIFIER_BACKEND` in
+/// [`crate::config::GatewayConfig`]; the default is [`BackendKind::Regex`], so an
+/// out-of-the-box deployment makes no network call and needs no model file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackendKind {
+    /// The keyword baseline (default).
+    Regex,
+    /// The embedded in-process model.
+    Local,
+    /// An OpenAI-compatible chat endpoint.
+    Hosted,
+}
+
+impl BackendKind {
+    /// Parse a backend label (case-insensitive). An empty string is [`BackendKind::Regex`];
+    /// an unrecognized label is `None` so the caller can warn and fall back to the default.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "" | "regex" => Some(BackendKind::Regex),
+            "local" => Some(BackendKind::Local),
+            "hosted" => Some(BackendKind::Hosted),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BackendKind::Regex => "regex",
+            BackendKind::Local => "local",
+            BackendKind::Hosted => "hosted",
+        }
+    }
+}
+
+/// Plain configuration for building a classifier. Deliberately env-free: the caller (the
+/// router's `config.rs`, or the eval example) reads the environment and populates this, so
+/// the routing library never reads env vars itself.
+#[derive(Debug, Clone)]
+pub struct ClassifierConfig {
+    pub backend: BackendKind,
+    /// Optional weights-file override for the local backend (empty ⇒ embedded model).
+    pub model_path: String,
+    /// Base URL (ending at the API version) for the hosted backend.
+    pub endpoint: String,
+    pub api_key: String,
+    /// Model id for the hosted backend.
+    pub model: String,
+    /// Per-decision deadline applied to whichever backend is built. Zero ⇒ no timeout.
+    pub timeout: Duration,
+    /// Below this request-type confidence the router uses the safe default and counts a
+    /// fallback. Must be in `[0, 1]`.
+    pub low_confidence: f32,
+}
+
+impl Default for ClassifierConfig {
+    fn default() -> Self {
+        Self {
+            backend: BackendKind::Regex,
+            model_path: String::new(),
+            endpoint: String::new(),
+            api_key: String::new(),
+            model: "gpt-4o-mini".into(),
+            timeout: Duration::from_millis(1500),
+            low_confidence: 0.55,
+        }
+    }
+}
+
+/// Build the configured backend, degrading to the regex classifier whenever the requested
+/// backend cannot be constructed — a missing/corrupt model, a `local` build with no asset, or
+/// a `hosted` build with no endpoint. This is the "regex fallback on model-load failure"
+/// contract: the router always gets *a* working classifier. Runtime failures and timeouts are
+/// handled separately, per decision, by [`ClassifierRuntime::classify_or_fallback`].
+pub fn build_request_classifier(
+    cfg: &ClassifierConfig,
+    http: reqwest::Client,
+) -> Arc<dyn RequestClassifier> {
+    let inner: Arc<dyn RequestClassifier> = match cfg.backend {
+        BackendKind::Regex => Arc::new(RegexClassifier),
+        BackendKind::Local => {
+            let loaded = if cfg.model_path.is_empty() {
+                LocalClassifier::embedded()
+            } else {
+                LocalClassifier::from_path(std::path::Path::new(&cfg.model_path))
+            };
+            match loaded {
+                Ok(classifier) => Arc::new(classifier),
+                Err(e) => {
+                    tracing::warn!(
+                        target: "nasiko::llm_router::classifier",
+                        error = %e,
+                        "classifier: local model failed to load; falling back to the regex baseline"
+                    );
+                    Arc::new(RegexClassifier)
+                }
+            }
+        }
+        BackendKind::Hosted => {
+            if cfg.endpoint.is_empty() {
+                tracing::warn!(
+                    target: "nasiko::llm_router::classifier",
+                    "classifier: CLASSIFIER_BACKEND=hosted but CLASSIFIER_ENDPOINT is empty; falling back to the regex baseline"
+                );
+                Arc::new(RegexClassifier)
+            } else {
+                Arc::new(super::hosted_classifier::HostedClassifier::new(
+                    http,
+                    cfg.endpoint.clone(),
+                    cfg.api_key.clone(),
+                    cfg.model.clone(),
+                ))
+            }
+        }
+    };
+
+    if cfg.timeout.is_zero() {
+        inner
+    } else {
+        Arc::new(TimeoutClassifier::new(inner, cfg.timeout))
+    }
+}
+
+/// Process-lifetime counters for the router's classifier decisions. Only two numbers matter
+/// operationally: how often the classifier ran, and how often the router used the safe
+/// default instead (a backend error, a timeout, or a low-confidence verdict). The fallback
+/// rate is the `costs we measure` figure from the track brief.
+#[derive(Debug, Default)]
+pub struct ClassifierStats {
+    decisions: AtomicU64,
+    fallbacks: AtomicU64,
+}
+
+impl ClassifierStats {
+    /// Total decisions taken (successful or fallen back).
+    pub fn decisions(&self) -> u64 {
+        self.decisions.load(Ordering::Relaxed)
+    }
+
+    /// Decisions answered by the regex safe default rather than the configured backend.
+    pub fn fallbacks(&self) -> u64 {
+        self.fallbacks.load(Ordering::Relaxed)
+    }
+
+    /// `fallbacks / decisions` in `[0, 1]`; `0.0` before any decision.
+    pub fn fallback_rate(&self) -> f64 {
+        let decisions = self.decisions();
+        if decisions == 0 {
+            0.0
+        } else {
+            self.fallbacks() as f64 / decisions as f64
+        }
+    }
+
+    fn record(&self, fell_back: bool) {
+        self.decisions.fetch_add(1, Ordering::Relaxed);
+        if fell_back {
+            self.fallbacks.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+/// The router's request classifier: a pluggable backend, the low-confidence threshold, and
+/// the fallback counters. Held as `Arc<ClassifierRuntime>` by the router so the counters are
+/// process-wide.
+///
+/// [`classify_or_fallback`](ClassifierRuntime::classify_or_fallback) is the single entry
+/// point used by both the router and `examples/classifier_eval.rs`, so the eval exercises the
+/// exact path production takes — including the fallback.
+pub struct ClassifierRuntime {
+    classifier: Arc<dyn RequestClassifier>,
+    low_confidence: f32,
+    stats: ClassifierStats,
+}
+
+impl ClassifierRuntime {
+    /// Build a runtime over `classifier`, treating any verdict below `low_confidence` as
+    /// uncertain. `low_confidence` is clamped to `[0, 1]`.
+    pub fn new(classifier: Arc<dyn RequestClassifier>, low_confidence: f32) -> Self {
+        Self {
+            classifier,
+            low_confidence: low_confidence.clamp(0.0, 1.0),
+            stats: ClassifierStats::default(),
+        }
+    }
+
+    /// The regex-baseline runtime — the default, and what tests use to reproduce the
+    /// pre-classifier behaviour.
+    pub fn regex() -> Self {
+        Self::new(Arc::new(RegexClassifier), 1.0)
+    }
+
+    /// The active backend's name.
+    pub fn name(&self) -> &str {
+        self.classifier.name()
+    }
+
+    /// The confidence threshold below which a verdict is treated as uncertain.
+    pub fn low_confidence(&self) -> f32 {
+        self.low_confidence
+    }
+
+    /// The fallback counters.
+    pub fn stats(&self) -> &ClassifierStats {
+        &self.stats
+    }
+
+    /// Classify a request, returning the verdict and whether the safe default was used.
+    ///
+    /// Three cases produce `(regex_result, true)` — a **fallback**, not an error:
+    /// - the backend returned `Err` (inference, load-at-call-time, or network failure);
+    /// - the backend exceeded its timeout (surfaced as [`ClassifyError::Timeout`]);
+    /// - the backend returned `Ok` but with `confidence < low_confidence`.
+    ///
+    /// The last case is the "safe low-confidence behaviour" the brief requires: an unsure
+    /// model does not get to pin a conversation's model; the router falls back to exactly
+    /// what it would have done before the classifier existed.
+    pub async fn classify_or_fallback(
+        &self,
+        input: &ClassifyInput<'_>,
+    ) -> (Classification, bool) {
+        match self.classifier.classify(input).await {
+            Ok(classification) if classification.confidence >= self.low_confidence => {
+                self.stats.record(false);
+                (classification, false)
+            }
+            Ok(classification) => {
+                tracing::info!(
+                    target: "nasiko::llm_router::classifier",
+                    backend = self.classifier.name(),
+                    confidence = classification.confidence,
+                    threshold = self.low_confidence,
+                    request_type = %classification.request_type.as_str(),
+                    "classifier: low-confidence verdict — using the regex safe default"
+                );
+                self.stats.record(true);
+                (regex_classification(input.query), true)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "nasiko::llm_router::classifier",
+                    backend = self.classifier.name(),
+                    error = %e,
+                    "classifier: backend failed — falling back to the regex baseline"
+                );
+                self.stats.record(true);
+                (regex_classification(input.query), true)
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -530,5 +974,162 @@ mod tests {
         );
         assert_eq!(rt, RequestType::CodeGeneration);
         assert!(matches!(tier, Tier::Tier1 | Tier::Tier2 | Tier::Tier3));
+    }
+}
+#[cfg(test)]
+mod request_classifier_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    /// Always errors — exercises the router's error fallback.
+    struct FailingClassifier;
+    #[async_trait]
+    impl RequestClassifier for FailingClassifier {
+        fn name(&self) -> &str {
+            "failing"
+        }
+        async fn classify(&self, _: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+            Err(ClassifyError::Inference("boom".into()))
+        }
+    }
+
+    /// Always returns a fixed verdict — lets a test drive the confidence branch.
+    struct FixedClassifier(Classification);
+    #[async_trait]
+    impl RequestClassifier for FixedClassifier {
+        fn name(&self) -> &str {
+            "fixed"
+        }
+        async fn classify(&self, _: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+            Ok(self.0)
+        }
+    }
+
+    /// Sleeps past any short timeout before answering.
+    struct SlowClassifier;
+    #[async_trait]
+    impl RequestClassifier for SlowClassifier {
+        fn name(&self) -> &str {
+            "slow"
+        }
+        async fn classify(&self, _: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            Ok(regex_classification("write a python function"))
+        }
+    }
+
+    fn verdict(rt: RequestType, confidence: f32) -> Classification {
+        Classification {
+            request_type: rt,
+            complexity: 2,
+            confidence,
+        }
+    }
+
+    #[tokio::test]
+    async fn regex_classifier_matches_the_function_and_uses_fixed_values() {
+        let classifier = RegexClassifier;
+        let c = classifier
+            .classify(&ClassifyInput::query_only("write a python script to parse csv"))
+            .await
+            .unwrap();
+        assert_eq!(c.request_type, RequestType::CodeGeneration);
+        assert_eq!(c.complexity, REGEX_COMPLEXITY);
+        assert_eq!(c.confidence, REGEX_CONFIDENCE);
+    }
+
+    #[tokio::test]
+    async fn runtime_uses_the_backend_when_confident() {
+        let runtime = ClassifierRuntime::new(
+            Arc::new(FixedClassifier(verdict(RequestType::Writing, 0.9))),
+            0.55,
+        );
+        let (c, fell_back) = runtime
+            .classify_or_fallback(&ClassifyInput::query_only("rewrite this sentence"))
+            .await;
+        assert_eq!(c.request_type, RequestType::Writing);
+        assert!(!fell_back);
+        assert_eq!(runtime.stats().decisions(), 1);
+        assert_eq!(runtime.stats().fallbacks(), 0);
+    }
+
+    #[tokio::test]
+    async fn runtime_falls_back_on_low_confidence() {
+        let runtime = ClassifierRuntime::new(
+            Arc::new(FixedClassifier(verdict(RequestType::Writing, 0.2))),
+            0.55,
+        );
+        let input = ClassifyInput::query_only("write a python function to sort a list");
+        let (c, fell_back) = runtime.classify_or_fallback(&input).await;
+        assert!(fell_back);
+        // The safe default is exactly the regex verdict for the same query.
+        assert_eq!(c, regex_classification(input.query));
+        assert_eq!(runtime.stats().fallbacks(), 1);
+        assert!((runtime.stats().fallback_rate() - 1.0).abs() < 1e-9);
+    }
+
+    #[tokio::test]
+    async fn runtime_falls_back_on_backend_error() {
+        let runtime = ClassifierRuntime::new(Arc::new(FailingClassifier), 0.0);
+        let (c, fell_back) = runtime
+            .classify_or_fallback(&ClassifyInput::query_only("what is the capital of France?"))
+            .await;
+        assert!(fell_back);
+        assert_eq!(c.request_type, RequestType::FactualLookup);
+        assert_eq!(runtime.name(), "failing");
+    }
+
+    #[tokio::test]
+    async fn timeout_classifier_surfaces_a_timeout_that_falls_back() {
+        let slow: Arc<dyn RequestClassifier> = Arc::new(SlowClassifier);
+        let timed = Arc::new(TimeoutClassifier::new(slow, Duration::from_millis(5)));
+        let runtime = ClassifierRuntime::new(timed, 0.0);
+        let (_, fell_back) = runtime
+            .classify_or_fallback(&ClassifyInput::query_only("write a python function"))
+            .await;
+        assert!(fell_back, "a timed-out backend must take the safe default");
+        assert_eq!(runtime.stats().fallbacks(), 1);
+    }
+
+    #[test]
+    fn backend_kind_parses_labels_and_defaults_unknown_to_none() {
+        assert_eq!(BackendKind::parse(""), Some(BackendKind::Regex));
+        assert_eq!(BackendKind::parse("ReGeX"), Some(BackendKind::Regex));
+        assert_eq!(BackendKind::parse("local"), Some(BackendKind::Local));
+        assert_eq!(BackendKind::parse(" hosted "), Some(BackendKind::Hosted));
+        assert_eq!(BackendKind::parse("gpt-9000"), None);
+    }
+
+    #[tokio::test]
+    async fn build_with_default_config_is_the_regex_baseline() {
+        let cfg = ClassifierConfig::default();
+        let runtime = ClassifierRuntime::new(
+            build_request_classifier(&cfg, reqwest::Client::new()),
+            cfg.low_confidence,
+        );
+        assert_eq!(runtime.name(), "regex");
+    }
+
+    #[tokio::test]
+    async fn build_hosted_without_endpoint_degrades_to_regex() {
+        let cfg = ClassifierConfig {
+            backend: BackendKind::Hosted,
+            endpoint: String::new(),
+            ..ClassifierConfig::default()
+        };
+        let classifier = build_request_classifier(&cfg, reqwest::Client::new());
+        assert_eq!(classifier.name(), "regex");
+    }
+
+    #[tokio::test]
+    async fn build_local_uses_the_embedded_model() {
+        // The embedded asset is present, so `local` builds a working, non-regex backend.
+        let cfg = ClassifierConfig {
+            backend: BackendKind::Local,
+            timeout: Duration::ZERO,
+            ..ClassifierConfig::default()
+        };
+        let classifier = build_request_classifier(&cfg, reqwest::Client::new());
+        assert_eq!(classifier.name(), "local");
     }
 }
