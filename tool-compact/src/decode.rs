@@ -7,7 +7,7 @@ use serde_json::{Map, Value};
 
 use crate::encode::INSTRUCTION;
 use crate::grammar;
-use crate::schema::{Field, Scalar, Shape};
+use crate::schema::{self, Field, Scalar, Shape};
 use crate::types::{CompactError, ToolCall, ToolDef};
 
 pub(crate) fn schemas_from_text(text: &str) -> Result<Vec<ToolDef>, CompactError> {
@@ -186,14 +186,19 @@ pub(crate) fn calls_from_text(text: &str, tools: &[ToolDef]) -> Result<Vec<ToolC
     let Some(raw) = grammar::scan_one(text)? else {
         return Ok(Vec::new());
     };
-    if !tools.iter().any(|tool| tool.name == raw.name) {
+    let Some(tool) = tools.iter().find(|tool| tool.name == raw.name) else {
         return Err(CompactError::UnknownTool { name: raw.name });
-    }
+    };
     let parsed: Value =
         serde_json::from_str(&raw.arguments).map_err(|_| grammar::malformed(&raw.name))?;
     if !parsed.is_object() {
         return Err(grammar::malformed(&raw.name));
     }
+    let shape = schema::classify(tool)?;
+    schema::check(&shape, &parsed).map_err(|reason| CompactError::InvalidArguments {
+        name: raw.name.clone(),
+        reason,
+    })?;
     Ok(vec![ToolCall {
         name: raw.name,
         arguments: raw.arguments,
@@ -244,6 +249,53 @@ mod tests {
         let args: Value = serde_json::from_str(&calls[0].arguments).unwrap();
         assert_eq!(args["title"], "Design review");
         assert_eq!(args["start"], "2026-10-05T15:00:00+05:30");
+    }
+
+    #[test]
+    fn unknown_tool_is_unknown_tool() {
+        let text = r#"<<call weather {"city":"Pune"}>>"#;
+        let err = crate::decode_calls(text, &[calendar()]).unwrap_err();
+        assert!(matches!(err, crate::CompactError::UnknownTool { name } if name == "weather"));
+    }
+
+    #[test]
+    fn missing_title_is_invalid_arguments() {
+        let text = r#"<<call create_calendar_event {"start":"2026-10-05T15:00:00+05:30"}>>"#;
+        let err = crate::decode_calls(text, &[calendar()]).unwrap_err();
+        assert!(matches!(
+            err,
+            crate::CompactError::InvalidArguments { reason: crate::ArgumentFault::MissingField(ref f), .. } if f == "title"
+        ));
+    }
+
+    #[test]
+    fn string_duration_is_wrong_type() {
+        let text = r#"<<call create_calendar_event {"title":"Retro","start":"2026-10-05T15:00:00+05:30","duration_min":"30"}>>"#;
+        let err = crate::decode_calls(text, &[calendar()]).unwrap_err();
+        assert!(matches!(
+            err,
+            crate::CompactError::InvalidArguments { reason: crate::ArgumentFault::WrongType { ref field }, .. } if field == "duration_min"
+        ));
+    }
+
+    #[test]
+    fn secret_visibility_is_a_bad_enum() {
+        let text = r#"<<call create_calendar_event {"title":"Retro","start":"2026-10-05T15:00:00+05:30","visibility":"secret"}>>"#;
+        let err = crate::decode_calls(text, &[calendar()]).unwrap_err();
+        assert!(matches!(
+            err,
+            crate::CompactError::InvalidArguments { reason: crate::ArgumentFault::BadEnum { ref field }, .. } if field == "visibility"
+        ));
+    }
+
+    #[test]
+    fn truncated_marker_is_malformed() {
+        let text = r#"<<call create_calendar_event {"title":"Retro"}"#;
+        let err = crate::decode_calls(text, &[calendar()]).unwrap_err();
+        assert!(matches!(
+            err,
+            crate::CompactError::InvalidArguments { reason: crate::ArgumentFault::Malformed, .. }
+        ));
     }
 
     #[test]

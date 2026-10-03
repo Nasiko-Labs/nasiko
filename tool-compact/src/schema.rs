@@ -41,6 +41,83 @@ impl Shape {
     }
 }
 
+pub(crate) fn check(shape: &Shape, value: &Value) -> Result<(), crate::types::ArgumentFault> {
+    match shape {
+        Shape::Object { fields } => check_object(fields, value, ""),
+        other => check_value(other, value, ""),
+    }
+}
+
+fn check_object(
+    fields: &[Field],
+    value: &Value,
+    field_name: &str,
+) -> Result<(), crate::types::ArgumentFault> {
+    use crate::types::ArgumentFault;
+    let Some(object) = value.as_object() else {
+        return Err(ArgumentFault::WrongType {
+            field: field_name.to_string(),
+        });
+    };
+    for field in fields {
+        if field.required && !object.contains_key(&field.name) {
+            return Err(ArgumentFault::MissingField(field.name.clone()));
+        }
+    }
+    for (key, child) in object {
+        let Some(field) = fields.iter().find(|field| field.name == *key) else {
+            return Err(ArgumentFault::WrongType { field: key.clone() });
+        };
+        check_value(&field.shape, child, key)?;
+    }
+    Ok(())
+}
+
+fn check_value(
+    shape: &Shape,
+    value: &Value,
+    field: &str,
+) -> Result<(), crate::types::ArgumentFault> {
+    use crate::types::ArgumentFault;
+    let wrong = || ArgumentFault::WrongType {
+        field: field.to_string(),
+    };
+    match shape {
+        Shape::Scalar(Scalar::Str | Scalar::DateTime) => {
+            value.as_str().map(|_| ()).ok_or_else(wrong)
+        }
+        Shape::Scalar(Scalar::Int) => value
+            .as_i64()
+            .or_else(|| value.as_u64().map(|n| n as i64))
+            .map(|_| ())
+            .ok_or_else(wrong),
+        Shape::Scalar(Scalar::Num) => value.as_number().map(|_| ()).ok_or_else(wrong),
+        Shape::Scalar(Scalar::Bool) => value.as_bool().map(|_| ()).ok_or_else(wrong),
+        Shape::Enum(allowed) => {
+            let Some(text) = value.as_str() else {
+                return Err(wrong());
+            };
+            if allowed.iter().any(|item| item == text) {
+                Ok(())
+            } else {
+                Err(ArgumentFault::BadEnum {
+                    field: field.to_string(),
+                })
+            }
+        }
+        Shape::Array(inner) => {
+            let Some(items) = value.as_array() else {
+                return Err(wrong());
+            };
+            for item in items {
+                check_value(inner, item, field)?;
+            }
+            Ok(())
+        }
+        Shape::Object { fields } => check_object(fields, value, field),
+    }
+}
+
 pub(crate) fn classify(tool: &ToolDef) -> Result<Shape, CompactError> {
     match &tool.parameters {
         None => Ok(Shape::Object { fields: Vec::new() }),
