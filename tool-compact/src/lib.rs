@@ -4,12 +4,19 @@
 
 mod decode;
 mod error;
+mod report;
 mod schema;
+mod scope;
 mod types;
 
 pub use decode::StreamDecoder;
 pub use error::{CompactError, Result};
+pub use report::{
+    BypassReason, OptimizationContext, OptimizationOutcome, OptimizationPlan, OptimizationReport,
+    optimize_tools,
+};
 pub use schema::{CanonicalTool, Property, SchemaKind, SchemaNode, analyze_tools};
+pub use scope::{ScopeDecision, ScopeInput, ScopeReason, select_tools};
 pub use types::{CompactTools, FunctionDef, ToolCall, ToolDef};
 
 /// Decode atomically: any malformed or invalid detected call fails the response.
