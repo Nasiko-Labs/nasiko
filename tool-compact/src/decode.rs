@@ -18,8 +18,8 @@ pub fn decode_calls(text: &str, tools: &[ToolDef]) -> Result<Vec<ToolCall>, Deco
             let start_idx = cursor + pos + 6; // index after "<<call"
             let remaining = &text[start_idx..];
 
-            // Parse tool name (skip leading whitespaces)
-            let trimmed = remaining.trim_start();
+            // Parse tool name (skip leading whitespaces and optional colon)
+            let trimmed = remaining.trim_start().trim_start_matches(':').trim_start();
             let leading_ws_count = remaining.len() - trimmed.len();
             let name_start = start_idx + leading_ws_count;
 
@@ -27,17 +27,17 @@ pub fn decode_calls(text: &str, tools: &[ToolDef]) -> Result<Vec<ToolCall>, Deco
                 return Err(DecodeError::MalformedSyntax("incomplete tool call".to_string()));
             }
 
-            // Tool name ends at first whitespace or '{'
+            // Tool name ends at first whitespace, colon, parenthesis, or '{'
             let mut name_end = name_start;
             while name_end < len {
                 let b = bytes[name_end];
-                if b.is_ascii_whitespace() || b == b'{' {
+                if b.is_ascii_whitespace() || b == b'{' || b == b':' || b == b'(' {
                     break;
                 }
                 name_end += 1;
             }
 
-            let tool_name = text[name_start..name_end].trim();
+            let tool_name = text[name_start..name_end].trim().trim_end_matches(':');
             if tool_name.is_empty() {
                 return Err(DecodeError::MalformedSyntax("missing tool name in call".to_string()));
             }
@@ -220,5 +220,19 @@ mod tests {
         let text = "Today's weather is sunny and warm.";
         let calls = decode_calls(text, &tools).unwrap();
         assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn test_decode_tolerant_colon_and_formatting() {
+        let tools = sample_tools();
+        let text1 = r#"<<call:create_calendar_event {"title":"Sync","start":"2026-10-05"}>>"#;
+        let calls1 = decode_calls(text1, &tools).unwrap();
+        assert_eq!(calls1.len(), 1);
+        assert_eq!(calls1[0].function.name, "create_calendar_event");
+
+        let text2 = r#"<<call create_calendar_event: {"title":"Sync","start":"2026-10-05"}>>"#;
+        let calls2 = decode_calls(text2, &tools).unwrap();
+        assert_eq!(calls2.len(), 1);
+        assert_eq!(calls2[0].function.name, "create_calendar_event");
     }
 }
