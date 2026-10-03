@@ -107,6 +107,7 @@ async fn responses_core(
         )
     };
     let signals = RequestSignals {
+        context: response_classifier_context(&body, ctx.cfg.classifier_context_chars),
         turn_ordinal: user_turn_ordinal(body.get("input")),
         is_tool_continuation: is_tool_continuation(body.get("input")),
         query,
@@ -217,6 +218,21 @@ async fn responses_core(
     last_response.map(Ok).unwrap_or_else(|| {
         Err(last_error.unwrap_or_else(|| GatewayError::Upstream("no Responses attempts".into())))
     })
+}
+
+fn response_classifier_context(body: &Value, limit: usize) -> String {
+    let mut messages = Vec::new();
+    if let Some(instructions) = body.get("instructions").and_then(Value::as_str) {
+        messages.push(serde_json::json!({"role":"system", "content":instructions}));
+    }
+    if let Some(input) = body.get("input").and_then(Value::as_array) {
+        messages.extend(input.iter().filter(|m| m.get("role").is_some()).cloned());
+    }
+    let messages: Vec<crate::ir::Message> = messages
+        .into_iter()
+        .filter_map(|m| serde_json::from_value(m).ok())
+        .collect();
+    crate::routing::classifier_context(&messages, limit)
 }
 
 fn is_retryable_transport_error(error: &reqwest::Error) -> bool {
@@ -1041,6 +1057,7 @@ mod tests {
     fn ctx(base: String) -> LlmRouterCtx {
         let provider_base = base.clone();
         LlmRouterCtx {
+            classifier: Arc::new(crate::routing::classifier::RegexClassifier),
             db: PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
             http: reqwest::Client::new(),
             cfg: Arc::new(GatewayConfig {

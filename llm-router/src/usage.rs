@@ -154,13 +154,18 @@ pub async fn log_usage(
         request_bytes: record.request_bytes,
     };
 
-    let metadata = build_metadata(MetadataInputs {
+    let mut metadata = build_metadata(MetadataInputs {
         platform_paid: record.platform_paid,
         attribution_source: record.attribution_source,
         pricing: priced.provenance(),
         cache_creation: serde_json::to_value(&cache_details).unwrap_or(serde_json::Value::Null),
         compress: record.compress_metadata,
         brevity: record.brevity_metadata,
+    });
+    metadata["routing_evidence"] = serde_json::json!({
+        "input_reported": input.is_some(), "output_reported": output.is_some(),
+        "cache_read_reported": cache_read.is_some(),
+        "cache_creation_reported": cache_creation.is_some() || matches!(record.provider.as_str(), "openai" | "openrouter"),
     });
 
     sqlx::query(

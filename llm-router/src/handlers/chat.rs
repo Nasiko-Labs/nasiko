@@ -48,6 +48,7 @@ pub(crate) struct RequestSignals {
     /// Latest user turn's text — the classifier's `query` input (Level 3) for every agent,
     /// and (for a coding-agent integration) also the `conv_id` anchor for *this* turn.
     pub query: Option<String>,
+    pub context: String,
     /// Count of top-level user turns so far. Combined with `query`, anchors a coding-agent's
     /// `conv_id` to the current turn rather than the whole session — see
     /// `BoundarySignals::for_coding_agent`'s doc comment for why that distinction matters.
@@ -193,6 +194,7 @@ async fn chat_core(
         model: req.model.as_deref(),
     };
     let signals = RequestSignals {
+        context: routing::classifier_context(&req.messages, ctx.cfg.classifier_context_chars),
         query: routing::latest_user_query(&req.messages),
         turn_ordinal: routing::user_turn_ordinal(&req.messages),
         is_tool_continuation: routing::is_tool_continuation(&req.messages),
@@ -426,7 +428,7 @@ pub(crate) async fn resolve_routed_request(
     // otherwise pins every request to Level 4 (the agent's configured `llm_config`) and
     // makes the prompt classifier (Level 3) unreachable. Derive signals from the transcript
     // itself instead for these agents.
-    let (boundary, flow_id, billed_user_id, attribution_source) = if resolved.is_coding_agent {
+    let (mut boundary, flow_id, billed_user_id, attribution_source) = if resolved.is_coding_agent {
         (
             BoundarySignals::for_coding_agent(
                 &agent_id,
@@ -467,11 +469,25 @@ pub(crate) async fn resolve_routed_request(
             Some(attribution.source),
         )
     };
-    let decision = routing::route_model(
+    if signals.is_tool_continuation
+        && (ctx.cfg.classifier_backend != "regex" || ctx.cfg.cache_switch_enabled)
+    {
+        boundary.phase = routing::Phase::Continue;
+    }
+    let decision = routing::route_model_with_classifier(
         ctx.router_cache.as_ref(),
         ctx.tier_registry.as_ref(),
         ctx.cell_store.as_ref(),
         ctx.salience_gate.as_ref(),
+        ctx.classifier.as_ref(),
+        (ctx.cfg.classifier_backend != "regex").then_some(ctx.cfg.classifier_seed),
+        &signals.context,
+        ctx.cfg.cache_switch_enabled.then_some((
+            &ctx.db,
+            ctx.pricing.as_ref(),
+            billed_user_id.as_str(),
+            ctx.cfg.cache_switch_margin,
+        )),
         &RouteInputs {
             agent_id: &agent_id,
             provider: &resolved.provider,
@@ -949,6 +965,7 @@ mod tests {
             ..Default::default()
         };
         LlmRouterCtx {
+            classifier: Arc::new(crate::routing::classifier::RegexClassifier),
             db: PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
             http: reqwest::Client::new(),
             cfg: Arc::new(cfg),
@@ -1440,6 +1457,7 @@ mod tests {
                 model: None,
             },
             RequestSignals {
+                context: String::new(),
                 query: Some("write a function that reverses a string".into()),
                 turn_ordinal: 1,
                 is_tool_continuation: false,
@@ -1486,6 +1504,7 @@ mod tests {
                 model: None,
             },
             RequestSignals {
+                context: String::new(),
                 query: Some("write a function that reverses a string".into()),
                 turn_ordinal: 1,
                 is_tool_continuation: false,
