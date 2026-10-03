@@ -787,4 +787,40 @@ mod tests {
         let err = decode_calls("<<call foo {\"a\":1}", &tools).unwrap_err();
         assert_eq!(err.error_code(), "malformed_call");
     }
+
+    #[test]
+    fn test_property_random_chunk_splits_stream_decoder() {
+        let tools = sample_tools();
+        let full_text = "Preamble <<call create_calendar_event {\"title\":\"Design Review\",\"start\":\"2026-10-05T15:00:00+05:30\"}>> Interleaved text <<call send_email {\"to\":[\"test@example.com\"],\"subject\":\"Status\",\"body\":\"Green\"}>> Postamble";
+        
+        // Property test: Every possible 2-way and 3-way split of the stream must decode identically
+        let len = full_text.len();
+        for split_pos in 1..len {
+            let chunk1 = &full_text[..split_pos];
+            let chunk2 = &full_text[split_pos..];
+
+            let mut decoder = StreamDecoder::new();
+            decoder.feed(chunk1);
+            decoder.feed(chunk2);
+
+            let calls = decoder.finish(&tools).expect("2-way split must decode identically");
+            assert_eq!(calls.len(), 2);
+            assert_eq!(calls[0].name, "create_calendar_event");
+            assert_eq!(calls[1].name, "send_email");
+        }
+
+        // Test step-based multi-chunk fragmentation (chunk sizes 1, 2, 3, 5, 7, 11)
+        for chunk_size in [1, 2, 3, 5, 7, 11, 17, 31] {
+            let mut decoder = StreamDecoder::new();
+            let mut start = 0;
+            while start < len {
+                let end = std::cmp::min(start + chunk_size, len);
+                decoder.feed(&full_text[start..end]);
+                start = end;
+            }
+            let calls = decoder.finish(&tools).expect("Chunk fragmentation must decode");
+            assert_eq!(calls.len(), 2);
+        }
+    }
 }
+
