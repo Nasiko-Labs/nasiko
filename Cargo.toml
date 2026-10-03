@@ -4,6 +4,7 @@ members = [
     # ─── OSS crates ─────────────────────────────────────────────────────────
     "auth",
     "compress",
+    "tool-compact",
     "config",
     "secrets",
     "observability",
@@ -36,6 +37,7 @@ version = "0.1.0"
 # ─── Internal OSS crates ────────────────────────────────────────────────────
 nasiko-auth = { path = "auth" }
 nasiko-compress = { path = "compress" }
+nasiko-tool-compact = { path = "tool-compact" }
 nasiko-config = { path = "config" }
 nasiko-pricing = { path = "pricing" }
 nasiko-savings = { path = "savings" }
@@ -73,6 +75,7 @@ utoipa-swagger-ui = { version = "9", features = ["axum"] }
 # ─── Serialization ──────────────────────────────────────────────────────────
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+jsonschema = { version = "=0.58.4", default-features = false }
 
 # ─── Text / patterns ────────────────────────────────────────────────────────
 regex = "1"
@@ -171,6 +174,8 @@ mockito = "1"
 
 # ─── Benchmarking ───────────────────────────────────────────────────────────
 criterion = { version = "0.5", features = ["async_tokio"] }
+proptest = "1"
+tiktoken-rs = "=0.12.0"
 
 [profile.release]
 strip = true
