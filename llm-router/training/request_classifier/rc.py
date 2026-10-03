@@ -248,7 +248,7 @@ def cmd_split(args):
                      "tests": [r["slice"]] + r["tags"]} for r in kept if r["split"] == split]
         with open(os.path.join(DATA, f"eval_{split}.json"), "w", encoding="utf-8") as f:
             json.dump({"schema_version": "h4-public-eval-v1",
-                       "purpose": f"P2 own held-out split ({split}); synthetic, never trained on",
+                       "purpose": f"classifier: own held-out split ({split}); synthetic, never trained on",
                        "source": "llm-router/training/request_classifier",
                        "examples": examples}, f, ensure_ascii=False, indent=1)
     c = Counter(r["split"] for r in kept)

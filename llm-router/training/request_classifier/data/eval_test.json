@@ -1,6 +1,6 @@
 {
  "schema_version": "h4-public-eval-v1",
- "purpose": "P2 own held-out split (test); synthetic, never trained on",
+ "purpose": "classifier: own held-out split (test); synthetic, never trained on",
  "source": "llm-router/training/request_classifier",
  "examples": [
   {
