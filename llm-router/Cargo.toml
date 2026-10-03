@@ -19,6 +19,8 @@ nasiko-pricing.workspace = true
 nasiko-savings.workspace = true
 # Internal — structural payload compression at the egress seam (src/compress.rs)
 nasiko-compress.workspace = true
+# Internal — compact tool definitions and call decoding at the egress seam (src/tool_compact.rs)
+nasiko-tool-compact.workspace = true
 
 # Web / async
 axum = { workspace = true }
@@ -67,3 +69,5 @@ base64 = { workspace = true }
 mockito = { workspace = true }
 tower = { workspace = true }
 zstd.workspace = true
+# Local token measurement in examples/compact_tools_eval.rs only; pinned at the workspace root.
+tiktoken-rs.workspace = true

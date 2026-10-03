@@ -145,6 +145,14 @@ pub struct GatewayConfig {
     /// byte-identical to a build without it.
     pub brevity_holdout_pct: u8,
 
+    /// Send tool definitions in the compact one-line form and decode the model's calls back
+    /// into `tool_calls` (`tool_compact.rs`). Non-streaming requests only.
+    ///
+    /// Defaults **off**: unlike the layers above it changes the shape of what the model is
+    /// asked to write, so it is opt-in fleet-wide, and then still needs the agent's own
+    /// `compress_enabled` switch.
+    pub tool_compact_enabled: bool,
+
     /// Persist pre-compression originals so an agent can recover what was elided (IP-5).
     /// Defaults **on**; only ever writes a row when compression actually elided something, which
     /// requires the agent's switch, so an opted-out fleet stores nothing.
@@ -193,6 +201,7 @@ impl Default for GatewayConfig {
             brevity_enabled: true,
             brevity_min_bytes: 0,
             brevity_holdout_pct: 5,
+            tool_compact_enabled: false,
             compress_recovery_enabled: true,
             compress_recovery_min_bytes: 8192,
             compress_recovery_ttl_secs: 86_400,
@@ -296,6 +305,7 @@ impl GatewayConfig {
                 d.brevity_holdout_pct as usize,
             )
             .min(100) as u8,
+            tool_compact_enabled: env_flag("TOKEN_TOOL_COMPACT", d.tool_compact_enabled),
             compress_recovery_enabled: env_flag(
                 "TOKEN_COMPRESS_RECOVERY",
                 d.compress_recovery_enabled,
