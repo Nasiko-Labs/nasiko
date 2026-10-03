@@ -154,6 +154,157 @@ pub struct GatewayConfig {
     pub compress_recovery_min_bytes: usize,
     /// How long an original stays recoverable. Sized to outlive the flow that produced it.
     pub compress_recovery_ttl_secs: u64,
+
+    /// Request-classifier (routing Level 3) settings. The defaults reproduce the behaviour
+    /// before the classifier became pluggable: the regex backend, no abstention.
+    pub classifier: ClassifierConfig,
+    /// `ROUTER_TIER_SEED`: when set, Thompson tier selection draws from a per-decision RNG
+    /// seeded from this value plus `(provider, agent, conv_id, query)`, so identical inputs
+    /// and learned state give an identical tier. Unset ⇒ entropy, as before.
+    pub router_tier_seed: Option<u64>,
+    /// `ROUTER_DECISION_L1_CAPACITY`: size of an in-process sticky decision cache in front of
+    /// Redis (or of the no-op cache when Redis is absent). `0` (default) disables it.
+    pub router_decision_l1_capacity: usize,
+}
+
+/// Request-classifier configuration, read only by [`GatewayConfig::from_env`].
+#[derive(Clone, PartialEq)]
+pub struct ClassifierConfig {
+    /// `CLASSIFIER_BACKEND`: `regex` (default) | `local` | `hosted` | `cascade`.
+    pub backend: String,
+    /// `CLASSIFIER_MODEL_PATH`: local weights file; empty ⇒ the weights embedded in the binary.
+    pub model_path: String,
+    /// `CLASSIFIER_ENDPOINT`: OpenAI-compatible base URL (ending in `/v1`) for `hosted`.
+    pub endpoint: String,
+    /// `CLASSIFIER_MODEL`: hosted model id.
+    pub model: String,
+    /// `CLASSIFIER_API_KEY`: hosted key. Empty ⇒ no `Authorization` header (e.g. a proxy holds
+    /// the key). Deliberately never falls back to the platform provider keys.
+    pub api_key: String,
+    /// `CLASSIFIER_TIMEOUT_MS`: whole-classification budget; on expiry the regex answers.
+    pub timeout_ms: u64,
+    /// `CLASSIFIER_MIN_CONFIDENCE`: below this the router serves the configured model without
+    /// pinning. `0.0` (default) never abstains.
+    pub min_confidence: f32,
+    /// `CLASSIFIER_ESCALATE_BELOW`: cascade escalates to hosted when local confidence is below.
+    pub escalate_below: f32,
+    /// `CLASSIFIER_COMPLEXITY_ROUTING`: opt-in complexity prior shift + guardrail.
+    pub complexity_routing: bool,
+    /// `CLASSIFIER_COMPLEXITY_GUARD_CONFIDENCE`: minimum confidence for the guardrail.
+    pub complexity_guard_confidence: f32,
+    /// `CLASSIFIER_HOSTED_LOGPROBS`: request token logprobs for a calibrated hosted confidence.
+    pub hosted_logprobs: bool,
+    /// `CLASSIFIER_HOSTED_DEFAULT_CONFIDENCE`: hosted confidence when logprobs are unavailable.
+    pub hosted_default_confidence: f32,
+}
+
+impl Default for ClassifierConfig {
+    fn default() -> Self {
+        Self {
+            backend: "regex".into(),
+            model_path: String::new(),
+            endpoint: String::new(),
+            model: String::new(),
+            api_key: String::new(),
+            timeout_ms: 1500,
+            min_confidence: 0.0,
+            escalate_below: 0.6,
+            complexity_routing: false,
+            complexity_guard_confidence: 0.6,
+            hosted_logprobs: true,
+            hosted_default_confidence: 0.7,
+        }
+    }
+}
+
+/// Hand-written so the API key can never reach a log line through `{:?}`.
+impl std::fmt::Debug for ClassifierConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClassifierConfig")
+            .field("backend", &self.backend)
+            .field("model_path", &self.model_path)
+            .field("endpoint", &self.endpoint)
+            .field("model", &self.model)
+            .field(
+                "api_key",
+                &if self.api_key.is_empty() {
+                    "<unset>"
+                } else {
+                    "<redacted>"
+                },
+            )
+            .field("timeout_ms", &self.timeout_ms)
+            .field("min_confidence", &self.min_confidence)
+            .field("escalate_below", &self.escalate_below)
+            .field("complexity_routing", &self.complexity_routing)
+            .field(
+                "complexity_guard_confidence",
+                &self.complexity_guard_confidence,
+            )
+            .field("hosted_logprobs", &self.hosted_logprobs)
+            .field("hosted_default_confidence", &self.hosted_default_confidence)
+            .finish()
+    }
+}
+
+impl ClassifierConfig {
+    /// Build from a key lookup (the process env in [`GatewayConfig::from_env`], a map in
+    /// tests). Malformed or out-of-range values warn and fall back to the default.
+    pub fn from_lookup(get: impl Fn(&str) -> Option<String>) -> Self {
+        let d = Self::default();
+        let string = |key: &str, default: &str| {
+            get(key)
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| default.to_string())
+        };
+        let flag = |key: &str, default: bool| parse_value_or_warn(key, get(key), parse_flag, default);
+        let unit = |key: &str, default: f32| parse_value_or_warn(key, get(key), parse_unit, default);
+        Self {
+            backend: string("CLASSIFIER_BACKEND", &d.backend).to_ascii_lowercase(),
+            model_path: string("CLASSIFIER_MODEL_PATH", &d.model_path),
+            endpoint: string("CLASSIFIER_ENDPOINT", &d.endpoint),
+            model: string("CLASSIFIER_MODEL", &d.model),
+            api_key: string("CLASSIFIER_API_KEY", &d.api_key),
+            timeout_ms: parse_value_or_warn(
+                "CLASSIFIER_TIMEOUT_MS",
+                get("CLASSIFIER_TIMEOUT_MS"),
+                |v| v.trim().parse::<u64>().map(|ms| ms.max(1)),
+                d.timeout_ms,
+            ),
+            min_confidence: unit("CLASSIFIER_MIN_CONFIDENCE", d.min_confidence),
+            escalate_below: unit("CLASSIFIER_ESCALATE_BELOW", d.escalate_below),
+            complexity_routing: flag("CLASSIFIER_COMPLEXITY_ROUTING", d.complexity_routing),
+            complexity_guard_confidence: unit(
+                "CLASSIFIER_COMPLEXITY_GUARD_CONFIDENCE",
+                d.complexity_guard_confidence,
+            ),
+            hosted_logprobs: flag("CLASSIFIER_HOSTED_LOGPROBS", d.hosted_logprobs),
+            hosted_default_confidence: unit(
+                "CLASSIFIER_HOSTED_DEFAULT_CONFIDENCE",
+                d.hosted_default_confidence,
+            ),
+        }
+    }
+}
+
+/// A probability-like value in `[0, 1]`.
+fn parse_unit(raw: &str) -> Result<f32, String> {
+    let v: f32 = raw.trim().parse().map_err(|e| format!("{e}"))?;
+    if (0.0..=1.0).contains(&v) {
+        Ok(v)
+    } else {
+        Err(format!("{v} is outside [0, 1]"))
+    }
+}
+
+/// `true`/`1` or `false`/`0` (case-insensitive).
+fn parse_flag(raw: &str) -> Result<bool, String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" => Ok(true),
+        "false" | "0" => Ok(false),
+        other => Err(format!("{other:?} is not true/false/1/0")),
+    }
 }
 
 impl Default for GatewayConfig {
@@ -196,6 +347,9 @@ impl Default for GatewayConfig {
             compress_recovery_enabled: true,
             compress_recovery_min_bytes: 8192,
             compress_recovery_ttl_secs: 86_400,
+            classifier: ClassifierConfig::default(),
+            router_tier_seed: None,
+            router_decision_l1_capacity: 0,
         }
     }
 }
@@ -308,6 +462,17 @@ impl GatewayConfig {
                 "TOKEN_COMPRESS_RECOVERY_TTL_SECS",
                 d.compress_recovery_ttl_secs as usize,
             ) as u64,
+            classifier: ClassifierConfig::from_lookup(|k| std::env::var(k).ok()),
+            router_tier_seed: parse_or_warn(
+                "ROUTER_TIER_SEED",
+                |v| v.trim().parse::<u64>().map(Some),
+                None,
+            ),
+            router_decision_l1_capacity: parse_or_warn(
+                "ROUTER_DECISION_L1_CAPACITY",
+                |v| v.trim().parse::<usize>(),
+                d.router_decision_l1_capacity,
+            ),
         }
     }
 
@@ -369,7 +534,18 @@ fn parse_or_warn<T, E: std::fmt::Display>(
     f: impl Fn(&str) -> Result<T, E>,
     default: T,
 ) -> T {
-    let Ok(raw) = std::env::var(key) else {
+    parse_value_or_warn(key, std::env::var(key).ok(), f, default)
+}
+
+/// [`parse_or_warn`] over an already-looked-up value, so config parsing can be tested
+/// without mutating the process environment.
+fn parse_value_or_warn<T, E: std::fmt::Display>(
+    key: &str,
+    raw: Option<String>,
+    f: impl Fn(&str) -> Result<T, E>,
+    default: T,
+) -> T {
+    let Some(raw) = raw else {
         return default;
     };
     if raw.trim().is_empty() {
@@ -408,6 +584,54 @@ fn env_first(keys: &[&str], default: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn lookup(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+        let map: std::collections::HashMap<String, String> = pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        move |k| map.get(k).cloned()
+    }
+
+    #[test]
+    fn config_parses_classifier_env_and_warns_on_garbage() {
+        assert_eq!(ClassifierConfig::from_lookup(lookup(&[])), ClassifierConfig::default());
+        let c = ClassifierConfig::from_lookup(lookup(&[
+            ("CLASSIFIER_BACKEND", " LOCAL "),
+            ("CLASSIFIER_MODEL_PATH", "/tmp/w.json"),
+            ("CLASSIFIER_TIMEOUT_MS", "250"),
+            ("CLASSIFIER_MIN_CONFIDENCE", "0.55"),
+            ("CLASSIFIER_COMPLEXITY_ROUTING", "TRUE"),
+            ("CLASSIFIER_HOSTED_LOGPROBS", "0"),
+        ]));
+        assert_eq!(c.backend, "local");
+        assert_eq!(c.model_path, "/tmp/w.json");
+        assert_eq!(c.timeout_ms, 250);
+        assert_eq!(c.min_confidence, 0.55);
+        assert!(c.complexity_routing);
+        assert!(!c.hosted_logprobs);
+        // Garbage and out-of-range values fall back to the defaults.
+        let g = ClassifierConfig::from_lookup(lookup(&[
+            ("CLASSIFIER_TIMEOUT_MS", "soon"),
+            ("CLASSIFIER_MIN_CONFIDENCE", "1.5"),
+            ("CLASSIFIER_ESCALATE_BELOW", "-0.1"),
+            ("CLASSIFIER_COMPLEXITY_ROUTING", "maybe"),
+            ("CLASSIFIER_BACKEND", "   "),
+        ]));
+        assert_eq!(g, ClassifierConfig::default());
+    }
+
+    #[test]
+    fn classifier_config_debug_redacts_api_key() {
+        let c = ClassifierConfig {
+            api_key: "sk-very-secret".into(),
+            ..Default::default()
+        };
+        let dbg = format!("{c:?}");
+        assert!(!dbg.contains("sk-very-secret"));
+        assert!(dbg.contains("<redacted>"));
+        assert!(format!("{:?}", ClassifierConfig::default()).contains("<unset>"));
+    }
 
     #[test]
     fn platform_key_for_built_ins() {
