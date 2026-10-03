@@ -113,12 +113,14 @@ pub fn decode_calls(text: &str, tools: &[ToolDef]) -> Result<Vec<ToolCall>, Deco
             let id = format!("call_{}", call_counter);
             call_counter += 1;
 
+            let clean_args = crate::validate::sanitize_json(raw_args.trim());
+
             calls.push(ToolCall {
                 id,
                 kind: "function".to_string(),
                 function: FunctionCall {
                     name: tool_name.to_string(),
-                    arguments: raw_args.to_string(),
+                    arguments: clean_args,
                 },
                 extra: Map::new(),
             });
@@ -235,4 +237,16 @@ mod tests {
         assert_eq!(calls2.len(), 1);
         assert_eq!(calls2[0].function.name, "create_calendar_event");
     }
+
+    #[test]
+    fn test_decode_handles_trailing_commas_gracefully() {
+        let tools = sample_tools();
+        let text = r#"<<call create_calendar_event {"title":"Sync","start":"2026-10-05",}>>"#;
+        let calls = decode_calls(text, &tools).unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].function.name, "create_calendar_event");
+        let parsed: serde_json::Value = serde_json::from_str(&calls[0].function.arguments).unwrap();
+        assert_eq!(parsed["title"], "Sync");
+    }
 }
+

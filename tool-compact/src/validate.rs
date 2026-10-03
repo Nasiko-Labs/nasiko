@@ -10,7 +10,7 @@ pub fn validate_call(name: &str, raw_args: &str, tools: &[ToolDef]) -> Result<To
         .find(|t| t.function.name == name)
         .ok_or_else(|| DecodeError::UnknownTool(format!("unknown tool '{}'", name)))?;
 
-    let parsed_args: Value = serde_json::from_str(raw_args)
+    let parsed_args: Value = parse_json_args(raw_args)
         .map_err(|e| DecodeError::InvalidArguments(format!("malformed json arguments: {}", e)))?;
 
     if let Some(params_schema) = &tool.function.parameters {
@@ -18,6 +18,64 @@ pub fn validate_call(name: &str, raw_args: &str, tools: &[ToolDef]) -> Result<To
     }
 
     Ok(tool.clone())
+}
+
+/// Parses JSON arguments with resilience for trailing commas and minor model quirks.
+pub fn parse_json_args(raw: &str) -> Result<Value, serde_json::Error> {
+    let trimmed = raw.trim();
+    if let Ok(v) = serde_json::from_str(trimmed) {
+        return Ok(v);
+    }
+    let sanitized = sanitize_json(trimmed);
+    serde_json::from_str(&sanitized)
+}
+
+/// Sanitizes JSON strings by stripping trailing commas outside of string literals.
+pub fn sanitize_json(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut in_string = false;
+    let mut escape = false;
+    let chars: Vec<char> = input.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+
+    while i < len {
+        let c = chars[i];
+        if in_string {
+            if escape {
+                escape = false;
+            } else if c == '\\' {
+                escape = true;
+            } else if c == '"' {
+                in_string = false;
+            }
+            out.push(c);
+            i += 1;
+        } else {
+            if c == '"' {
+                in_string = true;
+                out.push(c);
+                i += 1;
+            } else if c == ',' {
+                // Peek forward past whitespace to see if next non-ws is '}' or ']'
+                let mut j = i + 1;
+                while j < len && chars[j].is_whitespace() {
+                    j += 1;
+                }
+                if j < len && (chars[j] == '}' || chars[j] == ']') {
+                    // Trailing comma found before closing delimiter, skip comma
+                    i += 1;
+                } else {
+                    out.push(c);
+                    i += 1;
+                }
+            } else {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    out
 }
 
 pub fn validate_json_schema(args: &Value, schema: &Value) -> Result<(), DecodeError> {
@@ -151,3 +209,19 @@ fn validate_property_value(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_sanitize_json_trailing_commas() {
+        let input = r#"{"a": 1, "b": "hello, world", "c": [1, 2, ], }"#;
+        let parsed = parse_json_args(input).unwrap();
+        assert_eq!(parsed["a"], 1);
+        assert_eq!(parsed["b"], "hello, world");
+        assert_eq!(parsed["c"], json!([1, 2]));
+    }
+}
+

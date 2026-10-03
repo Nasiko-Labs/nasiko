@@ -75,6 +75,27 @@ pub fn apply_compaction(req: &mut ChatRequest) -> Option<Vec<CompactToolDef>> {
         );
     }
 
+    // Convert past assistant tool_calls in message history to uniform <<call>> format
+    for msg in &mut req.messages {
+        if msg.role == "assistant" {
+            if let Some(calls) = msg.tool_calls.take() {
+                let mut rendered = Vec::new();
+                for call in &calls {
+                    rendered.push(format!("<<call {} {}>>", call.function.name, call.function.arguments));
+                }
+                let rendered_str = rendered.join(" ");
+                if let Some(Value::String(ref mut s)) = msg.content {
+                    if !s.is_empty() {
+                        s.push(' ');
+                    }
+                    s.push_str(&rendered_str);
+                } else {
+                    msg.content = Some(Value::String(rendered_str));
+                }
+            }
+        }
+    }
+
     Some(compact_defs)
 }
 
