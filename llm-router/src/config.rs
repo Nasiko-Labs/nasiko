@@ -154,6 +154,17 @@ pub struct GatewayConfig {
     pub compress_recovery_min_bytes: usize,
     /// How long an original stays recoverable. Sized to outlive the flow that produced it.
     pub compress_recovery_ttl_secs: u64,
+
+    /// Opt-in compact tool schemas (`tool-compact/`).
+    ///
+    /// Defaults **off**: existing behavior is unchanged unless an operator sets
+    /// `LLM_COMPACT_TOOLS_ENABLED=true`. When on, the router may replace native
+    /// `tools` with an injected compact definitions block on eligible requests;
+    /// anything unsupported bypasses (native tools sent untouched). See
+    /// [`crate::compact_tools`] for the currently supported coverage
+    /// (OpenAI non-streaming request side only; streaming / Anthropic / Gemini
+    /// responses are not decoded through this path yet).
+    pub compact_tools_enabled: bool,
 }
 
 impl Default for GatewayConfig {
@@ -196,6 +207,7 @@ impl Default for GatewayConfig {
             compress_recovery_enabled: true,
             compress_recovery_min_bytes: 8192,
             compress_recovery_ttl_secs: 86_400,
+            compact_tools_enabled: false,
         }
     }
 }
@@ -308,6 +320,7 @@ impl GatewayConfig {
                 "TOKEN_COMPRESS_RECOVERY_TTL_SECS",
                 d.compress_recovery_ttl_secs as usize,
             ) as u64,
+            compact_tools_enabled: env_flag("LLM_COMPACT_TOOLS_ENABLED", d.compact_tools_enabled),
         }
     }
 
