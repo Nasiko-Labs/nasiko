@@ -172,5 +172,5 @@ mockito = "1"
 criterion = { version = "0.5", features = ["async_tokio"] }
 
 [profile.release]
-strip = true
+strip = "none"
 # codegen-units = 1

@@ -18,6 +18,7 @@ nasiko-secrets.workspace = true
 nasiko-pricing.workspace = true
 # Internal — structural payload compression at the egress seam (src/compress.rs)
 nasiko-compress.workspace = true
+nasiko-tool-compact.workspace = true
 
 # Web / async
 axum = { workspace = true }
@@ -66,3 +67,4 @@ base64 = { workspace = true }
 mockito = { workspace = true }
 tower = { workspace = true }
 zstd.workspace = true
+tiktoken-rs = "0.6"
