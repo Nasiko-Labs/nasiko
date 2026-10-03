@@ -3586,6 +3586,7 @@ dependencies = [
  "nasiko-pricing",
  "nasiko-savings",
  "nasiko-secrets",
+ "nasiko-tool-compact",
  "rand 0.9.5",
  "rand_distr",
  "redis",

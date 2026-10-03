@@ -19,6 +19,8 @@ nasiko-pricing.workspace = true
 nasiko-savings.workspace = true
 # Internal — structural payload compression at the egress seam (src/compress.rs)
 nasiko-compress.workspace = true
+# Compact function-tool schemas. The router seam calls this; the eval example does too.
+nasiko-tool-compact.workspace = true
 
 # Web / async
 axum = { workspace = true }
