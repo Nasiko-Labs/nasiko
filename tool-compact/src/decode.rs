@@ -183,9 +183,21 @@ fn malformed() -> CompactError {
 }
 
 pub(crate) fn calls_from_text(text: &str, tools: &[ToolDef]) -> Result<Vec<ToolCall>, CompactError> {
-    let Some(raw) = grammar::scan_one(text)? else {
-        return Ok(Vec::new());
-    };
+    let mut rest = text.to_string();
+    let mut calls = Vec::new();
+    loop {
+        let Some((_, after_marker)) = rest.split_once("<<call ") else {
+            break;
+        };
+        let after_marker = after_marker.to_string();
+        let (raw, consumed) = grammar::take_call(&after_marker)?;
+        calls.push(validate_call(raw, tools)?);
+        rest = after_marker.chars().skip(consumed).collect();
+    }
+    Ok(calls)
+}
+
+fn validate_call(raw: grammar::RawCall, tools: &[ToolDef]) -> Result<ToolCall, CompactError> {
     let Some(tool) = tools.iter().find(|tool| tool.name == raw.name) else {
         return Err(CompactError::UnknownTool { name: raw.name });
     };
@@ -199,10 +211,10 @@ pub(crate) fn calls_from_text(text: &str, tools: &[ToolDef]) -> Result<Vec<ToolC
         name: raw.name.clone(),
         reason,
     })?;
-    Ok(vec![ToolCall {
+    Ok(ToolCall {
         name: raw.name,
         arguments: raw.arguments,
-    }])
+    })
 }
 
 #[cfg(test)]
@@ -249,6 +261,40 @@ mod tests {
         let args: Value = serde_json::from_str(&calls[0].arguments).unwrap();
         assert_eq!(args["title"], "Design review");
         assert_eq!(args["start"], "2026-10-05T15:00:00+05:30");
+    }
+
+    #[test]
+    fn prose_around_a_call_is_ignored() {
+        let text = format!(
+            "Sure.\n{design_review}\nDone.",
+            design_review = crate::fixtures::design_review()
+        );
+        let calls = crate::decode_calls(&text, &[calendar()]).unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "create_calendar_event");
+    }
+
+    #[test]
+    fn two_calls_come_back_in_source_order() {
+        let text = r#"<<call send_email {"to":["sam@example.com"]}>> then <<call create_calendar_event {"title":"Retro","start":"2026-10-04T10:00:00+05:30"}>>"#;
+        let email = ToolDef {
+            name: "send_email".into(),
+            description: None,
+            parameters: Some(json!({
+                "type": "object",
+                "properties": {"to": {"type": "array", "items": {"type": "string"}}},
+                "required": ["to"]
+            })),
+        };
+        let calls = crate::decode_calls(text, &[calendar(), email]).unwrap();
+        assert_eq!(calls[0].name, "send_email");
+        assert_eq!(calls[1].name, "create_calendar_event");
+    }
+
+    #[test]
+    fn plain_answer_has_no_calls_and_is_not_an_error() {
+        let calls = crate::decode_calls("What's the weather?", &[calendar()]).unwrap();
+        assert!(calls.is_empty());
     }
 
     #[test]

@@ -11,8 +11,8 @@ Status is `Not started`, `In progress`, or `Done`. Update this file when a task 
 | T05 | Rebuild the schema from the compact form | [lld/05-schema-round-trip.md](lld/05-schema-round-trip.md) | Done |
 | T06 | Decode one well-formed call | [lld/06-decode-one-call.md](lld/06-decode-one-call.md) | Done |
 | T07 | Keep `>>` inside a string argument | [lld/07-closer-inside-string.md](lld/07-closer-inside-string.md) | Done |
-| T08 | Reject unknown tools and invalid arguments | [lld/08-fail-closed.md](lld/08-fail-closed.md) | Not started |
-| T09 | Decode prose, several calls, and a reply with no call | [lld/09-prose-and-several-calls.md](lld/09-prose-and-several-calls.md) | Not started |
+| T08 | Reject unknown tools and invalid arguments | [lld/08-fail-closed.md](lld/08-fail-closed.md) | Done |
+| T09 | Decode prose, several calls, and a reply with no call | [lld/09-prose-and-several-calls.md](lld/09-prose-and-several-calls.md) | Done |
 | T10 | Decode a call split across stream chunks | [lld/10-stream-decoder.md](lld/10-stream-decoder.md) | Not started |
 | T11 | Prove a successful decode always matches the schema | [lld/11-no-invalid-success.md](lld/11-no-invalid-success.md) | Not started |
 | T12 | Write the offline eval example | [lld/12-offline-eval.md](lld/12-offline-eval.md) | Not started |
