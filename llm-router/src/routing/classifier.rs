@@ -363,7 +363,7 @@ impl RegexClassifier {
 #[async_trait]
 impl RequestClassifier for RegexClassifier { async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> { Ok(Self::classify_sync(input)) } fn backend_name(&self) -> &str { "regex" } }
 
-pub struct ModelClassifier { pub http: reqwest::Client, pub endpoint: String, pub model: String, pub timeout: Duration }
+pub struct ModelClassifier { pub http: reqwest::Client, pub endpoint: String, pub model: String, pub api_key: Option<String>, pub timeout: Duration }
 #[derive(Serialize)] struct ModelRequest<'a> { model: &'a str, temperature: f32, messages: [ModelMessage<'a>; 2] }
 #[derive(Serialize)] struct ModelMessage<'a> { role: &'a str, content: String }
 #[async_trait]
@@ -371,7 +371,9 @@ impl RequestClassifier for ModelClassifier {
     async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
         let system = "Classify only. Return JSON only with request_type, complexity, confidence. request_type must be code_generation, code_understanding, technical_design, analytical_reasoning, writing, factual_lookup, or general. complexity is 1-5 and confidence is 0-1.";
         let user = format!("query:\n{}\ncontext:\n{}", input.query, input.context.unwrap_or(""));
-        let response = self.http.post(&self.endpoint).timeout(self.timeout).json(&ModelRequest { model: &self.model, temperature: 0.0, messages: [ModelMessage { role: "system", content: system.into() }, ModelMessage { role: "user", content: user }] }).send().await.map_err(|e| ClassifyError::Request(e.to_string()))?;
+        let mut request = self.http.post(&self.endpoint).timeout(self.timeout).json(&ModelRequest { model: &self.model, temperature: 0.0, messages: [ModelMessage { role: "system", content: system.into() }, ModelMessage { role: "user", content: user }] });
+        if let Some(api_key) = self.api_key.as_deref().filter(|key| !key.is_empty()) { request = request.bearer_auth(api_key); }
+        let response = request.send().await.map_err(|e| ClassifyError::Request(e.to_string()))?;
         if !response.status().is_success() { return Err(ClassifyError::Request(format!("HTTP {}", response.status()))); }
         let value: serde_json::Value = response.json().await.map_err(|e| ClassifyError::InvalidOutput(e.to_string()))?;
         let content = value["choices"][0]["message"]["content"].as_str().ok_or_else(|| ClassifyError::InvalidOutput("missing content".into()))?;

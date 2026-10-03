@@ -20,7 +20,30 @@ Classification is eligible only at `cold_start` and `switch`; existing cache hit
 EVAL_SET=/tmp/classifier-eval.json OUT=/tmp/classifier-out.jsonl cargo run --release -p nasiko-llm-router --example classifier_eval
 ```
 
-Rust validation and latency measurements are NOT VERIFIED in this workspace because Cargo is unavailable.
+  Rust validation and latency measurements are NOT VERIFIED in this workspace because Cargo is unavailable.
+
+  ## Request classifier adapter
+
+  The dashboard calls the real Rust classifier through the development adapter. It defaults to `http://127.0.0.1:8090/api/classify`; set `NASIKO_CLASSIFIER_URL` to override that URL.
+
+  ```sh
+  CLASSIFIER_BACKEND=model \
+  CLASSIFIER_ENDPOINT=https://bedrock-mantle.us-east-1.api.aws/v1/chat/completions \
+  CLASSIFIER_MODEL_PATH=openai.gpt-5.6-luna \
+  CLASSIFIER_API_KEY="$API_KEY" \
+  cargo run -p nasiko-llm-router --bin classifier-adapter
+  ```
+
+  Use `CLASSIFIER_BACKEND=regex` for the offline baseline. Model errors, invalid JSON, invalid fields, timeouts, and low confidence use the Rust regex fallback and set `fallback_used` to `true`. Never commit the API key.
+
+  Health check: `curl http://127.0.0.1:8090/health`
+
+  ```sh
+  curl -X POST http://127.0.0.1:8090/api/classify \
+    -H 'content-type: application/json' \
+    -d '{"query":"Design a distributed payment system supporting 10 million users.","context":null}'
+  ```
+
 
 ![Nasiko](docs/assets/nasiko-runtime-banner.png)
 

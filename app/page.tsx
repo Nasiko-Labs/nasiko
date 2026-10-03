@@ -37,8 +37,9 @@ export default function Page() {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ query, simulate_failure: simulateFailure }),
       })
-      if (!response.ok) throw new Error('Classifier API unavailable')
-      setResult(await response.json())
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error ?? `Classifier adapter returned HTTP ${response.status}`)
+      setResult(payload)
     } catch (nextError) {
       setResult(null)
       setError(nextError instanceof Error ? nextError.message : 'Classifier API unavailable')

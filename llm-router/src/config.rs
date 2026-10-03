@@ -84,6 +84,7 @@ pub struct GatewayConfig {
     pub classifier_backend: String,
     pub classifier_model_path: String,
     pub classifier_endpoint: String,
+    pub classifier_api_key: String,
     pub classifier_timeout_ms: u64,
     pub classifier_min_confidence: f32,
 
@@ -191,6 +192,7 @@ impl Default for GatewayConfig {
             classifier_backend: "regex".into(),
             classifier_model_path: String::new(),
             classifier_endpoint: String::new(),
+            classifier_api_key: String::new(),
             classifier_timeout_ms: 2_000,
             classifier_min_confidence: 0.60,
             salience_gate_enabled: true,
@@ -276,6 +278,7 @@ impl GatewayConfig {
             classifier_backend: env_or("CLASSIFIER_BACKEND", &d.classifier_backend),
             classifier_model_path: env_or("CLASSIFIER_MODEL_PATH", &d.classifier_model_path),
             classifier_endpoint: env_or("CLASSIFIER_ENDPOINT", &d.classifier_endpoint),
+            classifier_api_key: env_first(&["CLASSIFIER_API_KEY", "API_KEY"], &d.classifier_api_key),
             classifier_timeout_ms: env_parse_first(&["CLASSIFIER_TIMEOUT_MS"], d.classifier_timeout_ms),
             classifier_min_confidence: env_parse_first(&["CLASSIFIER_MIN_CONFIDENCE"], d.classifier_min_confidence),
             salience_gate_enabled: std::env::var("SALIENCE_GATE_ENABLED")

@@ -42,9 +42,10 @@ fn classifier(config: &GatewayConfig) -> Arc<dyn RequestClassifier> {
         };
         let primary = ModelClassifier {
             http: reqwest::Client::new(),
-            endpoint: config.classifier_endpoint.clone(),
-            model,
-            timeout: std::time::Duration::from_millis(config.classifier_timeout_ms),
+  endpoint: config.classifier_endpoint.clone(),
+  model,
+  api_key: Some(config.classifier_api_key.clone()),
+  timeout: std::time::Duration::from_millis(config.classifier_timeout_ms),
         };
         Arc::new(FallbackClassifier {
             primary: Arc::new(primary),
