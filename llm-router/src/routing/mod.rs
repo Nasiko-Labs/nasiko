@@ -23,10 +23,11 @@ pub mod cells;
 pub mod classifier;
 // The salience classifier itself — feature engine, weight loading, scoring, banding.
 // Private to `routing`: only `salience.rs` (a sibling module) uses it directly, via
-// `ClassifierSalienceGate`.
+// `ClassifierSalienceGate`; `request_features.rs` shares its hashing/tokenizer helpers.
 mod patterns;
 pub mod pricing_sync;
 pub mod registry;
+pub mod request_features;
 pub mod salience;
 mod salience_classifier;
 
