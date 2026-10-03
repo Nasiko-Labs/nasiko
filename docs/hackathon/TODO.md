@@ -18,7 +18,7 @@ Status is `Not started`, `In progress`, or `Done`. Update this file when a task 
 | T12 | Write the offline eval example | [lld/12-offline-eval.md](lld/12-offline-eval.md) | Done |
 | T13 | Round-trip the public sample | [lld/13-public-sample.md](lld/13-public-sample.md) | Done |
 | T14 | Show two eval runs write the same output | [lld/14-deterministic-eval.md](lld/14-deterministic-eval.md) | Done |
-| T15 | Measure token reduction on the public sample | [lld/15-token-count.md](lld/15-token-count.md) | Not started |
+| T15 | Measure token reduction on the public sample | [lld/15-token-count.md](lld/15-token-count.md) | Done |
 | T16 | Add the router flag and keep it off by default | [lld/16-flag-defaults-off.md](lld/16-flag-defaults-off.md) | Not started |
 | T17 | Compact and decode OpenAI non-streaming requests | [lld/17-openai-non-streaming.md](lld/17-openai-non-streaming.md) | Not started |
 | T18 | Bypass compaction when it is not safe | [lld/18-bypass.md](lld/18-bypass.md) | Not started |

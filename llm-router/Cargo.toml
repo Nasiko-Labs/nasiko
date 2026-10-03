@@ -62,6 +62,8 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
+# Token counts for the eval example only. Not a dependency of the router library.
+tiktoken-rs = "=0.6.0"
 tokio = { workspace = true }
 serde_json = { workspace = true }
 serial_test = { workspace = true }

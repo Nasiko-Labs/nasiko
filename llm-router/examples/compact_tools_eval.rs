@@ -5,7 +5,8 @@
 //!   cargo run --release -p nasiko-llm-router --example compact_tools_eval
 //! ```
 //!
-//! Writes one JSONL line per case. Does not score. Live mode is a later task.
+//! Writes one JSONL line per case. Does not score. Set `COUNT_TOKENS=1` to print
+//! `token_reduction=` for the `cases` lines. Live mode is not part of this example.
 
 use std::fs::File;
 use std::io::Write;
@@ -40,9 +41,12 @@ fn run() -> Result<(), String> {
         .unwrap_or_default();
 
     let mut out = File::create(&out_path).map_err(|err| format!("create {out_path}: {err}"))?;
+    let mut counted = Vec::new();
     if let Some(cases) = spec.get("cases").and_then(Value::as_array) {
         for case in cases {
-            writeln!(out, "{}", case_line(case, &catalog)?).map_err(|err| err.to_string())?;
+            let (line, row) = case_line(case, &catalog)?;
+            writeln!(out, "{line}").map_err(|err| err.to_string())?;
+            counted.push(row);
         }
     }
     if let Some(cases) = spec.get("decoder_cases").and_then(Value::as_array) {
@@ -50,10 +54,19 @@ fn run() -> Result<(), String> {
             writeln!(out, "{}", decoder_line(case, &catalog)?).map_err(|err| err.to_string())?;
         }
     }
+    if std::env::var("COUNT_TOKENS").ok().as_deref() == Some("1") {
+        println!("token_reduction={}", token_reduction(&counted)?);
+    }
     Ok(())
 }
 
-fn case_line(case: &Value, catalog: &[Value]) -> Result<String, String> {
+struct Counted {
+    compacted: bool,
+    compact: Value,
+    native: Value,
+}
+
+fn case_line(case: &Value, catalog: &[Value]) -> Result<(String, Counted), String> {
     let id = case.get("id").and_then(Value::as_str).unwrap_or("");
     let tools = selected_tools(case, catalog)?;
     let messages = case
@@ -65,13 +78,15 @@ fn case_line(case: &Value, catalog: &[Value]) -> Result<String, String> {
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
+    let native = native_request(&messages, &tools);
     match encode_tools(&tools) {
         Ok(compact) => {
             let rendered = render_calls(&expected);
             let roundtrip = decode_calls(&rendered, &tools).map_err(|err| err.to_string())?;
+            let compact_body = compact_request(&compact.text, &messages);
             let line = json!({
                 "id": id,
-                "compact_request": compact_request(&compact.text, &messages),
+                "compact_request": compact_body,
                 "compacted": true,
                 "rendered_calls": rendered,
                 "roundtrip_calls": roundtrip
@@ -82,20 +97,46 @@ fn case_line(case: &Value, catalog: &[Value]) -> Result<String, String> {
                     }))
                     .collect::<Vec<_>>(),
             });
-            Ok(line.to_string())
+            Ok((
+                line.to_string(),
+                Counted { compacted: true, compact: compact_body, native },
+            ))
         }
         Err(CompactError::UnsupportedSchema { .. }) => {
             let line = json!({
                 "id": id,
-                "compact_request": native_request(&messages, &tools),
+                "compact_request": native,
                 "compacted": false,
                 "rendered_calls": "",
                 "roundtrip_calls": [],
             });
-            Ok(line.to_string())
+            Ok((
+                line.to_string(),
+                Counted { compacted: false, compact: native.clone(), native },
+            ))
         }
         Err(err) => Err(err.to_string()),
     }
+}
+
+/// Fraction of native `o200k_base` tokens removed. A bypassed case adds nothing
+/// to the numerator, even when its two bodies differ.
+fn token_reduction(rows: &[Counted]) -> Result<f64, String> {
+    let bpe = tiktoken_rs::o200k_base().map_err(|err| err.to_string())?;
+    let mut saved = 0i64;
+    let mut native_total = 0i64;
+    for row in rows {
+        let native = bpe.encode_with_special_tokens(&row.native.to_string()).len() as i64;
+        let compact = bpe.encode_with_special_tokens(&row.compact.to_string()).len() as i64;
+        native_total += native;
+        if row.compacted {
+            saved += native - compact;
+        }
+    }
+    if native_total == 0 {
+        return Ok(0.0);
+    }
+    Ok(saved as f64 / native_total as f64)
 }
 
 fn decoder_line(case: &Value, catalog: &[Value]) -> Result<String, String> {
@@ -254,4 +295,40 @@ fn split_like(rendered: &str, chunks: &[String]) -> Vec<String> {
 
 fn parse_json(text: &str) -> Value {
     serde_json::from_str(text).unwrap_or(Value::String(text.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn bypassed_case_adds_nothing_to_the_numerator() {
+        let native = json!({
+            "messages": [{"role": "user", "content": "book it"}],
+            "tools": [{"type": "function", "function": {"name": "create_calendar_event", "parameters": {"type": "object"}}}]
+        });
+        let compact = json!({
+            "messages": [{"role": "system", "content": "create_calendar_event(title:str)"}]
+        });
+        let compacted = Counted {
+            compacted: true,
+            compact: compact.clone(),
+            native: native.clone(),
+        };
+        let bypass = Counted {
+            compacted: false,
+            compact: json!({"short": true}),
+            native: json!({
+                "tools": [{"description": "x".repeat(4000), "name": "lookup", "parameters": {"$ref": "#/$defs/Id"}}]
+            }),
+        };
+        let only = token_reduction(std::slice::from_ref(&compacted)).expect("tokens");
+        let with_bypass = token_reduction(&[compacted, bypass]).expect("tokens");
+        assert!(only >= 0.30, "compacted case should clear the bar, got {only}");
+        assert!(
+            with_bypass < only,
+            "a bypassed case must not increase savings: {with_bypass} vs {only}"
+        );
+    }
 }
