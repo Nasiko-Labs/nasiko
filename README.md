@@ -90,7 +90,7 @@ nothing off the machine.
 | Cursor CLI  | yes                             | not yet     |
 
 
-Those four are the supported set today and we will continue to add support for me. If you have a request please create an issue!
+Those four are the supported set today and we will continue to add support for more. If you have a request please create an issue!
 
 > The CLI is a Rust crate, so this path needs [Rust](https://rustup.rs). Reporting and routing also
 > need an active control plane and valid login: see
