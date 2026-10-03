@@ -6,8 +6,9 @@
 use serde_json::{Map, Value};
 
 use crate::encode::INSTRUCTION;
+use crate::grammar;
 use crate::schema::{Field, Scalar, Shape};
-use crate::types::{CompactError, ToolDef};
+use crate::types::{CompactError, ToolCall, ToolDef};
 
 pub(crate) fn schemas_from_text(text: &str) -> Result<Vec<ToolDef>, CompactError> {
     let mut tools = Vec::new();
@@ -178,17 +179,32 @@ fn shape_to_value(shape: &Shape) -> Value {
 }
 
 fn malformed() -> CompactError {
-    CompactError::InvalidArguments {
-        name: String::new(),
-        reason: crate::types::ArgumentFault::Malformed,
+    grammar::malformed("")
+}
+
+pub(crate) fn calls_from_text(text: &str, tools: &[ToolDef]) -> Result<Vec<ToolCall>, CompactError> {
+    let Some(raw) = grammar::scan_one(text)? else {
+        return Ok(Vec::new());
+    };
+    if !tools.iter().any(|tool| tool.name == raw.name) {
+        return Err(CompactError::UnknownTool { name: raw.name });
     }
+    let parsed: Value =
+        serde_json::from_str(&raw.arguments).map_err(|_| grammar::malformed(&raw.name))?;
+    if !parsed.is_object() {
+        return Err(grammar::malformed(&raw.name));
+    }
+    Ok(vec![ToolCall {
+        name: raw.name,
+        arguments: raw.arguments,
+    }])
 }
 
 #[cfg(test)]
 mod tests {
     use crate::fixtures::calendar;
     use crate::types::ToolDef;
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     #[test]
     fn decoded_calendar_keeps_schema_facts() {
@@ -208,6 +224,26 @@ mod tests {
         );
         assert_eq!(params["properties"]["attendees"]["items"]["type"], "string");
         assert_eq!(params["properties"]["duration_min"]["type"], "integer");
+    }
+
+    #[test]
+    fn design_review_call_decodes_to_one_tool_call() {
+        let calls = crate::decode_calls(crate::fixtures::design_review(), &[calendar()]).unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "create_calendar_event");
+        let args: Value = serde_json::from_str(&calls[0].arguments).unwrap();
+        assert_eq!(args["title"], "Design review");
+        assert_eq!(args["start"], "2026-10-05T15:00:00+05:30");
+        assert_eq!(args["attendees"], json!(["riya@example.com"]));
+    }
+
+    #[test]
+    fn argument_key_order_does_not_matter() {
+        let text = r#"<<call create_calendar_event {"start":"2026-10-05T15:00:00+05:30","title":"Design review"}>>"#;
+        let calls = crate::decode_calls(text, &[calendar()]).unwrap();
+        let args: Value = serde_json::from_str(&calls[0].arguments).unwrap();
+        assert_eq!(args["title"], "Design review");
+        assert_eq!(args["start"], "2026-10-05T15:00:00+05:30");
     }
 
     #[test]

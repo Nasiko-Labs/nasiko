@@ -25,8 +25,6 @@ mod types;
 pub use stream::StreamDecoder;
 pub use types::{ArgumentFault, CompactError, CompactTools, ToolCall, ToolDef};
 
-use types::not_built;
-
 /// Encode `tools` into the compact signature block.
 ///
 /// Every tool is classified first. One unsupported schema fails the batch so
@@ -36,8 +34,8 @@ pub fn encode_tools(tools: &[ToolDef]) -> Result<CompactTools, CompactError> {
 }
 
 /// Decode compact call text into tool calls.
-pub fn decode_calls(_text: &str, _tools: &[ToolDef]) -> Result<Vec<ToolCall>, CompactError> {
-    Err(not_built())
+pub fn decode_calls(text: &str, tools: &[ToolDef]) -> Result<Vec<ToolCall>, CompactError> {
+    decode::calls_from_text(text, tools)
 }
 
 /// Rebuild tool schemas from the compact signature text.
