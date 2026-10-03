@@ -101,6 +101,23 @@ pub struct GatewayConfig {
     /// retuned. Default 0.80.
     pub salience_high_threshold: f64,
 
+    /// Request classifier backend. `regex` preserves the existing routing behavior;
+    /// `http` opts into the configured JSON classification endpoint.
+    pub request_classifier_backend: String,
+    /// JSON endpoint used when REQUEST_CLASSIFIER_BACKEND=http.
+    pub request_classifier_endpoint: String,
+    /// Chat model used when REQUEST_CLASSIFIER_BACKEND=llm (OpenAI-compatible `/chat/completions`;
+    /// REQUEST_CLASSIFIER_ENDPOINT is then the API base URL, e.g. `https://host/v1`).
+    pub request_classifier_model: String,
+    /// Weights file for REQUEST_CLASSIFIER_BACKEND=local. Empty uses the model bundled in the binary.
+    pub request_classifier_model_path: String,
+    /// Optional bearer token for the classifier endpoint (sourced only from environment).
+    pub request_classifier_api_key: String,
+    /// Hard timeout for the opt-in classifier backend; timeout triggers regex fallback.
+    pub request_classifier_timeout_ms: u64,
+    /// HTTP predictions below this confidence are treated as invalid and use regex.
+    pub request_classifier_min_confidence: f64,
+
     /// Fleet-wide kill switch for payload compression. Compression is opted into **per agent**
     /// (`agents.compress_enabled`); this only lets an operator stop all of it at once without
     /// editing every agent's row. Default on, so a UI toggle takes effect without a deploy.
@@ -185,6 +202,13 @@ impl Default for GatewayConfig {
             salience_weights_path: String::new(),
             salience_low_threshold: 0.20,
             salience_high_threshold: 0.80,
+            request_classifier_backend: "regex".into(),
+            request_classifier_endpoint: String::new(),
+            request_classifier_model: String::new(),
+            request_classifier_model_path: String::new(),
+            request_classifier_api_key: String::new(),
+            request_classifier_timeout_ms: 500,
+            request_classifier_min_confidence: 0.5,
             compress_kill_switch: true,
             compress_min_bytes: 2048,
             compress_types: nasiko_compress::TypeMask::DEFAULT,
@@ -274,6 +298,35 @@ impl GatewayConfig {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(d.salience_high_threshold),
+            request_classifier_backend: env_or(
+                "REQUEST_CLASSIFIER_BACKEND",
+                &d.request_classifier_backend,
+            ),
+            request_classifier_endpoint: env_or(
+                "REQUEST_CLASSIFIER_ENDPOINT",
+                &d.request_classifier_endpoint,
+            ),
+            request_classifier_model: env_or(
+                "REQUEST_CLASSIFIER_MODEL",
+                &d.request_classifier_model,
+            ),
+            request_classifier_model_path: env_or(
+                "REQUEST_CLASSIFIER_MODEL_PATH",
+                &d.request_classifier_model_path,
+            ),
+            request_classifier_api_key: env_or(
+                "REQUEST_CLASSIFIER_API_KEY",
+                &d.request_classifier_api_key,
+            ),
+            request_classifier_timeout_ms: std::env::var("REQUEST_CLASSIFIER_TIMEOUT_MS")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(d.request_classifier_timeout_ms),
+            request_classifier_min_confidence: std::env::var("REQUEST_CLASSIFIER_MIN_CONFIDENCE")
+                .ok()
+                .and_then(|value| value.parse::<f64>().ok())
+                .filter(|value| value.is_finite() && (0.0..=1.0).contains(value))
+                .unwrap_or(d.request_classifier_min_confidence),
             compress_kill_switch: env_flag("TOKEN_COMPRESS_ENABLED", true),
             compress_min_bytes: env_usize("TOKEN_COMPRESS_MIN_BYTES", 2048),
             // A bad label must not silently widen or narrow what gets rewritten, so an
@@ -434,5 +487,14 @@ mod tests {
         assert_eq!(cfg.platform_key_for("my-gateway"), "");
         assert_eq!(cfg.platform_key_for("deepseek"), "");
         assert_eq!(cfg.platform_key_for(""), "");
+    }
+
+    #[test]
+    fn request_classifier_defaults_to_legacy_regex() {
+        let cfg = GatewayConfig::default();
+        assert_eq!(cfg.request_classifier_backend, "regex");
+        assert!(cfg.request_classifier_endpoint.is_empty());
+        assert_eq!(cfg.request_classifier_timeout_ms, 500);
+        assert_eq!(cfg.request_classifier_min_confidence, 0.5);
     }
 }

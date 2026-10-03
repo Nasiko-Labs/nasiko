@@ -1,0 +1,54 @@
+{"seed": 4, "query": "Create a React component for a paginated table with sortable columns.", "context": "TypeScript, no UI library.", "request_type": "code_generation", "complexity": 3}
+{"seed": 6, "query": "Build a retry decorator with exponential backoff and jitter, configurable on exception types.", "context": "Python 3.12.", "request_type": "code_generation", "complexity": 3}
+{"seed": 8, "query": "Convert this callback-based Node function to async/await.", "context": "fs.readFile with nested callbacks, 12 lines.", "request_type": "code_generation", "complexity": 2}
+{"seed": 13, "query": "Write a regex that matches ISO 8601 dates with optional time and timezone.", "context": "", "request_type": "code_generation", "complexity": 2}
+{"seed": 15, "query": "Write a GitHub Actions workflow that runs cargo test and clippy on every pull request.", "context": "", "request_type": "code_generation", "complexity": 2}
+{"seed": 20, "query": "Add a Kubernetes liveness and readiness probe to this deployment yaml.", "context": "Service listens on 8080, /healthz exists.", "request_type": "code_generation", "complexity": 2}
+{"seed": 21, "query": "What does this regex do? `^(?=.*[A-Z])(?=.*\\d).{8,}$`", "context": "", "request_type": "code_understanding", "complexity": 2}
+{"seed": 24, "query": "What is the difference between `&str` and `String` in this snippet and why does it fail to compile?", "context": "let s: &str = String::from(\"a\");", "request_type": "code_understanding", "complexity": 2}
+{"seed": 27, "query": "What does `git rebase -i HEAD~3` actually do?", "context": "", "request_type": "code_understanding", "complexity": 1}
+{"seed": 30, "query": "Review this PR diff and explain what behavioural change it introduces.", "context": "Changes the default timeout from 30s to None in the HTTP client builder.", "request_type": "code_understanding", "complexity": 3}
+{"seed": 39, "query": "Look at this stack trace and tell me what is most likely the root cause.", "context": "NullPointerException at OrderService.java:88 after upgrading the DI container.", "request_type": "code_understanding", "complexity": 3}
+{"seed": 43, "query": "Sketch an architecture for real-time collaborative editing for our notes app.", "context": "Web client, currently REST + Postgres.", "request_type": "technical_design", "complexity": 5}
+{"seed": 47, "query": "Design a zero-downtime strategy for splitting our users table into two services.", "context": "Postgres, 200M rows, 24/7 traffic.", "request_type": "technical_design", "complexity": 5}
+{"seed": 49, "query": "How would you design idempotent webhook handling for a payments provider?", "context": "At-least-once delivery, events can arrive out of order.", "request_type": "technical_design", "complexity": 4}
+{"seed": 51, "query": "Outline an authentication design for a mobile app and a public API sharing one user base.", "context": "", "request_type": "technical_design", "complexity": 3}
+{"seed": 53, "query": "Plan the rollout of a breaking API change to 300 integrators.", "context": "Versioning is currently by header; deprecation policy undefined.", "request_type": "technical_design", "complexity": 3}
+{"seed": 54, "query": "Design a job scheduler that guarantees a task runs at most once across a cluster.", "context": "No ZooKeeper allowed; Postgres is available.", "request_type": "technical_design", "complexity": 4}
+{"seed": 56, "query": "Design the observability stack for 40 microservices: logs, metrics, traces, alerting.", "context": "Kubernetes, budget-conscious.", "request_type": "technical_design", "complexity": 4}
+{"seed": 62, "query": "Our p99 latency doubled after the release but p50 is flat. What are the most likely causes and how do I rank them?", "context": "Release added a feature flag lookup and a new DB index.", "request_type": "analytical_reasoning", "complexity": 4}
+{"seed": 65, "query": "If a train leaves at 3pm at 60 mph and another at 4pm at 80 mph, when does the second catch up?", "context": "", "request_type": "analytical_reasoning", "complexity": 2}
+{"seed": 67, "query": "Which of these three vendors is cheapest over 3 years given the usage curve?", "context": "Vendor A flat 40k/yr; B 0.02 per call with 500k free; C tiered. Usage grows 8% monthly from 2M calls.", "request_type": "analytical_reasoning", "complexity": 4}
+{"seed": 68, "query": "Work out the expected value of this bet.", "context": "Win 5 with probability 0.3, lose 2 otherwise.", "request_type": "analytical_reasoning", "complexity": 1}
+{"seed": 78, "query": "Evaluate whether our retry policy could amplify an outage.", "context": "3 retries, no backoff, 10 upstream callers.", "request_type": "analytical_reasoning", "complexity": 4}
+{"seed": 79, "query": "Why does cache hit rate fall as we add more nodes?", "context": "Consistent hashing without virtual nodes, 2 to 8 nodes.", "request_type": "analytical_reasoning", "complexity": 3}
+{"seed": 89, "query": "Draft a postmortem summary for a non-technical audience.", "context": "30-minute outage, caused by an expired certificate, no data loss.", "request_type": "writing", "complexity": 3}
+{"seed": 91, "query": "Give me three catchy names and taglines for a developer tool that compresses prompts.", "context": "", "request_type": "writing", "complexity": 2}
+{"seed": 95, "query": "Polish this LinkedIn post announcing our open-source release.", "context": "", "request_type": "writing", "complexity": 1}
+{"seed": 97, "query": "Write a poem about debugging in Python.", "context": "", "request_type": "writing", "complexity": 2}
+{"seed": 98, "query": "Summarise this meeting transcript into decisions, owners and deadlines.", "context": "45-minute standup transcript pasted below, 3,000 words.", "request_type": "writing", "complexity": 3}
+{"seed": 99, "query": "Create the speaker notes for a five-minute lightning talk on property-based testing.", "context": "", "request_type": "writing", "complexity": 3}
+{"seed": 101, "query": "Compose a technical blog post comparing two approaches to feature flags, with a clear narrative.", "context": "Audience: mid-level engineers, 1,000 words.", "request_type": "writing", "complexity": 4}
+{"seed": 104, "query": "What port does PostgreSQL use by default?", "context": "", "request_type": "factual_lookup", "complexity": 1}
+{"seed": 113, "query": "What is the time complexity of binary search?", "context": "", "request_type": "factual_lookup", "complexity": 1}
+{"seed": 118, "query": "Define eventual consistency in one line.", "context": "", "request_type": "factual_lookup", "complexity": 1}
+{"seed": 120, "query": "Which AWS service offers managed Kafka?", "context": "", "request_type": "factual_lookup", "complexity": 1}
+{"seed": 121, "query": "How many days are in a leap year?", "context": "", "request_type": "factual_lookup", "complexity": 1}
+{"seed": 122, "query": "What is the syntax for a Python list comprehension?", "context": "", "request_type": "factual_lookup", "complexity": 1}
+{"seed": 124, "query": "What is the formula for compound interest?", "context": "", "request_type": "factual_lookup", "complexity": 1}
+{"seed": 133, "query": "ok", "context": "", "request_type": "general", "complexity": 1}
+{"seed": 134, "query": "Can we continue where we left off?", "context": "", "request_type": "general", "complexity": 1}
+{"seed": 135, "query": "Which is better, tabs or spaces?", "context": "", "request_type": "general", "complexity": 1}
+{"seed": 138, "query": "Plan a weekend trip to Lisbon for two people.", "context": "", "request_type": "general", "complexity": 3}
+{"seed": 141, "query": "Can you recommend a good book on leadership?", "context": "", "request_type": "general", "complexity": 1}
+{"seed": 142, "query": "Could you repeat that more simply?", "context": "", "request_type": "general", "complexity": 1}
+{"seed": 145, "query": "hmm not sure what I want to ask", "context": "", "request_type": "general", "complexity": 1}
+{"seed": 159, "query": "Should we refactor now or ship first? Weigh the risks given the deadline.", "context": "Two weeks to launch, 30% test coverage.", "request_type": "analytical_reasoning", "complexity": 3}
+{"seed": 169, "query": "Define idempotency.", "context": "", "request_type": "factual_lookup", "complexity": 1}
+{"seed": 174, "query": "Fix this bug: the discount is applied twice when the coupon and the loyalty tier overlap.", "context": "def total(cart): d = coupon(cart) + loyalty(cart); return price(cart) - d - coupon(cart)", "request_type": "code_generation", "complexity": 3}
+{"seed": 183, "query": "pls help!!! my code no work, it say undefined is not a function lol", "context": "button.onclick = handlr;", "request_type": "code_understanding", "complexity": 2}
+{"seed": 186, "query": "write something nice for my coworker's farewell card, she is moving to Berlin", "context": "", "request_type": "writing", "complexity": 1}
+{"seed": 189, "query": "What should I name my open source CLI that renames photos by date?", "context": "", "request_type": "general", "complexity": 2}
+{"seed": 198, "query": "I have 3 hours before a demo. Tell me what to cut from this plan so it still works.", "context": "Plan lists auth, dashboard, export, email alerts, dark mode, audit log.", "request_type": "analytical_reasoning", "complexity": 3}
+{"seed": 199, "query": "Lay out how you would test a payments reconciliation job end to end.", "context": "Nightly batch, reads provider CSVs, writes to ledger.", "request_type": "technical_design", "complexity": 3}
+{"seed": 200, "query": "Give me a quick Python one-liner to flatten a list of lists.", "context": "", "request_type": "code_generation", "complexity": 1}
