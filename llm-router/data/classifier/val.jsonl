@@ -1,0 +1,63 @@
+{"id":"vcg-01","query":"Convert this SQL schema into a set of Django models.","request_type":"code_generation","complexity":3}
+{"id":"vcg-02","query":"Add a health check endpoint to the Express app.","request_type":"code_generation","complexity":2}
+{"id":"vcg-03","query":"Patch the login flow so it rejects expired tokens.","request_type":"code_generation","complexity":3}
+{"id":"vcg-04","query":"Give me a one-liner to find the largest file in a directory tree.","request_type":"code_generation","complexity":1}
+{"id":"vcg-05","query":"Turn this pseudocode into working C.","request_type":"code_generation","complexity":2}
+{"id":"vcg-06","query":"Write a GitHub Action that runs the tests on every pull request.","request_type":"code_generation","complexity":3}
+{"id":"vcg-07","query":"Rename the `usr` variable to `user` throughout this file.","request_type":"code_generation","complexity":1}
+{"id":"vcg-08","query":"Implement idempotent upserts for the orders table.","request_type":"code_generation","complexity":4}
+{"id":"vcg-09","query":"Produce a regex that strips HTML tags from text.","request_type":"code_generation","complexity":2}
+{"id":"vcu-01","query":"Why is this loop running one extra iteration?","request_type":"code_understanding","complexity":2}
+{"id":"vcu-02","query":"What is this decorator doing to the request object?","request_type":"code_understanding","complexity":2}
+{"id":"vcu-03","query":"Explain the purpose of the `#[repr(C)]` annotation here.","request_type":"code_understanding","complexity":1}
+{"id":"vcu-04","query":"Trace how a login request reaches the database in this codebase.","request_type":"code_understanding","complexity":4}
+{"id":"vcu-05","query":"What happens to the connection if this await panics?","request_type":"code_understanding","complexity":3}
+{"id":"vcu-06","query":"Is this code thread-safe? Explain your reasoning.","request_type":"code_understanding","complexity":3}
+{"id":"vcu-07","query":"Why does this comparison always evaluate to false?","request_type":"code_understanding","complexity":2}
+{"id":"vcu-08","query":"Summarise what this migration changes about the schema.","request_type":"code_understanding","complexity":2}
+{"id":"vcu-09","query":"What is the difference between these two implementations?","request_type":"code_understanding","complexity":3}
+{"id":"vtd-01","query":"What's the best way to shard this Postgres table as it grows?","request_type":"technical_design","complexity":4}
+{"id":"vtd-02","query":"Should we use a queue or a cron job for the nightly export? Discuss trade-offs.","request_type":"technical_design","complexity":4}
+{"id":"vtd-03","query":"Propose a schema for multi-tenant billing.","request_type":"technical_design","complexity":4}
+{"id":"vtd-04","query":"How would you structure the modules for a growing monolith?","request_type":"technical_design","complexity":4}
+{"id":"vtd-05","query":"Design an idempotency strategy for our webhook receiver.","request_type":"technical_design","complexity":5}
+{"id":"vtd-06","query":"What approach would you take to version this public API?","request_type":"technical_design","complexity":4}
+{"id":"vtd-07","query":"Compare Kafka and SQS for our event pipeline.","request_type":"technical_design","complexity":4}
+{"id":"vtd-08","query":"Outline a rollback plan for the database migration.","request_type":"technical_design","complexity":4}
+{"id":"vtd-09","query":"Sketch a caching layer for the product catalogue.","request_type":"technical_design","complexity":3}
+{"id":"var-01","query":"Given three retries per request and five requests per page, how many upstream calls does one page load make?","request_type":"analytical_reasoning","complexity":3}
+{"id":"var-02","query":"Which of these two configs explains the higher p99 latency? Reason from the numbers.","request_type":"analytical_reasoning","complexity":4}
+{"id":"var-03","query":"Work out the total cost if we run 1.2M calls at $0.15 per thousand.","request_type":"analytical_reasoning","complexity":2}
+{"id":"var-04","query":"Is this checksum choice likely to collide for our key space? Justify.","request_type":"analytical_reasoning","complexity":4}
+{"id":"var-05","query":"Estimate the storage we need for one year of events at 400 bytes each.","request_type":"analytical_reasoning","complexity":3}
+{"id":"var-06","query":"Does this retry policy guarantee eventual success? Explain.","request_type":"analytical_reasoning","complexity":4}
+{"id":"var-07","query":"Figure out how many shards we need for 50k writes per second.","request_type":"analytical_reasoning","complexity":3}
+{"id":"var-08","query":"Find the arithmetic mistake in this invoice total: 3 items at 19.99 plus 7% tax.","request_type":"analytical_reasoning","complexity":2}
+{"id":"var-09","query":"Which hypothesis fits the observed error rate better, A or B?","request_type":"analytical_reasoning","complexity":4}
+{"id":"vw-01","query":"Turn this changelog into a friendly blog post.","request_type":"writing","complexity":3}
+{"id":"vw-02","query":"Write a two-sentence apology to the customer for the delay.","request_type":"writing","complexity":2}
+{"id":"vw-03","query":"Polish this paragraph so it reads more naturally.","request_type":"writing","complexity":2}
+{"id":"vw-04","query":"Produce release notes for version 2.4 aimed at end users.","request_type":"writing","complexity":3}
+{"id":"vw-05","query":"Draft a job description for a backend engineer.","request_type":"writing","complexity":3}
+{"id":"vw-06","query":"Shorten this announcement without losing the deadline.","request_type":"writing","complexity":2}
+{"id":"vw-07","query":"Write onboarding docs for our new billing feature.","request_type":"writing","complexity":3}
+{"id":"vw-08","query":"Rephrase this warning so it doesn't sound alarming.","request_type":"writing","complexity":2}
+{"id":"vw-09","query":"Compose a LinkedIn post about our launch.","request_type":"writing","complexity":2}
+{"id":"vf-01","query":"Who invented the World Wide Web?","request_type":"factual_lookup","complexity":1}
+{"id":"vf-02","query":"What is the tallest mountain in Africa?","request_type":"factual_lookup","complexity":1}
+{"id":"vf-03","query":"When was the euro introduced?","request_type":"factual_lookup","complexity":1}
+{"id":"vf-04","query":"What does CPU stand for?","request_type":"factual_lookup","complexity":1}
+{"id":"vf-05","query":"Where is the Great Barrier Reef?","request_type":"factual_lookup","complexity":1}
+{"id":"vf-06","query":"What is the chemical formula for table salt?","request_type":"factual_lookup","complexity":1}
+{"id":"vf-07","query":"Who was the first person to win two Nobel Prizes?","request_type":"factual_lookup","complexity":2}
+{"id":"vf-08","query":"How many countries are in the European Union today?","request_type":"factual_lookup","complexity":2}
+{"id":"vf-09","query":"Define entropy in one sentence.","request_type":"factual_lookup","complexity":1}
+{"id":"vg-01","query":"Morning! Ready when you are.","request_type":"general","complexity":1}
+{"id":"vg-02","query":"That's all for now, cheers.","request_type":"general","complexity":1}
+{"id":"vg-03","query":"Can you repeat that?","request_type":"general","complexity":1}
+{"id":"vg-04","query":"Alright, noted.","request_type":"general","complexity":1}
+{"id":"vg-05","query":"No thanks, I'm good.","request_type":"general","complexity":1}
+{"id":"vg-06","query":"Talk later.","request_type":"general","complexity":1}
+{"id":"vg-07","query":"Just testing the connection.","request_type":"general","complexity":1}
+{"id":"vg-08","query":"You there?","request_type":"general","complexity":1}
+{"id":"vg-09","query":"Appreciate the quick turnaround.","request_type":"general","complexity":1}

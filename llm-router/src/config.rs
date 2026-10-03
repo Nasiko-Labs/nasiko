@@ -4,6 +4,10 @@
 //! can be promoted to a standalone binary later without dragging in the platform's
 //! full `Config`. Env-var *names* match the platform for deployment consistency.
 
+use std::time::Duration;
+
+use crate::routing::classifier::{BackendKind, ClassifierConfig};
+
 /// Configuration for the LLM router, read from the environment.
 ///
 /// See `RUST_PLAN_V1.md` §5. All fields have sane defaults so `from_env` never fails;
@@ -101,6 +105,27 @@ pub struct GatewayConfig {
     /// retuned. Default 0.80.
     pub salience_high_threshold: f64,
 
+    /// Request-classifier backend (`regex` | `local` | `hosted`). Default `regex`: the
+    /// out-of-the-box router makes no extra network call and needs no model file, so the
+    /// regex baseline stays the safe default. Any other value is opt-in.
+    pub classifier_backend: String,
+    /// Weights-file override for the `local` backend. Empty ⇒ the model embedded in the
+    /// binary (no deployment step). A path that fails to load degrades to the regex baseline.
+    pub classifier_model_path: String,
+    /// Base URL for the `hosted` backend, ending at the API version (e.g.
+    /// `https://api.openai.com/v1`). Empty with `backend=hosted` degrades to regex.
+    pub classifier_endpoint: String,
+    /// API key for the `hosted` backend (sent as a bearer token).
+    pub classifier_api_key: String,
+    /// Model id for the `hosted` backend.
+    pub classifier_model: String,
+    /// Per-decision timeout (ms) applied to the selected classifier backend. `0` ⇒ no
+    /// timeout. A timeout is a fallback trigger, never a request failure.
+    pub classifier_timeout_ms: u64,
+    /// Request-type confidence below which the router treats a verdict as uncertain, uses
+    /// the regex safe default, and counts a fallback. Default 0.55.
+    pub classifier_low_confidence: f32,
+
     /// Fleet-wide kill switch for payload compression. Compression is opted into **per agent**
     /// (`agents.compress_enabled`); this only lets an operator stop all of it at once without
     /// editing every agent's row. Default on, so a UI toggle takes effect without a deploy.
@@ -185,6 +210,13 @@ impl Default for GatewayConfig {
             salience_weights_path: String::new(),
             salience_low_threshold: 0.20,
             salience_high_threshold: 0.80,
+            classifier_backend: "regex".into(),
+            classifier_model_path: String::new(),
+            classifier_endpoint: String::new(),
+            classifier_api_key: String::new(),
+            classifier_model: "gpt-4o-mini".into(),
+            classifier_timeout_ms: 1500,
+            classifier_low_confidence: 0.55,
             compress_kill_switch: true,
             compress_min_bytes: 2048,
             compress_types: nasiko_compress::TypeMask::DEFAULT,
@@ -274,6 +306,19 @@ impl GatewayConfig {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(d.salience_high_threshold),
+            classifier_backend: env_or("CLASSIFIER_BACKEND", &d.classifier_backend),
+            classifier_model_path: env_or("CLASSIFIER_MODEL_PATH", &d.classifier_model_path),
+            classifier_endpoint: env_or("CLASSIFIER_ENDPOINT", &d.classifier_endpoint),
+            classifier_api_key: env_or("CLASSIFIER_API_KEY", &d.classifier_api_key),
+            classifier_model: env_or("CLASSIFIER_MODEL", &d.classifier_model),
+            classifier_timeout_ms: std::env::var("CLASSIFIER_TIMEOUT_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(d.classifier_timeout_ms),
+            classifier_low_confidence: std::env::var("CLASSIFIER_LOW_CONFIDENCE")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(d.classifier_low_confidence),
             compress_kill_switch: env_flag("TOKEN_COMPRESS_ENABLED", true),
             compress_min_bytes: env_usize("TOKEN_COMPRESS_MIN_BYTES", 2048),
             // A bad label must not silently widen or narrow what gets rewritten, so an
@@ -308,6 +353,30 @@ impl GatewayConfig {
                 "TOKEN_COMPRESS_RECOVERY_TTL_SECS",
                 d.compress_recovery_ttl_secs as usize,
             ) as u64,
+        }
+    }
+
+    /// Map the classifier settings into the env-free [`ClassifierConfig`] the routing layer
+    /// consumes. The env-var names are read only here (`from_env`), never in the routing
+    /// library, per the track's separation of config from logic. An unrecognized
+    /// `CLASSIFIER_BACKEND` warns and falls back to the regex baseline.
+    pub fn classifier_config(&self) -> ClassifierConfig {
+        let backend = BackendKind::parse(&self.classifier_backend).unwrap_or_else(|| {
+            tracing::warn!(
+                target: "nasiko::llm_router::startup",
+                value = %self.classifier_backend,
+                "llm-router: unknown CLASSIFIER_BACKEND; using the regex baseline"
+            );
+            BackendKind::Regex
+        });
+        ClassifierConfig {
+            backend,
+            model_path: self.classifier_model_path.clone(),
+            endpoint: self.classifier_endpoint.clone(),
+            api_key: self.classifier_api_key.clone(),
+            model: self.classifier_model.clone(),
+            timeout: Duration::from_millis(self.classifier_timeout_ms),
+            low_confidence: self.classifier_low_confidence,
         }
     }
 

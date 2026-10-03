@@ -21,19 +21,31 @@ pub mod cache;
 pub mod catalog;
 pub mod cells;
 pub mod classifier;
+// Optional hosted classification backend (OpenAI-compatible chat endpoint).
+pub mod hosted_classifier;
 // The salience classifier itself — feature engine, weight loading, scoring, banding.
 // Private to `routing`: only `salience.rs` (a sibling module) uses it directly, via
 // `ClassifierSalienceGate`.
 mod patterns;
 pub mod pricing_sync;
 pub mod registry;
+// The request-classifier model (embedded hashed n-gram logistic regression). Public so the
+// trainer example can fit and export it; the router reaches it through the `classifier` seam.
+pub mod request_model;
 pub mod salience;
 mod salience_classifier;
+// Shared tokenization / n-gram / hashing primitives used by both in-process models.
+mod text_features;
 
 pub use boundary::{BoundarySignals, Mode, Phase};
 pub use cache::{CachedDecision, DecisionCache, NoopCache, RedisCache};
 pub use cells::{CellStore, InMemoryCellStore, PgCellStore};
-pub use classifier::{RequestType, Tier, classify, classify_request_type, signal};
+pub use classifier::{
+    BackendKind, Classification, ClassifierConfig, ClassifierRuntime, ClassifyError, ClassifyInput,
+    LocalClassifier, RegexClassifier, RequestClassifier, Tier, TimeoutClassifier,
+    build_request_classifier, classify, classify_request_type, regex_classification, signal,
+    RequestType,
+};
 pub use registry::{PgTierRegistry, TierRegistry};
 pub use salience::{AllowAllGate, ClassifierSalienceGate, SalienceGate};
 
@@ -124,6 +136,7 @@ pub async fn route_model(
     registry: &dyn TierRegistry,
     cell_store: &dyn CellStore,
     gate: &dyn SalienceGate,
+    classifier: &ClassifierRuntime,
     inputs: &RouteInputs<'_>,
 ) -> RouteDecision {
     tracing::info!(
@@ -245,15 +258,42 @@ pub async fn route_model(
                 agent_id = %inputs.agent_id, %conv_id, provider = %inputs.provider,
                 "route_model: LEVEL 3 (Classified) — at fireable boundary with a query; invoking classifier"
             );
-            // Load the provider's learned quality, then Thompson-sample a tier. Production
-            // uses an entropy RNG (exploration drives learning); tests seed it. The RNG
-            // (`ThreadRng`) is `!Send`, so it is scoped to drop before the next `.await` — the
-            // handler future must stay `Send`.
+            // Classify the query with the configured backend. `classify_or_fallback`
+            // absorbs backend errors, timeouts, and low-confidence verdicts by returning the
+            // regex safe default and counting a fallback — so this never fails and a broken
+            // model can only cost routing quality, never availability. `context` is `None`:
+            // the router only has the latest user message.
+            let (classification, fell_back) = classifier
+                .classify_or_fallback(&ClassifyInput::query_only(query))
+                .await;
+            let request_type = classification.request_type;
+            // Load the provider's learned quality, then Thompson-sample a tier. The bandit
+            // key stays `request_type` (unchanged) so existing learned cells retain their
+            // meaning; `complexity`/`confidence` are reported for observability and future
+            // use, not yet part of the arm key. Production uses an entropy RNG (exploration
+            // drives learning); tests seed it. The RNG (`ThreadRng`) is `!Send`, so it is
+            // scoped to drop before the next `.await` — the handler future must stay `Send`.
             let learned = cell_store.load(inputs.provider).await;
-            let (tier, request_type) = {
+            let tier = {
                 let mut rng = rand::rng();
-                classify(query, inputs.provider, &learned, &mut rng)
+                classifier::pick_model_thompson(
+                    &learned,
+                    request_type,
+                    classifier::DEFAULT_W_QUALITY,
+                    classifier::DEFAULT_W_COST,
+                    &mut rng,
+                )
             };
+            tracing::info!(
+                target: "nasiko::llm_router::routing",
+                agent_id = %inputs.agent_id, %conv_id,
+                backend = classifier.name(),
+                request_type = %request_type.as_str(),
+                complexity = classification.complexity,
+                confidence = classification.confidence,
+                fell_back,
+                "route_model: LEVEL 3 — classifier verdict (request_type, complexity, confidence); tier Thompson-sampled on request_type"
+            );
             // Per-config tier override takes priority over the global registry.
             let config_override = match tier {
                 Tier::Tier1 => inputs.tier1_model.map(str::to_string),
@@ -508,6 +548,14 @@ mod tests {
         }
     }
 
+    /// The regex-baseline classifier runtime, shared by the routing tests — it reproduces
+    /// the pre-classifier (keyword) behaviour exactly.
+    static REGEX_RUNTIME: std::sync::LazyLock<ClassifierRuntime> =
+        std::sync::LazyLock::new(ClassifierRuntime::regex);
+    fn regex_runtime() -> &'static ClassifierRuntime {
+        &REGEX_RUNTIME
+    }
+
     fn signals(conv_id: Option<&str>, phase: Phase, mode: Mode) -> BoundarySignals {
         BoundarySignals {
             conv_id: conv_id.map(str::to_string),
@@ -546,6 +594,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &regex_runtime(),
             &inputs("anthropic", &s, Some("pinned-model")),
         )
         .await;
@@ -563,6 +612,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &regex_runtime(),
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -582,6 +632,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &regex_runtime(),
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -612,6 +663,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &DenyGate,
+            &regex_runtime(),
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -638,6 +690,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &DenyGate,
+            &regex_runtime(),
             &i,
         )
         .await;
@@ -658,6 +711,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &DenyGate,
+            &regex_runtime(),
             &i,
         )
         .await;
@@ -677,6 +731,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &DenyGate,
+            &regex_runtime(),
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -699,6 +754,7 @@ mod tests {
             &test_support::StubRegistry,
             &cells,
             &AllowAllGate,
+            &regex_runtime(),
             &i,
         )
         .await;
@@ -726,6 +782,7 @@ mod tests {
             &test_support::StubRegistry,
             &cells,
             &AllowAllGate,
+            &regex_runtime(),
             &i,
         )
         .await;
@@ -743,6 +800,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &regex_runtime(),
             &inputs("gemini", &s, None),
         )
         .await;
@@ -761,6 +819,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &regex_runtime(),
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -777,6 +836,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &regex_runtime(),
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -795,6 +855,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &regex_runtime(),
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -814,6 +875,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &regex_runtime(),
             &i,
         )
         .await;
