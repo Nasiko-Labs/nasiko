@@ -154,6 +154,17 @@ pub struct GatewayConfig {
     pub compress_recovery_min_bytes: usize,
     /// How long an original stays recoverable. Sized to outlive the flow that produced it.
     pub compress_recovery_ttl_secs: u64,
+
+    /// Replace native tool definitions with the compact grammar on OpenAI non-streaming
+    /// chat. Default **off**. `COMPACT_TOOLS=true` turns it on. The transform does not
+    /// read the environment; this flag is loaded here because the standalone binary and
+    /// `nasiko-server` both build config with [`GatewayConfig::from_env`].
+    ///
+    /// Covered: provider `openai`, `stream` absent or false, function tools whose schemas
+    /// encode, no forced `tool_choice`, no prior tool call or tool result in the transcript.
+    /// Anything else is left byte-for-byte unchanged. Streaming, Anthropic, and Gemini
+    /// are not compacted.
+    pub compact_tools: bool,
 }
 
 impl Default for GatewayConfig {
@@ -196,6 +207,7 @@ impl Default for GatewayConfig {
             compress_recovery_enabled: true,
             compress_recovery_min_bytes: 8192,
             compress_recovery_ttl_secs: 86_400,
+            compact_tools: false,
         }
     }
 }
@@ -308,6 +320,7 @@ impl GatewayConfig {
                 "TOKEN_COMPRESS_RECOVERY_TTL_SECS",
                 d.compress_recovery_ttl_secs as usize,
             ) as u64,
+            compact_tools: env_flag("COMPACT_TOOLS", false),
         }
     }
 

@@ -1,0 +1,8 @@
+[package]
+name = "nasiko-tool-compact"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+serde_json = { workspace = true }
+thiserror = { workspace = true }

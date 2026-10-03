@@ -288,6 +288,17 @@ async fn chat_core(
         "brevity: directive decision"
     );
 
+    // OpenAI non-streaming only. Flag off, or any bypass, leaves `req` untouched.
+    let prepared = if crate::compact_tools::eligible(
+        ctx.cfg.compact_tools,
+        &resolved.provider,
+        req.is_streaming(),
+    ) {
+        crate::compact_tools::prepare(&mut req, true)
+    } else {
+        None
+    };
+
     // ── savings ledger inputs ─────────────────────────────────────────────────────────────
     // Measured here, after both seams, because this is the payload the provider will actually
     // bill for — which is what makes `sent_bytes / reported_input_tokens` a calibration rather
@@ -371,9 +382,15 @@ async fn chat_core(
     }
 
     // Non-streaming: run with ordered fallbacks; usage records the effective provider/model.
-    let (resp, (provider, model)) = fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
-        .instrument(llm_span.clone())
-        .await?;
+    let (mut resp, (provider, model)) =
+        fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
+            .instrument(llm_span.clone())
+            .await?;
+    let decoded = if let Some(prepared) = &prepared {
+        crate::compact_tools::decode_response(&mut resp, prepared)
+    } else {
+        Ok(())
+    };
     let latency_ms = started.elapsed().as_millis() as i64;
 
     // Record effective model and token usage on the server-side gen_ai span.
@@ -405,6 +422,7 @@ async fn chat_core(
         },
     );
 
+    decoded?;
     Ok(Json(inbound.render_chat_response(resp)).into_response())
 }
 
