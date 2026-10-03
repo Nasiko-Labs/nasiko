@@ -532,3 +532,216 @@ mod tests {
         assert!(matches!(tier, Tier::Tier1 | Tier::Tier2 | Tier::Tier3));
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// 5. RequestClassifier trait — pluggable backend for P2
+// ═══════════════════════════════════════════════════════════════════
+
+/// Optional user profile hints derived from the Nasiko DB at routing
+/// boundaries (`cold_start` / `switch`). Every field is `Option` — `None`
+/// means the datum is unavailable (new user, eval mode, or DB unreachable).
+/// The classifier degrades gracefully: missing fields are simply omitted from
+/// the DeepSeek prompt without changing the call shape.
+///
+/// Sourced from:
+/// - `users.role` + `users.is_superuser`  → `is_admin`
+/// - `COUNT(chat_sessions)` per user       → `session_count`
+/// - `AVG(chat_messages.input_tokens)` of the user's last 10 messages → `avg_token_length`
+/// - `MODE(chat_sessions.agent_id)`        → `primary_agent_name`
+#[derive(Debug, Clone, Default)]
+pub struct UserHint {
+    /// Total chat sessions this user has had. Proxy for experience level:
+    /// 0–5 → beginner, 6–30 → intermediate, 31+ → experienced.
+    pub session_count: Option<u32>,
+    /// Average `input_tokens` of the user's last 10 messages.
+    /// < 40  → writes short, vague queries (needs extra guidance).
+    /// > 150 → writes detailed, well-formed queries (trust their framing).
+    pub avg_token_length: Option<u32>,
+    /// Display name of the agent they use most (e.g. `"code-agent"`).
+    /// Biases classification toward that domain.
+    pub primary_agent_name: Option<String>,
+    /// `true` when `users.role = 'admin'` or `users.is_superuser = true`.
+    /// Admins tend to ask infrastructure / configuration questions.
+    pub is_admin: bool,
+}
+
+impl UserHint {
+    /// Render as a concise natural-language sentence for the DeepSeek prompt.
+    /// Returns `None` when all optional fields are absent (nothing to add).
+    pub fn to_prompt_text(&self) -> Option<String> {
+        let mut parts: Vec<String> = Vec::new();
+
+        if let Some(n) = self.session_count {
+            let level = match n {
+                0..=5 => "new user (likely beginner)",
+                6..=30 => "intermediate user",
+                _ => "experienced user",
+            };
+            parts.push(format!("User experience: {} ({} sessions total)", level, n));
+        }
+
+        if let Some(avg) = self.avg_token_length {
+            let style = if avg < 40 {
+                "writes short vague queries"
+            } else if avg < 150 {
+                "writes moderate-length queries"
+            } else {
+                "writes detailed, well-formed queries"
+            };
+            parts.push(format!("Query style: {} (~{} tokens avg)", style, avg));
+        }
+
+        if let Some(ref agent) = self.primary_agent_name {
+            parts.push(format!("Primary agent used: {}", agent));
+        }
+
+        if self.is_admin {
+            parts.push(
+                "Role: admin (tends to ask infrastructure/config questions)".to_owned(),
+            );
+        }
+
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join(". ") + ".")
+        }
+    }
+}
+
+/// Input to any `RequestClassifier` backend.
+///
+/// - `query`     — the raw user query text (always present).
+/// - `context`   — surrounding conversation or file context passed through by
+///                 the router (e.g. the `context` field from the eval JSON).
+/// - `user_hint` — optional profile enrichment loaded from the Nasiko DB.
+///                 `None` in eval mode and for anonymous/new users.
+pub struct ClassifyInput<'a> {
+    pub query: &'a str,
+    pub context: Option<&'a str>,
+    pub user_hint: Option<UserHint>,
+}
+
+/// Result returned by any `RequestClassifier` implementation.
+pub struct Classification {
+    /// The coarse category of work the query represents.
+    pub request_type: RequestType,
+    /// Estimated difficulty, 1 (trivial) – 5 (very complex).
+    pub complexity: u8,
+    /// Classifier confidence in [0, 1]. Low-confidence results are routed to
+    /// the regex safe-default (counted as fallback, not error).
+    pub confidence: f32,
+}
+
+/// Errors a classifier backend may return. On any `Err` the router falls back
+/// to `RegexClassifier` and increments the fallback counter.
+#[derive(Debug, thiserror::Error)]
+pub enum ClassifyError {
+    #[error("network: {0}")]
+    Network(String),
+    #[error("parse: {0}")]
+    Parse(String),
+    #[error("timeout")]
+    Timeout,
+}
+
+/// A pluggable, async classifier. The router holds `Arc<dyn RequestClassifier>`.
+///
+/// Implementors: `RegexClassifier` (default, no network) and
+/// `DeepSeekClassifier` (hosted, selected via `CLASSIFIER_BACKEND=hosted`).
+/// The `WithFallback` wrapper composes the two so the router never calls both
+/// directly.
+#[async_trait::async_trait]
+pub trait RequestClassifier: Send + Sync {
+    /// Short identifier logged with every classify call (e.g. `"regex"`, `"deepseek"`).
+    fn name(&self) -> &str;
+
+    /// Classify the input. Implementors must be deterministic for the same
+    /// input (use `temperature = 0.0` for hosted models; expose a seed for
+    /// any sampling path and document the variance).
+    async fn classify(
+        &self,
+        input: &ClassifyInput<'_>,
+    ) -> Result<Classification, ClassifyError>;
+}
+
+/// The default classifier — wraps the existing `classify_request_type` regex
+/// vote-count function. Always succeeds (no network), never times out.
+///
+/// Fixed outputs:
+/// - `complexity` = 3  (regex cannot estimate difficulty; use the midpoint)
+/// - `confidence` = 0.5 (regex cannot express certainty; use the midpoint)
+pub struct RegexClassifier;
+
+#[async_trait::async_trait]
+impl RequestClassifier for RegexClassifier {
+    fn name(&self) -> &str {
+        "regex"
+    }
+
+    async fn classify(
+        &self,
+        input: &ClassifyInput<'_>,
+    ) -> Result<Classification, ClassifyError> {
+        Ok(Classification {
+            request_type: classify_request_type(input.query),
+            complexity: 3,
+            confidence: 0.5,
+        })
+    }
+}
+
+/// Wraps a primary classifier with automatic `RegexClassifier` fallback.
+///
+/// On any `Err` or timeout from the primary, the fallback runs and a counter
+/// is incremented so the fallback rate is observable. The caller (the router)
+/// always gets an `Ok(Classification)`; only the source changes.
+pub struct WithFallback {
+    primary: std::sync::Arc<dyn RequestClassifier>,
+    fallback: RegexClassifier,
+    fallback_count: std::sync::atomic::AtomicU64,
+}
+
+impl WithFallback {
+    pub fn new(primary: std::sync::Arc<dyn RequestClassifier>) -> Self {
+        Self {
+            primary,
+            fallback: RegexClassifier,
+            fallback_count: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    /// Cumulative number of calls that fell back to regex.
+    pub fn fallback_count(&self) -> u64 {
+        self.fallback_count
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+#[async_trait::async_trait]
+impl RequestClassifier for WithFallback {
+    fn name(&self) -> &str {
+        self.primary.name()
+    }
+
+    async fn classify(
+        &self,
+        input: &ClassifyInput<'_>,
+    ) -> Result<Classification, ClassifyError> {
+        match self.primary.classify(input).await {
+            Ok(result) => Ok(result),
+            Err(e) => {
+                self.fallback_count
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                tracing::warn!(
+                    target: "nasiko::llm_router::classifier",
+                    backend = self.primary.name(),
+                    error = %e,
+                    fallback_count = self.fallback_count(),
+                    "classifier: primary failed, falling back to regex"
+                );
+                self.fallback.classify(input).await
+            }
+        }
+    }
+}
