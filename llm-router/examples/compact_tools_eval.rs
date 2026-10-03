@@ -25,7 +25,7 @@ use nasiko_tool_compact::{
 use serde_json::{Value, json};
 
 /// Fixed reference time for the eval, so relative dates resolve the same way on every run.
-const REFERENCE_TIME: &str = "Today is 2026-10-02, timezone Asia/Kolkata.";
+const REFERENCE_TIME: &str = "Today is Friday 2026-10-02, timezone Asia/Kolkata.";
 
 struct Live {
     http: reqwest::Client,
