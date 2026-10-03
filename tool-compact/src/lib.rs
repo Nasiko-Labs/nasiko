@@ -6,6 +6,7 @@
 
 use std::collections::BTreeSet;
 
+use chrono::DateTime;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use thiserror::Error;
@@ -615,6 +616,16 @@ fn validate_value(schema: &Value, value: &Value, path: &str, tool: &str) -> Resu
     if !kinds.is_empty() && !kinds.iter().any(|kind| value_has_type(value, kind)) {
         return Err(invalid(tool, format!("{path} has the wrong JSON type")));
     }
+    if schema.get("format").and_then(Value::as_str) == Some("date-time")
+        && value
+            .as_str()
+            .is_none_or(|text| DateTime::parse_from_rfc3339(text).is_err())
+    {
+        return Err(invalid(
+            tool,
+            format!("{path} must be an RFC 3339 date-time string"),
+        ));
+    }
 
     if let Some(properties) = schema.get("properties").and_then(Value::as_object) {
         let object = value
@@ -750,6 +761,13 @@ mod tests {
         assert!(matches!(
             decode_calls(
                 "<<call create_calendar_event {\"start\":\"2026-10-04T10:00:00+05:30\"}>>",
+                &tools
+            ),
+            Err(Error::InvalidArguments { .. })
+        ));
+        assert!(matches!(
+            decode_calls(
+                "<<call create_calendar_event {\"title\":\"x\",\"start\":\"tomorrow\"}>>",
                 &tools
             ),
             Err(Error::InvalidArguments { .. })
