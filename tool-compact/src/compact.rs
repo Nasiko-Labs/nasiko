@@ -166,7 +166,7 @@ fn empty_object(closed: bool) -> Object {
 }
 
 /// Tool and field names: ASCII letters, digits, `_`, `-`, `.`.
-fn is_name(s: &str) -> bool {
+pub(crate) fn is_name(s: &str) -> bool {
     !s.is_empty()
         && s.chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))

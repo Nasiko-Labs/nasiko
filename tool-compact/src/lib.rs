@@ -19,11 +19,13 @@
 )]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
+mod calls;
 mod compact;
 mod error;
 mod schema;
 mod validate;
 
+pub use calls::{MARKER, decode_calls};
 pub use compact::{
     CompactTools, HEADER, INSTRUCTION, canonical_schema, decode_tools, encode_tools,
 };
