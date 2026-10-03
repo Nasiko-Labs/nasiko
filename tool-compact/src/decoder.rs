@@ -43,7 +43,7 @@ impl StreamDecoder {
                 let mut p = call_start;
 
                 // Skip leading whitespace after <<call
-                while p < len && (bytes[p] == b' ' || bytes[p] == b'\\t' || bytes[p] == b'\\n' || bytes[p] == b'\\r') {
+                while p < len && (bytes[p] == b' ' || bytes[p] == b'\t' || bytes[p] == b'\n' || bytes[p] == b'\r') {
                     p += 1;
                 }
 
@@ -59,7 +59,7 @@ impl StreamDecoder {
                 }
 
                 // Skip whitespace before JSON argument
-                while p < len && (bytes[p] == b' ' || bytes[p] == b'\\t' || bytes[p] == b'\\n' || bytes[p] == b'\\r') {
+                while p < len && (bytes[p] == b' ' || bytes[p] == b'\t' || bytes[p] == b'\n' || bytes[p] == b'\r') {
                     p += 1;
                 }
 
@@ -76,7 +76,7 @@ impl StreamDecoder {
                     if in_string {
                         if escaped {
                             escaped = false;
-                        } else if b == b'\\\\' {
+                        } else if b == b'\\' {
                             escaped = true;
                         } else if b == b'"' {
                             in_string = false;

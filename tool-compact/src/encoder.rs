@@ -1,8 +1,7 @@
 use crate::types::{CompactTools, FunctionDef, Result, ToolCompactError, ToolDef};
 use serde_json::{json, Map, Value};
 
-pub const CALL_INSTRUCTIONS: &str = 
-"To call tools, emit: <<call tool_name {\\"arg\\": \\"val\\"}>>. You may output plain commentary text before or after multiple calls.";
+pub const CALL_INSTRUCTIONS: &str = r#"To call tools, emit: <<call tool_name {"arg": "val"}>>. You may output plain commentary text before or after multiple calls."#;
 
 /// Encodes standard JSON Schema tool definitions into compact micro-grammar.
 pub fn encode_tools(tools: &[ToolDef]) -> Result<CompactTools> {
@@ -24,7 +23,7 @@ pub fn encode_tools(tools: &[ToolDef]) -> Result<CompactTools> {
     }
 
     Ok(CompactTools {
-        compact_definitions: lines.join("\\n"),
+        compact_definitions: lines.join("\n"),
         call_instructions: CALL_INSTRUCTIONS.to_string(),
         tool_count: tools.len(),
     })
@@ -94,7 +93,7 @@ fn format_type_repr(val: &Value) -> Result<String> {
             Ok(format!("[{}]", item_type))
         }
         "object" => {
-            if let Some(props) = val.get("properties").and_then(|p| p.as_object()) {
+            if let Some(_props) = val.get("properties").and_then(|p| p.as_object()) {
                 let inner = format_object_schema(val.as_object().unwrap())?;
                 Ok(inner)
             } else {
@@ -211,7 +210,7 @@ fn parse_type_spec_to_json_schema(spec: &str) -> Result<Value> {
     if spec.contains('|') {
         let enums: Vec<Value> = spec
             .split('|')
-            .map(|s| Value::String(s.trim().trim_matches('\\'').to_string()))
+            .map(|s| Value::String(s.trim().trim_matches('\'').to_string()))
             .collect();
         return Ok(json!({
             "type": "string",

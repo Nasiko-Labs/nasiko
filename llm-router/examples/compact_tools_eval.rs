@@ -112,7 +112,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for exp in &case.expected {
             rendered_parts.push(format!("<<call {} {}>>", exp.name, exp.arguments));
         }
-        let rendered_calls = rendered_parts.join("\\n");
+        let rendered_calls = rendered_parts.join("\n");
 
         // Decode calls back to verify roundtrip fidelity
         let roundtrip_calls = match decode_calls(&rendered_calls, &active_tools) {
@@ -135,7 +135,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             json!({
                 "role": "system",
                 "content": format!(
-                    "Available tools:\\n{}\\n\\n{}",
+                    "Available tools:\n{}\n\n{}",
                     compact.compact_definitions,
                     compact.call_instructions
                 )
