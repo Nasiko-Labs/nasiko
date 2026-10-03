@@ -50,7 +50,7 @@ use tiktoken_rs::{CoreBPE, o200k_base};
 type AppResult<T> = Result<T, String>;
 
 /// Fixed reference time for live runs, so relative dates resolve identically.
-const REFERENCE_CONTEXT: &str = "Today is 2026-10-02. Timezone: Asia/Kolkata.";
+const REFERENCE_CONTEXT: &str = "Today is Friday, 2026-10-02. Timezone: Asia/Kolkata.";
 
 fn main() {
     if let Err(error) = run() {
