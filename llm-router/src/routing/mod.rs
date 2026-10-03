@@ -7,10 +7,11 @@
 //! drift). The decision follows a fixed five-level precedence — see [`route_model`].
 //!
 //! ```text
-//! query + provider ──► classify() ──► Tier ──► registry::model_for(provider, Tier) ──► model
+//! query + context ──► RequestClassifier ──► RequestType ──► Thompson(cells) ──► Tier
+//!                                         Tier + provider ──► registry::model_for ──► model
 //! ```
 //!
-//! The [classifier](classifier::classify) buckets the query into a request type and
+//! The configured [`RequestClassifier`] (regex by default) buckets the query into a request type and
 //! Thompson-samples a [`Tier`] over the provider's learned quality [cells](cells); feedback
 //! from the user's next turn ([`classifier::signal`]) is folded back into those cells, so the
 //! router learns which tier suffices for which kind of query. See [`route_model`].
@@ -33,7 +34,15 @@ mod salience_classifier;
 pub use boundary::{BoundarySignals, Mode, Phase};
 pub use cache::{CachedDecision, DecisionCache, NoopCache, RedisCache};
 pub use cells::{CellStore, InMemoryCellStore, PgCellStore};
-pub use classifier::{RequestType, Tier, classify, classify_request_type, signal};
+pub use classifier::fallback::{DecisionSource, FallbackClassifier};
+pub use classifier::{
+    Classification, ClassifyError, ClassifyInput, RegexClassifier, RequestClassifier, RequestType,
+    Tier, classify, classify_request_type, signal,
+};
+
+use classifier::{DEFAULT_W_COST, DEFAULT_W_QUALITY, pick_model_thompson};
+use rand::SeedableRng;
+use rand::rngs::StdRng;
 pub use registry::{PgTierRegistry, TierRegistry};
 pub use salience::{AllowAllGate, ClassifierSalienceGate, SalienceGate};
 
@@ -50,6 +59,9 @@ pub enum RouteSource {
     SmallTalk,
     /// Level 3 — the classifier ran at a safe boundary.
     Classified,
+    /// Level 3 — the classifier ran but was below its confidence threshold, so the agent's
+    /// configured model (the safe default) was served and nothing was pinned.
+    LowConfidence,
     /// Level 4 — the agent's configured (`llm_config`) model.
     Config,
     /// Level 5 — no `llm_config`: the resolver's passthrough model (the request's own
@@ -83,6 +95,11 @@ pub struct RouteInputs<'a> {
     pub signals: &'a BoundarySignals,
     /// The query to classify (latest user message text). `None` disables classification.
     pub query: Option<&'a str>,
+    /// Optional context passed to the classifier alongside `query`.
+    pub context: Option<&'a str>,
+    /// Seed for Thompson tier sampling; `None` samples from entropy (see
+    /// `GatewayConfig::router_tier_seed`).
+    pub tier_seed: Option<u64>,
 }
 
 /// The outcome of routing: the model to call and how it was chosen.
@@ -109,9 +126,12 @@ pub struct RouteDecision {
 ///      [`RouteSource::SmallTalk`] and the cache is **not** written, so a greeting can never
 ///      pin the session. Only substantive turns fall through to Level 3.
 /// 3. **Classify** — only at a fireable boundary (`switch`/`cold_start` + `free_flowing`)
-///    with a query present and a registry entry for `(provider, tier)`. Loads the provider's
-///    learned cells, Thompson-samples a tier, and writes the decision (incl. request type)
-///    through to the cache so the next turn short-circuits at Level 2.
+///    with a query present and a registry entry for `(provider, tier)`. The configured
+///    [`RequestClassifier`] (behind [`FallbackClassifier`]: timeout + regex fallback) picks the
+///    request type; the provider's learned cells then Thompson-sample a tier, and the decision
+///    (incl. request type) is written through to the cache so the next turn short-circuits at
+///    Level 2. A **low-confidence** classification is not routed on: the agent's configured
+///    model is served ([`RouteSource::LowConfidence`]) and nothing is pinned.
 /// 4. **Config** — the agent's configured model (`has_llm_config`).
 /// 5. **Default** — no `llm_config`: the resolver's `fallback_model`, which is the request's
 ///    own provider/model (passthrough) or the platform default as the last-resort safety net.
@@ -124,6 +144,7 @@ pub async fn route_model(
     registry: &dyn TierRegistry,
     cell_store: &dyn CellStore,
     gate: &dyn SalienceGate,
+    classifier: &FallbackClassifier,
     inputs: &RouteInputs<'_>,
 ) -> RouteDecision {
     tracing::info!(
@@ -245,15 +266,63 @@ pub async fn route_model(
                 agent_id = %inputs.agent_id, %conv_id, provider = %inputs.provider,
                 "route_model: LEVEL 3 (Classified) — at fireable boundary with a query; invoking classifier"
             );
-            // Load the provider's learned quality, then Thompson-sample a tier. Production
-            // uses an entropy RNG (exploration drives learning); tests seed it. The RNG
-            // (`ThreadRng`) is `!Send`, so it is scoped to drop before the next `.await` — the
-            // handler future must stay `Send`.
+            let decision = classifier
+                .decide(&ClassifyInput {
+                    query,
+                    context: inputs.context,
+                })
+                .await;
+            let Classification {
+                request_type,
+                complexity,
+                confidence,
+            } = decision.classification;
+            if decision.source == DecisionSource::LowConfidence {
+                // Safe default: the model the agent would get with routing off. Not pinned,
+                // so continuation turns also land on it (cache miss ⇒ Level 4) and the next
+                // boundary turn is classified afresh.
+                tracing::info!(
+                    target: "nasiko::llm_router::routing",
+                    agent_id = %inputs.agent_id, %conv_id,
+                    level = 3,
+                    source = ?RouteSource::LowConfidence,
+                    backend = %classifier.backend_name(),
+                    request_type = %request_type.as_str(),
+                    confidence,
+                    model = %inputs.fallback_model,
+                    "route_model: LEVEL 3 (LowConfidence) — classifier unsure; serving the configured model without pinning"
+                );
+                return RouteDecision {
+                    model: inputs.fallback_model.to_string(),
+                    tier: None,
+                    source: RouteSource::LowConfidence,
+                };
+            }
+            // Load the provider's learned quality, then Thompson-sample a tier — from entropy
+            // in production (exploration drives learning), or deterministically when a tier
+            // seed is configured.
             let learned = cell_store.load(inputs.provider).await;
-            let (tier, request_type) = {
-                let mut rng = rand::rng();
-                classify(query, inputs.provider, &learned, &mut rng)
-            };
+            let mut rng = tier_rng(inputs.tier_seed, inputs.provider, query, request_type);
+            let tier = pick_model_thompson(
+                &learned,
+                request_type,
+                DEFAULT_W_QUALITY,
+                DEFAULT_W_COST,
+                &mut rng,
+            );
+            tracing::info!(
+                target: "nasiko::llm_router::classifier",
+                provider = %inputs.provider,
+                backend = %classifier.backend_name(),
+                decision_source = ?decision.source,
+                request_type = %request_type.as_str(),
+                complexity,
+                confidence,
+                learned_cells = learned.len(),
+                classified_tier = ?tier,
+                seeded = inputs.tier_seed.is_some(),
+                "classifier: classified request and Thompson-sampled a model tier"
+            );
             // Per-config tier override takes priority over the global registry.
             let config_override = match tier {
                 Tier::Tier1 => inputs.tier1_model.map(str::to_string),
@@ -349,6 +418,24 @@ pub async fn route_model(
         tier: None,
         source,
     }
+}
+
+/// The RNG behind Thompson tier sampling. With a seed, it is derived from `(seed, provider,
+/// query, request_type)`, so identical inputs and learned state always pick the same tier;
+/// without one it is seeded from the thread's entropy RNG, as before. `DefaultHasher::new()`
+/// uses fixed keys, so the derivation is stable across processes running the same binary
+/// (the same reasoning as `boundary::coding_agent_conv_id`).
+fn tier_rng(seed: Option<u64>, provider: &str, query: &str, request_type: RequestType) -> StdRng {
+    use std::hash::{Hash, Hasher};
+    let Some(seed) = seed else {
+        return StdRng::from_rng(&mut rand::rng());
+    };
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    seed.hash(&mut hasher);
+    provider.hash(&mut hasher);
+    query.hash(&mut hasher);
+    request_type.as_str().hash(&mut hasher);
+    StdRng::seed_from_u64(hasher.finish())
 }
 
 /// Credit the current turn's feedback to a prior decision, if there is any to credit.
@@ -532,6 +619,8 @@ mod tests {
             tier3_model: None,
             signals,
             query: Some("hello"),
+            context: None,
+            tier_seed: None,
         }
     }
 
@@ -546,6 +635,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &FallbackClassifier::regex_only(),
             &inputs("anthropic", &s, Some("pinned-model")),
         )
         .await;
@@ -563,6 +653,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &FallbackClassifier::regex_only(),
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -582,6 +673,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &FallbackClassifier::regex_only(),
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -612,6 +704,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &DenyGate,
+            &FallbackClassifier::regex_only(),
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -638,6 +731,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &DenyGate,
+            &FallbackClassifier::regex_only(),
             &i,
         )
         .await;
@@ -658,6 +752,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &DenyGate,
+            &FallbackClassifier::regex_only(),
             &i,
         )
         .await;
@@ -677,6 +772,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &DenyGate,
+            &FallbackClassifier::regex_only(),
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -699,6 +795,7 @@ mod tests {
             &test_support::StubRegistry,
             &cells,
             &AllowAllGate,
+            &FallbackClassifier::regex_only(),
             &i,
         )
         .await;
@@ -726,6 +823,7 @@ mod tests {
             &test_support::StubRegistry,
             &cells,
             &AllowAllGate,
+            &FallbackClassifier::regex_only(),
             &i,
         )
         .await;
@@ -743,6 +841,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &FallbackClassifier::regex_only(),
             &inputs("gemini", &s, None),
         )
         .await;
@@ -761,6 +860,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &FallbackClassifier::regex_only(),
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -777,6 +877,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &FallbackClassifier::regex_only(),
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -795,6 +896,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &FallbackClassifier::regex_only(),
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -814,11 +916,177 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &FallbackClassifier::regex_only(),
             &i,
         )
         .await;
         assert_eq!(d.source, RouteSource::Default);
         assert_eq!(d.model, "cfg-model");
+    }
+
+    /// A backend with a fixed answer, for driving Level 3 through each decision source.
+    struct FixedBackend(Result<Classification, fn() -> ClassifyError>);
+    #[async_trait]
+    impl RequestClassifier for FixedBackend {
+        fn name(&self) -> &str {
+            "fixed"
+        }
+        async fn classify(&self, _: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+            self.0.map_err(|make| make())
+        }
+    }
+
+    fn guarded(answer: Result<Classification, fn() -> ClassifyError>) -> FallbackClassifier {
+        FallbackClassifier::new(
+            std::sync::Arc::new(FixedBackend(answer)),
+            std::time::Duration::from_secs(1),
+            0.6,
+        )
+    }
+
+    fn writing(confidence: f32) -> Result<Classification, fn() -> ClassifyError> {
+        Ok(Classification::new(RequestType::Writing, 2, confidence).expect("valid"))
+    }
+
+    fn inference_failure() -> ClassifyError {
+        ClassifyError::Inference("boom".into())
+    }
+
+    /// A working decision cache (unlike `FakeCache`, `get` returns what `put` stored).
+    #[derive(Default)]
+    struct MemoryCache(Mutex<std::collections::HashMap<(String, String), CachedDecision>>);
+    #[async_trait]
+    impl DecisionCache for MemoryCache {
+        async fn get(&self, conv_id: &str, agent_id: &str) -> Option<CachedDecision> {
+            let key = (conv_id.to_string(), agent_id.to_string());
+            self.0.lock().unwrap().get(&key).cloned()
+        }
+        async fn put(&self, conv_id: &str, agent_id: &str, decision: &CachedDecision) {
+            let key = (conv_id.to_string(), agent_id.to_string());
+            self.0.lock().unwrap().insert(key, decision.clone());
+        }
+    }
+
+    #[tokio::test]
+    async fn low_confidence_serves_config_model_and_does_not_pin() {
+        let cache = FakeCache::empty();
+        let classifier = guarded(writing(0.2));
+        let s = signals(Some("c1"), Phase::ColdStart, Mode::FreeFlowing);
+        let d = route_model(
+            &cache,
+            &test_support::StubRegistry,
+            &InMemoryCellStore::new(),
+            &AllowAllGate,
+            &classifier,
+            &inputs("anthropic", &s, None),
+        )
+        .await;
+        assert_eq!(d.source, RouteSource::LowConfidence);
+        assert_eq!(d.model, "cfg-model");
+        assert_eq!(d.tier, None);
+        assert!(
+            cache.puts.lock().unwrap().is_empty(),
+            "unsure turns must not pin"
+        );
+        assert_eq!(classifier.stats().low_confidence, 1);
+    }
+
+    #[tokio::test]
+    async fn backend_failure_still_classifies_via_regex_and_counts_fallback() {
+        let cache = FakeCache::empty();
+        let classifier = guarded(Err(inference_failure));
+        let s = signals(Some("c1"), Phase::Switch, Mode::FreeFlowing);
+        let d = route_model(
+            &cache,
+            &test_support::StubRegistry,
+            &InMemoryCellStore::new(),
+            &AllowAllGate,
+            &classifier,
+            &inputs("anthropic", &s, None),
+        )
+        .await;
+        assert_eq!(d.source, RouteSource::Classified);
+        assert_eq!(cache.puts.lock().unwrap().len(), 1);
+        assert_eq!(classifier.stats().fallbacks, 1);
+    }
+
+    #[tokio::test]
+    async fn continue_turns_never_call_the_classifier() {
+        // Sticky routing: mid tool-loop (phase=continue) the classifier must not run,
+        // whether the conversation's decision is cached (Level 2) or not (Level 4).
+        let classifier = guarded(writing(0.9));
+        let s = signals(Some("c1"), Phase::Continue, Mode::FreeFlowing);
+        for cache in [FakeCache::with_hit("cached-model"), FakeCache::empty()] {
+            route_model(
+                &cache,
+                &test_support::StubRegistry,
+                &InMemoryCellStore::new(),
+                &AllowAllGate,
+                &classifier,
+                &inputs("anthropic", &s, None),
+            )
+            .await;
+        }
+        assert_eq!(classifier.stats().decisions, 0);
+    }
+
+    #[tokio::test]
+    async fn boundary_then_tool_loop_keeps_the_classified_model() {
+        // Over a real in-memory cache: the cold-start turn classifies and pins; every
+        // following tool-loop turn is served the pinned model without classifying.
+        let cache = MemoryCache::default();
+        let classifier = guarded(writing(0.9));
+        let cold = signals(Some("c1"), Phase::ColdStart, Mode::FreeFlowing);
+        let first = route_model(
+            &cache,
+            &test_support::StubRegistry,
+            &InMemoryCellStore::new(),
+            &AllowAllGate,
+            &classifier,
+            &inputs("anthropic", &cold, None),
+        )
+        .await;
+        assert_eq!(first.source, RouteSource::Classified);
+        let tool_loop = signals(Some("c1"), Phase::Continue, Mode::FreeFlowing);
+        for _ in 0..3 {
+            let d = route_model(
+                &cache,
+                &test_support::StubRegistry,
+                &InMemoryCellStore::new(),
+                &AllowAllGate,
+                &classifier,
+                &inputs("anthropic", &tool_loop, None),
+            )
+            .await;
+            assert_eq!(d.source, RouteSource::CacheHit);
+            assert_eq!(d.model, first.model);
+        }
+        assert_eq!(classifier.stats().decisions, 1);
+    }
+
+    #[tokio::test]
+    async fn seeded_tier_selection_is_deterministic() {
+        let s = signals(Some("c1"), Phase::Switch, Mode::FreeFlowing);
+        let mut picks = std::collections::HashSet::new();
+        for _ in 0..20 {
+            let mut i = inputs("anthropic", &s, None);
+            i.tier_seed = Some(42);
+            let d = route_model(
+                &FakeCache::empty(),
+                &test_support::StubRegistry,
+                &InMemoryCellStore::new(),
+                &AllowAllGate,
+                &FallbackClassifier::regex_only(),
+                &i,
+            )
+            .await;
+            picks.insert(d.model);
+        }
+        assert_eq!(
+            picks.len(),
+            1,
+            "same seed + inputs must pick one model: {picks:?}"
+        );
     }
 
     #[test]

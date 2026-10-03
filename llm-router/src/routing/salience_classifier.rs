@@ -116,7 +116,7 @@ impl Weights {
 /// (unlike `std::collections::hash_map::DefaultHasher`, which is explicitly *not*
 /// guaranteed stable across Rust versions). A trained weight vector is only meaningful if
 /// hashing is stable, so this must never change without retraining.
-fn fnv1a(bytes: &[u8]) -> u64 {
+pub(crate) fn fnv1a(bytes: &[u8]) -> u64 {
     const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME: u64 = 0x0000_0100_0000_01b3;
     let mut hash = OFFSET_BASIS;
@@ -139,7 +139,7 @@ fn hash_to_bucket(gram: &str) -> (usize, f64) {
 
 /// Lowercase word tokens, splitting on anything that isn't alphanumeric. Empty tokens are
 /// dropped, so runs of punctuation/whitespace just act as separators.
-fn word_tokens(text: &str) -> Vec<String> {
+pub(crate) fn word_tokens(text: &str) -> Vec<String> {
     text.to_lowercase()
         .split(|c: char| !c.is_alphanumeric())
         .filter(|s| !s.is_empty())
@@ -148,7 +148,7 @@ fn word_tokens(text: &str) -> Vec<String> {
 }
 
 /// Word n-grams (`n` consecutive tokens joined by a single space) for `n` in `1..=max_n`.
-fn word_ngrams(tokens: &[String], max_n: usize) -> Vec<String> {
+pub(crate) fn word_ngrams(tokens: &[String], max_n: usize) -> Vec<String> {
     let mut grams = Vec::new();
     for n in 1..=max_n {
         if n > tokens.len() {
@@ -166,7 +166,7 @@ fn word_ngrams(tokens: &[String], max_n: usize) -> Vec<String> {
 /// appear inside a gram. Operates on `char`s (not bytes) so multi-byte UTF-8 isn't split
 /// mid-codepoint — this is what carries the code-switching case (e.g. `"Hola, ..."`)
 /// without a network call.
-fn char_ngrams(text: &str, min_n: usize, max_n: usize) -> Vec<String> {
+pub(crate) fn char_ngrams(text: &str, min_n: usize, max_n: usize) -> Vec<String> {
     let chars: Vec<char> = text.to_lowercase().chars().collect();
     let mut grams = Vec::new();
     for n in min_n..=max_n {
