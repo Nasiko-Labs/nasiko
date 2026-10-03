@@ -1,0 +1,763 @@
+{
+ "schema_version": "compact-tools-eval-v1",
+ "purpose": "Own cases for compact-tools prompt tuning (reference time 2026-10-02, Friday, Asia/Kolkata). Reported separately from the public set.",
+ "tools": [
+  {
+   "type": "function",
+   "function": {
+    "name": "create_calendar_event",
+    "description": "Create an event in the user's calendar.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "title": {
+       "type": "string",
+       "description": "Event title"
+      },
+      "start": {
+       "type": "string",
+       "format": "date-time",
+       "description": "Start time, ISO 8601"
+      },
+      "duration_min": {
+       "type": "integer",
+       "description": "Duration in minutes"
+      },
+      "attendees": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       },
+       "description": "Attendee emails"
+      },
+      "visibility": {
+       "type": "string",
+       "enum": [
+        "public",
+        "private"
+       ]
+      }
+     },
+     "required": [
+      "title",
+      "start"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "send_email",
+    "description": "Send an email from the user's account.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "to": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       },
+       "description": "Recipient emails"
+      },
+      "subject": {
+       "type": "string",
+       "description": "Subject line"
+      },
+      "body": {
+       "type": "string",
+       "description": "Plain-text body"
+      },
+      "cc": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       },
+       "description": "CC emails"
+      }
+     },
+     "required": [
+      "to",
+      "subject",
+      "body"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "get_weather",
+    "description": "Get the current weather for a city.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "city": {
+       "type": "string",
+       "description": "City name"
+      },
+      "unit": {
+       "type": "string",
+       "enum": [
+        "celsius",
+        "fahrenheit"
+       ]
+      }
+     },
+     "required": [
+      "city"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "create_task",
+    "description": "Create a task in the team tracker.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "title": {
+       "type": "string",
+       "description": "Task title"
+      },
+      "priority": {
+       "type": "string",
+       "enum": [
+        "low",
+        "medium",
+        "high"
+       ]
+      },
+      "due": {
+       "type": "string",
+       "description": "Due date",
+       "format": "date"
+      },
+      "tags": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       },
+       "description": "Labels"
+      },
+      "assignee": {
+       "type": "object",
+       "description": "Person responsible",
+       "properties": {
+        "name": {
+         "type": "string"
+        },
+        "email": {
+         "type": "string",
+         "format": "email"
+        }
+       },
+       "required": [
+        "name"
+       ]
+      }
+     },
+     "required": [
+      "title",
+      "priority"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "search_files",
+    "description": "Search project files by text.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "query": {
+       "type": "string",
+       "description": "Text to find"
+      },
+      "max_results": {
+       "type": "integer",
+       "description": "Maximum number of results"
+      },
+      "include_hidden": {
+       "type": "boolean",
+       "description": "Also search hidden files"
+      }
+     },
+     "required": [
+      "query"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "set_thermostat",
+    "description": "Set the home thermostat.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "temperature": {
+       "type": "number",
+       "description": "Target temperature in Celsius"
+      },
+      "mode": {
+       "type": "string",
+       "enum": [
+        "heat",
+        "cool",
+        "auto"
+       ]
+      }
+     },
+     "required": [
+      "temperature"
+     ]
+    }
+   }
+  }
+ ],
+ "cases": [
+  {
+   "id": "own-001",
+   "tools": [
+    "get_weather",
+    "send_email"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "What's the weather in Pune in celsius?"
+    }
+   ],
+   "expected": [
+    {
+     "name": "get_weather",
+     "arguments": {
+      "city": "Pune",
+      "unit": "celsius"
+     }
+    }
+   ]
+  },
+  {
+   "id": "own-002",
+   "tools": [
+    "search_files",
+    "send_email"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "Explain what a monad is in one sentence."
+    }
+   ],
+   "expected": []
+  },
+  {
+   "id": "own-003",
+   "tools": [
+    "create_task",
+    "create_calendar_event"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "Create a high priority task 'Fix login bug' due 2026-10-09, assigned to Dana (dana@example.com), tagged backend and auth."
+    }
+   ],
+   "expected": [
+    {
+     "name": "create_task",
+     "arguments": {
+      "title": "Fix login bug",
+      "priority": "high",
+      "due": "2026-10-09",
+      "tags": [
+       "backend",
+       "auth"
+      ],
+      "assignee": {
+       "name": "Dana",
+       "email": "dana@example.com"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "own-004",
+   "tools": [
+    "search_files",
+    "create_task"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "Find files mentioning 'rate limiter', show at most 5 results."
+    }
+   ],
+   "expected": [
+    {
+     "name": "search_files",
+     "arguments": {
+      "query": "rate limiter",
+      "max_results": 5
+     }
+    }
+   ]
+  },
+  {
+   "id": "own-005",
+   "tools": [
+    "set_thermostat",
+    "get_weather"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "Set the thermostat to 21.5 degrees in cool mode."
+    }
+   ],
+   "expected": [
+    {
+     "name": "set_thermostat",
+     "arguments": {
+      "temperature": 21.5,
+      "mode": "cool"
+     }
+    }
+   ]
+  },
+  {
+   "id": "own-006",
+   "tools": [
+    "get_weather",
+    "set_thermostat",
+    "send_email"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "Check the weather in Delhi in fahrenheit, set the thermostat to 24, then email me@example.com with subject 'Home' and body 'All set'."
+    }
+   ],
+   "expected": [
+    {
+     "name": "get_weather",
+     "arguments": {
+      "city": "Delhi",
+      "unit": "fahrenheit"
+     }
+    },
+    {
+     "name": "set_thermostat",
+     "arguments": {
+      "temperature": 24
+     }
+    },
+    {
+     "name": "send_email",
+     "arguments": {
+      "to": [
+       "me@example.com"
+      ],
+      "subject": "Home",
+      "body": "All set"
+     }
+    }
+   ],
+   "match": {
+    "free_text_fields": [
+     "subject",
+     "body"
+    ]
+   }
+  },
+  {
+   "id": "own-007",
+   "tools": [
+    "create_calendar_event",
+    "send_email"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "Schedule 'Team lunch' tomorrow at 1pm IST for 45 minutes."
+    }
+   ],
+   "expected": [
+    {
+     "name": "create_calendar_event",
+     "arguments": {
+      "title": "Team lunch",
+      "start": "2026-10-03T13:00:00+05:30",
+      "duration_min": 45
+     }
+    }
+   ]
+  },
+  {
+   "id": "own-008",
+   "tools": [
+    "send_email",
+    "create_calendar_event"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "Send an email to a@x.com and cc b@x.com with subject 'Report' and body 'Attached soon'."
+    }
+   ],
+   "expected": [
+    {
+     "name": "send_email",
+     "arguments": {
+      "to": [
+       "a@x.com"
+      ],
+      "cc": [
+       "b@x.com"
+      ],
+      "subject": "Report",
+      "body": "Attached soon"
+     }
+    }
+   ]
+  },
+  {
+   "id": "own-009",
+   "tools": [
+    "create_calendar_event",
+    "send_email",
+    "get_weather"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "Thanks, that's all!"
+    }
+   ],
+   "expected": []
+  },
+  {
+   "id": "own-010",
+   "tools": [
+    "get_weather",
+    "set_thermostat"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "What's the weather in Oslo?"
+    }
+   ],
+   "expected": [
+    {
+     "name": "get_weather",
+     "arguments": {
+      "city": "Oslo"
+     }
+    }
+   ]
+  },
+  {
+   "id": "own-011",
+   "tools": [
+    "search_files",
+    "get_weather"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "Search for 'TODO' including hidden files."
+    }
+   ],
+   "expected": [
+    {
+     "name": "search_files",
+     "arguments": {
+      "query": "TODO",
+      "include_hidden": true
+     }
+    }
+   ]
+  },
+  {
+   "id": "own-012",
+   "tools": [
+    "create_calendar_event",
+    "create_task"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "Book a private 30 minute 'Retro' next Monday 10am IST."
+    }
+   ],
+   "expected": [
+    {
+     "name": "create_calendar_event",
+     "arguments": {
+      "title": "Retro",
+      "start": "2026-10-05T10:00:00+05:30",
+      "duration_min": 30,
+      "visibility": "private"
+     }
+    }
+   ]
+  },
+  {
+   "id": "own-013",
+   "tools": [
+    "create_calendar_event",
+    "send_email"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "Add 'Standup' on Monday 9am IST and 'Review' on Tuesday 4pm IST."
+    }
+   ],
+   "expected": [
+    {
+     "name": "create_calendar_event",
+     "arguments": {
+      "title": "Standup",
+      "start": "2026-10-05T09:00:00+05:30"
+     }
+    },
+    {
+     "name": "create_calendar_event",
+     "arguments": {
+      "title": "Review",
+      "start": "2026-10-06T16:00:00+05:30"
+     }
+    }
+   ]
+  },
+  {
+   "id": "own-014",
+   "tools": [
+    "send_email",
+    "search_files"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "Email x@y.com with subject: Q&A >> notes and body: Use <<call>> carefully"
+    }
+   ],
+   "expected": [
+    {
+     "name": "send_email",
+     "arguments": {
+      "to": [
+       "x@y.com"
+      ],
+      "subject": "Q&A >> notes",
+      "body": "Use <<call>> carefully"
+     }
+    }
+   ]
+  },
+  {
+   "id": "own-015",
+   "tools": [
+    "create_task",
+    "create_calendar_event"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "Add a medium priority task 'Write docs'."
+    }
+   ],
+   "expected": [
+    {
+     "name": "create_task",
+     "arguments": {
+      "title": "Write docs",
+      "priority": "medium"
+     }
+    }
+   ]
+  },
+  {
+   "id": "own-016",
+   "tools": [
+    "get_weather",
+    "send_email"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "Delete my account."
+    }
+   ],
+   "expected": []
+  },
+  {
+   "id": "own-017",
+   "tools": [
+    "create_task",
+    "search_files"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "Create a low priority task 'Water plants' tagged home."
+    }
+   ],
+   "expected": [
+    {
+     "name": "create_task",
+     "arguments": {
+      "title": "Water plants",
+      "priority": "low",
+      "tags": [
+       "home"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "own-018",
+   "tools": [
+    "get_weather",
+    "create_calendar_event"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "Weather in Paris and Rome please."
+    }
+   ],
+   "expected": [
+    {
+     "name": "get_weather",
+     "arguments": {
+      "city": "Paris"
+     }
+    },
+    {
+     "name": "get_weather",
+     "arguments": {
+      "city": "Rome"
+     }
+    }
+   ]
+  }
+ ],
+ "decoder_cases": [
+  {
+   "id": "own-dc-001",
+   "note": "nested object, split mid-key",
+   "tools": [
+    "create_task"
+   ],
+   "chunks": [
+    "<<call create_task {\"title\":\"T\",\"priority\":\"high\",\"assignee\":{\"na",
+    "me\":\"Dana\"}}",
+    ">>"
+   ],
+   "expected": {
+    "calls": [
+     {
+      "name": "create_task",
+      "arguments": {
+       "title": "T",
+       "priority": "high",
+       "assignee": {
+        "name": "Dana"
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "id": "own-dc-002",
+   "note": "nested required field missing",
+   "tools": [
+    "create_task"
+   ],
+   "chunks": [
+    "<<call create_task {\"title\":\"T\",\"priority\":\"high\",\"assignee\":{\"email\":\"d@x.com\"}}>>"
+   ],
+   "expected": {
+    "error": "invalid_arguments"
+   }
+  },
+  {
+   "id": "own-dc-003",
+   "note": "enum violation inside array item type",
+   "tools": [
+    "create_task"
+   ],
+   "chunks": [
+    "<<call create_task {\"title\":\"T\",\"priority\":\"urgent\"}>>"
+   ],
+   "expected": {
+    "error": "invalid_arguments"
+   }
+  },
+  {
+   "id": "own-dc-004",
+   "note": "two calls, text between and after",
+   "tools": [
+    "get_weather"
+   ],
+   "chunks": [
+    "Checking. <<call get_weather {\"city\":\"A\"}>> and <<call get_weather {\"city\":\"B\"}>> done"
+   ],
+   "expected": {
+    "calls": [
+     {
+      "name": "get_weather",
+      "arguments": {
+       "city": "A"
+      }
+     },
+     {
+      "name": "get_weather",
+      "arguments": {
+       "city": "B"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "id": "own-dc-005",
+   "note": "integer given as float",
+   "tools": [
+    "search_files"
+   ],
+   "chunks": [
+    "<<call search_files {\"query\":\"x\",\"max_results\":2.5}>>"
+   ],
+   "expected": {
+    "error": "invalid_arguments"
+   }
+  },
+  {
+   "id": "own-dc-006",
+   "note": "truncated call, never closed",
+   "tools": [
+    "get_weather"
+   ],
+   "chunks": [
+    "<<call get_weather {\"city\":\"A\""
+   ],
+   "expected": {
+    "error": "invalid_arguments"
+   }
+  }
+ ]
+}
