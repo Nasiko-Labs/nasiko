@@ -27,6 +27,7 @@ pub mod classifier;
 mod patterns;
 pub mod pricing_sync;
 pub mod registry;
+pub mod request_classifier;
 pub mod salience;
 mod salience_classifier;
 
@@ -35,6 +36,7 @@ pub use cache::{CachedDecision, DecisionCache, NoopCache, RedisCache};
 pub use cells::{CellStore, InMemoryCellStore, PgCellStore};
 pub use classifier::{RequestType, Tier, classify, classify_request_type, signal};
 pub use registry::{PgTierRegistry, TierRegistry};
+pub use request_classifier::{Classification, MlRequestClassifier, RegexClassifier, RequestClassifier};
 pub use salience::{AllowAllGate, ClassifierSalienceGate, SalienceGate};
 
 /// Which precedence level produced a routing decision — emitted as a structured tag so we
@@ -83,6 +85,10 @@ pub struct RouteInputs<'a> {
     pub signals: &'a BoundarySignals,
     /// The query to classify (latest user message text). `None` disables classification.
     pub query: Option<&'a str>,
+    /// Optional conversation context (e.g. preceding transcript turns).
+    pub context: Option<&'a str>,
+    /// Request classifier abstraction. When `None`, defaults to [`RegexClassifier`].
+    pub classifier: Option<&'a dyn RequestClassifier>,
 }
 
 /// The outcome of routing: the model to call and how it was chosen.
@@ -91,6 +97,8 @@ pub struct RouteDecision {
     pub model: String,
     pub tier: Option<Tier>,
     pub source: RouteSource,
+    /// Detailed classification output (request type, complexity, confidence) when Level 3 classified.
+    pub classification: Option<Classification>,
 }
 
 /// Apply the five-level precedence and return the model to call.
@@ -156,6 +164,7 @@ pub async fn route_model(
             model: model.to_string(),
             tier: None,
             source: RouteSource::Pinned,
+            classification: None,
         };
     }
     tracing::debug!(
@@ -195,6 +204,7 @@ pub async fn route_model(
                 model: hit.model,
                 tier: hit.tier,
                 source: RouteSource::CacheHit,
+                classification: None,
             };
         }
         tracing::debug!(
@@ -232,6 +242,7 @@ pub async fn route_model(
                     model,
                     tier: None,
                     source: RouteSource::SmallTalk,
+                    classification: None,
                 };
             }
             tracing::info!(
@@ -245,15 +256,40 @@ pub async fn route_model(
                 agent_id = %inputs.agent_id, %conv_id, provider = %inputs.provider,
                 "route_model: LEVEL 3 (Classified) — at fireable boundary with a query; invoking classifier"
             );
+            // Invoke the configured RequestClassifier (or RegexClassifier fallback).
+            let default_classifier = RegexClassifier;
+            let classifier = inputs.classifier.unwrap_or(&default_classifier);
+            let classification = classifier.classify(query, inputs.context);
+
             // Load the provider's learned quality, then Thompson-sample a tier. Production
             // uses an entropy RNG (exploration drives learning); tests seed it. The RNG
             // (`ThreadRng`) is `!Send`, so it is scoped to drop before the next `.await` — the
             // handler future must stay `Send`.
             let learned = cell_store.load(inputs.provider).await;
-            let (tier, request_type) = {
+            let tier = {
                 let mut rng = rand::rng();
-                classify(query, inputs.provider, &learned, &mut rng)
+                classifier::pick_model_thompson(
+                    &learned,
+                    classification.request_type,
+                    classifier::DEFAULT_W_QUALITY,
+                    classifier::DEFAULT_W_COST,
+                    &mut rng,
+                )
             };
+            let request_type = classification.request_type;
+            let preview: String = query.chars().take(120).collect();
+            tracing::info!(
+                target: "nasiko::llm_router::classifier",
+                provider = %inputs.provider,
+                query_chars = query.chars().count(),
+                query_preview = %preview,
+                request_type = %request_type.as_str(),
+                complexity = classification.complexity,
+                confidence = classification.confidence,
+                learned_cells = learned.len(),
+                classified_tier = ?tier,
+                "classifier: classified query into request type and Thompson-sampled a model tier"
+            );
             // Per-config tier override takes priority over the global registry.
             let config_override = match tier {
                 Tier::Tier1 => inputs.tier1_model.map(str::to_string),
@@ -298,6 +334,7 @@ pub async fn route_model(
                         model: decision.model,
                         tier: Some(tier),
                         source: RouteSource::Classified,
+                        classification: Some(classification),
                     };
                 }
                 None => {
@@ -348,6 +385,7 @@ pub async fn route_model(
         model: inputs.fallback_model.to_string(),
         tier: None,
         source,
+        classification: None,
     }
 }
 
@@ -435,6 +473,42 @@ pub fn latest_user_query(messages: &[crate::ir::Message]) -> Option<String> {
         }
     }
     Some(text)
+}
+
+/// Extract conversation context preceding the latest user turn.
+///
+/// If the latest user message contains `\n\nCurrent message: `, the preceding portion is
+/// the unpacked history prefix. Otherwise, extracts text from preceding turns (up to 3).
+pub fn conversation_context(messages: &[crate::ir::Message]) -> Option<String> {
+    let text = messages
+        .iter()
+        .rev()
+        .find(|m| m.role == "user")
+        .and_then(|m| m.text())?;
+
+    if let Some(pos) = text.find("\n\nCurrent message: ") {
+        let prefix = &text[..pos];
+        if !prefix.trim().is_empty() {
+            return Some(prefix.trim().to_string());
+        }
+    }
+
+    let user_idx = messages.iter().rposition(|m| m.role == "user")?;
+    if user_idx > 0 {
+        let start = user_idx.saturating_sub(3);
+        let mut parts = Vec::new();
+        for m in &messages[start..user_idx] {
+            if let Some(t) = m.text()
+                && !t.trim().is_empty()
+            {
+                parts.push(format!("{}: {}", m.role, t.trim()));
+            }
+        }
+        if !parts.is_empty() {
+            return Some(parts.join("\n"));
+        }
+    }
+    None
 }
 
 /// Number of top-level user turns so far (count of `role == "user"` messages). Tool results
@@ -532,6 +606,8 @@ mod tests {
             tier3_model: None,
             signals,
             query: Some("hello"),
+            context: None,
+            classifier: None,
         }
     }
 
@@ -919,5 +995,130 @@ mod tests {
         ]));
         assert!(!is_tool_continuation(&[msg("user"), msg("assistant")]));
         assert!(!is_tool_continuation(&[]));
+    }
+
+    #[test]
+    fn conversation_context_extracts_preceding_messages() {
+        let msg = |role: &str, content: &str| Message {
+            role: role.into(),
+            content: Some(Value::String(content.into())),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+            extra: Map::new(),
+        };
+
+        // 1. Packed history format:
+        let packed = vec![msg(
+            "user",
+            "user: hello\nassistant: Hi\n\nCurrent message: implement quicksort",
+        )];
+        let ctx = conversation_context(&packed);
+        assert_eq!(ctx.as_deref(), Some("user: hello\nassistant: Hi"));
+
+        // 2. Multi-turn IR message format:
+        let turns = vec![
+            msg("user", "how to reverse a string?"),
+            msg("assistant", "use .chars().rev()"),
+            msg("user", "now do it in Python"),
+        ];
+        let ctx2 = conversation_context(&turns);
+        assert!(ctx2.is_some());
+        let ctx2_str = ctx2.unwrap();
+        assert!(ctx2_str.contains("user: how to reverse a string?"));
+        assert!(ctx2_str.contains("assistant: use .chars().rev()"));
+    }
+
+    #[tokio::test]
+    async fn level3_ml_request_classifier_participates_in_routing() {
+        let cache = FakeCache::empty();
+        let s = signals(Some("c1"), Phase::Switch, Mode::FreeFlowing);
+        // Use threshold=0.42 matching the trained weights exported threshold.
+        let ml_clf = MlRequestClassifier::embedded(0.42, 5000)
+            .expect("embedded weights should load");
+
+        let mut inp = inputs("anthropic", &s, None);
+        // Use a very explicit code-generation query the model reliably classifies.
+        inp.query = Some("write a python function to implement binary search");
+        inp.context = None;
+        inp.classifier = Some(&ml_clf);
+
+        let d = route_model(
+            &cache,
+            &test_support::StubRegistry,
+            &InMemoryCellStore::new(),
+            &AllowAllGate,
+            &inp,
+        )
+        .await;
+
+        assert_eq!(d.source, RouteSource::Classified);
+        assert!(d.tier.is_some());
+        let expected_models = ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"];
+        assert!(expected_models.contains(&d.model.as_str()));
+
+        // Verify ML classifier participated: classification must be present and valid.
+        assert!(d.classification.is_some(), "ML classifier must produce a classification");
+        let classification = d.classification.unwrap();
+        // The ML model must return one of the 7 known request types.
+        let valid_types = [
+            RequestType::CodeGeneration,
+            RequestType::CodeUnderstanding,
+            RequestType::TechnicalDesign,
+            RequestType::AnalyticalReasoning,
+            RequestType::Writing,
+            RequestType::FactualLookup,
+            RequestType::General,
+        ];
+        assert!(
+            valid_types.contains(&classification.request_type),
+            "request_type {:?} must be a valid P2 class",
+            classification.request_type
+        );
+        // For this clear code-generation query, expect CodeGeneration or CodeUnderstanding.
+        assert!(
+            matches!(
+                classification.request_type,
+                RequestType::CodeGeneration | RequestType::CodeUnderstanding
+            ),
+            "expected code-related classification, got {:?}",
+            classification.request_type
+        );
+        assert!(classification.complexity >= 1 && classification.complexity <= 5);
+        assert!(classification.confidence > 0.0);
+
+        // Verification of cache write-through
+        let puts = cache.puts.lock().unwrap();
+        assert_eq!(puts.len(), 1);
+        assert_eq!(puts[0].0, "c1");
+        assert_eq!(puts[0].1, "agent-1");
+        assert_eq!(puts[0].2, d.model);
+    }
+
+    #[tokio::test]
+    async fn level3_regex_classifier_matches_baseline_behavior() {
+        let cache = FakeCache::empty();
+        let s = signals(Some("c1"), Phase::Switch, Mode::FreeFlowing);
+        let regex_clf = RegexClassifier;
+
+        let mut inp = inputs("anthropic", &s, None);
+        inp.query = Some("build me a python script that parses CSV");
+        inp.classifier = Some(&regex_clf);
+
+        let d = route_model(
+            &cache,
+            &test_support::StubRegistry,
+            &InMemoryCellStore::new(),
+            &AllowAllGate,
+            &inp,
+        )
+        .await;
+
+        assert_eq!(d.source, RouteSource::Classified);
+        assert!(d.classification.is_some());
+        let classification = d.classification.unwrap();
+        assert_eq!(classification.request_type, RequestType::CodeGeneration);
+        assert_eq!(classification.complexity, 0);
+        assert!((classification.confidence - 1.0).abs() < 1e-9);
     }
 }

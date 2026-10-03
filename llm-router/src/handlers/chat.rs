@@ -48,6 +48,8 @@ pub(crate) struct RequestSignals {
     /// Latest user turn's text — the classifier's `query` input (Level 3) for every agent,
     /// and (for a coding-agent integration) also the `conv_id` anchor for *this* turn.
     pub query: Option<String>,
+    /// Optional conversation context (e.g. preceding transcript turns).
+    pub context: Option<String>,
     /// Count of top-level user turns so far. Combined with `query`, anchors a coding-agent's
     /// `conv_id` to the current turn rather than the whole session — see
     /// `BoundarySignals::for_coding_agent`'s doc comment for why that distinction matters.
@@ -194,6 +196,7 @@ async fn chat_core(
     };
     let signals = RequestSignals {
         query: routing::latest_user_query(&req.messages),
+        context: routing::conversation_context(&req.messages),
         turn_ordinal: routing::user_turn_ordinal(&req.messages),
         is_tool_continuation: routing::is_tool_continuation(&req.messages),
     };
@@ -483,6 +486,8 @@ pub(crate) async fn resolve_routed_request(
             tier3_model: resolved.tier3_model.as_deref(),
             signals: &boundary,
             query: signals.query.as_deref(),
+            context: signals.context.as_deref(),
+            classifier: Some(ctx.request_classifier.as_ref()),
         },
     )
     .await;
@@ -957,6 +962,7 @@ mod tests {
             tier_registry: Arc::new(NoTiers),
             cell_store: Arc::new(crate::routing::InMemoryCellStore::new()),
             salience_gate: Arc::new(crate::routing::AllowAllGate),
+            request_classifier: Arc::new(crate::routing::RegexClassifier),
             pricing: Arc::new(nasiko_pricing::PricingEngine::new(
                 PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
             )),
@@ -1441,6 +1447,7 @@ mod tests {
             },
             RequestSignals {
                 query: Some("write a function that reverses a string".into()),
+                context: None,
                 turn_ordinal: 1,
                 is_tool_continuation: false,
             },
@@ -1487,6 +1494,7 @@ mod tests {
             },
             RequestSignals {
                 query: Some("write a function that reverses a string".into()),
+                context: None,
                 turn_ordinal: 1,
                 is_tool_continuation: false,
             },

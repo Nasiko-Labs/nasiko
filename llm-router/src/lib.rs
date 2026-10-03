@@ -48,8 +48,9 @@ pub use inbound::InboundFormat;
 pub use inject::{LlmInjectCtx, inject_llm_env};
 pub use resolver::{ConfigCache, ResolvedConfig};
 pub use routing::{
-    AllowAllGate, CellStore, ClassifierSalienceGate, DecisionCache, InMemoryCellStore, NoopCache,
-    PgCellStore, PgTierRegistry, RedisCache, SalienceGate, TierRegistry,
+    AllowAllGate, CellStore, Classification, ClassifierSalienceGate, DecisionCache,
+    InMemoryCellStore, MlRequestClassifier, NoopCache, PgCellStore, PgTierRegistry, RedisCache,
+    RegexClassifier, RequestClassifier, SalienceGate, TierRegistry,
 };
 
 /// Shared context for the LLM router.
@@ -82,6 +83,10 @@ pub struct LlmRouterCtx {
     /// classify + pin. [`ClassifierSalienceGate`] when `SALIENCE_GATE_ENABLED`; else [`AllowAllGate`]
     /// (classify at every boundary, i.e. behaviour before the gate existed).
     pub salience_gate: Arc<dyn SalienceGate>,
+    /// P2 request classifier — classifies user queries into a 7-way request type and
+    /// 5-way complexity. [`RegexClassifier`] when `CLASSIFIER_ENABLED=false` (the default);
+    /// otherwise [`MlRequestClassifier`].
+    pub request_classifier: Arc<dyn RequestClassifier>,
     /// The platform's single cost engine. Every `token_usage` row is priced
     /// through this — the DB trigger that used to do it returned NULL for any
     /// model missing from `model_pricing`, which booked 92.8% of calls at $0.
@@ -127,6 +132,7 @@ impl LlmRouterCtx {
         let router_cache = build_router_cache(&cfg);
         let cfg = Arc::new(cfg);
         let salience_gate = build_salience_gate(&cfg);
+        let request_classifier = build_request_classifier(&cfg);
         let pricing = Arc::new(PricingEngine::new(db.clone()));
         Self {
             db,
@@ -137,6 +143,7 @@ impl LlmRouterCtx {
             tier_registry,
             cell_store,
             salience_gate,
+            request_classifier,
             pricing,
         }
     }
@@ -201,6 +208,57 @@ fn build_salience_gate(cfg: &Arc<GatewayConfig>) -> Arc<dyn SalienceGate> {
                 "llm-router: salience model failed to load; falling back to AllowAllGate (classify at every fireable boundary)"
             );
             Arc::new(AllowAllGate)
+        }
+    }
+}
+
+/// Build the P2 request classifier from config.
+///
+/// [`RegexClassifier`] when `CLASSIFIER_ENABLED=false` (the default).
+/// Otherwise [`MlRequestClassifier`] over the statically embedded model or
+/// `CLASSIFIER_WEIGHTS_PATH` if provided. Degrades gracefully to [`RegexClassifier`]
+/// on load failure.
+fn build_request_classifier(cfg: &Arc<GatewayConfig>) -> Arc<dyn RequestClassifier> {
+    if !cfg.classifier_enabled {
+        tracing::info!(
+            target: "nasiko::llm_router::startup",
+            "llm-router: request classifier = RegexClassifier (CLASSIFIER_ENABLED=false; regex baseline)"
+        );
+        return Arc::new(RegexClassifier);
+    }
+
+    let loaded = if cfg.classifier_weights_path.is_empty() {
+        MlRequestClassifier::embedded(cfg.classifier_threshold, cfg.classifier_timeout_ms)
+    } else {
+        MlRequestClassifier::from_path(
+            &cfg.classifier_weights_path,
+            cfg.classifier_threshold,
+            cfg.classifier_timeout_ms,
+        )
+    };
+
+    match loaded {
+        Ok(clf) => {
+            tracing::info!(
+                target: "nasiko::llm_router::startup",
+                weights_source = if cfg.classifier_weights_path.is_empty() {
+                    "embedded"
+                } else {
+                    &cfg.classifier_weights_path
+                },
+                threshold = cfg.classifier_threshold,
+                timeout_ms = cfg.classifier_timeout_ms,
+                "llm-router: request classifier = MlRequestClassifier (P2 Level 3 routing enabled)"
+            );
+            Arc::new(clf)
+        }
+        Err(err) => {
+            tracing::warn!(
+                target: "nasiko::llm_router::startup",
+                error = %err,
+                "llm-router: failed to load ML request classifier; falling back to RegexClassifier"
+            );
+            Arc::new(RegexClassifier)
         }
     }
 }

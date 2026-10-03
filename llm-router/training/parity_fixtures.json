@@ -1,0 +1,357 @@
+[
+  {
+    "id": "case1",
+    "query": "write a python function to parse json",
+    "context": null,
+    "regex_type": "code_generation",
+    "dense": [
+      0.69314718,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      3.63758616,
+      2.07944154
+    ],
+    "regex_votes": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "num_hashed_buckets": 109,
+    "sum_hashed": -0.09325048,
+    "sample_hashed": [
+      {
+        "bucket": 950,
+        "val": -0.09325048
+      },
+      {
+        "bucket": 2846,
+        "val": -0.09325048
+      },
+      {
+        "bucket": 2989,
+        "val": 0.09325048
+      },
+      {
+        "bucket": 3731,
+        "val": 0.09325048
+      },
+      {
+        "bucket": 4268,
+        "val": -0.09325048
+      },
+      {
+        "bucket": 4406,
+        "val": -0.09325048
+      },
+      {
+        "bucket": 4462,
+        "val": -0.09325048
+      },
+      {
+        "bucket": 5626,
+        "val": -0.09325048
+      },
+      {
+        "bucket": 7254,
+        "val": -0.09325048
+      },
+      {
+        "bucket": 7594,
+        "val": -0.09325048
+      }
+    ]
+  },
+  {
+    "id": "case2",
+    "query": "Explain why this function is slow and suggest optimizations.",
+    "context": "Here is the slow code: for i in range(1000): db.query(i)",
+    "regex_type": "code_understanding",
+    "dense": [
+      0.69314718,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      4.04305127,
+      4.11087386,
+      2.30258509
+    ],
+    "regex_votes": [
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "num_hashed_buckets": 202,
+    "sum_hashed": 0.68358593,
+    "sample_hashed": [
+      {
+        "bucket": 833,
+        "val": 0.06835859
+      },
+      {
+        "bucket": 1392,
+        "val": -0.06835859
+      },
+      {
+        "bucket": 2619,
+        "val": 0.06835859
+      },
+      {
+        "bucket": 2911,
+        "val": 0.06835859
+      },
+      {
+        "bucket": 2931,
+        "val": 0.06835859
+      },
+      {
+        "bucket": 2989,
+        "val": 0.13671719
+      },
+      {
+        "bucket": 3144,
+        "val": -0.06835859
+      },
+      {
+        "bucket": 3907,
+        "val": 0.13671719
+      },
+      {
+        "bucket": 4268,
+        "val": -0.06835859
+      },
+      {
+        "bucket": 4406,
+        "val": -0.06835859
+      }
+    ]
+  },
+  {
+    "id": "case3",
+    "query": "Draft a polite email asking for project updates.",
+    "context": null,
+    "regex_type": "writing",
+    "dense": [
+      0.69314718,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      3.8918203,
+      2.19722458
+    ],
+    "regex_votes": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0
+    ],
+    "num_hashed_buckets": 147,
+    "sum_hashed": -1.63299316,
+    "sample_hashed": [
+      {
+        "bucket": 1227,
+        "val": 0.08164966
+      },
+      {
+        "bucket": 1573,
+        "val": 0.08164966
+      },
+      {
+        "bucket": 1616,
+        "val": -0.08164966
+      },
+      {
+        "bucket": 1830,
+        "val": -0.08164966
+      },
+      {
+        "bucket": 1838,
+        "val": -0.08164966
+      },
+      {
+        "bucket": 2984,
+        "val": -0.08164966
+      },
+      {
+        "bucket": 3100,
+        "val": -0.08164966
+      },
+      {
+        "bucket": 3653,
+        "val": 0.08164966
+      },
+      {
+        "bucket": 4153,
+        "val": 0.08164966
+      },
+      {
+        "bucket": 4276,
+        "val": -0.08164966
+      }
+    ]
+  },
+  {
+    "id": "case4",
+    "query": "What is the capital of France?",
+    "context": null,
+    "regex_type": "factual_lookup",
+    "dense": [
+      0.69314718,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      3.4339872,
+      1.94591015
+    ],
+    "regex_votes": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0
+    ],
+    "num_hashed_buckets": 90,
+    "sum_hashed": -0.41702883,
+    "sample_hashed": [
+      {
+        "bucket": 375,
+        "val": 0.10425721
+      },
+      {
+        "bucket": 1979,
+        "val": 0.10425721
+      },
+      {
+        "bucket": 3834,
+        "val": -0.10425721
+      },
+      {
+        "bucket": 4967,
+        "val": 0.10425721
+      },
+      {
+        "bucket": 5707,
+        "val": 0.10425721
+      },
+      {
+        "bucket": 6221,
+        "val": 0.10425721
+      },
+      {
+        "bucket": 6345,
+        "val": 0.10425721
+      },
+      {
+        "bucket": 7202,
+        "val": -0.10425721
+      },
+      {
+        "bucket": 7706,
+        "val": -0.10425721
+      },
+      {
+        "bucket": 9168,
+        "val": -0.10425721
+      }
+    ]
+  },
+  {
+    "id": "case5",
+    "query": "Calculate the compound interest for $1000 at 5% over 10 years.",
+    "context": null,
+    "regex_type": "analytical_reasoning",
+    "dense": [
+      0.69314718,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      4.14313473,
+      2.48490665
+    ],
+    "regex_votes": [
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "num_hashed_buckets": 192,
+    "sum_hashed": -2.13200716,
+    "sample_hashed": [
+      {
+        "bucket": 96,
+        "val": -0.07106691
+      },
+      {
+        "bucket": 149,
+        "val": 0.07106691
+      },
+      {
+        "bucket": 242,
+        "val": -0.07106691
+      },
+      {
+        "bucket": 544,
+        "val": -0.07106691
+      },
+      {
+        "bucket": 1075,
+        "val": 0.07106691
+      },
+      {
+        "bucket": 1713,
+        "val": 0.07106691
+      },
+      {
+        "bucket": 2212,
+        "val": -0.07106691
+      },
+      {
+        "bucket": 3256,
+        "val": -0.07106691
+      },
+      {
+        "bucket": 3667,
+        "val": 0.07106691
+      },
+      {
+        "bucket": 4559,
+        "val": 0.07106691
+      }
+    ]
+  }
+]

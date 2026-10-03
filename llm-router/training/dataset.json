@@ -1,0 +1,5224 @@
+{
+  "dataset": [
+    {
+      "id": "ex_0001",
+      "source_group": "cg_01",
+      "query": "Write a python function to check if a string is a palindrome.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0002",
+      "source_group": "cg_01",
+      "query": "make a python function that tells if a word is palindrome or not",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0003",
+      "source_group": "cg_01",
+      "query": "writ a pythn functin to chek if string is palindrom",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0004",
+      "source_group": "cg_01",
+      "query": "Hi assistant! Please write a python function to check if a string is a palindrome. Much appreciated!",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0005",
+      "source_group": "cg_02",
+      "query": "Implement binary search on a sorted integer slice in Rust.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 2,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0006",
+      "source_group": "cg_02",
+      "query": "implement binary search over a sorted slice in rust",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 2,
+      "split": "validation",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0007",
+      "source_group": "cg_02",
+      "query": "impliment bynary serch on a sortd int slice in rust",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 2,
+      "split": "validation",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0008",
+      "source_group": "cg_03",
+      "query": "Create a FastAPI endpoint that accepts JSON user profiles and validates email using pydantic.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 2,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0009",
+      "source_group": "cg_03",
+      "query": "Write a REST API endpoint in FastAPI for user signup validation.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 2,
+      "split": "calibration",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0010",
+      "source_group": "cg_04",
+      "query": "Write an LRU Cache in Go with thread-safe Get and Put methods using a doubly linked list and mutex.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0011",
+      "source_group": "cg_04",
+      "query": "implement a thread-safe LRU cache in golang with sync.Mutex",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0012",
+      "source_group": "cg_05",
+      "query": "Implement a distributed rate limiter in Python using Redis sliding window log with Lua script for atomicity.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0013",
+      "source_group": "cg_05",
+      "query": "Write a redis lua sliding window rate limiter function in python.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0014",
+      "source_group": "cg_06",
+      "query": "Build a multi-producer multi-consumer bounded lock-free ring buffer in C++20 using atomic memory orders (acquire/release).",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 5,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0015",
+      "source_group": "cg_06",
+      "query": "write lock-free bounded mpmc queue in cpp using std::atomic with strict memory ordering",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 5,
+      "split": "calibration",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0016",
+      "source_group": "cg_07",
+      "query": "Fix this bug: the loop index goes out of bounds on empty arrays.",
+      "context": "fn process(items: &[i32]) -> i32 { items[0] + items[items.len()] }",
+      "request_type": "code_generation",
+      "complexity": 2,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0017",
+      "source_group": "cg_07",
+      "query": "Fix the off-by-one and empty check bug in this function",
+      "context": "fn process(items: &[i32]) -> i32 { items[0] + items[items.len()] }",
+      "request_type": "code_generation",
+      "complexity": 2,
+      "split": "calibration",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0018",
+      "source_group": "cg_08",
+      "query": "Refactor this synchronous HTTP handler into an asynchronous non-blocking Tokio handler.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 3,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0019",
+      "source_group": "cg_08",
+      "query": "Hello, I have a quick question. Refactor this synchronous HTTP handler into an asynchronous non-blocking Tokio handler. Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 3,
+      "split": "validation",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0020",
+      "source_group": "cg_08",
+      "query": "Can you refactor this synchronous HTTP handler into an asynchronous non-blocking Tokio handler.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 3,
+      "split": "validation",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0021",
+      "source_group": "cg_09",
+      "query": "Add comprehensive error handling and retry logic with exponential backoff to this DB connection pool.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 3,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0022",
+      "source_group": "cg_09",
+      "query": "Hello, I have a quick question. Add comprehensive error handling and retry logic with exponential backoff to this DB connection pool. Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 3,
+      "split": "validation",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0023",
+      "source_group": "cg_09",
+      "query": "Can you add comprehensive error handling and retry logic with exponential backoff to this DB connection pool.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 3,
+      "split": "validation",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0024",
+      "source_group": "cg_10",
+      "query": "Write a SQL query to find top 3 customers by revenue per region using window functions.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0025",
+      "source_group": "cg_10",
+      "query": "Hello, I have a quick question. Write a SQL query to find top 3 customers by revenue per region using window functions. Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0026",
+      "source_group": "cg_10",
+      "query": "Can you write a SQL query to find top 3 customers by revenue per region using window functions.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0027",
+      "source_group": "cg_11",
+      "query": "Generate a TypeScript interface and zod schema for a GitHub webhook payload.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0028",
+      "source_group": "cg_11",
+      "query": "Hello, I have a quick question. Generate a TypeScript interface and zod schema for a GitHub webhook payload. Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0029",
+      "source_group": "cg_11",
+      "query": "Can you generate a TypeScript interface and zod schema for a GitHub webhook payload.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0030",
+      "source_group": "cg_12",
+      "query": "Write a bash one-liner to find all files larger than 100MB and compress them with gzip.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0031",
+      "source_group": "cg_12",
+      "query": "Hello, I have a quick question. Write a bash one-liner to find all files larger than 100MB and compress them with gzip. Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0032",
+      "source_group": "cg_12",
+      "query": "Can you write a bash one-liner to find all files larger than 100MB and compress them with gzip.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0033",
+      "source_group": "cg_13",
+      "query": "Implement A* pathfinding algorithm on a 2D grid in Java with custom Manhattan distance heuristic.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0034",
+      "source_group": "cg_13",
+      "query": "Hello, I have a quick question. Implement A* pathfinding algorithm on a 2D grid in Java with custom Manhattan distance heuristic. Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0035",
+      "source_group": "cg_13",
+      "query": "Can you implement A* pathfinding algorithm on a 2D grid in Java with custom Manhattan distance heuristic.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0036",
+      "source_group": "cg_14",
+      "query": "Write a custom PyTorch training loop with gradient accumulation, mixed precision amp, and wandb logging.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0037",
+      "source_group": "cg_14",
+      "query": "Hello, I have a quick question. Write a custom PyTorch training loop with gradient accumulation, mixed precision amp, and wandb logging. Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0038",
+      "source_group": "cg_14",
+      "query": "Can you write a custom PyTorch training loop with gradient accumulation, mixed precision amp, and wandb logging.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0039",
+      "source_group": "cg_15",
+      "query": "Generate a Kubernetes Helm chart for a stateful PostgreSQL cluster with persistence and automated backup cronjob.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 4,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0040",
+      "source_group": "cg_15",
+      "query": "Hello, I have a quick question. Generate a Kubernetes Helm chart for a stateful PostgreSQL cluster with persistence and automated backup cronjob. Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 4,
+      "split": "validation",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0041",
+      "source_group": "cg_15",
+      "query": "Can you generate a Kubernetes Helm chart for a stateful PostgreSQL cluster with persistence and automated backup cronjob.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 4,
+      "split": "validation",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0042",
+      "source_group": "cg_16",
+      "query": "Build a zero-copy parser in Rust using nom for the Redis RESP3 serialization protocol.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 4,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0043",
+      "source_group": "cg_16",
+      "query": "Hello, I have a quick question. Build a zero-copy parser in Rust using nom for the Redis RESP3 serialization protocol. Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 4,
+      "split": "validation",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0044",
+      "source_group": "cg_16",
+      "query": "Can you build a zero-copy parser in Rust using nom for the Redis RESP3 serialization protocol.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 4,
+      "split": "validation",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0045",
+      "source_group": "cg_17",
+      "query": "Implement Raft consensus leader election and log replication module in Rust with simulated RPC transports.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 5,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0046",
+      "source_group": "cg_17",
+      "query": "Hello, I have a quick question. Implement Raft consensus leader election and log replication module in Rust with simulated RPC transports. Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 5,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0047",
+      "source_group": "cg_17",
+      "query": "Can you implement Raft consensus leader election and log replication module in Rust with simulated RPC transports.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 5,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0048",
+      "source_group": "cg_18",
+      "query": "Write a quicksort function in C.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 2,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0049",
+      "source_group": "cg_18",
+      "query": "Hello, I have a quick question. Write a quicksort function in C. Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 2,
+      "split": "validation",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0050",
+      "source_group": "cg_18",
+      "query": "Can you write a quicksort function in C.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 2,
+      "split": "validation",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0051",
+      "source_group": "cg_19",
+      "query": "Create a React hook `useDebounce` that delays updating value until 300ms of inactivity.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0052",
+      "source_group": "cg_19",
+      "query": "Hello, I have a quick question. Create a React hook `useDebounce` that delays updating value until 300ms of inactivity. Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0053",
+      "source_group": "cg_19",
+      "query": "Can you create a React hook `useDebounce` that delays updating value until 300ms of inactivity.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0054",
+      "source_group": "cg_20",
+      "query": "Write a Python script that parses CSV rows and sends batch email notifications via SMTP.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0055",
+      "source_group": "cg_20",
+      "query": "Hello, I have a quick question. Write a Python script that parses CSV rows and sends batch email notifications via SMTP. Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0056",
+      "source_group": "cg_20",
+      "query": "Can you write a Python script that parses CSV rows and sends batch email notifications via SMTP.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0057",
+      "source_group": "cu_01",
+      "query": "Explain what this function does and how it handles null pointers.",
+      "context": "void process(Node* n) { if(!n) return; free(n->val); }",
+      "request_type": "code_understanding",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0058",
+      "source_group": "cu_01",
+      "query": "what does this function do and how does it deal with null pointers?",
+      "context": "void process(Node* n) { if(!n) return; free(n->val); }",
+      "request_type": "code_understanding",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0059",
+      "source_group": "cu_01",
+      "query": "explan what this code is doing with null pointers",
+      "context": "void process(Node* n) { if(!n) return; free(n->val); }",
+      "request_type": "code_understanding",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0060",
+      "source_group": "cu_02",
+      "query": "Explain why this function is slow and what causes high memory allocations.",
+      "context": "def process(items): return [str(x) for x in range(len(items)) if str(x) in items]",
+      "request_type": "code_understanding",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0061",
+      "source_group": "cu_02",
+      "query": "why is this python function slow? analyze the computational complexity",
+      "context": "def process(items): return [str(x) for x in range(len(items)) if str(x) in items]",
+      "request_type": "code_understanding",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0062",
+      "source_group": "cu_03",
+      "query": "Walk me through this Rust async code and explain why deadlocks occur on these locks.",
+      "context": "async fn deadlocking() { let a = lock1.lock().await; let b = lock2.lock().await; }",
+      "request_type": "code_understanding",
+      "complexity": 3,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0063",
+      "source_group": "cu_03",
+      "query": "Hello, I have a quick question. Walk me through this Rust async code and explain why deadlocks occur on these locks. Looking forward to your response, thanks!",
+      "context": "async fn deadlocking() { let a = lock1.lock().await; let b = lock2.lock().await; }",
+      "request_type": "code_understanding",
+      "complexity": 3,
+      "split": "validation",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0064",
+      "source_group": "cu_03",
+      "query": "Can you walk me through this Rust async code and explain why deadlocks occur on these locks.",
+      "context": "async fn deadlocking() { let a = lock1.lock().await; let b = lock2.lock().await; }",
+      "request_type": "code_understanding",
+      "complexity": 3,
+      "split": "validation",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0065",
+      "source_group": "cu_04",
+      "query": "What does the `volatile` keyword mean in C in the context of embedded memory mapped IO?",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0066",
+      "source_group": "cu_04",
+      "query": "Hello, I have a quick question. What does the `volatile` keyword mean in C in the context of embedded memory mapped IO? Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0067",
+      "source_group": "cu_04",
+      "query": "Can you what does the `volatile` keyword mean in C in the context of embedded memory mapped IO?",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0068",
+      "source_group": "cu_05",
+      "query": "How does the borrow checker in Rust ensure memory safety without a garbage collector?",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 3,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0069",
+      "source_group": "cu_05",
+      "query": "Hello, I have a quick question. How does the borrow checker in Rust ensure memory safety without a garbage collector? Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 3,
+      "split": "validation",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0070",
+      "source_group": "cu_05",
+      "query": "Can you how does the borrow checker in Rust ensure memory safety without a garbage collector?",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 3,
+      "split": "validation",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0071",
+      "source_group": "cu_06",
+      "query": "Analyze this SQL execution plan and tell me why the optimizer chose a sequential scan over the index.",
+      "context": "Seq Scan on orders (cost=0.00..1845.00 rows=50000 width=72) Filter: (status = 'PENDING')",
+      "request_type": "code_understanding",
+      "complexity": 3,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0072",
+      "source_group": "cu_06",
+      "query": "Hello, I have a quick question. Analyze this SQL execution plan and tell me why the optimizer chose a sequential scan over the index. Looking forward to your response, thanks!",
+      "context": "Seq Scan on orders (cost=0.00..1845.00 rows=50000 width=72) Filter: (status = 'PENDING')",
+      "request_type": "code_understanding",
+      "complexity": 3,
+      "split": "calibration",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0073",
+      "source_group": "cu_06",
+      "query": "Can you analyze this SQL execution plan and tell me why the optimizer chose a sequential scan over the index.",
+      "context": "Seq Scan on orders (cost=0.00..1845.00 rows=50000 width=72) Filter: (status = 'PENDING')",
+      "request_type": "code_understanding",
+      "complexity": 3,
+      "split": "calibration",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0074",
+      "source_group": "cu_07",
+      "query": "Explain how garbage collection works in Java, specifically comparing G1GC and ZGC mechanics.",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 4,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0075",
+      "source_group": "cu_07",
+      "query": "Hello, I have a quick question. Explain how garbage collection works in Java, specifically comparing G1GC and ZGC mechanics. Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 4,
+      "split": "calibration",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0076",
+      "source_group": "cu_07",
+      "query": "Can you explain how garbage collection works in Java, specifically comparing G1GC and ZGC mechanics.",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 4,
+      "split": "calibration",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0077",
+      "source_group": "cu_08",
+      "query": "Deconstruct this assembly snippet and explain how the stack frame is initialized and restored.",
+      "context": "push rbp; mov rbp, rsp; sub rsp, 32; ...; leave; ret",
+      "request_type": "code_understanding",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0078",
+      "source_group": "cu_08",
+      "query": "Hello, I have a quick question. Deconstruct this assembly snippet and explain how the stack frame is initialized and restored. Looking forward to your response, thanks!",
+      "context": "push rbp; mov rbp, rsp; sub rsp, 32; ...; leave; ret",
+      "request_type": "code_understanding",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0079",
+      "source_group": "cu_08",
+      "query": "Can you deconstruct this assembly snippet and explain how the stack frame is initialized and restored.",
+      "context": "push rbp; mov rbp, rsp; sub rsp, 32; ...; leave; ret",
+      "request_type": "code_understanding",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0080",
+      "source_group": "cu_09",
+      "query": "Explain the formal semantics of C++ memory_order_consume vs memory_order_acquire on weakly ordered architectures like ARM and Alpha.",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 5,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0081",
+      "source_group": "cu_09",
+      "query": "Hello, I have a quick question. Explain the formal semantics of C++ memory_order_consume vs memory_order_acquire on weakly ordered architectures like ARM and Alpha. Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 5,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0082",
+      "source_group": "cu_09",
+      "query": "Can you explain the formal semantics of C++ memory_order_consume vs memory_order_acquire on weakly ordered architectures like ARM and Alpha.",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 5,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0083",
+      "source_group": "cu_10",
+      "query": "What is the difference between `interface{}` and `any` in modern Go?",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0084",
+      "source_group": "cu_10",
+      "query": "Hello, I have a quick question. What is the difference between `interface{}` and `any` in modern Go? Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0085",
+      "source_group": "cu_10",
+      "query": "Can you what is the difference between `interface{}` and `any` in modern Go?",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0086",
+      "source_group": "cu_11",
+      "query": "How does React fiber reconciliation schedule priority updates and pause execution?",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0087",
+      "source_group": "cu_11",
+      "query": "Hello, I have a quick question. How does React fiber reconciliation schedule priority updates and pause execution? Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0088",
+      "source_group": "cu_11",
+      "query": "Can you how does React fiber reconciliation schedule priority updates and pause execution?",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0089",
+      "source_group": "cu_12",
+      "query": "Review this cryptographic signing function and identify the side-channel timing attack vulnerability.",
+      "context": "for i in range(len(sig)): if sig[i] != expected[i]: return False",
+      "request_type": "code_understanding",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0090",
+      "source_group": "cu_12",
+      "query": "Hello, I have a quick question. Review this cryptographic signing function and identify the side-channel timing attack vulnerability. Looking forward to your response, thanks!",
+      "context": "for i in range(len(sig)): if sig[i] != expected[i]: return False",
+      "request_type": "code_understanding",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0091",
+      "source_group": "cu_12",
+      "query": "Can you review this cryptographic signing function and identify the side-channel timing attack vulnerability.",
+      "context": "for i in range(len(sig)): if sig[i] != expected[i]: return False",
+      "request_type": "code_understanding",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0092",
+      "source_group": "cu_13",
+      "query": "What is the time and space complexity of merge sort vs heap sort?",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 2,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0093",
+      "source_group": "cu_13",
+      "query": "Hello, I have a quick question. What is the time and space complexity of merge sort vs heap sort? Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 2,
+      "split": "validation",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0094",
+      "source_group": "cu_13",
+      "query": "Can you what is the time and space complexity of merge sort vs heap sort?",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 2,
+      "split": "validation",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0095",
+      "source_group": "cu_14",
+      "query": "Explain what this regex pattern does: `^(?=.*[A-Za-z])(?=.*\\d)[A-Za-z\\d]{8,}$`.",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0096",
+      "source_group": "cu_14",
+      "query": "Hello, I have a quick question. Explain what this regex pattern does: `^(?=.*[A-Za-z])(?=.*\\d)[A-Za-z\\d]{8,}$`. Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0097",
+      "source_group": "cu_14",
+      "query": "Can you explain what this regex pattern does: `^(?=.*[A-Za-z])(?=.*\\d)[A-Za-z\\d]{8,}$`.",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0098",
+      "source_group": "cu_15",
+      "query": "Explain why this TypeScript generic condition is evaluating to `never` instead of the union type.",
+      "context": "type Flatten<T> = T extends (infer U)[] ? U : never;",
+      "request_type": "code_understanding",
+      "complexity": 3,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0099",
+      "source_group": "cu_15",
+      "query": "Hello, I have a quick question. Explain why this TypeScript generic condition is evaluating to `never` instead of the union type. Looking forward to your response, thanks!",
+      "context": "type Flatten<T> = T extends (infer U)[] ? U : never;",
+      "request_type": "code_understanding",
+      "complexity": 3,
+      "split": "calibration",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0100",
+      "source_group": "cu_15",
+      "query": "Can you explain why this TypeScript generic condition is evaluating to `never` instead of the union type.",
+      "context": "type Flatten<T> = T extends (infer U)[] ? U : never;",
+      "request_type": "code_understanding",
+      "complexity": 3,
+      "split": "calibration",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0101",
+      "source_group": "td_01",
+      "query": "Design a relational database schema for a simple blog with users, posts, and comments.",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0102",
+      "source_group": "td_01",
+      "query": "how should i design a database schema for blog posts and user comments?",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0103",
+      "source_group": "td_01",
+      "query": "design database tables for users, posts, tags and comments in postgres",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0104",
+      "source_group": "td_02",
+      "query": "How should I design an API rate limiter to protect our backend services from DDoS?",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0105",
+      "source_group": "td_02",
+      "query": "api design for global rate limiting gateway",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0106",
+      "source_group": "td_03",
+      "query": "Design the system architecture for a real-time collaborative document editor like Google Docs.",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0107",
+      "source_group": "td_03",
+      "query": "system architecture for collaborative text editing with CRDTs and websockets",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0108",
+      "source_group": "td_04",
+      "query": "What are the trade-offs between Apache Kafka and RabbitMQ for event-driven microservices?",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0109",
+      "source_group": "td_04",
+      "query": "Hello, I have a quick question. What are the trade-offs between Apache Kafka and RabbitMQ for event-driven microservices? Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0110",
+      "source_group": "td_04",
+      "query": "Can you what are the trade-offs between Apache Kafka and RabbitMQ for event-driven microservices?",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0111",
+      "source_group": "td_05",
+      "query": "Design a globally distributed payment processing system handling 100k TPS with strict ACID guarantees, multi-region active-active failover, and zero transaction loss.",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 5,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0112",
+      "source_group": "td_05",
+      "query": "Architecture for global multi-region active-active payment gateway with idempotent ledger and two-phase commit or saga pattern",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 5,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0113",
+      "source_group": "td_06",
+      "query": "Design a URL shortener service like Bitly including data model, hashing strategy, and caching layer.",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0114",
+      "source_group": "td_06",
+      "query": "Hello, I have a quick question. Design a URL shortener service like Bitly including data model, hashing strategy, and caching layer. Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0115",
+      "source_group": "td_06",
+      "query": "Can you design a URL shortener service like Bitly including data model, hashing strategy, and caching layer.",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0116",
+      "source_group": "td_07",
+      "query": "How should we architect an authentication service supporting OAuth2, OIDC, SAML, and MFA for enterprise tenants?",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0117",
+      "source_group": "td_07",
+      "query": "Hello, I have a quick question. How should we architect an authentication service supporting OAuth2, OIDC, SAML, and MFA for enterprise tenants? Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0118",
+      "source_group": "td_07",
+      "query": "Can you how should we architect an authentication service supporting OAuth2, OIDC, SAML, and MFA for enterprise tenants?",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0119",
+      "source_group": "td_08",
+      "query": "Compare monotonic IDs (UUIDv7, ULID, Snowflake) vs auto-incrementing integers for distributed databases.",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0120",
+      "source_group": "td_08",
+      "query": "Hello, I have a quick question. Compare monotonic IDs (UUIDv7, ULID, Snowflake) vs auto-incrementing integers for distributed databases. Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0121",
+      "source_group": "td_08",
+      "query": "Can you compare monotonic IDs (UUIDv7, ULID, Snowflake) vs auto-incrementing integers for distributed databases.",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0122",
+      "source_group": "td_09",
+      "query": "Propose an observability architecture using OpenTelemetry, Prometheus, Jaeger, and Grafana for a Kubernetes cluster.",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 4,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0123",
+      "source_group": "td_09",
+      "query": "Hello, I have a quick question. Propose an observability architecture using OpenTelemetry, Prometheus, Jaeger, and Grafana for a Kubernetes cluster. Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 4,
+      "split": "validation",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0124",
+      "source_group": "td_09",
+      "query": "Can you propose an observability architecture using OpenTelemetry, Prometheus, Jaeger, and Grafana for a Kubernetes cluster.",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 4,
+      "split": "validation",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0125",
+      "source_group": "td_10",
+      "query": "Design a fault-tolerant notification pipeline delivering push notifications, emails, and SMS with provider failover and rate limits.",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 3,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0126",
+      "source_group": "td_10",
+      "query": "Hello, I have a quick question. Design a fault-tolerant notification pipeline delivering push notifications, emails, and SMS with provider failover and rate limits. Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 3,
+      "split": "validation",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0127",
+      "source_group": "td_10",
+      "query": "Can you design a fault-tolerant notification pipeline delivering push notifications, emails, and SMS with provider failover and rate limits.",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 3,
+      "split": "validation",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0128",
+      "source_group": "td_11",
+      "query": "What are the architectural trade-offs of micro frontends vs monolithic single page applications?",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0129",
+      "source_group": "td_11",
+      "query": "Hello, I have a quick question. What are the architectural trade-offs of micro frontends vs monolithic single page applications? Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0130",
+      "source_group": "td_11",
+      "query": "Can you what are the architectural trade-offs of micro frontends vs monolithic single page applications?",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0131",
+      "source_group": "td_12",
+      "query": "Design an enterprise data mesh architecture across multiple cloud providers with federated governance and lineage tracking.",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 5,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0132",
+      "source_group": "td_12",
+      "query": "Hello, I have a quick question. Design an enterprise data mesh architecture across multiple cloud providers with federated governance and lineage tracking. Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 5,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0133",
+      "source_group": "td_12",
+      "query": "Can you design an enterprise data mesh architecture across multiple cloud providers with federated governance and lineage tracking.",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 5,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0134",
+      "source_group": "td_13",
+      "query": "How should I structure the folder layout for a clean architecture Go project?",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0135",
+      "source_group": "td_13",
+      "query": "Hello, I have a quick question. How should I structure the folder layout for a clean architecture Go project? Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0136",
+      "source_group": "td_13",
+      "query": "Can you how should I structure the folder layout for a clean architecture Go project?",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0137",
+      "source_group": "ar_01",
+      "query": "Calculate the compound interest on $5,000 invested at an annual interest rate of 6% compounded monthly for 4 years.",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0138",
+      "source_group": "ar_01",
+      "query": "calculate the interest for 5000 dollars at 6% monthly compound after 4 years",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0139",
+      "source_group": "ar_01",
+      "query": "what is 5000 * (1 + 0.06/12)**(12*4)?",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0140",
+      "source_group": "ar_02",
+      "query": "What is the probability of rolling a sum of 8 with two fair six-sided dice?",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0141",
+      "source_group": "ar_02",
+      "query": "probability of rolling 8 with two dice",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0142",
+      "source_group": "ar_03",
+      "query": "Solve this system of linear equations: 3x + 2y - z = 1, 2x - 2y + 4z = -2, -x + 0.5y - z = 0.",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0143",
+      "source_group": "ar_03",
+      "query": "Hello, I have a quick question. Solve this system of linear equations: 3x + 2y - z = 1, 2x - 2y + 4z = -2, -x + 0.5y - z = 0. Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0144",
+      "source_group": "ar_03",
+      "query": "Can you solve this system of linear equations: 3x + 2y - z = 1, 2x - 2y + 4z = -2, -x + 0.5y - z = 0.",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0145",
+      "source_group": "ar_04",
+      "query": "Prove that the square root of 2 is an irrational number by contradiction.",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0146",
+      "source_group": "ar_04",
+      "query": "prove by contradiction that sqrt(2) is irrational",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0147",
+      "source_group": "ar_05",
+      "query": "Three travelers check into a hotel room costing $30 ($10 each). The clerk realizes the room was only $25 and gives $5 to the bellboy to return. The bellboy keeps $2 and returns $1 to each traveler. Now each paid $9 ($27 total) plus $2 the bellboy kept = $29. Where is the missing dollar?",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0148",
+      "source_group": "ar_05",
+      "query": "Hello, I have a quick question. Three travelers check into a hotel room costing $30 ($10 each). The clerk realizes the room was only $25 and gives $5 to the bellboy to return. The bellboy keeps $2 and returns $1 to each traveler. Now each paid $9 ($27 total) plus $2 the bellboy kept = $29. Where is the missing dollar? Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0149",
+      "source_group": "ar_05",
+      "query": "Can you three travelers check into a hotel room costing $30 ($10 each). The clerk realizes the room was only $25 and gives $5 to the bellboy to return. The bellboy keeps $2 and returns $1 to each traveler. Now each paid $9 ($27 total) plus $2 the bellboy kept = $29. Where is the missing dollar?",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0150",
+      "source_group": "ar_06",
+      "query": "Calculate the Nash equilibrium in a two-player asymmetric game with payoff matrix [[(3,1), (0,0)], [(0,0), (1,3)]].",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0151",
+      "source_group": "ar_06",
+      "query": "Hello, I have a quick question. Calculate the Nash equilibrium in a two-player asymmetric game with payoff matrix [[(3,1), (0,0)], [(0,0), (1,3)]]. Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0152",
+      "source_group": "ar_06",
+      "query": "Can you calculate the Nash equilibrium in a two-player asymmetric game with payoff matrix [[(3,1), (0,0)], [(0,0), (1,3)]].",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0153",
+      "source_group": "ar_07",
+      "query": "Derive the closed-form Black-Scholes formula for European call option pricing using risk-neutral expectation and geometric Brownian motion.",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 5,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0154",
+      "source_group": "ar_07",
+      "query": "Hello, I have a quick question. Derive the closed-form Black-Scholes formula for European call option pricing using risk-neutral expectation and geometric Brownian motion. Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 5,
+      "split": "validation",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0155",
+      "source_group": "ar_07",
+      "query": "Can you derive the closed-form Black-Scholes formula for European call option pricing using risk-neutral expectation and geometric Brownian motion.",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 5,
+      "split": "validation",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0156",
+      "source_group": "ar_08",
+      "query": "What's the sum of 458 and 792?",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0157",
+      "source_group": "ar_08",
+      "query": "Hello, I have a quick question. What's the sum of 458 and 792? Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0158",
+      "source_group": "ar_08",
+      "query": "Can you what's the sum of 458 and 792?",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0159",
+      "source_group": "ar_09",
+      "query": "How many ways can 5 people be seated at a round table if two particular people refuse to sit next to each other?",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0160",
+      "source_group": "ar_09",
+      "query": "Hello, I have a quick question. How many ways can 5 people be seated at a round table if two particular people refuse to sit next to each other? Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0161",
+      "source_group": "ar_09",
+      "query": "Can you how many ways can 5 people be seated at a round table if two particular people refuse to sit next to each other?",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0162",
+      "source_group": "ar_10",
+      "query": "Prove that every planar graph is 5-colorable using induction and Euler's formula.",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 4,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0163",
+      "source_group": "ar_10",
+      "query": "Hello, I have a quick question. Prove that every planar graph is 5-colorable using induction and Euler's formula. Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 4,
+      "split": "calibration",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0164",
+      "source_group": "ar_10",
+      "query": "Can you prove that every planar graph is 5-colorable using induction and Euler's formula.",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 4,
+      "split": "calibration",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0165",
+      "source_group": "ar_11",
+      "query": "If a train travels 60 miles at 30 mph and returns the same distance at 60 mph, what is its average speed for the round trip?",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 2,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0166",
+      "source_group": "ar_11",
+      "query": "Hello, I have a quick question. If a train travels 60 miles at 30 mph and returns the same distance at 60 mph, what is its average speed for the round trip? Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 2,
+      "split": "calibration",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0167",
+      "source_group": "ar_11",
+      "query": "Can you if a train travels 60 miles at 30 mph and returns the same distance at 60 mph, what is its average speed for the round trip?",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 2,
+      "split": "calibration",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0168",
+      "source_group": "ar_12",
+      "query": "Derive the optimal policy for a Markov Decision Process with state transition probabilities P and discount factor gamma using policy iteration.",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 5,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0169",
+      "source_group": "ar_12",
+      "query": "Hello, I have a quick question. Derive the optimal policy for a Markov Decision Process with state transition probabilities P and discount factor gamma using policy iteration. Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 5,
+      "split": "validation",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0170",
+      "source_group": "ar_12",
+      "query": "Can you derive the optimal policy for a Markov Decision Process with state transition probabilities P and discount factor gamma using policy iteration.",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 5,
+      "split": "validation",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0171",
+      "source_group": "ar_13",
+      "query": "Calculate the eigenvalues and eigenvectors of matrix [[4, -2], [1, 1]].",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 3,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0172",
+      "source_group": "ar_13",
+      "query": "Hello, I have a quick question. Calculate the eigenvalues and eigenvectors of matrix [[4, -2], [1, 1]]. Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 3,
+      "split": "calibration",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0173",
+      "source_group": "ar_13",
+      "query": "Can you calculate the eigenvalues and eigenvectors of matrix [[4, -2], [1, 1]].",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 3,
+      "split": "calibration",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0174",
+      "source_group": "wr_01",
+      "query": "Write a poem about Python programming and the elegance of indentation.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 2,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0175",
+      "source_group": "wr_01",
+      "query": "compose a short poem about python scripts and coding in the night",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 2,
+      "split": "calibration",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0176",
+      "source_group": "wr_01",
+      "query": "writ a peom about python",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 2,
+      "split": "calibration",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0177",
+      "source_group": "wr_01",
+      "query": "Could you please write a poem about Python? It's for my team's newsletter. Thank you!",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 2,
+      "split": "calibration",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0178",
+      "source_group": "wr_02",
+      "query": "Draft an email to stakeholders explaining that the production database outage has been resolved.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 2,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0179",
+      "source_group": "wr_02",
+      "query": "write an email update to executives regarding the database outage resolution",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 2,
+      "split": "calibration",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0180",
+      "source_group": "wr_03",
+      "query": "Rewrite this paragraph to make it sound more professional and concise for an executive memo.",
+      "context": "Basically our team did a lot of things last month and we got stuff done on time although there was some problems.",
+      "request_type": "writing",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0181",
+      "source_group": "wr_03",
+      "query": "Hello, I have a quick question. Rewrite this paragraph to make it sound more professional and concise for an executive memo. Looking forward to your response, thanks!",
+      "context": "Basically our team did a lot of things last month and we got stuff done on time although there was some problems.",
+      "request_type": "writing",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0182",
+      "source_group": "wr_03",
+      "query": "Can you rewrite this paragraph to make it sound more professional and concise for an executive memo.",
+      "context": "Basically our team did a lot of things last month and we got stuff done on time although there was some problems.",
+      "request_type": "writing",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0183",
+      "source_group": "wr_04",
+      "query": "Compose a persuasive cover letter for a Senior Site Reliability Engineer role at Stripe.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0184",
+      "source_group": "wr_04",
+      "query": "Hello, I have a quick question. Compose a persuasive cover letter for a Senior Site Reliability Engineer role at Stripe. Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0185",
+      "source_group": "wr_04",
+      "query": "Can you compose a persuasive cover letter for a Senior Site Reliability Engineer role at Stripe.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0186",
+      "source_group": "wr_05",
+      "query": "Draft a detailed post-mortem report for a multi-hour cloud regional outage including timeline, root cause analysis, impact, and preventive action items.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 4,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0187",
+      "source_group": "wr_05",
+      "query": "Hello, I have a quick question. Draft a detailed post-mortem report for a multi-hour cloud regional outage including timeline, root cause analysis, impact, and preventive action items. Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 4,
+      "split": "validation",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0188",
+      "source_group": "wr_05",
+      "query": "Can you draft a detailed post-mortem report for a multi-hour cloud regional outage including timeline, root cause analysis, impact, and preventive action items.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 4,
+      "split": "validation",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0189",
+      "source_group": "wr_06",
+      "query": "Write a press release announcing our series B funding round of $40 million led by Andreessen Horowitz.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0190",
+      "source_group": "wr_06",
+      "query": "Hello, I have a quick question. Write a press release announcing our series B funding round of $40 million led by Andreessen Horowitz. Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0191",
+      "source_group": "wr_06",
+      "query": "Can you write a press release announcing our series B funding round of $40 million led by Andreessen Horowitz.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0192",
+      "source_group": "wr_07",
+      "query": "Write a comprehensive white paper explaining the impact of European AI Act compliance on enterprise fintech pipelines.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 5,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0193",
+      "source_group": "wr_07",
+      "query": "Hello, I have a quick question. Write a comprehensive white paper explaining the impact of European AI Act compliance on enterprise fintech pipelines. Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 5,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0194",
+      "source_group": "wr_07",
+      "query": "Can you write a comprehensive white paper explaining the impact of European AI Act compliance on enterprise fintech pipelines.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 5,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0195",
+      "source_group": "wr_08",
+      "query": "Draft a polite slack message declining an invitation to a meeting due to a deadline conflict.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 1,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0196",
+      "source_group": "wr_08",
+      "query": "Hello, I have a quick question. Draft a polite slack message declining an invitation to a meeting due to a deadline conflict. Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 1,
+      "split": "validation",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0197",
+      "source_group": "wr_08",
+      "query": "Can you draft a polite slack message declining an invitation to a meeting due to a deadline conflict.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 1,
+      "split": "validation",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0198",
+      "source_group": "wr_09",
+      "query": "Rewrite this product description to adopt an inspiring and energetic marketing tone.",
+      "context": "Our shoe is light and has rubber soles for running.",
+      "request_type": "writing",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0199",
+      "source_group": "wr_09",
+      "query": "Hello, I have a quick question. Rewrite this product description to adopt an inspiring and energetic marketing tone. Looking forward to your response, thanks!",
+      "context": "Our shoe is light and has rubber soles for running.",
+      "request_type": "writing",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0200",
+      "source_group": "wr_09",
+      "query": "Can you rewrite this product description to adopt an inspiring and energetic marketing tone.",
+      "context": "Our shoe is light and has rubber soles for running.",
+      "request_type": "writing",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0201",
+      "source_group": "wr_10",
+      "query": "Compose an essay analyzing the themes of isolation and technological alienation in 20th century dystopian literature.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0202",
+      "source_group": "wr_10",
+      "query": "Hello, I have a quick question. Compose an essay analyzing the themes of isolation and technological alienation in 20th century dystopian literature. Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0203",
+      "source_group": "wr_10",
+      "query": "Can you compose an essay analyzing the themes of isolation and technological alienation in 20th century dystopian literature.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0204",
+      "source_group": "wr_11",
+      "query": "Write a script for a 60-second video advertisement introducing an eco-friendly water bottle.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0205",
+      "source_group": "wr_11",
+      "query": "Hello, I have a quick question. Write a script for a 60-second video advertisement introducing an eco-friendly water bottle. Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0206",
+      "source_group": "wr_11",
+      "query": "Can you write a script for a 60-second video advertisement introducing an eco-friendly water bottle.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0207",
+      "source_group": "wr_12",
+      "query": "Draft terms of service and acceptable use policy for a SaaS API platform.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0208",
+      "source_group": "wr_12",
+      "query": "Hello, I have a quick question. Draft terms of service and acceptable use policy for a SaaS API platform. Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0209",
+      "source_group": "wr_12",
+      "query": "Can you draft terms of service and acceptable use policy for a SaaS API platform.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0210",
+      "source_group": "fl_01",
+      "query": "What is the capital of Australia?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0211",
+      "source_group": "fl_01",
+      "query": "what is the capital city of australia",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0212",
+      "source_group": "fl_01",
+      "query": "wat is the captal of austrlia?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0213",
+      "source_group": "fl_02",
+      "query": "Who was the first person to walk on the Moon and in what year?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0214",
+      "source_group": "fl_02",
+      "query": "who walked on the moon first and when was it",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0215",
+      "source_group": "fl_03",
+      "query": "Define the term 'epistemology' in philosophy.",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0216",
+      "source_group": "fl_03",
+      "query": "Hello, I have a quick question. Define the term 'epistemology' in philosophy. Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0217",
+      "source_group": "fl_03",
+      "query": "Can you define the term 'epistemology' in philosophy.",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0218",
+      "source_group": "fl_04",
+      "query": "How many states are there in the United States?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0219",
+      "source_group": "fl_04",
+      "query": "Hello, I have a quick question. How many states are there in the United States? Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "validation",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0220",
+      "source_group": "fl_04",
+      "query": "Can you how many states are there in the United States?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "validation",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0221",
+      "source_group": "fl_05",
+      "query": "When was the Treaty of Westphalia signed and what conflict did it end?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0222",
+      "source_group": "fl_05",
+      "query": "Hello, I have a quick question. When was the Treaty of Westphalia signed and what conflict did it end? Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0223",
+      "source_group": "fl_05",
+      "query": "Can you when was the Treaty of Westphalia signed and what conflict did it end?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0224",
+      "source_group": "fl_06",
+      "query": "What is the atomic weight and electron configuration of Uranium-238?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0225",
+      "source_group": "fl_06",
+      "query": "Hello, I have a quick question. What is the atomic weight and electron configuration of Uranium-238? Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0226",
+      "source_group": "fl_06",
+      "query": "Can you what is the atomic weight and electron configuration of Uranium-238?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0227",
+      "source_group": "fl_07",
+      "query": "List all countries bordering the Mediterranean Sea and their official languages.",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 3,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0228",
+      "source_group": "fl_07",
+      "query": "Hello, I have a quick question. List all countries bordering the Mediterranean Sea and their official languages. Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 3,
+      "split": "validation",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0229",
+      "source_group": "fl_07",
+      "query": "Can you list all countries bordering the Mediterranean Sea and their official languages.",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 3,
+      "split": "validation",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0230",
+      "source_group": "fl_08",
+      "query": "Provide a comprehensive chronological timeline of the Byzantine-Sasanian War of 602\u2013628, including key battles and commanders.",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0231",
+      "source_group": "fl_08",
+      "query": "Hello, I have a quick question. Provide a comprehensive chronological timeline of the Byzantine-Sasanian War of 602\u2013628, including key battles and commanders. Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0232",
+      "source_group": "fl_08",
+      "query": "Can you provide a comprehensive chronological timeline of the Byzantine-Sasanian War of 602\u2013628, including key battles and commanders.",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0233",
+      "source_group": "fl_09",
+      "query": "What is the Speed of Light in a vacuum in meters per second?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0234",
+      "source_group": "fl_09",
+      "query": "Hello, I have a quick question. What is the Speed of Light in a vacuum in meters per second? Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "calibration",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0235",
+      "source_group": "fl_09",
+      "query": "Can you what is the Speed of Light in a vacuum in meters per second?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "calibration",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0236",
+      "source_group": "fl_10",
+      "query": "Who discovered Penicillin and in what year was it discovered?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0237",
+      "source_group": "fl_10",
+      "query": "Hello, I have a quick question. Who discovered Penicillin and in what year was it discovered? Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0238",
+      "source_group": "fl_10",
+      "query": "Can you who discovered Penicillin and in what year was it discovered?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0239",
+      "source_group": "fl_11",
+      "query": "What is the primary difference between DNA and RNA nucleotide structures?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0240",
+      "source_group": "fl_11",
+      "query": "Hello, I have a quick question. What is the primary difference between DNA and RNA nucleotide structures? Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0241",
+      "source_group": "fl_11",
+      "query": "Can you what is the primary difference between DNA and RNA nucleotide structures?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0242",
+      "source_group": "fl_12",
+      "query": "Provide the complete structural formula and IUPAC naming history of morphine and its synthetic derivatives.",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0243",
+      "source_group": "fl_12",
+      "query": "Hello, I have a quick question. Provide the complete structural formula and IUPAC naming history of morphine and its synthetic derivatives. Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0244",
+      "source_group": "fl_12",
+      "query": "Can you provide the complete structural formula and IUPAC naming history of morphine and its synthetic derivatives.",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0245",
+      "source_group": "gen_01",
+      "query": "Hello! How are you doing today?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0246",
+      "source_group": "gen_01",
+      "query": "hi there assistant",
+      "context": null,
+      "request_type": "general",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0247",
+      "source_group": "gen_01",
+      "query": "hey hows it going",
+      "context": null,
+      "request_type": "general",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0248",
+      "source_group": "gen_02",
+      "query": "Can you help me brainstorm some gift ideas for a coffee lover?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0249",
+      "source_group": "gen_02",
+      "query": "give me gift suggestions for someone who loves espresso",
+      "context": null,
+      "request_type": "general",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0250",
+      "source_group": "gen_03",
+      "query": "What are some good tips for improving focus and reducing distractions while working from home?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0251",
+      "source_group": "gen_03",
+      "query": "Hello, I have a quick question. What are some good tips for improving focus and reducing distractions while working from home? Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "general",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0252",
+      "source_group": "gen_03",
+      "query": "Can you what are some good tips for improving focus and reducing distractions while working from home?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0253",
+      "source_group": "gen_04",
+      "query": "I am planning a 7-day trip to Kyoto in autumn. Can you recommend a balanced itinerary?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 3,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0254",
+      "source_group": "gen_04",
+      "query": "Hello, I have a quick question. I am planning a 7-day trip to Kyoto in autumn. Can you recommend a balanced itinerary? Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "general",
+      "complexity": 3,
+      "split": "validation",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0255",
+      "source_group": "gen_04",
+      "query": "Can you i am planning a 7-day trip to Kyoto in autumn. Can you recommend a balanced itinerary?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 3,
+      "split": "validation",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0256",
+      "source_group": "gen_05",
+      "query": "What are the general pros and cons of living in a small town versus a large metropolitan city?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0257",
+      "source_group": "gen_05",
+      "query": "Hello, I have a quick question. What are the general pros and cons of living in a small town versus a large metropolitan city? Looking forward to your response, thanks!",
+      "context": null,
+      "request_type": "general",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0258",
+      "source_group": "gen_05",
+      "query": "Can you what are the general pros and cons of living in a small town versus a large metropolitan city?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0259",
+      "source_group": "gen_06",
+      "query": "Thank you for the explanation, that was very clear!",
+      "context": "Assistant: Here is the breakdown of your code.",
+      "request_type": "general",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0260",
+      "source_group": "gen_06",
+      "query": "Hello, I have a quick question. Thank you for the explanation, that was very clear! Looking forward to your response, thanks!",
+      "context": "Assistant: Here is the breakdown of your code.",
+      "request_type": "general",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0261",
+      "source_group": "gen_06",
+      "query": "Can you thank you for the explanation, that was very clear!?",
+      "context": "Assistant: Here is the breakdown of your code.",
+      "request_type": "general",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0262",
+      "source_group": "gen_07",
+      "query": "Can you summarize the main discussion points from this meeting transcript?",
+      "context": "Alice: We need to ship on Friday. Bob: Let's test first.",
+      "request_type": "general",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0263",
+      "source_group": "gen_07",
+      "query": "Hello, I have a quick question. Can you summarize the main discussion points from this meeting transcript? Looking forward to your response, thanks!",
+      "context": "Alice: We need to ship on Friday. Bob: Let's test first.",
+      "request_type": "general",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0264",
+      "source_group": "gen_07",
+      "query": "Can you can you summarize the main discussion points from this meeting transcript?",
+      "context": "Alice: We need to ship on Friday. Bob: Let's test first.",
+      "request_type": "general",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": true
+    },
+    {
+      "id": "ex_0265",
+      "source_group": "gen_08",
+      "query": "Tell me an interesting fun fact about octopuses.",
+      "context": null,
+      "request_type": "general",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0266",
+      "source_group": "gen_09",
+      "query": "Can you provide general advice on preparing for a behavioral interview for a manager role?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0267",
+      "source_group": "gen_10",
+      "query": "Good morning. What can you do?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 1,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0268",
+      "source_group": "cg_ext_01",
+      "query": "Write a python script using BeautifulSoup to scrape article titles from a blog.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0269",
+      "source_group": "cg_ext_02",
+      "query": "Implement a red-black tree insertion with rebalancing rotations in Rust.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0270",
+      "source_group": "cg_ext_03",
+      "query": "Write a dockerfile for a multi-stage Rust build with distroless base image.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0271",
+      "source_group": "cg_ext_04",
+      "query": "Create a SQL trigger to automatically update the `updated_at` column on row updates.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0272",
+      "source_group": "cg_ext_05",
+      "query": "Implement Dijkstra's shortest path algorithm using a min-heap in C++.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0273",
+      "source_group": "cg_ext_06",
+      "query": "Write a Python decorator that caches return values with a 60 second TTL.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0274",
+      "source_group": "cg_ext_07",
+      "query": "Build an automated CI/CD GitHub Actions workflow for linting, testing, and pushing docker containers to ECR.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0275",
+      "source_group": "cg_ext_08",
+      "query": "Implement a B-tree indexing page node in C with binary split and search.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 5,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0276",
+      "source_group": "cg_ext_09",
+      "query": "Write a regex to validate international phone numbers in E.164 format.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0277",
+      "source_group": "cg_ext_10",
+      "query": "Implement matrix multiplication in WebAssembly using SIMD instructions.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 5,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0278",
+      "source_group": "cg_ext_11",
+      "query": "Write a GraphQL resolver in Apollo Server for nested comments pagination.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0279",
+      "source_group": "cg_ext_12",
+      "query": "Implement an undo-redo stack in TypeScript using the Command pattern.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0280",
+      "source_group": "cg_ext_13",
+      "query": "Write a Go CLI tool using cobra that takes flags and writes JSON output.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0281",
+      "source_group": "cg_ext_14",
+      "query": "Implement quicksort in Kotlin with Lomuto partition scheme.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0282",
+      "source_group": "cg_ext_15",
+      "query": "Write a custom allocator in C using `mmap` with a free list strategy.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 5,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0283",
+      "source_group": "cg_ext_16",
+      "query": "Refactor this nested callback hell into async/await with try/catch blocks.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0284",
+      "source_group": "cg_ext_17",
+      "query": "Implement merge sort on a singly linked list in C++ without extra space.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0285",
+      "source_group": "cg_ext_18",
+      "query": "Write a Solidity smart contract for an ERC-20 token with minting and burning caps.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 3,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0286",
+      "source_group": "cg_ext_19",
+      "query": "Create a PySpark job to calculate rolling 7-day active user counts.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0287",
+      "source_group": "cg_ext_20",
+      "query": "Implement an asynchronous DNS client in Rust using mio and raw UDP sockets.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 5,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0288",
+      "source_group": "cu_ext_01",
+      "query": "Explain the difference between call, apply, and bind in JavaScript.",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0289",
+      "source_group": "cu_ext_02",
+      "query": "What causes a stack overflow error in recursive functions and how do compilers optimize tail calls?",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0290",
+      "source_group": "cu_ext_03",
+      "query": "Walk me through how this TLS 1.3 handshake packet exchange works.",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 4,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0291",
+      "source_group": "cu_ext_04",
+      "query": "Explain how Python's GIL affects multithreading vs multiprocessing.",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 3,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0292",
+      "source_group": "cu_ext_05",
+      "query": "What does the `#[derive(Copy, Clone)]` attribute do in Rust?",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0293",
+      "source_group": "cu_ext_06",
+      "query": "Explain how CSS flexbox `flex-grow`, `flex-shrink`, and `flex-basis` interact.",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0294",
+      "source_group": "cu_ext_07",
+      "query": "How does branch prediction work in modern CPUs and why does sorting an array speed up processing?",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0295",
+      "source_group": "cu_ext_08",
+      "query": "What is the difference between shallow copy and deep copy in Python?",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0296",
+      "source_group": "cu_ext_09",
+      "query": "Walk me through how the Linux epoll syscall handles I/O multiplexing under edge-triggered vs level-triggered modes.",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 5,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0297",
+      "source_group": "cu_ext_10",
+      "query": "Explain the difference between optimistic concurrency control and pessimistic locking in databases.",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 3,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0298",
+      "source_group": "cu_ext_11",
+      "query": "Why does `0.1 + 0.2 !== 0.3` in floating-point arithmetic?",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0299",
+      "source_group": "cu_ext_12",
+      "query": "Explain the concept of memory leaks in garbage-collected languages.",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0300",
+      "source_group": "cu_ext_13",
+      "query": "Analyze this crash trace: `SIGSEGV in malloc_consolidate` and explain the heap corruption cause.",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0301",
+      "source_group": "cu_ext_14",
+      "query": "Explain the semantics of Rust's `Pin<&mut T>` and why self-referential structs require it.",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0302",
+      "source_group": "cu_ext_15",
+      "query": "How does BGP routing convergence work and what are route flap damping mechanisms?",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0303",
+      "source_group": "cu_ext_16",
+      "query": "What is the difference between process and thread context switching overhead?",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0304",
+      "source_group": "cu_ext_17",
+      "query": "Explain the Raft log compaction mechanism and how snapshots are transferred to slow followers.",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0305",
+      "source_group": "cu_ext_18",
+      "query": "What does `extern \"C\"` do in C++ and why is name mangling disabled?",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0306",
+      "source_group": "cu_ext_19",
+      "query": "Explain the difference between static and dynamic dispatch in object-oriented programming.",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0307",
+      "source_group": "cu_ext_20",
+      "query": "Why does Go channel send deadlock if the buffer is full and no goroutine is reading?",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0308",
+      "source_group": "td_ext_01",
+      "query": "Design a database schema for an e-commerce platform with inventory reservations.",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0309",
+      "source_group": "td_ext_02",
+      "query": "How should we design a webhook delivery system that guarantees at-least-once delivery with exponential backoff?",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 3,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0310",
+      "source_group": "td_ext_03",
+      "query": "Architect a high-throughput search autocomplete system with latency under 10ms at p99.",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 4,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0311",
+      "source_group": "td_ext_04",
+      "query": "What are the trade-offs between REST, gRPC, and GraphQL for internal service-to-service communication?",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 3,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0312",
+      "source_group": "td_ext_05",
+      "query": "Design a video streaming platform architecture like Netflix including encoding pipeline, CDN distribution, and DRM.",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 5,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0313",
+      "source_group": "td_ext_06",
+      "query": "How should I design an idempotency key mechanism in an HTTP REST API?",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0314",
+      "source_group": "td_ext_07",
+      "query": "Propose a zero-downtime database migration strategy for changing a column type on a table with 500 million rows.",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0315",
+      "source_group": "td_ext_08",
+      "query": "Design a metrics aggregation pipeline processing 10 million events per second using Kafka, Flink, and ClickHouse.",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 5,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0316",
+      "source_group": "td_ext_09",
+      "query": "Compare optimistic locking vs distributed Redis lock for booking airline seats.",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0317",
+      "source_group": "td_ext_10",
+      "query": "Design the storage and sharding architecture for a chat messaging application like WhatsApp.",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0318",
+      "source_group": "td_ext_11",
+      "query": "How should we design an audit logging architecture to satisfy SOC 2 and GDPR compliance?",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 3,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0319",
+      "source_group": "td_ext_12",
+      "query": "What are the trade-offs of using event sourcing vs CRUD architecture?",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0320",
+      "source_group": "td_ext_13",
+      "query": "Design an automated canary deployment pipeline using Istio and Argo Rollouts in Kubernetes.",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 4,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0321",
+      "source_group": "td_ext_14",
+      "query": "Architect a decentralized file storage protocol using IPFS and incentives.",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 5,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0322",
+      "source_group": "td_ext_15",
+      "query": "How should I design a caching hierarchy with L1 in-memory and L2 Redis for a multi-tenant SaaS application?",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 3,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0323",
+      "source_group": "ar_ext_01",
+      "query": "Calculate the derivative of f(x) = x^3 * e^(2x) using the product rule.",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0324",
+      "source_group": "ar_ext_02",
+      "query": "What is the expected number of coin flips needed to get two consecutive heads?",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0325",
+      "source_group": "ar_ext_03",
+      "query": "Solve this recurrence relation: T(n) = 2T(n/2) + n using the Master Theorem.",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0326",
+      "source_group": "ar_ext_04",
+      "query": "How many integers between 1 and 1000 are divisible by 3 or 5 but not both?",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 2,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0327",
+      "source_group": "ar_ext_05",
+      "query": "Prove that there are infinitely many prime numbers using Euclid's proof.",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0328",
+      "source_group": "ar_ext_06",
+      "query": "Calculate the determinant of a 3x3 matrix [[1, 2, 3], [0, 4, 5], [1, 0, 6]].",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0329",
+      "source_group": "ar_ext_07",
+      "query": "Solve the Knapsack problem with weights [2, 3, 4] and values [3, 4, 5] for capacity 5.",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 3,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0330",
+      "source_group": "ar_ext_08",
+      "query": "What is 15% tip on a restaurant bill of $84.60?",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0331",
+      "source_group": "ar_ext_09",
+      "query": "Derive the gradient of cross-entropy loss with respect to softmax logits.",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0332",
+      "source_group": "ar_ext_10",
+      "query": "Prove that the Halting problem is undecidable using a diagonal argument.",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0333",
+      "source_group": "ar_ext_11",
+      "query": "If a bag has 4 red balls and 6 blue balls, what is the probability of drawing 2 red balls without replacement?",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 2,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0334",
+      "source_group": "ar_ext_12",
+      "query": "Calculate the volume of a sphere with radius 7 cm.",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0335",
+      "source_group": "ar_ext_13",
+      "query": "Solve the differential equation dy/dx + 2y = e^(-x) with initial condition y(0) = 1.",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0336",
+      "source_group": "ar_ext_14",
+      "query": "Prove that in any group G, if x^2 = e for all x in G, then G is abelian.",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0337",
+      "source_group": "ar_ext_15",
+      "query": "Analyze the minimax regret strategy for decision making under uncertainty with state payoffs.",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0338",
+      "source_group": "wr_ext_01",
+      "query": "Write a thank you note to a mentor who gave career advice.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0339",
+      "source_group": "wr_ext_02",
+      "query": "Draft an announcement email welcoming a new VP of Engineering to the company.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0340",
+      "source_group": "wr_ext_03",
+      "query": "Compose a descriptive paragraph capturing the atmosphere of a bustling rainy market in Tokyo.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 2,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0341",
+      "source_group": "wr_ext_04",
+      "query": "Write a persuasive proposal requesting approval to adopt Rust for our high-frequency trading engine.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 3,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0342",
+      "source_group": "wr_ext_05",
+      "query": "Rewrite this technical explanation so that a 10-year-old child can understand how the internet works.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0343",
+      "source_group": "wr_ext_06",
+      "query": "Draft an FAQ section addressing customer security concerns about cloud data migration.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0344",
+      "source_group": "wr_ext_07",
+      "query": "Write a motivational speech for a startup team before launch day.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0345",
+      "source_group": "wr_ext_08",
+      "query": "Compose a sonnet about the passage of time and autumn leaves.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0346",
+      "source_group": "wr_ext_09",
+      "query": "Write an executive summary of our quarterly financial performance highlighting 25% ARR growth.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0347",
+      "source_group": "wr_ext_10",
+      "query": "Draft a polite response to a negative customer review on our SaaS app store page.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 2,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0348",
+      "source_group": "wr_ext_11",
+      "query": "Rewrite this passive sentence into active voice: 'The decision was made by the board after objections were raised.'",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0349",
+      "source_group": "wr_ext_12",
+      "query": "Compose a comprehensive RFP response for a government cloud infrastructure contract.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 5,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0350",
+      "source_group": "wr_ext_13",
+      "query": "Write an engaging blog post introducing the new features of our open source library.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0351",
+      "source_group": "wr_ext_14",
+      "query": "Draft a memo detailing the return-to-office hybrid policy updates.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0352",
+      "source_group": "wr_ext_15",
+      "query": "Write a haiku about clean code.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0353",
+      "source_group": "fl_ext_01",
+      "query": "What is the tallest mountain in North America?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0354",
+      "source_group": "fl_ext_02",
+      "query": "Who was the Roman emperor during the Great Fire of Rome in 64 AD?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0355",
+      "source_group": "fl_ext_03",
+      "query": "Define the term 'gerrymandering' in political science.",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0356",
+      "source_group": "fl_ext_04",
+      "query": "What is the boiling point of liquid nitrogen at 1 atm?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0357",
+      "source_group": "fl_ext_05",
+      "query": "Who invented the World Wide Web and when was the first web page published?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0358",
+      "source_group": "fl_ext_06",
+      "query": "What is the capital of Kazakhstan?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0359",
+      "source_group": "fl_ext_07",
+      "query": "List the key differences between prokaryotic and eukaryotic cells.",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0360",
+      "source_group": "fl_ext_08",
+      "query": "When was the Magna Carta signed and by which king?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0361",
+      "source_group": "fl_ext_09",
+      "query": "What is the function of the mitochondria in human cells?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0362",
+      "source_group": "fl_ext_10",
+      "query": "What are the three laws of robotics formulated by Isaac Asimov?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 2,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0363",
+      "source_group": "fl_ext_11",
+      "query": "Who painted 'The Starry Night' and where is it currently exhibited?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0364",
+      "source_group": "fl_ext_12",
+      "query": "What is the half-life of Carbon-14 used in radiocarbon dating?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0365",
+      "source_group": "fl_ext_13",
+      "query": "Which river is the longest in South America?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0366",
+      "source_group": "fl_ext_14",
+      "query": "What is Moore's Law and who originated it?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0367",
+      "source_group": "fl_ext_15",
+      "query": "Describe the historical context of the Meiji Restoration in 19th century Japan.",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0368",
+      "source_group": "gen_ext_01",
+      "query": "Could you suggest some low-maintenance houseplants for an apartment with indirect light?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 1,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0369",
+      "source_group": "gen_ext_02",
+      "query": "What should I pack for a 3-day camping trip in the mountains?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0370",
+      "source_group": "gen_ext_03",
+      "query": "Can you help me organize my daily schedule to fit in 30 minutes of exercise?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 2,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0371",
+      "source_group": "gen_ext_04",
+      "query": "What are some fun team-building activities for a remote engineering team?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 2,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0372",
+      "source_group": "gen_ext_05",
+      "query": "Thanks for your help! Have a great day.",
+      "context": null,
+      "request_type": "general",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0373",
+      "source_group": "gen_ext_06",
+      "query": "Can you tell me a clean joke about programming?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0374",
+      "source_group": "gen_ext_07",
+      "query": "What are some good strategies for overcoming writer's block?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0375",
+      "source_group": "gen_ext_08",
+      "query": "How can I improve my sleep hygiene?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0376",
+      "source_group": "gen_ext_09",
+      "query": "Can you help me choose between learning guitar or piano as an adult beginner?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 2,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0377",
+      "source_group": "gen_ext_10",
+      "query": "What are the rules of chess regarding castling?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0378",
+      "source_group": "gen_ext_11",
+      "query": "Could you give me some ideas for easy vegetarian dinners?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 1,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0379",
+      "source_group": "gen_ext_12",
+      "query": "What is the difference between a direct flight and a non-stop flight?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0380",
+      "source_group": "gen_ext_13",
+      "query": "How do noise-canceling headphones work?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0381",
+      "source_group": "gen_ext_14",
+      "query": "Can you give me a list of podcasts about technology and entrepreneurship?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0382",
+      "source_group": "gen_ext_15",
+      "query": "Just checking in, are you able to answer questions about finance?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0383",
+      "source_group": "auto_code_generation_01",
+      "query": "Write a Lua script to parse Redis key expiration events.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 2,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0384",
+      "source_group": "auto_code_generation_02",
+      "query": "Implement an LRU cache in Swift using collections.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0385",
+      "source_group": "auto_code_generation_03",
+      "query": "Write a PowerShell script to audit active directory user account expirations.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0386",
+      "source_group": "auto_code_generation_04",
+      "query": "Build a parser for CSV files in Zig handling quoted commas.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 3,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0387",
+      "source_group": "auto_code_generation_05",
+      "query": "Implement a Bloom filter in Rust with optimal k hash functions.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0388",
+      "source_group": "auto_code_generation_06",
+      "query": "Write a Terraform module deploying an AWS VPC with private subnets and NAT gateways.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0389",
+      "source_group": "auto_code_generation_07",
+      "query": "Implement an AVL tree with rotation logic in Python.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0390",
+      "source_group": "auto_code_generation_08",
+      "query": "Write a C program to reverse a linked list iteratively and recursively.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 2,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0391",
+      "source_group": "auto_code_generation_09",
+      "query": "Create a custom React hook `useLocalStorage` with SSR hydration guards.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0392",
+      "source_group": "auto_code_generation_10",
+      "query": "Write an SQL query to calculate month-over-month retention cohort percentages.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0393",
+      "source_group": "auto_code_generation_11",
+      "query": "Implement an HTTP reverse proxy in Go with round-robin load balancing.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0394",
+      "source_group": "auto_code_generation_12",
+      "query": "Write a Solidity staking contract with time-weighted rewards.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 4,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0395",
+      "source_group": "auto_code_generation_13",
+      "query": "Implement an immutable persistent vector in Scala with structural sharing.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 5,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0396",
+      "source_group": "auto_code_generation_14",
+      "query": "Write a python script to convert markdown documentation into EPUB format.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0397",
+      "source_group": "auto_code_generation_15",
+      "query": "Implement a Trie data structure with prefix autocomplete in Kotlin.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0398",
+      "source_group": "auto_code_generation_16",
+      "query": "Write a CUDA kernel for 2D convolution with shared memory optimization.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 5,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0399",
+      "source_group": "auto_code_generation_17",
+      "query": "Implement the PageRank algorithm on a graph in PySpark.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 4,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0400",
+      "source_group": "auto_code_generation_18",
+      "query": "Write a WebGL fragment shader for procedural water wave reflections.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 4,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0401",
+      "source_group": "auto_code_generation_19",
+      "query": "Create a GitHub action that comments PR code test coverage diffs.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0402",
+      "source_group": "auto_code_generation_20",
+      "query": "Implement a distributed lock manager in Rust using etcd leases.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0403",
+      "source_group": "auto_code_understanding_21",
+      "query": "Explain the concept of monads in functional programming with simple examples.",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0404",
+      "source_group": "auto_code_understanding_22",
+      "query": "What does the `std::move` cast actually do in C++?",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 2,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0405",
+      "source_group": "auto_code_understanding_23",
+      "query": "Explain why Python's default arguments evaluate at function definition time.",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0406",
+      "source_group": "auto_code_understanding_24",
+      "query": "How does Java's JIT compiler perform escape analysis and scalar replacement?",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0407",
+      "source_group": "auto_code_understanding_25",
+      "query": "Explain how TLS session resumption via tickets works.",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 3,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0408",
+      "source_group": "auto_code_understanding_26",
+      "query": "What is the difference between inner join, left join, and full outer join in SQL?",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 1,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0409",
+      "source_group": "auto_code_understanding_27",
+      "query": "Explain how Linux cgroups v2 control memory and CPU limits for containers.",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0410",
+      "source_group": "auto_code_understanding_28",
+      "query": "What is the ABA problem in lock-free concurrent programming and how is it solved?",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 4,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0411",
+      "source_group": "auto_code_understanding_29",
+      "query": "Explain what an async generator is in JavaScript and how `for await` consumes it.",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0412",
+      "source_group": "auto_code_understanding_30",
+      "query": "How does the V8 engine optimize JavaScript property access using hidden classes and inline caches?",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 5,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0413",
+      "source_group": "auto_code_understanding_31",
+      "query": "Explain the difference between TCP congestion control algorithms Cubic and BBR.",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 4,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0414",
+      "source_group": "auto_code_understanding_32",
+      "query": "What does `transmute` do in Rust and why is it inherently unsafe?",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0415",
+      "source_group": "auto_code_understanding_33",
+      "query": "Explain how zero-knowledge proofs work conceptually without deep algebra.",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0416",
+      "source_group": "auto_code_understanding_34",
+      "query": "What is tail latency amplification in distributed microservices?",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0417",
+      "source_group": "auto_code_understanding_35",
+      "query": "Explain how the Go runtime handles goroutine stack growth from 2KB.",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0418",
+      "source_group": "auto_code_understanding_36",
+      "query": "How does the Raft protocol prevent split-brain during network partitions?",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0419",
+      "source_group": "auto_code_understanding_37",
+      "query": "Explain the difference between row-oriented and columnar database storage engines.",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0420",
+      "source_group": "auto_code_understanding_38",
+      "query": "What is the purpose of the Linux `/proc` filesystem?",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0421",
+      "source_group": "auto_code_understanding_39",
+      "query": "Explain how deep learning backpropagation uses the multivariable chain rule.",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 3,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0422",
+      "source_group": "auto_code_understanding_40",
+      "query": "How does Git calculate SHA-1 object hashes for commits, trees, and blobs?",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0423",
+      "source_group": "auto_technical_design_41",
+      "query": "Design an order matching engine for a cryptocurrency exchange with microsecond latencies.",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 5,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0424",
+      "source_group": "auto_technical_design_42",
+      "query": "Architect a real-time multiplayer game server backend using WebSockets and UDP.",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 4,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0425",
+      "source_group": "auto_technical_design_43",
+      "query": "Design a distributed file upload system handling multi-gigabyte files with chunking and resume.",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0426",
+      "source_group": "auto_technical_design_44",
+      "query": "What are the trade-offs between push-based and pull-based metrics monitoring systems?",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0427",
+      "source_group": "auto_technical_design_45",
+      "query": "Design an access control system supporting Role-Based Access Control (RBAC) and Attribute-Based (ABAC).",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0428",
+      "source_group": "auto_technical_design_46",
+      "query": "How should we design a feature flagging platform supporting percentage rollouts and targeting rules?",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0429",
+      "source_group": "auto_technical_design_47",
+      "query": "Architect a serverless image processing pipeline triggered by S3 bucket events.",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 2,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0430",
+      "source_group": "auto_technical_design_48",
+      "query": "Design a distributed tracing infrastructure collecting spans across 500 microservices.",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 4,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0431",
+      "source_group": "auto_technical_design_49",
+      "query": "What are the architectural considerations when migrating from a monolith to microservices?",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0432",
+      "source_group": "auto_technical_design_50",
+      "query": "Design a database schema for an online banking system with double-entry ledger.",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 4,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0433",
+      "source_group": "auto_technical_design_51",
+      "query": "How should we design an API gateway for mobile apps to aggregate backend responses?",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0434",
+      "source_group": "auto_technical_design_52",
+      "query": "Architect a globally replicated distributed key-value store using Paxos or Raft.",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 5,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0435",
+      "source_group": "auto_technical_design_53",
+      "query": "Design a real-time bidding advertising exchange with 50ms strict SLA.",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 5,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0436",
+      "source_group": "auto_technical_design_54",
+      "query": "What are the trade-offs of using Cassandra vs DynamoDB for time-series sensor telemetry?",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 3,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0437",
+      "source_group": "auto_technical_design_55",
+      "query": "Design an incident management system with pager escalation and duty scheduling.",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0438",
+      "source_group": "auto_technical_design_56",
+      "query": "Architect a secure enterprise secrets management service like HashiCorp Vault.",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 4,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0439",
+      "source_group": "auto_technical_design_57",
+      "query": "Design a web crawling system that respects robots.txt and crawls 100 million pages daily.",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0440",
+      "source_group": "auto_technical_design_58",
+      "query": "How should we design a multi-region disaster recovery strategy with RPO=0 and RTO<1m?",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 5,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0441",
+      "source_group": "auto_technical_design_59",
+      "query": "Design a scalable commenting system supporting nested replies and upvotes.",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0442",
+      "source_group": "auto_technical_design_60",
+      "query": "Architect a vector database search system for 1 billion 768-dimensional embeddings.",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 5,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0443",
+      "source_group": "auto_analytical_reasoning_61",
+      "query": "Calculate the probability of drawing a full house in 5-card poker.",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0444",
+      "source_group": "auto_analytical_reasoning_62",
+      "query": "Solve the Tower of Hanoi problem for 4 disks and calculate minimum moves.",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0445",
+      "source_group": "auto_analytical_reasoning_63",
+      "query": "Prove that the language L = {a^n b^n c^n | n >= 0} is not context-free using the pumping lemma.",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0446",
+      "source_group": "auto_analytical_reasoning_64",
+      "query": "Calculate the trajectory and range of a projectile launched at 45 degrees with initial velocity 20 m/s.",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0447",
+      "source_group": "auto_analytical_reasoning_65",
+      "query": "Solve this logic puzzle: who owns the zebra among 5 houses of different colors and pets?",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 3,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0448",
+      "source_group": "auto_analytical_reasoning_66",
+      "query": "Calculate the limit as x approaches 0 of (sin(x) - x) / x^3 using L'Hopital's rule.",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 2,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0449",
+      "source_group": "auto_analytical_reasoning_67",
+      "query": "Prove that every tree with n vertices has exactly n - 1 edges.",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0450",
+      "source_group": "auto_analytical_reasoning_68",
+      "query": "Calculate the Gini coefficient for a population with income distribution [10, 20, 30, 40].",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0451",
+      "source_group": "auto_analytical_reasoning_69",
+      "query": "Solve for x: log2(x) + log2(x - 2) = 3.",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0452",
+      "source_group": "auto_analytical_reasoning_70",
+      "query": "Calculate the conditional probability P(Disease | Positive Test) given 99% accuracy and 0.1% base rate.",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0453",
+      "source_group": "auto_analytical_reasoning_71",
+      "query": "Prove that the set of real numbers is uncountable using Cantor's diagonal argument.",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0454",
+      "source_group": "auto_analytical_reasoning_72",
+      "query": "Calculate the resistance between opposite corners of a cube made of 1-ohm resistors.",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0455",
+      "source_group": "auto_analytical_reasoning_73",
+      "query": "Derive the formula for compound interest continuously compounded.",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 2,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0456",
+      "source_group": "auto_analytical_reasoning_74",
+      "query": "Calculate the stationary distribution of a 3-state Markov chain.",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0457",
+      "source_group": "auto_analytical_reasoning_75",
+      "query": "Solve the 8-queens problem and determine how many distinct non-isomorphic solutions exist.",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 3,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0458",
+      "source_group": "auto_analytical_reasoning_76",
+      "query": "Calculate the volume integral of x^2 + y^2 over a cylinder of radius R and height H.",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0459",
+      "source_group": "auto_analytical_reasoning_77",
+      "query": "Prove that the square of any odd integer is of the form 8k + 1.",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 2,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0460",
+      "source_group": "auto_analytical_reasoning_78",
+      "query": "Calculate the Shannon entropy of a source with symbol probabilities [0.5, 0.25, 0.125, 0.125].",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0461",
+      "source_group": "auto_analytical_reasoning_79",
+      "query": "Analyze the game of Nim with pile sizes (3, 4, 5) and determine the winning first move.",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 3,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0462",
+      "source_group": "auto_analytical_reasoning_80",
+      "query": "Derive the Euler-Lagrange equation for a simple harmonic pendulum.",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 4,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0463",
+      "source_group": "auto_writing_81",
+      "query": "Write an email requesting feedback from your team after completing a major project milestone.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0464",
+      "source_group": "auto_writing_82",
+      "query": "Draft a customer service response resolving a shipping delay complaint gracefully.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 2,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0465",
+      "source_group": "auto_writing_83",
+      "query": "Compose an introductory paragraph for an article about the future of renewable energy.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0466",
+      "source_group": "auto_writing_84",
+      "query": "Write a script for a podcast episode introducing quantum computing concepts.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0467",
+      "source_group": "auto_writing_85",
+      "query": "Draft an internal memo announcing a scheduled server maintenance window.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0468",
+      "source_group": "auto_writing_86",
+      "query": "Compose a heartfelt retirement speech honoring a colleague with 30 years of service.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0469",
+      "source_group": "auto_writing_87",
+      "query": "Write a product announcement newsletter showcasing our new mobile app.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 2,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0470",
+      "source_group": "auto_writing_88",
+      "query": "Draft guidelines for contributing to an open source project.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0471",
+      "source_group": "auto_writing_89",
+      "query": "Rewrite this email to make it more empathetic and understanding.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 1,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0472",
+      "source_group": "auto_writing_90",
+      "query": "Compose a fantasy story opening describing an ancient ruined citadel at dusk.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 3,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0473",
+      "source_group": "auto_writing_91",
+      "query": "Write a recommendation letter for an engineering intern applying to graduate school.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 3,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0474",
+      "source_group": "auto_writing_92",
+      "query": "Draft an apology letter to customers affected by an unexpected billing glitch.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0475",
+      "source_group": "auto_writing_93",
+      "query": "Compose a punchy elevator pitch for a B2B AI analytics startup.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0476",
+      "source_group": "auto_writing_94",
+      "query": "Write a short blog post on five practical habits for writing cleaner code.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 2,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0477",
+      "source_group": "auto_writing_95",
+      "query": "Draft an executive summary for a board presentation on cybersecurity risks.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 4,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0478",
+      "source_group": "auto_writing_96",
+      "query": "Compose a poem celebrating the beauty of mathematics.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0479",
+      "source_group": "auto_writing_97",
+      "query": "Write a press release announcing a partnership between two healthcare companies.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0480",
+      "source_group": "auto_writing_98",
+      "query": "Draft a polite follow-up email after a job interview.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0481",
+      "source_group": "auto_writing_99",
+      "query": "Rewrite this paragraph to eliminate jargon and improve readability.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0482",
+      "source_group": "auto_writing_100",
+      "query": "Compose a comprehensive policy proposal on remote work sustainability.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 4,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0483",
+      "source_group": "auto_factual_lookup_101",
+      "query": "What is the capital of Canada?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0484",
+      "source_group": "auto_factual_lookup_102",
+      "query": "Who was the 16th President of the United States?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0485",
+      "source_group": "auto_factual_lookup_103",
+      "query": "What is the chemical formula for photosynthesis?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0486",
+      "source_group": "auto_factual_lookup_104",
+      "query": "Define the term 'heuristic' in computer science.",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0487",
+      "source_group": "auto_factual_lookup_105",
+      "query": "When was the United Nations founded?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0488",
+      "source_group": "auto_factual_lookup_106",
+      "query": "What is the deepest trench in the world's oceans?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0489",
+      "source_group": "auto_factual_lookup_107",
+      "query": "Who discovered the structure of DNA in 1953?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0490",
+      "source_group": "auto_factual_lookup_108",
+      "query": "What are the primary colors in additive color mixing (RGB)?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0491",
+      "source_group": "auto_factual_lookup_109",
+      "query": "What is the currency of Japan?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0492",
+      "source_group": "auto_factual_lookup_110",
+      "query": "Which planet in our solar system has the most moons?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0493",
+      "source_group": "auto_factual_lookup_111",
+      "query": "Define the term 'quantum entanglement'.",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 2,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0494",
+      "source_group": "auto_factual_lookup_112",
+      "query": "When did the Apollo 11 mission land on the Moon?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0495",
+      "source_group": "auto_factual_lookup_113",
+      "query": "What is the boiling point of ethanol in Celsius?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0496",
+      "source_group": "auto_factual_lookup_114",
+      "query": "Who wrote the novel 'Crime and Punishment'?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0497",
+      "source_group": "auto_factual_lookup_115",
+      "query": "What is the main function of the kidneys in the human body?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0498",
+      "source_group": "auto_factual_lookup_116",
+      "query": "List the seven continents in order of land area.",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0499",
+      "source_group": "auto_factual_lookup_117",
+      "query": "What is Avogadro's constant and what does it represent?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 2,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0500",
+      "source_group": "auto_factual_lookup_118",
+      "query": "When was the fall of the Berlin Wall?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0501",
+      "source_group": "auto_factual_lookup_119",
+      "query": "What is the SI unit of electrical resistance?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0502",
+      "source_group": "auto_factual_lookup_120",
+      "query": "Define the economic concept of 'opportunity cost'.",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0503",
+      "source_group": "auto_general_121",
+      "query": "Can you recommend three great science fiction books to read?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0504",
+      "source_group": "auto_general_122",
+      "query": "How can I organize my desk to be more productive?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0505",
+      "source_group": "auto_general_123",
+      "query": "What are some easy hobbies to pick up on weekends?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0506",
+      "source_group": "auto_general_124",
+      "query": "How do I care for a sourdough bread starter?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0507",
+      "source_group": "auto_general_125",
+      "query": "What are some conversational icebreakers for a networking event?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0508",
+      "source_group": "auto_general_126",
+      "query": "Can you help me plan a surprise birthday party for my friend?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 2,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0509",
+      "source_group": "auto_general_127",
+      "query": "What are the health benefits of drinking green tea?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0510",
+      "source_group": "auto_general_128",
+      "query": "How can I prepare my car for winter weather driving?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 2,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0511",
+      "source_group": "auto_general_129",
+      "query": "Can you suggest some budget-friendly weekend road trip destinations in New England?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0512",
+      "source_group": "auto_general_130",
+      "query": "What is the etiquette for tipping in restaurants in European countries?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 1,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0513",
+      "source_group": "auto_general_131",
+      "query": "Can you help me brainstorm a title for my podcast about personal finance?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 2,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0514",
+      "source_group": "auto_general_132",
+      "query": "What are some tips for staying calm before public speaking?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0515",
+      "source_group": "auto_general_133",
+      "query": "How do air fryers work compared to conventional convection ovens?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 2,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0516",
+      "source_group": "auto_general_134",
+      "query": "Can you suggest some relaxing music playlists for studying?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0517",
+      "source_group": "auto_general_135",
+      "query": "What are some fun games to play with family during holidays?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 1,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0518",
+      "source_group": "auto_general_136",
+      "query": "Could you give me some tips for starting a backyard vegetable garden?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 2,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0519",
+      "source_group": "auto_general_137",
+      "query": "How do I choose the right running shoes for my foot shape?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0520",
+      "source_group": "auto_general_138",
+      "query": "Can you summarize the difference between espresso and drip coffee?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0521",
+      "source_group": "auto_general_139",
+      "query": "What are some good podcasts to listen to on long commutes?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0522",
+      "source_group": "auto_general_140",
+      "query": "Hello assistant, can you tell me what you can help me with today?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    }
+  ]
+}
