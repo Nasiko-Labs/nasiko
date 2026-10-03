@@ -1409,7 +1409,9 @@ mod tests {
             ]
         });
         let signals_for = |body: Value| {
-            let req = inbound_for(InboundFormat::Anthropic).parse_chat(body).unwrap();
+            let req = inbound_for(InboundFormat::Anthropic)
+                .parse_chat(body)
+                .unwrap();
             let anchor = routing::turn_anchor(&req.messages);
             BoundarySignals::for_coding_agent(
                 AGENT,
@@ -1424,7 +1426,9 @@ mod tests {
         assert_eq!(looping.phase, routing::Phase::Continue);
         assert_eq!(first.conv_id, looping.conv_id);
         // The shared helpers keep their literal meaning (brevity/compress rely on them).
-        let req = inbound_for(InboundFormat::Anthropic).parse_chat(turn2).unwrap();
+        let req = inbound_for(InboundFormat::Anthropic)
+            .parse_chat(turn2)
+            .unwrap();
         assert!(!routing::is_tool_continuation(&req.messages));
         assert_eq!(routing::user_turn_ordinal(&req.messages), 2);
     }

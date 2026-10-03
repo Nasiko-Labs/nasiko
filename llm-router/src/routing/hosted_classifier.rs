@@ -133,7 +133,10 @@ fn head(s: &str, max: usize) -> &str {
 
 fn tail(s: &str, max: usize) -> &str {
     let n = s.chars().count();
-    match n.checked_sub(max).and_then(|skip| s.char_indices().nth(skip)) {
+    match n
+        .checked_sub(max)
+        .and_then(|skip| s.char_indices().nth(skip))
+    {
         Some((i, _)) if n > max => &s[i..],
         _ => s,
     }
@@ -257,10 +260,9 @@ impl RequestClassifier for HostedClassifier {
         if !status.is_success() {
             return Err(ClassifyError::Unavailable(format!("HTTP {status}")));
         }
-        let envelope: Value = resp
-            .json()
-            .await
-            .map_err(|e| ClassifyError::InvalidResponse(format!("bad envelope: {}", e.without_url())))?;
+        let envelope: Value = resp.json().await.map_err(|e| {
+            ClassifyError::InvalidResponse(format!("bad envelope: {}", e.without_url()))
+        })?;
         let content = envelope["choices"][0]["message"]["content"]
             .as_str()
             .ok_or_else(|| ClassifyError::InvalidResponse("no message content".into()))?;
@@ -292,7 +294,8 @@ mod tests {
     fn envelope(content: &str, top: Option<Value>) -> String {
         let mut choice = json!({ "message": { "role": "assistant", "content": content } });
         if let Some(top) = top {
-            choice["logprobs"] = json!({ "content": [ { "token": "C", "logprob": -0.1, "top_logprobs": top } ] });
+            choice["logprobs"] =
+                json!({ "content": [ { "token": "C", "logprob": -0.1, "top_logprobs": top } ] });
         }
         json!({ "choices": [choice], "usage": { "prompt_tokens": 900, "completion_tokens": 2 } })
             .to_string()
@@ -450,8 +453,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!((rt, cx, conf), (RequestType::Writing, 5, Some(1.0)));
-        assert_eq!(parse_answer(" d3 ").unwrap().0, RequestType::AnalyticalReasoning);
-        assert_eq!(parse_answer("Answer: B").unwrap(), (RequestType::CodeUnderstanding, 3, None));
+        assert_eq!(
+            parse_answer(" d3 ").unwrap().0,
+            RequestType::AnalyticalReasoning
+        );
+        assert_eq!(
+            parse_answer("Answer: B").unwrap(),
+            (RequestType::CodeUnderstanding, 3, None)
+        );
         assert!(parse_answer("{\"request_type\":\"poetry\"}").is_err());
     }
 

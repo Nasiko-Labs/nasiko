@@ -99,9 +99,10 @@ async fn main() {
         }
         writeln!(out, "{line}").expect("write OUT");
 
-        if let (Some(gold_type), Some(gold_cx)) =
-            (example["request_type"].as_str(), example["complexity"].as_u64())
-        {
+        if let (Some(gold_type), Some(gold_cx)) = (
+            example["request_type"].as_str(),
+            example["complexity"].as_u64(),
+        ) {
             labelled += 1;
             type_correct += usize::from(gold_type == c.request_type.as_str());
             let diff = (i64::from(c.complexity) - gold_cx as i64).abs();
@@ -119,7 +120,9 @@ async fn main() {
         let (bytes, provenance) = if cfg.classifier.model_path.is_empty() {
             (
                 embedded_artifact_len(),
-                LocalClassifier::embedded().ok().map(|m| m.provenance().clone()),
+                LocalClassifier::embedded()
+                    .ok()
+                    .map(|m| m.provenance().clone()),
             )
         } else {
             (

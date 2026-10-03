@@ -81,8 +81,10 @@ static SYSTEM_REMINDER: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?is)<system-reminder>.*?</system-reminder>").unwrap());
 static HORIZONTAL_WS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[ \t]+").unwrap());
 static ERROR_MARKER: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\b(?:error|exception|traceback|panic(?:ked)?|stack ?trace|errno|segfault)\b|\b[45]\d\d\b")
-        .unwrap()
+    Regex::new(
+        r"\b(?:error|exception|traceback|panic(?:ked)?|stack ?trace|errno|segfault)\b|\b[45]\d\d\b",
+    )
+    .unwrap()
 });
 static CONSTRAINT_MARKER: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\b(?:must|should not|without|do not|don't|ensure|keep|only|exactly|at least|no more than)\b")
@@ -90,9 +92,8 @@ static CONSTRAINT_MARKER: LazyLock<Regex> = LazyLock::new(|| {
 });
 static LIST_ITEM: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?m)^\s*(?:[-*•]|\d+[.)])\s").unwrap());
-static NEGATION: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\b(?:do not|don't|never|no need|without|just|only)\b").unwrap()
-});
+static NEGATION: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b(?:do not|don't|never|no need|without|just|only)\b").unwrap());
 static DESIGN_VOCAB: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\b(?:architect|design|schema|migration|rollout|scalab|trade-?off|component|idempot|state machine|api contract)")
         .unwrap()
@@ -283,15 +284,25 @@ mod tests {
     #[test]
     fn features_are_bitwise_deterministic_and_sorted() {
         for (q, c) in [
-            ("Implement a parser for comma-separated integers", Some("Rust 2021")),
+            (
+                "Implement a parser for comma-separated integers",
+                Some("Rust 2021"),
+            ),
             ("hello", None),
-            ("Explain why `next` returns the old value", Some("```rust\nfn next() {}\n```")),
+            (
+                "Explain why `next` returns the old value",
+                Some("```rust\nfn next() {}\n```"),
+            ),
         ] {
             let a = extract(q, c);
             let b = extract(q, c);
             assert_eq!(bits(&a), bits(&b));
             assert!(a.hashed.windows(2).all(|w| w[0].0 < w[1].0), "not sorted");
-            assert!(a.hashed.iter().all(|(b, v)| *v != 0.0 && (*b as usize) < RC_NUM_BUCKETS));
+            assert!(
+                a.hashed
+                    .iter()
+                    .all(|(b, v)| *v != 0.0 && (*b as usize) < RC_NUM_BUCKETS)
+            );
         }
     }
 
@@ -303,7 +314,10 @@ mod tests {
             assert_ne!(q_bucket, c_bucket, "{word}");
         }
         // The same text as query vs as context yields different vectors.
-        assert_ne!(extract("cache", None).hashed, extract("x", Some("cache")).hashed);
+        assert_ne!(
+            extract("cache", None).hashed,
+            extract("x", Some("cache")).hashed
+        );
     }
 
     #[test]
@@ -330,7 +344,11 @@ mod tests {
         ];
         for (q, c) in &cases {
             let f = extract(q, c.as_deref());
-            assert!(f.dense.iter().all(|v| v.is_finite() && *v >= 0.0 && *v < 20.0));
+            assert!(
+                f.dense
+                    .iter()
+                    .all(|v| v.is_finite() && *v >= 0.0 && *v < 20.0)
+            );
             assert!(f.hashed.iter().all(|(_, v)| v.is_finite()));
         }
     }
@@ -338,10 +356,19 @@ mod tests {
     #[test]
     fn dump_matches_inference_features() {
         for (q, c) in [
-            ("Fix typo in this Python comment", Some("No other files or changes needed.")),
+            (
+                "Fix typo in this Python comment",
+                Some("No other files or changes needed."),
+            ),
             ("What does Option::take() do in Rust?", None),
-            ("Summarize the release notes in three bullets", Some("Release notes: ...")),
-            ("Design a migration to queued processing", Some("POST /confirm returns 200")),
+            (
+                "Summarize the release notes in three bullets",
+                Some("Release notes: ..."),
+            ),
+            (
+                "Design a migration to queued processing",
+                Some("POST /confirm returns 200"),
+            ),
             ("", None),
         ] {
             let f = extract(q, c);
@@ -372,7 +399,10 @@ mod tests {
         let g = extract("hello there", None);
         assert_eq!(g.dense[D_REGEX_ABSTAINED], 1.0);
         assert_eq!(g.dense[D_REGEX_TOP_SHARE], 0.0);
-        let h = extract("draft an email", Some("Traceback: error 500\nfn main() { x(); }"));
+        let h = extract(
+            "draft an email",
+            Some("Traceback: error 500\nfn main() { x(); }"),
+        );
         assert_eq!(h.dense[D_ERROR_MARKER], 1.0);
         assert!(h.dense[D_CODE_LINE_RATIO] > 0.0);
         assert!(h.dense[D_WRITING_VOCAB] > 0.0);

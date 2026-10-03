@@ -17,8 +17,7 @@ use nasiko_llm_router::routing::request_features::{extract, features_to_json, re
 
 fn main() {
     let path = std::env::var("DATASET").expect("set DATASET to the labelled JSONL path");
-    let out_path =
-        std::env::var("DUMP_OUT").unwrap_or_else(|_| "classifier-features.jsonl".into());
+    let out_path = std::env::var("DUMP_OUT").unwrap_or_else(|_| "classifier-features.jsonl".into());
     let started = Instant::now();
     let input = std::io::BufReader::new(std::fs::File::open(&path).expect("open DATASET"));
     let mut out =

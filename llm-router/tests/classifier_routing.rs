@@ -33,7 +33,10 @@ async fn factory_selects_local_backend() {
         ..Default::default()
     });
     assert_eq!(c.name(), "local");
-    let v = c.classify(&input("Fix typo in this comment")).await.unwrap();
+    let v = c
+        .classify(&input("Fix typo in this comment"))
+        .await
+        .unwrap();
     assert!((1..=5).contains(&v.complexity));
     assert!((0.0..=1.0).contains(&v.confidence));
     assert_eq!(c.stats().snapshot().fallback_load, 0);

@@ -258,8 +258,10 @@ impl ClassifierConfig {
                 .filter(|v| !v.is_empty())
                 .unwrap_or_else(|| default.to_string())
         };
-        let flag = |key: &str, default: bool| parse_value_or_warn(key, get(key), parse_flag, default);
-        let unit = |key: &str, default: f32| parse_value_or_warn(key, get(key), parse_unit, default);
+        let flag =
+            |key: &str, default: bool| parse_value_or_warn(key, get(key), parse_flag, default);
+        let unit =
+            |key: &str, default: f32| parse_value_or_warn(key, get(key), parse_unit, default);
         Self {
             backend: string("CLASSIFIER_BACKEND", &d.backend).to_ascii_lowercase(),
             model_path: string("CLASSIFIER_MODEL_PATH", &d.model_path),
@@ -595,7 +597,10 @@ mod tests {
 
     #[test]
     fn config_parses_classifier_env_and_warns_on_garbage() {
-        assert_eq!(ClassifierConfig::from_lookup(lookup(&[])), ClassifierConfig::default());
+        assert_eq!(
+            ClassifierConfig::from_lookup(lookup(&[])),
+            ClassifierConfig::default()
+        );
         let c = ClassifierConfig::from_lookup(lookup(&[
             ("CLASSIFIER_BACKEND", " LOCAL "),
             ("CLASSIFIER_MODEL_PATH", "/tmp/w.json"),

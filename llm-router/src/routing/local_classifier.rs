@@ -76,7 +76,10 @@ fn model_err(msg: impl Into<String>) -> ClassifyError {
 
 fn finite_vec<const N: usize>(v: &[f64], what: &str) -> Result<[f32; N], ClassifyError> {
     if v.len() != N {
-        return Err(model_err(format!("{what}: expected {N} values, got {}", v.len())));
+        return Err(model_err(format!(
+            "{what}: expected {N} values, got {}",
+            v.len()
+        )));
     }
     let mut out = [0f32; N];
     for (o, x) in out.iter_mut().zip(v) {
@@ -93,7 +96,10 @@ fn finite_matrix<const R: usize>(
     what: &str,
 ) -> Result<[[f32; RC_NUM_DENSE]; R], ClassifyError> {
     if m.len() != R {
-        return Err(model_err(format!("{what}: expected {R} rows, got {}", m.len())));
+        return Err(model_err(format!(
+            "{what}: expected {R} rows, got {}",
+            m.len()
+        )));
     }
     let mut out = [[0f32; RC_NUM_DENSE]; R];
     for (o, row) in out.iter_mut().zip(m) {
@@ -120,7 +126,10 @@ impl LocalClassifier {
         let f: WeightsFile = serde_json::from_str(raw)
             .map_err(|e| model_err(format!("weights file is not valid JSON: {e}")))?;
         if f.schema != WEIGHTS_SCHEMA {
-            return Err(model_err(format!("unsupported weights schema {:?}", f.schema)));
+            return Err(model_err(format!(
+                "unsupported weights schema {:?}",
+                f.schema
+            )));
         }
         if f.feature_engine != RC_FEATURE_ENGINE {
             return Err(model_err(format!(
@@ -175,12 +184,11 @@ impl LocalClassifier {
         let features = extract(query, context);
         let mut z_type = [0f64; NUM_TYPES];
         let mut z_cx = [0f64; NUM_CX];
-        for k in 0..NUM_TYPES {
-            z_type[k] = f64::from(self.type_bias[k])
-                + dot(&self.type_dense[k], &features.dense);
+        for ((z, bias), dense) in z_type.iter_mut().zip(self.type_bias).zip(&self.type_dense) {
+            *z = f64::from(bias) + dot(dense, &features.dense);
         }
-        for k in 0..NUM_CX {
-            z_cx[k] = f64::from(self.cx_bias[k]) + dot(&self.cx_dense[k], &features.dense);
+        for ((z, bias), dense) in z_cx.iter_mut().zip(self.cx_bias).zip(&self.cx_dense) {
+            *z = f64::from(bias) + dot(dense, &features.dense);
         }
         for (bucket, value) in &features.hashed {
             let row = &self.rows[*bucket as usize];
@@ -303,8 +311,8 @@ pub(crate) mod tests {
     #[test]
     #[ignore = "regenerates the placeholder artifact; only for bootstrapping"]
     fn write_fixture_artifact() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("assets/request_classifier.json");
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/request_classifier.json");
         std::fs::write(path, fixture_json() + "\n").unwrap();
     }
 
@@ -329,19 +337,40 @@ pub(crate) mod tests {
             ("buckets", mutate(|v| v["num_buckets"] = 65536.into())),
             ("dense", mutate(|v| v["num_dense_features"] = 8.into())),
             ("classes", mutate(|v| v["classes"][0] = "writing".into())),
-            ("type_bias", mutate(|v| v["type_bias"] = serde_json::json!([0.0, 1.0]))),
-            ("type_dense", mutate(|v| v["type_dense"][0] = serde_json::json!([1.0]))),
-            ("cx_bias", mutate(|v| v["cx_bias"] = serde_json::json!([0.0]))),
+            (
+                "type_bias",
+                mutate(|v| v["type_bias"] = serde_json::json!([0.0, 1.0])),
+            ),
+            (
+                "type_dense",
+                mutate(|v| v["type_dense"][0] = serde_json::json!([1.0])),
+            ),
+            (
+                "cx_bias",
+                mutate(|v| v["cx_bias"] = serde_json::json!([0.0])),
+            ),
             ("temperature0", mutate(|v| v["temperature"] = 0.0.into())),
             ("temperature-", mutate(|v| v["temperature"] = (-1.0).into())),
-            ("row len", mutate(|v| v["hashed"]["5"] = serde_json::json!([1.0, 2.0]))),
-            ("row key", mutate(|v| v["hashed"]["abc"] = serde_json::json!(vec![0.0; 11]))),
-            ("row range", mutate(|v| v["hashed"]["40000"] = serde_json::json!(vec![0.0; 11]))),
+            (
+                "row len",
+                mutate(|v| v["hashed"]["5"] = serde_json::json!([1.0, 2.0])),
+            ),
+            (
+                "row key",
+                mutate(|v| v["hashed"]["abc"] = serde_json::json!(vec![0.0; 11])),
+            ),
+            (
+                "row range",
+                mutate(|v| v["hashed"]["40000"] = serde_json::json!(vec![0.0; 11])),
+            ),
             ("not json", "{".to_string()),
         ];
         for (what, raw) in bad {
             assert!(
-                matches!(LocalClassifier::from_json(&raw), Err(ClassifyError::Model(_))),
+                matches!(
+                    LocalClassifier::from_json(&raw),
+                    Err(ClassifyError::Model(_))
+                ),
                 "{what} should be rejected"
             );
         }

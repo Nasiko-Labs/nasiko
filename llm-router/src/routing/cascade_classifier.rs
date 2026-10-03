@@ -59,7 +59,9 @@ impl RequestClassifier for CascadeClassifier {
         match tokio::time::timeout(self.hosted_budget, self.hosted.classify(input)).await {
             Ok(Ok(hosted)) => Ok(hosted),
             Ok(Err(e)) => {
-                self.stats.escalation_failures.fetch_add(1, Ordering::Relaxed);
+                self.stats
+                    .escalation_failures
+                    .fetch_add(1, Ordering::Relaxed);
                 tracing::warn!(
                     target: "nasiko::llm_router::classifier",
                     error = %e,
@@ -68,7 +70,9 @@ impl RequestClassifier for CascadeClassifier {
                 Ok(local)
             }
             Err(_) => {
-                self.stats.escalation_failures.fetch_add(1, Ordering::Relaxed);
+                self.stats
+                    .escalation_failures
+                    .fetch_add(1, Ordering::Relaxed);
                 tracing::warn!(
                     target: "nasiko::llm_router::classifier",
                     budget_ms = self.hosted_budget.as_millis() as u64,
@@ -103,7 +107,10 @@ mod tests {
         }
     }
 
-    fn cascade(threshold: f32, answer: Option<Classification>) -> (CascadeClassifier, Arc<Fake>, Arc<ClassifierStats>) {
+    fn cascade(
+        threshold: f32,
+        answer: Option<Classification>,
+    ) -> (CascadeClassifier, Arc<Fake>, Arc<ClassifierStats>) {
         let fake = Arc::new(Fake {
             calls: AtomicUsize::new(0),
             answer,
@@ -111,7 +118,13 @@ mod tests {
         let stats = Arc::new(ClassifierStats::default());
         let local = Arc::new(LocalClassifier::from_json(&fixture_json()).unwrap());
         (
-            CascadeClassifier::new(local, fake.clone(), threshold, Duration::from_secs(1), stats.clone()),
+            CascadeClassifier::new(
+                local,
+                fake.clone(),
+                threshold,
+                Duration::from_secs(1),
+                stats.clone(),
+            ),
             fake,
             stats,
         )
@@ -126,7 +139,8 @@ mod tests {
 
     #[tokio::test]
     async fn confident_local_never_calls_hosted() {
-        let (c, fake, stats) = cascade(0.0, Some(Classification::new(RequestType::Writing, 2, 0.9)));
+        let (c, fake, stats) =
+            cascade(0.0, Some(Classification::new(RequestType::Writing, 2, 0.9)));
         let got = c.classify(&input()).await.unwrap();
         assert_eq!(got.request_type, RequestType::CodeGeneration);
         assert_eq!(fake.calls.load(Ordering::Relaxed), 0);

@@ -260,7 +260,10 @@ pub struct TieredDecisionCache {
 }
 
 impl TieredDecisionCache {
-    pub fn new(l1: std::sync::Arc<dyn DecisionCache>, l2: std::sync::Arc<dyn DecisionCache>) -> Self {
+    pub fn new(
+        l1: std::sync::Arc<dyn DecisionCache>,
+        l2: std::sync::Arc<dyn DecisionCache>,
+    ) -> Self {
         Self { l1, l2 }
     }
 }
@@ -308,16 +311,23 @@ mod tests {
             complexity: Some(4),
             confidence: Some(0.75),
         };
-        let back: WireDecision = serde_json::from_str(&serde_json::to_string(&wire).unwrap()).unwrap();
+        let back: WireDecision =
+            serde_json::from_str(&serde_json::to_string(&wire).unwrap()).unwrap();
         assert_eq!((back.complexity, back.confidence), (Some(4), Some(0.75)));
     }
 
     #[tokio::test]
     async fn l1_cache_serves_sticky_decision_without_redis() {
-        let l1 = std::sync::Arc::new(InMemoryDecisionCache::new(2, std::time::Duration::from_secs(60)));
+        let l1 = std::sync::Arc::new(InMemoryDecisionCache::new(
+            2,
+            std::time::Duration::from_secs(60),
+        ));
         let tiered = TieredDecisionCache::new(l1.clone(), std::sync::Arc::new(NoopCache));
         tiered.put("c1", "a", &decision("m1")).await;
-        assert_eq!(tiered.get("c1", "a").await.map(|d| d.model), Some("m1".into()));
+        assert_eq!(
+            tiered.get("c1", "a").await.map(|d| d.model),
+            Some("m1".into())
+        );
         assert!(tiered.get("c2", "a").await.is_none());
         // Bounded: a third distinct key never grows the map past capacity.
         tiered.put("c2", "a", &decision("m2")).await;

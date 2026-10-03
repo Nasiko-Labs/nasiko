@@ -36,15 +36,16 @@ mod salience_classifier;
 
 pub use boundary::{BoundarySignals, Mode, Phase};
 pub use cache::{
-    CachedDecision, DecisionCache, InMemoryDecisionCache, NoopCache, RedisCache, TieredDecisionCache,
+    CachedDecision, DecisionCache, InMemoryDecisionCache, NoopCache, RedisCache,
+    TieredDecisionCache,
 };
+pub use cascade_classifier::CascadeClassifier;
 pub use cells::{CellStore, InMemoryCellStore, PgCellStore};
 pub use classifier::{
     Classification, ClassifierStats, ClassifierStatsSnapshot, ClassifyError, ClassifyInput,
     ComplexityRouting, GuardedClassifier, RegexClassifier, RequestClassifier, RequestType, Tier,
     classify, classify_request_type, select_tier, signal,
 };
-pub use cascade_classifier::CascadeClassifier;
 pub use hosted_classifier::HostedClassifier;
 pub use local_classifier::LocalClassifier;
 pub use registry::{PgTierRegistry, TierRegistry};
@@ -340,8 +341,13 @@ pub async fn route_model(
             let learned = cell_store.load(inputs.provider).await;
             let request_type = c.request_type;
             let tier = {
-                let mut rng =
-                    routing_rng(inputs.tier_seed, inputs.provider, inputs.agent_id, conv_id, query);
+                let mut rng = routing_rng(
+                    inputs.tier_seed,
+                    inputs.provider,
+                    inputs.agent_id,
+                    conv_id,
+                    query,
+                );
                 select_tier(&learned, &c, inputs.complexity_routing, &mut rng)
             };
             // Per-config tier override takes priority over the global registry.
@@ -1196,7 +1202,8 @@ mod tests {
             "counting"
         }
         async fn classify(&self, _: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
-            self.calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             self.verdict
                 .ok_or_else(|| ClassifyError::Unavailable("down".into()))
         }
@@ -1266,9 +1273,14 @@ mod tests {
         assert_eq!(d.source, RouteSource::Classified);
         assert_eq!(
             d.classification,
-            Some(RegexClassifier::classify_sync("draft an email to my team about the outage"))
+            Some(RegexClassifier::classify_sync(
+                "draft an email to my team about the outage"
+            ))
         );
-        assert_eq!(cache.puts.lock().unwrap()[0].request_type, Some(RequestType::Writing));
+        assert_eq!(
+            cache.puts.lock().unwrap()[0].request_type,
+            Some(RequestType::Writing)
+        );
     }
 
     #[tokio::test]
@@ -1290,7 +1302,10 @@ mod tests {
         assert_eq!(d.source, RouteSource::LowConfidence);
         assert_eq!(d.model, "cfg-model");
         assert_eq!(d.tier, None);
-        assert!(cache.puts.lock().unwrap().is_empty(), "abstain must not pin");
+        assert!(
+            cache.puts.lock().unwrap().is_empty(),
+            "abstain must not pin"
+        );
     }
 
     #[tokio::test]
@@ -1395,7 +1410,11 @@ mod tests {
                 &i,
             )
             .await;
-            assert_eq!(*first.get_or_insert(d.tier), d.tier, "seeded tier must not vary");
+            assert_eq!(
+                *first.get_or_insert(d.tier),
+                d.tier,
+                "seeded tier must not vary"
+            );
         }
         let mut tiers = std::collections::HashSet::new();
         for n in 0..200 {
@@ -1414,7 +1433,10 @@ mod tests {
             .await;
             tiers.insert(d.tier);
         }
-        assert!(tiers.len() > 1, "different conversations should still explore");
+        assert!(
+            tiers.len() > 1,
+            "different conversations should still explore"
+        );
     }
 
     #[tokio::test]
