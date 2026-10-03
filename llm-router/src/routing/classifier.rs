@@ -309,6 +309,20 @@ pub fn classify<R: Rng + ?Sized>(
     rng: &mut R,
 ) -> (Tier, RequestType) {
     let request_type = classify_request_type(query);
+    classify_with_request_type(query, provider, cells, request_type, rng)
+}
+
+/// Select a provider-specific tier using a request type supplied by another classifier.
+///
+/// This retains the existing learned quality/cost policy while allowing an alternate
+/// classifier backend to supply the request-type signal.
+pub fn classify_with_request_type<R: Rng + ?Sized>(
+    query: &str,
+    provider: &str,
+    cells: &CellMap,
+    request_type: RequestType,
+    rng: &mut R,
+) -> (Tier, RequestType) {
     let tier = pick_model_thompson(cells, request_type, DEFAULT_W_QUALITY, DEFAULT_W_COST, rng);
     let preview: String = query.chars().take(120).collect();
     tracing::info!(
