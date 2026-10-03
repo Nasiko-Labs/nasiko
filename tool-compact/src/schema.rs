@@ -71,7 +71,7 @@ pub struct Node {
     pub description: Option<String>,
 }
 
-fn unsupported(path: &str, reason: impl Into<String>) -> Error {
+pub(crate) fn unsupported(path: &str, reason: impl Into<String>) -> Error {
     Error::Unsupported {
         path: path.to_string(),
         reason: reason.into(),

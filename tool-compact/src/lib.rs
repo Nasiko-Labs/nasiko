@@ -19,9 +19,13 @@
 )]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
+mod compact;
 mod error;
 mod schema;
 
+pub use compact::{
+    CompactTools, HEADER, INSTRUCTION, canonical_schema, decode_tools, encode_tools,
+};
 pub use error::Error;
 pub use schema::{Format, Kind, Node, Object, normalize_tool};
 
