@@ -194,11 +194,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let (Some(base_url), Some(_model_name)) = (&provider_base_url, &live_model) {
             let client = reqwest::Client::new();
             let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-            let resp = client
-                .post(&url)
-                .json(&out_line["compact_request"])
-                .send()
-                .await;
+            let mut req_builder = client.post(&url).json(&out_line["compact_request"]);
+
+            if let Ok(key) = env::var("OPENAI_API_KEY")
+                .or_else(|_| env::var("OPENROUTER_API_KEY"))
+                .or_else(|_| env::var("PROVIDER_API_KEY"))
+                .or_else(|_| env::var("API_KEY"))
+            {
+                req_builder = req_builder.header("Authorization", format!("Bearer {}", key));
+            }
+
+            let resp = req_builder.send().await;
 
             match resp {
                 Ok(res) => {
