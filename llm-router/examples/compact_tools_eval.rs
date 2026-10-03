@@ -22,6 +22,7 @@ use nasiko_tool_compact::{
     render_call,
 };
 use serde_json::{Map, Value, json};
+use tiktoken_rs::{CoreBPE, o200k_base};
 
 type AppResult<T> = Result<T, String>;
 
@@ -37,6 +38,11 @@ fn run() -> AppResult<()> {
     let out = env::var("OUT").map_err(|_| "OUT must name the JSONL output file")?;
     let live_model = configured_live_model();
     let cases = load_cases(Path::new(&eval_set))?;
+    let measure_out = env::var("MEASURE_OUT").ok();
+    let tokenizer = measure_out
+        .as_ref()
+        .map(|_| o200k_base().map_err(|error| format!("could not load o200k_base: {error}")))
+        .transpose()?;
 
     let out_path = Path::new(&out);
     if let Some(parent) = out_path
@@ -53,18 +59,28 @@ fn run() -> AppResult<()> {
     let file = File::create(out_path)
         .map_err(|error| format!("could not create '{}': {error}", out_path.display()))?;
     let mut writer = BufWriter::new(file);
+    let mut measurements = Vec::new();
 
     for (index, case) in cases.iter().enumerate() {
-        let record = eval_record(case, index, live_model.as_deref())?;
-        serde_json::to_writer(&mut writer, &canonicalize(&record))
+        let (record, measurement) =
+            eval_record(case, index, live_model.as_deref(), tokenizer.as_ref())?;
+        let line = canonical_json_line(&record)
             .map_err(|error| format!("could not serialize case {index}: {error}"))?;
         writer
-            .write_all(b"\n")
+            .write_all(&line)
             .map_err(|error| format!("could not write case {index}: {error}"))?;
+        if let Some(measurement) = measurement {
+            measurements.push(measurement);
+        }
     }
     writer
         .flush()
-        .map_err(|error| format!("could not flush '{}': {error}", out_path.display()))
+        .map_err(|error| format!("could not flush '{}': {error}", out_path.display()))?;
+
+    if let Some(measure_out) = measure_out {
+        write_measurements(Path::new(&measure_out), &measurements)?;
+    }
+    Ok(())
 }
 
 /// `MODEL` is used only when the live provider endpoint is configured. Offline
@@ -75,6 +91,84 @@ fn configured_live_model() -> Option<String> {
         .filter(|base_url| !base_url.is_empty())
         .and_then(|_| env::var("MODEL").ok())
         .filter(|model| !model.is_empty())
+}
+
+/// Local-only measurement output. These values are deliberately kept out of the
+/// organizer-facing `OUT` file, whose scoring is recomputed by the organizers.
+#[derive(serde::Serialize)]
+struct TokenMeasurement {
+    id: Value,
+    native_tokens: usize,
+    compact_tokens: usize,
+    token_reduction: f64,
+}
+
+impl TokenMeasurement {
+    fn from_requests(
+        id: &Value,
+        native_request: &Value,
+        compact_request: &Value,
+        tokenizer: &CoreBPE,
+    ) -> AppResult<Self> {
+        let native_tokens = request_token_count(native_request, tokenizer)?;
+        let compact_tokens = request_token_count(compact_request, tokenizer)?;
+        let token_reduction = if native_tokens == 0 {
+            0.0
+        } else {
+            1.0 - compact_tokens as f64 / native_tokens as f64
+        };
+        Ok(Self {
+            id: id.clone(),
+            native_tokens,
+            compact_tokens,
+            token_reduction,
+        })
+    }
+}
+
+/// Counts the complete canonicalized JSON request body with the o200k_base BPE.
+fn request_token_count(request: &Value, tokenizer: &CoreBPE) -> AppResult<usize> {
+    let body = serde_json::to_string(&canonicalize(request))
+        .map_err(|error| format!("could not serialize request for token counting: {error}"))?;
+    Ok(tokenizer.encode_with_special_tokens(&body).len())
+}
+
+fn write_measurements(path: &Path, measurements: &[TokenMeasurement]) -> AppResult<()> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "could not create measurement directory '{}': {error}",
+                parent.display()
+            )
+        })?;
+    }
+    let file = File::create(path).map_err(|error| {
+        format!(
+            "could not create measurement report '{}': {error}",
+            path.display()
+        )
+    })?;
+    let mut writer = BufWriter::new(file);
+    for measurement in measurements {
+        let value = serde_json::to_value(measurement)
+            .map_err(|error| format!("could not serialize measurement: {error}"))?;
+        let line = canonical_json_line(&value)?;
+        writer.write_all(&line).map_err(|error| {
+            format!(
+                "could not write measurement report '{}': {error}",
+                path.display()
+            )
+        })?;
+    }
+    writer.flush().map_err(|error| {
+        format!(
+            "could not flush measurement report '{}': {error}",
+            path.display()
+        )
+    })
 }
 
 /// Accept a JSON array, an object containing a conventional case array, or JSONL.
@@ -120,7 +214,12 @@ fn cases_from_value(value: Value) -> AppResult<Vec<Value>> {
     }
 }
 
-fn eval_record(case: &Value, index: usize, live_model: Option<&str>) -> AppResult<Value> {
+fn eval_record(
+    case: &Value,
+    index: usize,
+    live_model: Option<&str>,
+    tokenizer: Option<&CoreBPE>,
+) -> AppResult<(Value, Option<TokenMeasurement>)> {
     let object = case
         .as_object()
         .ok_or_else(|| format!("case {index} must be a JSON object"))?;
@@ -129,9 +228,9 @@ fn eval_record(case: &Value, index: usize, live_model: Option<&str>) -> AppResul
         .ok_or_else(|| format!("case {index} is missing id"))?;
 
     if is_decoder_case(object) {
-        return decoder_record(id, object);
+        return decoder_record(id, object).map(|record| (record, None));
     }
-    normal_record(id, object, live_model)
+    normal_record(id, object, live_model, tokenizer)
 }
 
 /// Normal cases have exactly the Track P1 organizer fields.
@@ -139,7 +238,8 @@ fn normal_record(
     id: Value,
     case: &Map<String, Value>,
     live_model: Option<&str>,
-) -> AppResult<Value> {
+    tokenizer: Option<&CoreBPE>,
+) -> AppResult<(Value, Option<TokenMeasurement>)> {
     let native_request = native_openai_request(case, live_model);
     let tools = tool_defs_from_request(&native_request).map_err(compact_error_message)?;
     let calls = expected_calls(case).map_err(compact_error_message)?;
@@ -155,13 +255,21 @@ fn normal_record(
         .map_err(compact_error_message)
         .map(tool_calls_json)?;
 
-    Ok(json!({
-        "id": id,
-        "compact_request": compact_request,
-        "compacted": compacted,
-        "rendered_calls": rendered_calls,
-        "roundtrip_calls": roundtrip_calls,
-    }))
+    let measurement = tokenizer
+        .map(|tokenizer| {
+            TokenMeasurement::from_requests(&id, &native_request, &compact_request, tokenizer)
+        })
+        .transpose()?;
+    Ok((
+        json!({
+            "id": id,
+            "compact_request": compact_request,
+            "compacted": compacted,
+            "rendered_calls": rendered_calls,
+            "roundtrip_calls": roundtrip_calls,
+        }),
+        measurement,
+    ))
 }
 
 /// Decoder cases do not run normal-case compaction or expected-call round trips.
@@ -483,6 +591,13 @@ fn decode_chunks_adapter(chunks: &[String], tools: &[ToolDef]) -> CompactResult<
     decoder.finish()
 }
 
+fn canonical_json_line(value: &Value) -> AppResult<Vec<u8>> {
+    let mut line = serde_json::to_vec(&canonicalize(value))
+        .map_err(|error| format!("could not serialize JSONL value: {error}"))?;
+    line.push(b'\n');
+    Ok(line)
+}
+
 fn canonicalize(value: &Value) -> Value {
     match value {
         Value::Array(values) => Value::Array(values.iter().map(canonicalize).collect()),
@@ -500,6 +615,21 @@ fn canonicalize(value: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_jsonl_output_is_byte_stable() {
+        let record = json!({
+            "roundtrip_calls": [],
+            "id": null,
+            "compacted": true,
+            "compact_request": {"messages": []},
+            "rendered_calls": ""
+        });
+        assert_eq!(
+            canonical_json_line(&record).unwrap(),
+            canonical_json_line(&record).unwrap()
+        );
+    }
 
     #[test]
     fn successful_compaction_removes_native_tools_and_injects_instructions() {
