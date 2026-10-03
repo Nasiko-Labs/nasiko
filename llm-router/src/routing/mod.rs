@@ -21,6 +21,7 @@ pub mod cache;
 pub mod catalog;
 pub mod cells;
 pub mod classifier;
+pub mod decision;
 // The salience classifier itself — feature engine, weight loading, scoring, banding.
 // Private to `routing`: only `salience.rs` (a sibling module) uses it directly, via
 // `ClassifierSalienceGate`.
@@ -126,6 +127,39 @@ pub async fn route_model(
     gate: &dyn SalienceGate,
     inputs: &RouteInputs<'_>,
 ) -> RouteDecision {
+    route_model_impl(cache, registry, cell_store, gate, inputs, None).await
+}
+
+/// Opt-in classifier seam; the original entry point preserves legacy behavior.
+#[allow(clippy::too_many_arguments)]
+pub async fn route_model_with_classifier(
+    cache: &dyn DecisionCache,
+    registry: &dyn TierRegistry,
+    cell_store: &dyn CellStore,
+    gate: &dyn SalienceGate,
+    inputs: &RouteInputs<'_>,
+    classifier: &decision::ClassifierRuntime,
+    context: Option<&str>,
+) -> RouteDecision {
+    route_model_impl(
+        cache,
+        registry,
+        cell_store,
+        gate,
+        inputs,
+        Some((classifier, context)),
+    )
+    .await
+}
+
+async fn route_model_impl(
+    cache: &dyn DecisionCache,
+    registry: &dyn TierRegistry,
+    cell_store: &dyn CellStore,
+    gate: &dyn SalienceGate,
+    inputs: &RouteInputs<'_>,
+    semantic: Option<(&decision::ClassifierRuntime, Option<&str>)>,
+) -> RouteDecision {
     tracing::info!(
         target: "nasiko::llm_router::routing",
         agent_id = %inputs.agent_id,
@@ -218,7 +252,17 @@ pub async fn route_model(
                 query_preview = %inputs.query.map(query_preview).unwrap_or_default(),
                 "route_model: LEVEL 2.5 (SalienceGate) — cache miss at a fireable boundary; asking the gate whether to classify this turn"
             );
-            if !gate.is_substantive(query).await {
+            // Give the existing gate context for replies like "yes, do that".
+            // Its verdict still applies; the opt-in backend does not bypass it.
+            let contextual_query = semantic
+                .filter(|(c, _)| c.experimental)
+                .and_then(|(_, context)| context)
+                .filter(|context| !context.is_empty())
+                .map(|context| format!("{context}\nCurrent message: {query}"));
+            if !gate
+                .is_substantive(contextual_query.as_deref().unwrap_or(query))
+                .await
+            {
                 let model = small_talk_model(registry, inputs).await;
                 tracing::info!(
                     target: "nasiko::llm_router::routing",
@@ -250,10 +294,37 @@ pub async fn route_model(
             // (`ThreadRng`) is `!Send`, so it is scoped to drop before the next `.await` — the
             // handler future must stay `Send`.
             let learned = cell_store.load(inputs.provider).await;
-            let (tier, request_type) = {
-                let mut rng = rand::rng();
-                classify(query, inputs.provider, &learned, &mut rng)
-            };
+            let (tier, request_type) =
+                if let Some((runtime, context)) = semantic.filter(|(c, _)| c.experimental) {
+                    use rand::SeedableRng;
+                    let input = classifier::ClassifyInput { query, context };
+                    let outcome = runtime.run(&input).await;
+                    let result = outcome.classification;
+                    let mut rng = rand::rngs::StdRng::seed_from_u64(decision::routing_seed(
+                        runtime.seed,
+                        inputs.provider,
+                        &input,
+                    ));
+                    let tier = classifier::pick_model_thompson_with_complexity(
+                        &learned,
+                        result.request_type,
+                        result.complexity,
+                        classifier::DEFAULT_W_QUALITY,
+                        classifier::DEFAULT_W_COST,
+                        &mut rng,
+                    );
+                    tracing::info!(
+                        request_type = result.request_type.as_str(),
+                        complexity = result.complexity,
+                        confidence = result.confidence,
+                        fallback = outcome.fallback.map(|r| r.as_str()),
+                        "semantic classifier decision"
+                    );
+                    (tier, result.request_type)
+                } else {
+                    let mut rng = rand::rng();
+                    classify(query, inputs.provider, &learned, &mut rng)
+                };
             // Per-config tier override takes priority over the global registry.
             let config_override = match tier {
                 Tier::Tier1 => inputs.tier1_model.map(str::to_string),

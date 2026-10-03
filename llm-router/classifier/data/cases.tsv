@@ -1,0 +1,153 @@
+split	family	request_type	complexity	query	context
+train	csv-parser	code_generation	2	Write a Python function that reads a CSV and returns the rows.	Use the standard library; no filtering or validation is needed.
+train	sql-migration	code_generation	3	Create a reversible migration to add a nullable account status and backfill active customers.	PostgreSQL; existing customers are marked active in a separate subscriptions table.
+train	comment-edit	code_generation	1	Correct the spelling in this code comment.	The comment is '# retrun the cached item'.
+train	cache-bug	code_generation	4	Fix the stale reads in our concurrent cache implementation.	Readers overlap invalidation and rebuilding; preserve thread safety and add regression coverage.
+train	json-config	code_generation	1	Change the timeout from 30 to 45 in this JSON config.	Only the timeout property should change.
+train	trace-function	code_understanding	2	Explain what this function does.	def double(x): return x * 2
+train	ownership-review	code_understanding	3	Review this Rust ownership error and explain why the borrow outlives the object.	Do not rewrite the code; explain the lifetime relationship and diagnostics.
+train	read-stack	code_understanding	3	Diagnose the likely source of this stack trace without making edits.	The request handler calls an async helper that returns an unawaited coroutine.
+train	inspect-query	code_understanding	2	Walk me through this SQL query.	SELECT customer_id, count(*) FROM orders GROUP BY customer_id
+train	comment-meaning	code_understanding	1	What does the comment '# cache hit' mean here?	The function returns a value from an in-memory dictionary.
+train	queue-design	technical_design	4	Design a durable task queue with retries and worker failures.	Consider idempotency, visibility timeouts, ordering, and horizontal scaling.
+train	schema-choice	technical_design	3	Should orders and payments share a table or use separate tables?	We need partial refunds and multiple payment attempts per order.
+train	api-shape	technical_design	2	Propose a simple REST API for a read-only book catalog.	Two endpoints: list books and fetch one book.
+train	partition-design	technical_design	5	Design a geo-distributed inventory service that prevents overselling during partitions.	Address consistency, regional failover, reservations, and recovery validation.
+train	storage-tradeoff	technical_design	3	Compare relational and document storage for this application.	Customers have nested profiles but billing requires transactions across accounts.
+train	coin-probability	analytical_reasoning	2	Calculate the probability of two heads from two independent fair coin tosses.	Show a short derivation.
+train	arithmetic	analytical_reasoning	1	What is 17 plus 8?	
+train	proof-synthesis	analytical_reasoning	5	Prove the proposed randomized algorithm terminates and bound its expected running time.	Retries depend on prior state; justify the probability assumptions and account for adversarial inputs.
+train	trend-analysis	analytical_reasoning	3	Analyze whether sales growth is driven by price or volume.	Revenue rose 20%, units rose 5%; calculate the implied price contribution.
+train	causal-analysis	analytical_reasoning	4	Evaluate whether the feature launch caused the observed retention increase.	There was a simultaneous marketing campaign, unequal treatment groups, and incomplete follow-up.
+train	outage-email	writing	2	Draft an email to customers about today's outage.	Keep it under 100 words; acknowledge impact and say recovery is complete.
+train	prose-summary	writing	2	Summarize this architecture document for our sales team.	Focus on customer benefits rather than implementation details.
+train	translate-prose	writing	1	Translate 'Good morning' into Spanish.	
+train	policy-rewrite	writing	3	Rewrite this policy so employees can understand it while preserving its exceptions.	The original has five overlapping eligibility rules and two exclusions.
+train	python-poem	writing	2	Write a short poem about a Python snake.	It lives in a garden; this is about the animal.
+train	capital-fact	factual_lookup	1	What is the capital of Kenya?	
+train	term-definition	factual_lookup	1	Define idempotency in one sentence.	
+train	inventor-fact	factual_lookup	1	Who invented the World Wide Web?	
+train	api-fact	factual_lookup	1	Which HTTP status code means Not Found?	
+train	language-fact	factual_lookup	1	What does HTML stand for?	
+train	greeting	general	1	Hello there!	
+train	thanks	general	1	Thank you, have a nice evening.	
+train	casual-chat	general	1	How's it going?	No concrete task is requested.
+train	farewell	general	1	Goodbye for now.	
+train	unclear	general	1	Hmm, maybe later.	There is no earlier task or referent.
+validation	css-edit	code_generation	1	Set this CSS button's border radius to 8px.	The only requested modification is the numeric radius value.
+validation	pagination-impl	code_generation	3	Implement cursor pagination with stable ordering and an integration test.	Existing data can change between pages; use created_at and id as the cursor.
+validation	transaction-fix	code_generation	5	Repair our cross-region transaction coordinator after ambiguous commit failures.	Handle duplicate delivery, participant recovery, concurrency and fault-injection tests.
+validation	regex-explain	code_understanding	2	What does this regular expression match?	^[A-Z]{2}[0-9]{4}$
+validation	async-inspection	code_understanding	3	Explain why this asynchronous test hangs.	A task waits on a queue whose producer exited before sending its sentinel. No code change requested.
+validation	algorithm-review	code_understanding	4	Review this lock-free stack for correctness under memory reclamation.	Explain ABA risks and whether the existing hazard pointer protocol is valid.
+validation	webhook-design	technical_design	3	How should we design delivery acknowledgements for webhooks?	Consumers are external; retries and duplicate callbacks are expected.
+validation	simple-schema	technical_design	2	Suggest a database schema for a personal recipe collection.	Recipes have ingredients and tags; one user only.
+validation	identity-architecture	technical_design	5	Design tenant isolation across our identity, storage, and event systems.	Include shared infrastructure, incident containment, migration and verification.
+validation	discount-math	analytical_reasoning	1	A 100 rupee item has a 10% discount. What is the price?	
+validation	deduction	analytical_reasoning	3	Determine which meeting slot satisfies everyone's constraints.	A cannot do mornings, B is free only Tuesday, C is busy after 3pm; slots are Tuesday 11am, Tuesday 2pm and Wednesday 2pm.
+validation	experiment-analysis	analytical_reasoning	4	Assess whether this A/B result is convincing.	Treatment assignment was biased, sample sizes differ and several metrics were tested.
+validation	technical-rewrite	writing	2	Rewrite this explanation of SQL joins for a twelve-year-old.	Use an analogy and keep it under one paragraph.
+validation	copy-edit	writing	1	Correct the spelling in this sentence: 'The architechture is ready.'	This is prose in an email, not source code.
+validation	report-synthesis	writing	4	Write one consistent report from these conflicting interviews.	Reconcile terminology, attribute disagreements, preserve uncertainty and cover twelve themes.
+validation	protocol-definition	factual_lookup	1	What is DNS?	A brief definition is enough.
+validation	geography-fact	factual_lookup	1	Which continent is Peru in?	
+validation	file-format-fact	factual_lookup	1	What does CSV stand for?	
+validation	morning-chat	general	1	Good morning!	
+validation	acknowledgement	general	1	Okay, understood.	The prior answer was informational; no follow-up action requested.
+validation	weekend-chat	general	1	Hope you had a nice weekend.	
+test	toml-edit	code_generation	1	Replace port 8080 with 8081 in this TOML file.	No other changes are needed.
+test	followup-code	code_generation	2	Yes, do that.	Assistant proposed adding a null check to the supplied JavaScript function. User now approves the edit.
+test	cli-implementation	code_generation	3	Build a CLI that merges logs by timestamp and reports malformed entries.	Support two input formats, bounded memory and deterministic tests.
+test	distributed-debug	code_generation	5	Fix duplicate financial postings during failover and prove retries are safe.	Several services share a ledger; there are partial writes, replays and overlapping recovery workers.
+test	followup-explain	code_understanding	2	Explain that part again.	The prior answer described the recursion in the supplied tree traversal function.
+test	branch-explanation	code_understanding	1	What happens when x is zero here?	The code is: if x == 0: return 'empty'; else: return 'filled'.
+test	complexity-code-review	code_understanding	3	Analyze the time complexity of this implementation.	There is an outer loop over n elements and an inner binary search over a sorted list of n elements; no rewrite requested.
+test	memory-model	code_understanding	4	Explain whether this memory ordering is sufficient.	Two threads publish and consume a pointer with relaxed atomics; the pointed-to object is initialized before publishing.
+test	followup-design	technical_design	3	What would you recommend instead?	We are choosing between polling and event-driven updates for an inventory API; discuss the design trade-offs.
+test	cache-architecture	technical_design	3	Suggest a caching strategy for a frequently read product catalog.	Discuss invalidation and freshness; implementation is not requested.
+test	local-tool-design	technical_design	2	Outline a simple architecture for a single-user notes app.	It runs locally with no accounts, synchronization or collaboration.
+test	consensus-design	technical_design	5	Design a replicated scheduler that keeps correct ownership under network partitions.	Explain fencing, election, clock assumptions, crash recovery and a validation plan.
+test	plain-proof	analytical_reasoning	4	Prove that every finite integral domain is a field.	Give a complete mathematical argument.
+test	mental-math	analytical_reasoning	1	Compute 6 times 7.	
+test	word-problem	analytical_reasoning	2	A train travels 90 kilometers in 90 minutes. What is its average speed in km/h?	
+test	multi-source-reasoning	analytical_reasoning	4	Which of these explanations best accounts for the discrepancy?	Two experiments disagree; measurements have different denominators, missing records and selection effects. Evaluate competing hypotheses.
+test	technical-poetry	writing	2	Compose a playful poem about databases falling in love.	This is creative writing; no database implementation is requested.
+test	followup-writing	writing	1	Make it friendlier.	The previous message is a two-sentence invitation email.
+test	code-to-prose	writing	3	Turn these developer notes into release notes for customers.	Summarize six changes, group related items and remove internal jargon while retaining limitations.
+test	complex-editing	writing	4	Rewrite the grant application to align its narrative across all sections.	The methods, budget and goals conflict; preserve cited evidence and address the reviewer's objections.
+test	python-fact	factual_lookup	1	Who created the Python programming language?	Only the person's name is needed.
+test	calendar-fact	factual_lookup	1	How many days are there in a leap year?	
+test	terminology-fact	factual_lookup	1	What does RAM stand for?	
+test	fixed-fact	factual_lookup	1	Name the largest ocean on Earth.	
+test	simple-wave	general	1	Hey!	
+test	satisfied-chat	general	1	That's all, thanks.	The task is complete.
+test	casual-status	general	1	Nice to see you again.	
+test	nonaction	general	1	Never mind, let's leave it.	The user cancels the prior action; no new task is requested.
+train	yaml-port-edit	code_generation	1	Change port 3000 to 3001 in this YAML file.	Only update the numeric value; no explanation is needed.
+train	env-flag-edit	code_generation	1	Set FEATURE_LOGIN to true in this env file.	Keep every other key unchanged.
+train	toml-timeout-edit	code_generation	1	Update the timeout_ms value from 500 to 750 in this TOML config.	This is a configuration edit, not a factual question.
+train	followup-apply-patch	code_generation	2	Yes, apply that patch.	The assistant proposed adding validation to the displayed TypeScript function.
+train	followup-implement-option	code_generation	2	Let's implement the second option.	The second option was adding a retry wrapper around the API client.
+train	test-fix-approval	code_generation	3	Go ahead and fix the failing unit test.	The failure is in the supplied repository code; update code and tests.
+train	ledger-retry-fix	code_generation	5	Fix duplicate invoice events during regional failover and make retries idempotent.	Workers can replay messages, partially commit database rows and restart mid-flight.
+train	concurrent-index-fix	code_generation	4	Repair the race in this shared search index refresh path.	Readers must never see a partially rebuilt index; include regression coverage.
+train	config-question-fact	factual_lookup	1	What is TOML used for?	A short factual definition is enough; do not edit a file.
+train	port-definition-fact	factual_lookup	1	In networking, what is a port?	Answer as a definition, not as a config change.
+train	leap-year-days	factual_lookup	1	How many days are in a leap year?	Only the number is needed.
+train	calendar-common-year	factual_lookup	1	How many days are in a common year?	Answer directly.
+train	proof-finite-group	analytical_reasoning	4	Prove that every subgroup of a cyclic group is cyclic.	Give a complete mathematical argument.
+train	proof-modular-inverse	analytical_reasoning	3	Show why a has a multiplicative inverse modulo p when p is prime and a is not divisible by p.	Use number theory reasoning, not a lookup.
+train	deduce-constraint-order	analytical_reasoning	3	Find the only valid deployment order from these constraints.	A must happen before C, B cannot be first, and D must follow C.
+train	experiment-confounder	analytical_reasoning	4	Decide whether the retention lift is likely caused by the pricing change.	The cohort also changed onboarding and marketing spend during the same week.
+train	cache-architecture-plan	technical_design	3	Design a cache strategy for a product catalog with frequent reads and occasional updates.	Discuss invalidation, freshness and failure behavior; no code is requested.
+train	replicated-ledger-design	technical_design	5	Design a replicated ledger service that stays correct under partitions.	Explain quorum choices, fencing, recovery and verification.
+train	notes-app-architecture	technical_design	2	Sketch the architecture for a local-only notes application.	One user, no sync, no accounts and no collaboration.
+train	webhook-tradeoff	technical_design	3	Compare polling and webhooks for inventory updates.	Recommend an approach and explain the tradeoffs.
+train	code-explain-followup	code_understanding	2	Explain that loop again.	The prior answer walked through the supplied Python function.
+train	zero-branch-reading	code_understanding	1	What happens when count is zero in this branch?	The code is: if count == 0: return [] else: return items[:count].
+train	big-o-existing-code	code_understanding	3	Analyze the runtime complexity of this existing implementation.	It has a loop over n rows and a hash-map lookup inside the loop.
+train	atomic-order-review	code_understanding	4	Explain whether these acquire and release operations are enough.	The existing code publishes a pointer from one thread and reads it from another.
+train	friendly-followup-writing	writing	1	Make it warmer.	The previous draft is a short invitation email.
+train	tone-followup-writing	writing	1	Make that sound more professional.	The previous message is a two-sentence Slack announcement.
+train	customer-release-notes	writing	3	Turn these engineering notes into customer-facing release notes.	Group related changes and remove internal implementation details.
+train	grant-narrative-rewrite	writing	4	Rewrite this proposal so the goals, methods and budget tell one coherent story.	Preserve evidence and address two reviewer objections.
+train	greeting-after-task	general	1	Great, thanks.	No new task is requested after the completed answer.
+train	cancel-action	general	1	Never mind, do not change it.	The user cancels the pending edit and asks for nothing else.
+train	casual-checkin	general	1	How are you doing today?	No technical or writing task is requested.
+train	empty-reference	general	1	Do the thing we talked about.	There is no usable prior context for what thing means.
+validation	json-value-edit	code_generation	1	Change retries from 2 to 3 in this JSON snippet.	Update only the value.
+validation	followup-accepted-code	code_generation	2	Yes, make that change.	The assistant proposed replacing the handwritten parser with the helper function.
+validation	replay-bug-fix	code_generation	5	Fix duplicate payouts when the queue redelivers messages during failover.	There are partial commits, overlapping workers and external payment side effects.
+validation	explain-followup-loop	code_understanding	2	Can you explain that line again?	The previous answer discussed the supplied JavaScript reducer.
+validation	existing-query-cost	code_understanding	3	What is the time complexity of this query plan?	The existing plan scans orders and uses an index lookup for each customer.
+validation	pointer-ordering-review	code_understanding	4	Check whether this lock-free queue's memory ordering is valid.	Explain the existing code; do not rewrite it.
+validation	cache-design-hard	technical_design	3	Recommend a cache design for user profile reads.	Profiles change occasionally; discuss invalidation and freshness rather than writing code.
+validation	failover-architecture	technical_design	5	Design failover for a multi-region scheduler.	Discuss ownership, fencing, split-brain prevention and recovery checks.
+validation	simple-local-tool-design	technical_design	2	Outline a simple design for a personal bookmark manager.	Local storage only; one user.
+validation	proof-prime-field	analytical_reasoning	4	Prove that arithmetic modulo a prime has multiplicative inverses for nonzero elements.	Give the reasoning, not just a fact.
+validation	constraint-selection	analytical_reasoning	3	Choose the only valid release slot from these constraints.	Backend cannot deploy Friday, mobile must deploy after backend, and support is available Tuesday.
+validation	quick-calendar-fact	factual_lookup	1	How many months are in a year?	Only the number is needed.
+validation	file-format-definition	factual_lookup	1	What is TOML?	A brief definition is enough.
+validation	friendly-email-followup	writing	1	Make this scheduling email sound warmer.	The previous text is a short scheduling email.
+validation	technical-notes-to-blog	writing	3	Turn these implementation notes into a customer blog paragraph.	Keep limitations but remove internal jargon.
+validation	no-new-task-thanks	general	1	Perfect, thanks!	The user is acknowledging completion.
+validation	no-reference-general	general	1	Maybe we can do that later.	No current task is requested.
+train	api-symbol-fact	factual_lookup	1	What does Vec::pop return in Rust?	Answer in one sentence; no codebase context is provided.
+train	stdlib-method-fact	factual_lookup	1	What does dict.get do in Python?	Give a short factual explanation.
+train	function-name-definition	factual_lookup	1	What does Promise.allSettled mean in JavaScript?	Answer as an API definition, not as code review.
+train	warm-notification-rewrite	writing	2	Rewrite this appointment reminder to sound warmer while keeping the date unchanged.	The message is for one customer and must preserve Friday at 3pm.
+train	candidate-email-rewrite	writing	2	Make this interview email friendlier without changing the time or location.	Original: Your interview is Monday at 9am in Room 4.
+train	release-bullets-customer	writing	3	Summarize these release notes in three bullets for a nontechnical customer.	Do not mention ticket IDs; mention that exports may pause briefly.
+train	parser-implementation	code_generation	3	Implement a parser for semicolon-separated integers and report the first invalid field index.	Rust 2021, whitespace is allowed, empty fields are invalid and tests are required.
+train	validation-parser-code	code_generation	3	Write a parser that accepts newline-separated IDs and rejects blanks with line numbers.	Use the standard library and include unit tests.
+train	comment-keyword-edit	code_generation	1	Do not redesign the feature; only change FIXME to NOTE in this comment.	The line is '// FIXME: redesign billing after launch'.
+train	auth-log-reasoning	analytical_reasoning	5	Diagnose why users sometimes lose sessions after token refresh and reconstruct two possible interleavings.	Use the logs to reason about uncertainty, ordering and cache behavior; do not implement the fix.
+train	reconciliation-reasoning	analytical_reasoning	4	Investigate duplicate charges and missing refunds by walking through the event timeline.	State what can be inferred, identify unsafe retry assumptions and propose repair principles.
+train	timeout-causality	analytical_reasoning	4	Analyze whether the timeout proves the operation failed.	There are delayed webhooks, retry keys and inconsistent local status rows.
+validation	code-api-fact	factual_lookup	1	What does Result::unwrap do in Rust?	Answer as a direct API fact.
+validation	notification-tone-writing	writing	2	Rewrite this reminder to be warmer but keep Tuesday 11am unchanged.	It goes to one candidate.
+validation	customer-summary-bullets	writing	3	Summarize these product changes in three bullets for customers.	Remove internal IDs and keep the deployment limitation.
+validation	delimited-parser-implementation	code_generation	3	Implement a parser for pipe-separated signed integers and return the first bad index.	Whitespace is allowed; empty fields are errors; add tests.
+validation	minimal-comment-edit	code_generation	1	Only replace TODO with NOTE in this comment, despite the word redesign.	The line is '// TODO: redesign cache keys later'.
+validation	session-race-analysis	analytical_reasoning	5	Diagnose intermittent session loss by reconstructing two refresh races from logs.	Identify evidence, uncertainty, ordering assumptions and why a TTL change is insufficient.
+validation	refund-event-analysis	analytical_reasoning	4	Investigate missing refunds and duplicate charges from an event timeline.	Separate what is known from what is uncertain and propose invariants.

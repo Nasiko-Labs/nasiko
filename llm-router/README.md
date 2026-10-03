@@ -15,6 +15,11 @@ promotable to a standalone binary later without logic changes.
 
 ## Request path
 
+The optional P2 request classifier predicts request type, complexity and confidence
+using a trained local CPU model or a hosted decision endpoint. Regex remains the
+default. See [classifier setup and configuration](classifier/README.md) and
+[measured results and limitations](classifier/RESULTS.md).
+
 ```
 agent (OpenAI SDK)
   → POST {OPENAI_BASE_URL}/chat/completions   Authorization: Bearer <nasiko-JWT>

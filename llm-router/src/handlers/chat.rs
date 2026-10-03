@@ -45,6 +45,7 @@ pub(crate) struct RoutedRequest {
 /// gathered once per format-specific handler since each wire format shapes its transcript
 /// differently (chat.rs's IR `Message` list vs. responses.rs's Responses-API `input` array).
 pub(crate) struct RequestSignals {
+    pub context: Option<String>,
     /// Latest user turn's text — the classifier's `query` input (Level 3) for every agent,
     /// and (for a coding-agent integration) also the `conv_id` anchor for *this* turn.
     pub query: Option<String>,
@@ -193,6 +194,11 @@ async fn chat_core(
         model: req.model.as_deref(),
     };
     let signals = RequestSignals {
+        context: if ctx.request_classifier.experimental {
+            routing::decision::conversation_context(&req.messages)
+        } else {
+            None
+        },
         query: routing::latest_user_query(&req.messages),
         turn_ordinal: routing::user_turn_ordinal(&req.messages),
         is_tool_continuation: routing::is_tool_continuation(&req.messages),
@@ -467,7 +473,7 @@ pub(crate) async fn resolve_routed_request(
             Some(attribution.source),
         )
     };
-    let decision = routing::route_model(
+    let decision = routing::route_model_with_classifier(
         ctx.router_cache.as_ref(),
         ctx.tier_registry.as_ref(),
         ctx.cell_store.as_ref(),
@@ -484,6 +490,8 @@ pub(crate) async fn resolve_routed_request(
             signals: &boundary,
             query: signals.query.as_deref(),
         },
+        ctx.request_classifier.as_ref(),
+        signals.context.as_deref(),
     )
     .await;
     tracing::info!(
@@ -957,6 +965,7 @@ mod tests {
             tier_registry: Arc::new(NoTiers),
             cell_store: Arc::new(crate::routing::InMemoryCellStore::new()),
             salience_gate: Arc::new(crate::routing::AllowAllGate),
+            request_classifier: Arc::new(crate::routing::decision::ClassifierRuntime::default()),
             pricing: Arc::new(nasiko_pricing::PricingEngine::new(
                 PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
             )),
@@ -1440,6 +1449,7 @@ mod tests {
                 model: None,
             },
             RequestSignals {
+                context: None,
                 query: Some("write a function that reverses a string".into()),
                 turn_ordinal: 1,
                 is_tool_continuation: false,
@@ -1486,6 +1496,7 @@ mod tests {
                 model: None,
             },
             RequestSignals {
+                context: None,
                 query: Some("write a function that reverses a string".into()),
                 turn_ordinal: 1,
                 is_tool_continuation: false,

@@ -11,6 +11,7 @@
 //! `SECRETS_ENCRYPTION_KEY`, `PLATFORM_OPENAI_API_KEY`, provider bases, …).
 
 use std::time::Duration;
+mod config;
 
 use nasiko_llm_router::{LlmRouterCtx, router};
 use tracing_subscriber::EnvFilter;
@@ -35,7 +36,11 @@ async fn main() {
         .expect("failed to build http client");
 
     // Same context + routes as the in-server mount; gateway config from env.
-    let ctx = LlmRouterCtx::from_shared(db, http);
+    let mut ctx = LlmRouterCtx::from_shared(db, http);
+    let classifier =
+        config::ClassifierConfig::from_env().expect("invalid classifier configuration");
+    classifier.runtime.prepare(classifier.load_timeout).await;
+    ctx.request_classifier = classifier.runtime;
     let app = router(ctx).route("/health", axum::routing::get(|| async { "ok" }));
 
     let listener = tokio::net::TcpListener::bind(&bind)

@@ -1,0 +1,367 @@
+{
+  "schema_version": "nasiko-classifier-dev-v1",
+  "purpose": "Authored synthetic development data; not evidence of private-set performance.",
+  "source_sha256": "9a8de7f039916e03e101564a2c527d2159d83f4e92837d65ff9c41a754fba9c1",
+  "examples": [
+    {
+      "family": "css-edit",
+      "request_type": "code_generation",
+      "complexity": 1,
+      "query": "Set this CSS button's border radius to 8px.",
+      "context": "The only requested modification is the numeric radius value.",
+      "id": "validation-css-edit"
+    },
+    {
+      "family": "pagination-impl",
+      "request_type": "code_generation",
+      "complexity": 3,
+      "query": "Implement cursor pagination with stable ordering and an integration test.",
+      "context": "Existing data can change between pages; use created_at and id as the cursor.",
+      "id": "validation-pagination-impl"
+    },
+    {
+      "family": "transaction-fix",
+      "request_type": "code_generation",
+      "complexity": 5,
+      "query": "Repair our cross-region transaction coordinator after ambiguous commit failures.",
+      "context": "Handle duplicate delivery, participant recovery, concurrency and fault-injection tests.",
+      "id": "validation-transaction-fix"
+    },
+    {
+      "family": "regex-explain",
+      "request_type": "code_understanding",
+      "complexity": 2,
+      "query": "What does this regular expression match?",
+      "context": "^[A-Z]{2}[0-9]{4}$",
+      "id": "validation-regex-explain"
+    },
+    {
+      "family": "async-inspection",
+      "request_type": "code_understanding",
+      "complexity": 3,
+      "query": "Explain why this asynchronous test hangs.",
+      "context": "A task waits on a queue whose producer exited before sending its sentinel. No code change requested.",
+      "id": "validation-async-inspection"
+    },
+    {
+      "family": "algorithm-review",
+      "request_type": "code_understanding",
+      "complexity": 4,
+      "query": "Review this lock-free stack for correctness under memory reclamation.",
+      "context": "Explain ABA risks and whether the existing hazard pointer protocol is valid.",
+      "id": "validation-algorithm-review"
+    },
+    {
+      "family": "webhook-design",
+      "request_type": "technical_design",
+      "complexity": 3,
+      "query": "How should we design delivery acknowledgements for webhooks?",
+      "context": "Consumers are external; retries and duplicate callbacks are expected.",
+      "id": "validation-webhook-design"
+    },
+    {
+      "family": "simple-schema",
+      "request_type": "technical_design",
+      "complexity": 2,
+      "query": "Suggest a database schema for a personal recipe collection.",
+      "context": "Recipes have ingredients and tags; one user only.",
+      "id": "validation-simple-schema"
+    },
+    {
+      "family": "identity-architecture",
+      "request_type": "technical_design",
+      "complexity": 5,
+      "query": "Design tenant isolation across our identity, storage, and event systems.",
+      "context": "Include shared infrastructure, incident containment, migration and verification.",
+      "id": "validation-identity-architecture"
+    },
+    {
+      "family": "discount-math",
+      "request_type": "analytical_reasoning",
+      "complexity": 1,
+      "query": "A 100 rupee item has a 10% discount. What is the price?",
+      "context": "",
+      "id": "validation-discount-math"
+    },
+    {
+      "family": "deduction",
+      "request_type": "analytical_reasoning",
+      "complexity": 3,
+      "query": "Determine which meeting slot satisfies everyone's constraints.",
+      "context": "A cannot do mornings, B is free only Tuesday, C is busy after 3pm; slots are Tuesday 11am, Tuesday 2pm and Wednesday 2pm.",
+      "id": "validation-deduction"
+    },
+    {
+      "family": "experiment-analysis",
+      "request_type": "analytical_reasoning",
+      "complexity": 4,
+      "query": "Assess whether this A/B result is convincing.",
+      "context": "Treatment assignment was biased, sample sizes differ and several metrics were tested.",
+      "id": "validation-experiment-analysis"
+    },
+    {
+      "family": "technical-rewrite",
+      "request_type": "writing",
+      "complexity": 2,
+      "query": "Rewrite this explanation of SQL joins for a twelve-year-old.",
+      "context": "Use an analogy and keep it under one paragraph.",
+      "id": "validation-technical-rewrite"
+    },
+    {
+      "family": "copy-edit",
+      "request_type": "writing",
+      "complexity": 1,
+      "query": "Correct the spelling in this sentence: 'The architechture is ready.'",
+      "context": "This is prose in an email, not source code.",
+      "id": "validation-copy-edit"
+    },
+    {
+      "family": "report-synthesis",
+      "request_type": "writing",
+      "complexity": 4,
+      "query": "Write one consistent report from these conflicting interviews.",
+      "context": "Reconcile terminology, attribute disagreements, preserve uncertainty and cover twelve themes.",
+      "id": "validation-report-synthesis"
+    },
+    {
+      "family": "protocol-definition",
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "query": "What is DNS?",
+      "context": "A brief definition is enough.",
+      "id": "validation-protocol-definition"
+    },
+    {
+      "family": "geography-fact",
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "query": "Which continent is Peru in?",
+      "context": "",
+      "id": "validation-geography-fact"
+    },
+    {
+      "family": "file-format-fact",
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "query": "What does CSV stand for?",
+      "context": "",
+      "id": "validation-file-format-fact"
+    },
+    {
+      "family": "morning-chat",
+      "request_type": "general",
+      "complexity": 1,
+      "query": "Good morning!",
+      "context": "",
+      "id": "validation-morning-chat"
+    },
+    {
+      "family": "acknowledgement",
+      "request_type": "general",
+      "complexity": 1,
+      "query": "Okay, understood.",
+      "context": "The prior answer was informational; no follow-up action requested.",
+      "id": "validation-acknowledgement"
+    },
+    {
+      "family": "weekend-chat",
+      "request_type": "general",
+      "complexity": 1,
+      "query": "Hope you had a nice weekend.",
+      "context": "",
+      "id": "validation-weekend-chat"
+    },
+    {
+      "family": "json-value-edit",
+      "request_type": "code_generation",
+      "complexity": 1,
+      "query": "Change retries from 2 to 3 in this JSON snippet.",
+      "context": "Update only the value.",
+      "id": "validation-json-value-edit"
+    },
+    {
+      "family": "followup-accepted-code",
+      "request_type": "code_generation",
+      "complexity": 2,
+      "query": "Yes, make that change.",
+      "context": "The assistant proposed replacing the handwritten parser with the helper function.",
+      "id": "validation-followup-accepted-code"
+    },
+    {
+      "family": "replay-bug-fix",
+      "request_type": "code_generation",
+      "complexity": 5,
+      "query": "Fix duplicate payouts when the queue redelivers messages during failover.",
+      "context": "There are partial commits, overlapping workers and external payment side effects.",
+      "id": "validation-replay-bug-fix"
+    },
+    {
+      "family": "explain-followup-loop",
+      "request_type": "code_understanding",
+      "complexity": 2,
+      "query": "Can you explain that line again?",
+      "context": "The previous answer discussed the supplied JavaScript reducer.",
+      "id": "validation-explain-followup-loop"
+    },
+    {
+      "family": "existing-query-cost",
+      "request_type": "code_understanding",
+      "complexity": 3,
+      "query": "What is the time complexity of this query plan?",
+      "context": "The existing plan scans orders and uses an index lookup for each customer.",
+      "id": "validation-existing-query-cost"
+    },
+    {
+      "family": "pointer-ordering-review",
+      "request_type": "code_understanding",
+      "complexity": 4,
+      "query": "Check whether this lock-free queue's memory ordering is valid.",
+      "context": "Explain the existing code; do not rewrite it.",
+      "id": "validation-pointer-ordering-review"
+    },
+    {
+      "family": "cache-design-hard",
+      "request_type": "technical_design",
+      "complexity": 3,
+      "query": "Recommend a cache design for user profile reads.",
+      "context": "Profiles change occasionally; discuss invalidation and freshness rather than writing code.",
+      "id": "validation-cache-design-hard"
+    },
+    {
+      "family": "failover-architecture",
+      "request_type": "technical_design",
+      "complexity": 5,
+      "query": "Design failover for a multi-region scheduler.",
+      "context": "Discuss ownership, fencing, split-brain prevention and recovery checks.",
+      "id": "validation-failover-architecture"
+    },
+    {
+      "family": "simple-local-tool-design",
+      "request_type": "technical_design",
+      "complexity": 2,
+      "query": "Outline a simple design for a personal bookmark manager.",
+      "context": "Local storage only; one user.",
+      "id": "validation-simple-local-tool-design"
+    },
+    {
+      "family": "proof-prime-field",
+      "request_type": "analytical_reasoning",
+      "complexity": 4,
+      "query": "Prove that arithmetic modulo a prime has multiplicative inverses for nonzero elements.",
+      "context": "Give the reasoning, not just a fact.",
+      "id": "validation-proof-prime-field"
+    },
+    {
+      "family": "constraint-selection",
+      "request_type": "analytical_reasoning",
+      "complexity": 3,
+      "query": "Choose the only valid release slot from these constraints.",
+      "context": "Backend cannot deploy Friday, mobile must deploy after backend, and support is available Tuesday.",
+      "id": "validation-constraint-selection"
+    },
+    {
+      "family": "quick-calendar-fact",
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "query": "How many months are in a year?",
+      "context": "Only the number is needed.",
+      "id": "validation-quick-calendar-fact"
+    },
+    {
+      "family": "file-format-definition",
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "query": "What is TOML?",
+      "context": "A brief definition is enough.",
+      "id": "validation-file-format-definition"
+    },
+    {
+      "family": "friendly-email-followup",
+      "request_type": "writing",
+      "complexity": 1,
+      "query": "Make this scheduling email sound warmer.",
+      "context": "The previous text is a short scheduling email.",
+      "id": "validation-friendly-email-followup"
+    },
+    {
+      "family": "technical-notes-to-blog",
+      "request_type": "writing",
+      "complexity": 3,
+      "query": "Turn these implementation notes into a customer blog paragraph.",
+      "context": "Keep limitations but remove internal jargon.",
+      "id": "validation-technical-notes-to-blog"
+    },
+    {
+      "family": "no-new-task-thanks",
+      "request_type": "general",
+      "complexity": 1,
+      "query": "Perfect, thanks!",
+      "context": "The user is acknowledging completion.",
+      "id": "validation-no-new-task-thanks"
+    },
+    {
+      "family": "no-reference-general",
+      "request_type": "general",
+      "complexity": 1,
+      "query": "Maybe we can do that later.",
+      "context": "No current task is requested.",
+      "id": "validation-no-reference-general"
+    },
+    {
+      "family": "code-api-fact",
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "query": "What does Result::unwrap do in Rust?",
+      "context": "Answer as a direct API fact.",
+      "id": "validation-code-api-fact"
+    },
+    {
+      "family": "notification-tone-writing",
+      "request_type": "writing",
+      "complexity": 2,
+      "query": "Rewrite this reminder to be warmer but keep Tuesday 11am unchanged.",
+      "context": "It goes to one candidate.",
+      "id": "validation-notification-tone-writing"
+    },
+    {
+      "family": "customer-summary-bullets",
+      "request_type": "writing",
+      "complexity": 3,
+      "query": "Summarize these product changes in three bullets for customers.",
+      "context": "Remove internal IDs and keep the deployment limitation.",
+      "id": "validation-customer-summary-bullets"
+    },
+    {
+      "family": "delimited-parser-implementation",
+      "request_type": "code_generation",
+      "complexity": 3,
+      "query": "Implement a parser for pipe-separated signed integers and return the first bad index.",
+      "context": "Whitespace is allowed; empty fields are errors; add tests.",
+      "id": "validation-delimited-parser-implementation"
+    },
+    {
+      "family": "minimal-comment-edit",
+      "request_type": "code_generation",
+      "complexity": 1,
+      "query": "Only replace TODO with NOTE in this comment, despite the word redesign.",
+      "context": "The line is '// TODO: redesign cache keys later'.",
+      "id": "validation-minimal-comment-edit"
+    },
+    {
+      "family": "session-race-analysis",
+      "request_type": "analytical_reasoning",
+      "complexity": 5,
+      "query": "Diagnose intermittent session loss by reconstructing two refresh races from logs.",
+      "context": "Identify evidence, uncertainty, ordering assumptions and why a TTL change is insufficient.",
+      "id": "validation-session-race-analysis"
+    },
+    {
+      "family": "refund-event-analysis",
+      "request_type": "analytical_reasoning",
+      "complexity": 4,
+      "query": "Investigate missing refunds and duplicate charges from an event timeline.",
+      "context": "Separate what is known from what is uncertain and propose invariants.",
+      "id": "validation-refund-event-analysis"
+    }
+  ]
+}
