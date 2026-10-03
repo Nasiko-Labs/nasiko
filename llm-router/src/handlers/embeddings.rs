@@ -103,10 +103,14 @@ async fn embeddings_core(
             compress_metadata: None,
             // Embeddings are not chat completions; IP-2 never runs here.
             brevity_metadata: None,
+            // Compaction is a tool-schema transform; embeddings have no tools.
+            compact_metadata: None,
             // Nothing was compressed, so there is nothing to credit to a savings layer.
             compress_bytes: None,
             request_bytes: None,
             platform_paid: resolved.platform_paid,
+            // Embeddings never call `route_model`: there is no tier to choose.
+            routing_metadata: None,
         },
     );
 

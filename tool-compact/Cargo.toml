@@ -1,0 +1,15 @@
+[package]
+name = "nasiko-tool-compact"
+edition.workspace = true
+version.workspace = true
+description = "Compact tool-schema encoding and fail-closed decoding for LLM tool calls."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Structural work is pure JSON: schema rendering, argument validation, call parsing.
+# No IO, no env, no provider code — the router depends on this crate, never the reverse.
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

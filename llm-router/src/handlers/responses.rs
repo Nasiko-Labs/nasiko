@@ -785,9 +785,12 @@ impl AttemptGuard {
                 compress_metadata: None,
                 // /v1/responses does not share chat_core, so IP-1/IP-2 never run here (PRD §9).
                 brevity_metadata: None,
+                // Compaction runs only in chat_core; /v1/responses never compacts tools.
+                compact_metadata: None,
                 // Nothing was compressed, so there is nothing to credit to a savings layer.
                 compress_bytes: None,
                 request_bytes: None,
+                routing_metadata: routed.routing_metadata.clone(),
             }),
         }
     }
@@ -858,8 +861,10 @@ fn log_response_usage(
             // Never compressed: this surface does not go through `chat_core`.
             compress_metadata: None,
             brevity_metadata: None,
+            compact_metadata: None,
             compress_bytes: None,
             request_bytes: None,
+            routing_metadata: routed.routing_metadata,
         },
     );
 }
@@ -1497,6 +1502,7 @@ mod tests {
             resolved: attempt.clone(),
             flow_id: None,
             attribution_source: None,
+            routing_metadata: None,
         };
         let parsed = parse_request(&json!({"input":"hi"})).unwrap();
         let result = translated_attempt(&context, &routed, &attempt, &parsed, Instant::now()).await;
@@ -1881,6 +1887,7 @@ mod tests {
             },
             flow_id: None,
             attribution_source: None,
+            routing_metadata: None,
         };
         let mut guard =
             AttemptGuard::new(&context, &routed, &routed.resolved, Instant::now(), false);

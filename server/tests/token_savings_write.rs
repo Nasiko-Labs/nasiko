@@ -59,6 +59,10 @@ fn record(
         brevity_metadata: None,
         compress_bytes,
         request_bytes,
+        // `nasiko-llm-router::UsageRecord` gained these fields for the compact-tools/classifier
+        // tracks; this test only exercises the pre-existing savings-ledger write, so both are None.
+        compact_metadata: None,
+        routing_metadata: None,
     }
 }
 

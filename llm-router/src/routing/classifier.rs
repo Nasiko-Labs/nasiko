@@ -324,6 +324,169 @@ pub fn classify<R: Rng + ?Sized>(
     (tier, request_type)
 }
 
+// --------------------------------------------------------------------------
+// 5. Model-agnostic classifier interface (cost-aware routing)
+// --------------------------------------------------------------------------
+//
+// The functions above are the router's built-in regex path. The trait below generalizes
+// "classify a request" so an alternative backend (a local model, a hosted API) can be swapped
+// in behind configuration without the router caring which is active. The regex path stays the
+// out-of-the-box default, so nothing needs a network unless a user opts in. Adding this trait
+// does not change routing: `route_model`/`classify` still drive today's behaviour, so the
+// default build is byte-identical — the trait is exercised by the `classifier_eval` example and
+// is ready for the router to adopt behind a `config.rs` flag (the remaining wiring step).
+
+/// Input to a [`RequestClassifier`]: the user query and, optionally, surrounding context
+/// (adjacent files, prior turn, task framing) that a smarter backend can weigh.
+pub struct ClassifyInput<'a> {
+    pub query: &'a str,
+    pub context: Option<&'a str>,
+}
+
+/// A classification decision. `complexity` is on a 1–5 scale (1 = trivial, 5 = hardest);
+/// `confidence` is in `[0, 1]` and expresses how sure the backend is of `request_type`.
+pub struct Classification {
+    pub request_type: RequestType,
+    pub complexity: u8,
+    pub confidence: f32,
+}
+
+/// Why a classification could not be produced. The router treats either variant the same way:
+/// fall back to the regex result and count a fallback.
+#[derive(Debug, thiserror::Error)]
+pub enum ClassifyError {
+    /// The backend exceeded its configured time budget.
+    #[error("classifier timed out")]
+    Timeout,
+    /// The backend failed to load or returned an error (model-load, inference, or network).
+    #[error("classifier backend error: {0}")]
+    Backend(String),
+}
+
+/// A model-agnostic request classifier. `async` because hosted backends make network calls; the
+/// local backends here resolve immediately. Implementations must be cheap to share across tasks
+/// (`Send + Sync`) since the router holds a single `Arc<dyn RequestClassifier>`.
+#[async_trait::async_trait]
+pub trait RequestClassifier: Send + Sync {
+    /// Stable backend name for logs and the eval output (`"regex"`, `"heuristic"`, …).
+    fn name(&self) -> &str;
+
+    /// Classify one request, or return [`ClassifyError`] so the router can fall back.
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError>;
+}
+
+/// The default backend: the router's regex request-type classifier, wrapped to fit the trait.
+///
+/// Fixed decision values, documented because they are a baseline rather than a measurement:
+/// * `complexity` is always [`RegexClassifier::FIXED_COMPLEXITY`] (3, the middle of 1–5) — the
+///   regex path carries no notion of complexity, so it reports the neutral midpoint.
+/// * `confidence` is always [`RegexClassifier::FIXED_CONFIDENCE`] (0.5) — a vote-count match is
+///   a weak signal, so the baseline never claims high confidence.
+pub struct RegexClassifier;
+
+impl RegexClassifier {
+    pub const FIXED_COMPLEXITY: u8 = 3;
+    pub const FIXED_CONFIDENCE: f32 = 0.5;
+}
+
+#[async_trait::async_trait]
+impl RequestClassifier for RegexClassifier {
+    fn name(&self) -> &str {
+        "regex"
+    }
+
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+        Ok(Classification {
+            request_type: classify_request_type(input.query),
+            complexity: Self::FIXED_COMPLEXITY,
+            confidence: Self::FIXED_CONFIDENCE,
+        })
+    }
+}
+
+/// A local, dependency-free comparison backend: it reuses the regex request-type vote but adds a
+/// real complexity estimate and a vote-margin confidence. It is deterministic and needs no
+/// network — a concrete "at least one backend of your choice" to compare against the baseline.
+///
+/// ## Complexity rubric (1–5)
+///
+/// A base from the request type (how much reasoning the *kind* of task usually needs) adjusted
+/// by the combined query+context length (longer, more detailed asks tend to be harder), then
+/// clamped to 1–5:
+/// * base: `FactualLookup`/`General` = 1, `CodeUnderstanding`/`Writing` = 2,
+///   `TechnicalDesign` = 3, `CodeGeneration` = 3, `AnalyticalReasoning` = 4.
+/// * length bump: +1 if combined length ≥ 240 chars, +1 more if ≥ 800 chars; −1 if < 40 chars.
+///
+/// ## Confidence
+///
+/// The share of total category votes won by the chosen type (margin of victory), scaled into
+/// `[0.35, 0.95]`; a `General` default (no votes) reports the floor.
+pub struct HeuristicClassifier;
+
+impl HeuristicClassifier {
+    fn request_type_base(rt: RequestType) -> u8 {
+        match rt {
+            RequestType::FactualLookup | RequestType::General => 1,
+            RequestType::CodeUnderstanding | RequestType::Writing => 2,
+            RequestType::TechnicalDesign | RequestType::CodeGeneration => 3,
+            RequestType::AnalyticalReasoning => 4,
+        }
+    }
+
+    /// Request type plus the per-category vote counts, so confidence can use the margin.
+    fn vote(text: &str) -> (RequestType, usize, usize) {
+        let mut best = RequestType::General;
+        let mut best_score = 0usize;
+        let mut total = 0usize;
+        for (rt, pats) in CATEGORY_PATTERNS.iter() {
+            let score = pats.iter().filter(|p| p.is_match(text)).count();
+            total += score;
+            if score > best_score {
+                best_score = score;
+                best = *rt;
+            }
+        }
+        (best, best_score, total)
+    }
+}
+
+#[async_trait::async_trait]
+impl RequestClassifier for HeuristicClassifier {
+    fn name(&self) -> &str {
+        "heuristic"
+    }
+
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+        let combined_len = input.query.len() + input.context.map_or(0, str::len);
+        let (request_type, best_score, total) = Self::vote(input.query);
+
+        let mut complexity = Self::request_type_base(request_type) as i32;
+        if combined_len >= 240 {
+            complexity += 1;
+        }
+        if combined_len >= 800 {
+            complexity += 1;
+        }
+        if combined_len < 40 {
+            complexity -= 1;
+        }
+        let complexity = complexity.clamp(1, 5) as u8;
+
+        let confidence = if total == 0 {
+            0.35
+        } else {
+            let margin = best_score as f32 / total as f32;
+            (0.35 + 0.60 * margin).clamp(0.35, 0.95)
+        };
+
+        Ok(Classification {
+            request_type,
+            complexity,
+            confidence,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -530,5 +693,58 @@ mod tests {
         );
         assert_eq!(rt, RequestType::CodeGeneration);
         assert!(matches!(tier, Tier::Tier1 | Tier::Tier2 | Tier::Tier3));
+    }
+
+    // --- RequestClassifier backends ---
+
+    #[tokio::test]
+    async fn regex_classifier_reports_fixed_values() {
+        let c = RegexClassifier;
+        let out = c
+            .classify(&ClassifyInput {
+                query: "write a python function that sorts a list",
+                context: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(c.name(), "regex");
+        assert_eq!(out.request_type, RequestType::CodeGeneration);
+        assert_eq!(out.complexity, RegexClassifier::FIXED_COMPLEXITY);
+        assert_eq!(out.confidence, RegexClassifier::FIXED_CONFIDENCE);
+    }
+
+    #[tokio::test]
+    async fn heuristic_classifier_scales_complexity_with_length() {
+        let c = HeuristicClassifier;
+        let short = c
+            .classify(&ClassifyInput { query: "capital of France?", context: None })
+            .await
+            .unwrap();
+        let long_ctx = "x".repeat(900);
+        let long = c
+            .classify(&ClassifyInput {
+                query: "design a distributed rate limiter with trade-offs",
+                context: Some(&long_ctx),
+            })
+            .await
+            .unwrap();
+        assert!(short.complexity <= 2, "short trivial query should be low complexity");
+        assert!(long.complexity >= 4, "long design query should be high complexity");
+        assert!((1..=5).contains(&short.complexity));
+        assert!((0.0..=1.0).contains(&long.confidence));
+    }
+
+    #[tokio::test]
+    async fn classifiers_are_deterministic_for_identical_input() {
+        let c = HeuristicClassifier;
+        let input = ClassifyInput {
+            query: "explain what this function does",
+            context: Some("fn f() {}"),
+        };
+        let a = c.classify(&input).await.unwrap();
+        let b = c.classify(&input).await.unwrap();
+        assert_eq!(a.request_type, b.request_type);
+        assert_eq!(a.complexity, b.complexity);
+        assert_eq!(a.confidence, b.confidence);
     }
 }

@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Nasiko — What we changed</title>
+<style>
+  :root {
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2230; --border:#2d333b;
+    --text:#e6edf3; --muted:#8b949e; --accent:#58a6ff; --green:#3fb950; --red:#f85149;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+    font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+  header { padding:22px 28px; border-bottom:1px solid var(--border); }
+  header h1 { margin:0; font-size:19px; }
+  header .sub { color:var(--muted); font-size:13px; margin-top:4px; }
+  header a { color:var(--accent); text-decoration:none; font-size:13px; }
+  .wrap { max-width:960px; margin:0 auto; padding:26px 28px 70px; }
+  .lead { color:var(--muted); margin:0 0 22px; }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:16px;
+    padding:22px 24px; margin-bottom:22px; }
+  .card h2 { margin:0 0 4px; font-size:17px; }
+  .card .tag { color:var(--muted); font-size:13px; margin:0 0 18px; }
+  .big { font-size:40px; font-weight:800; line-height:1; }
+  .big.green { color:var(--green); }
+  .row { display:flex; gap:26px; align-items:flex-end; flex-wrap:wrap; }
+  .metric .k { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+  .metric .v { font-size:26px; font-weight:700; margin-top:2px; }
+  /* before -> after bars */
+  .bars { margin-top:16px; }
+  .bar { display:flex; align-items:center; gap:12px; margin:8px 0; }
+  .bar .lbl { width:74px; color:var(--muted); font-size:13px; }
+  .bar .track { flex:1; background:var(--panel2); border-radius:8px; height:26px; overflow:hidden; }
+  .bar .fill { height:100%; display:flex; align-items:center; padding-left:10px;
+    font-size:13px; font-weight:600; color:#04260c; white-space:nowrap; }
+  .bar .fill.before { background:linear-gradient(90deg,#f85149,#d29922); color:#2a0a08; }
+  .bar .fill.after  { background:linear-gradient(90deg,#3fb950,#58a6ff); }
+  table { width:100%; border-collapse:collapse; margin-top:12px; }
+  th,td { text-align:left; padding:9px 10px; border-bottom:1px solid var(--border); font-size:13.5px; }
+  th { color:var(--muted); font-weight:600; font-size:11px; text-transform:uppercase; }
+  td.mono { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:12.5px; }
+  .chg { color:var(--green); font-weight:600; }
+  .same { color:var(--muted); }
+  .live { background:linear-gradient(180deg,var(--panel),var(--panel2));
+    border:1px solid var(--border); border-radius:14px; padding:18px 22px; margin-bottom:22px; }
+  .live h3 { margin:0 0 6px; font-size:14px; }
+  .live .mut { color:var(--muted); font-size:13px; }
+  .pill { display:inline-block; background:rgba(63,185,80,.14); color:var(--green);
+    border-radius:20px; padding:2px 10px; font-size:12px; font-weight:600; margin-left:6px; }
+  .state { color:var(--muted); padding:30px 0; }
+  .foot { color:var(--muted); font-size:12.5px; margin-top:10px; }
+  code { font-family:"SF Mono",Menlo,Consolas,monospace; background:var(--panel2);
+    border-radius:6px; padding:1px 6px; font-size:12.5px; }
+  .err { color:var(--red); white-space:pre-wrap; font-size:12.5px; }
+  /* explainer + playground */
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:22px; }
+  @media (max-width:760px){ .grid2 { grid-template-columns:1fr; } }
+  .ex h2 { margin:0 0 6px; font-size:16px; }
+  .ex ul { margin:8px 0 0; padding-left:18px; color:var(--muted); }
+  .ex ul li { margin:3px 0; }
+  .ex .big { font-size:30px; }
+  .play { background:linear-gradient(180deg,var(--panel),var(--panel2));
+    border:1px solid var(--border); border-radius:16px; padding:20px 22px; margin-bottom:24px; }
+  .play h2 { margin:0 0 4px; font-size:17px; }
+  .play .tag { color:var(--muted); font-size:13px; margin:0 0 12px; }
+  .play .chips { margin:4px 0 10px; }
+  .chip { display:inline-block; background:var(--panel2); border:1px solid var(--border);
+    border-radius:8px; padding:4px 10px; margin:3px 6px 3px 0; font-size:12.5px; cursor:pointer; }
+  .chip:hover { border-color:var(--accent); }
+  .play .ctl { display:flex; gap:10px; margin-top:6px; }
+  .play input { flex:1; padding:11px 14px; border:1px solid var(--border); border-radius:10px;
+    background:var(--bg); color:var(--text); font-size:14px; }
+  .play button { padding:11px 22px; border:0; border-radius:10px; background:var(--green);
+    color:#04260c; font-weight:700; cursor:pointer; font-size:14px; }
+  .play button:disabled { opacity:.5; cursor:wait; }
+  .splits { display:grid; grid-template-columns:1.3fr 1fr; gap:14px; margin-top:16px; }
+  @media (max-width:760px){ .splits { grid-template-columns:1fr; } }
+  .out, .acard { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:14px 16px; }
+  .out h3, .acard h3 { margin:0 0 8px; font-size:13px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); }
+  .out pre { margin:0; white-space:pre-wrap; word-break:break-word; max-height:300px; overflow:auto;
+    font-family:"SF Mono",Menlo,Consolas,monospace; font-size:12.5px; background:var(--panel2); border-radius:8px; padding:10px 12px; }
+  .acard { margin-bottom:12px; }
+  .acard.p1 { border-left:3px solid var(--green); }
+  .acard.p2 { border-left:3px solid var(--accent); }
+  .acard .line { display:flex; justify-content:space-between; gap:12px; padding:3px 0; font-size:13px; }
+  .acard .line b { font-weight:700; }
+  .acard .k { color:var(--muted); }
+  .section { font-size:14px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em;
+    border-top:1px solid var(--border); padding-top:18px; margin:6px 0 16px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>⚡ What we changed in the Nasiko router</h1>
+  <div class="sub">Two upgrades, shown before → after · numbers below come from the real Rust code and the live app ·
+    <a href="/advanced">open the detailed dashboard →</a></div>
+</header>
+<div class="wrap">
+  <p class="lead">Both improvements run inside the real router. This page shows, in plain terms, what each one does and how much it saves.</p>
+
+  <!-- what we improved -->
+  <div class="grid2">
+    <div class="card ex">
+      <h2>P1 · Compact tool schemas</h2>
+      <div class="big green">fewer prompt tokens</div>
+      <ul>
+        <li><b>Before:</b> every tool was sent as verbose JSON Schema on every call.</li>
+        <li><b>After:</b> tools are sent as a compact one-line signature grammar.</li>
+        <li>Same tool calls, fail-closed decoding — <b>−30–55%</b> of the tool-schema bytes.</li>
+        <li>Recorded per call in <code>token_usage.metadata.compact</code>.</li>
+      </ul>
+    </div>
+    <div class="card ex">
+      <h2>P2 · Request classifier</h2>
+      <div class="big" style="color:var(--accent)">smarter routing</div>
+      <ul>
+        <li><b>Before:</b> a flat regex — fixed complexity 3, fixed confidence 0.5.</li>
+        <li><b>After:</b> a real complexity (1–5) + calibrated confidence.</li>
+        <li>Now <b>drives the Level-3 model tier</b> (regex stays the fallback).</li>
+        <li>Pluggable <code>RequestClassifier</code> trait — swap in any backend.</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- playground -->
+  <div class="play">
+    <h2>▶ Playground — run a real agent task</h2>
+    <p class="tag">Type a task. It goes through the <b>real</b> gateway (an un-pinned agent, with tools attached), so
+      <b>P1</b> and <b>P2</b> both act on the same call. You get the agent’s output on the left and exactly what each layer did on the right.</p>
+    <div class="chips" id="taskchips"></div>
+    <div class="ctl">
+      <input id="taskq" placeholder="e.g. Book a 30-min design review Monday 3pm with riya@example.com and email the team" />
+      <button id="taskbtn" onclick="runTask()">Run task</button>
+    </div>
+    <div id="taskout"></div>
+  </div>
+
+  <div class="section">Measured before → after (sample eval + live totals)</div>
+  <div id="root"><div class="state">Running the real binaries… first run compiles (~30s), then it’s instant.</div></div>
+
+  <p class="foot">P1 = <code>nasiko-tool-compact</code> crate + router seam · P2 = <code>RequestClassifier</code> trait in routing.
+    Flags: <code>TOKEN_COMPACT_TOOLS</code>, <code>CLASSIFIER_HEURISTIC</code> in <code>server/.env</code>.</p>
+</div>
+
+<script>
+const esc = s => String(s ?? "").replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+
+// ---------- Playground ----------
+const TASKS = [
+  "Book a 30-min design review Monday 3pm with riya@example.com and email the team the agenda",
+  "What is the capital of Australia?",
+  "Write a Python function that parses a CSV and returns rows above a threshold, with error handling",
+  "Draft an email to the team that the outage is resolved",
+];
+function fillChips() {
+  document.getElementById("taskchips").innerHTML =
+    TASKS.map(t => `<span class="chip" onclick="pick(this)">${esc(t)}</span>`).join("");
+}
+function pick(el) { document.getElementById("taskq").value = el.textContent; }
+
+function annP1(p1) {
+  if (!p1 || !p1.applied) {
+    return `<div class="acard p1"><h3>P1 · compact tools</h3>
+      <div class="k">No tools were compacted on this call.</div></div>`;
+  }
+  const red = p1.native_bytes ? Math.round(100 * p1.saved_bytes / p1.native_bytes) : 0;
+  return `<div class="acard p1"><h3>P1 · compact tools</h3>
+    <div class="line"><span class="k">tools compacted</span><b>${esc(p1.tools)}</b></div>
+    <div class="line"><span class="k">tool-schema bytes</span><b>${esc(p1.native_bytes)} → ${esc(p1.compact_bytes)}</b></div>
+    <div class="line"><span class="k">saved</span><b class="chg" style="color:var(--green)">${esc(p1.saved_bytes)} B (−${red}%)</b></div></div>`;
+}
+function annP2(p2) {
+  const h = p2.heuristic || {}, r = p2.regex || {};
+  const conf = h.confidence != null ? Number(h.confidence).toFixed(2) : "·";
+  return `<div class="acard p2"><h3>P2 · classifier + routing</h3>
+    <div class="line"><span class="k">before · regex</span><b>${esc(r.request_type)} · c${esc(r.complexity)} · ${esc(r.confidence)}</b></div>
+    <div class="line"><span class="k">after · heuristic</span><b style="color:var(--accent)">${esc(h.request_type)} · c${esc(h.complexity)} · ${esc(conf)}</b></div>
+    <div class="line"><span class="k">routed model</span><b>${esc(p2.routed_model)}</b></div>
+    <div class="line"><span class="k">vs agent default</span><b>${p2.overridden ? "overridden ✓" : esc(p2.default_model)}</b></div></div>`;
+}
+function runTask() {
+  const q = document.getElementById("taskq").value.trim();
+  const btn = document.getElementById("taskbtn");
+  const out = document.getElementById("taskout");
+  if (!q) { out.innerHTML = `<div class="err" style="margin-top:12px">Type a task first.</div>`; return; }
+  btn.disabled = true; btn.textContent = "Running…";
+  out.innerHTML = `<div class="state">Minting token, seeding a flow, calling the real gateway…</div>`;
+  fetch("/api/run_task?q=" + encodeURIComponent(q)).then(r => r.json()).then(d => {
+    btn.disabled = false; btn.textContent = "Run task";
+    if (!d.ok) { out.innerHTML = `<div class="err" style="margin-top:12px">${esc(d.log)}</div>`; return; }
+    const u = d.usage || {};
+    out.innerHTML = `<div class="splits">
+      <div class="out"><h3>Agent output</h3><pre>${esc(d.output)}</pre>
+        <div class="k" style="margin-top:8px;color:var(--muted);font-size:12px">
+          usage: ${esc(u.prompt_tokens ?? "?")} in / ${esc(u.completion_tokens ?? "?")} out tokens</div></div>
+      <div><h3 style="margin:0 0 8px;font-size:13px;color:var(--muted);text-transform:uppercase">What P1 &amp; P2 did</h3>
+        ${annP1(d.p1)}${annP2(d.p2)}</div>
+    </div>`;
+  }).catch(e => {
+    btn.disabled = false; btn.textContent = "Run task";
+    out.innerHTML = `<div class="err" style="margin-top:12px">${esc(e)}</div>`;
+  });
+}
+fillChips();
+
+// ---------- Measured summary ----------
+
+function barPair(before, after, unit) {
+  const max = Math.max(before, after, 1);
+  const w = v => Math.max(6, Math.round(100 * v / max));
+  return `<div class="bars">
+    <div class="bar"><span class="lbl">Before</span>
+      <div class="track"><div class="fill before" style="width:${w(before)}%">${esc(before)} ${unit}</div></div></div>
+    <div class="bar"><span class="lbl">After</span>
+      <div class="track"><div class="fill after" style="width:${w(after)}%">${esc(after)} ${unit}</div></div></div>
+  </div>`;
+}
+
+function render(d) {
+  if (!d.ok) {
+    return `<div class="card"><h2>Could not run</h2><div class="err">${esc(d.log || "unknown error")}</div></div>`;
+  }
+  // ---- P1 ----
+  const t = d.p1.tokens || {};
+  const live = d.live && d.live.ok ? d.live.p1 : null;
+  const liveStrip = live ? `
+    <div class="live">
+      <h3>Live in the running app <span class="pill">real traffic</span></h3>
+      <div class="mut">Across <b>${live.applied_calls}</b> compacted call(s) in the app, tool schemas shrank
+        <b>${live.native_bytes} → ${live.compact_bytes} bytes</b>
+        (saved <b>${live.saved_bytes}</b>, −${live.reduction_pct}%). Recorded by the router in
+        <code>token_usage.metadata.compact</code>.</div>
+    </div>` : "";
+
+  const p1Rows = (d.p1.sample || []).map(c =>
+    `<tr><td class="mono">${esc(c.id)}</td><td>${esc(c.baseline)}</td><td>${esc(c.compact)}</td>
+     <td class="chg">−${esc(c.saved_pct)}%</td></tr>`).join("");
+
+  const p1 = `
+    <div class="card">
+      <h2>P1 · Compact tool schemas</h2>
+      <p class="tag">Send tool definitions in a compact form instead of verbose JSON — fewer prompt tokens, same tool calls.</p>
+      <div class="row">
+        <div><div class="big green">−${esc(t.reduction || 0)}%</div></div>
+        <div class="metric"><div class="k">prompt tokens</div><div class="v">${esc(t.baseline)} → ${esc(t.compact)}</div></div>
+        <div class="metric"><div class="k">round-trip tool calls</div><div class="v">${esc(d.p1.cases.cases_passed)}/${esc(d.p1.cases.cases_total)} exact</div></div>
+      </div>
+      ${barPair(t.baseline, t.compact, "tok")}
+      <table><thead><tr><th>case</th><th>before</th><th>after</th><th>saved</th></tr></thead><tbody>${p1Rows}</tbody></table>
+    </div>`;
+
+  // ---- P2 ----
+  const rows = (d.p2.rows || []).map(r => {
+    const changed = r.regex_type !== r.heur_type || r.regex_c !== r.heur_c;
+    return `<tr>
+      <td>${esc(r.query).slice(0,54)}${r.query.length>54?"…":""}</td>
+      <td class="mono">${esc(r.regex_type)} · c${esc(r.regex_c ?? "·")} · ${esc((r.regex_conf??0).toFixed? r.regex_conf.toFixed(2): r.regex_conf)}</td>
+      <td class="mono ${changed?"chg":"same"}">${esc(r.heur_type)} · c${esc(r.heur_c ?? "·")} · ${esc((r.heur_conf??0).toFixed? r.heur_conf.toFixed(2): r.heur_conf)}</td>
+    </tr>`;
+  }).join("");
+
+  const reg = d.p2.regex || {}, heu = d.p2.heuristic || {};
+  const p2 = `
+    <div class="card">
+      <h2>P2 · Request classifier</h2>
+      <p class="tag">The router used a flat regex (fixed complexity 3, confidence 0.5). Ours adds a real complexity (1–5)
+        and a calibrated confidence, and now drives the Level-3 model tier.</p>
+      <div class="row">
+        <div class="metric"><div class="k">before (regex)</div><div class="v">type ${esc(reg.type_acc)}% · fixed c/conf</div></div>
+        <div class="metric"><div class="k">after (heuristic)</div><div class="v">type ${esc(heu.type_acc)}% · ±1 cplx ${esc(heu.complexity_within1)}%</div></div>
+        <div class="metric"><div class="k">classify latency</div><div class="v">~${esc(heu.p50_us)}µs</div></div>
+      </div>
+      <table><thead><tr><th>query</th><th>before · regex</th><th>after · heuristic</th></tr></thead><tbody>${rows}</tbody></table>
+    </div>`;
+
+  return liveStrip + p1 + p2;
+}
+
+fetch("/api/summary").then(r => r.json()).then(d => {
+  document.getElementById("root").innerHTML = render(d);
+}).catch(e => {
+  document.getElementById("root").innerHTML = `<div class="card"><div class="err">${esc(e)}</div></div>`;
+});
+</script>
+</body>
+</html>

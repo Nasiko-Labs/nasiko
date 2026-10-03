@@ -154,6 +154,19 @@ pub struct GatewayConfig {
     pub compress_recovery_min_bytes: usize,
     /// How long an original stays recoverable. Sized to outlive the flow that produced it.
     pub compress_recovery_ttl_secs: u64,
+
+    /// Replace native tool definitions with the compact [`nasiko_tool_compact`] form at the
+    /// egress seam (`src/compact.rs`). **Defaults off** — unlike the other layers here —
+    /// because the response-side decode of `<<call …>>` output is not yet wired into the
+    /// provider path, so this is enabled explicitly per deployment. Off ⇒ the seam is a no-op
+    /// and the outbound request is byte-identical.
+    pub compact_tools_enabled: bool,
+
+    /// Use the model-agnostic [`HeuristicClassifier`](crate::routing::HeuristicClassifier) to
+    /// decide the request type that drives Level-3 tier selection, instead of the built-in
+    /// regex vote. **Defaults off**: the regex path is the out-of-the-box baseline, and any
+    /// classifier error falls back to it, so an off build routes exactly as before.
+    pub classifier_heuristic_enabled: bool,
 }
 
 impl Default for GatewayConfig {
@@ -196,6 +209,8 @@ impl Default for GatewayConfig {
             compress_recovery_enabled: true,
             compress_recovery_min_bytes: 8192,
             compress_recovery_ttl_secs: 86_400,
+            compact_tools_enabled: false,
+            classifier_heuristic_enabled: false,
         }
     }
 }
@@ -308,6 +323,11 @@ impl GatewayConfig {
                 "TOKEN_COMPRESS_RECOVERY_TTL_SECS",
                 d.compress_recovery_ttl_secs as usize,
             ) as u64,
+            compact_tools_enabled: env_flag("TOKEN_COMPACT_TOOLS", d.compact_tools_enabled),
+            classifier_heuristic_enabled: env_flag(
+                "CLASSIFIER_HEURISTIC",
+                d.classifier_heuristic_enabled,
+            ),
         }
     }
 

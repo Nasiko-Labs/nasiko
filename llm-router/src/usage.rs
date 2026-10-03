@@ -57,6 +57,9 @@ pub struct UsageRecord {
     /// having: IP-1 leaves a row only when it acted, so a missing block is ambiguous between
     /// "off" and "nothing to do". This one always says which.
     pub brevity_metadata: Option<serde_json::Value>,
+    /// Pre-serialized `metadata.compact` block (compact tool schemas). `None` when compaction
+    /// did not apply, so the row stays byte-identical to before this layer existed.
+    pub compact_metadata: Option<serde_json::Value>,
     /// `(bytes_in, bytes_out)` from IP-1 when it actually reduced the payload, for the
     /// `token_savings` ledger. Two integers rather than the compression module's type, so this
     /// module stays a pure DB concern.
@@ -69,6 +72,12 @@ pub struct UsageRecord {
     /// Total text bytes actually sent, after compression and the brevity directive. Calibrates
     /// chars-per-token against this very call rather than a fixed divisor (see `savings.rs`).
     pub request_bytes: Option<usize>,
+    /// Pre-serialized `metadata.routing` block (classifier track): how this call's model tier
+    /// was chosen (`source`, and `tier`/`request_type`/`classifier` when a classification ran).
+    /// `None` is not expected in practice — `route_model` always returns a decision — but the
+    /// embeddings and Responses-API handlers set it to `None` since they do not route through
+    /// `route_model`.
+    pub routing_metadata: Option<serde_json::Value>,
 }
 
 /// Spawn the usage write so it never blocks the response.
@@ -161,6 +170,8 @@ pub async fn log_usage(
         cache_creation: serde_json::to_value(&cache_details).unwrap_or(serde_json::Value::Null),
         compress: record.compress_metadata,
         brevity: record.brevity_metadata,
+        compact: record.compact_metadata,
+        routing: record.routing_metadata,
     });
 
     sqlx::query(
@@ -281,6 +292,10 @@ struct MetadataInputs {
     compress: Option<serde_json::Value>,
     /// Always `Some` once the brevity layer exists: it records "skipped, and why" too.
     brevity: Option<serde_json::Value>,
+    /// `None` when compaction did not apply.
+    compact: Option<serde_json::Value>,
+    /// `None` for operations that do not route through `route_model` (embeddings, Responses API).
+    routing: Option<serde_json::Value>,
 }
 
 /// The row's `metadata` JSONB.
@@ -300,6 +315,12 @@ fn build_metadata(inputs: MetadataInputs) -> serde_json::Value {
     }
     if let Some(brevity) = inputs.brevity {
         metadata["brevity"] = brevity;
+    }
+    if let Some(compact) = inputs.compact {
+        metadata["compact"] = compact;
+    }
+    if let Some(routing) = inputs.routing {
+        metadata["routing"] = routing;
     }
     metadata
 }
@@ -321,6 +342,8 @@ mod tests {
             cache_creation: serde_json::Value::Null,
             compress: None,
             brevity: None,
+            compact: None,
+            routing: None,
         }
     }
 

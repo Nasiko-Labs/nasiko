@@ -1,0 +1,24 @@
+{"id": "tr-01", "query": "Write a Python function that merges two sorted lists.", "context": "No existing helpers.", "request_type": "code_generation", "complexity": 2}
+{"id": "tr-02", "query": "Implement a rate limiter middleware in Rust using a token bucket.", "context": "axum service, shared state via Arc.", "request_type": "code_generation", "complexity": 4}
+{"id": "tr-03", "query": "Fix this typo in a comment: # retrun value", "context": "Single-line change.", "request_type": "code_generation", "complexity": 1}
+{"id": "tr-04", "query": "Refactor this module to remove the duplicated error handling.", "context": "200-line file, three near-identical match arms.", "request_type": "code_generation", "complexity": 3}
+{"id": "tr-05", "query": "Explain what this function does and why it recurses.", "context": "fn walk(node) { ... }", "request_type": "code_understanding", "complexity": 2}
+{"id": "tr-06", "query": "Walk me through how this event loop schedules tasks.", "context": "Tokio runtime internals excerpt.", "request_type": "code_understanding", "complexity": 4}
+{"id": "tr-07", "query": "What is this regex matching?", "context": "^(?:[a-z0-9]+-)*[a-z0-9]+$", "request_type": "code_understanding", "complexity": 2}
+{"id": "tr-08", "query": "How should I design an API for multi-tenant billing?", "context": "B2B SaaS, usage-based pricing.", "request_type": "technical_design", "complexity": 5}
+{"id": "tr-09", "query": "What are the trade-offs between a message queue and a database outbox here?", "context": "Order service emitting events.", "request_type": "technical_design", "complexity": 4}
+{"id": "tr-10", "query": "Design a database schema for a library catalog.", "context": "Books, members, loans.", "request_type": "technical_design", "complexity": 3}
+{"id": "tr-11", "query": "Calculate the probability of at least one collision among 23 people's birthdays.", "context": "", "request_type": "analytical_reasoning", "complexity": 3}
+{"id": "tr-12", "query": "Prove that the sum of the first n odd numbers is n squared.", "context": "", "request_type": "analytical_reasoning", "complexity": 4}
+{"id": "tr-13", "query": "What's the result of 128 * 64?", "context": "", "request_type": "analytical_reasoning", "complexity": 1}
+{"id": "tr-14", "query": "Draft an email to the team announcing the outage is resolved.", "context": "Incident #482, 2h downtime.", "request_type": "writing", "complexity": 2}
+{"id": "tr-15", "query": "Compose a short blog post introducing our new caching layer.", "context": "Audience: developers.", "request_type": "writing", "complexity": 3}
+{"id": "tr-16", "query": "Rewrite this paragraph to sound more concise.", "context": "One paragraph of marketing copy.", "request_type": "writing", "complexity": 2}
+{"id": "tr-17", "query": "What is the capital of Australia?", "context": "", "request_type": "factual_lookup", "complexity": 1}
+{"id": "tr-18", "query": "Who wrote the Rust book?", "context": "", "request_type": "factual_lookup", "complexity": 1}
+{"id": "tr-19", "query": "What year was the TCP protocol standardized?", "context": "", "request_type": "factual_lookup", "complexity": 2}
+{"id": "tr-20", "query": "Hey, can you help me out with something?", "context": "", "request_type": "general", "complexity": 1}
+{"id": "tr-21", "query": "Thanks, that was helpful!", "context": "", "request_type": "general", "complexity": 1}
+{"id": "tr-22", "query": "Build a REST endpoint and also explain how the auth middleware works.", "context": "Multi-intent: code plus explanation.", "request_type": "code_generation", "complexity": 4}
+{"id": "tr-23", "query": "optimize this", "context": "Ambiguous, minimal context; attached O(n^2) loop.", "request_type": "code_generation", "complexity": 3}
+{"id": "tr-24", "query": "Summarize the architectural trade-offs we discussed and recommend one.", "context": "Long design thread about sync vs async replication.", "request_type": "technical_design", "complexity": 5}

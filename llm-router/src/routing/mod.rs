@@ -33,7 +33,11 @@ mod salience_classifier;
 pub use boundary::{BoundarySignals, Mode, Phase};
 pub use cache::{CachedDecision, DecisionCache, NoopCache, RedisCache};
 pub use cells::{CellStore, InMemoryCellStore, PgCellStore};
-pub use classifier::{RequestType, Tier, classify, signal};
+pub use classifier::{
+    classify, pick_model_thompson, signal, Classification, ClassifyError, ClassifyInput,
+    HeuristicClassifier, RegexClassifier, RequestClassifier, RequestType, Tier,
+    DEFAULT_W_COST, DEFAULT_W_QUALITY,
+};
 pub use registry::{PgTierRegistry, TierRegistry};
 pub use salience::{AllowAllGate, ClassifierSalienceGate, SalienceGate};
 
@@ -83,6 +87,10 @@ pub struct RouteInputs<'a> {
     pub signals: &'a BoundarySignals,
     /// The query to classify (latest user message text). `None` disables classification.
     pub query: Option<&'a str>,
+    /// classifier track: when set, the model-agnostic [`HeuristicClassifier`] decides the
+    /// Level-3 request type (which drives tier selection); on any classifier error the router
+    /// falls back to the regex vote. Off ⇒ the regex path, identical to before.
+    pub classifier_heuristic: bool,
 }
 
 /// The outcome of routing: the model to call and how it was chosen.
@@ -91,6 +99,13 @@ pub struct RouteDecision {
     pub model: String,
     pub tier: Option<Tier>,
     pub source: RouteSource,
+    /// The request type behind `tier`, when one was classified or cached (Level 2/3 only).
+    /// `None` for Pinned/SmallTalk/Config/Default, where no classification happened.
+    pub request_type: Option<RequestType>,
+    /// `"heuristic"` when [`HeuristicClassifier`] decided `request_type` on *this* call
+    /// (`classifier_heuristic` was on); `None` on a regex decision, a cache hit (nothing
+    /// classified this call) or any source with no classification at all.
+    pub classifier: Option<&'static str>,
 }
 
 /// Apply the five-level precedence and return the model to call.
@@ -156,6 +171,8 @@ pub async fn route_model(
             model: model.to_string(),
             tier: None,
             source: RouteSource::Pinned,
+            request_type: None,
+            classifier: None,
         };
     }
     tracing::debug!(
@@ -195,6 +212,8 @@ pub async fn route_model(
                 model: hit.model,
                 tier: hit.tier,
                 source: RouteSource::CacheHit,
+                request_type: hit.request_type,
+                classifier: None,
             };
         }
         tracing::debug!(
@@ -232,6 +251,8 @@ pub async fn route_model(
                     model,
                     tier: None,
                     source: RouteSource::SmallTalk,
+                    request_type: None,
+                    classifier: None,
                 };
             }
             tracing::info!(
@@ -250,10 +271,53 @@ pub async fn route_model(
             // (`ThreadRng`) is `!Send`, so it is scoped to drop before the next `.await` — the
             // handler future must stay `Send`.
             let learned = cell_store.load(inputs.provider).await;
+
+            // classifier track: when `classifier_heuristic` is on, the model-agnostic classifier
+            // decides the request type that drives tier selection; any classifier error falls
+            // back to the regex vote. Run it before the RNG exists so the handler future stays
+            // `Send` across the `.await` (`ThreadRng` is `!Send`).
+            let heuristic = if inputs.classifier_heuristic {
+                HeuristicClassifier
+                    .classify(&ClassifyInput { query, context: None })
+                    .await
+                    .ok()
+            } else {
+                None
+            };
             let (tier, request_type) = {
                 let mut rng = rand::rng();
-                classify(query, inputs.provider, &learned, &mut rng)
+                match heuristic.as_ref() {
+                    Some(c) => (
+                        pick_model_thompson(
+                            &learned,
+                            c.request_type,
+                            DEFAULT_W_QUALITY,
+                            DEFAULT_W_COST,
+                            &mut rng,
+                        ),
+                        c.request_type,
+                    ),
+                    None => classify(query, inputs.provider, &learned, &mut rng),
+                }
             };
+            match &heuristic {
+                Some(c) => tracing::info!(
+                    target: "nasiko::llm_router::routing",
+                    agent_id = %inputs.agent_id, %conv_id,
+                    classifier = "heuristic",
+                    request_type = %request_type.as_str(),
+                    complexity = c.complexity,
+                    confidence = c.confidence,
+                    tier = ?tier,
+                    "route_model: LEVEL 3 — heuristic classifier drove the request type"
+                ),
+                None if inputs.classifier_heuristic => tracing::warn!(
+                    target: "nasiko::llm_router::routing",
+                    agent_id = %inputs.agent_id, %conv_id,
+                    "route_model: LEVEL 3 — heuristic classifier failed; fell back to regex"
+                ),
+                None => {}
+            }
             // Per-config tier override takes priority over the global registry.
             let config_override = match tier {
                 Tier::Tier1 => inputs.tier1_model.map(str::to_string),
@@ -298,6 +362,8 @@ pub async fn route_model(
                         model: decision.model,
                         tier: Some(tier),
                         source: RouteSource::Classified,
+                        request_type: Some(request_type),
+                        classifier: heuristic.as_ref().map(|_| "heuristic"),
                     };
                 }
                 None => {
@@ -348,6 +414,8 @@ pub async fn route_model(
         model: inputs.fallback_model.to_string(),
         tier: None,
         source,
+        request_type: None,
+        classifier: None,
     }
 }
 
@@ -532,6 +600,7 @@ mod tests {
             tier3_model: None,
             signals,
             query: Some("hello"),
+            classifier_heuristic: false,
         }
     }
 

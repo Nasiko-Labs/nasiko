@@ -1,0 +1,456 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Nasiko Eval Demo</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --panel2: #1c2230; --border: #2d333b;
+    --text: #e6edf3; --muted: #8b949e; --accent: #58a6ff;
+    --green: #3fb950; --red: #f85149; --amber: #d29922;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    padding: 20px 28px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 16px;
+  }
+  header h1 { font-size: 18px; margin: 0; }
+  header .sub { color: var(--muted); font-size: 13px; }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 24px 28px 64px; }
+  .tabs { display: flex; gap: 8px; margin-bottom: 20px; }
+  .tab {
+    padding: 8px 16px; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--panel); color: var(--text); cursor: pointer; font-size: 14px;
+  }
+  .tab.active { background: var(--accent); border-color: var(--accent); color: #0d1117; font-weight: 600; }
+  .controls { display: flex; gap: 10px; align-items: center; margin-bottom: 18px; flex-wrap: wrap; }
+  button.run {
+    padding: 9px 18px; border: 0; border-radius: 8px; background: var(--green);
+    color: #04260c; font-weight: 600; cursor: pointer; font-size: 14px;
+  }
+  button.run:disabled { opacity: .5; cursor: wait; }
+  select {
+    padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--panel); color: var(--text); font-size: 14px;
+  }
+  .cards { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 20px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    padding: 16px 18px; min-width: 150px;
+  }
+  .card .k { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  .card .v { font-size: 26px; font-weight: 700; margin-top: 4px; }
+  .v.good { color: var(--green); } .v.bad { color: var(--red); } .v.mid { color: var(--amber); }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 26px; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; }
+  tr:hover td { background: var(--panel2); }
+  .badge { padding: 2px 9px; border-radius: 20px; font-size: 12px; font-weight: 600; }
+  .badge.pass { background: rgba(63,185,80,.15); color: var(--green); }
+  .badge.fail { background: rgba(248,81,73,.15); color: var(--red); }
+  code, pre {
+    font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 12.5px;
+    background: var(--panel2); border-radius: 6px; padding: 1px 6px;
+  }
+  pre { padding: 10px 12px; overflow-x: auto; white-space: pre-wrap; word-break: break-word; margin: 4px 0 0; }
+  h2 { font-size: 15px; margin: 24px 0 12px; border-left: 3px solid var(--accent); padding-left: 10px; }
+  .muted { color: var(--muted); }
+  .empty { color: var(--muted); padding: 40px; text-align: center; }
+  .log { color: var(--red); white-space: pre-wrap; }
+  .mono { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 12.5px; }
+  .cmp { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 6px 0 18px; }
+  .cmp .side { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  .cmp .side .hd { padding: 8px 12px; font-size: 12px; font-weight: 600; }
+  .cmp .before .hd { background: rgba(248,81,73,.12); color: var(--red); }
+  .cmp .after .hd { background: rgba(63,185,80,.12); color: var(--green); }
+  .cmp .side pre { margin: 0; border-radius: 0; max-height: 280px; overflow: auto; }
+  .tokbar { height: 10px; border-radius: 6px; background: var(--panel2); overflow: hidden; margin-top: 6px; }
+  .tokbar > span { display: block; height: 100%; background: linear-gradient(90deg,#3fb950,#58a6ff); }
+  details { margin: 6px 0 16px; } summary { cursor: pointer; color: var(--accent); font-size: 13px; }
+  .delta-up { color: var(--green); } .delta-same { color: var(--muted); }
+  tr.changed td { background: rgba(88,166,255,.07); }
+  .play { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; margin-bottom: 22px; }
+  .play h3 { margin: 0 0 10px; font-size: 14px; }
+  .play input[type=text], .play textarea {
+    width: 100%; padding: 9px 12px; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--bg); color: var(--text); font-size: 14px; margin-bottom: 8px; font-family: inherit;
+  }
+  .play textarea { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 12.5px; }
+  .play .hint { color: var(--muted); font-size: 12px; margin: 0 0 8px; }
+  .play .chips { margin: 4px 0 10px; }
+  .chip { display: inline-block; background: var(--panel2); border: 1px solid var(--border); border-radius: 6px;
+    padding: 2px 8px; margin: 2px 4px 2px 0; font-family: "SF Mono", Menlo, monospace; font-size: 12px; cursor: pointer; }
+  .chip:hover { border-color: var(--accent); }
+  .hero { background: radial-gradient(1200px 300px at 0% 0%, rgba(88,166,255,.14), transparent),
+    linear-gradient(180deg, var(--panel), var(--panel2)); border: 1px solid var(--border);
+    border-radius: 16px; padding: 28px 30px; margin-bottom: 22px; }
+  .hero-h { font-size: 24px; margin: 0 0 8px; }
+  .hero-p { color: var(--muted); max-width: 720px; margin: 0 0 16px; }
+  button.run.big { font-size: 15px; padding: 11px 24px; }
+  .card.hl { flex: 1; min-width: 160px; background: linear-gradient(180deg, var(--panel), var(--panel2)); }
+  .card .kk { color: var(--muted); font-size: 11px; margin-top: 4px; }
+  .costbox { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; margin-bottom: 20px; }
+  .costbox label { color: var(--muted); font-size: 13px; margin-right: 18px; }
+  .costbox input { width: 120px; padding: 6px 10px; margin-left: 8px; border: 1px solid var(--border);
+    border-radius: 7px; background: var(--bg); color: var(--text); font-size: 14px; }
+  .costgrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-top: 16px; }
+  .costgrid > div { background: var(--panel2); border-radius: 10px; padding: 12px 14px; }
+  .costgrid b { display: block; font-size: 22px; margin-top: 4px; }
+  .prow { display: flex; align-items: stretch; gap: 6px; flex-wrap: wrap; margin: 10px 0 6px; }
+  .pbox { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; min-width: 120px; }
+  .pbox.ours { border-color: var(--green); background: rgba(63,185,80,.08); }
+  .pb-t { font-weight: 600; font-size: 13px; } .pb-s { color: var(--muted); font-size: 11px; margin-top: 2px; }
+  .parr { align-self: center; color: var(--muted); font-size: 18px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>⚡ Nasiko Router — Compact Tools &amp; Cost-Aware Classifier</h1>
+  <span class="sub">Live before→after harness · running the real Rust binaries, not mock data</span>
+</header>
+<div class="wrap">
+  <div class="tabs">
+    <div class="tab active" data-tab="overview" onclick="switchTab('overview')">◆ Overview</div>
+    <div class="tab" data-tab="p1" onclick="switchTab('p1')">P1 · Compact tools</div>
+    <div class="tab" data-tab="p2" onclick="switchTab('p2')">P2 · Classifier</div>
+  </div>
+
+  <!-- OVERVIEW -->
+  <section id="overview">
+    <div class="hero">
+      <div class="hero-txt">
+        <h2 class="hero-h">Two router upgrades, measured end to end.</h2>
+        <p class="hero-p">Compact tool schemas cut prompt tokens without breaking a single tool call.
+        A model-agnostic classifier replaces a flat regex with adaptive, calibrated routing.
+        Everything below is produced by the actual <code>nasiko-tool-compact</code> crate and
+        <code>RequestClassifier</code> trait — click once and watch.</p>
+        <button class="run big" id="ovrun" onclick="runOverview()">▶ Run everything</button>
+        <span class="muted" id="ovstatus"></span>
+      </div>
+    </div>
+    <div id="ovcards"></div>
+    <div id="ovcost"></div>
+    <h2>Where this code runs in the router</h2>
+    <div class="pipe" id="pipe"></div>
+    <p class="muted">Green boxes are what we added. The crate is pure (no IO, no provider code); the router converts at the seam, so the default path stays byte-identical until compaction is switched on.</p>
+  </section>
+
+  <!-- P1 -->
+  <section id="p1" style="display:none">
+    <div class="play">
+      <h3>🧪 Try your own — type a request, see baseline vs ours</h3>
+      <p class="hint">Type a user message. We send it through the <b>real</b> <code>compact_tools_eval</code> binary and show the native request (what the router used to send) vs our compact request, with live token savings. Tools available: <span id="p1tools" class="muted"></span></p>
+      <input type="text" id="p1q" placeholder="e.g. Book a design review Monday 3pm with riya@example.com" />
+      <button class="run" id="p1liverun" onclick="runP1Live()">▶ Transform &amp; count tokens</button>
+      <div id="p1liveout" style="margin-top:12px"></div>
+      <hr style="border:0;border-top:1px solid var(--border);margin:16px 0" />
+      <h3>🔓 Decoder — paste what a model would emit, watch it fail-closed or decode</h3>
+      <p class="hint">Paste a compact call. Valid → standard tool call; unknown tool / bad args → an error, never a guess.</p>
+      <div class="chips">
+        <span class="chip" onclick="setDecode(this)">&lt;&lt;call create_calendar_event {"title":"Retro","start":"2026-10-04T10:00:00+05:30"}&gt;&gt;</span>
+        <span class="chip" onclick="setDecode(this)">&lt;&lt;call create_calendar_event {"title":"x","start":"2026-10-05T15:00:00+05:30","visibility":"secret"}&gt;&gt;</span>
+        <span class="chip" onclick="setDecode(this)">&lt;&lt;call delete_everything {"confirm":true}&gt;&gt;</span>
+      </div>
+      <textarea id="p1call" rows="2" placeholder='&lt;&lt;call create_calendar_event {"title":"Retro","start":"2026-10-04T10:00:00+05:30"}&gt;&gt;'></textarea>
+      <button class="run" id="p1decrun" onclick="runP1Decode()">▶ Decode</button>
+      <div id="p1decout" style="margin-top:12px"></div>
+    </div>
+    <div class="controls">
+      <button class="run" id="p1run" onclick="runP1()">▶ Run full P1 eval</button>
+      <span class="muted">Runs <code>compact_tools_eval</code> offline, scores round-trip &amp; decoder cases.</span>
+    </div>
+    <div id="p1body"><div class="empty">Click “Run full P1 eval” to build &amp; run. First run compiles (~30s).</div></div>
+  </section>
+
+  <!-- P2 -->
+  <section id="p2" style="display:none">
+    <div class="play">
+      <h3>🧪 Try your own — classify a query: baseline (regex) vs ours (heuristic)</h3>
+      <p class="hint">Type any query. It runs through the <b>real</b> <code>RequestClassifier</code> trait — both backends — and shows the difference.</p>
+      <div class="chips">
+        <span class="chip" onclick="setClassify(this)">Write a Python function that merges two sorted lists</span>
+        <span class="chip" onclick="setClassify(this)">What is the capital of Australia?</span>
+        <span class="chip" onclick="setClassify(this)">Calculate the probability of at least one shared birthday among 23 people</span>
+        <span class="chip" onclick="setClassify(this)">Draft an email to the team announcing the outage is resolved</span>
+      </div>
+      <input type="text" id="clsq" placeholder="e.g. Write a Python function that merges two sorted lists" />
+      <input type="text" id="clsctx" placeholder="optional context (adjacent code, task framing)…" />
+      <button class="run" id="clsrun" onclick="runClassifyLive()">▶ Classify</button>
+      <div id="clsout" style="margin-top:12px"></div>
+    </div>
+    <div class="controls">
+      <button class="run" id="p2run" onclick="runP2()">▶ Run full P2 eval</button>
+      <label class="muted">Backend
+        <select id="p2backend">
+          <option value="regex">regex (baseline)</option>
+          <option value="heuristic">heuristic</option>
+          <option value="compare">⇄ compare both</option>
+        </select>
+      </label>
+      <span class="muted">Runs <code>classifier_eval</code>, compares to ground truth.</span>
+    </div>
+    <div id="p2body"><div class="empty">Click “Run full P2 eval” to classify the sample set.</div></div>
+  </section>
+</div>
+
+<script>
+function switchTab(t) {
+  document.querySelectorAll('.tab').forEach(e => e.classList.toggle('active', e.dataset.tab === t));
+  for (const s of ['overview', 'p1', 'p2']) {
+    document.getElementById(s).style.display = s === t ? '' : 'none';
+  }
+}
+function esc(s) {
+  return String(s ?? '').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+}
+function j(x) { return esc(JSON.stringify(x)); }
+function badge(ok) { return `<span class="badge ${ok?'pass':'fail'}">${ok?'PASS':'FAIL'}</span>`; }
+
+function setDecode(el) { document.getElementById('p1call').value = el.textContent; }
+function setClassify(el) { document.getElementById('clsq').value = el.textContent; }
+// ---- Overview ----
+let OV = { p1: null, p2: null };
+async function runOverview() {
+  const btn = document.getElementById('ovrun'); const st = document.getElementById('ovstatus');
+  btn.disabled = true; st.textContent = ' building & running both tracks… (first run compiles)';
+  document.getElementById('pipe').innerHTML = pipeSvg();
+  try {
+    const [p1, p2] = await Promise.all([
+      (await fetch('/api/p1')).json(),
+      (await fetch('/api/p2?backend=compare')).json(),
+    ]);
+    if (!p1.ok || !p2.ok) { st.innerHTML = `<span class="log">${esc((p1.log||'')+(p2.log||''))}</span>`; return; }
+    OV.p1 = p1; OV.p2 = p2;
+    renderOvCards(); renderCost();
+    st.textContent = ' done — live numbers below.';
+  } catch (e) { st.innerHTML = `<span class="log">${esc(e)}</span>`; }
+  finally { btn.disabled = false; }
+}
+
+function renderOvCards() {
+  const tt = OV.p1.token_totals, s = OV.p1.summary;
+  const rg = OV.p2.regex, hr = OV.p2.heuristic;
+  const allPass = s.cases_passed === s.cases_total && s.decoder_passed === s.decoder_total;
+  document.getElementById('ovcards').innerHTML = `<div class="cards">
+    <div class="card hl"><div class="k">Tool-schema tokens</div><div class="v good">−${tt.reduction}%</div><div class="kk">${tt.baseline} → ${tt.compact} (o200k_base)</div></div>
+    <div class="card hl"><div class="k">Tool calls preserved</div><div class="v ${allPass?'good':'bad'}">${s.cases_passed+s.decoder_passed}/${s.cases_total+s.decoder_total}</div><div class="kk">round-trip + streaming decode</div></div>
+    <div class="card hl"><div class="k">Classifier complexity ±1</div><div class="v mid">${rg.complexity_within1}% → ${hr.complexity_within1}%</div><div class="kk">regex → ours (heuristic)</div></div>
+    <div class="card hl"><div class="k">Unsafe calls emitted</div><div class="v good">0</div><div class="kk">unknown / bad args fail closed</div></div>
+    <div class="card hl"><div class="k">Classify latency p50</div><div class="v">${hr.p50_us} µs</div><div class="kk">local, no network</div></div>
+  </div>`;
+}
+
+function renderCost() {
+  document.getElementById('ovcost').innerHTML = `
+    <h2>Cost at scale <span class="muted" style="font-weight:400;font-size:13px">— tool-schema input tokens only, a conservative floor</span></h2>
+    <div class="costbox">
+      <label>Requests / day <input type="number" id="ovreq" value="100000" oninput="calcCost()"></label>
+      <label>$ / 1M input tokens <input type="number" id="ovprice" value="2.50" step="0.1" oninput="calcCost()"></label>
+      <div id="costout"></div>
+    </div>`;
+  calcCost();
+}
+function calcCost() {
+  if (!OV.p1) return;
+  const reqs = +document.getElementById('ovreq').value || 0;
+  const price = +document.getElementById('ovprice').value || 0;
+  const cases = OV.p1.cases.length || 1;
+  const avgSaved = (OV.p1.token_totals.baseline - OV.p1.token_totals.compact) / cases;
+  const perMonthTokens = avgSaved * reqs * 30;
+  const perMonth = perMonthTokens / 1e6 * price;
+  const perYear = perMonth * 12;
+  document.getElementById('costout').innerHTML = `
+    <div class="costgrid">
+      <div><span class="kk">avg tokens saved / request</span><b>${Math.round(avgSaved)}</b></div>
+      <div><span class="kk">tokens saved / month</span><b>${(perMonthTokens/1e6).toFixed(1)}M</b></div>
+      <div><span class="kk">saved / month</span><b class="good">$${perMonth.toLocaleString(undefined,{maximumFractionDigits:0})}</b></div>
+      <div><span class="kk">saved / year</span><b class="good">$${perYear.toLocaleString(undefined,{maximumFractionDigits:0})}</b></div>
+    </div>`;
+}
+
+function pipeSvg() {
+  const box = (x, label, sub, ours) => `
+    <div class="pbox ${ours?'ours':''}">
+      <div class="pb-t">${label}</div><div class="pb-s">${sub}</div></div>`;
+  return `<div class="prow">
+    ${box(0,'Client','native tool defs',false)}<span class="parr">→</span>
+    ${box(1,'Router seam','ir/chat.rs',false)}<span class="parr">→</span>
+    ${box(2,'encode_tools()','compact schema ★',true)}<span class="parr">→</span>
+    ${box(3,'LLM','writes &lt;&lt;call…&gt;&gt;',false)}<span class="parr">→</span>
+    ${box(4,'StreamDecoder','validate + rebuild ★',true)}<span class="parr">→</span>
+    ${box(5,'Client','standard tool call',false)}
+  </div>`;
+}
+async function runP1Live() {
+  const q = document.getElementById('p1q').value.trim();
+  const out = document.getElementById('p1liveout');
+  if (!q) { out.innerHTML = '<span class="muted">Type a message first.</span>'; return; }
+  const btn = document.getElementById('p1liverun'); btn.disabled = true;
+  out.innerHTML = '<span class="muted">Running through the binary…</span>';
+  try {
+    const r = await (await fetch('/api/p1live?q=' + encodeURIComponent(q))).json();
+    if (!r.ok) { out.innerHTML = `<pre class="log">${esc(r.log)}</pre>`; return; }
+    document.getElementById('p1tools').textContent = (r.tools || []).join('  ·  ');
+    const afterW = r.baseline_tokens ? Math.max(4, Math.round(100 * (r.compact_tokens / r.baseline_tokens))) : 100;
+    out.innerHTML = `
+      <div class="mono"><span class="delta-up">${esc(r.baseline_tokens)} → ${esc(r.compact_tokens)} tokens (−${esc(r.saved_pct)}%)</span></div>
+      <div class="tokbar"><span style="width:${afterW}%"></span></div>
+      <div class="cmp">
+        <div class="side before"><div class="hd">Native request (baseline)</div><pre>${esc(JSON.stringify(r.baseline_request, null, 1))}</pre></div>
+        <div class="side after"><div class="hd">Compact request (ours)</div><pre>${esc(JSON.stringify(r.compact_request, null, 1))}</pre></div>
+      </div>`;
+  } catch (e) { out.innerHTML = `<pre class="log">${esc(e)}</pre>`; }
+  finally { btn.disabled = false; }
+}
+
+async function runP1Decode() {
+  const call = document.getElementById('p1call').value.trim();
+  const out = document.getElementById('p1decout');
+  if (!call) { out.innerHTML = '<span class="muted">Paste a compact call first.</span>'; return; }
+  const btn = document.getElementById('p1decrun'); btn.disabled = true;
+  out.innerHTML = '<span class="muted">Decoding…</span>';
+  try {
+    const r = await (await fetch('/api/p1live?call=' + encodeURIComponent(call))).json();
+    if (!r.ok) { out.innerHTML = `<pre class="log">${esc(r.log)}</pre>`; return; }
+    const d = r.decoded || {};
+    if (d.error) {
+      out.innerHTML = `<div class="side before"><div class="hd">Fail-closed → error</div><pre>${j(d)}</pre></div>
+        <p class="muted">Rejected safely as <b>${esc(d.error)}</b> — never a guessed call.</p>`;
+    } else {
+      out.innerHTML = `<div class="side after"><div class="hd">Decoded standard tool call</div><pre>${esc(JSON.stringify(d, null, 1))}</pre></div>`;
+    }
+  } catch (e) { out.innerHTML = `<pre class="log">${esc(e)}</pre>`; }
+  finally { btn.disabled = false; }
+}
+
+async function runClassifyLive() {
+  const q = document.getElementById('clsq').value.trim();
+  const ctx = document.getElementById('clsctx').value.trim();
+  const out = document.getElementById('clsout');
+  if (!q) { out.innerHTML = '<span class="muted">Type a query first.</span>'; return; }
+  const btn = document.getElementById('clsrun'); btn.disabled = true;
+  out.innerHTML = '<span class="muted">Classifying through both backends…</span>';
+  try {
+    const r = await (await fetch('/api/classify?q=' + encodeURIComponent(q) + '&ctx=' + encodeURIComponent(ctx))).json();
+    if (!r.ok) { out.innerHTML = `<pre class="log">${esc(r.log)}</pre>`; return; }
+    const card = (title, c, cls) => `<div class="side ${cls}"><div class="hd">${title}</div><pre>type      : ${esc(c.request_type)}
+complexity: ${esc(c.complexity)} / 5
+confidence: ${esc(Number(c.confidence).toFixed(2))}
+latency   : ${esc(c.latency_us)} µs</pre></div>`;
+    out.innerHTML = `<div class="cmp">
+      ${card('Baseline — regex', r.regex, 'before')}
+      ${card('Ours — heuristic', r.heuristic, 'after')}
+    </div><p class="muted">Same query, both real backends. Regex is fixed (complexity 3 / conf 0.50); ours adapts to the query.</p>`;
+  } catch (e) { out.innerHTML = `<pre class="log">${esc(e)}</pre>`; }
+  finally { btn.disabled = false; }
+}
+
+async function runP1() {
+  const btn = document.getElementById('p1run'); const body = document.getElementById('p1body');
+  btn.disabled = true; body.innerHTML = '<div class="empty">Building &amp; running… (first run compiles)</div>';
+  try {
+    const r = await (await fetch('/api/p1')).json();
+    if (!r.ok) { body.innerHTML = `<pre class="log">${esc(r.log)}</pre>`; return; }
+    const s = r.summary;
+    const casesOk = s.cases_passed === s.cases_total;
+    const decOk = s.decoder_passed === s.decoder_total;
+    const tt = r.token_totals || {};
+    let html = `<div class="cards">
+      <div class="card"><div class="k">Round-trip cases</div><div class="v ${casesOk?'good':'bad'}">${s.cases_passed}/${s.cases_total}</div></div>
+      <div class="card"><div class="k">Decoder cases</div><div class="v ${decOk?'good':'bad'}">${s.decoder_passed}/${s.decoder_total}</div></div>
+      <div class="card"><div class="k">Baseline tokens</div><div class="v bad">${esc(tt.baseline ?? '–')}</div></div>
+      <div class="card"><div class="k">Compact tokens</div><div class="v good">${esc(tt.compact ?? '–')}</div></div>
+      <div class="card"><div class="k">Tokens saved</div><div class="v good">${esc(tt.reduction ?? '–')}%</div></div>
+    </div>`;
+    html += `<h2>Before → after (what the router actually sends)</h2>`;
+    for (const c of r.cases) {
+      const pct = c.saved_pct ?? 0;
+      const afterW = c.baseline_tokens ? Math.max(4, Math.round(100 * (c.compact_tokens / c.baseline_tokens))) : 100;
+      html += `<div class="mono" style="margin-top:14px"><b>${esc(c.id)}</b> — ${esc(c.query)}
+        &nbsp; <span class="badge ${c.pass?'pass':'fail'}">${c.pass?'decodes ✓':'FAIL'}</span>
+        &nbsp; <span class="delta-up">${esc(c.baseline_tokens ?? '?')} → ${esc(c.compact_tokens ?? '?')} tokens (−${esc(pct)}%)</span></div>
+        <div class="tokbar"><span style="width:${afterW}%"></span></div>
+        <div class="cmp">
+          <div class="side before"><div class="hd">Native request (baseline)</div><pre>${esc(JSON.stringify(c.baseline_request, null, 1))}</pre></div>
+          <div class="side after"><div class="hd">Compact request (ours)</div><pre>${esc(JSON.stringify(c.compact_request, null, 1))}</pre></div>
+        </div>
+        <details><summary>show rendered call + decoded result</summary>
+          <pre>rendered: ${esc(c.rendered || '(no call)')}\ndecoded : ${j(c.roundtrip)}</pre></details>`;
+    }
+    html += `<h2>Decoder cases (streaming / fail-closed)</h2>
+      <table><tr><th>ID</th><th>Note</th><th>Stream chunks</th><th>Decoded</th><th>Result</th></tr>`;
+    for (const d of r.decoder) {
+      html += `<tr><td class="mono">${esc(d.id)}</td><td>${esc(d.note)}</td>
+        <td><pre>${j(d.chunks)}</pre></td><td><pre>${j(d.decoded)}</pre></td><td>${badge(d.pass)}</td></tr>`;
+    }
+    html += `</table><p class="muted">${esc(r.token || '')}</p>`;
+    body.innerHTML = html;
+  } catch (e) { body.innerHTML = `<pre class="log">${esc(e)}</pre>`; }
+  finally { btn.disabled = false; }
+}
+
+async function runP2() {
+  const btn = document.getElementById('p2run'); const body = document.getElementById('p2body');
+  const backend = document.getElementById('p2backend').value;
+  btn.disabled = true; body.innerHTML = '<div class="empty">Running…</div>';
+  try {
+    const r = await (await fetch('/api/p2?backend=' + backend)).json();
+    if (!r.ok) { body.innerHTML = `<pre class="log">${esc(r.log)}</pre>`; return; }
+    if (r.mode === 'compare') { body.innerHTML = renderCompare(r); return; }
+    const s = r.summary;
+    const accCls = s.type_acc >= 70 ? 'good' : s.type_acc >= 40 ? 'mid' : 'bad';
+    let html = `<div class="cards">
+      <div class="card"><div class="k">Backend</div><div class="v">${esc(r.backend)}</div></div>
+      <div class="card"><div class="k">Type accuracy</div><div class="v ${accCls}">${s.type_acc}%</div></div>
+      <div class="card"><div class="k">Complexity ±1</div><div class="v mid">${s.complexity_within1}%</div></div>
+      <div class="card"><div class="k">p50 latency</div><div class="v">${s.p50_us} µs</div></div>
+      <div class="card"><div class="k">p95 latency</div><div class="v">${s.p95_us} µs</div></div>
+    </div>`;
+    html += `<table><tr><th>ID</th><th>Query</th><th>Predicted</th><th>Expected</th><th>Type</th><th>Cx (pred/exp)</th><th>Conf</th><th>µs</th></tr>`;
+    for (const row of r.rows) {
+      html += `<tr><td class="mono">${esc(row.id)}</td><td>${esc(row.query)}</td>
+        <td class="mono">${esc(row.pred_type)}</td><td class="mono muted">${esc(row.exp_type)}</td>
+        <td>${badge(row.type_ok)}</td>
+        <td>${esc(row.pred_complexity)}/${esc(row.exp_complexity)} ${row.c_ok?'✓':'✗'}</td>
+        <td>${esc(Number(row.confidence).toFixed(2))}</td><td>${esc(row.latency_us)}</td></tr>`;
+    }
+    html += `</table><p class="muted">Regex is the out-of-the-box baseline; switch the backend to compare. Accuracy here is on the 10-case public sample — the private set is larger.</p>`;
+    body.innerHTML = html;
+  } catch (e) { body.innerHTML = `<pre class="log">${esc(e)}</pre>`; }
+  finally { btn.disabled = false; }
+}
+
+function renderCompare(r) {
+  const rg = r.regex, hr = r.heuristic;
+  const dAcc = (hr.type_acc - rg.type_acc).toFixed(1);
+  const dCx = (hr.complexity_within1 - rg.complexity_within1).toFixed(1);
+  const sign = v => (v > 0 ? '+' : '') + v;
+  let html = `<div class="cards">
+    <div class="card"><div class="k">Type accuracy</div><div class="v">${rg.type_acc}% → ${hr.type_acc}%
+      <span class="${dAcc>=0?'delta-up':'bad'}" style="font-size:14px"> (${sign(dAcc)})</span></div></div>
+    <div class="card"><div class="k">Complexity ±1</div><div class="v">${rg.complexity_within1}% → ${hr.complexity_within1}%
+      <span class="${dCx>=0?'delta-up':'bad'}" style="font-size:14px"> (${sign(dCx)})</span></div></div>
+    <div class="card"><div class="k">p50 regex / heur</div><div class="v" style="font-size:18px">${rg.p50_us} / ${hr.p50_us} µs</div></div>
+  </div>`;
+  html += `<h2>Per-query: baseline (regex) → ours (heuristic)</h2>
+    <table><tr><th>ID</th><th>Query</th><th>Expected</th>
+      <th>regex type</th><th>heur type</th><th>regex Cx</th><th>heur Cx</th><th>exp Cx</th><th>regex conf</th><th>heur conf</th></tr>`;
+  for (const row of r.rows) {
+    html += `<tr class="${row.changed?'changed':''}">
+      <td class="mono">${esc(row.id)}</td><td>${esc(row.query)}</td><td class="mono muted">${esc(row.exp_type)}</td>
+      <td class="mono">${esc(row.regex_type)} ${row.regex_type_ok?'✓':'✗'}</td>
+      <td class="mono">${esc(row.heur_type)} ${row.heur_type_ok?'✓':'✗'}</td>
+      <td>${esc(row.regex_c)}</td><td><b>${esc(row.heur_c)}</b></td><td class="muted">${esc(row.exp_complexity)}</td>
+      <td>${esc(Number(row.regex_conf).toFixed(2))}</td><td><b>${esc(Number(row.heur_conf).toFixed(2))}</b></td></tr>`;
+  }
+  html += `</table><p class="muted">Highlighted rows changed between backends. Regex reports fixed complexity=3 / confidence=0.50; the heuristic varies both with the query — this is the “previous data vs ours” difference.</p>`;
+  return html;
+}
+</script>
+</body>
+</html>

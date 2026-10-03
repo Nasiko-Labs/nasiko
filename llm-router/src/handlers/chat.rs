@@ -39,6 +39,9 @@ pub(crate) struct RoutedRequest {
     pub resolved: crate::resolver::ResolvedConfig,
     pub flow_id: Option<String>,
     pub attribution_source: Option<routing::attribution::AttributionSource>,
+    /// classifier track: how this call's model was chosen (`source`, and
+    /// `tier`/`request_type`/`classifier` when a classification happened), for the usage row.
+    pub routing_metadata: Option<serde_json::Value>,
 }
 
 /// Prompt-derived signals `resolve_routed_request` needs beyond the resolved config,
@@ -205,6 +208,7 @@ async fn chat_core(
         resolved,
         flow_id,
         attribution_source,
+        routing_metadata,
     } = routed;
 
     // ── compression seam ──────────────────────────────────────────────────────────────────
@@ -288,6 +292,22 @@ async fn chat_core(
         "brevity: directive decision"
     );
 
+    // ── compact tool-schema seam (opt-in) ─────────────────────────────────────────────────
+    // After brevity, and last among the request transforms, because it removes `req.tools` and
+    // appends the compact definitions as a trailing system message — it must see the final tool
+    // set. Off by default (`TOKEN_COMPACT_TOOLS`), so this is a no-op unless a deployment enables
+    // it; see `compact.rs` for why (response-side decode is wired for the non-streaming path).
+    // The original tools are captured first so the reply can be decoded back against them.
+    let compact_original_tools = req.tools.clone();
+    let compact = crate::compact::apply(&mut req, &ctx.cfg);
+    tracing::info!(
+        target: "nasiko::llm_router::compact",
+        %agent_id,
+        outcome = ?compact,
+        metadata = ?compact.to_metadata(),
+        "compact: tool-schema decision"
+    );
+
     // ── savings ledger inputs ─────────────────────────────────────────────────────────────
     // Measured here, after both seams, because this is the payload the provider will actually
     // bill for — which is what makes `sent_bytes / reported_input_tokens` a calibration rather
@@ -366,15 +386,30 @@ async fn chat_core(
             brevity_metadata: brevity_metadata.clone(),
             compress_bytes,
             request_bytes: Some(sent_bytes),
+            routing_metadata: routing_metadata.clone(),
             span: llm_span.clone(),
         });
     }
 
     // Non-streaming: run with ordered fallbacks; usage records the effective provider/model.
-    let (resp, (provider, model)) = fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
+    let (mut resp, (provider, model)) = fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
         .instrument(llm_span.clone())
         .await?;
     let latency_ms = started.elapsed().as_millis() as i64;
+
+    // Response-side half of compaction: decode the model's `<<call …>>` reply back into standard
+    // tool calls, validated against the original tools, so the client never sees the compact form.
+    if matches!(compact, crate::compact::CompactOutcome::Applied { .. }) {
+        if let Some(tools) = compact_original_tools.as_deref() {
+            let decoded = crate::compact::decode_response(&mut resp, tools);
+            tracing::info!(
+                target: "nasiko::llm_router::compact",
+                %agent_id,
+                decoded_calls = decoded,
+                "compact: decoded model reply back into standard tool calls"
+            );
+        }
+    }
 
     // Record effective model and token usage on the server-side gen_ai span.
     llm_span.record("gen_ai.response.model", model.as_str());
@@ -400,8 +435,10 @@ async fn chat_core(
             platform_paid,
             compress_metadata: compression.to_metadata(),
             brevity_metadata: brevity_metadata.clone(),
+            compact_metadata: compact.to_metadata(),
             compress_bytes,
             request_bytes: Some(sent_bytes),
+            routing_metadata,
         },
     );
 
@@ -483,6 +520,7 @@ pub(crate) async fn resolve_routed_request(
             tier3_model: resolved.tier3_model.as_deref(),
             signals: &boundary,
             query: signals.query.as_deref(),
+            classifier_heuristic: ctx.cfg.classifier_heuristic_enabled,
         },
     )
     .await;
@@ -496,6 +534,15 @@ pub(crate) async fn resolve_routed_request(
         model_overridden = decision.model != resolved.model,
         "chat_core: model routing decision"
     );
+    // classifier track: carried onto the usage row so which precedence level chose the model
+    // (pinned/cached/classified/config/default), and the classifier's decision when one ran,
+    // is auditable per call — not just in server logs.
+    let routing_metadata = Some(serde_json::json!({
+        "source": format!("{:?}", decision.source),
+        "tier": decision.tier.map(|t| format!("{t:?}")),
+        "request_type": decision.request_type.map(|r| r.as_str()),
+        "classifier": decision.classifier,
+    }));
     if decision.model != resolved.model {
         tracing::info!(
             target: "nasiko::llm_router::chat",
@@ -522,6 +569,7 @@ pub(crate) async fn resolve_routed_request(
         resolved,
         flow_id,
         attribution_source,
+        routing_metadata,
     })
 }
 
@@ -576,6 +624,11 @@ struct StreamChatArgs<'a> {
     /// `compress_metadata` is: on this path the `UsageRecord` is only built once the stream ends.
     compress_bytes: Option<(usize, usize)>,
     request_bytes: Option<usize>,
+    /// classifier track: the routing decision for this call (see
+    /// `RoutedRequest::routing_metadata`), threaded through for the same reason as
+    /// `compress_metadata` — the stream's `UsageRecord` is built once, at `Drop`, long after
+    /// `resolve_routed_request` returned.
+    routing_metadata: Option<serde_json::Value>,
 }
 
 /// Stream provider chunks back as OpenAI SSE: `data: <chunk>\n\n` … `data: [DONE]\n\n`.
@@ -600,6 +653,7 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
         brevity_metadata,
         compress_bytes,
         request_bytes,
+        routing_metadata,
     } = args;
     let state = Arc::new(Mutex::new(StreamState::default()));
     let guard = UsageGuard {
@@ -619,6 +673,7 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
         brevity_metadata,
         compress_bytes,
         request_bytes,
+        routing_metadata,
     };
 
     let body_stream = async_stream::stream! {
@@ -691,12 +746,14 @@ struct UsageGuard {
     /// `Copy`, so unlike the two above these are read rather than taken.
     compress_bytes: Option<(usize, usize)>,
     request_bytes: Option<usize>,
+    routing_metadata: Option<serde_json::Value>,
 }
 
 impl Drop for UsageGuard {
     fn drop(&mut self) {
         let compress_metadata = self.compress_metadata.take();
         let brevity_metadata = self.brevity_metadata.take();
+        let routing_metadata = self.routing_metadata.take();
         let st = self.state.lock().unwrap_or_else(|e| e.into_inner());
         record_span_usage(&self.span, st.usage.as_ref());
         usage::spawn_log(
@@ -719,8 +776,10 @@ impl Drop for UsageGuard {
                 platform_paid: self.platform_paid,
                 compress_metadata,
                 brevity_metadata,
+                compact_metadata: None,
                 compress_bytes: self.compress_bytes,
                 request_bytes: self.request_bytes,
+                routing_metadata,
             },
         );
     }
@@ -866,6 +925,7 @@ mod tests {
                 // This test covers span lifetime, not compression.
                 compress_metadata: None,
                 brevity_metadata: None,
+                routing_metadata: None,
             };
             drop(guard);
         });

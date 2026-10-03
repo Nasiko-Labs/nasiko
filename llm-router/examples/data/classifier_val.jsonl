@@ -1,0 +1,8 @@
+{"id": "va-01", "query": "Generate a TypeScript type guard for this union.", "context": "type Shape = Circle | Square.", "request_type": "code_generation", "complexity": 2}
+{"id": "va-02", "query": "Why does this async function deadlock under load?", "context": "Holds a Mutex across an .await.", "request_type": "code_understanding", "complexity": 4}
+{"id": "va-03", "query": "How would you design a feature-flag service that scales to 10k evaluations per second?", "context": "Low-latency reads, infrequent writes.", "request_type": "technical_design", "complexity": 5}
+{"id": "va-04", "query": "How many distinct ways can you arrange the letters in BANANA?", "context": "", "request_type": "analytical_reasoning", "complexity": 2}
+{"id": "va-05", "query": "Write release notes for version 2.3 highlighting the new router.", "context": "Changelog attached.", "request_type": "writing", "complexity": 2}
+{"id": "va-06", "query": "What does HTTP status 418 mean?", "context": "", "request_type": "factual_lookup", "complexity": 1}
+{"id": "va-07", "query": "ok", "context": "Noisy, low-signal reply.", "request_type": "general", "complexity": 1}
+{"id": "va-08", "query": "Add error handling to this parser and tell me which inputs still break it.", "context": "Multi-intent: code plus analysis of edge cases.", "request_type": "code_generation", "complexity": 4}
