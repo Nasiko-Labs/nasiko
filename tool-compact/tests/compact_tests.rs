@@ -146,3 +146,96 @@ fn test_plain_text_with_no_calls() {
     let calls = decode_calls(output, &tools).expect("should handle text with no calls");
     assert!(calls.is_empty());
 }
+
+
+fn github_pr_tool() -> ToolDef {
+    ToolDef {
+        kind: "function".to_string(),
+        function: FunctionDef {
+            name: "create_pull_request".to_string(),
+            description: Some("Create a new GitHub pull request in the repository.".to_string()),
+            parameters: Some(json!({
+                "type": "object",
+                "properties": {
+                    "repo": {"type": "string", "description": "owner/repo"},
+                    "base": {"type": "string", "description": "target branch"},
+                    "head": {"type": "string", "description": "feature branch"},
+                    "title": {"type": "string"},
+                    "body": {"type": "string"},
+                    "draft": {"type": "boolean"},
+                    "reviewers": {"type": "array", "items": {"type": "string"}}
+                },
+                "required": ["repo", "base", "head", "title"]
+            })),
+        },
+        extra: Map::new(),
+    }
+}
+
+fn postgres_sql_tool() -> ToolDef {
+    ToolDef {
+        kind: "function".to_string(),
+        function: FunctionDef {
+            name: "execute_sql".to_string(),
+            description: Some("Execute a PostgreSQL SQL query with safety controls.".to_string()),
+            parameters: Some(json!({
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "SQL statement"},
+                    "timeout_ms": {"type": "integer"},
+                    "read_only": {"type": "boolean"}
+                },
+                "required": ["query"]
+            })),
+        },
+        extra: Map::new(),
+    }
+}
+
+#[test]
+fn test_complex_realworld_github_agent() {
+    let tools = vec![github_pr_tool(), postgres_sql_tool()];
+    let compact = encode_tools(&tools).expect("encode complex tools");
+
+    assert!(compact.compact_definitions.contains("create_pull_request("));
+    assert!(compact.compact_definitions.contains("repo:str"));
+    assert!(compact.compact_definitions.contains("reviewers?:[str]"));
+    assert!(compact.compact_definitions.contains("draft?:bool"));
+
+    let output = r#"I have completed the code changes. Now submitting the PR:
+<<call create_pull_request {"repo":"Nasiko-Labs/nasiko","base":"main","head":"feat/compact-tools","title":"feat: sub-token tool schema compaction","draft":false,"reviewers":["lead-reviewer"]}>>
+Please let me know if you need any followups."#;
+
+    let calls = decode_calls(output, &tools).expect("decode real PR tool call");
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].function.name, "create_pull_request");
+    assert!(calls[0].function.arguments.contains("feat/compact-tools"));
+    assert!(calls[0].function.arguments.contains("Nasiko-Labs/nasiko"));
+}
+
+#[test]
+fn test_sql_query_with_redirection_and_quotes() {
+    let tools = vec![postgres_sql_tool()];
+    let output = "<<call execute_sql {\"query\":\"SELECT id, prompt FROM requests WHERE log LIKE '%>>%' ORDER BY id DESC LIMIT 10;\",\"read_only\":true,\"timeout_ms\":5000}>>";
+    
+    let calls = decode_calls(output, &tools).expect("handle SQL query containing >> inside quotes");
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].function.name, "execute_sql");
+    assert!(calls[0].function.arguments.contains("%>>%"));
+}
+
+#[test]
+fn test_single_byte_fragmented_streaming_dfa() {
+    let tools = vec![postgres_sql_tool()];
+    let full_text = "<<call execute_sql {\"query\":\"SELECT count(*) FROM errors;\"}>>";
+    
+    let mut decoder = StreamDecoder::new();
+    for c in full_text.chars() {
+        let mut buf = [0u8; 4];
+        let s = c.encode_utf8(&mut buf);
+        decoder.feed(s);
+    }
+    let calls = decoder.finish(&tools).expect("should handle byte-by-byte streaming DFA");
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].function.name, "execute_sql");
+}
