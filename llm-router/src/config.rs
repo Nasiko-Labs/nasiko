@@ -10,6 +10,15 @@
 /// fail-closed behaviour (e.g. an empty `agent_jwt_secret`) is enforced at use sites.
 #[derive(Debug, Clone)]
 pub struct GatewayConfig {
+    pub classifier_backend: String,
+    pub classifier_endpoint: String,
+    pub classifier_model: String,
+    pub classifier_timeout_ms: u64,
+    pub classifier_min_confidence: f32,
+    pub classifier_context_chars: usize,
+    pub classifier_seed: u64,
+    pub cache_switch_enabled: bool,
+    pub cache_switch_margin: f64,
     /// Shared HS256 secret the orchestrator mints agent-identity JWTs with. Empty ⇒
     /// every request is rejected 401 (fail closed) — never fail open.
     pub agent_jwt_secret: String,
@@ -160,6 +169,15 @@ impl Default for GatewayConfig {
     /// The canonical defaults (also the values `from_env` falls back to per key).
     fn default() -> Self {
         Self {
+            classifier_backend: "regex".into(),
+            classifier_endpoint: "https://openrouter.ai/api/alpha/decisions".into(),
+            classifier_model: "typesafe/jev-1.13-20260917".into(),
+            classifier_timeout_ms: 3000,
+            classifier_min_confidence: 0.6,
+            classifier_context_chars: 12000,
+            classifier_seed: 42,
+            cache_switch_enabled: false,
+            cache_switch_margin: 0.2,
             agent_jwt_secret: String::new(),
             agent_jwt_algorithm: "HS256".into(),
             default_provider: "openai".into(),
@@ -206,6 +224,25 @@ impl GatewayConfig {
     pub fn from_env() -> Self {
         let d = Self::default();
         Self {
+            classifier_backend: env_or("CLASSIFIER_BACKEND", &d.classifier_backend),
+            classifier_endpoint: env_or("CLASSIFIER_ENDPOINT", &d.classifier_endpoint),
+            classifier_model: env_or("CLASSIFIER_MODEL", &d.classifier_model),
+            classifier_timeout_ms: env_parse_first(
+                &["CLASSIFIER_TIMEOUT_MS"],
+                d.classifier_timeout_ms,
+            ),
+            classifier_min_confidence: env_parse_first(
+                &["CLASSIFIER_MIN_CONFIDENCE"],
+                d.classifier_min_confidence,
+            ),
+            classifier_context_chars: env_usize(
+                "CLASSIFIER_CONTEXT_CHARS",
+                d.classifier_context_chars,
+            )
+            .min(24000),
+            classifier_seed: env_parse_first(&["CLASSIFIER_SEED"], d.classifier_seed),
+            cache_switch_enabled: env_flag("CACHE_SWITCH_ENABLED", d.cache_switch_enabled),
+            cache_switch_margin: env_parse_first(&["CACHE_SWITCH_MARGIN"], d.cache_switch_margin),
             agent_jwt_secret: env_or("AGENT_JWT_SECRET", &d.agent_jwt_secret),
             agent_jwt_algorithm: env_or("AGENT_JWT_ALGORITHM", &d.agent_jwt_algorithm),
             default_provider: env_or("DEFAULT_PROVIDER", &d.default_provider),

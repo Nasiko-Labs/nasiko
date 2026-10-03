@@ -29,6 +29,7 @@ pub mod pricing_sync;
 pub mod registry;
 pub mod salience;
 mod salience_classifier;
+pub mod switch_cost;
 
 pub use boundary::{BoundarySignals, Mode, Phase};
 pub use cache::{CachedDecision, DecisionCache, NoopCache, RedisCache};
@@ -126,6 +127,31 @@ pub async fn route_model(
     gate: &dyn SalienceGate,
     inputs: &RouteInputs<'_>,
 ) -> RouteDecision {
+    route_model_with_classifier(
+        cache,
+        registry,
+        cell_store,
+        gate,
+        &classifier::RegexClassifier,
+        None,
+        "",
+        None,
+        inputs,
+    )
+    .await
+}
+
+pub async fn route_model_with_classifier(
+    cache: &dyn DecisionCache,
+    registry: &dyn TierRegistry,
+    cell_store: &dyn CellStore,
+    gate: &dyn SalienceGate,
+    classifier: &dyn classifier::RequestClassifier,
+    seed: Option<u64>,
+    context: &str,
+    switch_policy: Option<(&sqlx::PgPool, &nasiko_pricing::PricingEngine, &str, f64)>,
+    inputs: &RouteInputs<'_>,
+) -> RouteDecision {
     tracing::info!(
         target: "nasiko::llm_router::routing",
         agent_id = %inputs.agent_id,
@@ -176,7 +202,11 @@ pub async fn route_model(
             agent_id = %inputs.agent_id, %conv_id,
             "route_model: LEVEL 2 (CacheHit) — looking up sticky decision for (conv_id, agent_id)"
         );
-        if let Some(hit) = cache.get(conv_id, inputs.agent_id).await {
+        let prior = cache.get(conv_id, inputs.agent_id).await;
+        if let Some(hit) = prior
+            .clone()
+            .filter(|_| switch_policy.is_none() || !inputs.signals.is_fireable_boundary())
+        {
             // Learning write: this turn's user message is the verdict on the previous turn's
             // answer, which the cached decision identifies. Credit it to that (tier,
             // request_type). `signal` is conservative, so a genuine new question scores None
@@ -215,10 +245,17 @@ pub async fn route_model(
             tracing::info!(
                 target: "nasiko::llm_router::routing",
                 agent_id = %inputs.agent_id, %conv_id, provider = %inputs.provider,
-                query_preview = %inputs.query.map(query_preview).unwrap_or_default(),
+                query_chars = query.chars().count(),
                 "route_model: LEVEL 2.5 (SalienceGate) — cache miss at a fireable boundary; asking the gate whether to classify this turn"
             );
             if !gate.is_substantive(query).await {
+                if let Some(prior) = &prior {
+                    return RouteDecision {
+                        model: prior.model.clone(),
+                        tier: prior.tier,
+                        source: RouteSource::CacheHit,
+                    };
+                }
                 let model = small_talk_model(registry, inputs).await;
                 tracing::info!(
                     target: "nasiko::llm_router::routing",
@@ -250,9 +287,44 @@ pub async fn route_model(
             // (`ThreadRng`) is `!Send`, so it is scoped to drop before the next `.await` — the
             // handler future must stay `Send`.
             let learned = cell_store.load(inputs.provider).await;
-            let (tier, request_type) = {
+            let result = classifier.classify(query, context).await;
+            let Ok(result) = result else {
+                return RouteDecision {
+                    model: inputs.fallback_model.into(),
+                    tier: None,
+                    source: RouteSource::Config,
+                };
+            };
+            if result.fallback_reason.is_some() {
+                return RouteDecision {
+                    model: prior
+                        .as_ref()
+                        .map(|p| p.model.clone())
+                        .unwrap_or_else(|| inputs.fallback_model.into()),
+                    tier: prior.as_ref().and_then(|p| p.tier),
+                    source: RouteSource::Config,
+                };
+            }
+            let request_type = result.request_type;
+            let tier = if let Some(seed) = seed {
+                use rand::SeedableRng;
+                let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+                classifier::pick_model_thompson(
+                    &learned,
+                    request_type,
+                    classifier::DEFAULT_W_QUALITY,
+                    classifier::DEFAULT_W_COST,
+                    &mut rng,
+                )
+            } else {
                 let mut rng = rand::rng();
-                classify(query, inputs.provider, &learned, &mut rng)
+                classifier::pick_model_thompson(
+                    &learned,
+                    request_type,
+                    classifier::DEFAULT_W_QUALITY,
+                    classifier::DEFAULT_W_COST,
+                    &mut rng,
+                )
             };
             // Per-config tier override takes priority over the global registry.
             let config_override = match tier {
@@ -276,6 +348,34 @@ pub async fn route_model(
             };
             match tier_model {
                 Some(model) => {
+                    if let (Some(prior), Some((db, pricing, owner, margin))) =
+                        (&prior, switch_policy)
+                    {
+                        if model != prior.model
+                            && !tokio::time::timeout(
+                                std::time::Duration::from_millis(250),
+                                switch_cost::should_switch(
+                                    db,
+                                    pricing,
+                                    owner,
+                                    inputs.agent_id,
+                                    conv_id,
+                                    inputs.provider,
+                                    &prior.model,
+                                    &model,
+                                    margin,
+                                ),
+                            )
+                            .await
+                            .unwrap_or(false)
+                        {
+                            return RouteDecision {
+                                model: prior.model.clone(),
+                                tier: prior.tier,
+                                source: RouteSource::CacheHit,
+                            };
+                        }
+                    }
                     let decision = CachedDecision {
                         model,
                         tier: Some(tier),
@@ -301,6 +401,13 @@ pub async fn route_model(
                     };
                 }
                 None => {
+                    if let Some(prior) = &prior {
+                        return RouteDecision {
+                            model: prior.model.clone(),
+                            tier: prior.tier,
+                            source: RouteSource::CacheHit,
+                        };
+                    }
                     // Registry miss for this provider ⇒ fall through to configured/default model.
                     tracing::warn!(
                         target: "nasiko::llm_router::routing",
@@ -381,12 +488,6 @@ async fn maybe_learn(
     cell_store
         .observe(inputs.provider, tier, rt, observation)
         .await;
-}
-
-/// A short, log-safe preview of a query (first 120 chars) — mirrors the classifier's own
-/// `query_preview` so both stages format the query the same way in the logs.
-fn query_preview(q: &str) -> String {
-    q.chars().take(120).collect()
 }
 
 /// The model to answer a non-substantive turn with (Level 2.5). Level 2.5 is only reached
@@ -532,6 +633,44 @@ mod tests {
             tier3_model: None,
             signals,
             query: Some("hello"),
+        }
+    }
+
+    struct FixedClassifier;
+    #[async_trait]
+    impl classifier::RequestClassifier for FixedClassifier {
+        async fn classify(&self, _: &str, _: &str) -> Result<classifier::Classification, String> {
+            Ok(classifier::Classification {
+                request_type: RequestType::AnalyticalReasoning,
+                complexity: 5,
+                confidence: 0.95,
+                fallback_reason: None,
+                decision_cost_usd: None,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn enabled_classifier_uses_seed_deterministically() {
+        let cache = FakeCache::empty();
+        let registry = test_support::StubRegistry;
+        let cells = InMemoryCellStore::default();
+        let signals = signals(Some("test"), Phase::ColdStart, Mode::FreeFlowing);
+        let input = inputs("openai", &signals, None);
+        for _ in 0..3 {
+            let decision = route_model_with_classifier(
+                &cache,
+                &registry,
+                &cells,
+                &AllowAllGate,
+                &FixedClassifier,
+                Some(42),
+                "prior context",
+                None,
+                &input,
+            )
+            .await;
+            assert_eq!(decision.tier, Some(Tier::Tier3));
         }
     }
 
@@ -920,4 +1059,41 @@ mod tests {
         assert!(!is_tool_continuation(&[msg("user"), msg("assistant")]));
         assert!(!is_tool_continuation(&[]));
     }
+}
+
+pub fn classifier_context(messages: &[crate::ir::Message], max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+    let latest = messages.iter().rposition(|m| m.role == "user");
+    let mut instructions = Vec::new();
+    let mut recent = Vec::new();
+    for (i, m) in messages.iter().enumerate() {
+        if Some(i) == latest {
+            continue;
+        }
+        if let Some(text) = m.text() {
+            let text = format!("{}: {}", m.role, text);
+            if m.role == "system" || m.role == "developer" {
+                instructions.push(text);
+            } else if i + 6 >= messages.len() {
+                recent.push(text);
+            }
+        }
+    }
+    let instructions: String = instructions
+        .join("\n")
+        .chars()
+        .take(max_chars / 2)
+        .collect();
+    let recent: String = recent
+        .join("\n")
+        .chars()
+        .rev()
+        .take(max_chars.saturating_sub(instructions.chars().count() + 1))
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    format!("{instructions}\n{recent}")
 }

@@ -1,0 +1,153 @@
+{
+  "schema_version": "h4-public-eval-v1",
+  "purpose": "Synthetic independently labelled validation cases. No empirical improvement claimed.",
+  "examples": [
+    {
+      "id": "own-validation-code_generation-4",
+      "query": "Implement a durable job executor.",
+      "context": "Multiple workers, transactional leases, crash recovery, and fencing tests.",
+      "request_type": "code_generation",
+      "complexity": 5
+    },
+    {
+      "id": "own-validation-code_generation-5",
+      "query": "Replace that line with a return statement.",
+      "context": "Earlier message contains a JavaScript function ending with console.log(total).",
+      "request_type": "code_generation",
+      "complexity": 1
+    },
+    {
+      "id": "own-validation-code_generation-6",
+      "query": "Add authentication middleware and tests.",
+      "context": "Use existing token verifier, return 401 on missing or expired token.",
+      "request_type": "code_generation",
+      "complexity": 3
+    },
+    {
+      "id": "own-validation-code_understanding-4",
+      "query": "Explain the compiler error.",
+      "context": "A borrowed reference escapes a spawned task requiring a static lifetime.",
+      "request_type": "code_understanding",
+      "complexity": 3
+    },
+    {
+      "id": "own-validation-code_understanding-5",
+      "query": "Explain that expression.",
+      "context": "Prior snippet is values.iter().filter(|v| **v > 0).count().",
+      "request_type": "code_understanding",
+      "complexity": 2
+    },
+    {
+      "id": "own-validation-code_understanding-6",
+      "query": "Review this code for race conditions.",
+      "context": "Two async workers independently read then overwrite a shared account balance.",
+      "request_type": "code_understanding",
+      "complexity": 4
+    },
+    {
+      "id": "own-validation-technical_design-4",
+      "query": "How should we structure this module?",
+      "context": "A small calculator library with three pure operations.",
+      "request_type": "technical_design",
+      "complexity": 2
+    },
+    {
+      "id": "own-validation-technical_design-5",
+      "query": "Define the deployment architecture.",
+      "context": "Three regions, disaster recovery, data residency, and conflicting consistency needs.",
+      "request_type": "technical_design",
+      "complexity": 5
+    },
+    {
+      "id": "own-validation-technical_design-6",
+      "query": "Design a rate limiter.",
+      "context": "One server, per-user requests, fixed one-minute windows.",
+      "request_type": "technical_design",
+      "complexity": 3
+    },
+    {
+      "id": "own-validation-analytical_reasoning-4",
+      "query": "Compare expected cost of both options.",
+      "context": "A costs 2 per use. B costs 40 per month plus 0.5 per use. Assume 50 uses.",
+      "request_type": "analytical_reasoning",
+      "complexity": 2
+    },
+    {
+      "id": "own-validation-analytical_reasoning-5",
+      "query": "Resolve this contradiction.",
+      "context": "Two replicas claim exclusive ownership after a network partition. Compare event evidence.",
+      "request_type": "analytical_reasoning",
+      "complexity": 5
+    },
+    {
+      "id": "own-validation-analytical_reasoning-6",
+      "query": "Work out the probability.",
+      "context": "Draw two balls without replacement from three red and four blue balls.",
+      "request_type": "analytical_reasoning",
+      "complexity": 3
+    },
+    {
+      "id": "own-validation-writing-4",
+      "query": "Turn these notes into a proposal.",
+      "context": "Include competing options, risks, audience-specific wording, and an executive summary.",
+      "request_type": "writing",
+      "complexity": 4
+    },
+    {
+      "id": "own-validation-writing-5",
+      "query": "Rewrite it for a child.",
+      "context": "Earlier text explains how rain forms from condensed water vapor.",
+      "request_type": "writing",
+      "complexity": 2
+    },
+    {
+      "id": "own-validation-writing-6",
+      "query": "Summarize this long report.",
+      "context": "Several conflicting sources. Preserve the distinctions and avoid unsupported conclusions.",
+      "request_type": "writing",
+      "complexity": 4
+    },
+    {
+      "id": "own-validation-factual_lookup-4",
+      "query": "Name the author of Pride and Prejudice.",
+      "context": "No extra commentary.",
+      "request_type": "factual_lookup",
+      "complexity": 1
+    },
+    {
+      "id": "own-validation-factual_lookup-5",
+      "query": "What is the default HTTPS port?",
+      "context": "Do not write code.",
+      "request_type": "factual_lookup",
+      "complexity": 1
+    },
+    {
+      "id": "own-validation-factual_lookup-6",
+      "query": "What is its symbol?",
+      "context": "The earlier question concerns the chemical element sodium.",
+      "request_type": "factual_lookup",
+      "complexity": 1
+    },
+    {
+      "id": "own-validation-general-4",
+      "query": "Suggest something fun for tonight.",
+      "context": "The user likes board games and is staying home.",
+      "request_type": "general",
+      "complexity": 2
+    },
+    {
+      "id": "own-validation-general-5",
+      "query": "Can we talk for a moment?",
+      "context": "No task has been specified.",
+      "request_type": "general",
+      "complexity": 1
+    },
+    {
+      "id": "own-validation-general-6",
+      "query": "Wish me luck.",
+      "context": "The user has an exam tomorrow.",
+      "request_type": "general",
+      "complexity": 1
+    }
+  ]
+}

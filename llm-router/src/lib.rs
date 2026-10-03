@@ -59,6 +59,7 @@ pub use routing::{
 /// router state.
 #[derive(Clone)]
 pub struct LlmRouterCtx {
+    pub classifier: Arc<dyn routing::classifier::RequestClassifier>,
     /// Postgres pool — reads `agents.llm_config` / `user_secrets`, writes `token_usage`.
     pub db: PgPool,
     /// Pooled outbound HTTP client for provider calls.
@@ -128,7 +129,9 @@ impl LlmRouterCtx {
         let cfg = Arc::new(cfg);
         let salience_gate = build_salience_gate(&cfg);
         let pricing = Arc::new(PricingEngine::new(db.clone()));
+        let classifier = routing::classifier::build_classifier(&cfg, http.clone());
         Self {
+            classifier,
             db,
             http,
             cfg,

@@ -1,0 +1,153 @@
+{
+  "schema_version": "h4-public-eval-v1",
+  "purpose": "Synthetic independently labelled train cases. No empirical improvement claimed.",
+  "examples": [
+    {
+      "id": "own-train-code_generation-1",
+      "query": "Change `flase` to `false` in this config snippet.",
+      "context": "Only one spelling correction.",
+      "request_type": "code_generation",
+      "complexity": 1
+    },
+    {
+      "id": "own-train-code_generation-2",
+      "query": "Add a function that converts Celsius to Fahrenheit.",
+      "context": "Python. Return a float.",
+      "request_type": "code_generation",
+      "complexity": 2
+    },
+    {
+      "id": "own-train-code_generation-3",
+      "query": "Build a CSV reader that reports invalid row numbers.",
+      "context": "Rust, quoted fields, UTF-8, and unit tests.",
+      "request_type": "code_generation",
+      "complexity": 3
+    },
+    {
+      "id": "own-train-code_understanding-1",
+      "query": "Explain how this loop terminates.",
+      "context": "while n > 0 { n /= 2; }",
+      "request_type": "code_understanding",
+      "complexity": 2
+    },
+    {
+      "id": "own-train-code_understanding-2",
+      "query": "What happens when this branch runs?",
+      "context": "if valid { return Ok(value); } else { return Err(error); }",
+      "request_type": "code_understanding",
+      "complexity": 2
+    },
+    {
+      "id": "own-train-code_understanding-3",
+      "query": "Trace ownership across this service.",
+      "context": "Rust tasks share Arc<Mutex<State>> and send results through a bounded channel.",
+      "request_type": "code_understanding",
+      "complexity": 4
+    },
+    {
+      "id": "own-train-technical_design-1",
+      "query": "Choose a storage design for chat history.",
+      "context": "Compare relational rows with document storage for ten thousand users.",
+      "request_type": "technical_design",
+      "complexity": 3
+    },
+    {
+      "id": "own-train-technical_design-2",
+      "query": "Design a safe order-processing service.",
+      "context": "Unordered webhooks, duplicate delivery, cancellation, partial refunds, and a ledger.",
+      "request_type": "technical_design",
+      "complexity": 5
+    },
+    {
+      "id": "own-train-technical_design-3",
+      "query": "Plan an API version migration.",
+      "context": "Old clients remain online for six months. Include rollback and compatibility.",
+      "request_type": "technical_design",
+      "complexity": 4
+    },
+    {
+      "id": "own-train-analytical_reasoning-1",
+      "query": "Calculate the final balance.",
+      "context": "Start with 200. Subtract 35 and add 12.",
+      "request_type": "analytical_reasoning",
+      "complexity": 1
+    },
+    {
+      "id": "own-train-analytical_reasoning-2",
+      "query": "Which explanation fits these measurements?",
+      "context": "Failures rise only after worker count exceeds DB pool capacity.",
+      "request_type": "analytical_reasoning",
+      "complexity": 3
+    },
+    {
+      "id": "own-train-analytical_reasoning-3",
+      "query": "Find the cause of missing ledger entries.",
+      "context": "Retries cross timeout boundaries and event ordering is not guaranteed.",
+      "request_type": "analytical_reasoning",
+      "complexity": 4
+    },
+    {
+      "id": "own-train-writing-1",
+      "query": "Make this sentence shorter.",
+      "context": "The meeting will take place at approximately three in the afternoon.",
+      "request_type": "writing",
+      "complexity": 1
+    },
+    {
+      "id": "own-train-writing-2",
+      "query": "Draft a reminder for the team.",
+      "context": "The launch checklist is due tomorrow. Keep a friendly tone.",
+      "request_type": "writing",
+      "complexity": 2
+    },
+    {
+      "id": "own-train-writing-3",
+      "query": "Write a customer incident explanation.",
+      "context": "Explain impact, recovery, and uncertainty without blaming users or promising no recurrence.",
+      "request_type": "writing",
+      "complexity": 3
+    },
+    {
+      "id": "own-train-factual_lookup-1",
+      "query": "What is the capital of Japan?",
+      "context": "Answer with the city name.",
+      "request_type": "factual_lookup",
+      "complexity": 1
+    },
+    {
+      "id": "own-train-factual_lookup-2",
+      "query": "Define HTTP 404.",
+      "context": "One short sentence.",
+      "request_type": "factual_lookup",
+      "complexity": 1
+    },
+    {
+      "id": "own-train-factual_lookup-3",
+      "query": "What does this standard term mean?",
+      "context": "Term is cache hit. Provide a definition, not a design.",
+      "request_type": "factual_lookup",
+      "complexity": 1
+    },
+    {
+      "id": "own-train-general-1",
+      "query": "Hello, how are you?",
+      "context": "A new conversation.",
+      "request_type": "general",
+      "complexity": 1
+    },
+    {
+      "id": "own-train-general-2",
+      "query": "Thanks, that helped.",
+      "context": "Previous answer solved the user problem.",
+      "request_type": "general",
+      "complexity": 1
+    },
+    {
+      "id": "own-train-general-3",
+      "query": "Tell me a lighthearted joke.",
+      "context": "No topic restrictions.",
+      "request_type": "general",
+      "complexity": 1
+    }
+  ]
+}
