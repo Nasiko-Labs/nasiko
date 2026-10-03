@@ -199,6 +199,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Ok(key) = env::var("OPENAI_API_KEY")
                 .or_else(|_| env::var("OPENROUTER_API_KEY"))
                 .or_else(|_| env::var("PROVIDER_API_KEY"))
+                .or_else(|_| env::var("GROQ_API_KEY"))
                 .or_else(|_| env::var("API_KEY"))
             {
                 req_builder = req_builder.header("Authorization", format!("Bearer {}", key));
@@ -208,7 +209,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             match resp {
                 Ok(res) => {
+                    let status = res.status();
                     if let Ok(json_resp) = res.json::<Value>().await {
+                        if !status.is_success() {
+                            eprintln!("⚠️  Live API returned error HTTP {}: {}", status, json_resp);
+                        }
                         let raw_text = json_resp["choices"][0]["message"]["content"]
                             .as_str()
                             .unwrap_or_default()

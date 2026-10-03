@@ -37,9 +37,30 @@ pub fn decode_calls(text: &str, tools: &[ToolDef]) -> Result<Vec<ToolCall>, Deco
                 name_end += 1;
             }
 
-            let tool_name = text[name_start..name_end].trim().trim_end_matches(':');
+            let mut tool_name = text[name_start..name_end].trim().trim_end_matches(':');
             if tool_name.is_empty() {
                 return Err(DecodeError::MalformedSyntax("missing tool name in call".to_string()));
+            }
+
+            // If the model literally output `<<call name <actual_name> ...` or `<<call tool <actual_name>`, skip the descriptor
+            if (tool_name.eq_ignore_ascii_case("name") || tool_name.eq_ignore_ascii_case("tool"))
+                && !tools.iter().any(|t| t.function.name == tool_name)
+            {
+                let after_desc = &text[name_end..];
+                let trimmed_after = after_desc.trim_start().trim_start_matches(':').trim_start();
+                let next_start = name_end + (after_desc.len() - trimmed_after.len());
+                let mut next_end = next_start;
+                while next_end < len {
+                    let b = bytes[next_end];
+                    if b.is_ascii_whitespace() || b == b'{' || b == b':' || b == b'(' || b == b'>' {
+                        break;
+                    }
+                    next_end += 1;
+                }
+                if next_end > next_start {
+                    tool_name = text[next_start..next_end].trim().trim_end_matches(':');
+                    name_end = next_end;
+                }
             }
 
             // Find start of JSON arguments '{'
