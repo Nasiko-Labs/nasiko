@@ -21,6 +21,8 @@ pub mod cache;
 pub mod catalog;
 pub mod cells;
 pub mod classifier;
+pub mod hosted_classifier;
+pub mod linear_classifier;
 // The salience classifier itself — feature engine, weight loading, scoring, banding.
 // Private to `routing`: only `salience.rs` (a sibling module) uses it directly, via
 // `ClassifierSalienceGate`.
@@ -33,7 +35,10 @@ mod salience_classifier;
 pub use boundary::{BoundarySignals, Mode, Phase};
 pub use cache::{CachedDecision, DecisionCache, NoopCache, RedisCache};
 pub use cells::{CellStore, InMemoryCellStore, PgCellStore};
-pub use classifier::{RequestType, Tier, classify, classify_request_type, signal};
+pub use classifier::{
+    Classification, ClassifierChain, ClassifyError, ClassifyInput, Decision, FallbackReason,
+    RegexClassifier, RequestClassifier, RequestType, Tier, classify, classify_request_type, signal,
+};
 pub use registry::{PgTierRegistry, TierRegistry};
 pub use salience::{AllowAllGate, ClassifierSalienceGate, SalienceGate};
 
@@ -83,6 +88,10 @@ pub struct RouteInputs<'a> {
     pub signals: &'a BoundarySignals,
     /// The query to classify (latest user message text). `None` disables classification.
     pub query: Option<&'a str>,
+    /// Earlier user turns, as classifier context ([`request_context`]). Optional.
+    pub context: Option<&'a str>,
+    /// The request classifier for Level 3 (regex unless configured otherwise).
+    pub classifier: &'a ClassifierChain,
 }
 
 /// The outcome of routing: the model to call and how it was chosen.
@@ -249,10 +258,31 @@ pub async fn route_model(
             // uses an entropy RNG (exploration drives learning); tests seed it. The RNG
             // (`ThreadRng`) is `!Send`, so it is scoped to drop before the next `.await` — the
             // handler future must stay `Send`.
+            // Request type from the configured classifier (regex fallback inside the chain on
+            // error, timeout or low confidence), then a Thompson-sampled tier as before.
+            // Complexity is logged but not yet part of the bandit key.
+            let decided = inputs
+                .classifier
+                .decide(&ClassifyInput {
+                    query,
+                    context: inputs.context,
+                })
+                .await;
+            let request_type = decided.classification.request_type;
+            tracing::info!(
+                target: "nasiko::llm_router::classifier",
+                agent_id = %inputs.agent_id, %conv_id,
+                backend = inputs.classifier.backend(),
+                fallback = decided.fallback.map(FallbackReason::as_str),
+                request_type = %request_type.as_str(),
+                complexity = decided.classification.complexity,
+                confidence = decided.classification.confidence,
+                "route_model: LEVEL 3 — request classified"
+            );
             let learned = cell_store.load(inputs.provider).await;
-            let (tier, request_type) = {
+            let tier = {
                 let mut rng = rand::rng();
-                classify(query, inputs.provider, &learned, &mut rng)
+                classifier::pick_tier(request_type, inputs.provider, &learned, &mut rng)
             };
             // Per-config tier override takes priority over the global registry.
             let config_override = match tier {
@@ -437,6 +467,22 @@ pub fn latest_user_query(messages: &[crate::ir::Message]) -> Option<String> {
     Some(text)
 }
 
+/// Classifier context: the earlier user turns (not the latest, which is the query), joined and
+/// trimmed to their last 1,000 characters. `None` on a first turn. System prompts are left out:
+/// they are long, generic agent instructions that say nothing about this request.
+pub fn request_context(messages: &[crate::ir::Message]) -> Option<String> {
+    let users: Vec<String> = messages
+        .iter()
+        .filter(|m| m.role == "user")
+        .filter_map(|m| m.text())
+        .collect();
+    let (_, earlier) = users.split_last()?;
+    let joined = earlier.join("\n");
+    let chars: Vec<char> = joined.chars().collect();
+    let tail: String = chars[chars.len().saturating_sub(1000)..].iter().collect();
+    (!tail.trim().is_empty()).then_some(tail)
+}
+
 /// Number of top-level user turns so far (count of `role == "user"` messages). Tool results
 /// normalize to `role == "tool"` (see `inbound::anthropic`'s doc comment on `tool_result` →
 /// `{role:"tool"}`), so this counts only genuine new prompts, not tool-loop continuations.
@@ -456,11 +502,14 @@ pub fn is_tool_continuation(messages: &[crate::ir::Message]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    static REGEX: std::sync::LazyLock<ClassifierChain> =
+        std::sync::LazyLock::new(ClassifierChain::regex);
     use crate::ir::Message;
     use crate::routing::registry::test_support;
     use async_trait::async_trait;
     use serde_json::{Map, Value};
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
     /// A cache seeded with one hit and recording every `put`, to prove read/write levels.
     struct FakeCache {
@@ -532,6 +581,8 @@ mod tests {
             tier3_model: None,
             signals,
             query: Some("hello"),
+            context: None,
+            classifier: &REGEX,
         }
     }
 
@@ -919,5 +970,120 @@ mod tests {
         ]));
         assert!(!is_tool_continuation(&[msg("user"), msg("assistant")]));
         assert!(!is_tool_continuation(&[]));
+    }
+
+    // ── request classifier at Level 3: boundaries, stickiness, fallback ────────────────────
+
+    /// Counts calls and answers a fixed type, so tests can see exactly when classification runs.
+    struct CountingClassifier {
+        calls: std::sync::atomic::AtomicUsize,
+        answer: Result<RequestType, ()>,
+        confidence: f32,
+    }
+    impl CountingClassifier {
+        fn new(answer: Result<RequestType, ()>, confidence: f32) -> Self {
+            Self {
+                calls: Default::default(),
+                answer,
+                confidence,
+            }
+        }
+        fn calls(&self) -> usize {
+            self.calls.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+    #[async_trait]
+    impl RequestClassifier for CountingClassifier {
+        fn name(&self) -> &str {
+            "counting"
+        }
+        async fn classify(&self, _: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.answer
+                .map(|request_type| Classification {
+                    request_type,
+                    complexity: 3,
+                    confidence: self.confidence,
+                })
+                .map_err(|()| ClassifyError::Inference("boom".into()))
+        }
+    }
+
+    /// A cache that remembers what was written, like Redis would across turns.
+    #[derive(Default)]
+    struct StickyCache(Mutex<Option<CachedDecision>>);
+    #[async_trait]
+    impl DecisionCache for StickyCache {
+        async fn get(&self, _: &str, _: &str) -> Option<CachedDecision> {
+            self.0.lock().unwrap().clone()
+        }
+        async fn put(&self, _: &str, _: &str, d: &CachedDecision) {
+            *self.0.lock().unwrap() = Some(d.clone());
+        }
+    }
+
+    async fn route_with(
+        cache: &dyn DecisionCache,
+        chain: &ClassifierChain,
+        phase: Phase,
+    ) -> RouteDecision {
+        let s = signals(Some("c1"), phase, Mode::FreeFlowing);
+        let mut i = inputs("anthropic", &s, None);
+        i.classifier = chain;
+        route_model(
+            cache,
+            &test_support::StubRegistry,
+            &InMemoryCellStore::new(),
+            &AllowAllGate,
+            &i,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn classifier_runs_once_per_boundary_and_stays_sticky_through_continue_turns() {
+        let backend = Arc::new(CountingClassifier::new(
+            Ok(RequestType::TechnicalDesign),
+            0.9,
+        ));
+        let chain = ClassifierChain::new(backend.clone(), std::time::Duration::from_secs(1), 0.3);
+        let cache = StickyCache::default();
+
+        // cold start / switch: classified once, decision cached with the backend's type.
+        let first = route_with(&cache, &chain, Phase::Switch).await;
+        assert_eq!(first.source, RouteSource::Classified);
+        assert_eq!(backend.calls(), 1);
+        let cached = cache.0.lock().unwrap().clone().unwrap();
+        assert_eq!(cached.request_type, Some(RequestType::TechnicalDesign));
+
+        // tool-loop continue turns: sticky model, classifier never called again.
+        for _ in 0..3 {
+            let d = route_with(&cache, &chain, Phase::Continue).await;
+            assert_eq!(d.source, RouteSource::CacheHit);
+            assert_eq!(d.model, first.model);
+        }
+        assert_eq!(backend.calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn continue_turn_without_a_cached_decision_never_calls_the_classifier() {
+        let backend = Arc::new(CountingClassifier::new(Ok(RequestType::Writing), 0.9));
+        let chain = ClassifierChain::new(backend.clone(), std::time::Duration::from_secs(1), 0.3);
+        let d = route_with(&FakeCache::empty(), &chain, Phase::Continue).await;
+        assert_eq!(d.source, RouteSource::Config);
+        assert_eq!(backend.calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_failing_classifier_still_routes_via_the_regex_and_counts_the_fallback() {
+        let backend = Arc::new(CountingClassifier::new(Err(()), 0.9));
+        let chain = ClassifierChain::new(backend.clone(), std::time::Duration::from_secs(1), 0.3);
+        let cache = StickyCache::default();
+        let d = route_with(&cache, &chain, Phase::Switch).await;
+        assert_eq!(d.source, RouteSource::Classified);
+        // inputs() queries "hello", which the regex buckets as General.
+        let cached = cache.0.lock().unwrap().clone().unwrap();
+        assert_eq!(cached.request_type, Some(classify_request_type("hello")));
+        assert_eq!(chain.stats().errors, 1);
     }
 }

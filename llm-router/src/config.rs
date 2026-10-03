@@ -154,6 +154,23 @@ pub struct GatewayConfig {
     pub compress_recovery_min_bytes: usize,
     /// How long an original stays recoverable. Sized to outlive the flow that produced it.
     pub compress_recovery_ttl_secs: u64,
+
+    /// Request classifier backend used at routing boundaries: `regex` (default, today's
+    /// keyword vote), `local` (the embedded linear model, no network) or `hosted` (an
+    /// OpenAI-compatible endpoint). Any other value, or a backend that fails to load, falls back
+    /// to `regex`. See [`crate::routing::classifier`].
+    pub classifier_backend: String,
+    /// `local` only: a model JSON produced by `examples/classifier_train.rs`. Empty = embedded.
+    pub classifier_model_path: String,
+    /// `hosted` only: API base URL (`/chat/completions` is appended), model id and bearer key.
+    pub classifier_endpoint: String,
+    pub classifier_model: String,
+    pub classifier_api_key: String,
+    /// Per-call deadline; past it the router uses the regex result and counts a timeout.
+    pub classifier_timeout_ms: u64,
+    /// Below this confidence the router treats the backend's answer as unknown and uses the
+    /// regex result (counted as a low-confidence fallback).
+    pub classifier_min_confidence: f32,
 }
 
 impl Default for GatewayConfig {
@@ -196,6 +213,13 @@ impl Default for GatewayConfig {
             compress_recovery_enabled: true,
             compress_recovery_min_bytes: 8192,
             compress_recovery_ttl_secs: 86_400,
+            classifier_backend: "regex".into(),
+            classifier_model_path: String::new(),
+            classifier_endpoint: String::new(),
+            classifier_model: String::new(),
+            classifier_api_key: String::new(),
+            classifier_timeout_ms: 800,
+            classifier_min_confidence: 0.3,
         }
     }
 }
@@ -308,6 +332,20 @@ impl GatewayConfig {
                 "TOKEN_COMPRESS_RECOVERY_TTL_SECS",
                 d.compress_recovery_ttl_secs as usize,
             ) as u64,
+            classifier_backend: env_or("CLASSIFIER_BACKEND", &d.classifier_backend),
+            classifier_model_path: env_or("CLASSIFIER_MODEL_PATH", &d.classifier_model_path),
+            classifier_endpoint: env_or("CLASSIFIER_ENDPOINT", &d.classifier_endpoint),
+            classifier_model: env_or("CLASSIFIER_MODEL", &d.classifier_model),
+            classifier_api_key: env_or("CLASSIFIER_API_KEY", &d.classifier_api_key),
+            classifier_timeout_ms: env_usize(
+                "CLASSIFIER_TIMEOUT_MS",
+                d.classifier_timeout_ms as usize,
+            ) as u64,
+            classifier_min_confidence: std::env::var("CLASSIFIER_MIN_CONFIDENCE")
+                .ok()
+                .and_then(|v| v.parse::<f32>().ok())
+                .filter(|v| (0.0..=1.0).contains(v))
+                .unwrap_or(d.classifier_min_confidence),
         }
     }
 
