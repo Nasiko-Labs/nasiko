@@ -1,0 +1,62 @@
+# Example configuration file for P2 Request Classifier
+#
+# This file demonstrates the TOML configuration format for the classifier system.
+# Copy this file to `classifier.toml` and customize for your deployment.
+
+# Deployment environment: "dev", "staging", or "production"
+environment = "production"
+
+# Primary classifier backend configuration
+[primary]
+type = "hosted"
+model_id = "gpt-5.6-luna"
+region = "us-east-1"
+timeout = 5000  # milliseconds
+prompt_mode = "FewShot"  # or "ZeroShot"
+batch_concurrency = 10
+
+# Few-shot examples for improved classification accuracy
+# Add 3-5 representative examples per RequestType for best results
+[[primary.few_shot_examples]]
+request_text = "Write a Python function to calculate fibonacci numbers"
+request_type = "CodeGeneration"
+explanation = "Request explicitly asks to write/create new code"
+
+[[primary.few_shot_examples]]
+request_text = "Explain how this sorting algorithm works"
+request_type = "CodeUnderstanding"
+explanation = "Request asks to understand or explain existing code"
+
+[[primary.few_shot_examples]]
+request_text = "Design a microservices architecture for an e-commerce platform"
+request_type = "TechnicalDesign"
+explanation = "Request focuses on system design and architecture"
+
+[[primary.few_shot_examples]]
+request_text = "What's the time complexity of binary search?"
+request_type = "AnalyticalReasoning"
+explanation = "Request requires algorithmic analysis and complexity reasoning"
+
+[[primary.few_shot_examples]]
+request_text = "Draft technical documentation for this API"
+request_type = "Writing"
+explanation = "Request asks to create written content (documentation)"
+
+# Fallback chain configuration
+[fallback]
+enabled = true
+
+# Fallback to regex-based classifier when hosted backend fails
+[[fallback.chain]]
+type = "regex"
+default_type = "General"
+
+# Batch processing settings
+[batch]
+max_size = 200
+concurrency = 15
+
+# Circuit breaker for fault tolerance
+[circuit_breaker]
+failure_threshold = 5
+reset_timeout = 60  # seconds

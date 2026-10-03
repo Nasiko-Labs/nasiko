@@ -1,4 +1,4 @@
-[package]
+﻿[package]
 name = "nasiko-llm-router"
 edition.workspace = true
 version.workspace = true
@@ -13,11 +13,11 @@ name = "llm-router"
 path = "src/bin/llm-router.rs"
 
 [dependencies]
-# Internal — AES-GCM (per-user HKDF) decrypt of user_secrets via try_for_user
+# Internal â€” AES-GCM (per-user HKDF) decrypt of user_secrets via try_for_user
 nasiko-secrets.workspace = true
 nasiko-pricing.workspace = true
 nasiko-savings.workspace = true
-# Internal — structural payload compression at the egress seam (src/compress.rs)
+# Internal â€” structural payload compression at the egress seam (src/compress.rs)
 nasiko-compress.workspace = true
 
 # Web / async
@@ -30,12 +30,12 @@ async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
-# Query classifier — regex categories + Thompson-sampling tier selection
+# Query classifier â€” regex categories + Thompson-sampling tier selection
 regex = { workspace = true }
 rand = { workspace = true }
 rand_distr = { workspace = true }
 
-# Storage & outbound HTTP (the crate owns these via LlmRouterCtx — no nasiko-server dep)
+# Storage & outbound HTTP (the crate owns these via LlmRouterCtx â€” no nasiko-server dep)
 sqlx = { workspace = true }
 reqwest = { workspace = true, features = ["json", "stream"] }
 futures = { workspace = true }
@@ -49,7 +49,7 @@ jsonwebtoken = { workspace = true }
 dashmap = { workspace = true }
 uuid = { workspace = true }
 
-# Router decision cache (S3) — sticky (conv_id, agent_id) → model across turns/scale
+# Router decision cache (S3) â€” sticky (conv_id, agent_id) â†’ model across turns/scale
 redis = { workspace = true }
 
 # Errors / time / logging
@@ -58,6 +58,16 @@ chrono = { workspace = true }
 tracing = { workspace = true }
 # Used only by the standalone `llm-router` binary for log output.
 tracing-subscriber = { workspace = true }
+
+# AWS SDK for Bedrock (P2 Request Classifier - hosted backend)
+aws-config = { version = "1.1.7", features = ["behavior-version-latest"] }
+aws-sdk-bedrockruntime = "1.63.0"
+
+# Configuration parsing (P2 Request Classifier - TOML config files)
+toml = "0.8"
+
+# Lazy static for regex compilation (P2 Request Classifier)
+lazy_static = "1.4"
 
 [dev-dependencies]
 tokio = { workspace = true }
