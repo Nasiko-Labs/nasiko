@@ -104,3 +104,21 @@ fn readable_descriptions_are_exact_and_cannot_escape_annotations() {
         assert_eq!(encode_tools(&rebuilt).unwrap(), compact);
     }
 }
+
+#[test]
+fn legacy_hash_annotations_and_call_footer_preserve_semantics() {
+    let compact = CompactTools {
+        rendered: "TOOLS\nlegacy(x:[str#\"leaf\"]#\"array\")!#\"root\" - \"tool\"\nCALL <<call TOOL_NAME JSON_OBJECT>>".into(),
+    };
+    let mut original = tool(json!({
+        "type":"object","description":"root","additionalProperties":false,
+        "required":["x"],"properties":{"x":{"type":"array","description":"array",
+            "items":{"type":"string","description":"leaf"}}}
+    }));
+    original.function.name = "legacy".into();
+    original.function.description = Some("tool".into());
+    assert_eq!(
+        analyze_tools(&[original]).unwrap(),
+        analyze_tools(&decode_tools(&compact).unwrap()).unwrap()
+    );
+}

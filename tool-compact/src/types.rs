@@ -30,7 +30,8 @@ pub struct FunctionDef {
     pub extra: Map<String, Value>,
 }
 
-/// Validated call; integration code assigns provider call IDs.
+/// Call representation; decoders validate it, callers can construct it directly.
+/// Integration code assigns provider call IDs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolCall {
     /// Exact supplied tool name.
@@ -42,7 +43,7 @@ pub struct ToolCall {
 /// Exact model-facing representation; no original-schema sidecar.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompactTools {
-    /// Deterministically rendered tool grammar and call syntax.
+    /// Deterministically rendered tool grammar; call instructions are caller-owned.
     pub rendered: String,
 }
 

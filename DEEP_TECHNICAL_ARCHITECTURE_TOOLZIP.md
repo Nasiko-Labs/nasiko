@@ -3,7 +3,8 @@
 > **Document type:** Master Technical Architecture / Engineering Design Document  
 > **Documentation model:** Docs-as-Code / Codex implementation contract  
 > **Recommended filename:** `DEEP_TECHNICAL_ARCHITECTURE_TOOLZIP.md`  
-> **Status:** Draft for implementation  
+> **Status:** Original design plus implemented MVP appendix; independently audited 2026-10-03.
+> Sections describing CURRENT/TARGET and illustrative API sketches retain the original design context. The implemented grammar supersedes §13.2–13.3; see the implemented MVP appendix, tool-compact/README.md, and TOOLZIP_PROJECT_WALKTHROUGH.md. Current acceptance evidence is in TOOLZIP_FINAL_AUDIT.md.
 > **System:** Nasiko ToolZip  
 > **Project:** Nasiko Build-A-Thon — P1 Compact Tool Schemas  
 > **Repository:** `https://github.com/YellankiKaushik/Nasiko-Build-a-thon`  
@@ -1057,7 +1058,7 @@ The grammar must be:
 - explicit about enums;
 - robust to model whitespace changes.
 
-## 13.2 Final Grammar V1
+## 13.2 Original Target Grammar V1 (Historical; Superseded)
 
 Required properties have **no suffix**.
 
@@ -1156,7 +1157,7 @@ create_calendar_event(title:str#"Event title",start:datetime#"Start time, ISO 86
 CALL <<call TOOL_NAME JSON_OBJECT>>
 ```
 
-## 13.3 Binding EBNF-Like Definition
+## 13.3 Original Target EBNF-Like Definition (Historical; Superseded)
 
 The parser/renderer contract is:
 
@@ -1233,7 +1234,7 @@ MVP recommendation: bypass unusual identifiers.
 
 Descriptions are untrusted strings.
 
-They MUST be encoded with JSON string escaping.
+The implemented renderer uses bounded parenthesized descriptions. Nonempty text without parentheses, quotes, backslashes, or control characters is emitted verbatim inside that annotation; all other descriptions use JSON string escaping inside the parentheses. Tool descriptions follow ` - ` with the same safe-text predicate or a JSON string. The parser retains the older `#` plus JSON-string form shown below for compatibility.
 
 Property example:
 
@@ -1247,7 +1248,7 @@ Tool example:
 send_email(...) - "Text containing \"quotes\" safely"
 ```
 
-Never concatenate raw description text into grammar delimiters.
+Never concatenate description text without applying the renderer's safe-text predicate or JSON escaping.
 
 ## 13.7 Grammar Versioning
 
@@ -1394,7 +1395,7 @@ Validation MUST recurse.
 
 ### Integer vs number
 
-For an `integer` schema, JSON numeric values that carry a fractional representation are invalid.
+For an `integer` schema, mathematically fractional JSON numbers are invalid. `30.0` is accepted, as is `30`; `30.5` and the string `"30"` are rejected. The decoder additionally rejects numeric literals that cannot be represented without loss.
 
 Examples:
 
@@ -1578,7 +1579,7 @@ impl StreamDecoder {
     pub fn push(&mut self, chunk: &str) -> Result<Vec<ToolCall>>;
 
     /// Fails if the stream ends in an incomplete detected call.
-    pub fn finish(&mut self) -> Result<()>;
+    pub fn finish(self) -> Result<Vec<ToolCall>>;
 }
 ```
 
@@ -2528,7 +2529,7 @@ Important assets:
 |---|---|---|
 | THR-001 | Model invents tool | Exact tool-name lookup |
 | THR-002 | Model emits invalid argument | Recursive SchemaGuard validation |
-| THR-003 | Delimiter injection from description | JSON-string escaping |
+| THR-003 | Delimiter injection from description | Bounded safe-text annotations or JSON-string escaping |
 | THR-004 | Parser terminates on `>>` inside string | String-aware JSON state machine |
 | THR-005 | Unsupported schema semantics lost | Capability allowlist + bypass |
 | THR-006 | ToolScope removes required tool | High-recall policy + full fallback |
@@ -3388,26 +3389,28 @@ Expected and acceptable if documented:
 
 # 42. Open Questions
 
-Only genuinely unresolved implementation choices remain here. Resolved architectural questions are no longer listed as open.
+This section records remaining implementation choices and the resolution of the original tokenizer/auth questions. Entries marked resolved are implementation facts rather than open work.
 
 | ID | Question | Resolution rule |
 |---|---|---|
-| OQ-001 | Exact pinned `tiktoken-rs` version? | Resolve against the current Cargo registry/toolchain, pin it, and keep it out of the pure library |
+| OQ-001 (resolved) | Exact pinned `tiktoken-rs` version? | 0.12.1; evaluator/demo development dependency only |
 | OQ-002 | Which exact `llm-router` seam is safest for optional integration? | Decide only after the official evaluator and core tests are green |
 | OQ-003 | Should numeric/string validation constraints be added beyond the required subset? | Add only after the required public/private-compatible path is stable |
-| OQ-004 | What exact bearer-key environment variable should optional live mode accept? | Match the organizer proxy/runtime contract when known; never make it required for offline mode |
+| OQ-004 (resolved) | What exact bearer-key environment variable should optional live mode accept? | PROVIDER_API_KEY or OPENAI_API_KEY, optional; read only in the live evaluator |
 
 The following are **already resolved** and MUST NOT be reopened during MVP implementation:
 
 - `additionalProperties`: absent/`true` = allowed, `false` = forbidden, schema-valued = bypass;
 - ToolScope query source for optional router integration: most recent textual user message;
 - unsupported selected schema: V1 uses whole-request native fallback;
-- duplicate/malformed detected calls: fail the whole decode;
+- duplicate tool definitions or malformed detected calls: fail the whole decode; repeated valid calls remain valid and ordered;
 - ToolScope official evaluator behavior: disabled by default.
 
 ---
 
 # 43. Definition of Done
+
+This is the original implementation checklist, retained as design history. Its unchecked boxes do not represent current test status; see TOOLZIP_FINAL_AUDIT.md for the audited acceptance matrix. The 48-to-6 demonstration in §38 is illustrative; the actual synthetic demo selects 2 of 48 tools.
 
 ## Required P1 Core
 

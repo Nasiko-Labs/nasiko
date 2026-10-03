@@ -115,3 +115,33 @@ fn incomplete_stream_and_depth_limit_fail_closed() {
         Err(CompactError::LimitExceeded(_))
     ));
 }
+
+#[test]
+fn response_and_call_count_limits_are_inclusive_and_sticky() {
+    let mut response = StreamDecoder::new(&tools()).unwrap();
+    assert!(
+        response
+            .push(&"a".repeat(16 * 1024 * 1024))
+            .unwrap()
+            .is_empty()
+    );
+    assert!(matches!(
+        response.push("a"),
+        Err(CompactError::LimitExceeded("response bytes"))
+    ));
+    assert!(response.push("").is_err());
+    assert!(response.finish().is_err());
+
+    let call = "<<call foo {\"x\":\"yes\"}>>";
+    let mut accepted = StreamDecoder::new(&tools()).unwrap();
+    assert_eq!(accepted.push(&call.repeat(4096)).unwrap().len(), 4096);
+    assert_eq!(accepted.finish().unwrap().len(), 4096);
+    let mut rejected = StreamDecoder::new(&tools()).unwrap();
+    rejected.push(&call.repeat(4096)).unwrap();
+    assert!(matches!(
+        rejected.push(call),
+        Err(CompactError::LimitExceeded("call count"))
+    ));
+    assert!(rejected.push("").is_err());
+    assert!(rejected.finish().is_err());
+}

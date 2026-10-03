@@ -32,9 +32,8 @@ async fn main() -> Result<()> {
     for case in &dataset.cases {
         let tools = dataset::resolve(&lookup, &case.tools)?;
         let (body, compacted) = request::build(case, &tools)?;
-        let rendered = render_calls(&case.expected)?;
-        let roundtrip = decode_calls(&rendered, &tools);
-        let mut record = json!({"id":case.id,"compact_request":body,"compacted":compacted,"rendered_calls":rendered,"roundtrip_calls":call_result(roundtrip)});
+        let (rendered, roundtrip) = expected_roundtrip(&case.expected, &tools);
+        let mut record = json!({"id":case.id,"compact_request":body,"compacted":compacted,"rendered_calls":rendered,"roundtrip_calls":roundtrip});
         if let Some(live) = &live {
             let (sent, raw, calls) = live.evaluate(body, compacted, &tools).await?;
             record["compact_request"] = sent;
@@ -62,6 +61,18 @@ fn call_result(result: nasiko_tool_compact::Result<Vec<ToolCall>>) -> Value {
     match result {
         Ok(calls) => json!(calls),
         Err(error) => json!({"error":error_label(&error)}),
+    }
+}
+
+// Native fallback can retain names that the compact call grammar cannot render.
+// Record that failure per case rather than abandoning the remaining dataset.
+fn expected_roundtrip(calls: &[ToolCall], tools: &[ToolDef]) -> (String, Value) {
+    match render_calls(calls) {
+        Ok(rendered) => {
+            let decoded = call_result(decode_calls(&rendered, tools));
+            (rendered, decoded)
+        }
+        Err(error) => (String::new(), call_result(Err(error))),
     }
 }
 
@@ -95,6 +106,23 @@ mod tests {
     }
     fn tools() -> Vec<ToolDef> {
         serde_json::from_value(json!([{"type":"function","function":{"name":"work","parameters":{"type":"object","required":["x"],"properties":{"x":{"type":"integer"}}}}}])).unwrap()
+    }
+
+    #[test]
+    fn native_identifier_fallback_still_produces_a_case_result() {
+        let mut tools = tools();
+        tools[0].function.name = "1_ping".into();
+        let calls = vec![ToolCall {
+            name: "1_ping".into(),
+            arguments: json!({"x":1}),
+        }];
+        let (body, compacted) = request::build(&case(), &tools).unwrap();
+        assert!(!compacted);
+        assert_eq!(body["tools"][0]["function"]["name"], "1_ping");
+        assert_eq!(
+            expected_roundtrip(&calls, &tools),
+            (String::new(), json!({"error":"invalid_arguments"}))
+        );
     }
 
     #[test]
