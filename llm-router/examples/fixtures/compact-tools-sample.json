@@ -1,0 +1,82 @@
+{
+  "schema_version": "compact-tools-eval@v1-sample",
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "create_calendar_event",
+        "description": "Create an event in the user's calendar.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "title": {"type": "string", "description": "Event title"},
+            "start": {"type": "string", "format": "date-time"},
+            "duration_min": {"type": "integer"},
+            "attendees": {"type": "array", "items": {"type": "string"}},
+            "visibility": {"type": "string", "enum": ["public", "private"]}
+          },
+          "required": ["title", "start"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "send_email",
+        "description": "Send an email.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "to": {"type": "array", "items": {"type": "string"}},
+            "subject": {"type": "string"},
+            "body": {"type": "string"}
+          },
+          "required": ["to", "subject", "body"]
+        }
+      }
+    }
+  ],
+  "cases": [
+    {
+      "id": "ct-001",
+      "tools": ["create_calendar_event", "send_email"],
+      "messages": [{"role": "user", "content": "Book a design review."}],
+      "expected": [{"name": "create_calendar_event", "arguments": {"title": "Design review", "start": "2026-10-05T15:00:00+05:30", "attendees": ["riya@example.com"]}}]
+    },
+    {
+      "id": "ct-002",
+      "tools": ["create_calendar_event", "send_email"],
+      "messages": [{"role": "user", "content": "Email Sam and book a private retro."}],
+      "expected": [
+        {"name": "send_email", "arguments": {"to": ["sam@example.com"], "subject": "Build status", "body": "The build is green."}},
+        {"name": "create_calendar_event", "arguments": {"title": "Retro", "start": "2026-10-04T10:00:00+05:30", "duration_min": 30, "visibility": "private"}}
+      ]
+    },
+    {
+      "id": "ct-003",
+      "tools": ["create_calendar_event"],
+      "messages": [{"role": "user", "content": "What's the weather?"}],
+      "expected": []
+    }
+  ],
+  "decoder_cases": [
+    {
+      "id": "dc-001",
+      "tools": ["create_calendar_event"],
+      "chunks": ["<<ca", "ll create_calendar_event {\"title\":\"Ret", "ro\",\"start\":\"2026-10-04T10:00:00+05:30\"}>", ">"],
+      "expected": {"calls": [{"name": "create_calendar_event", "arguments": {"title": "Retro", "start": "2026-10-04T10:00:00+05:30"}}]}
+    },
+    {
+      "id": "dc-002",
+      "tools": ["create_calendar_event"],
+      "chunks": ["<<call create_calendar_event {\"title\":\"Bad\",\"start\":\"2026-10-04T10:00:00+05:30\",\"visibility\":\"secret\"}>>"],
+      "expected": {"error": "invalid_arguments"}
+    },
+    {
+      "id": "dc-003",
+      "tools": ["create_calendar_event"],
+      "chunks": ["<<call unknown {\"title\":\"Bad\"}>>"],
+      "expected": {"error": "unknown_tool"}
+    }
+  ]
+}
