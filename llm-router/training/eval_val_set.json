@@ -1,81 +1,46 @@
 {
   "examples": [
     {
-      "id": "ex_0005",
-      "query": "Implement binary search on a sorted integer slice in Rust.",
-      "context": null,
-      "ground_truth_type": "code_generation",
-      "ground_truth_complexity": 2
-    },
-    {
-      "id": "ex_0006",
-      "query": "implement binary search over a sorted slice in rust",
-      "context": null,
-      "ground_truth_type": "code_generation",
-      "ground_truth_complexity": 2
-    },
-    {
-      "id": "ex_0007",
-      "query": "impliment bynary serch on a sortd int slice in rust",
-      "context": null,
-      "ground_truth_type": "code_generation",
-      "ground_truth_complexity": 2
-    },
-    {
-      "id": "ex_0018",
-      "query": "Refactor this synchronous HTTP handler into an asynchronous non-blocking Tokio handler.",
+      "id": "ex_0010",
+      "query": "Write an LRU Cache in Go with thread-safe Get and Put methods using a doubly linked list and mutex.",
       "context": null,
       "ground_truth_type": "code_generation",
       "ground_truth_complexity": 3
     },
     {
-      "id": "ex_0019",
-      "query": "Hello! Refactor this synchronous HTTP handler into an asynchronous non-blocking Tokio handler. Looking forward to your advice, thanks!",
+      "id": "ex_0011",
+      "query": "implement a thread-safe LRU cache in golang with sync.Mutex",
       "context": null,
       "ground_truth_type": "code_generation",
       "ground_truth_complexity": 3
     },
     {
-      "id": "ex_0020",
-      "query": "Could you essentially refactor this synchronous HTTP handler into an asynchronous non-blocking Tokio handler.",
+      "id": "ex_0041",
+      "query": "Write a custom PyTorch training loop with gradient accumulation, mixed precision amp, and wandb logging.",
       "context": null,
       "ground_truth_type": "code_generation",
-      "ground_truth_complexity": 3
+      "ground_truth_complexity": 4
     },
     {
-      "id": "ex_0021",
-      "query": "Refactor this synchronous HTTP handler into an asynchronous non-blocking Tokio handler.",
+      "id": "ex_0042",
+      "query": "Hello! Write a custom PyTorch training loop with gradient accumulation, mixed precision amp, and wandb logging. Looking forward to your advice, thanks!",
+      "context": null,
+      "ground_truth_type": "code_generation",
+      "ground_truth_complexity": 4
+    },
+    {
+      "id": "ex_0043",
+      "query": "Could you quickly write a custom PyTorch training loop with gradient accumulation, mixed precision amp, and wandb logging.",
+      "context": null,
+      "ground_truth_type": "code_generation",
+      "ground_truth_complexity": 4
+    },
+    {
+      "id": "ex_0044",
+      "query": "Write a custom PyTorch training loop with gradient accumulation, mixed precision amp, and wandb logging.",
       "context": "User context: production environment with tight SLA.",
       "ground_truth_type": "code_generation",
-      "ground_truth_complexity": 3
-    },
-    {
-      "id": "ex_0022",
-      "query": "Add comprehensive error handling and retry logic with exponential backoff to this DB connection pool.",
-      "context": null,
-      "ground_truth_type": "code_generation",
-      "ground_truth_complexity": 3
-    },
-    {
-      "id": "ex_0023",
-      "query": "Hello! Add comprehensive error handling and retry logic with exponential backoff to this DB connection pool. Looking forward to your advice, thanks!",
-      "context": null,
-      "ground_truth_type": "code_generation",
-      "ground_truth_complexity": 3
-    },
-    {
-      "id": "ex_0024",
-      "query": "Could you kindly add comprehensive error handling and retry logic with exponential backoff to this DB connection pool.",
-      "context": null,
-      "ground_truth_type": "code_generation",
-      "ground_truth_complexity": 3
-    },
-    {
-      "id": "ex_0025",
-      "query": "Add comprehensive error handling and retry logic with exponential backoff to this DB connection pool.",
-      "context": "User context: production environment with tight SLA.",
-      "ground_truth_type": "code_generation",
-      "ground_truth_complexity": 3
+      "ground_truth_complexity": 4
     },
     {
       "id": "ex_0045",
@@ -101,34 +66,6 @@
     {
       "id": "ex_0048",
       "query": "Generate a Kubernetes Helm chart for a stateful PostgreSQL cluster with persistence and automated backup cronjob.",
-      "context": "User context: production environment with tight SLA.",
-      "ground_truth_type": "code_generation",
-      "ground_truth_complexity": 4
-    },
-    {
-      "id": "ex_0049",
-      "query": "Build a zero-copy parser in Rust using nom for the Redis RESP3 serialization protocol.",
-      "context": null,
-      "ground_truth_type": "code_generation",
-      "ground_truth_complexity": 4
-    },
-    {
-      "id": "ex_0050",
-      "query": "Hello! Build a zero-copy parser in Rust using nom for the Redis RESP3 serialization protocol. Looking forward to your advice, thanks!",
-      "context": null,
-      "ground_truth_type": "code_generation",
-      "ground_truth_complexity": 4
-    },
-    {
-      "id": "ex_0051",
-      "query": "Could you basically build a zero-copy parser in Rust using nom for the Redis RESP3 serialization protocol.",
-      "context": null,
-      "ground_truth_type": "code_generation",
-      "ground_truth_complexity": 4
-    },
-    {
-      "id": "ex_0052",
-      "query": "Build a zero-copy parser in Rust using nom for the Redis RESP3 serialization protocol.",
       "context": "User context: production environment with tight SLA.",
       "ground_truth_type": "code_generation",
       "ground_truth_complexity": 4
@@ -162,81 +99,144 @@
       "ground_truth_complexity": 2
     },
     {
-      "id": "ex_0074",
-      "query": "Walk me through this Rust async code and explain why deadlocks occur on these locks.",
-      "context": "async fn deadlocking() { let a = lock1.lock().await; let b = lock2.lock().await; }",
-      "ground_truth_type": "code_understanding",
-      "ground_truth_complexity": 3
-    },
-    {
-      "id": "ex_0075",
-      "query": "Hello! Walk me through this Rust async code and explain why deadlocks occur on these locks. Looking forward to your advice, thanks!",
-      "context": "async fn deadlocking() { let a = lock1.lock().await; let b = lock2.lock().await; }",
-      "ground_truth_type": "code_understanding",
-      "ground_truth_complexity": 3
-    },
-    {
-      "id": "ex_0076",
-      "query": "Could you btw walk me through this Rust async code and explain why deadlocks occur on these locks.",
-      "context": "async fn deadlocking() { let a = lock1.lock().await; let b = lock2.lock().await; }",
-      "ground_truth_type": "code_understanding",
-      "ground_truth_complexity": 3
-    },
-    {
-      "id": "ex_0081",
-      "query": "How does the borrow checker in Rust ensure memory safety without a garbage collector?",
+      "id": "ex_0088",
+      "query": "Explain how garbage collection works in Java, specifically comparing G1GC and ZGC mechanics.",
       "context": null,
       "ground_truth_type": "code_understanding",
-      "ground_truth_complexity": 3
+      "ground_truth_complexity": 4
     },
     {
-      "id": "ex_0082",
-      "query": "Hello! How does the borrow checker in Rust ensure memory safety without a garbage collector? Looking forward to your advice, thanks!",
+      "id": "ex_0089",
+      "query": "Hello! Explain how garbage collection works in Java, specifically comparing G1GC and ZGC mechanics. Looking forward to your advice, thanks!",
       "context": null,
       "ground_truth_type": "code_understanding",
-      "ground_truth_complexity": 3
+      "ground_truth_complexity": 4
     },
     {
-      "id": "ex_0083",
-      "query": "Could you kindly how does the borrow checker in Rust ensure memory safety without a garbage collector?",
+      "id": "ex_0090",
+      "query": "Could you essentially explain how garbage collection works in Java, specifically comparing G1GC and ZGC mechanics.",
       "context": null,
       "ground_truth_type": "code_understanding",
-      "ground_truth_complexity": 3
+      "ground_truth_complexity": 4
     },
     {
-      "id": "ex_0084",
-      "query": "How does the borrow checker in Rust ensure memory safety without a garbage collector?",
+      "id": "ex_0091",
+      "query": "Explain how garbage collection works in Java, specifically comparing G1GC and ZGC mechanics.",
       "context": "User context: production environment with tight SLA.",
       "ground_truth_type": "code_understanding",
+      "ground_truth_complexity": 4
+    },
+    {
+      "id": "ex_0102",
+      "query": "How does React fiber reconciliation schedule priority updates and pause execution?",
+      "context": null,
+      "ground_truth_type": "code_understanding",
+      "ground_truth_complexity": 4
+    },
+    {
+      "id": "ex_0103",
+      "query": "Hello! How does React fiber reconciliation schedule priority updates and pause execution? Looking forward to your advice, thanks!",
+      "context": null,
+      "ground_truth_type": "code_understanding",
+      "ground_truth_complexity": 4
+    },
+    {
+      "id": "ex_0104",
+      "query": "Could you please how does React fiber reconciliation schedule priority updates and pause execution?",
+      "context": null,
+      "ground_truth_type": "code_understanding",
+      "ground_truth_complexity": 4
+    },
+    {
+      "id": "ex_0105",
+      "query": "How does React fiber reconciliation schedule priority updates and pause execution?",
+      "context": "User context: production environment with tight SLA.",
+      "ground_truth_type": "code_understanding",
+      "ground_truth_complexity": 4
+    },
+    {
+      "id": "ex_0127",
+      "query": "What are the trade-offs between Apache Kafka and RabbitMQ for event-driven microservices?",
+      "context": null,
+      "ground_truth_type": "technical_design",
       "ground_truth_complexity": 3
     },
     {
-      "id": "ex_0109",
-      "query": "What is the time and space complexity of merge sort vs heap sort?",
+      "id": "ex_0128",
+      "query": "Hello! What are the trade-offs between Apache Kafka and RabbitMQ for event-driven microservices? Looking forward to your advice, thanks!",
       "context": null,
-      "ground_truth_type": "code_understanding",
-      "ground_truth_complexity": 2
+      "ground_truth_type": "technical_design",
+      "ground_truth_complexity": 3
     },
     {
-      "id": "ex_0110",
-      "query": "Hello! What is the time and space complexity of merge sort vs heap sort? Looking forward to your advice, thanks!",
+      "id": "ex_0129",
+      "query": "Could you basically what are the trade-offs between Apache Kafka and RabbitMQ for event-driven microservices?",
       "context": null,
-      "ground_truth_type": "code_understanding",
-      "ground_truth_complexity": 2
+      "ground_truth_type": "technical_design",
+      "ground_truth_complexity": 3
     },
     {
-      "id": "ex_0111",
-      "query": "Could you basically what is the time and space complexity of merge sort vs heap sort?",
-      "context": null,
-      "ground_truth_type": "code_understanding",
-      "ground_truth_complexity": 2
-    },
-    {
-      "id": "ex_0112",
-      "query": "What is the time and space complexity of merge sort vs heap sort?",
+      "id": "ex_0130",
+      "query": "What are the trade-offs between Apache Kafka and RabbitMQ for event-driven microservices?",
       "context": "User context: production environment with tight SLA.",
-      "ground_truth_type": "code_understanding",
-      "ground_truth_complexity": 2
+      "ground_truth_type": "technical_design",
+      "ground_truth_complexity": 3
+    },
+    {
+      "id": "ex_0133",
+      "query": "Design a URL shortener service like Bitly including data model, hashing strategy, and caching layer.",
+      "context": null,
+      "ground_truth_type": "technical_design",
+      "ground_truth_complexity": 3
+    },
+    {
+      "id": "ex_0134",
+      "query": "Hello! Design a URL shortener service like Bitly including data model, hashing strategy, and caching layer. Looking forward to your advice, thanks!",
+      "context": null,
+      "ground_truth_type": "technical_design",
+      "ground_truth_complexity": 3
+    },
+    {
+      "id": "ex_0135",
+      "query": "Could you please design a URL shortener service like Bitly including data model, hashing strategy, and caching layer.",
+      "context": null,
+      "ground_truth_type": "technical_design",
+      "ground_truth_complexity": 3
+    },
+    {
+      "id": "ex_0136",
+      "query": "Design a URL shortener service like Bitly including data model, hashing strategy, and caching layer.",
+      "context": "User context: production environment with tight SLA.",
+      "ground_truth_type": "technical_design",
+      "ground_truth_complexity": 3
+    },
+    {
+      "id": "ex_0141",
+      "query": "Compare monotonic IDs (UUIDv7, ULID, Snowflake) vs auto-incrementing integers for distributed databases.",
+      "context": null,
+      "ground_truth_type": "technical_design",
+      "ground_truth_complexity": 3
+    },
+    {
+      "id": "ex_0142",
+      "query": "Hello! Compare monotonic IDs (UUIDv7, ULID, Snowflake) vs auto-incrementing integers for distributed databases. Looking forward to your advice, thanks!",
+      "context": null,
+      "ground_truth_type": "technical_design",
+      "ground_truth_complexity": 3
+    },
+    {
+      "id": "ex_0143",
+      "query": "Could you essentially compare monotonic IDs (UUIDv7, ULID, Snowflake) vs auto-incrementing integers for distributed databases.",
+      "context": null,
+      "ground_truth_type": "technical_design",
+      "ground_truth_complexity": 3
+    },
+    {
+      "id": "ex_0144",
+      "query": "Compare monotonic IDs (UUIDv7, ULID, Snowflake) vs auto-incrementing integers for distributed databases.",
+      "context": "User context: production environment with tight SLA.",
+      "ground_truth_type": "technical_design",
+      "ground_truth_complexity": 3
     },
     {
       "id": "ex_0145",
@@ -295,200 +295,270 @@
       "ground_truth_complexity": 3
     },
     {
-      "id": "ex_0184",
-      "query": "Derive the closed-form Black-Scholes formula for European call option pricing using risk-neutral expectation and geometric Brownian motion.",
+      "id": "ex_0174",
+      "query": "Prove that the square root of 2 is an irrational number by contradiction.",
       "context": null,
       "ground_truth_type": "analytical_reasoning",
-      "ground_truth_complexity": 5
+      "ground_truth_complexity": 3
     },
     {
-      "id": "ex_0185",
-      "query": "Hello! Derive the closed-form Black-Scholes formula for European call option pricing using risk-neutral expectation and geometric Brownian motion. Looking forward to your advice, thanks!",
+      "id": "ex_0175",
+      "query": "prove by contradiction that sqrt(2) is irrational",
       "context": null,
       "ground_truth_type": "analytical_reasoning",
-      "ground_truth_complexity": 5
+      "ground_truth_complexity": 3
     },
     {
-      "id": "ex_0186",
-      "query": "Could you kindly derive the closed-form Black-Scholes formula for European call option pricing using risk-neutral expectation and geometric Brownian motion.",
+      "id": "ex_0176",
+      "query": "Three travelers check into a hotel room costing $30 ($10 each). The clerk realizes the room was only $25 and gives $5 to the bellboy to return. The bellboy keeps $2 and returns $1 to each traveler. Now each paid $9 ($27 total) plus $2 the bellboy kept = $29. Where is the missing dollar?",
       "context": null,
       "ground_truth_type": "analytical_reasoning",
-      "ground_truth_complexity": 5
-    },
-    {
-      "id": "ex_0187",
-      "query": "Derive the closed-form Black-Scholes formula for European call option pricing using risk-neutral expectation and geometric Brownian motion.",
-      "context": "User context: production environment with tight SLA.",
-      "ground_truth_type": "analytical_reasoning",
-      "ground_truth_complexity": 5
-    },
-    {
-      "id": "ex_0203",
-      "query": "Derive the optimal policy for a Markov Decision Process with state transition probabilities P and discount factor gamma using policy iteration.",
-      "context": null,
-      "ground_truth_type": "analytical_reasoning",
-      "ground_truth_complexity": 5
-    },
-    {
-      "id": "ex_0204",
-      "query": "Hello! Derive the optimal policy for a Markov Decision Process with state transition probabilities P and discount factor gamma using policy iteration. Looking forward to your advice, thanks!",
-      "context": null,
-      "ground_truth_type": "analytical_reasoning",
-      "ground_truth_complexity": 5
-    },
-    {
-      "id": "ex_0205",
-      "query": "Could you quickly derive the optimal policy for a Markov Decision Process with state transition probabilities P and discount factor gamma using policy iteration.",
-      "context": null,
-      "ground_truth_type": "analytical_reasoning",
-      "ground_truth_complexity": 5
-    },
-    {
-      "id": "ex_0206",
-      "query": "Derive the optimal policy for a Markov Decision Process with state transition probabilities P and discount factor gamma using policy iteration.",
-      "context": "User context: production environment with tight SLA.",
-      "ground_truth_type": "analytical_reasoning",
-      "ground_truth_complexity": 5
-    },
-    {
-      "id": "ex_0215",
-      "query": "Draft an email to stakeholders explaining that the production database outage has been resolved.",
-      "context": null,
-      "ground_truth_type": "writing",
       "ground_truth_complexity": 2
     },
     {
-      "id": "ex_0216",
-      "query": "write an email update to executives regarding the database outage resolution",
+      "id": "ex_0177",
+      "query": "Hello! Three travelers check into a hotel room costing $30 ($10 each). The clerk realizes the room was only $25 and gives $5 to the bellboy to return. The bellboy keeps $2 and returns $1 to each traveler. Now each paid $9 ($27 total) plus $2 the bellboy kept = $29. Where is the missing dollar? Looking forward to your advice, thanks!",
       "context": null,
-      "ground_truth_type": "writing",
+      "ground_truth_type": "analytical_reasoning",
       "ground_truth_complexity": 2
     },
     {
-      "id": "ex_0224",
-      "query": "Draft a detailed post-mortem report for a multi-hour cloud regional outage including timeline, root cause analysis, impact, and preventive action items.",
+      "id": "ex_0178",
+      "query": "Could you FYI three travelers check into a hotel room costing $30 ($10 each). The clerk realizes the room was only $25 and gives $5 to the bellboy to return. The bellboy keeps $2 and returns $1 to each traveler. Now each paid $9 ($27 total) plus $2 the bellboy kept = $29. Where is the missing dollar?",
       "context": null,
-      "ground_truth_type": "writing",
+      "ground_truth_type": "analytical_reasoning",
+      "ground_truth_complexity": 2
+    },
+    {
+      "id": "ex_0179",
+      "query": "Three travelers check into a hotel room costing $30 ($10 each). The clerk realizes the room was only $25 and gives $5 to the bellboy to return. The bellboy keeps $2 and returns $1 to each traveler. Now each paid $9 ($27 total) plus $2 the bellboy kept = $29. Where is the missing dollar?",
+      "context": "User context: production environment with tight SLA.",
+      "ground_truth_type": "analytical_reasoning",
+      "ground_truth_complexity": 2
+    },
+    {
+      "id": "ex_0180",
+      "query": "Calculate the Nash equilibrium in a two-player asymmetric game with payoff matrix [[(3,1), (0,0)], [(0,0), (1,3)]].",
+      "context": null,
+      "ground_truth_type": "analytical_reasoning",
       "ground_truth_complexity": 4
     },
     {
-      "id": "ex_0225",
-      "query": "Hello! Draft a detailed post-mortem report for a multi-hour cloud regional outage including timeline, root cause analysis, impact, and preventive action items. Looking forward to your advice, thanks!",
+      "id": "ex_0181",
+      "query": "Hello! Calculate the Nash equilibrium in a two-player asymmetric game with payoff matrix [[(3,1), (0,0)], [(0,0), (1,3)]]. Looking forward to your advice, thanks!",
       "context": null,
-      "ground_truth_type": "writing",
+      "ground_truth_type": "analytical_reasoning",
       "ground_truth_complexity": 4
     },
     {
-      "id": "ex_0226",
-      "query": "Could you urgently draft a detailed post-mortem report for a multi-hour cloud regional outage including timeline, root cause analysis, impact, and preventive action items.",
+      "id": "ex_0182",
+      "query": "Could you essentially calculate the Nash equilibrium in a two-player asymmetric game with payoff matrix [[(3,1), (0,0)], [(0,0), (1,3)]].",
       "context": null,
-      "ground_truth_type": "writing",
+      "ground_truth_type": "analytical_reasoning",
       "ground_truth_complexity": 4
     },
     {
-      "id": "ex_0227",
-      "query": "Draft a detailed post-mortem report for a multi-hour cloud regional outage including timeline, root cause analysis, impact, and preventive action items.",
+      "id": "ex_0183",
+      "query": "Calculate the Nash equilibrium in a two-player asymmetric game with payoff matrix [[(3,1), (0,0)], [(0,0), (1,3)]].",
+      "context": "User context: production environment with tight SLA.",
+      "ground_truth_type": "analytical_reasoning",
+      "ground_truth_complexity": 4
+    },
+    {
+      "id": "ex_0232",
+      "query": "Write a comprehensive white paper explaining the impact of European AI Act compliance on enterprise fintech pipelines.",
+      "context": null,
+      "ground_truth_type": "writing",
+      "ground_truth_complexity": 5
+    },
+    {
+      "id": "ex_0233",
+      "query": "Hello! Write a comprehensive white paper explaining the impact of European AI Act compliance on enterprise fintech pipelines. Looking forward to your advice, thanks!",
+      "context": null,
+      "ground_truth_type": "writing",
+      "ground_truth_complexity": 5
+    },
+    {
+      "id": "ex_0234",
+      "query": "Could you please write a comprehensive white paper explaining the impact of European AI Act compliance on enterprise fintech pipelines.",
+      "context": null,
+      "ground_truth_type": "writing",
+      "ground_truth_complexity": 5
+    },
+    {
+      "id": "ex_0235",
+      "query": "Write a comprehensive white paper explaining the impact of European AI Act compliance on enterprise fintech pipelines.",
       "context": "User context: production environment with tight SLA.",
       "ground_truth_type": "writing",
+      "ground_truth_complexity": 5
+    },
+    {
+      "id": "ex_0284",
+      "query": "Who discovered Penicillin and in what year was it discovered?",
+      "context": null,
+      "ground_truth_type": "factual_lookup",
+      "ground_truth_complexity": 1
+    },
+    {
+      "id": "ex_0285",
+      "query": "Hello! Who discovered Penicillin and in what year was it discovered? Looking forward to your advice, thanks!",
+      "context": null,
+      "ground_truth_type": "factual_lookup",
+      "ground_truth_complexity": 1
+    },
+    {
+      "id": "ex_0286",
+      "query": "Could you urgently who discovered Penicillin and in what year was it discovered?",
+      "context": null,
+      "ground_truth_type": "factual_lookup",
+      "ground_truth_complexity": 1
+    },
+    {
+      "id": "ex_0295",
+      "query": "Hello! How are you doing today?",
+      "context": null,
+      "ground_truth_type": "general",
+      "ground_truth_complexity": 1
+    },
+    {
+      "id": "ex_0296",
+      "query": "hi there assistant",
+      "context": null,
+      "ground_truth_type": "general",
+      "ground_truth_complexity": 1
+    },
+    {
+      "id": "ex_0297",
+      "query": "hey hows it going",
+      "context": null,
+      "ground_truth_type": "general",
+      "ground_truth_complexity": 1
+    },
+    {
+      "id": "ex_0308",
+      "query": "What are the general pros and cons of living in a small town versus a large metropolitan city?",
+      "context": null,
+      "ground_truth_type": "general",
+      "ground_truth_complexity": 2
+    },
+    {
+      "id": "ex_0309",
+      "query": "Hello! What are the general pros and cons of living in a small town versus a large metropolitan city? Looking forward to your advice, thanks!",
+      "context": null,
+      "ground_truth_type": "general",
+      "ground_truth_complexity": 2
+    },
+    {
+      "id": "ex_0310",
+      "query": "Could you please what are the general pros and cons of living in a small town versus a large metropolitan city?",
+      "context": null,
+      "ground_truth_type": "general",
+      "ground_truth_complexity": 2
+    },
+    {
+      "id": "ex_0311",
+      "query": "What are the general pros and cons of living in a small town versus a large metropolitan city?",
+      "context": "User context: production environment with tight SLA.",
+      "ground_truth_type": "general",
+      "ground_truth_complexity": 2
+    },
+    {
+      "id": "ex_0321",
+      "query": "Can you provide general advice on preparing for a behavioral interview for a manager role?",
+      "context": null,
+      "ground_truth_type": "general",
+      "ground_truth_complexity": 3
+    },
+    {
+      "id": "ex_0322",
+      "query": "Hello! Can you provide general advice on preparing for a behavioral interview for a manager role? Looking forward to your advice, thanks!",
+      "context": null,
+      "ground_truth_type": "general",
+      "ground_truth_complexity": 3
+    },
+    {
+      "id": "ex_0323",
+      "query": "Could you kindly can you provide general advice on preparing for a behavioral interview for a manager role?",
+      "context": null,
+      "ground_truth_type": "general",
+      "ground_truth_complexity": 3
+    },
+    {
+      "id": "ex_0324",
+      "query": "Can you provide general advice on preparing for a behavioral interview for a manager role?",
+      "context": "User context: production environment with tight SLA.",
+      "ground_truth_type": "general",
+      "ground_truth_complexity": 3
+    },
+    {
+      "id": "ex_0360",
+      "query": "Write a regex to validate international phone numbers in E.164 format.",
+      "context": null,
+      "ground_truth_type": "code_generation",
+      "ground_truth_complexity": 1
+    },
+    {
+      "id": "ex_0361",
+      "query": "Hello! Write a regex to validate international phone numbers in E.164 format. Looking forward to your advice, thanks!",
+      "context": null,
+      "ground_truth_type": "code_generation",
+      "ground_truth_complexity": 1
+    },
+    {
+      "id": "ex_0362",
+      "query": "Could you essentially write a regex to validate international phone numbers in E.164 format.",
+      "context": null,
+      "ground_truth_type": "code_generation",
+      "ground_truth_complexity": 1
+    },
+    {
+      "id": "ex_0371",
+      "query": "Implement an undo-redo stack in TypeScript using the Command pattern.",
+      "context": null,
+      "ground_truth_type": "code_generation",
+      "ground_truth_complexity": 3
+    },
+    {
+      "id": "ex_0372",
+      "query": "Hello! Implement an undo-redo stack in TypeScript using the Command pattern. Looking forward to your advice, thanks!",
+      "context": null,
+      "ground_truth_type": "code_generation",
+      "ground_truth_complexity": 3
+    },
+    {
+      "id": "ex_0373",
+      "query": "Could you essentially implement an undo-redo stack in TypeScript using the Command pattern.",
+      "context": null,
+      "ground_truth_type": "code_generation",
+      "ground_truth_complexity": 3
+    },
+    {
+      "id": "ex_0374",
+      "query": "Implement an undo-redo stack in TypeScript using the Command pattern.",
+      "context": "User context: production environment with tight SLA.",
+      "ground_truth_type": "code_generation",
+      "ground_truth_complexity": 3
+    },
+    {
+      "id": "ex_0382",
+      "query": "Write a custom allocator in C using `mmap` with a free list strategy.",
+      "context": null,
+      "ground_truth_type": "code_generation",
+      "ground_truth_complexity": 5
+    },
+    {
+      "id": "ex_0383",
+      "query": "Refactor this nested callback hell into async/await with try/catch blocks.",
+      "context": null,
+      "ground_truth_type": "code_generation",
+      "ground_truth_complexity": 2
+    },
+    {
+      "id": "ex_0390",
+      "query": "Walk me through how this TLS 1.3 handshake packet exchange works.",
+      "context": null,
+      "ground_truth_type": "code_understanding",
       "ground_truth_complexity": 4
-    },
-    {
-      "id": "ex_0236",
-      "query": "Draft a polite slack message declining an invitation to a meeting due to a deadline conflict.",
-      "context": null,
-      "ground_truth_type": "writing",
-      "ground_truth_complexity": 1
-    },
-    {
-      "id": "ex_0237",
-      "query": "Hello! Draft a polite slack message declining an invitation to a meeting due to a deadline conflict. Looking forward to your advice, thanks!",
-      "context": null,
-      "ground_truth_type": "writing",
-      "ground_truth_complexity": 1
-    },
-    {
-      "id": "ex_0238",
-      "query": "Could you FYI draft a polite slack message declining an invitation to a meeting due to a deadline conflict.",
-      "context": null,
-      "ground_truth_type": "writing",
-      "ground_truth_complexity": 1
-    },
-    {
-      "id": "ex_0273",
-      "query": "List all countries bordering the Mediterranean Sea and their official languages.",
-      "context": null,
-      "ground_truth_type": "factual_lookup",
-      "ground_truth_complexity": 3
-    },
-    {
-      "id": "ex_0274",
-      "query": "Hello! List all countries bordering the Mediterranean Sea and their official languages. Looking forward to your advice, thanks!",
-      "context": null,
-      "ground_truth_type": "factual_lookup",
-      "ground_truth_complexity": 3
-    },
-    {
-      "id": "ex_0275",
-      "query": "Could you urgently list all countries bordering the Mediterranean Sea and their official languages.",
-      "context": null,
-      "ground_truth_type": "factual_lookup",
-      "ground_truth_complexity": 3
-    },
-    {
-      "id": "ex_0276",
-      "query": "List all countries bordering the Mediterranean Sea and their official languages.",
-      "context": "User context: production environment with tight SLA.",
-      "ground_truth_type": "factual_lookup",
-      "ground_truth_complexity": 3
-    },
-    {
-      "id": "ex_0304",
-      "query": "I am planning a 7-day trip to Kyoto in autumn. Can you recommend a balanced itinerary?",
-      "context": null,
-      "ground_truth_type": "general",
-      "ground_truth_complexity": 3
-    },
-    {
-      "id": "ex_0305",
-      "query": "Hello! I am planning a 7-day trip to Kyoto in autumn. Can you recommend a balanced itinerary? Looking forward to your advice, thanks!",
-      "context": null,
-      "ground_truth_type": "general",
-      "ground_truth_complexity": 3
-    },
-    {
-      "id": "ex_0306",
-      "query": "Could you basically i am planning a 7-day trip to Kyoto in autumn. Can you recommend a balanced itinerary?",
-      "context": null,
-      "ground_truth_type": "general",
-      "ground_truth_complexity": 3
-    },
-    {
-      "id": "ex_0307",
-      "query": "I am planning a 7-day trip to Kyoto in autumn. Can you recommend a balanced itinerary?",
-      "context": "User context: production environment with tight SLA.",
-      "ground_truth_type": "general",
-      "ground_truth_complexity": 3
-    },
-    {
-      "id": "ex_0325",
-      "query": "Good morning. What can you do?",
-      "context": null,
-      "ground_truth_type": "general",
-      "ground_truth_complexity": 1
-    },
-    {
-      "id": "ex_0326",
-      "query": "Hello! Good morning. What can you do? Looking forward to your advice, thanks!",
-      "context": null,
-      "ground_truth_type": "general",
-      "ground_truth_complexity": 1
-    },
-    {
-      "id": "ex_0327",
-      "query": "Could you btw good morning. What can you do?",
-      "context": null,
-      "ground_truth_type": "general",
-      "ground_truth_complexity": 1
     },
     {
       "id": "ex_0396",
@@ -498,53 +568,46 @@
       "ground_truth_complexity": 5
     },
     {
-      "id": "ex_0410",
-      "query": "Architect a high-throughput search autocomplete system with latency under 10ms at p99.",
+      "id": "ex_0397",
+      "query": "Explain the difference between optimistic concurrency control and pessimistic locking in databases.",
       "context": null,
-      "ground_truth_type": "technical_design",
-      "ground_truth_complexity": 4
-    },
-    {
-      "id": "ex_0411",
-      "query": "What are the trade-offs between REST, gRPC, and GraphQL for internal service-to-service communication?",
-      "context": null,
-      "ground_truth_type": "technical_design",
+      "ground_truth_type": "code_understanding",
       "ground_truth_complexity": 3
     },
     {
-      "id": "ex_0420",
-      "query": "Design an automated canary deployment pipeline using Istio and Argo Rollouts in Kubernetes.",
+      "id": "ex_0402",
+      "query": "How does BGP routing convergence work and what are route flap damping mechanisms?",
       "context": null,
-      "ground_truth_type": "technical_design",
+      "ground_truth_type": "code_understanding",
       "ground_truth_complexity": 4
     },
     {
-      "id": "ex_0426",
-      "query": "How many integers between 1 and 1000 are divisible by 3 or 5 but not both?",
+      "id": "ex_0425",
+      "query": "Solve this recurrence relation: T(n) = 2T(n/2) + n using the Master Theorem.",
       "context": null,
       "ground_truth_type": "analytical_reasoning",
-      "ground_truth_complexity": 2
-    },
-    {
-      "id": "ex_0440",
-      "query": "Compose a descriptive paragraph capturing the atmosphere of a bustling rainy market in Tokyo.",
-      "context": null,
-      "ground_truth_type": "writing",
-      "ground_truth_complexity": 2
-    },
-    {
-      "id": "ex_0441",
-      "query": "Write a persuasive proposal requesting approval to adopt Rust for our high-frequency trading engine.",
-      "context": null,
-      "ground_truth_type": "writing",
       "ground_truth_complexity": 3
     },
     {
-      "id": "ex_0447",
-      "query": "Draft a polite response to a negative customer review on our SaaS app store page.",
+      "id": "ex_0438",
+      "query": "Write a thank you note to a mentor who gave career advice.",
       "context": null,
       "ground_truth_type": "writing",
-      "ground_truth_complexity": 2
+      "ground_truth_complexity": 1
+    },
+    {
+      "id": "ex_0448",
+      "query": "Rewrite this passive sentence into active voice: 'The decision was made by the board after objections were raised.'",
+      "context": null,
+      "ground_truth_type": "writing",
+      "ground_truth_complexity": 1
+    },
+    {
+      "id": "ex_0452",
+      "query": "Write a haiku about clean code.",
+      "context": null,
+      "ground_truth_type": "writing",
+      "ground_truth_complexity": 1
     },
     {
       "id": "ex_0453",
@@ -554,46 +617,32 @@
       "ground_truth_complexity": 1
     },
     {
-      "id": "ex_0456",
-      "query": "What is the boiling point of liquid nitrogen at 1 atm?",
+      "id": "ex_0459",
+      "query": "List the key differences between prokaryotic and eukaryotic cells.",
       "context": null,
       "ground_truth_type": "factual_lookup",
+      "ground_truth_complexity": 2
+    },
+    {
+      "id": "ex_0477",
+      "query": "What are the rules of chess regarding castling?",
+      "context": null,
+      "ground_truth_type": "general",
+      "ground_truth_complexity": 2
+    },
+    {
+      "id": "ex_0478",
+      "query": "Could you give me some ideas for easy vegetarian dinners?",
+      "context": null,
+      "ground_truth_type": "general",
       "ground_truth_complexity": 1
     },
     {
-      "id": "ex_0462",
-      "query": "What are the three laws of robotics formulated by Isaac Asimov?",
-      "context": null,
-      "ground_truth_type": "factual_lookup",
-      "ground_truth_complexity": 2
-    },
-    {
-      "id": "ex_0470",
-      "query": "Can you help me organize my daily schedule to fit in 30 minutes of exercise?",
-      "context": null,
-      "ground_truth_type": "general",
-      "ground_truth_complexity": 2
-    },
-    {
-      "id": "ex_0471",
-      "query": "What are some fun team-building activities for a remote engineering team?",
-      "context": null,
-      "ground_truth_type": "general",
-      "ground_truth_complexity": 2
-    },
-    {
-      "id": "ex_0476",
-      "query": "Can you help me choose between learning guitar or piano as an adult beginner?",
-      "context": null,
-      "ground_truth_type": "general",
-      "ground_truth_complexity": 2
-    },
-    {
-      "id": "ex_0483",
-      "query": "Write a Lua script to parse Redis key expiration events.",
+      "id": "ex_0486",
+      "query": "Build a parser for CSV files in Zig handling quoted commas.",
       "context": null,
       "ground_truth_type": "code_generation",
-      "ground_truth_complexity": 2
+      "ground_truth_complexity": 3
     },
     {
       "id": "ex_0490",
@@ -603,25 +652,11 @@
       "ground_truth_complexity": 2
     },
     {
-      "id": "ex_0499",
-      "query": "Implement the PageRank algorithm on a graph in PySpark.",
+      "id": "ex_0500",
+      "query": "Write a WebGL fragment shader for procedural water wave reflections.",
       "context": null,
       "ground_truth_type": "code_generation",
       "ground_truth_complexity": 4
-    },
-    {
-      "id": "ex_0504",
-      "query": "What does the `std::move` cast actually do in C++?",
-      "context": null,
-      "ground_truth_type": "code_understanding",
-      "ground_truth_complexity": 2
-    },
-    {
-      "id": "ex_0507",
-      "query": "Explain how TLS session resumption via tickets works.",
-      "context": null,
-      "ground_truth_type": "code_understanding",
-      "ground_truth_complexity": 3
     },
     {
       "id": "ex_0508",
@@ -631,13 +666,6 @@
       "ground_truth_complexity": 1
     },
     {
-      "id": "ex_0513",
-      "query": "Explain the difference between TCP congestion control algorithms Cubic and BBR.",
-      "context": null,
-      "ground_truth_type": "code_understanding",
-      "ground_truth_complexity": 4
-    },
-    {
       "id": "ex_0521",
       "query": "Explain how deep learning backpropagation uses the multivariable chain rule.",
       "context": null,
@@ -645,36 +673,36 @@
       "ground_truth_complexity": 3
     },
     {
-      "id": "ex_0524",
-      "query": "Architect a real-time multiplayer game server backend using WebSockets and UDP.",
-      "context": null,
-      "ground_truth_type": "technical_design",
-      "ground_truth_complexity": 4
-    },
-    {
-      "id": "ex_0530",
-      "query": "Design a distributed tracing infrastructure collecting spans across 500 microservices.",
-      "context": null,
-      "ground_truth_type": "technical_design",
-      "ground_truth_complexity": 4
-    },
-    {
-      "id": "ex_0536",
-      "query": "What are the trade-offs of using Cassandra vs DynamoDB for time-series sensor telemetry?",
+      "id": "ex_0526",
+      "query": "What are the trade-offs between push-based and pull-based metrics monitoring systems?",
       "context": null,
       "ground_truth_type": "technical_design",
       "ground_truth_complexity": 3
     },
     {
-      "id": "ex_0547",
-      "query": "Solve this logic puzzle: who owns the zebra among 5 houses of different colors and pets?",
+      "id": "ex_0527",
+      "query": "Design an access control system supporting Role-Based Access Control (RBAC) and Attribute-Based (ABAC).",
+      "context": null,
+      "ground_truth_type": "technical_design",
+      "ground_truth_complexity": 4
+    },
+    {
+      "id": "ex_0535",
+      "query": "Design a real-time bidding advertising exchange with 50ms strict SLA.",
+      "context": null,
+      "ground_truth_type": "technical_design",
+      "ground_truth_complexity": 5
+    },
+    {
+      "id": "ex_0546",
+      "query": "Calculate the trajectory and range of a projectile launched at 45 degrees with initial velocity 20 m/s.",
       "context": null,
       "ground_truth_type": "analytical_reasoning",
-      "ground_truth_complexity": 3
+      "ground_truth_complexity": 2
     },
     {
-      "id": "ex_0555",
-      "query": "Derive the formula for compound interest continuously compounded.",
+      "id": "ex_0551",
+      "query": "Solve for x: log2(x) + log2(x - 2) = 3.",
       "context": null,
       "ground_truth_type": "analytical_reasoning",
       "ground_truth_complexity": 2
@@ -687,18 +715,11 @@
       "ground_truth_complexity": 3
     },
     {
-      "id": "ex_0563",
-      "query": "Derive the closed-form Black-Scholes formula using risk-neutral pricing.",
+      "id": "ex_0567",
+      "query": "Solve this linear recurrence: a_n = 5*a_{n-1} - 6*a_{n-2} with a_0=1, a_1=4.",
       "context": null,
       "ground_truth_type": "analytical_reasoning",
-      "ground_truth_complexity": 5
-    },
-    {
-      "id": "ex_0568",
-      "query": "Calculate the expected value and variance of a Poisson distributed variable.",
-      "context": null,
-      "ground_truth_type": "analytical_reasoning",
-      "ground_truth_complexity": 2
+      "ground_truth_complexity": 3
     },
     {
       "id": "ex_0571",
@@ -708,36 +729,36 @@
       "ground_truth_complexity": 3
     },
     {
-      "id": "ex_0572",
-      "query": "Solve the traveling salesperson problem for a 5-node graph using dynamic programming.",
+      "id": "ex_0573",
+      "query": "Write an email requesting feedback from your team after completing a major project milestone.",
       "context": null,
-      "ground_truth_type": "analytical_reasoning",
-      "ground_truth_complexity": 4
+      "ground_truth_type": "writing",
+      "ground_truth_complexity": 2
     },
     {
-      "id": "ex_0581",
-      "query": "Rewrite this email to make it more empathetic and understanding.",
+      "id": "ex_0588",
+      "query": "Compose a poem celebrating the beauty of mathematics.",
+      "context": null,
+      "ground_truth_type": "writing",
+      "ground_truth_complexity": 2
+    },
+    {
+      "id": "ex_0591",
+      "query": "Rewrite this paragraph to eliminate jargon and improve readability.",
       "context": null,
       "ground_truth_type": "writing",
       "ground_truth_complexity": 1
     },
     {
-      "id": "ex_0583",
-      "query": "Write a recommendation letter for an engineering intern applying to graduate school.",
-      "context": null,
-      "ground_truth_type": "writing",
-      "ground_truth_complexity": 3
-    },
-    {
-      "id": "ex_0594",
-      "query": "Who was the 16th President of the United States?",
+      "id": "ex_0597",
+      "query": "When was the United Nations founded?",
       "context": null,
       "ground_truth_type": "factual_lookup",
       "ground_truth_complexity": 1
     },
     {
-      "id": "ex_0600",
-      "query": "What are the primary colors in additive color mixing (RGB)?",
+      "id": "ex_0601",
+      "query": "What is the currency of Japan?",
       "context": null,
       "ground_truth_type": "factual_lookup",
       "ground_truth_complexity": 1
@@ -750,6 +771,20 @@
       "ground_truth_complexity": 2
     },
     {
+      "id": "ex_0610",
+      "query": "When was the fall of the Berlin Wall?",
+      "context": null,
+      "ground_truth_type": "factual_lookup",
+      "ground_truth_complexity": 1
+    },
+    {
+      "id": "ex_0611",
+      "query": "What is the SI unit of electrical resistance?",
+      "context": null,
+      "ground_truth_type": "factual_lookup",
+      "ground_truth_complexity": 1
+    },
+    {
       "id": "ex_0612",
       "query": "Define the economic concept of 'opportunity cost'.",
       "context": null,
@@ -757,25 +792,60 @@
       "ground_truth_complexity": 1
     },
     {
-      "id": "ex_0622",
-      "query": "What is the etiquette for tipping in restaurants in European countries?",
+      "id": "ex_0617",
+      "query": "What are some conversational icebreakers for a networking event?",
       "context": null,
       "ground_truth_type": "general",
       "ground_truth_complexity": 1
     },
     {
-      "id": "ex_0625",
-      "query": "How do air fryers work compared to conventional convection ovens?",
+      "id": "ex_0629",
+      "query": "How do I choose the right running shoes for my foot shape?",
       "context": null,
       "ground_truth_type": "general",
       "ground_truth_complexity": 2
     },
     {
-      "id": "ex_0628",
-      "query": "Could you give me some tips for starting a backyard vegetable garden?",
+      "id": "ex_0630",
+      "query": "Can you summarize the difference between espresso and drip coffee?",
       "context": null,
       "ground_truth_type": "general",
+      "ground_truth_complexity": 1
+    },
+    {
+      "id": "ex_0639",
+      "query": "Summarize the key architectural differences between WebRTC and RTMP streaming.",
+      "context": null,
+      "ground_truth_type": "technical_design",
+      "ground_truth_complexity": 3
+    },
+    {
+      "id": "ex_0640",
+      "query": "Explain why this variable is getting mutated outside its intended lexical scope.",
+      "context": null,
+      "ground_truth_type": "code_understanding",
       "ground_truth_complexity": 2
+    },
+    {
+      "id": "ex_0641",
+      "query": "Calculate the probability that at least 2 people share a birthday in a room of 30.",
+      "context": null,
+      "ground_truth_type": "analytical_reasoning",
+      "ground_truth_complexity": 3
+    },
+    {
+      "id": "ex_0649",
+      "query": "Write a cold outreach email to prospective B2B clients showcasing our latency reduction.",
+      "context": null,
+      "ground_truth_type": "writing",
+      "ground_truth_complexity": 2
+    },
+    {
+      "id": "ex_0670",
+      "query": "Draft an internal engineering wiki page documenting our production deployment checklist.",
+      "context": null,
+      "ground_truth_type": "writing",
+      "ground_truth_complexity": 3
     }
   ]
 }

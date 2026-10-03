@@ -1094,18 +1094,74 @@ def generate_additional_diverse_groups():
             ("What are some good podcasts to listen to on long commutes?", 1),
             ("Hello assistant, can you tell me what you can help me with today?", 1),
         ]),
+        ("instruction_prompts", [
+            ("Format this unorganized JSON payload with 2 spaces indentation and alphabetical keys.", 1, "code_generation"),
+            ("Convert this raw curl request into an equivalent Python requests snippet.", 2, "code_generation"),
+            ("Translate this SQL query into a MongoDB aggregation pipeline.", 3, "code_generation"),
+            ("Generate a mock mockito test suite for this Java UserService class.", 3, "code_generation"),
+            ("Write a shell script to kill all orphan zombie processes consuming more than 1GB RAM.", 2, "code_generation"),
+            ("Draft a comprehensive README markdown file for an open-source Rust CLI crate.", 3, "writing"),
+            ("Summarize the key architectural differences between WebRTC and RTMP streaming.", 3, "technical_design"),
+            ("Explain why this variable is getting mutated outside its intended lexical scope.", 2, "code_understanding"),
+            ("Calculate the probability that at least 2 people share a birthday in a room of 30.", 3, "analytical_reasoning"),
+            ("Who was the British Prime Minister during the Suez Crisis in 1956?", 1, "factual_lookup"),
+            ("Give me 5 actionable suggestions to reduce friction during user onboarding.", 2, "general"),
+            ("Extract all IPv4 and IPv6 addresses from this access log using a regex.", 2, "code_generation"),
+            ("Optimize this nested loop to achieve O(N log N) time complexity instead of O(N^2).", 3, "code_generation"),
+            ("Explain the concept of speculative execution vulnerabilities like Spectre and Meltdown.", 4, "code_understanding"),
+            ("Design a distributed lock using Redis Redlock algorithm and discuss its edge cases.", 4, "technical_design"),
+            ("Calculate the total electrical energy consumed in kWh by a 1500W heater run for 8 hours daily for 30 days.", 1, "analytical_reasoning"),
+            ("Write a cold outreach email to prospective B2B clients showcasing our latency reduction.", 2, "writing"),
+            ("What is the primary function of the corpus callosum in the human brain?", 1, "factual_lookup"),
+            ("Can you help me plan a 1-day sightseeing walking tour of Amsterdam?", 2, "general"),
+            ("Refactor this C++ class to follow RAII and eliminate naked `new` and `delete` calls.", 3, "code_generation"),
+            ("Inspect this memory profiling flamegraph and identify where the garbage collection pause originates.", 4, "code_understanding"),
+            ("Architect a zero-trust network access (ZTNA) model for remote engineers accessing production clusters.", 5, "technical_design"),
+            ("Solve this optimization problem: maximize f(x, y) = 4x + 3y subject to 2x + y <= 10 and x + 2y <= 8.", 3, "analytical_reasoning"),
+            ("Proofread and enhance this technical blog post introduction to hook readers immediately.", 2, "writing"),
+            ("What year was the Nobel Prize in Physics first awarded and who was the inaugural recipient?", 1, "factual_lookup"),
+            ("What are some thoughtful questions to ask the interviewer at the end of a software engineering interview?", 2, "general"),
+            ("Implement a rate-limited queue in TypeScript with exponential backoff on retry.", 3, "code_generation"),
+            ("Decompile this byte sequence and explain what the machine code instructions perform.", 4, "code_understanding"),
+            ("Design an automated disaster recovery failover mechanism across AWS us-east-1 and eu-west-1.", 5, "technical_design"),
+            ("Calculate the expected loss in a portfolio with normal distribution VaR at 95% confidence.", 4, "analytical_reasoning"),
+            ("Write a diplomatic memo explaining why a requested feature has been deprioritized.", 2, "writing"),
+            ("Name the four Galilean moons of Jupiter in order of orbital distance.", 1, "factual_lookup"),
+            ("How do noise-isolating earplugs differ mechanically from active noise-cancelling headphones?", 2, "general"),
+            ("Write a Prometheus alerting rule in YAML that fires when 5xx HTTP error rates exceed 2% over 5 minutes.", 2, "code_generation"),
+            ("Walk me through the difference between level-triggered and edge-triggered interrupts in OS kernels.", 4, "code_understanding"),
+            ("Architect an event-driven telemetry pipeline ingesting 500,000 IoT messages per second.", 5, "technical_design"),
+            ("Determine the winning strategy for a two-player subtraction game where players take 1, 2, or 3 coins from 21.", 2, "analytical_reasoning"),
+            ("Draft an internal engineering wiki page documenting our production deployment checklist.", 3, "writing"),
+            ("What is the speed of sound through sea water at 20 degrees Celsius?", 1, "factual_lookup"),
+            ("Can you suggest some productive habits to decompress after an intense coding session?", 1, "general"),
+        ]),
     ]
     idx = 1
-    for rt, items in classes:
-        for q, comp in items:
-            groups.append({
-                "group": f"auto_{rt}_{idx:02d}",
-                "query": q,
-                "context": None,
-                "request_type": rt,
-                "complexity": comp,
-                "derived": []
-            })
+    for item in classes:
+        rt = item[0]
+        items = item[1]
+        for entry in items:
+            if rt == "instruction_prompts":
+                q, comp, target_rt = entry
+                groups.append({
+                    "group": f"instr_{idx:02d}",
+                    "query": q,
+                    "context": None,
+                    "request_type": target_rt,
+                    "complexity": comp,
+                    "derived": []
+                })
+            else:
+                q, comp = entry
+                groups.append({
+                    "group": f"auto_{rt}_{idx:02d}",
+                    "query": q,
+                    "context": None,
+                    "request_type": rt,
+                    "complexity": comp,
+                    "derived": []
+                })
             idx += 1
     return groups
 
