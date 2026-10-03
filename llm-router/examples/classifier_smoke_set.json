@@ -1,0 +1,152 @@
+{
+  "schema_version": "classifier-smoke-set@v0",
+  "purpose": "Tiny, hand-labelled smoke/demo set for the P2 request-classifier track. NOT a statistically meaningful accuracy benchmark — too small for that. Labelling rubric for `complexity` (1-5): 1 = single trivial fact/typo-level fix, 2 = single-step task with no ambiguity, 3 = multi-step but single-domain, 4 = multi-step crossing domains or needing some judgement, 5 = multi-intent/ambiguous/needs clarification.",
+  "examples": [
+    {
+      "id": "sm-01",
+      "query": "Write a Python function that reverses a linked list.",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 2,
+      "tests": ["code_keyword"]
+    },
+    {
+      "id": "sm-02",
+      "query": "Can you build me a REST endpoint in Go that uploads a file to S3?",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 3,
+      "tests": ["code_keyword", "multi_step"]
+    },
+    {
+      "id": "sm-03",
+      "query": "What does this regex do: ^(?=.*[A-Z])(?=.*\\d).{8,}$",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 2,
+      "tests": ["code_keyword"]
+    },
+    {
+      "id": "sm-04",
+      "query": "Walk me through how this async retry decorator actually works.",
+      "context": "def retry(fn): ...",
+      "request_type": "code_understanding",
+      "complexity": 3,
+      "tests": ["code_keyword", "has_context"]
+    },
+    {
+      "id": "sm-05",
+      "query": "How should I design a multi-tenant database schema for a SaaS billing system?",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 4,
+      "tests": ["design_keyword"]
+    },
+    {
+      "id": "sm-06",
+      "query": "What are the trade-offs between event sourcing and a plain CRUD data model here?",
+      "context": null,
+      "request_type": "technical_design",
+      "complexity": 4,
+      "tests": ["design_keyword"]
+    },
+    {
+      "id": "sm-07",
+      "query": "Calculate the probability of getting exactly 3 heads in 7 coin flips.",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 2,
+      "tests": ["math_keyword"]
+    },
+    {
+      "id": "sm-08",
+      "query": "If a train leaves at 60mph and another at 80mph 20 minutes later on the same track, when do they meet?",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 3,
+      "tests": ["math_keyword", "multi_step"]
+    },
+    {
+      "id": "sm-09",
+      "query": "Draft a short email to my team announcing the outage is resolved.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 2,
+      "tests": ["writing_keyword"]
+    },
+    {
+      "id": "sm-10",
+      "query": "Rewrite this paragraph to sound more confident and less apologetic.",
+      "context": "I'm sorry if this is a dumb question, but maybe we could possibly consider looking into caching?",
+      "request_type": "writing",
+      "complexity": 2,
+      "tests": ["writing_keyword", "has_context"]
+    },
+    {
+      "id": "sm-11",
+      "query": "What is the capital of Australia?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "tests": ["short_request", "factual_keyword"]
+    },
+    {
+      "id": "sm-12",
+      "query": "Who wrote the novel 'Beloved'?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "tests": ["short_request", "factual_keyword"]
+    },
+    {
+      "id": "sm-13",
+      "query": "hey, how's it going?",
+      "context": null,
+      "request_type": "general",
+      "complexity": 1,
+      "tests": ["small_talk"]
+    },
+    {
+      "id": "sm-14",
+      "query": "thanks, that's helpful",
+      "context": null,
+      "request_type": "general",
+      "complexity": 1,
+      "tests": ["small_talk"]
+    },
+    {
+      "id": "sm-15",
+      "query": "my code is throwing an error can u plz help me fix it thanks",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 2,
+      "tests": ["noisy_informal_phrasing"]
+    },
+    {
+      "id": "sm-16",
+      "query": "Could you put together a short script that does the sorting thing we talked about, in whatever language is easiest?",
+      "context": null,
+      "request_type": "code_generation",
+      "complexity": 2,
+      "tests": ["paraphrase_of_sm-01", "no_direct_keyword_match"]
+    },
+    {
+      "id": "sm-17",
+      "query": "Explain why this function is slow and then rewrite it to be faster.",
+      "context": "def find_dupes(xs):\n    return [x for x in xs if xs.count(x) > 1]",
+      "request_type": "code_understanding",
+      "complexity": 4,
+      "tests": ["multi_intent_explain_then_generate", "has_context"],
+      "note": "Multi-intent: explain (code_understanding) + optimize (code_generation). Labelled by dominant/first-stated intent per our documented tie-break rule."
+    },
+    {
+      "id": "sm-18",
+      "query": "Can you summarize what this incident report says, and also draft a one-line Slack update about it?",
+      "context": "Root cause: a misconfigured retry loop caused a 3x traffic spike...",
+      "request_type": "writing",
+      "complexity": 4,
+      "tests": ["multi_intent_summarize_then_write", "has_context"],
+      "note": "Multi-intent: summarize (analytical_reasoning/code_understanding-adjacent) + draft message (writing). Labelled by the final deliverable the user asked for."
+    }
+  ]
+}

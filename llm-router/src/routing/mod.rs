@@ -21,6 +21,7 @@ pub mod cache;
 pub mod catalog;
 pub mod cells;
 pub mod classifier;
+pub mod classifier_hosted;
 // The salience classifier itself — feature engine, weight loading, scoring, banding.
 // Private to `routing`: only `salience.rs` (a sibling module) uses it directly, via
 // `ClassifierSalienceGate`.
@@ -33,7 +34,11 @@ mod salience_classifier;
 pub use boundary::{BoundarySignals, Mode, Phase};
 pub use cache::{CachedDecision, DecisionCache, NoopCache, RedisCache};
 pub use cells::{CellStore, InMemoryCellStore, PgCellStore};
-pub use classifier::{RequestType, Tier, classify, classify_request_type, signal};
+pub use classifier::{
+    ClassifyError, ClassifyInput, Classification, FallbackClassifier, RegexClassifier,
+    RequestClassifier, RequestType, Tier, classify, classify_request_type, signal,
+};
+pub use classifier_hosted::HostedClassifier;
 pub use registry::{PgTierRegistry, TierRegistry};
 pub use salience::{AllowAllGate, ClassifierSalienceGate, SalienceGate};
 
@@ -124,6 +129,7 @@ pub async fn route_model(
     registry: &dyn TierRegistry,
     cell_store: &dyn CellStore,
     gate: &dyn SalienceGate,
+    classifier: &dyn RequestClassifier,
     inputs: &RouteInputs<'_>,
 ) -> RouteDecision {
     tracing::info!(
@@ -245,14 +251,44 @@ pub async fn route_model(
                 agent_id = %inputs.agent_id, %conv_id, provider = %inputs.provider,
                 "route_model: LEVEL 3 (Classified) — at fireable boundary with a query; invoking classifier"
             );
-            // Load the provider's learned quality, then Thompson-sample a tier. Production
-            // uses an entropy RNG (exploration drives learning); tests seed it. The RNG
-            // (`ThreadRng`) is `!Send`, so it is scoped to drop before the next `.await` — the
-            // handler future must stay `Send`.
+            // Load the provider's learned quality. Request-type classification goes through
+            // the pluggable `RequestClassifier` (regex by default; see `classifier_hosted`
+            // for the opt-in hosted backend) — an async call, so it must complete and drop
+            // BEFORE the RNG block below opens: `rand::rng()`'s `ThreadRng` is `!Send`, and
+            // must never be held across an `.await`, or the handler future stops being
+            // `Send`. Thompson tier-sampling itself is unchanged.
             let learned = cell_store.load(inputs.provider).await;
-            let (tier, request_type) = {
+            let request_type = match classifier
+                .classify(&ClassifyInput {
+                    query,
+                    context: None,
+                })
+                .await
+            {
+                Ok(classification) => classification.request_type,
+                Err(e) => {
+                    // RequestClassifier implementations wired in via LlmRouterCtx are always
+                    // FallbackClassifier-wrapped (regex itself never errors), so this arm is
+                    // not expected to run in production — kept as a safe, fail-closed default
+                    // rather than a panic for any classifier a caller supplies directly.
+                    tracing::warn!(
+                        target: "nasiko::llm_router::routing",
+                        agent_id = %inputs.agent_id, %conv_id,
+                        error = %e,
+                        "route_model: classifier returned an error with no fallback configured; defaulting to General"
+                    );
+                    RequestType::General
+                }
+            };
+            let tier = {
                 let mut rng = rand::rng();
-                classify(query, inputs.provider, &learned, &mut rng)
+                classifier::pick_model_thompson(
+                    &learned,
+                    request_type,
+                    classifier::DEFAULT_W_QUALITY,
+                    classifier::DEFAULT_W_COST,
+                    &mut rng,
+                )
             };
             // Per-config tier override takes priority over the global registry.
             let config_override = match tier {
@@ -508,6 +544,27 @@ mod tests {
         }
     }
 
+    /// A classifier that counts how many times it was invoked — proves the `continue`
+    /// phase never reaches the classifier at all, rather than just happening to ignore
+    /// its result.
+    #[derive(Default)]
+    struct CountingClassifier {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+    #[async_trait]
+    impl RequestClassifier for CountingClassifier {
+        fn name(&self) -> &str {
+            "counting"
+        }
+        async fn classify(
+            &self,
+            input: &ClassifyInput<'_>,
+        ) -> Result<Classification, ClassifyError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            RegexClassifier.classify(input).await
+        }
+    }
+
     fn signals(conv_id: Option<&str>, phase: Phase, mode: Mode) -> BoundarySignals {
         BoundarySignals {
             conv_id: conv_id.map(str::to_string),
@@ -546,6 +603,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &RegexClassifier,
             &inputs("anthropic", &s, Some("pinned-model")),
         )
         .await;
@@ -563,6 +621,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &RegexClassifier,
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -582,6 +641,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &RegexClassifier,
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -612,6 +672,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &DenyGate,
+            &RegexClassifier,
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -638,6 +699,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &DenyGate,
+            &RegexClassifier,
             &i,
         )
         .await;
@@ -658,6 +720,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &DenyGate,
+            &RegexClassifier,
             &i,
         )
         .await;
@@ -677,6 +740,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &DenyGate,
+            &RegexClassifier,
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -699,6 +763,7 @@ mod tests {
             &test_support::StubRegistry,
             &cells,
             &AllowAllGate,
+            &RegexClassifier,
             &i,
         )
         .await;
@@ -726,6 +791,7 @@ mod tests {
             &test_support::StubRegistry,
             &cells,
             &AllowAllGate,
+            &RegexClassifier,
             &i,
         )
         .await;
@@ -743,6 +809,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &RegexClassifier,
             &inputs("gemini", &s, None),
         )
         .await;
@@ -756,16 +823,44 @@ mod tests {
         // A tool-loop turn (phase=continue) with a cache miss falls to config, never classifies.
         let cache = FakeCache::empty();
         let s = signals(Some("c1"), Phase::Continue, Mode::FreeFlowing);
+        let classifier = CountingClassifier::default();
         let d = route_model(
             &cache,
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &classifier,
             &inputs("anthropic", &s, None),
         )
         .await;
         assert_eq!(d.source, RouteSource::Config);
         assert_eq!(d.model, "cfg-model");
+        assert_eq!(
+            classifier.calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "a continue-phase turn must never invoke the classifier"
+        );
+    }
+
+    #[tokio::test]
+    async fn cold_start_classifies_at_boundary_and_writes_cache() {
+        // Mirrors `level3_classifies_at_boundary_and_writes_cache` but for `Phase::ColdStart`
+        // — the other safe-to-classify boundary alongside `Phase::Switch`.
+        let cache = FakeCache::empty();
+        let s = signals(Some("c1"), Phase::ColdStart, Mode::FreeFlowing);
+        let d = route_model(
+            &cache,
+            &test_support::StubRegistry,
+            &InMemoryCellStore::new(),
+            &AllowAllGate,
+            &RegexClassifier,
+            &inputs("anthropic", &s, None),
+        )
+        .await;
+        assert_eq!(d.source, RouteSource::Classified);
+        assert!(d.tier.is_some());
+        let puts = cache.puts.lock().unwrap();
+        assert_eq!(puts.len(), 1);
     }
 
     #[tokio::test]
@@ -777,6 +872,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &RegexClassifier,
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -795,6 +891,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &RegexClassifier,
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -814,6 +911,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &RegexClassifier,
             &i,
         )
         .await;

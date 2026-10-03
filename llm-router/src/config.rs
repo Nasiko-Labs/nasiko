@@ -101,6 +101,20 @@ pub struct GatewayConfig {
     /// retuned. Default 0.80.
     pub salience_high_threshold: f64,
 
+    /// Request-type classifier backend. `"regex"` (default — no network, byte-identical to
+    /// pre-classifier-abstraction behaviour) or `"hosted"` (an OpenAI-compatible
+    /// chat-completion endpoint; opt-in only). Any other/unset value behaves as `"regex"`.
+    pub classifier_backend: String,
+    /// Hosted backend only: full chat-completion endpoint URL. Empty ⇒ hosted backend
+    /// cannot be built, so `build_classifier` degrades to regex even if
+    /// `classifier_backend = "hosted"` (fail closed, never an outage over a missing URL).
+    pub classifier_endpoint: String,
+    /// Hosted backend only: model id to request.
+    pub classifier_model: String,
+    /// Hosted backend only: timeout before `FallbackClassifier` degrades to regex.
+    /// Default 2000ms.
+    pub classifier_timeout_ms: u64,
+
     /// Fleet-wide kill switch for payload compression. Compression is opted into **per agent**
     /// (`agents.compress_enabled`); this only lets an operator stop all of it at once without
     /// editing every agent's row. Default on, so a UI toggle takes effect without a deploy.
@@ -185,6 +199,10 @@ impl Default for GatewayConfig {
             salience_weights_path: String::new(),
             salience_low_threshold: 0.20,
             salience_high_threshold: 0.80,
+            classifier_backend: "regex".into(),
+            classifier_endpoint: String::new(),
+            classifier_model: String::new(),
+            classifier_timeout_ms: 2000,
             compress_kill_switch: true,
             compress_min_bytes: 2048,
             compress_types: nasiko_compress::TypeMask::DEFAULT,
@@ -274,6 +292,13 @@ impl GatewayConfig {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(d.salience_high_threshold),
+            classifier_backend: env_or("CLASSIFIER_BACKEND", &d.classifier_backend),
+            classifier_endpoint: env_or("CLASSIFIER_ENDPOINT", &d.classifier_endpoint),
+            classifier_model: env_or("CLASSIFIER_MODEL", &d.classifier_model),
+            classifier_timeout_ms: std::env::var("CLASSIFIER_TIMEOUT_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(d.classifier_timeout_ms),
             compress_kill_switch: env_flag("TOKEN_COMPRESS_ENABLED", true),
             compress_min_bytes: env_usize("TOKEN_COMPRESS_MIN_BYTES", 2048),
             // A bad label must not silently widen or narrow what gets rewritten, so an
@@ -434,5 +459,13 @@ mod tests {
         assert_eq!(cfg.platform_key_for("my-gateway"), "");
         assert_eq!(cfg.platform_key_for("deepseek"), "");
         assert_eq!(cfg.platform_key_for(""), "");
+    }
+
+    #[test]
+    fn classifier_backend_defaults_to_regex() {
+        let cfg = GatewayConfig::default();
+        assert_eq!(cfg.classifier_backend, "regex");
+        assert!(cfg.classifier_endpoint.is_empty());
+        assert!(cfg.classifier_model.is_empty());
     }
 }

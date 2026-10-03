@@ -48,8 +48,10 @@ pub use inbound::InboundFormat;
 pub use inject::{LlmInjectCtx, inject_llm_env};
 pub use resolver::{ConfigCache, ResolvedConfig};
 pub use routing::{
-    AllowAllGate, CellStore, ClassifierSalienceGate, DecisionCache, InMemoryCellStore, NoopCache,
-    PgCellStore, PgTierRegistry, RedisCache, SalienceGate, TierRegistry,
+    AllowAllGate, CellStore, Classification, ClassifierSalienceGate, ClassifyError, ClassifyInput,
+    DecisionCache, FallbackClassifier, HostedClassifier, InMemoryCellStore, NoopCache,
+    PgCellStore, PgTierRegistry, RedisCache, RegexClassifier, RequestClassifier, SalienceGate,
+    TierRegistry,
 };
 
 /// Shared context for the LLM router.
@@ -82,6 +84,12 @@ pub struct LlmRouterCtx {
     /// classify + pin. [`ClassifierSalienceGate`] when `SALIENCE_GATE_ENABLED`; else [`AllowAllGate`]
     /// (classify at every boundary, i.e. behaviour before the gate existed).
     pub salience_gate: Arc<dyn SalienceGate>,
+    /// Request-type classifier for Level 3 routing. [`RegexClassifier`] by default
+    /// (`CLASSIFIER_BACKEND` unset/`"regex"`) — byte-identical to the pre-abstraction
+    /// behaviour. [`HostedClassifier`] wrapped in [`FallbackClassifier`] when
+    /// `CLASSIFIER_BACKEND=hosted`; any backend failure or timeout degrades to the regex
+    /// result, never an outage or a guess.
+    pub classifier: Arc<dyn RequestClassifier>,
     /// The platform's single cost engine. Every `token_usage` row is priced
     /// through this — the DB trigger that used to do it returned NULL for any
     /// model missing from `model_pricing`, which booked 92.8% of calls at $0.
@@ -127,6 +135,7 @@ impl LlmRouterCtx {
         let router_cache = build_router_cache(&cfg);
         let cfg = Arc::new(cfg);
         let salience_gate = build_salience_gate(&cfg);
+        let classifier = build_classifier(&cfg, http.clone());
         let pricing = Arc::new(PricingEngine::new(db.clone()));
         Self {
             db,
@@ -137,9 +146,58 @@ impl LlmRouterCtx {
             tier_registry,
             cell_store,
             salience_gate,
+            classifier,
             pricing,
         }
     }
+}
+
+/// Build the request-type classifier from config.
+///
+/// `"regex"` (default, or any unrecognized value) ⇒ [`RegexClassifier`] directly — no
+/// network, no timeout wrapper needed since it cannot fail. `"hosted"` ⇒
+/// [`HostedClassifier`] wrapped in [`FallbackClassifier`] (regex fallback on error or
+/// timeout); a hosted backend requested without both `CLASSIFIER_ENDPOINT` and
+/// `CLASSIFIER_MODEL` set degrades to plain regex at startup instead — a misconfigured
+/// opt-in must never turn into an outage.
+pub fn build_classifier(cfg: &Arc<GatewayConfig>, http: reqwest::Client) -> Arc<dyn RequestClassifier> {
+    if cfg.classifier_backend != "hosted" {
+        tracing::info!(
+            target: "nasiko::llm_router::startup",
+            "llm-router: classifier backend = regex (default)"
+        );
+        return Arc::new(RegexClassifier);
+    }
+    if cfg.classifier_endpoint.is_empty() || cfg.classifier_model.is_empty() {
+        tracing::warn!(
+            target: "nasiko::llm_router::startup",
+            "llm-router: CLASSIFIER_BACKEND=hosted but CLASSIFIER_ENDPOINT/CLASSIFIER_MODEL \
+             is unset; falling back to regex classifier"
+        );
+        return Arc::new(RegexClassifier);
+    }
+    // Read directly from the environment rather than storing on `GatewayConfig`: the
+    // config struct's fields are logged wholesale at startup (see `from_shared`'s
+    // `tracing::info!` above), and a credential must never end up in that dump.
+    let api_key = std::env::var("CLASSIFIER_API_KEY").ok();
+    tracing::info!(
+        target: "nasiko::llm_router::startup",
+        endpoint = %cfg.classifier_endpoint,
+        model = %cfg.classifier_model,
+        timeout_ms = cfg.classifier_timeout_ms,
+        api_key_set = api_key.as_ref().is_some_and(|k| !k.is_empty()),
+        "llm-router: classifier backend = hosted (regex fallback on error/timeout)"
+    );
+    let hosted = HostedClassifier::new(
+        http,
+        cfg.classifier_endpoint.clone(),
+        cfg.classifier_model.clone(),
+    )
+    .with_api_key(api_key);
+    Arc::new(FallbackClassifier::new(
+        hosted,
+        Duration::from_millis(cfg.classifier_timeout_ms),
+    ))
 }
 
 /// Build the Level 2.5 salience gate from config.

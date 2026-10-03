@@ -29,6 +29,7 @@
 
 use std::collections::HashMap;
 
+use async_trait::async_trait;
 use rand::Rng;
 use rand_distr::{Beta, Distribution};
 
@@ -174,6 +175,185 @@ pub fn classify_request_type(text: &str) -> RequestType {
         }
     }
     best
+}
+
+// --------------------------------------------------------------------------
+// 1.5. Pluggable classifier backend — `RequestClassifier` abstraction.
+//
+//    `classify_request_type` above (the regex) stays the always-available default,
+//    wrapped as `RegexClassifier`. A real backend (see `super::classifier_hosted`) is
+//    wired in only behind `FallbackClassifier`, so any failure — network, timeout,
+//    malformed output, an out-of-range field — degrades to the regex result rather than
+//    a guess or an outage. Tier selection (`pick_model_thompson` below) is unchanged by
+//    any of this: it only ever consumes the resulting `RequestType`.
+// --------------------------------------------------------------------------
+
+/// Input to a [`RequestClassifier`]: the query text to classify, plus optional
+/// conversation context. No backend in this crate reads `context` yet — it is reserved
+/// for a caller that wants to pass more than the latest user turn.
+pub struct ClassifyInput<'a> {
+    pub query: &'a str,
+    pub context: Option<&'a str>,
+}
+
+/// Fixed complexity [`RegexClassifier`] reports — it has no actual complexity signal, so
+/// this is a neutral mid-range placeholder, not a measurement.
+pub const REGEX_FIXED_COMPLEXITY: u8 = 3;
+/// Fixed confidence [`RegexClassifier`] reports — same reasoning as
+/// [`REGEX_FIXED_COMPLEXITY`]: a documented placeholder, not a calibrated probability.
+pub const REGEX_FIXED_CONFIDENCE: f32 = 0.5;
+
+/// A classifier's verdict. Only constructible through [`Classification::new`], which
+/// validates `complexity`/`confidence` — so an out-of-range value from a backend becomes
+/// a [`ClassifyError`] at construction time, never a silently-accepted bad value.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Classification {
+    pub request_type: RequestType,
+    /// `1..=5`, coarse complexity estimate.
+    pub complexity: u8,
+    /// `0.0..=1.0`, the classifier's confidence in `request_type`.
+    pub confidence: f32,
+}
+
+impl Classification {
+    /// Validate and construct. Fails closed: an out-of-range `complexity` or a
+    /// non-finite/out-of-range `confidence` is a [`ClassifyError`], not a clamp.
+    pub fn new(
+        request_type: RequestType,
+        complexity: u8,
+        confidence: f32,
+    ) -> Result<Self, ClassifyError> {
+        if !(1..=5).contains(&complexity) {
+            return Err(ClassifyError::InvalidComplexity(complexity));
+        }
+        if !confidence.is_finite() || !(0.0..=1.0).contains(&confidence) {
+            return Err(ClassifyError::InvalidConfidence(confidence));
+        }
+        Ok(Self {
+            request_type,
+            complexity,
+            confidence,
+        })
+    }
+}
+
+/// Why a [`RequestClassifier`] could not produce a [`Classification`]. Every variant is
+/// treated identically by [`FallbackClassifier`]: fall back to [`RegexClassifier`], never
+/// guess.
+#[derive(Debug, Clone)]
+pub enum ClassifyError {
+    /// The backend did not respond within its configured timeout.
+    Timeout,
+    /// The HTTP request itself failed (connect/send/transport).
+    Network(String),
+    /// The backend responded, but with an error status or an exhausted retry.
+    Backend(String),
+    /// The response body wasn't the expected shape (bad JSON, missing fields).
+    MalformedResponse(String),
+    /// `request_type` wasn't one of the known wire labels.
+    InvalidRequestType(String),
+    /// `complexity` was outside `1..=5`.
+    InvalidComplexity(u8),
+    /// `confidence` was outside `0.0..=1.0` (or non-finite).
+    InvalidConfidence(f32),
+}
+
+impl std::fmt::Display for ClassifyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ClassifyError::Timeout => write!(f, "classifier timed out"),
+            ClassifyError::Network(e) => write!(f, "network error: {e}"),
+            ClassifyError::Backend(e) => write!(f, "backend error: {e}"),
+            ClassifyError::MalformedResponse(e) => write!(f, "malformed response: {e}"),
+            ClassifyError::InvalidRequestType(s) => write!(f, "invalid request_type: {s:?}"),
+            ClassifyError::InvalidComplexity(c) => write!(f, "invalid complexity: {c}"),
+            ClassifyError::InvalidConfidence(c) => write!(f, "invalid confidence: {c}"),
+        }
+    }
+}
+
+impl std::error::Error for ClassifyError {}
+
+/// A pluggable request-type/complexity/confidence classifier.
+#[async_trait]
+pub trait RequestClassifier: Send + Sync {
+    /// A short, stable name for logs/eval output (e.g. `"regex"`, `"hosted"`).
+    fn name(&self) -> &str;
+
+    /// Classify `input`. Implementations should fail (return `Err`) rather than guess —
+    /// callers that need a never-fails classifier should wrap this in
+    /// [`FallbackClassifier`].
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError>;
+}
+
+/// The regex vote-count classifier ([`classify_request_type`]), wrapped to satisfy
+/// [`RequestClassifier`]. Always succeeds — this is the never-fails base every other
+/// backend falls back to.
+pub struct RegexClassifier;
+
+#[async_trait]
+impl RequestClassifier for RegexClassifier {
+    fn name(&self) -> &str {
+        "regex"
+    }
+
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+        let request_type = classify_request_type(input.query);
+        Classification::new(request_type, REGEX_FIXED_COMPLEXITY, REGEX_FIXED_CONFIDENCE)
+    }
+}
+
+/// Wraps any [`RequestClassifier`] with a timeout and a fail-closed fallback to
+/// [`RegexClassifier`]: a timeout, or any `Err` from `inner`, degrades to the regex
+/// result rather than an outage or a guessed classification. Mirrors the fail-safe
+/// direction [`super::salience::SalienceGate`] already takes for Level 2.5.
+pub struct FallbackClassifier<C: RequestClassifier> {
+    inner: C,
+    regex: RegexClassifier,
+    timeout: std::time::Duration,
+}
+
+impl<C: RequestClassifier> FallbackClassifier<C> {
+    pub fn new(inner: C, timeout: std::time::Duration) -> Self {
+        Self {
+            inner,
+            regex: RegexClassifier,
+            timeout,
+        }
+    }
+}
+
+#[async_trait]
+impl<C: RequestClassifier> RequestClassifier for FallbackClassifier<C> {
+    /// Reports the wrapped backend's name — the fallback is an implementation detail of
+    /// *how* a classification was produced, not a distinct backend identity.
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+        match tokio::time::timeout(self.timeout, self.inner.classify(input)).await {
+            Ok(Ok(classification)) => Ok(classification),
+            Ok(Err(e)) => {
+                tracing::warn!(
+                    target: "nasiko::llm_router::classifier",
+                    backend = %self.inner.name(),
+                    error = %e,
+                    "classifier backend failed; falling back to regex"
+                );
+                self.regex.classify(input).await
+            }
+            Err(_elapsed) => {
+                tracing::warn!(
+                    target: "nasiko::llm_router::classifier",
+                    backend = %self.inner.name(),
+                    timeout_ms = self.timeout.as_millis(),
+                    "classifier backend timed out; falling back to regex"
+                );
+                self.regex.classify(input).await
+            }
+        }
+    }
 }
 
 // --------------------------------------------------------------------------
@@ -530,5 +710,158 @@ mod tests {
         );
         assert_eq!(rt, RequestType::CodeGeneration);
         assert!(matches!(tier, Tier::Tier1 | Tier::Tier2 | Tier::Tier3));
+    }
+
+    // --- RequestClassifier / RegexClassifier / FallbackClassifier ---
+
+    #[tokio::test]
+    async fn regex_classifier_matches_reference_examples() {
+        use RequestType::*;
+        let cases = [
+            ("build me a python script that parses CSV", CodeGeneration),
+            ("explain what this function does", CodeUnderstanding),
+            ("how should I design this API?", TechnicalDesign),
+            (
+                "calculate the probability that it rains tomorrow",
+                AnalyticalReasoning,
+            ),
+            ("draft an email to my team about the outage", Writing),
+            ("what is the capital of France?", FactualLookup),
+            ("hello there", General),
+        ];
+        let classifier = RegexClassifier;
+        for (query, expected) in cases {
+            let input = ClassifyInput {
+                query,
+                context: None,
+            };
+            let result = classifier.classify(&input).await.unwrap();
+            assert_eq!(result.request_type, expected, "query: {query:?}");
+            assert_eq!(result.complexity, REGEX_FIXED_COMPLEXITY);
+            assert_eq!(result.confidence, REGEX_FIXED_CONFIDENCE);
+        }
+    }
+
+    #[tokio::test]
+    async fn regex_classifier_is_deterministic() {
+        let classifier = RegexClassifier;
+        let input = ClassifyInput {
+            query: "refactor this function to use async/await",
+            context: None,
+        };
+        let a = classifier.classify(&input).await.unwrap();
+        let b = classifier.classify(&input).await.unwrap();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn classification_rejects_invalid_complexity() {
+        assert!(matches!(
+            Classification::new(RequestType::General, 0, 0.5),
+            Err(ClassifyError::InvalidComplexity(0))
+        ));
+        assert!(matches!(
+            Classification::new(RequestType::General, 6, 0.5),
+            Err(ClassifyError::InvalidComplexity(6))
+        ));
+    }
+
+    #[test]
+    fn classification_rejects_invalid_confidence() {
+        assert!(matches!(
+            Classification::new(RequestType::General, 3, -0.1),
+            Err(ClassifyError::InvalidConfidence(_))
+        ));
+        assert!(matches!(
+            Classification::new(RequestType::General, 3, 1.1),
+            Err(ClassifyError::InvalidConfidence(_))
+        ));
+        assert!(matches!(
+            Classification::new(RequestType::General, 3, f32::NAN),
+            Err(ClassifyError::InvalidConfidence(_))
+        ));
+    }
+
+    #[test]
+    fn classification_accepts_boundary_values() {
+        assert!(Classification::new(RequestType::General, 1, 0.0).is_ok());
+        assert!(Classification::new(RequestType::General, 5, 1.0).is_ok());
+    }
+
+    /// A controllable classifier double for exercising `FallbackClassifier`'s branches.
+    struct FakeClassifier {
+        result: Result<Classification, ClassifyError>,
+        delay: std::time::Duration,
+    }
+
+    #[async_trait]
+    impl RequestClassifier for FakeClassifier {
+        fn name(&self) -> &str {
+            "fake"
+        }
+
+        async fn classify(
+            &self,
+            _input: &ClassifyInput<'_>,
+        ) -> Result<Classification, ClassifyError> {
+            if !self.delay.is_zero() {
+                tokio::time::sleep(self.delay).await;
+            }
+            self.result.clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn fallback_classifier_passes_through_inner_success() {
+        let expected = Classification::new(RequestType::Writing, 2, 0.9).unwrap();
+        let fallback = FallbackClassifier::new(
+            FakeClassifier {
+                result: Ok(expected),
+                delay: std::time::Duration::ZERO,
+            },
+            std::time::Duration::from_millis(500),
+        );
+        let input = ClassifyInput {
+            query: "irrelevant",
+            context: None,
+        };
+        let got = fallback.classify(&input).await.unwrap();
+        assert_eq!(got, expected);
+    }
+
+    #[tokio::test]
+    async fn fallback_classifier_falls_back_to_regex_on_error() {
+        let fallback = FallbackClassifier::new(
+            FakeClassifier {
+                result: Err(ClassifyError::Backend("boom".into())),
+                delay: std::time::Duration::ZERO,
+            },
+            std::time::Duration::from_millis(500),
+        );
+        let input = ClassifyInput {
+            query: "hello there",
+            context: None,
+        };
+        let got = fallback.classify(&input).await.unwrap();
+        assert_eq!(got.request_type, RequestType::General);
+        assert_eq!(got.complexity, REGEX_FIXED_COMPLEXITY);
+    }
+
+    #[tokio::test]
+    async fn fallback_classifier_falls_back_to_regex_on_timeout() {
+        let fallback = FallbackClassifier::new(
+            FakeClassifier {
+                result: Ok(Classification::new(RequestType::Writing, 2, 0.9).unwrap()),
+                delay: std::time::Duration::from_millis(200),
+            },
+            std::time::Duration::from_millis(20),
+        );
+        let input = ClassifyInput {
+            query: "what is the capital of France?",
+            context: None,
+        };
+        let got = fallback.classify(&input).await.unwrap();
+        assert_eq!(got.request_type, RequestType::FactualLookup);
+        assert_eq!(got.complexity, REGEX_FIXED_COMPLEXITY);
     }
 }
