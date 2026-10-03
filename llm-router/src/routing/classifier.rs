@@ -341,11 +341,48 @@ pub struct ClassifyInput<'a> {
     pub context: Option<&'a str>,
 }
 
+impl<'a> ClassifyInput<'a> {
+    /// Create an input with no context.
+    pub fn new(query: &'a str) -> Self {
+        Self { query, context: None }
+    }
+
+    /// Create an input with context.
+    pub fn with_context(query: &'a str, context: &'a str) -> Self {
+        Self { query, context: Some(context) }
+    }
+}
+
 /// One classifier decision.
 pub struct Classification {
     pub request_type: RequestType,
     pub complexity: u8, // 1–5
     pub confidence: f32, // 0–1
+    /// Which backend produced this decision.
+    pub backend: String,
+}
+
+impl Classification {
+    /// Create a validated classification. Complexity is clamped to 1..=5,
+    /// confidence to 0.0..=1.0.
+    pub fn new(
+        request_type: RequestType,
+        complexity: u8,
+        confidence: f32,
+        backend: impl Into<String>,
+    ) -> Self {
+        Self {
+            request_type,
+            complexity: complexity.clamp(1, 5),
+            confidence: confidence.clamp(0.0, 1.0),
+            backend: backend.into(),
+        }
+    }
+
+    /// Low-confidence `General` for undecidable inputs. Never fails.
+    pub fn unknown(backend: impl Into<String>) -> Self {
+        Self::new(RequestType::General, 1, 0.2, backend)
+    }
 }
 
 /// Why a backend failed. The router treats any error as a signal to fall back
@@ -371,8 +408,16 @@ impl std::error::Error for ClassifyError {}
 /// identical inputs (no sampling, or a seeded RNG with reported variance).
 #[async_trait::async_trait]
 pub trait RequestClassifier: Send + Sync {
-    /// Stable backend name, e.g. `"regex"`, `"heuristic"`.
+    /// Stable backend name, e.g. `"regex"`, `"heuristic"`, `"tfidf"`.
     fn name(&self) -> &str;
+    /// Human-readable description of the backend's approach.
+    fn description(&self) -> &'static str {
+        "No description provided."
+    }
+    /// Whether this backend uses the `context` field.
+    fn uses_context(&self) -> bool {
+        false
+    }
     /// Classify one request. Never panics; unexpected input yields a low-
     /// confidence `General` rather than an error.
     async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError>;
@@ -394,11 +439,12 @@ impl RequestClassifier for RegexClassifier {
     }
 
     async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
-        Ok(Classification {
-            request_type: classify_request_type(input.query),
-            complexity: 2,
-            confidence: 0.6,
-        })
+        Ok(Classification::new(
+            classify_request_type(input.query),
+            2,
+            0.6,
+            self.name(),
+        ))
     }
 }
 
@@ -560,25 +606,26 @@ impl RequestClassifier for HeuristicClassifier {
             request_type
         };
         let second = scores.get(1).map(|(_, s)| *s).unwrap_or(0.0);
-        let confidence = if top <= 0.0 {
-            0.25
-        } else {
-            0.3 + 0.7 * (top - second) / (top + 1.0)
-        };
-        Ok(Classification {
+        let confidence = confidence_from_margin(top, second);
+        Ok(Classification::new(
             request_type,
-            complexity: Self::estimate_complexity(input.query, input.context),
-            confidence: confidence.clamp(0.0, 1.0) as f32,
-        })
+            Self::estimate_complexity(input.query, input.context),
+            confidence,
+            self.name(),
+        ))
     }
 }
 
 /// Select a backend by name. Unknown names fall back to the regex baseline so a
 /// misconfigured backend can never break routing. Backends: `"regex"` (default),
-/// `"heuristic"` (local, deterministic, uses query + context).
+/// `"heuristic"` (local, deterministic, uses query + context),
+/// `"tfidf"` (statistical, uses query + context),
+/// `"ensemble"` (weighted vote over all three).
 pub fn classifier_from_backend(name: &str) -> std::sync::Arc<dyn RequestClassifier> {
     match name {
         "heuristic" => std::sync::Arc::new(HeuristicClassifier),
+        "tfidf" => std::sync::Arc::new(super::classifier_tfidf::TfidfClassifier),
+        "ensemble" => std::sync::Arc::new(super::classifier_ensemble::EnsembleClassifier::default_ensemble()),
         _ => std::sync::Arc::new(RegexClassifier),
     }
 }
@@ -596,6 +643,21 @@ pub fn classifier_from_config(
     config: &crate::config::GatewayConfig,
 ) -> std::sync::Arc<dyn RequestClassifier> {
     classifier_from_backend(&config.classifier_backend)
+}
+
+/// Compute a confidence score from the margin between the top two category
+/// scores. Returns 0.25 when `top` is 0 (no signal), otherwise
+/// `0.3 + 0.7 * (top - second) / (top + 1)`, clamped to 0.0..=1.0.
+///
+/// Shared by backends so confidence semantics are consistent: a lone weak
+/// signal is ~0.3, a decisive win approaches 1.0.
+pub fn confidence_from_margin(top: f64, second: f64) -> f32 {
+    if top <= 0.0 {
+        0.25
+    } else {
+        (0.3 + 0.7 * (top - second) / (top + 1.0)) as f32
+    }
+    .clamp(0.0, 1.0)
 }
 
 #[cfg(test)]
