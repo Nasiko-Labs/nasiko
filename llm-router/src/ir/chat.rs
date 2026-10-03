@@ -527,4 +527,72 @@ mod tests {
         assert_eq!(d["index"], 0);
         assert_eq!(d["function"]["arguments"], "{\"a\":");
     }
+
+    #[test]
+    fn compact_tool_conversions() {
+        use nasiko_tool_compact::{ToolCall as CompactToolCall, ToolDef as CompactToolDef};
+
+        let router_tool = ToolDef {
+            kind: "function".to_string(),
+            function: FunctionDef {
+                name: "test_tool".to_string(),
+                description: Some("a test tool".to_string()),
+                parameters: Some(json!({"type": "object"})),
+            },
+            extra: Map::new(),
+        };
+
+        // Convert router ToolDef -> compact ToolDef
+        let compact_tool: CompactToolDef = (&router_tool).into();
+        assert_eq!(compact_tool.name, "test_tool");
+        assert_eq!(compact_tool.description.as_deref(), Some("a test tool"));
+
+        // Convert compact ToolCall -> router ToolCall
+        let compact_call = CompactToolCall {
+            name: "test_tool".to_string(),
+            arguments: json!({"key": "val"}),
+        };
+        let router_call = ToolCall::from_compact(&compact_call, "call_123");
+        assert_eq!(router_call.id, "call_123");
+        assert_eq!(router_call.function.name, "test_tool");
+        assert_eq!(router_call.function.arguments, "{\"key\":\"val\"}");
+    }
 }
+
+// ─── nasiko-tool-compact Seam Conversions ───────────────────────────────────
+
+impl From<&ToolDef> for nasiko_tool_compact::ToolDef {
+    fn from(t: &ToolDef) -> Self {
+        Self {
+            name: t.function.name.clone(),
+            description: t.function.description.clone(),
+            parameters: t.function.parameters.clone(),
+        }
+    }
+}
+
+impl From<ToolDef> for nasiko_tool_compact::ToolDef {
+    fn from(t: ToolDef) -> Self {
+        Self {
+            name: t.function.name,
+            description: t.function.description,
+            parameters: t.function.parameters,
+        }
+    }
+}
+
+impl ToolCall {
+    /// Convert a compact tool call into router ToolCall, assigning a router ID.
+    pub fn from_compact(call: &nasiko_tool_compact::ToolCall, id: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            kind: function_kind(),
+            function: FunctionCall {
+                name: call.name.clone(),
+                arguments: serde_json::to_string(&call.arguments).unwrap_or_else(|_| "{}".to_string()),
+            },
+            extra: Map::new(),
+        }
+    }
+}
+

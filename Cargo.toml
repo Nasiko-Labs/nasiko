@@ -26,6 +26,7 @@ members = [
     "github",
     "bench",
     "bench-support",
+    "tool-compact",
 ]
 
 [workspace.package]
@@ -56,6 +57,7 @@ nasiko-coding-policy = { path = "coding-policy" }
 nasiko-oci = { path = "oci" }
 nasiko-llm-router = { path = "llm-router" }
 nasiko-bench-support = { path = "bench-support" }
+nasiko-tool-compact = { path = "tool-compact" }
 
 # ─── Testing ────────────────────────────────────────────────────────────────
 serial_test = "3"
