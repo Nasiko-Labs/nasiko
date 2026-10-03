@@ -1,0 +1,1092 @@
+{
+ "schema_version": "compact-tools-eval-v1",
+ "purpose": "OUR OWN extra cases. Same schema as the public sample; report separately; never used to tune.",
+ "tools": [
+  {
+   "type": "function",
+   "function": {
+    "name": "book_hotel",
+    "description": "Reserve hotel rooms.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "guest": {
+       "type": "object",
+       "properties": {
+        "name": {
+         "type": "string",
+         "description": "Full name"
+        },
+        "age": {
+         "type": "integer"
+        }
+       },
+       "required": [
+        "name"
+       ],
+       "description": "Who is staying"
+      },
+      "rooms": {
+       "type": "array",
+       "items": {
+        "type": "object",
+        "properties": {
+         "beds": {
+          "type": "number"
+         },
+         "smoking": {
+          "type": "boolean"
+         }
+        },
+        "required": [
+         "beds"
+        ]
+       }
+      },
+      "checkin": {
+       "type": "string",
+       "format": "date-time"
+      },
+      "tier": {
+       "type": "string",
+       "enum": [
+        "standard",
+        "deluxe"
+       ]
+      }
+     },
+     "required": [
+      "guest",
+      "checkin"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "search_files",
+    "description": "Search the user's files.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "query": {
+       "type": "string",
+       "description": "Search text"
+      },
+      "paths": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       }
+      },
+      "max_results": {
+       "type": "integer"
+      },
+      "sort": {
+       "type": "string",
+       "enum": [
+        "name",
+        "date"
+       ]
+      }
+     },
+     "required": [
+      "query"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "set_reminder",
+    "description": "Create a reminder.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "message": {
+       "type": "string",
+       "description": "What to remind"
+      },
+      "when": {
+       "type": "string",
+       "format": "date-time"
+      },
+      "repeat": {
+       "type": "string",
+       "enum": [
+        "daily",
+        "weekly"
+       ]
+      }
+     },
+     "required": [
+      "message",
+      "when"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "create_ticket",
+    "description": "Open a ticket in the tracker.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "title": {
+       "type": "string"
+      },
+      "labels": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       }
+      },
+      "priority": {
+       "type": "string",
+       "enum": [
+        "low",
+        "high",
+        "urgent"
+       ]
+      },
+      "assignee": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "title",
+      "priority"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "notes_add",
+    "description": "Add a note.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "title": {
+       "type": "string"
+      },
+      "body": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "title",
+      "body"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "mail_draft",
+    "description": "Draft an email.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "title": {
+       "type": "string"
+      },
+      "body": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "body"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "lookup_ref",
+    "description": "Uses a $ref.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "item": {
+       "$ref": "#/$defs/item"
+      }
+     },
+     "$defs": {
+      "item": {
+       "type": "string"
+      }
+     }
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "pick_one",
+    "description": "Uses oneOf.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "choice": {
+       "oneOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "integer"
+        }
+       ]
+      }
+     }
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "resize",
+    "description": "Uses a numeric bound.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "width": {
+       "type": "integer",
+       "minimum": 1,
+       "maximum": 4096
+      }
+     },
+     "required": [
+      "width"
+     ]
+    }
+   }
+  }
+ ],
+ "cases": [
+  {
+   "id": "xt-001",
+   "tools": [
+    "book_hotel",
+    "search_files"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "Book a deluxe room for Asha Rao, age 34, two beds, check-in 2026-10-10 14:00 IST"
+    }
+   ],
+   "expected": [
+    {
+     "name": "book_hotel",
+     "arguments": {
+      "guest": {
+       "name": "Asha Rao",
+       "age": 34
+      },
+      "rooms": [
+       {
+        "beds": 2
+       }
+      ],
+      "checkin": "2026-10-10T14:00:00+05:30",
+      "tier": "deluxe"
+     }
+    }
+   ],
+   "match": {
+    "free_text_fields": [
+     "guest"
+    ]
+   }
+  },
+  {
+   "id": "xt-002",
+   "tools": [
+    "set_reminder",
+    "create_ticket"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "Remind me daily at 9am starting tomorrow to stand up, and open an urgent ticket 'Fix login' with label bug"
+    }
+   ],
+   "expected": [
+    {
+     "name": "set_reminder",
+     "arguments": {
+      "message": "Stand up",
+      "when": "2026-10-03T09:00:00+05:30",
+      "repeat": "daily"
+     }
+    },
+    {
+     "name": "create_ticket",
+     "arguments": {
+      "title": "Fix login",
+      "priority": "urgent",
+      "labels": [
+       "bug"
+      ]
+     }
+    }
+   ],
+   "match": {
+    "free_text_fields": [
+     "message",
+     "title"
+    ]
+   }
+  },
+  {
+   "id": "xt-003",
+   "tools": [
+    "set_reminder"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "Remind me at 5pm today: call Zoë \"about the 😀 launch\" (don't forget >>)"
+    }
+   ],
+   "expected": [
+    {
+     "name": "set_reminder",
+     "arguments": {
+      "message": "call Zoë \"about the 😀 launch\" (don't forget >>)",
+      "when": "2026-10-02T17:00:00+05:30"
+     }
+    }
+   ],
+   "match": {
+    "free_text_fields": [
+     "message"
+    ]
+   }
+  },
+  {
+   "id": "xt-004",
+   "tools": [
+    "search_files",
+    "lookup_ref"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "Find the Q3 budget spreadsheet in /docs and /tmp, newest first, 5 results"
+    }
+   ],
+   "expected": [
+    {
+     "name": "search_files",
+     "arguments": {
+      "query": "Q3 budget spreadsheet",
+      "paths": [
+       "/docs",
+       "/tmp"
+      ],
+      "max_results": 5,
+      "sort": "date"
+     }
+    }
+   ],
+   "match": {
+    "free_text_fields": [
+     "query"
+    ]
+   }
+  },
+  {
+   "id": "xt-005",
+   "tools": [
+    "pick_one"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "Pick the number 7"
+    }
+   ],
+   "expected": [
+    {
+     "name": "pick_one",
+     "arguments": {
+      "choice": 7
+     }
+    }
+   ]
+  },
+  {
+   "id": "xt-006",
+   "tools": [
+    "resize"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "Resize to 800 wide"
+    }
+   ],
+   "expected": [
+    {
+     "name": "resize",
+     "arguments": {
+      "width": 800
+     }
+    }
+   ]
+  },
+  {
+   "id": "xt-007",
+   "tools": [
+    "search_files",
+    "set_reminder"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "What is the capital of France?"
+    }
+   ],
+   "expected": []
+  },
+  {
+   "id": "xt-008",
+   "tools": [
+    "notes_add",
+    "mail_draft"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "Draft an email saying the meeting moved to 3pm"
+    }
+   ],
+   "expected": [
+    {
+     "name": "mail_draft",
+     "arguments": {
+      "body": "The meeting moved to 3pm.",
+      "title": "Meeting moved"
+     }
+    }
+   ],
+   "match": {
+    "free_text_fields": [
+     "body",
+     "title"
+    ]
+   }
+  },
+  {
+   "id": "xt-009",
+   "tools": [
+    "create_ticket"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "Open a low priority ticket called Typo in docs assigned to sam"
+    }
+   ],
+   "expected": [
+    {
+     "name": "create_ticket",
+     "arguments": {
+      "title": "Typo in docs",
+      "priority": "low",
+      "assignee": "sam"
+     }
+    }
+   ],
+   "match": {
+    "free_text_fields": [
+     "title"
+    ]
+   }
+  },
+  {
+   "id": "xt-010",
+   "tools": [
+    "book_hotel"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "Two rooms, one with 1 bed non-smoking and one with 2 beds smoking, guest Lee, check-in 2026-11-01 noon UTC"
+    }
+   ],
+   "expected": [
+    {
+     "name": "book_hotel",
+     "arguments": {
+      "guest": {
+       "name": "Lee"
+      },
+      "rooms": [
+       {
+        "beds": 1,
+        "smoking": false
+       },
+       {
+        "beds": 2,
+        "smoking": true
+       }
+      ],
+      "checkin": "2026-11-01T12:00:00Z"
+     }
+    }
+   ],
+   "match": {
+    "free_text_fields": [
+     "guest"
+    ]
+   }
+  },
+  {
+   "id": "xt-011",
+   "tools": [
+    "notes_add"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "Note: line one\nline two with a tab\tand a backslash \\"
+    }
+   ],
+   "expected": [
+    {
+     "name": "notes_add",
+     "arguments": {
+      "title": "Note",
+      "body": "line one\nline two with a tab\tand a backslash \\"
+     }
+    }
+   ],
+   "match": {
+    "free_text_fields": [
+     "title",
+     "body"
+    ]
+   }
+  },
+  {
+   "id": "xt-012",
+   "tools": [
+    "search_files",
+    "create_ticket",
+    "set_reminder"
+   ],
+   "messages": [
+    {
+     "role": "user",
+     "content": "Search for invoices then remind me weekly on Monday 10am to review them"
+    }
+   ],
+   "expected": [
+    {
+     "name": "search_files",
+     "arguments": {
+      "query": "invoices"
+     }
+    },
+    {
+     "name": "set_reminder",
+     "arguments": {
+      "message": "Review invoices",
+      "when": "2026-10-05T10:00:00+05:30",
+      "repeat": "weekly"
+     }
+    }
+   ],
+   "match": {
+    "free_text_fields": [
+     "query",
+     "message"
+    ]
+   }
+  }
+ ],
+ "decoder_cases": [
+  {
+   "id": "xd-001",
+   "note": "prose before and after one call",
+   "tools": [
+    "book_hotel",
+    "search_files",
+    "set_reminder",
+    "create_ticket",
+    "notes_add",
+    "mail_draft"
+   ],
+   "chunks": [
+    "Sure, setting it up.\n<<call set_reminder {\"message\":\"Stand up\",\"when\":\"2026-10-03T09:00:00+05:30\"}>>\nAnything else?"
+   ],
+   "expected": {
+    "calls": [
+     {
+      "name": "set_reminder",
+      "arguments": {
+       "message": "Stand up",
+       "when": "2026-10-03T09:00:00+05:30"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "id": "xd-002",
+   "note": "two calls in order",
+   "tools": [
+    "book_hotel",
+    "search_files",
+    "set_reminder",
+    "create_ticket",
+    "notes_add",
+    "mail_draft"
+   ],
+   "chunks": [
+    "<<call set_reminder {\"message\":\"Stand up\",\"when\":\"2026-10-03T09:00:00+05:30\"}>>\n<<call create_ticket {\"title\":\"Fix\",\"priority\":\"high\"}>>"
+   ],
+   "expected": {
+    "calls": [
+     {
+      "name": "set_reminder",
+      "arguments": {
+       "message": "Stand up",
+       "when": "2026-10-03T09:00:00+05:30"
+      }
+     },
+     {
+      "name": "create_ticket",
+      "arguments": {
+       "title": "Fix",
+       "priority": "high"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "id": "xd-003",
+   "note": "escapes, unicode, braces and >> inside strings",
+   "tools": [
+    "book_hotel",
+    "search_files",
+    "set_reminder",
+    "create_ticket",
+    "notes_add",
+    "mail_draft"
+   ],
+   "chunks": [
+    "<<call notes_add {\"title\":\"q \\\" }}>> \\\\ é 😀\",\"body\":\"a\\nb >> {\"}>>"
+   ],
+   "expected": {
+    "calls": [
+     {
+      "name": "notes_add",
+      "arguments": {
+       "title": "q \" }}>> \\ é 😀",
+       "body": "a\nb >> {"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "id": "xd-004",
+   "note": "every character in its own chunk",
+   "tools": [
+    "book_hotel",
+    "search_files",
+    "set_reminder",
+    "create_ticket",
+    "notes_add",
+    "mail_draft"
+   ],
+   "chunks": [
+    "<",
+    "<",
+    "c",
+    "a",
+    "l",
+    "l",
+    " ",
+    "s",
+    "e",
+    "t",
+    "_",
+    "r",
+    "e",
+    "m",
+    "i",
+    "n",
+    "d",
+    "e",
+    "r",
+    " ",
+    "{",
+    "\"",
+    "m",
+    "e",
+    "s",
+    "s",
+    "a",
+    "g",
+    "e",
+    "\"",
+    ":",
+    "\"",
+    "S",
+    "t",
+    "a",
+    "n",
+    "d",
+    " ",
+    "u",
+    "p",
+    "\"",
+    ",",
+    "\"",
+    "w",
+    "h",
+    "e",
+    "n",
+    "\"",
+    ":",
+    "\"",
+    "2",
+    "0",
+    "2",
+    "6",
+    "-",
+    "1",
+    "0",
+    "-",
+    "0",
+    "3",
+    "T",
+    "0",
+    "9",
+    ":",
+    "0",
+    "0",
+    ":",
+    "0",
+    "0",
+    "+",
+    "0",
+    "5",
+    ":",
+    "3",
+    "0",
+    "\"",
+    "}",
+    ">",
+    ">"
+   ],
+   "expected": {
+    "calls": [
+     {
+      "name": "set_reminder",
+      "arguments": {
+       "message": "Stand up",
+       "when": "2026-10-03T09:00:00+05:30"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "id": "xd-005",
+   "note": "unknown tool",
+   "tools": [
+    "book_hotel",
+    "search_files",
+    "set_reminder",
+    "create_ticket",
+    "notes_add",
+    "mail_draft"
+   ],
+   "chunks": [
+    "<<call drop_tables {}>>"
+   ],
+   "expected": {
+    "error": "unknown_tool"
+   }
+  },
+  {
+   "id": "xd-006",
+   "note": "missing required field",
+   "tools": [
+    "book_hotel",
+    "search_files",
+    "set_reminder",
+    "create_ticket",
+    "notes_add",
+    "mail_draft"
+   ],
+   "chunks": [
+    "<<call create_ticket {\"title\":\"Fix\"}>>"
+   ],
+   "expected": {
+    "error": "invalid_arguments"
+   }
+  },
+  {
+   "id": "xd-007",
+   "note": "enum violation",
+   "tools": [
+    "book_hotel",
+    "search_files",
+    "set_reminder",
+    "create_ticket",
+    "notes_add",
+    "mail_draft"
+   ],
+   "chunks": [
+    "<<call create_ticket {\"title\":\"Fix\",\"priority\":\"critical\"}>>"
+   ],
+   "expected": {
+    "error": "invalid_arguments"
+   }
+  },
+  {
+   "id": "xd-008",
+   "note": "wrong type in a nested object",
+   "tools": [
+    "book_hotel",
+    "search_files",
+    "set_reminder",
+    "create_ticket",
+    "notes_add",
+    "mail_draft"
+   ],
+   "chunks": [
+    "<<call book_hotel {\"guest\":{\"name\":5},\"checkin\":\"2026-10-10T14:00:00+05:30\"}>>"
+   ],
+   "expected": {
+    "error": "invalid_arguments"
+   }
+  },
+  {
+   "id": "xd-009",
+   "note": "call cut off before the closing marker",
+   "tools": [
+    "book_hotel",
+    "search_files",
+    "set_reminder",
+    "create_ticket",
+    "notes_add",
+    "mail_draft"
+   ],
+   "chunks": [
+    "<<call set_reminder {\"message\":\"Stand up\",\"when\":\"2026-10-03T09:00:00+05:30\"}>"
+   ],
+   "expected": {
+    "error": "invalid_arguments"
+   }
+  },
+  {
+   "id": "xd-010",
+   "note": "trailing comma is not repaired",
+   "tools": [
+    "book_hotel",
+    "search_files",
+    "set_reminder",
+    "create_ticket",
+    "notes_add",
+    "mail_draft"
+   ],
+   "chunks": [
+    "<<call notes_add {\"title\":\"a\",\"body\":\"b\",}>>"
+   ],
+   "expected": {
+    "error": "invalid_arguments"
+   }
+  },
+  {
+   "id": "xd-011",
+   "note": "duplicate key is ambiguous",
+   "tools": [
+    "book_hotel",
+    "search_files",
+    "set_reminder",
+    "create_ticket",
+    "notes_add",
+    "mail_draft"
+   ],
+   "chunks": [
+    "<<call notes_add {\"title\":\"a\",\"title\":\"b\",\"body\":\"c\"}>>"
+   ],
+   "expected": {
+    "error": "invalid_arguments"
+   }
+  },
+  {
+   "id": "xd-012",
+   "note": "plain answer, no call",
+   "tools": [
+    "book_hotel",
+    "search_files",
+    "set_reminder",
+    "create_ticket",
+    "notes_add",
+    "mail_draft"
+   ],
+   "chunks": [
+    "The capital of France is Paris."
+   ],
+   "expected": {
+    "calls": []
+   }
+  },
+  {
+   "id": "xd-013",
+   "note": "partial opener at the end is plain text",
+   "tools": [
+    "book_hotel",
+    "search_files",
+    "set_reminder",
+    "create_ticket",
+    "notes_add",
+    "mail_draft"
+   ],
+   "chunks": [
+    "ok <<ca"
+   ],
+   "expected": {
+    "calls": []
+   }
+  },
+  {
+   "id": "xd-014",
+   "note": "marker split in the middle of the tool name",
+   "tools": [
+    "book_hotel",
+    "search_files",
+    "set_reminder",
+    "create_ticket",
+    "notes_add",
+    "mail_draft"
+   ],
+   "chunks": [
+    "<<call set_rem",
+    "inder ",
+    "{\"message\":\"Stand up\",",
+    "\"when\":\"2026-10-03T09:00:00+05:30\"}>",
+    ">"
+   ],
+   "expected": {
+    "calls": [
+     {
+      "name": "set_reminder",
+      "arguments": {
+       "message": "Stand up",
+       "when": "2026-10-03T09:00:00+05:30"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "id": "xd-015",
+   "note": "nested array of objects",
+   "tools": [
+    "book_hotel",
+    "search_files",
+    "set_reminder",
+    "create_ticket",
+    "notes_add",
+    "mail_draft"
+   ],
+   "chunks": [
+    "<<call book_hotel {\"guest\":{\"name\":\"A\"},\"rooms\":[{\"beds\":1},{\"beds\":2.5,\"smoking\":true}],\"checkin\":\"2026-10-10T14:00:00Z\"}>>"
+   ],
+   "expected": {
+    "calls": [
+     {
+      "name": "book_hotel",
+      "arguments": {
+       "guest": {
+        "name": "A"
+       },
+       "rooms": [
+        {
+         "beds": 1
+        },
+        {
+         "beds": 2.5,
+         "smoking": true
+        }
+       ],
+       "checkin": "2026-10-10T14:00:00Z"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "id": "xd-016",
+   "note": "prose that mentions the opener is rejected, not guessed",
+   "tools": [
+    "book_hotel",
+    "search_files",
+    "set_reminder",
+    "create_ticket",
+    "notes_add",
+    "mail_draft"
+   ],
+   "chunks": [
+    "To use a tool write <<call x to begin"
+   ],
+   "expected": {
+    "error": "unknown_tool"
+   }
+  },
+  {
+   "id": "xd-017",
+   "note": "bad datetime",
+   "tools": [
+    "book_hotel",
+    "search_files",
+    "set_reminder",
+    "create_ticket",
+    "notes_add",
+    "mail_draft"
+   ],
+   "chunks": [
+    "<<call set_reminder {\"message\":\"m\",\"when\":\"next friday\"}>>"
+   ],
+   "expected": {
+    "error": "invalid_arguments"
+   }
+  },
+  {
+   "id": "xd-018",
+   "note": "space before the closer is not tolerated",
+   "tools": [
+    "book_hotel",
+    "search_files",
+    "set_reminder",
+    "create_ticket",
+    "notes_add",
+    "mail_draft"
+   ],
+   "chunks": [
+    "<<call notes_add {\"title\":\"a\",\"body\":\"b\"} >>"
+   ],
+   "expected": {
+    "error": "invalid_arguments"
+   }
+  }
+ ]
+}

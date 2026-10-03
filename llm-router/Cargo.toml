@@ -19,7 +19,7 @@ nasiko-pricing.workspace = true
 nasiko-savings.workspace = true
 # Internal — structural payload compression at the egress seam (src/compress.rs)
 nasiko-compress.workspace = true
-# Internal — compact tool-schema codec (opt-in; used by examples until router wiring lands)
+# Internal — compact tool-schema codec (opt-in via TOKEN_TOOL_COMPACT, off by default)
 nasiko-tool-compact = { path = "../tool-compact" }
 
 # Web / async

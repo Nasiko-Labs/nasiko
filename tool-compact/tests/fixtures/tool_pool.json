@@ -1,0 +1,355 @@
+{
+ "purpose": "SYNTHETIC public-style tool pool for the scaling experiment; not customer or employer data.",
+ "tools": [
+  {
+   "type": "function",
+   "function": {
+    "name": "get_weather",
+    "description": "Get the current weather for a city.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "city": {
+       "type": "string",
+       "description": "City name"
+      },
+      "units": {
+       "type": "string",
+       "enum": [
+        "metric",
+        "imperial"
+       ]
+      }
+     },
+     "required": [
+      "city"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "search_web",
+    "description": "Search the web and return the top results.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "query": {
+       "type": "string",
+       "description": "Search query"
+      },
+      "max_results": {
+       "type": "integer",
+       "description": "How many results to return"
+      },
+      "site": {
+       "type": "string",
+       "description": "Restrict to this domain"
+      }
+     },
+     "required": [
+      "query"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "send_message",
+    "description": "Send a chat message to a channel or person.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "channel": {
+       "type": "string",
+       "description": "Channel or user id"
+      },
+      "text": {
+       "type": "string",
+       "description": "Message text"
+      },
+      "thread_id": {
+       "type": "string",
+       "description": "Reply in this thread"
+      }
+     },
+     "required": [
+      "channel",
+      "text"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "create_event",
+    "description": "Create a calendar event.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "title": {
+       "type": "string",
+       "description": "Event title"
+      },
+      "start": {
+       "type": "string",
+       "format": "date-time",
+       "description": "Start time"
+      },
+      "end": {
+       "type": "string",
+       "format": "date-time",
+       "description": "End time"
+      },
+      "attendees": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       },
+       "description": "Attendee emails"
+      }
+     },
+     "required": [
+      "title",
+      "start"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "read_file",
+    "description": "Read a text file from the workspace.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "path": {
+       "type": "string",
+       "description": "File path"
+      },
+      "offset": {
+       "type": "integer",
+       "description": "Line to start at"
+      },
+      "limit": {
+       "type": "integer",
+       "description": "Number of lines"
+      }
+     },
+     "required": [
+      "path"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "write_file",
+    "description": "Write text to a file in the workspace.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "path": {
+       "type": "string",
+       "description": "File path"
+      },
+      "content": {
+       "type": "string",
+       "description": "Full file content"
+      },
+      "overwrite": {
+       "type": "boolean",
+       "description": "Replace an existing file"
+      }
+     },
+     "required": [
+      "path",
+      "content"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "list_issues",
+    "description": "List issues in a repository.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "repo": {
+       "type": "string",
+       "description": "owner/name"
+      },
+      "state": {
+       "type": "string",
+       "enum": [
+        "open",
+        "closed",
+        "all"
+       ]
+      },
+      "labels": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       },
+       "description": "Filter by labels"
+      }
+     },
+     "required": [
+      "repo"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "create_issue",
+    "description": "Open a new issue in a repository.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "repo": {
+       "type": "string",
+       "description": "owner/name"
+      },
+      "title": {
+       "type": "string",
+       "description": "Issue title"
+      },
+      "body": {
+       "type": "string",
+       "description": "Issue body in Markdown"
+      },
+      "assignees": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       },
+       "description": "GitHub usernames"
+      }
+     },
+     "required": [
+      "repo",
+      "title"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "run_query",
+    "description": "Run a read-only SQL query.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "database": {
+       "type": "string",
+       "description": "Database name"
+      },
+      "sql": {
+       "type": "string",
+       "description": "The SQL statement"
+      },
+      "timeout_s": {
+       "type": "integer",
+       "description": "Timeout in seconds"
+      }
+     },
+     "required": [
+      "database",
+      "sql"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "translate_text",
+    "description": "Translate text into another language.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "text": {
+       "type": "string",
+       "description": "Text to translate"
+      },
+      "target_lang": {
+       "type": "string",
+       "description": "Target language code"
+      },
+      "source_lang": {
+       "type": "string",
+       "description": "Source language code, auto-detected if omitted"
+      }
+     },
+     "required": [
+      "text",
+      "target_lang"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "convert_currency",
+    "description": "Convert an amount between currencies.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "amount": {
+       "type": "number",
+       "description": "Amount to convert"
+      },
+      "from": {
+       "type": "string",
+       "description": "Source currency code"
+      },
+      "to": {
+       "type": "string",
+       "description": "Target currency code"
+      }
+     },
+     "required": [
+      "amount",
+      "from",
+      "to"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "set_timer",
+    "description": "Start a countdown timer.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "seconds": {
+       "type": "integer",
+       "description": "Duration in seconds"
+      },
+      "label": {
+       "type": "string",
+       "description": "What the timer is for"
+      }
+     },
+     "required": [
+      "seconds"
+     ]
+    }
+   }
+  }
+ ]
+}
