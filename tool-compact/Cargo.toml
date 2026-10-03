@@ -1,0 +1,16 @@
+[package]
+name = "nasiko-tool-compact"
+edition.workspace = true
+version.workspace = true
+description = "Reversible compact tool schemas and validated incremental tool-call decoding"
+license = "Apache-2.0"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+# Kept local to respect the buildathon's root-manifest scope. No network/file resolvers.
+jsonschema = { version = "=0.33.0", default-features = false }
+
+[dev-dependencies]
+proptest = "=1.6.0"
