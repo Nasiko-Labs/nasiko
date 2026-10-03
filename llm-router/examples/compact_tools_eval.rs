@@ -201,12 +201,46 @@ fn cases_from_value(value: Value) -> AppResult<Vec<Value>> {
     match value {
         Value::Array(cases) => Ok(cases),
         Value::Object(mut document) => {
-            for key in ["cases", "evaluations", "data", "items"] {
-                if let Some(Value::Array(cases)) = document.remove(key) {
-                    return Ok(cases);
+            let mut tool_registry = std::collections::HashMap::new();
+            if let Some(Value::Array(tools)) = document.get("tools") {
+                for tool in tools {
+                    let function = tool.get("function").unwrap_or(tool);
+                    if let Some(name) = function.get("name").and_then(Value::as_str) {
+                        tool_registry.insert(name.to_string(), tool.clone());
+                    }
                 }
             }
-            Ok(vec![Value::Object(document)])
+
+            let mut all_cases = Vec::new();
+            let mut found = false;
+            for key in ["cases", "decoder_cases", "evaluations", "data", "items"] {
+                if let Some(Value::Array(cases)) = document.remove(key) {
+                    found = true;
+                    all_cases.extend(cases);
+                }
+            }
+
+            if !found {
+                all_cases.push(Value::Object(document));
+            }
+
+            if !tool_registry.is_empty() {
+                for case in &mut all_cases {
+                    if let Value::Object(case_obj) = case
+                        && let Some(Value::Array(tools)) = case_obj.get_mut("tools")
+                    {
+                        for tool_val in tools.iter_mut() {
+                            if let Value::String(tool_name) = tool_val
+                                && let Some(resolved) = tool_registry.get(tool_name)
+                            {
+                                *tool_val = resolved.clone();
+                            }
+                        }
+                    }
+                }
+            }
+
+            Ok(all_cases)
         }
         _ => Err("evaluation dataset must be a JSON array, object, or JSONL objects".into()),
     }
@@ -312,15 +346,15 @@ fn native_openai_request(case: &Map<String, Value>, live_model: Option<&str>) ->
             request
         });
 
-    if !request.contains_key("model") {
-        if let Some(model) = live_model {
-            request.insert("model".into(), Value::String(model.into()));
-        }
+    if !request.contains_key("model")
+        && let Some(model) = live_model
+    {
+        request.insert("model".into(), Value::String(model.into()));
     }
-    if !request.contains_key("tools") {
-        if let Some(tools) = case_value(case, &["tools", "tool_definitions"]) {
-            request.insert("tools".into(), tools.clone());
-        }
+    if !request.contains_key("tools")
+        && let Some(tools) = case_value(case, &["tools", "tool_definitions"])
+    {
+        request.insert("tools".into(), tools.clone());
     }
     request.entry("messages").or_insert_with(|| json!([]));
     Value::Object(request)
@@ -398,7 +432,7 @@ fn native_tool_def(tool: &Value) -> CompactResult<ToolDef> {
 }
 
 fn expected_calls(case: &Map<String, Value>) -> CompactResult<Vec<ToolCall>> {
-    let values = case_value(case, &["expected_calls", "calls", "tool_calls"])
+    let values = case_value(case, &["expected_calls", "calls", "tool_calls", "expected"])
         .and_then(Value::as_array)
         .cloned()
         .or_else(|| {
@@ -568,5 +602,37 @@ mod tests {
                 .unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "lookup");
+    }
+
+    #[test]
+    fn dataset_with_tools_catalog_and_decoder_cases_is_loaded_and_resolved() {
+        let dataset = json!({
+            "schema_version": "compact-tools-eval-v1",
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "lookup",
+                    "description": "Find info",
+                    "parameters": {"type": "object", "properties": {"q": {"type": "string"}}}
+                }
+            }],
+            "cases": [{
+                "id": "ct-001",
+                "tools": ["lookup"],
+                "messages": [{"role": "user", "content": "hi"}],
+                "expected": [{"name": "lookup", "arguments": {"q": "test"}}]
+            }],
+            "decoder_cases": [{
+                "id": "dc-001",
+                "tools": ["lookup"],
+                "chunks": ["<<call lookup {\"q\":\"test\"}>>"]
+            }]
+        });
+        let cases = cases_from_value(dataset).unwrap();
+        assert_eq!(cases.len(), 2);
+        assert_eq!(cases[0]["id"], "ct-001");
+        assert_eq!(cases[0]["tools"][0]["function"]["name"], "lookup");
+        assert_eq!(cases[1]["id"], "dc-001");
+        assert_eq!(cases[1]["tools"][0]["function"]["name"], "lookup");
     }
 }
