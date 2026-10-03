@@ -1,0 +1,13 @@
+[package]
+name = "nasiko-tool-compact"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "nasiko_tool_compact"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
