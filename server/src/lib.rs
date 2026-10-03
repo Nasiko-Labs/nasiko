@@ -289,6 +289,18 @@ where
             rate_limit::limit_globally,
         ));
 
+    // LLM router context, built before the management routes so the classifier preview
+    // shares the exact `ClassifierService` instance routing uses (one backend client, one
+    // set of counters). Mounted further down, outside `/api`.
+    let llm_ctx =
+        nasiko_llm_router::LlmRouterCtx::from_shared(state.db.clone(), state.http_client.clone());
+    let classifier_preview = std::sync::Arc::new(llm_router::classifier::ClassifierPreview::new(
+        llm_ctx.classifier.clone(),
+    ));
+    // A hosted classifier preview is a paid network call; a human testing prompts by hand
+    // does not need more than this.
+    let classifier_preview_limiter = RateLimiter::new(20, Duration::from_secs(60));
+
     let protected = Router::new()
         .route("/me", get(me))
         .merge(router::router_routes(a2a_limiter))
@@ -311,6 +323,10 @@ where
         .merge(llm_router::model_registry::router())
         .merge(llm_router::providers::router())
         .merge(llm_router::custom_providers::router())
+        .merge(llm_router::classifier::router(
+            classifier_preview,
+            classifier_preview_limiter,
+        ))
         .merge(capabilities::router())
         .merge(usage::routes::router())
         .merge(flows::router())
@@ -386,8 +402,6 @@ where
     // top level (outside `/api` and `auth::require_auth`) — it verifies the agent's
     // own identity JWT internally, not the user session. Deployed agents point their
     // SDK base URL (`LLM_GATEWAY_BASE_URL`) directly at these `/v1/...` routes.
-    let llm_ctx =
-        nasiko_llm_router::LlmRouterCtx::from_shared(state.db.clone(), state.http_client.clone());
     // Both sync loops below read the router's effective config, resolved once here
     // rather than re-read from env per loop.
     let llm_cfg = llm_ctx.cfg.clone();

@@ -109,6 +109,7 @@ async fn responses_core(
     let signals = RequestSignals {
         turn_ordinal: user_turn_ordinal(body.get("input")),
         is_tool_continuation: is_tool_continuation(body.get("input")),
+        context: classifier_context(body.get("input")),
         query,
     };
     let routed = resolve_routed_request(
@@ -864,6 +865,26 @@ fn log_response_usage(
     );
 }
 
+/// Classifier context from a Responses-API `input` array — the `routing::context_from_messages`
+/// equivalent for this wire format. Only `message` items with a `user`/`assistant` role and
+/// text content take part; `function_call`, `function_call_output`, reasoning items and
+/// non-text parts contribute nothing (see `routing::context`'s module docs).
+fn classifier_context(input: Option<&Value>) -> Option<String> {
+    let items = input.and_then(Value::as_array)?;
+    crate::routing::classifier_context(items.iter().filter_map(|item| {
+        let is_message = item
+            .get("type")
+            .and_then(Value::as_str)
+            .is_none_or(|t| t == "message");
+        if !is_message {
+            return None;
+        }
+        let role = item.get("role").and_then(Value::as_str)?;
+        let text = item.get("content").and_then(content_text)?;
+        Some((role, text))
+    }))
+}
+
 fn latest_user_text(input: Option<&Value>) -> Option<String> {
     input
         .and_then(Value::as_array)?
@@ -1058,6 +1079,7 @@ mod tests {
             tier_registry: Arc::new(NoTiers),
             cell_store: Arc::new(crate::routing::InMemoryCellStore::new()),
             salience_gate: Arc::new(crate::routing::salience::AllowAllGate),
+            classifier: Arc::new(crate::routing::ClassifierService::regex_only()),
             pricing: Arc::new(nasiko_pricing::PricingEngine::new(
                 PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
             )),

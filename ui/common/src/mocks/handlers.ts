@@ -90,6 +90,9 @@ import {
   updateCustom,
   usageByAgent,
   type RouterState,
+  classifierPreview,
+  classifierStatus,
+  type ClassifierMode,
 } from './router'
 import { chatHandlers, chatMockRows, resetChatMock } from './chatStore'
 import {
@@ -160,6 +163,9 @@ export const CHAT_PAGE_VARIANTS = [
  * - `router-usage-fail` / `router-usage-full`: by-agent usage fails / returns 1,000 rows;
  * - `router-legacy`: configs made elsewhere (openrouter, a missing saved key, a deleted custom provider, off-catalog models).
  * - `router-budgets-empty` / `router-budgets-fail`: no budgets / every /api/budgets read answers 500 (R2).
+ * - `router-classifier-regex` / `router-classifier-unconfigured` / `router-classifier-fail`: the deployment runs the
+ *   regex default / asks for Jev without a key (every answer a counted fallback) / the preview answers 504;
+ *   `router-classifier-laya` / `router-classifier-laya-missing`: the local Laya bundle loaded / is missing on disk.
  */
 export const ROUTER_PAGE_VARIANTS = [
   'router-empty',
@@ -174,6 +180,11 @@ export const ROUTER_PAGE_VARIANTS = [
   'router-legacy',
   'router-budgets-empty',
   'router-budgets-fail',
+  'router-classifier-regex',
+  'router-classifier-unconfigured',
+  'router-classifier-fail',
+  'router-classifier-laya',
+  'router-classifier-laya-missing',
 ] as const
 /** Page variants combine (read through hasVariant) instead of taking the single degraded-state slot. */
 const PAGE_VARIANTS: readonly string[] = [...CHAT_PAGE_VARIANTS, ...ROUTER_PAGE_VARIANTS]
@@ -1523,6 +1534,32 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
         true,
       )
     }),
+    // llm_router/classifier.rs: status for any user; preview superuser-only, side-effect free.
+    http.get('/api/llm-router/classifier', () =>
+      routed(() => envelope(classifierStatus(classifierMode(), superuser()))),
+    ),
+    http.post('/api/llm-router/classifier/preview', async ({ request }) => {
+      const body = (await request.json().catch(() => ({}))) as {
+        query?: string
+        context?: string | null
+        backend?: string
+      }
+      return routed(() => {
+        if (!body.query?.trim()) throw new MockHttpError(400, 'query is required')
+        if (body.backend && body.backend !== 'configured' && body.backend !== 'regex')
+          throw new MockHttpError(422, 'unknown variant of backend')
+        if (hasVariant('router-classifier-fail'))
+          throw new MockHttpError(504, 'classifier preview timed out')
+        return envelope(
+          classifierPreview(
+            classifierMode(),
+            body.query,
+            body.context ?? null,
+            body.backend === 'regex' ? 'regex' : 'configured',
+          ),
+        )
+      }, true)
+    }),
     http.post('/api/custom-providers/test', async ({ request }) => {
       const body = (await request.json().catch(() => ({}))) as {
         base_url?: string
@@ -1676,6 +1713,15 @@ function routed(fn: () => Response, superuserOnly = false): Response {
     if (err instanceof Response) return err
     return text('internal error', 500)
   }
+}
+
+/** Which classifier deployment the mock answers as (`?mock=router-classifier-*`). */
+function classifierMode(): ClassifierMode {
+  if (hasVariant('router-classifier-regex')) return 'regex'
+  if (hasVariant('router-classifier-unconfigured')) return 'unconfigured'
+  if (hasVariant('router-classifier-laya')) return 'laya'
+  if (hasVariant('router-classifier-laya-missing')) return 'laya-missing'
+  return 'jev'
 }
 
 /** agents/llm_config.rs `agent_owner_or_reject`: 404 unknown, 403 "not the agent owner" unless owner or superuser. */

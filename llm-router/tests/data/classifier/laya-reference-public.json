@@ -1,0 +1,216 @@
+{
+ "source": "convaiinnovations/laya revision 55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851 via the laya 0.3.24 Python package on CPU (PyTorch 2.14.1), state {query, context}, max_len 512, head_max_len 192; probabilities rounded by the reference to 4 decimals",
+ "rubric_version": "classifier-rubric-v1",
+ "cases": [
+  {
+   "id": "pub-01",
+   "choice": "factual_lookup",
+   "type_probabilities": {
+    "code_generation": 0.151,
+    "code_understanding": 0.0768,
+    "technical_design": 0.1817,
+    "analytical_reasoning": 0.0523,
+    "writing": 0.054,
+    "factual_lookup": 0.4608,
+    "general": 0.0233
+   },
+   "complexity_probabilities": [
+    0.1643,
+    0.5389,
+    0.1638,
+    0.0716,
+    0.0615
+   ],
+   "score": 1.3271
+  },
+  {
+   "id": "pub-02",
+   "choice": "factual_lookup",
+   "type_probabilities": {
+    "code_generation": 0.1596,
+    "code_understanding": 0.2172,
+    "technical_design": 0.1394,
+    "analytical_reasoning": 0.0666,
+    "writing": 0.087,
+    "factual_lookup": 0.3007,
+    "general": 0.0296
+   },
+   "complexity_probabilities": [
+    0.4238,
+    0.3215,
+    0.0425,
+    0.1401,
+    0.0721
+   ],
+   "score": 1.1153
+  },
+  {
+   "id": "pub-03",
+   "choice": "code_understanding",
+   "type_probabilities": {
+    "code_generation": 0.06,
+    "code_understanding": 0.8588,
+    "technical_design": 0.0162,
+    "analytical_reasoning": 0.0204,
+    "writing": 0.0162,
+    "factual_lookup": 0.0217,
+    "general": 0.0068
+   },
+   "complexity_probabilities": [
+    0.1024,
+    0.3344,
+    0.2224,
+    0.2565,
+    0.0842
+   ],
+   "score": 1.8857
+  },
+  {
+   "id": "pub-04",
+   "choice": "code_generation",
+   "type_probabilities": {
+    "code_generation": 0.3631,
+    "code_understanding": 0.0291,
+    "technical_design": 0.1492,
+    "analytical_reasoning": 0.016,
+    "writing": 0.0781,
+    "factual_lookup": 0.3178,
+    "general": 0.0467
+   },
+   "complexity_probabilities": [
+    0.1256,
+    0.4902,
+    0.2028,
+    0.1356,
+    0.0457
+   ],
+   "score": 1.4856
+  },
+  {
+   "id": "pub-05",
+   "choice": "technical_design",
+   "type_probabilities": {
+    "code_generation": 0.0678,
+    "code_understanding": 0.0282,
+    "technical_design": 0.868,
+    "analytical_reasoning": 0.0072,
+    "writing": 0.009,
+    "factual_lookup": 0.0112,
+    "general": 0.0086
+   },
+   "complexity_probabilities": [
+    0.0215,
+    0.232,
+    0.2272,
+    0.3605,
+    0.1589
+   ],
+   "score": 2.4032
+  },
+  {
+   "id": "pub-06",
+   "choice": "technical_design",
+   "type_probabilities": {
+    "code_generation": 0.1195,
+    "code_understanding": 0.0713,
+    "technical_design": 0.5628,
+    "analytical_reasoning": 0.195,
+    "writing": 0.032,
+    "factual_lookup": 0.0117,
+    "general": 0.0076
+   },
+   "complexity_probabilities": [
+    0.0192,
+    0.1947,
+    0.2108,
+    0.3543,
+    0.2211
+   ],
+   "score": 2.5634
+  },
+  {
+   "id": "pub-07",
+   "choice": "code_generation",
+   "type_probabilities": {
+    "code_generation": 0.6659,
+    "code_understanding": 0.0407,
+    "technical_design": 0.2211,
+    "analytical_reasoning": 0.017,
+    "writing": 0.0316,
+    "factual_lookup": 0.0168,
+    "general": 0.0068
+   },
+   "complexity_probabilities": [
+    0.0982,
+    0.3787,
+    0.249,
+    0.1941,
+    0.08
+   ],
+   "score": 1.7789
+  },
+  {
+   "id": "pub-08",
+   "choice": "code_generation",
+   "type_probabilities": {
+    "code_generation": 0.368,
+    "code_understanding": 0.0517,
+    "technical_design": 0.2704,
+    "analytical_reasoning": 0.0232,
+    "writing": 0.0645,
+    "factual_lookup": 0.2032,
+    "general": 0.0192
+   },
+   "complexity_probabilities": [
+    0.2017,
+    0.4432,
+    0.1218,
+    0.1961,
+    0.0373
+   ],
+   "score": 1.4241
+  },
+  {
+   "id": "pub-09",
+   "choice": "code_generation",
+   "type_probabilities": {
+    "code_generation": 0.2444,
+    "code_understanding": 0.1193,
+    "technical_design": 0.2252,
+    "analytical_reasoning": 0.0257,
+    "writing": 0.1212,
+    "factual_lookup": 0.2392,
+    "general": 0.025
+   },
+   "complexity_probabilities": [
+    0.0711,
+    0.3453,
+    0.3278,
+    0.214,
+    0.0419
+   ],
+   "score": 1.8102
+  },
+  {
+   "id": "pub-10",
+   "choice": "technical_design",
+   "type_probabilities": {
+    "code_generation": 0.1303,
+    "code_understanding": 0.2517,
+    "technical_design": 0.3313,
+    "analytical_reasoning": 0.2145,
+    "writing": 0.037,
+    "factual_lookup": 0.0259,
+    "general": 0.0093
+   },
+   "complexity_probabilities": [
+    0.0226,
+    0.2048,
+    0.2667,
+    0.2737,
+    0.2322
+   ],
+   "score": 2.4881
+  }
+ ]
+}

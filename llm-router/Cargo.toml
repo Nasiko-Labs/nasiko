@@ -32,6 +32,9 @@ serde_json = { workspace = true }
 
 # Query classifier — regex categories + Thompson-sampling tier selection
 regex = { workspace = true }
+# Laya local classifier backend — ONNX Runtime (dynamically loaded) + the checkpoint's tokenizer
+ort = { workspace = true }
+tokenizers = { workspace = true }
 rand = { workspace = true }
 rand_distr = { workspace = true }
 

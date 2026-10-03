@@ -13,6 +13,9 @@
  * Ids are `5eed0007-*` (configs) and `5eed0008-*` (custom providers), so the live seed can use the same ones.
  */
 import type {
+  ClassifierPreview,
+  ClassifierPreviewResult,
+  ClassifierStatus,
   AgentUsage,
   AttachBody,
   CreateConfigBody,
@@ -694,4 +697,186 @@ export function usageByAgent(
       avg_latency_ms: r.request_count ? _lat / r.request_count : null,
     }))
     .sort((a, b) => b.total_tokens - a.total_tokens)
+}
+
+// ── Request classifier ([classifier] companion) ──────────────────────────────────────────────────────
+
+/** The deployment the mock answers as: Jev configured and working, regex only, or Jev asked for without a key. */
+export type ClassifierMode = 'jev' | 'regex' | 'unconfigured' | 'laya' | 'laya-missing'
+
+const CLASSIFIER_TYPES = [
+  'code_generation',
+  'code_understanding',
+  'technical_design',
+  'analytical_reasoning',
+  'writing',
+  'factual_lookup',
+  'general',
+] as const
+
+/** llm_router/classifier.rs `ClassifierStatusResponse`. Counters are fixed: the mock has no routing to count. */
+const LAYA_VERSION = 'receptron/laya-onnx@68f27df (export of convaiinnovations/laya@55cf4c4)'
+const LAYA_PATH = '/srv/nasiko/.laya/model'
+const LAYA_MISSING =
+  "classifier backend not initialized: Laya bundle is incomplete: '/srv/nasiko/.laya/model/laya.onnx' is missing (run llm-router/scripts/laya-setup.sh)"
+
+export function classifierStatus(mode: ClassifierMode, superuser: boolean): ClassifierStatus {
+  const jev = mode === 'jev' || mode === 'unconfigured'
+  const laya = mode === 'laya' || mode === 'laya-missing'
+  const working = mode === 'jev' || mode === 'laya'
+  const configured = jev ? 'jev' : laya ? 'laya' : 'regex'
+  const zero = { init: 0, inference: 0, invalid_output: 0, network: 0, timeout: 0 }
+  return {
+    configured_backend: configured,
+    effective_backend: working ? configured : 'regex',
+    init_error:
+      mode === 'unconfigured'
+        ? 'TYPESAFE_API_KEY is not set (required for CLASSIFIER_BACKEND=jev)'
+        : mode === 'laya-missing'
+          ? LAYA_MISSING
+          : null,
+    model: jev ? 'jev-1.13.0' : mode === 'laya' ? LAYA_VERSION : null,
+    endpoint_host: jev ? 'api.typesafe.ai' : null,
+    model_path: laya ? LAYA_PATH : null,
+    timeout_ms: 3000,
+    min_confidence: working ? 0.35 : 0,
+    routing_seed_set: false,
+    preview_allowed: superuser,
+    stats: {
+      calls: 128,
+      primary_ok: working ? 117 : 0,
+      abstained: working ? 4 : 0,
+      fallback_total: working ? 7 : mode === 'regex' ? 0 : 128,
+      fallbacks: working
+        ? { init: 0, inference: 1, invalid_output: 0, network: 2, timeout: 4 }
+        : mode === 'regex'
+          ? zero
+          : { ...zero, init: 128 },
+    },
+  }
+}
+
+/** A stand-in for `classify_request_type`: first keyword family that matches, else general. */
+function mockRegexType(query: string): { type: string; matched: boolean } {
+  const q = query.toLowerCase()
+  const rules: [RegExp, string][] = [
+    [/\b(write|implement|create|build|generate|refactor|fix (this|the) bug)\b/, 'code_generation'],
+    [/\bexplain (what|how|why)\b|what does (this|that|the) (function|code)/, 'code_understanding'],
+    [/\b(architecture|design (a|an|the)|trade-?offs?)\b/, 'technical_design'],
+    [/\b(calculate|probability|solve|prove|how many)\b/, 'analytical_reasoning'],
+    [/\b(draft|compose|rewrite (this|that|the)|make this sound)\b/, 'writing'],
+    [
+      /\b(what is (the )?capital of|define)\b|^\s*(who|what|when|where) (is|was|are|were)\b/,
+      'factual_lookup',
+    ],
+  ]
+  for (const [re, type] of rules) if (re.test(q)) return { type, matched: true }
+  return { type: 'general', matched: false }
+}
+
+/** A stable hash so the same query always gets the same mocked distribution. */
+function hash(s: string): number {
+  let h = 2166136261
+  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619) >>> 0
+  return h
+}
+
+function regexResult(query: string): ClassifierPreviewResult {
+  const { type, matched } = mockRegexType(query)
+  return {
+    answered_by: 'regex',
+    disposition: 'regex',
+    request_type: type,
+    complexity: 3,
+    confidence: matched ? 0.5 : 0.3,
+    latency_us: 9 + (hash(query) % 40),
+    input_truncated: false,
+    diagnostics: null,
+  }
+}
+
+/** A plausible model answer: a difficulty from the length, a type from richer cues, and a distribution around it. */
+function hostedResult(
+  query: string,
+  context: string | null,
+  backend: 'jev' | 'laya',
+): ClassifierPreviewResult {
+  const q = query.toLowerCase()
+  const cues: [RegExp, string][] = [
+    [/\b(fix|typo|rename|implement|write|add|refactor|port|migrate)\b/, 'code_generation'],
+    [/\b(explain|why does|walk me through|review|trace)\b/, 'code_understanding'],
+    [/\b(design|architect|rollout|schema|migration plan)\b/, 'technical_design'],
+    [/\b(diagnose|calculate|prove|estimate|which of|how many|why is)\b/, 'analytical_reasoning'],
+    [/\b(email|draft|rewrite|blog|announcement|release notes|friendlier)\b/, 'writing'],
+    [/\b(what is|what does|define|which port|difference between)\b/, 'factual_lookup'],
+  ]
+  let type = 'general'
+  for (const [re, t] of cues)
+    if (re.test(q)) {
+      type = t
+      break
+    }
+  const h = hash(query + (context ?? ''))
+  const top = 0.62 + (h % 30) / 100
+  const rest = (1 - top) / (CLASSIFIER_TYPES.length - 1)
+  const probs: [string, number][] = CLASSIFIER_TYPES.map((t) => [t, t === type ? top : rest])
+  const words = query.split(/\s+/).length + (context ? context.split(/\s+/).length / 3 : 0)
+  const level = Math.max(1, Math.min(5, Math.ceil(words / 12)))
+  const cx = [0, 0, 0, 0, 0]
+  cx[level - 1] = 0.7
+  cx[Math.min(4, level)] += 0.2
+  cx[Math.max(0, level - 2)] += 0.1
+  const expected = cx.reduce((acc, p, i) => acc + p * (i + 1), 0)
+  const abstained = top < 0.7
+  const local = backend === 'laya'
+  return {
+    answered_by: backend,
+    disposition: abstained ? 'abstained' : 'primary',
+    request_type: type,
+    complexity: level,
+    confidence: Number(top.toFixed(3)),
+    latency_us: local ? 380_000 + (h % 400_000) : 180_000 + (h % 220_000),
+    input_truncated: local ? words > 180 : query.length > 6000,
+    diagnostics: {
+      model_version: local ? LAYA_VERSION : 'jev-1.13.0',
+      type_probabilities: probs.map(([t, p]) => [t, Number(p.toFixed(3))]),
+      complexity_probabilities: cx,
+      complexity_expected: Number(expected.toFixed(2)),
+      vendor_type_confidence: Number((top * 0.9).toFixed(3)),
+      vendor_complexity_confidence: 0.61,
+      input_tokens: 540 + Math.ceil((query.length + (context?.length ?? 0)) / 4),
+      output_tokens: local ? 0 : 38,
+      attempts: 1,
+      input_truncated: local ? words > 180 : false,
+    },
+  }
+}
+
+/** llm_router/classifier.rs `preview_classification` for the mock deployment `mode`. */
+export function classifierPreview(
+  mode: ClassifierMode,
+  query: string,
+  context: string | null,
+  backend: 'configured' | 'regex',
+): ClassifierPreview {
+  const baseline = regexResult(query)
+  const status = classifierStatus(mode, true)
+  const result: ClassifierPreviewResult =
+    backend === 'regex' || mode === 'regex'
+      ? baseline
+      : status.init_error
+        ? {
+            ...baseline,
+            disposition: 'fallback',
+            fallback_reason: 'init',
+            fallback_detail: `classifier backend not initialized: ${status.init_error}`,
+          }
+        : hostedResult(query, context, mode === 'laya' ? 'laya' : 'jev')
+  return {
+    backend,
+    configured_backend: status.configured_backend,
+    result,
+    baseline,
+    init_error: status.init_error,
+  }
 }

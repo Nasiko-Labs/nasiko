@@ -62,6 +62,15 @@ test('LLM router: configured routing', async ({ page }) => {
   await expectAccessible(page)
 })
 
+test('LLM router: request classification preview', async ({ page }) => {
+  await page.goto(`/router?${ANCHOR}&tab=classification`)
+  await expect(page.getByRole('heading', { name: 'Request classification' })).toBeVisible()
+  await page.getByLabel('Query').fill('Design a rate limiter for a multi-tenant API')
+  await page.getByRole('button', { name: 'Test classification' }).click()
+  await expect(page.getByRole('region', { name: 'Classification results' })).toBeVisible()
+  await expectAccessible(page)
+})
+
 test('Harnesses and the status page', async ({ page }) => {
   await page.goto(`/harnesses?${ANCHOR}`)
   await expect(page.getByRole('heading', { level: 1 })).toBeVisible()

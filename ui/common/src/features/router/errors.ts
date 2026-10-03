@@ -22,6 +22,15 @@ type Rule = {
 
 // R-L1..R-L10: these match the server's text; error codes would make them robust.
 const RULES: Rule[] = [
+  {
+    status: 504,
+    match: /classifier preview timed out/,
+    view: () => ({ problem: copy.classifierTimedOut, action: copy.classifierTimedOutFix }),
+  },
+  {
+    status: 429,
+    view: () => ({ problem: copy.classifierRateLimited, action: copy.classifierRateLimitedFix }),
+  },
   { status: 409, match: /budget changed elsewhere/, view: () => ({ problem: copy.budgetChanged }) },
   {
     status: 409,

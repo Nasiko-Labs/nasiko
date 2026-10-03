@@ -29,8 +29,12 @@
 
 use std::collections::HashMap;
 
+use async_trait::async_trait;
 use rand::Rng;
+use rand::SeedableRng;
+use rand::rngs::StdRng;
 use rand_distr::{Beta, Distribution};
+use serde::{Deserialize, Serialize};
 
 use super::patterns::{CATEGORY_PATTERNS, NEGATIVE_SIGNALS, POSITIVE_SIGNALS};
 
@@ -49,7 +53,11 @@ pub enum Tier {
 /// The coarse kind of work a query represents. Learning is keyed on this, so the router can
 /// discover (e.g.) that the cheap tier is good enough for `FactualLookup` but not
 /// `CodeGeneration`. Order is irrelevant; `General` is the catch-all default.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+///
+/// The serde form is the same snake_case string as [`RequestType::as_str`] (checked by a
+/// test), so eval rows, cache entries and API payloads all agree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RequestType {
     CodeGeneration,
     CodeUnderstanding,
@@ -89,6 +97,18 @@ impl RequestType {
             _ => return None,
         })
     }
+
+    /// Every request type, in the fixed order used wherever a stable ordering matters (eval
+    /// confusion matrices, hosted-choice option order, hashing).
+    pub const ALL: [RequestType; 7] = [
+        RequestType::CodeGeneration,
+        RequestType::CodeUnderstanding,
+        RequestType::TechnicalDesign,
+        RequestType::AnalyticalReasoning,
+        RequestType::Writing,
+        RequestType::FactualLookup,
+        RequestType::General,
+    ];
 }
 
 /// One learned quality estimate: a running mean of observed reward for a `(tier,
@@ -164,6 +184,13 @@ const TIER_ARMS: [TierArm; 3] = [
 /// patterns wins, ties broken by declaration order, defaulting to `General`. Port of
 /// `categories.rs::classify`.
 pub fn classify_request_type(text: &str) -> RequestType {
+    classify_request_type_scored(text).0
+}
+
+/// [`classify_request_type`] plus the winning vote count (`0` ⇒ nothing matched and
+/// `General` is the default, not a verdict). The regex backend uses the count only to pick
+/// which of its two fixed confidence values to report.
+pub fn classify_request_type_scored(text: &str) -> (RequestType, usize) {
     let mut best = RequestType::General;
     let mut best_score = 0usize;
     for (rt, pats) in CATEGORY_PATTERNS.iter() {
@@ -173,7 +200,259 @@ pub fn classify_request_type(text: &str) -> RequestType {
             best = *rt;
         }
     }
-    best
+    (best, best_score)
+}
+
+/// Compile the regex tables now rather than on the first query, so one-time setup is not
+/// billed to the first request's decision latency.
+pub fn warm_regex_tables() {
+    let _ = CATEGORY_PATTERNS.len();
+    let _ = NEGATIVE_SIGNALS.len();
+    let _ = POSITIVE_SIGNALS.len();
+}
+
+// --------------------------------------------------------------------------
+// 1b. The RequestClassifier contract — what every backend (regex, hosted, …) implements
+// --------------------------------------------------------------------------
+
+/// What a classifier sees. `query` is the latest user request; `context` is optional,
+/// bounded, role-labelled surrounding material (earlier turns, a supplied code snippet) —
+/// never the system prompt, credentials or the whole transcript. See
+/// [`super::context::classifier_context`] for how the router builds it.
+#[derive(Debug, Clone, Copy)]
+pub struct ClassifyInput<'a> {
+    pub query: &'a str,
+    pub context: Option<&'a str>,
+}
+
+/// A classifier's verdict. `complexity` follows the eval rubric (1 trivial single operation
+/// … 5 intricate cross-component reasoning); `confidence` is the probability the backend
+/// assigns to `request_type` — for a hosted backend the predicted-type probability, for the
+/// regex backend a fixed, **uncalibrated** placeholder (see [`RegexClassifier`]).
+/// Complexity carries no confidence of its own: a sure request type says nothing about how
+/// reliable the difficulty estimate is.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Classification {
+    pub request_type: RequestType,
+    /// `1..=5`.
+    pub complexity: u8,
+    /// Finite, `0.0..=1.0`.
+    pub confidence: f32,
+}
+
+impl Classification {
+    /// The contract every backend must honour; the service rejects anything else as
+    /// invalid output and falls back, so a buggy backend can never route a request on a
+    /// nonsense verdict.
+    pub fn validate(&self) -> Result<(), ClassifyError> {
+        if !(1..=5).contains(&self.complexity) {
+            return Err(ClassifyError::InvalidResponse(format!(
+                "complexity {} outside 1..=5",
+                self.complexity
+            )));
+        }
+        if !self.confidence.is_finite() || !(0.0..=1.0).contains(&self.confidence) {
+            return Err(ClassifyError::InvalidResponse(format!(
+                "confidence {} outside 0..=1",
+                self.confidence
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// Why a backend could not answer. Each variant maps onto one counted fallback reason
+/// ([`super::classifier_service::FallbackReason`]); messages never contain credentials or
+/// the request text.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ClassifyError {
+    /// The backend was never usable (missing key, bad endpoint, model failed to load).
+    #[error("classifier backend not initialized: {0}")]
+    Init(String),
+    /// The overall deadline (connection + inference + validation + any retry) expired.
+    #[error("classifier call timed out")]
+    Timeout,
+    /// Could not reach the backend (DNS, connect, TLS, reset mid-body).
+    #[error("classifier network error: {0}")]
+    Network(String),
+    /// The backend answered with a failure status. `status` is the HTTP code (`429`,
+    /// `529`, `5xx`, …) so diagnostics can tell rate limiting from a server fault.
+    #[error("classifier upstream error (HTTP {status}): {detail}")]
+    Upstream { status: u16, detail: String },
+    /// The backend answered 2xx but the body violated the documented contract (unknown
+    /// label, probabilities that do not sum to one, non-finite number, missing answer…).
+    #[error("classifier returned an invalid response: {0}")]
+    InvalidResponse(String),
+}
+
+/// Optional, backend-specific detail about one answer. Kept off [`Classification`] so the
+/// routing hot path and the eval row stay small; the service, the eval sidecar and the UI
+/// preview surface it when present.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct BackendDiagnostics {
+    /// The model version the backend reports it actually ran (e.g. Jev's response `model`).
+    pub model_version: Option<String>,
+    /// Full request-type distribution, in [`RequestType::ALL`] order.
+    pub type_probabilities: Vec<(RequestType, f32)>,
+    /// Full complexity distribution over levels 1..=5.
+    pub complexity_probabilities: Vec<f32>,
+    /// Probability-weighted expected complexity on the 1..=5 scale, if the backend gives
+    /// a distribution.
+    pub complexity_expected: Option<f32>,
+    /// The vendor's own spread-based confidence statistic for the type question. Not a
+    /// probability of correctness; kept separately from [`Classification::confidence`].
+    pub vendor_type_confidence: Option<f32>,
+    /// Same, for the complexity question.
+    pub vendor_complexity_confidence: Option<f32>,
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    /// HTTP attempts made for this answer (1 = no retry).
+    pub attempts: u32,
+    /// The backend cut the input to its own window (e.g. a local model's token budget), as
+    /// opposed to the service's character caps.
+    #[serde(default)]
+    pub input_truncated: bool,
+}
+
+/// A backend answer plus optional diagnostics.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Classified {
+    pub classification: Classification,
+    pub diagnostics: Option<BackendDiagnostics>,
+}
+
+/// The pluggable classifier contract (P2 §1). Async because hosted backends make network
+/// calls; `Send + Sync` so one instance is shared across handler tasks. Implementations are
+/// built **once** (clients, keys, compiled tables) and reused for every request.
+///
+/// The router never calls a backend directly — it goes through
+/// [`super::classifier_service::ClassifierService`], which owns timing, validation,
+/// the confidence gate and the regex fallback, so every caller (router, eval, UI preview)
+/// shares one inference path.
+#[async_trait]
+pub trait RequestClassifier: Send + Sync {
+    /// Stable backend label: `"regex"`, `"jev"`, ….
+    fn name(&self) -> &str;
+
+    /// Classify one request. Errors are the backend's failure modes; the service turns
+    /// them into counted regex fallbacks.
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError>;
+
+    /// [`classify`](Self::classify) plus whatever diagnostics the backend has. The default
+    /// carries none; a backend with a distribution overrides this and implements
+    /// `classify` in terms of it.
+    async fn classify_detailed(
+        &self,
+        input: &ClassifyInput<'_>,
+    ) -> Result<Classified, ClassifyError> {
+        Ok(Classified {
+            classification: self.classify(input).await?,
+            diagnostics: None,
+        })
+    }
+}
+
+/// Fixed complexity the regex backend reports: the rubric midpoint, because keyword votes
+/// carry no difficulty signal at all. It is a placeholder, not an estimate.
+pub const REGEX_COMPLEXITY: u8 = 3;
+/// Fixed confidence the regex backend reports when at least one category pattern voted.
+/// **Uncalibrated**: it is not a measured accuracy, just a constant that lets regex rows
+/// flow through the same `{request_type, complexity, confidence}` contract. The eval
+/// report measures the actual calibration error this constant produces.
+pub const REGEX_CONFIDENCE_MATCHED: f32 = 0.5;
+/// Fixed confidence when no pattern matched and `General` was returned by default — lower
+/// than the matched value because the label is a fallthrough, not a vote. Equally
+/// uncalibrated.
+pub const REGEX_CONFIDENCE_DEFAULT: f32 = 0.3;
+
+/// The default backend: wraps [`classify_request_type`] unchanged. Needs no network, key or
+/// model; ignores `context` (the legacy classifier only ever saw the query). Reports the
+/// fixed [`REGEX_COMPLEXITY`] and one of the two fixed confidence constants above.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct RegexClassifier;
+
+impl RegexClassifier {
+    /// Synchronous form, for callers already outside async (the service's fallback path).
+    pub fn classify_sync(&self, input: &ClassifyInput<'_>) -> Classification {
+        let (request_type, votes) = classify_request_type_scored(input.query);
+        Classification {
+            request_type,
+            complexity: REGEX_COMPLEXITY,
+            confidence: if votes > 0 {
+                REGEX_CONFIDENCE_MATCHED
+            } else {
+                REGEX_CONFIDENCE_DEFAULT
+            },
+        }
+    }
+}
+
+#[async_trait]
+impl RequestClassifier for RegexClassifier {
+    fn name(&self) -> &str {
+        "regex"
+    }
+
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+        Ok(self.classify_sync(input))
+    }
+}
+
+/// Build the RNG that Thompson-samples a tier for one classification.
+///
+/// `None` seed ⇒ the legacy entropy RNG (exploration as before). `Some(seed)` ⇒ a
+/// [`StdRng`] seeded from a stable hash of `(seed, provider, request_type, query, learned
+/// cells)`, so identical inputs, config and learned state always pick the same tier, while
+/// different queries still explore differently across the population. Cells are hashed in
+/// sorted `(tier, request_type)` order; any change to a cell's mean or sample count
+/// changes the seed, so a tier chosen before and after learning may legitimately differ.
+/// `DefaultHasher::new()` uses fixed keys, so the seed is stable across processes.
+pub fn tier_rng(
+    seed: Option<u64>,
+    provider: &str,
+    request_type: RequestType,
+    query: &str,
+    cells: &CellMap,
+) -> TierRng {
+    let Some(seed) = seed else {
+        return TierRng::Entropy(rand::rng());
+    };
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    seed.hash(&mut h);
+    provider.hash(&mut h);
+    request_type.as_str().hash(&mut h);
+    query.hash(&mut h);
+    let mut ordered: Vec<_> = cells.iter().collect();
+    ordered.sort_by_key(|((tier, rt), _)| (tier.as_level(), rt.as_str()));
+    for ((tier, rt), cell) in ordered {
+        tier.as_level().hash(&mut h);
+        rt.as_str().hash(&mut h);
+        cell.quality_mean.to_bits().hash(&mut h);
+        cell.samples.hash(&mut h);
+    }
+    TierRng::Seeded(Box::new(StdRng::seed_from_u64(h.finish())))
+}
+
+/// Either RNG the router may sample tiers with. `ThreadRng` is `!Send`, so callers scope
+/// this to drop before the next `.await` exactly as the legacy code did.
+pub enum TierRng {
+    Entropy(rand::rngs::ThreadRng),
+    Seeded(Box<StdRng>),
+}
+
+impl TierRng {
+    /// Thompson-sample a tier with the default quality/cost blend.
+    pub fn pick(&mut self, cells: &CellMap, request_type: RequestType) -> Tier {
+        match self {
+            TierRng::Entropy(r) => {
+                pick_model_thompson(cells, request_type, DEFAULT_W_QUALITY, DEFAULT_W_COST, r)
+            }
+            TierRng::Seeded(r) => {
+                pick_model_thompson(cells, request_type, DEFAULT_W_QUALITY, DEFAULT_W_COST, r)
+            }
+        }
+    }
 }
 
 // --------------------------------------------------------------------------
@@ -364,6 +643,130 @@ mod tests {
             FactualLookup
         );
         assert_eq!(classify_request_type("hello there"), General);
+    }
+
+    #[test]
+    fn request_type_serde_matches_as_str() {
+        for rt in RequestType::ALL {
+            let json = serde_json::to_string(&rt).unwrap();
+            assert_eq!(json, format!("\"{}\"", rt.as_str()));
+            let back: RequestType = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, rt);
+        }
+        assert!(serde_json::from_str::<RequestType>("\"nonsense\"").is_err());
+    }
+
+    #[test]
+    fn scored_classifier_agrees_with_legacy_and_reports_votes() {
+        let (rt, votes) = classify_request_type_scored("write me a Python sort function");
+        assert_eq!(rt, RequestType::CodeGeneration);
+        assert!(votes > 0);
+        assert_eq!(rt, classify_request_type("write me a Python sort function"));
+        let (rt, votes) = classify_request_type_scored("hello there");
+        assert_eq!((rt, votes), (RequestType::General, 0));
+    }
+
+    #[tokio::test]
+    async fn regex_backend_wraps_legacy_and_reports_fixed_values() {
+        let c = RegexClassifier;
+        assert_eq!(c.name(), "regex");
+        for q in [
+            "write me a Python sort function",
+            "what is the capital of France?",
+            "hello there",
+            "",
+            "日本語のテキスト 🚀",
+        ] {
+            let out = c
+                .classify(&ClassifyInput {
+                    query: q,
+                    context: Some("ignored by regex"),
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                out.request_type,
+                classify_request_type(q),
+                "label for {q:?}"
+            );
+            assert_eq!(out.complexity, REGEX_COMPLEXITY);
+            out.validate().unwrap();
+        }
+        let matched = c.classify_sync(&ClassifyInput {
+            query: "write me a Python sort function",
+            context: None,
+        });
+        assert_eq!(matched.confidence, REGEX_CONFIDENCE_MATCHED);
+        let unmatched = c.classify_sync(&ClassifyInput {
+            query: "hello there",
+            context: None,
+        });
+        assert_eq!(unmatched.confidence, REGEX_CONFIDENCE_DEFAULT);
+        // Default-trait diagnostics are absent for the regex backend.
+        let d = c
+            .classify_detailed(&ClassifyInput {
+                query: "hi",
+                context: None,
+            })
+            .await
+            .unwrap();
+        assert!(d.diagnostics.is_none());
+    }
+
+    #[test]
+    fn classification_validation_rejects_out_of_contract_values() {
+        let ok = Classification {
+            request_type: RequestType::General,
+            complexity: 1,
+            confidence: 0.0,
+        };
+        ok.validate().unwrap();
+        for (complexity, confidence) in [(0, 0.5), (6, 0.5), (3, -0.1), (3, 1.01), (3, f32::NAN)] {
+            let bad = Classification {
+                request_type: RequestType::General,
+                complexity,
+                confidence,
+            };
+            assert!(
+                matches!(bad.validate(), Err(ClassifyError::InvalidResponse(_))),
+                "({complexity}, {confidence}) should be invalid"
+            );
+        }
+    }
+
+    #[test]
+    fn seeded_tier_rng_is_repeatable_and_sensitive_to_state() {
+        let cells = CellMap::new();
+        let pick = |seed, query: &str, cells: &CellMap| {
+            tier_rng(seed, "openai", RequestType::Writing, query, cells)
+                .pick(cells, RequestType::Writing)
+        };
+        // Same seed/inputs/state ⇒ same tier, every time.
+        for _ in 0..20 {
+            assert_eq!(
+                pick(Some(7), "draft an email", &cells),
+                pick(Some(7), "draft an email", &cells)
+            );
+        }
+        // Different seeds do not all agree (the seed actually matters): over many seeds at
+        // least two distinct tiers must appear for an unlearned, mid-strength request type.
+        let distinct: std::collections::HashSet<_> = (0..64u64)
+            .map(|s| pick(Some(s), "draft an email", &cells))
+            .collect();
+        assert!(distinct.len() > 1, "seed had no effect: {distinct:?}");
+        // Learned state is part of the seed derivation: a changed cell may change the pick,
+        // and the derivation must not panic on a populated map.
+        let mut learned = CellMap::new();
+        learned.insert(
+            (Tier::Tier3, RequestType::Writing),
+            Cell {
+                quality_mean: 0.99,
+                samples: MAX_SAMPLES,
+            },
+        );
+        let _ = pick(Some(7), "draft an email", &learned);
+        // No seed ⇒ entropy RNG still works (legacy path).
+        let _ = pick(None, "draft an email", &cells);
     }
 
     #[test]

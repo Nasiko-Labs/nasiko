@@ -57,6 +57,9 @@ pub(crate) struct RequestSignals {
     /// in-flight tool loop sticky. Only used when the resolved agent is a coding-agent
     /// integration.
     pub is_tool_continuation: bool,
+    /// Bounded, role-labelled prior turns for the classifier (`routing::classifier_context`).
+    /// Read only by a hosted classifier backend; the regex default ignores it.
+    pub context: Option<String>,
 }
 
 /// Record a call's four token classes on its `gen_ai` span.
@@ -196,6 +199,7 @@ async fn chat_core(
         query: routing::latest_user_query(&req.messages),
         turn_ordinal: routing::user_turn_ordinal(&req.messages),
         is_tool_continuation: routing::is_tool_continuation(&req.messages),
+        context: routing::context_from_messages(&req.messages),
     };
     let routed =
         resolve_routed_request(ctx, store, headers, agent_id, owner_id, hint, signals).await?;
@@ -472,6 +476,7 @@ pub(crate) async fn resolve_routed_request(
         ctx.tier_registry.as_ref(),
         ctx.cell_store.as_ref(),
         ctx.salience_gate.as_ref(),
+        ctx.classifier.as_ref(),
         &RouteInputs {
             agent_id: &agent_id,
             provider: &resolved.provider,
@@ -483,6 +488,7 @@ pub(crate) async fn resolve_routed_request(
             tier3_model: resolved.tier3_model.as_deref(),
             signals: &boundary,
             query: signals.query.as_deref(),
+            context: signals.context.as_deref(),
         },
     )
     .await;
@@ -957,6 +963,7 @@ mod tests {
             tier_registry: Arc::new(NoTiers),
             cell_store: Arc::new(crate::routing::InMemoryCellStore::new()),
             salience_gate: Arc::new(crate::routing::AllowAllGate),
+            classifier: Arc::new(crate::routing::ClassifierService::regex_only()),
             pricing: Arc::new(nasiko_pricing::PricingEngine::new(
                 PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
             )),
@@ -1443,6 +1450,7 @@ mod tests {
                 query: Some("write a function that reverses a string".into()),
                 turn_ordinal: 1,
                 is_tool_continuation: false,
+                context: None,
             },
         )
         .await
@@ -1489,6 +1497,7 @@ mod tests {
                 query: Some("write a function that reverses a string".into()),
                 turn_ordinal: 1,
                 is_tool_continuation: false,
+                context: None,
             },
         )
         .await;

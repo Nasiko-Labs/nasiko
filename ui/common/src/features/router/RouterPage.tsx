@@ -38,6 +38,7 @@ import { AgentsSection, type AgentRow, type SpendState } from './components/Agen
 import { Announcer } from './components/bits'
 import { RouterTitle } from './components/HowRouting'
 import { ConfigSheet, type EditorMode } from './components/ConfigSheet'
+import { ClassificationSection } from './components/ClassificationSection'
 import { ConfigsSection } from './components/ConfigsSection'
 import { CustomProviderSheet, type CustomMode } from './components/CustomProviderSheet'
 import { DeleteConfigDialog } from './components/DeleteConfigDialog'
@@ -338,7 +339,9 @@ function Page({
           <Tabs
             value={tab}
             onValueChange={(t) =>
-              setSearch({ tab: t === 'configs' || t === 'providers' ? t : undefined })
+              setSearch({
+                tab: t === 'configs' || t === 'providers' || t === 'classification' ? t : undefined,
+              })
             }
           >
             <TabsList aria-label={copy.anchorsLabel}>
@@ -396,6 +399,14 @@ function Page({
                 onAdd={() => setCustomMode({ kind: 'create' })}
                 onEdit={(p) => setCustomMode({ kind: 'edit', provider: p })}
               />
+            </TabsContent>
+            <TabsContent
+              value="classification"
+              forceMount
+              hidden={tab !== 'classification'}
+              className="pt-3"
+            >
+              <ClassificationSection superuser={superuser} active={tab === 'classification'} />
             </TabsContent>
           </Tabs>
         </>

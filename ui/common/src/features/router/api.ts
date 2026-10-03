@@ -37,6 +37,9 @@ import type {
   BudgetStatusResponse,
   CreateBudgetBody,
   UpdateBudgetBody,
+  ClassifierPreview,
+  ClassifierPreviewBody,
+  ClassifierStatus,
   CreateConfigBody,
   CreateCustomProviderBody,
   CustomProvider,
@@ -60,6 +63,7 @@ export const routerKeys = {
   budgets: ['router', 'budgets'] as const,
   budgetStatus: ['router', 'budgets', 'status'] as const,
   budgetAlerts: ['router', 'budgets', 'alerts'] as const,
+  classifier: ['router', 'classifier'] as const,
 }
 
 // R-L13: one request per agent until a batch read exists; this page's own limiter, not observability's.
@@ -424,6 +428,35 @@ export function referencingConfigs(err: unknown): string[] | null {
 }
 
 const json = { 'Content-Type': 'application/json' }
+
+// ─── Request classifier ([classifier] companion) ─────────────────────────────
+
+/** Effective classifier backend and counters. Counters move with routing, so this refetches on focus like a list. */
+export const classifierStatusQuery = {
+  queryKey: routerKeys.classifier,
+  queryFn: () => apiData<ClassifierStatus>('/api/llm-router/classifier'),
+  ...list,
+}
+
+export function useClassifierStatus(enabled = true) {
+  return useQuery({ ...classifierStatusQuery, enabled })
+}
+
+/**
+ * One side-effect-free classification. Prompt text is never cached (gcTime 0); the server reads the
+ * backend from deployment config, so the body carries only the text and a `regex`/`configured` choice.
+ */
+export function useClassifierPreview() {
+  return useMutation({
+    mutationFn: (body: ClassifierPreviewBody) =>
+      apiData<ClassifierPreview>('/api/llm-router/classifier/preview', {
+        method: 'POST',
+        headers: json,
+        body: JSON.stringify(body),
+      }),
+    gcTime: 0,
+  })
+}
 
 // ─── R2 budgets (proposed R-L10, mocked) ────────────────────────────────────
 

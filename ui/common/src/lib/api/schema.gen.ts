@@ -589,6 +589,43 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/llm-router/classifier": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Effective classifier backend, configuration and counters. */
+        get: operations["classifier_status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/llm-router/classifier/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Classify one query through the router's classifier and the regex baseline, without
+         *     touching routing state. Superuser only; rate limited per user.
+         */
+        post: operations["preview_classification"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/llm-router/providers": {
         parameters: {
             query?: never;
@@ -2367,6 +2404,46 @@ export interface components {
         ChangeRoleRequest: {
             role: string;
         };
+        /** @description `crate::mcp::ApiResponse` envelope around [`ClassifierStatusResponse`]. */
+        ClassifierStatusEnvelope: {
+            data: components["schemas"]["ClassifierStatusResponse"];
+            message: string;
+            /** Format: int32 */
+            status_code: number;
+        };
+        /**
+         * @description Effective classifier configuration and counters. Never carries the API key or the
+         *     endpoint's credentials.
+         */
+        ClassifierStatusResponse: {
+            /** @description `regex` or `jev`: what deployment configuration asked for. */
+            configured_backend: string;
+            /**
+             * @description The backend that answers when nothing fails (`regex` when the configured one could
+             *     not initialize).
+             */
+            effective_backend: string;
+            /** @description Hosted endpoint host (no path, no credentials; `null` for regex). */
+            endpoint_host?: string | null;
+            /** @description Why the configured backend is unusable, if it is. */
+            init_error?: string | null;
+            /**
+             * Format: float
+             * @description Below this request-type probability a hosted answer is an abstention; `0` = off.
+             */
+            min_confidence: number;
+            /** @description Hosted model id requested (`null` for regex). */
+            model?: string | null;
+            /** @description Local model directory (Laya), whether or not it loaded; `null` otherwise. */
+            model_path?: string | null;
+            /** @description Whether the caller may run previews (superuser). */
+            preview_allowed: boolean;
+            routing_seed_set: boolean;
+            /** @description Counters since process start, shared between routing and previews. */
+            stats: components["schemas"]["StatsView"];
+            /** Format: int64 */
+            timeout_ms: number;
+        };
         ConnectRequest: {
             /** Format: uuid */
             connector_id?: string | null;
@@ -2895,6 +2972,71 @@ export interface components {
             end_cursor?: string | null;
             has_next_page: boolean;
         };
+        /**
+         * @description Which backend a preview runs through. Only the deployment-configured model backend is
+         *     loaded in a process, so the choice is "that one" or the regex baseline; a backend that is
+         *     not configured cannot be previewed and the UI shows it as unrun.
+         * @enum {string}
+         */
+        PreviewBackend: "configured" | "regex";
+        /** @description `crate::mcp::ApiResponse` envelope around [`PreviewResponse`]. */
+        PreviewEnvelope: {
+            data: components["schemas"]["PreviewResponse"];
+            message: string;
+            /** Format: int32 */
+            status_code: number;
+        };
+        PreviewRequest: {
+            /** @description Defaults to `configured`. */
+            backend?: components["schemas"]["PreviewBackend"];
+            /** @description Optional surrounding material (earlier turns, a snippet). */
+            context?: string | null;
+            /** @description The latest user request. */
+            query: string;
+        };
+        PreviewResponse: {
+            /** @description Which backend the caller asked for. */
+            backend: components["schemas"]["PreviewBackend"];
+            /** @description The regex baseline on the same input. */
+            baseline: components["schemas"]["PreviewResult"];
+            /** @description `regex` or `jev`: what the deployment is configured with. */
+            configured_backend: string;
+            /** @description Why the hosted backend is unusable, when it is; the result is then a counted fallback. */
+            init_error?: string | null;
+            /** @description The requested backend's answer (for `regex`, identical to `baseline`). */
+            result: components["schemas"]["PreviewResult"];
+        };
+        /** @description One classification as the preview reports it. */
+        PreviewResult: {
+            /** @description Backend whose label this is (`regex` or `jev`). */
+            answered_by: string;
+            /**
+             * Format: int32
+             * @description 1..=5.
+             */
+            complexity: number;
+            /**
+             * Format: float
+             * @description Probability of `request_type` for a hosted answer; a fixed uncalibrated placeholder
+             *     for regex.
+             */
+            confidence: number;
+            /** @description Hosted diagnostics when the hosted backend answered. */
+            diagnostics: Record<string, never> | null;
+            /** @description `regex`, `primary`, `abstained`, or `fallback`. */
+            disposition: string;
+            /** @description Log-safe fallback detail. */
+            fallback_detail?: string | null;
+            /** @description Fallback reason when `disposition` is `fallback`. */
+            fallback_reason?: string | null;
+            input_truncated: boolean;
+            /**
+             * Format: int64
+             * @description Measured decision latency, including any fallback.
+             */
+            latency_us: number;
+            request_type: string;
+        };
         ProbeRequest: {
             url: string;
         };
@@ -3277,6 +3419,20 @@ export interface components {
             pct: number;
             /** Format: double */
             spend_usd: number;
+        };
+        StatsView: {
+            /** Format: int64 */
+            abstained: number;
+            /** Format: int64 */
+            calls: number;
+            /** Format: int64 */
+            fallback_total: number;
+            /** @description `{reason: count}` for `init`, `inference`, `invalid_output`, `network`, `timeout`. */
+            fallbacks: {
+                [key: string]: number;
+            };
+            /** Format: int64 */
+            primary_ok: number;
         };
         TokenUsageSummary: {
             /** Format: int64 */
@@ -5081,6 +5237,85 @@ export interface operations {
             };
             /** @description Unknown id, or not owned by the caller */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    classifier_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Classifier status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClassifierStatusEnvelope"];
+                };
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    preview_classification: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Classification preview */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PreviewEnvelope"];
+                };
+            };
+            /** @description Empty or oversized input */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Requires superuser */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Rate limit exceeded */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -57,3 +57,6 @@ ui/tests/fixtures/runs/
 
 # Private React/Next migration workspace; do not force-add before release approval.
 /react/
+
+# Laya classifier bundle + ONNX Runtime fetched by llm-router/scripts/laya-setup.sh (never committed)
+.laya/

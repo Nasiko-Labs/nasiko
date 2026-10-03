@@ -48,8 +48,9 @@ pub use inbound::InboundFormat;
 pub use inject::{LlmInjectCtx, inject_llm_env};
 pub use resolver::{ConfigCache, ResolvedConfig};
 pub use routing::{
-    AllowAllGate, CellStore, ClassifierSalienceGate, DecisionCache, InMemoryCellStore, NoopCache,
-    PgCellStore, PgTierRegistry, RedisCache, SalienceGate, TierRegistry,
+    AllowAllGate, CellStore, ClassifierSalienceGate, ClassifierService, DecisionCache,
+    InMemoryCellStore, NoopCache, PgCellStore, PgTierRegistry, RedisCache, SalienceGate,
+    TierRegistry,
 };
 
 /// Shared context for the LLM router.
@@ -82,6 +83,11 @@ pub struct LlmRouterCtx {
     /// classify + pin. [`ClassifierSalienceGate`] when `SALIENCE_GATE_ENABLED`; else [`AllowAllGate`]
     /// (classify at every boundary, i.e. behaviour before the gate existed).
     pub salience_gate: Arc<dyn SalienceGate>,
+    /// Level 3 request classifier: the configured backend (regex by default, Jev when
+    /// opted in via `CLASSIFIER_BACKEND`) behind the shared validation/timeout/fallback
+    /// policy. Built once here; the eval example and the UI preview build the same thing
+    /// from the same config.
+    pub classifier: Arc<ClassifierService>,
     /// The platform's single cost engine. Every `token_usage` row is priced
     /// through this — the DB trigger that used to do it returned NULL for any
     /// model missing from `model_pricing`, which booked 92.8% of calls at $0.
@@ -127,6 +133,7 @@ impl LlmRouterCtx {
         let router_cache = build_router_cache(&cfg);
         let cfg = Arc::new(cfg);
         let salience_gate = build_salience_gate(&cfg);
+        let classifier = Arc::new(ClassifierService::from_config(&cfg.classifier));
         let pricing = Arc::new(PricingEngine::new(db.clone()));
         Self {
             db,
@@ -137,6 +144,7 @@ impl LlmRouterCtx {
             tier_registry,
             cell_store,
             salience_gate,
+            classifier,
             pricing,
         }
     }

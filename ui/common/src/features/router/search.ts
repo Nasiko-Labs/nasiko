@@ -7,11 +7,11 @@ import { z } from 'zod'
 const ROUTER_SOURCES = ['attached', 'default', 'none'] as const
 export type SourceFilter = (typeof ROUTER_SOURCES)[number]
 
-export const ROUTER_TABS = ['agents', 'configs', 'providers'] as const
+export const ROUTER_TABS = ['agents', 'configs', 'providers', 'classification'] as const
 export type RouterTab = (typeof ROUTER_TABS)[number]
 
 export const routerSearchSchema = z.object({
-  tab: z.enum(['configs', 'providers']).optional().catch(undefined),
+  tab: z.enum(['configs', 'providers', 'classification']).optional().catch(undefined),
   source: z.enum(ROUTER_SOURCES).optional().catch(undefined),
 })
 export type RouterSearch = z.infer<typeof routerSearchSchema>

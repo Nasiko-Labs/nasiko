@@ -63,6 +63,11 @@ export const HARNESS_MOCK_VARIANTS = [
   'router-legacy',
   'router-budgets-empty',
   'router-budgets-fail',
+  'router-classifier-regex',
+  'router-classifier-unconfigured',
+  'router-classifier-fail',
+  'router-classifier-laya',
+  'router-classifier-laya-missing',
 ] as const
 
 const id = z.string().trim().min(1).max(100)

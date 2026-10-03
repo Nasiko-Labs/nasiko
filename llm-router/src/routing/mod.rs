@@ -21,6 +21,12 @@ pub mod cache;
 pub mod catalog;
 pub mod cells;
 pub mod classifier;
+pub mod classifier_eval;
+pub mod classifier_service;
+pub mod context;
+pub mod jev;
+pub mod laya;
+pub mod rubric;
 // The salience classifier itself — feature engine, weight loading, scoring, banding.
 // Private to `routing`: only `salience.rs` (a sibling module) uses it directly, via
 // `ClassifierSalienceGate`.
@@ -33,7 +39,12 @@ mod salience_classifier;
 pub use boundary::{BoundarySignals, Mode, Phase};
 pub use cache::{CachedDecision, DecisionCache, NoopCache, RedisCache};
 pub use cells::{CellStore, InMemoryCellStore, PgCellStore};
-pub use classifier::{RequestType, Tier, classify, classify_request_type, signal};
+pub use classifier::{
+    Classification, ClassifyError, ClassifyInput, RegexClassifier, RequestClassifier, RequestType,
+    Tier, classify, classify_request_type, signal,
+};
+pub use classifier_service::{ClassifierService, ClassifyOutcome, Disposition, FallbackReason};
+pub use context::{classifier_context, context_from_messages};
 pub use registry::{PgTierRegistry, TierRegistry};
 pub use salience::{AllowAllGate, ClassifierSalienceGate, SalienceGate};
 
@@ -50,6 +61,10 @@ pub enum RouteSource {
     SmallTalk,
     /// Level 3 — the classifier ran at a safe boundary.
     Classified,
+    /// Level 3, abstained — the hosted classifier answered below the configured confidence
+    /// floor, so the safe default (the configured model) was served and pinned for the
+    /// conversation with no tier/request type, so no feedback is ever credited to it.
+    LowConfidence,
     /// Level 4 — the agent's configured (`llm_config`) model.
     Config,
     /// Level 5 — no `llm_config`: the resolver's passthrough model (the request's own
@@ -83,6 +98,9 @@ pub struct RouteInputs<'a> {
     pub signals: &'a BoundarySignals,
     /// The query to classify (latest user message text). `None` disables classification.
     pub query: Option<&'a str>,
+    /// Bounded, role-labelled prior turns for the classifier ([`context::classifier_context`]).
+    /// Only a hosted backend reads it; regex ignores it.
+    pub context: Option<&'a str>,
 }
 
 /// The outcome of routing: the model to call and how it was chosen.
@@ -109,9 +127,16 @@ pub struct RouteDecision {
 ///      [`RouteSource::SmallTalk`] and the cache is **not** written, so a greeting can never
 ///      pin the session. Only substantive turns fall through to Level 3.
 /// 3. **Classify** — only at a fireable boundary (`switch`/`cold_start` + `free_flowing`)
-///    with a query present and a registry entry for `(provider, tier)`. Loads the provider's
-///    learned cells, Thompson-samples a tier, and writes the decision (incl. request type)
-///    through to the cache so the next turn short-circuits at Level 2.
+///    with a query present and a registry entry for `(provider, tier)`. Asks the
+///    [`ClassifierService`] for the request type (regex by default; a hosted backend with
+///    regex fallback when opted in), loads the provider's learned cells, Thompson-samples
+///    a tier, and writes the decision (incl. request type) through to the cache so the next
+///    turn short-circuits at Level 2.
+///    - **Low confidence** — a hosted answer below the configured floor is an abstention:
+///      the configured model is served ([`RouteSource::LowConfidence`]) and cached with no
+///      tier/request type, so the conversation stays sticky but nothing is ever credited.
+///    - **Backend failure** — the regex fallback's answer is used exactly as a regex
+///      classification would be; the failure is counted by the service, not here.
 /// 4. **Config** — the agent's configured model (`has_llm_config`).
 /// 5. **Default** — no `llm_config`: the resolver's `fallback_model`, which is the request's
 ///    own provider/model (passthrough) or the platform default as the last-resort safety net.
@@ -124,6 +149,7 @@ pub async fn route_model(
     registry: &dyn TierRegistry,
     cell_store: &dyn CellStore,
     gate: &dyn SalienceGate,
+    classifier: &ClassifierService,
     inputs: &RouteInputs<'_>,
 ) -> RouteDecision {
     tracing::info!(
@@ -245,15 +271,76 @@ pub async fn route_model(
                 agent_id = %inputs.agent_id, %conv_id, provider = %inputs.provider,
                 "route_model: LEVEL 3 (Classified) — at fireable boundary with a query; invoking classifier"
             );
-            // Load the provider's learned quality, then Thompson-sample a tier. Production
-            // uses an entropy RNG (exploration drives learning); tests seed it. The RNG
-            // (`ThreadRng`) is `!Send`, so it is scoped to drop before the next `.await` — the
-            // handler future must stay `Send`.
+            // Request type via the shared classifier service (regex by default). Any hosted
+            // failure has already been turned into a counted regex fallback inside it.
+            let outcome = classifier
+                .classify(&ClassifyInput {
+                    query,
+                    context: inputs.context,
+                })
+                .await;
+            tracing::info!(
+                target: "nasiko::llm_router::classifier",
+                agent_id = %inputs.agent_id, %conv_id, provider = %inputs.provider,
+                answered_by = %outcome.answered_by,
+                disposition = ?outcome.disposition,
+                request_type = %outcome.classification.request_type.as_str(),
+                complexity = outcome.classification.complexity,
+                confidence = outcome.classification.confidence,
+                latency_us = outcome.latency.as_micros() as u64,
+                "route_model: LEVEL 3 — classifier verdict (complexity is observational; it does not drive tier selection)"
+            );
+            if !outcome.is_actionable() {
+                // Abstention: serve the configured model and pin it for the conversation
+                // with no tier/request type, so later turns are cache hits that credit
+                // nothing. This is the "safe default", distinct from a backend failure.
+                let decision = CachedDecision {
+                    model: inputs.fallback_model.to_string(),
+                    tier: None,
+                    request_type: None,
+                };
+                cache.put(conv_id, inputs.agent_id, &decision).await;
+                tracing::info!(
+                    target: "nasiko::llm_router::routing",
+                    agent_id = %inputs.agent_id, %conv_id,
+                    level = 3,
+                    source = ?RouteSource::LowConfidence,
+                    model = %decision.model,
+                    confidence = outcome.classification.confidence,
+                    "route_model: LEVEL 3 (LowConfidence) — classifier abstained; serving the configured model and pinning it without a learnable cell"
+                );
+                return RouteDecision {
+                    model: decision.model,
+                    tier: None,
+                    source: RouteSource::LowConfidence,
+                };
+            }
+            let request_type = outcome.classification.request_type;
+            // Load the provider's learned quality, then Thompson-sample a tier. Without a
+            // routing seed this is the legacy entropy RNG (exploration drives learning); with
+            // one it is seeded from the inputs and learned state so identical state picks the
+            // same tier. Either RNG may be `!Send`, so it is scoped to drop before the next
+            // `.await` — the handler future must stay `Send`.
             let learned = cell_store.load(inputs.provider).await;
-            let (tier, request_type) = {
-                let mut rng = rand::rng();
-                classify(query, inputs.provider, &learned, &mut rng)
+            let tier = {
+                let mut rng = classifier::tier_rng(
+                    classifier.routing_seed(),
+                    inputs.provider,
+                    request_type,
+                    query,
+                    &learned,
+                );
+                rng.pick(&learned, request_type)
             };
+            tracing::info!(
+                target: "nasiko::llm_router::classifier",
+                provider = %inputs.provider,
+                request_type = %request_type.as_str(),
+                learned_cells = learned.len(),
+                classified_tier = ?tier,
+                seeded = classifier.routing_seed().is_some(),
+                "classifier: Thompson-sampled a model tier for the classified request type"
+            );
             // Per-config tier override takes priority over the global registry.
             let config_override = match tier {
                 Tier::Tier1 => inputs.tier1_model.map(str::to_string),
@@ -532,7 +619,12 @@ mod tests {
             tier3_model: None,
             signals,
             query: Some("hello"),
+            context: None,
         }
+    }
+
+    fn regex_classifier() -> ClassifierService {
+        ClassifierService::regex_only()
     }
 
     #[tokio::test]
@@ -546,6 +638,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &regex_classifier(),
             &inputs("anthropic", &s, Some("pinned-model")),
         )
         .await;
@@ -563,6 +656,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &regex_classifier(),
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -582,6 +676,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &regex_classifier(),
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -612,6 +707,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &DenyGate,
+            &regex_classifier(),
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -638,6 +734,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &DenyGate,
+            &regex_classifier(),
             &i,
         )
         .await;
@@ -658,6 +755,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &DenyGate,
+            &regex_classifier(),
             &i,
         )
         .await;
@@ -677,6 +775,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &DenyGate,
+            &regex_classifier(),
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -699,6 +798,7 @@ mod tests {
             &test_support::StubRegistry,
             &cells,
             &AllowAllGate,
+            &regex_classifier(),
             &i,
         )
         .await;
@@ -726,6 +826,7 @@ mod tests {
             &test_support::StubRegistry,
             &cells,
             &AllowAllGate,
+            &regex_classifier(),
             &i,
         )
         .await;
@@ -743,6 +844,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &regex_classifier(),
             &inputs("gemini", &s, None),
         )
         .await;
@@ -761,6 +863,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &regex_classifier(),
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -777,6 +880,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &regex_classifier(),
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -795,6 +899,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &regex_classifier(),
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -814,11 +919,333 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &regex_classifier(),
             &i,
         )
         .await;
         assert_eq!(d.source, RouteSource::Default);
         assert_eq!(d.model, "cfg-model");
+    }
+
+    // ── RequestClassifier integration ─────────────────────────────────────────────
+
+    use crate::config::ClassifierBackend;
+    use crate::routing::classifier::{Classification, ClassifyError};
+    use crate::routing::classifier_service::test_support::{FakeClassifier, service_with};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    fn hosted(fake: &Arc<FakeClassifier>, min_confidence: f32) -> ClassifierService {
+        service_with(fake.clone(), min_confidence, Duration::from_secs(1))
+    }
+
+    fn design(confidence: f32) -> Classification {
+        Classification {
+            request_type: RequestType::TechnicalDesign,
+            complexity: 4,
+            confidence,
+        }
+    }
+
+    #[tokio::test]
+    async fn pinned_cache_hit_continue_and_no_conv_paths_never_call_the_classifier() {
+        let fake = Arc::new(FakeClassifier::answering(design(0.9)));
+        let classifier = hosted(&fake, 0.0);
+
+        // Pinned.
+        let s = signals(Some("c1"), Phase::Switch, Mode::FreeFlowing);
+        let d = route_model(
+            &FakeCache::empty(),
+            &test_support::StubRegistry,
+            &InMemoryCellStore::new(),
+            &AllowAllGate,
+            &classifier,
+            &inputs("anthropic", &s, Some("pinned")),
+        )
+        .await;
+        assert_eq!(d.source, RouteSource::Pinned);
+
+        // Cache hit at a boundary.
+        let d = route_model(
+            &FakeCache::with_hit("cached"),
+            &test_support::StubRegistry,
+            &InMemoryCellStore::new(),
+            &AllowAllGate,
+            &classifier,
+            &inputs("anthropic", &s, None),
+        )
+        .await;
+        assert_eq!(d.source, RouteSource::CacheHit);
+
+        // Continue (tool loop) with a cache miss.
+        let s2 = signals(Some("c1"), Phase::Continue, Mode::FreeFlowing);
+        let d = route_model(
+            &FakeCache::empty(),
+            &test_support::StubRegistry,
+            &InMemoryCellStore::new(),
+            &AllowAllGate,
+            &classifier,
+            &inputs("anthropic", &s2, None),
+        )
+        .await;
+        assert_eq!(d.source, RouteSource::Config);
+
+        // No conv_id.
+        let s3 = signals(None, Phase::Switch, Mode::FreeFlowing);
+        let d = route_model(
+            &FakeCache::empty(),
+            &test_support::StubRegistry,
+            &InMemoryCellStore::new(),
+            &AllowAllGate,
+            &classifier,
+            &inputs("anthropic", &s3, None),
+        )
+        .await;
+        assert_eq!(d.source, RouteSource::Config);
+
+        // Small talk (gate denies) short-circuits before the classifier too.
+        let d = route_model(
+            &FakeCache::empty(),
+            &test_support::StubRegistry,
+            &InMemoryCellStore::new(),
+            &DenyGate,
+            &classifier,
+            &inputs("anthropic", &s, None),
+        )
+        .await;
+        assert_eq!(d.source, RouteSource::SmallTalk);
+
+        assert_eq!(
+            fake.calls(),
+            0,
+            "the classifier must not run on any of these paths"
+        );
+    }
+
+    #[tokio::test]
+    async fn eligible_boundary_calls_the_classifier_once_with_query_and_context() {
+        let fake = Arc::new(FakeClassifier::answering(design(0.9)));
+        let classifier = hosted(&fake, 0.0);
+        let cache = FakeCache::empty();
+        let s = signals(Some("c1"), Phase::ColdStart, Mode::FreeFlowing);
+        let mut i = inputs("anthropic", &s, None);
+        i.query = Some("design a sharded queue");
+        i.context = Some("user: we run postgres\nassistant: noted");
+        let d = route_model(
+            &cache,
+            &test_support::StubRegistry,
+            &InMemoryCellStore::new(),
+            &AllowAllGate,
+            &classifier,
+            &i,
+        )
+        .await;
+        assert_eq!(d.source, RouteSource::Classified);
+        assert_eq!(fake.calls(), 1);
+        let seen = fake.seen.lock().unwrap();
+        assert_eq!(
+            seen[0],
+            (
+                "design a sharded queue".to_string(),
+                Some("user: we run postgres\nassistant: noted".to_string())
+            )
+        );
+        // The decision was cached with the hosted request type for later feedback.
+        assert_eq!(cache.puts.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn low_confidence_serves_the_configured_model_and_pins_without_a_learnable_cell() {
+        let fake = Arc::new(FakeClassifier::answering(design(0.2)));
+        let classifier = hosted(&fake, 0.5);
+        let cache = FakeCache::empty();
+        let s = signals(Some("c1"), Phase::Switch, Mode::FreeFlowing);
+        let d = route_model(
+            &cache,
+            &test_support::StubRegistry,
+            &InMemoryCellStore::new(),
+            &AllowAllGate,
+            &classifier,
+            &inputs("anthropic", &s, None),
+        )
+        .await;
+        assert_eq!(d.source, RouteSource::LowConfidence);
+        assert_eq!(d.model, "cfg-model");
+        assert_eq!(d.tier, None);
+        let puts = cache.puts.lock().unwrap();
+        assert_eq!(
+            puts.len(),
+            1,
+            "an abstention pins the safe default for the conversation"
+        );
+        assert_eq!(puts[0].2, "cfg-model");
+        assert_eq!(fake.calls(), 1);
+        assert_eq!(classifier.stats().abstained, 1);
+        assert_eq!(classifier.stats().fallback_total(), 0);
+    }
+
+    #[tokio::test]
+    async fn abstention_cache_entry_is_sticky_but_never_learns() {
+        // A continuation turn after an abstention is a cache hit (sticky) whose entry has
+        // no tier/request type, so positive feedback credits nothing.
+        let cache = FakeCache {
+            hit: Some(CachedDecision {
+                model: "cfg-model".into(),
+                tier: None,
+                request_type: None,
+            }),
+            puts: Mutex::new(vec![]),
+        };
+        let cells = InMemoryCellStore::new();
+        let s = signals(Some("c1"), Phase::Continue, Mode::FreeFlowing);
+        let mut i = inputs("anthropic", &s, None);
+        i.query = Some("perfect, that worked. thanks!");
+        let fake = Arc::new(FakeClassifier::answering(design(0.9)));
+        let d = route_model(
+            &cache,
+            &test_support::StubRegistry,
+            &cells,
+            &AllowAllGate,
+            &hosted(&fake, 0.0),
+            &i,
+        )
+        .await;
+        assert_eq!(d.source, RouteSource::CacheHit);
+        assert!(cells.load("anthropic").await.is_empty());
+        assert_eq!(fake.calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn backend_failure_routes_on_the_regex_fallback_label_and_counts_it() {
+        let fake = Arc::new(FakeClassifier::failing(ClassifyError::Timeout));
+        let classifier = hosted(&fake, 0.9); // floor must not apply to the regex fallback
+        let cache = FakeCache::empty();
+        let s = signals(Some("c1"), Phase::Switch, Mode::FreeFlowing);
+        let mut i = inputs("anthropic", &s, None);
+        i.query = Some("draft an email to my team about the outage");
+        let d = route_model(
+            &cache,
+            &test_support::StubRegistry,
+            &InMemoryCellStore::new(),
+            &AllowAllGate,
+            &classifier,
+            &i,
+        )
+        .await;
+        assert_eq!(d.source, RouteSource::Classified);
+        assert!(d.tier.is_some());
+        assert_eq!(cache.puts.lock().unwrap().len(), 1);
+        let st = classifier.stats();
+        assert_eq!(st.fallback_total(), 1);
+        assert_eq!(st.abstained, 0);
+    }
+
+    #[tokio::test]
+    async fn seeded_tier_choice_is_repeatable_and_unseeded_is_legacy() {
+        let fake = Arc::new(FakeClassifier::answering(design(0.9)));
+        let seeded = ClassifierService::with_primary(
+            ClassifierBackend::Jev,
+            Some(fake.clone()),
+            Duration::from_secs(1),
+            0.0,
+            Some(42),
+        );
+        let s = signals(Some("c1"), Phase::Switch, Mode::FreeFlowing);
+        let mut first = None;
+        for _ in 0..25 {
+            let d = route_model(
+                &FakeCache::empty(),
+                &test_support::StubRegistry,
+                &InMemoryCellStore::new(),
+                &AllowAllGate,
+                &seeded,
+                &inputs("anthropic", &s, None),
+            )
+            .await;
+            assert_eq!(d.source, RouteSource::Classified);
+            match first {
+                None => first = Some(d.tier),
+                Some(t) => assert_eq!(d.tier, t, "seeded tier choice must be repeatable"),
+            }
+        }
+        // A different query under the same seed may still explore (it is not forced to the
+        // same tier), and the unseeded regex-only service still returns a valid tier.
+        let d = route_model(
+            &FakeCache::empty(),
+            &test_support::StubRegistry,
+            &InMemoryCellStore::new(),
+            &AllowAllGate,
+            &regex_classifier(),
+            &inputs("anthropic", &s, None),
+        )
+        .await;
+        assert!(d.tier.is_some());
+    }
+
+    #[tokio::test]
+    async fn feedback_still_credits_the_unchanged_tier_request_type_cell() {
+        // The bandit key stays (tier, request_type): a cached hosted decision's feedback
+        // lands in exactly that cell, with no complexity in the key.
+        let cache = FakeCache {
+            hit: Some(CachedDecision {
+                model: "claude-opus-4-8".into(),
+                tier: Some(Tier::Tier1),
+                request_type: Some(RequestType::TechnicalDesign),
+            }),
+            puts: Mutex::new(vec![]),
+        };
+        let cells = InMemoryCellStore::new();
+        let s = signals(Some("c1"), Phase::Continue, Mode::FreeFlowing);
+        let mut i = inputs("anthropic", &s, None);
+        i.query = Some("that's wrong, try again");
+        route_model(
+            &cache,
+            &test_support::StubRegistry,
+            &cells,
+            &AllowAllGate,
+            &regex_classifier(),
+            &i,
+        )
+        .await;
+        let learned = cells.load("anthropic").await;
+        assert_eq!(learned.len(), 1);
+        let cell = learned
+            .get(&(Tier::Tier1, RequestType::TechnicalDesign))
+            .unwrap();
+        assert_eq!(cell.quality_mean, 0.0);
+    }
+
+    #[tokio::test]
+    async fn per_config_override_and_registry_miss_apply_to_hosted_labels_too() {
+        let fake = Arc::new(FakeClassifier::answering(design(0.9)));
+        let classifier = hosted(&fake, 0.0);
+        let s = signals(Some("c1"), Phase::Switch, Mode::FreeFlowing);
+        // Override: whichever tier is sampled, the per-config model for it wins.
+        let mut i = inputs("anthropic", &s, None);
+        i.tier1_model = Some("t1-override");
+        i.tier2_model = Some("t2-override");
+        i.tier3_model = Some("t3-override");
+        let d = route_model(
+            &FakeCache::empty(),
+            &test_support::StubRegistry,
+            &InMemoryCellStore::new(),
+            &AllowAllGate,
+            &classifier,
+            &i,
+        )
+        .await;
+        assert!(d.model.ends_with("-override"), "{}", d.model);
+        // Registry miss (gemini) ⇒ Level 4, even though the classifier answered.
+        let d = route_model(
+            &FakeCache::empty(),
+            &test_support::StubRegistry,
+            &InMemoryCellStore::new(),
+            &AllowAllGate,
+            &classifier,
+            &inputs("gemini", &s, None),
+        )
+        .await;
+        assert_eq!(d.source, RouteSource::Config);
     }
 
     #[test]

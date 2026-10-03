@@ -154,6 +154,197 @@ pub struct GatewayConfig {
     pub compress_recovery_min_bytes: usize,
     /// How long an original stays recoverable. Sized to outlive the flow that produced it.
     pub compress_recovery_ttl_secs: u64,
+
+    /// Level 3 request classifier: which backend answers "what kind of request is this?",
+    /// how long it may take, and when its answer is too uncertain to act on. The regex
+    /// backend is the default and needs no network, key, or model download; see
+    /// [`ClassifierConfig`].
+    pub classifier: ClassifierConfig,
+}
+
+/// A credential that must never be printed. `Debug` and `Display` are redacted so the
+/// value cannot leak through a `{:?}` of the enclosing config, a tracing field, or an error
+/// message; the only way to read it is [`Secret::expose`], at the one call site that puts
+/// it on the wire.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct Secret(String);
+
+impl Secret {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    /// The raw value — call only where it is sent to the configured endpoint.
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_empty() {
+            "Secret(<unset>)"
+        } else {
+            "Secret(<redacted>)"
+        })
+    }
+}
+
+impl std::fmt::Display for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<redacted>")
+    }
+}
+
+/// Which request-classifier backend the router runs at Level 3.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ClassifierBackend {
+    /// The regex vote-count classifier (`classify_request_type`). Default; no network.
+    Regex,
+    /// Jev (typesafe.ai) hosted System One model over HTTPS, with regex fallback.
+    Jev,
+    /// Laya (Convai Innovations) local decision model via ONNX Runtime, with regex fallback.
+    Laya,
+}
+
+impl ClassifierBackend {
+    /// Stable label (also the `CLASSIFIER_BACKEND` value).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ClassifierBackend::Regex => "regex",
+            ClassifierBackend::Jev => "jev",
+            ClassifierBackend::Laya => "laya",
+        }
+    }
+
+    /// Parse a `CLASSIFIER_BACKEND` value. Unknown labels are an error rather than a
+    /// silent default: a typo must not quietly turn an opted-in hosted backend back off.
+    pub fn parse(s: &str) -> Result<Self, String> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "" | "regex" => Ok(ClassifierBackend::Regex),
+            "jev" => Ok(ClassifierBackend::Jev),
+            "laya" => Ok(ClassifierBackend::Laya),
+            other => Err(format!(
+                "unknown classifier backend '{other}' (expected regex|jev|laya)"
+            )),
+        }
+    }
+}
+
+/// Typed configuration for the Level 3 request classifier. Read once at the process
+/// boundary ([`ClassifierConfig::from_env`]); the classifier and the Jev client receive this
+/// struct and never touch the environment themselves, so the eval example, the host server
+/// and the standalone binary all build the identical service from identical inputs.
+///
+/// Env vars (all optional; defaults keep today's behaviour):
+///
+/// | Var | Field | Default |
+/// |---|---|---|
+/// | `CLASSIFIER_BACKEND` | `backend` | `regex` (`jev` hosted, `laya` local) |
+/// | `CLASSIFIER_ENDPOINT` | `endpoint` | `https://api.typesafe.ai/v1/systemone` |
+/// | `CLASSIFIER_MODEL` | `model` | `jev-1.13.0` (a versioned id, not the moving alias) |
+/// | `TYPESAFE_API_KEY` | `api_key` | unset |
+/// | `CLASSIFIER_TIMEOUT_MS` | `timeout_ms` | `3000` |
+/// | `CLASSIFIER_MIN_CONFIDENCE` | `min_confidence` | `0.0` (abstention off until calibrated) |
+/// | `CLASSIFIER_ROUTING_SEED` | `routing_seed` | unset (legacy entropy RNG for tier sampling) |
+/// | `CLASSIFIER_MAX_CONCURRENCY` | `max_concurrency` | `8` |
+/// | `CLASSIFIER_RETRIES` | `retries` | `0` (no retry in the routing hot path) |
+/// | `CLASSIFIER_MODEL_PATH` | `model_path` | unset (Laya: directory with `laya.onnx`, `laya.onnx.data`, `laya_config.json`, `tokenizer/`) |
+/// | `CLASSIFIER_ORT_DYLIB` (or `ORT_DYLIB_PATH`) | `ort_dylib` | unset (Laya: path to the ONNX Runtime shared library) |
+/// | `CLASSIFIER_THREADS` | `threads` | `0` = ONNX Runtime default (Laya intra-op threads) |
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClassifierConfig {
+    pub backend: ClassifierBackend,
+    /// Hosted endpoint the Jev adapter POSTs to. The credential is sent to this URL and
+    /// nowhere else; redirects are not followed.
+    pub endpoint: String,
+    /// Hosted model id. A versioned id (`jev-1.13.0`) makes a run reproducible; the
+    /// response's own `model` field is recorded as the version that actually answered.
+    pub model: String,
+    /// Hosted API key. Redacted in `Debug`/`Display`.
+    pub api_key: Secret,
+    /// Overall deadline for one classification, including connection, any retry/backoff and
+    /// response validation. On expiry the regex fallback answers.
+    pub timeout_ms: u64,
+    /// Below this request-type probability a hosted answer is treated as an abstention: the
+    /// router routes to the safe default and nothing is credited as a classification. `0.0`
+    /// disables abstention. Never applied to the regex backend.
+    pub min_confidence: f32,
+    /// When set, tier sampling is seeded deterministically from `(seed, provider,
+    /// request_type, query, learned cells)` so identical inputs and state pick the same
+    /// tier. Unset keeps the legacy entropy RNG.
+    pub routing_seed: Option<u64>,
+    /// Upper bound on in-flight hosted calls; excess callers wait (within the deadline).
+    pub max_concurrency: usize,
+    /// Extra attempts after a retryable failure (429/529/connection), each inside the same
+    /// overall deadline.
+    pub retries: u32,
+    /// Laya: directory holding the ONNX bundle. Only read when `backend == Laya`.
+    pub model_path: String,
+    /// Laya: path to `libonnxruntime.{so,dylib}` / `onnxruntime.dll`. Empty ⇒ `ort` resolves it
+    /// (`ORT_DYLIB_PATH`, then the default library name on the loader path).
+    pub ort_dylib: String,
+    /// Laya: ONNX Runtime intra-op threads; `0` keeps the runtime default.
+    pub threads: usize,
+}
+
+/// Jev's documented production endpoint.
+pub const DEFAULT_CLASSIFIER_ENDPOINT: &str = "https://api.typesafe.ai/v1/systemone";
+/// The versioned Jev release this adapter was written and tested against.
+pub const DEFAULT_CLASSIFIER_MODEL: &str = "jev-1.13.0";
+
+impl Default for ClassifierConfig {
+    fn default() -> Self {
+        Self {
+            backend: ClassifierBackend::Regex,
+            endpoint: DEFAULT_CLASSIFIER_ENDPOINT.into(),
+            model: DEFAULT_CLASSIFIER_MODEL.into(),
+            api_key: Secret::default(),
+            timeout_ms: 3000,
+            min_confidence: 0.0,
+            routing_seed: None,
+            max_concurrency: 8,
+            retries: 0,
+            model_path: String::new(),
+            ort_dylib: String::new(),
+            threads: 0,
+        }
+    }
+}
+
+impl ClassifierConfig {
+    /// Read the classifier settings from the environment (see the type docs for the table).
+    /// Never fails: a bad `CLASSIFIER_BACKEND` is logged and falls back to regex, so a
+    /// misconfiguration costs the experiment, not availability.
+    pub fn from_env() -> Self {
+        let d = Self::default();
+        Self {
+            backend: parse_or_warn("CLASSIFIER_BACKEND", ClassifierBackend::parse, d.backend),
+            endpoint: env_first(&["CLASSIFIER_ENDPOINT"], &d.endpoint),
+            model: env_first(&["CLASSIFIER_MODEL"], &d.model),
+            api_key: Secret::new(env_first(&["TYPESAFE_API_KEY"], "")),
+            timeout_ms: env_usize("CLASSIFIER_TIMEOUT_MS", d.timeout_ms as usize) as u64,
+            min_confidence: std::env::var("CLASSIFIER_MIN_CONFIDENCE")
+                .ok()
+                .and_then(|v| v.parse::<f32>().ok())
+                .filter(|v| v.is_finite())
+                .map(|v| v.clamp(0.0, 1.0))
+                .unwrap_or(d.min_confidence),
+            routing_seed: std::env::var("CLASSIFIER_ROUTING_SEED")
+                .ok()
+                .and_then(|v| v.trim().parse::<u64>().ok()),
+            max_concurrency: env_usize("CLASSIFIER_MAX_CONCURRENCY", d.max_concurrency).max(1),
+            retries: env_usize("CLASSIFIER_RETRIES", d.retries as usize).min(5) as u32,
+            model_path: env_first(&["CLASSIFIER_MODEL_PATH"], &d.model_path),
+            ort_dylib: env_first(&["CLASSIFIER_ORT_DYLIB", "ORT_DYLIB_PATH"], &d.ort_dylib),
+            threads: env_usize("CLASSIFIER_THREADS", d.threads),
+        }
+    }
 }
 
 impl Default for GatewayConfig {
@@ -196,6 +387,7 @@ impl Default for GatewayConfig {
             compress_recovery_enabled: true,
             compress_recovery_min_bytes: 8192,
             compress_recovery_ttl_secs: 86_400,
+            classifier: ClassifierConfig::default(),
         }
     }
 }
@@ -308,6 +500,7 @@ impl GatewayConfig {
                 "TOKEN_COMPRESS_RECOVERY_TTL_SECS",
                 d.compress_recovery_ttl_secs as usize,
             ) as u64,
+            classifier: ClassifierConfig::from_env(),
         }
     }
 
@@ -420,6 +613,53 @@ mod tests {
         assert_eq!(cfg.platform_key_for("openai"), "sk-openai");
         assert_eq!(cfg.platform_key_for("anthropic"), "sk-ant");
         assert_eq!(cfg.platform_key_for("gemini"), "sk-gem");
+    }
+
+    #[test]
+    fn secret_is_redacted_in_debug_and_display() {
+        let s = Secret::new("sk-live-very-secret");
+        assert_eq!(format!("{s:?}"), "Secret(<redacted>)");
+        assert_eq!(format!("{s}"), "<redacted>");
+        assert_eq!(s.expose(), "sk-live-very-secret");
+        assert_eq!(format!("{:?}", Secret::default()), "Secret(<unset>)");
+        // The whole GatewayConfig's Debug output must not contain the key either.
+        let cfg = GatewayConfig {
+            classifier: ClassifierConfig {
+                api_key: Secret::new("sk-live-very-secret"),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(!format!("{cfg:?}").contains("sk-live-very-secret"));
+    }
+
+    #[test]
+    fn classifier_backend_parses_known_labels_and_rejects_unknown() {
+        assert_eq!(
+            ClassifierBackend::parse("regex"),
+            Ok(ClassifierBackend::Regex)
+        );
+        assert_eq!(ClassifierBackend::parse(""), Ok(ClassifierBackend::Regex));
+        assert_eq!(
+            ClassifierBackend::parse(" JEV "),
+            Ok(ClassifierBackend::Jev)
+        );
+        assert_eq!(
+            ClassifierBackend::parse("laya"),
+            Ok(ClassifierBackend::Laya)
+        );
+        assert_eq!(ClassifierBackend::Laya.as_str(), "laya");
+        assert!(ClassifierBackend::parse("local").is_err());
+    }
+
+    #[test]
+    fn classifier_config_defaults_need_no_network_or_key() {
+        let c = ClassifierConfig::default();
+        assert_eq!(c.backend, ClassifierBackend::Regex);
+        assert!(c.api_key.is_empty());
+        assert_eq!(c.min_confidence, 0.0);
+        assert!(c.routing_seed.is_none());
+        assert_eq!(c.model, DEFAULT_CLASSIFIER_MODEL);
     }
 
     #[test]

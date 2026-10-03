@@ -66,6 +66,13 @@ examples/mint_token.rs   dev/test JWT minter
 Reuses the platform's `SECRETS_ENCRYPTION_KEY` (per-user HKDF AES-256-GCM) and
 `DATABASE_URL`.
 
+Request classifier (Level 3): `CLASSIFIER_BACKEND=regex|jev` (default `regex`, no
+network), `CLASSIFIER_ENDPOINT`, `CLASSIFIER_MODEL`, `TYPESAFE_API_KEY`,
+`CLASSIFIER_TIMEOUT_MS`, `CLASSIFIER_MIN_CONFIDENCE`, `CLASSIFIER_ROUTING_SEED`,
+`CLASSIFIER_MAX_CONCURRENCY`, `CLASSIFIER_RETRIES` — see
+[`docs/classifier/README.md`](docs/classifier/README.md) for semantics, the eval
+(`examples/classifier_eval.rs`) and the scorer (`examples/classifier_report.rs`).
+
 Storage: `agents.llm_config` (JSONB; NULL → defaults), `user_secrets` (decrypt via
 `SecretsCrypto::try_for_user`), `token_usage` (written), `model_pricing` (cost trigger).
 

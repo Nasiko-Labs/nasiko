@@ -59,6 +59,7 @@ describe('layout', () => {
       copy.anchors.agents,
       copy.anchors.configs,
       copy.anchors.providers,
+      copy.anchors.classification,
     ])
     // One tab at a time: Your agents first.
     expect(screen.queryByRole('heading', { name: copy.configsTitle })).toBeNull()

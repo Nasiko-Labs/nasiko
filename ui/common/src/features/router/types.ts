@@ -7,6 +7,8 @@
  *   `KIND_*`). Older servers send no `kind`: read it as `openai`.
  * - Model registry: `server/src/llm_router/model_registry.rs` `ModelMapping`.
  * - Secrets: `server/src/secrets/routes.rs` `SecretEntry` (names only, never values).
+ * - Classifier: `server/src/llm_router/classifier.rs` `ClassifierStatusResponse`, `PreviewRequest`,
+ *   `PreviewResponse` (in OpenAPI); `diagnostics` mirrors `llm-router` `BackendDiagnostics` (untyped `Object` there).
  */
 import type { components } from '@/lib/api/schema.gen'
 
@@ -187,4 +189,34 @@ export interface BudgetAlert {
   amount_usd: number
   at: string
   stopped: boolean
+}
+
+// ─── Request classifier ([classifier] companion): status and side-effect-free preview ──────────────
+
+export type ClassifierStatus = S['ClassifierStatusResponse']
+export type ClassifierPreviewBackend = S['PreviewBackend']
+export type ClassifierPreviewBody = S['PreviewRequest']
+
+/** `llm-router` `routing::classifier::BackendDiagnostics`: present only when a hosted backend answered. */
+export interface ClassifierDiagnostics {
+  model_version: string | null
+  type_probabilities: [string, number][]
+  complexity_probabilities: number[]
+  complexity_expected: number | null
+  vendor_type_confidence: number | null
+  vendor_complexity_confidence: number | null
+  input_tokens: number | null
+  output_tokens: number | null
+  attempts: number
+  /** The backend cut the input to its own window (Laya's 512-token budget). */
+  input_truncated?: boolean
+}
+
+export type ClassifierPreviewResult = Omit<S['PreviewResult'], 'diagnostics'> & {
+  diagnostics: ClassifierDiagnostics | null
+}
+
+export type ClassifierPreview = Omit<S['PreviewResponse'], 'result' | 'baseline'> & {
+  result: ClassifierPreviewResult
+  baseline: ClassifierPreviewResult
 }
