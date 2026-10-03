@@ -11,6 +11,7 @@ members = [
     "savings",
     "runtime",
     "react-agent",
+    "tool-compact",
     "orchestrator",
     "types",
     "utils",
