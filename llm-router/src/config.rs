@@ -80,6 +80,13 @@ pub struct GatewayConfig {
     /// the injector skips LLM wiring (fail closed — no broken base URL without a key).
     pub llm_gateway_base_url: String,
 
+    /// Request classifier backend. `regex` is the compatibility-preserving default.
+    pub classifier_backend: String,
+    pub classifier_model_path: String,
+    pub classifier_endpoint: String,
+    pub classifier_timeout_ms: u64,
+    pub classifier_min_confidence: f32,
+
     /// Level 2.5 salience gate: an in-process classifier decides whether a boundary turn
     /// is substantive enough to classify + pin, or is small talk to be served cheaply
     /// without pinning. Enabled by default. When `false`, the router classifies at every
@@ -181,6 +188,11 @@ impl Default for GatewayConfig {
             openrouter_http_referer: String::new(),
             openrouter_x_title: String::new(),
             llm_gateway_base_url: String::new(),
+            classifier_backend: "regex".into(),
+            classifier_model_path: String::new(),
+            classifier_endpoint: String::new(),
+            classifier_timeout_ms: 2_000,
+            classifier_min_confidence: 0.60,
             salience_gate_enabled: true,
             salience_weights_path: String::new(),
             salience_low_threshold: 0.20,
@@ -261,6 +273,11 @@ impl GatewayConfig {
             openrouter_http_referer: env_or("OPENROUTER_HTTP_REFERER", &d.openrouter_http_referer),
             openrouter_x_title: env_or("OPENROUTER_X_TITLE", &d.openrouter_x_title),
             llm_gateway_base_url: env_or("LLM_GATEWAY_BASE_URL", &d.llm_gateway_base_url),
+            classifier_backend: env_or("CLASSIFIER_BACKEND", &d.classifier_backend),
+            classifier_model_path: env_or("CLASSIFIER_MODEL_PATH", &d.classifier_model_path),
+            classifier_endpoint: env_or("CLASSIFIER_ENDPOINT", &d.classifier_endpoint),
+            classifier_timeout_ms: env_parse_first(&["CLASSIFIER_TIMEOUT_MS"], d.classifier_timeout_ms),
+            classifier_min_confidence: env_parse_first(&["CLASSIFIER_MIN_CONFIDENCE"], d.classifier_min_confidence),
             salience_gate_enabled: std::env::var("SALIENCE_GATE_ENABLED")
                 .ok()
                 .and_then(|v| v.parse().ok())

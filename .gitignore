@@ -1,59 +1,15 @@
-target/
-.otel-build/
-*.pyc
-__pycache__/
-.env
-.env.*
-*.env.toml
-!.env.example
-.venv/
-node_modules/
-*.egg-info/
-dist/
-.terraform/
-terraform.tfstate*
-*.tfstate*
+# v0 sandbox internal files
+__v0_runtime_loader.js
+__v0_devtools.tsx
+__v0_jsx-dev-runtime.ts
+.snowflake/
+.v0-trash/
+.vercel/
+
+# Environment variables
+.env*.local
+
+# Common ignores
+node_modules
+.next/
 .DS_Store
-uv.lock
-
-# IDE
-.idea/
-.vscode/settings.json
-*.swp
-*.swo
-.envrc
-
-# Claude Code. Only the personal half — settings.local.json is per-developer
-# permissions and holds absolute paths from whoever's machine wrote it, so it
-# is never shareable. The rest of .claude/ is: settings.json, skills/, agents/
-# and commands/ are team config and should be committed when someone adds one
-# (.claude/skills/backend-ui-slice is already scaffolded). Same split as
-# .vscode/settings.json above — ignore the personal file, not the tool's
-# directory, or the shared half can never land.
-.claude/settings.local.json
-
-
-# Local MCP config — contains a registry credential, do not commit
-.mcp.json
-values.json
-
-# Local-only MCP planning/research docs — not pushed to remote
-/mcp_upload_flow_docs/
-/docs/MCP_GITHUB_IMPORT_UI_GAP_ANALYSIS.md
-/docs/MCP_SERVER_UPLOAD_EE_IMPLEMENTATION_PLAN.md
-/docs/MCP_UPLOAD_PLAN_OSS.md
-.preview-shots/
-/_to_delete/
-# The same holder, anywhere. The Cowork device mount cannot unlink, so a file
-# that has to go gets moved into one of these instead of deleted; a stray one
-# under ui/ was otherwise an untracked directory in every status.
-_to_delete/
-/_xfer/
-# Recorded eval runs (ui/scripts/eval-generations.mjs --record). One directory
-# per run, kept so a baseline is never lost again — experiment output, not
-# source, and it accumulates. To keep one durably, `git add -f` it or copy it
-# out; `--compare` takes any directory of .dsl files.
-ui/tests/fixtures/runs/
-
-# Private React/Next migration workspace; do not force-add before release approval.
-/react/

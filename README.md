@@ -1,3 +1,27 @@
+# Nasiko Request Classifier (P2)
+
+Nasiko's existing `llm-router` now exposes a model-agnostic `RequestClassifier` while preserving the deterministic regex classifier as the default. Optional model classification is OpenAI-compatible and strict-JSON; failures and confidence below `CLASSIFIER_MIN_CONFIDENCE` fall back to regex. Complexity is scored 1–5 from meaningful task signals and context, not character count.
+
+Request types: `code_generation`, `code_understanding`, `technical_design`, `analytical_reasoning`, `writing`, `factual_lookup`, and `general`.
+
+Configuration:
+
+```text
+CLASSIFIER_BACKEND=regex
+CLASSIFIER_MODEL_PATH=
+CLASSIFIER_ENDPOINT=
+CLASSIFIER_TIMEOUT_MS=2000
+CLASSIFIER_MIN_CONFIDENCE=0.60
+```
+
+Classification is eligible only at `cold_start` and `switch`; existing cache hits keep the selected tier sticky through `continue`/tool loops. Use the existing router and registry for tier selection—no parallel router is introduced. The evaluator command is:
+
+```text
+EVAL_SET=/tmp/classifier-eval.json OUT=/tmp/classifier-out.jsonl cargo run --release -p nasiko-llm-router --example classifier_eval
+```
+
+Rust validation and latency measurements are NOT VERIFIED in this workspace because Cargo is unavailable.
+
 ![Nasiko](docs/assets/nasiko-runtime-banner.png)
 
 **Nasiko is the OpenRuntime for agents, coding harnesses, frameworks and tools.**<br />

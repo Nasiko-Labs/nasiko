@@ -31,6 +31,7 @@ use std::collections::HashMap;
 
 use rand::Rng;
 use rand_distr::{Beta, Distribution};
+use serde::{Deserialize, Serialize};
 
 use super::patterns::{CATEGORY_PATTERNS, NEGATIVE_SIGNALS, POSITIVE_SIGNALS};
 
@@ -49,7 +50,8 @@ pub enum Tier {
 /// The coarse kind of work a query represents. Learning is keyed on this, so the router can
 /// discover (e.g.) that the cheap tier is good enough for `FactualLookup` but not
 /// `CodeGeneration`. Order is irrelevant; `General` is the catch-all default.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RequestType {
     CodeGeneration,
     CodeUnderstanding,
@@ -322,6 +324,80 @@ pub fn classify<R: Rng + ?Sized>(
         "classifier: classified query into request type and Thompson-sampled a model tier"
     );
     (tier, request_type)
+}
+
+use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+use std::time::{Duration, Instant};
+
+#[derive(Debug, Clone, Copy)]
+pub struct ClassifyInput<'a> { pub query: &'a str, pub context: Option<&'a str> }
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Classification { pub request_type: RequestType, pub complexity: u8, pub confidence: f32 }
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ClassificationOutcome { pub classification: Classification, pub classifier_backend: String, pub fallback_used: bool, pub latency_us: u64 }
+
+#[derive(Debug, thiserror::Error)]
+pub enum ClassifyError { #[error("invalid classifier output: {0}")] InvalidOutput(String), #[error("classifier request failed: {0}")] Request(String) }
+
+#[async_trait]
+pub trait RequestClassifier: Send + Sync { async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError>; fn backend_name(&self) -> &str; }
+
+/// Deterministic offline baseline. Complexity uses task signals (steps, constraints,
+/// code/system vocabulary, and context), never character count. Confidence is evidence strength.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct RegexClassifier;
+impl RegexClassifier {
+    pub fn classify_sync(input: &ClassifyInput<'_>) -> Classification {
+        let text = format!("{} {}", input.query, input.context.unwrap_or_default());
+        let request_type = classify_request_type(&text);
+        let evidence = CATEGORY_PATTERNS.iter().find(|(kind, patterns)| *kind == request_type).map(|(_, patterns)| patterns.iter().filter(|pattern| pattern.is_match(&text)).count()).unwrap_or(0);
+        let lower = text.to_ascii_lowercase();
+        let steps = ["and", "then", "step by step", "requirements", "trade-offs", "failure", "scale", "multiple"].iter().filter(|s| lower.contains(**s)).count();
+        let code = ["code", "api", "database", "system", "architecture", "production"].iter().filter(|s| lower.contains(**s)).count();
+        let complexity = (1 + steps.min(2) + code.min(2) + usize::from(input.context.is_some_and(|c| !c.trim().is_empty()))).min(5) as u8;
+        Classification { request_type, complexity, confidence: if evidence == 0 { 0.55 } else { (0.72 + evidence as f32 * 0.06).min(0.98) } }
+    }
+}
+#[async_trait]
+impl RequestClassifier for RegexClassifier { async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> { Ok(Self::classify_sync(input)) } fn backend_name(&self) -> &str { "regex" } }
+
+pub struct ModelClassifier { pub http: reqwest::Client, pub endpoint: String, pub model: String, pub timeout: Duration }
+#[derive(Serialize)] struct ModelRequest<'a> { model: &'a str, temperature: f32, messages: [ModelMessage<'a>; 2] }
+#[derive(Serialize)] struct ModelMessage<'a> { role: &'a str, content: String }
+#[async_trait]
+impl RequestClassifier for ModelClassifier {
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+        let system = "Classify only. Return JSON only with request_type, complexity, confidence. request_type must be code_generation, code_understanding, technical_design, analytical_reasoning, writing, factual_lookup, or general. complexity is 1-5 and confidence is 0-1.";
+        let user = format!("query:\n{}\ncontext:\n{}", input.query, input.context.unwrap_or(""));
+        let response = self.http.post(&self.endpoint).timeout(self.timeout).json(&ModelRequest { model: &self.model, temperature: 0.0, messages: [ModelMessage { role: "system", content: system.into() }, ModelMessage { role: "user", content: user }] }).send().await.map_err(|e| ClassifyError::Request(e.to_string()))?;
+        if !response.status().is_success() { return Err(ClassifyError::Request(format!("HTTP {}", response.status()))); }
+        let value: serde_json::Value = response.json().await.map_err(|e| ClassifyError::InvalidOutput(e.to_string()))?;
+        let content = value["choices"][0]["message"]["content"].as_str().ok_or_else(|| ClassifyError::InvalidOutput("missing content".into()))?;
+        validate_classification(serde_json::from_str(content).map_err(|e| ClassifyError::InvalidOutput(e.to_string()))?)
+    }
+    fn backend_name(&self) -> &str { "model" }
+}
+
+pub fn validate_classification(value: Classification) -> Result<Classification, ClassifyError> {
+    if !(1..=5).contains(&value.complexity) { return Err(ClassifyError::InvalidOutput("complexity must be 1..=5".into())); }
+    if !value.confidence.is_finite() || !(0.0..=1.0).contains(&value.confidence) { return Err(ClassifyError::InvalidOutput("confidence must be finite and 0..=1".into())); }
+    Ok(value)
+}
+
+pub struct FallbackClassifier { pub primary: std::sync::Arc<dyn RequestClassifier>, pub fallback: RegexClassifier }
+#[async_trait]
+impl RequestClassifier for FallbackClassifier {
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> { match self.primary.classify(input).await.and_then(validate_classification) { Ok(value) if value.confidence >= 0.60 => Ok(value), Ok(_) | Err(_) => self.fallback.classify(input).await } }
+    fn backend_name(&self) -> &str { "model+regex-fallback" }
+}
+
+pub async fn classify_with_metrics(classifier: &dyn RequestClassifier, input: &ClassifyInput<'_>) -> ClassificationOutcome {
+    let started = Instant::now();
+    let classification = classifier.classify(input).await.unwrap_or_else(|_| RegexClassifier::classify_sync(input));
+    ClassificationOutcome { classification, classifier_backend: classifier.backend_name().into(), fallback_used: classifier.backend_name().contains("fallback"), latency_us: started.elapsed().as_micros() as u64 }
 }
 
 #[cfg(test)]
