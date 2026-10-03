@@ -154,6 +154,21 @@ pub struct GatewayConfig {
     pub compress_recovery_min_bytes: usize,
     /// How long an original stays recoverable. Sized to outlive the flow that produced it.
     pub compress_recovery_ttl_secs: u64,
+
+    /// Compact tool-schema encoding (P1): replace JSON Schema tool definitions with
+    /// signature lines and a `<<call …>>` calling convention (see `tool_compact`).
+    /// Experimental and **off by default** — existing behaviour is unchanged unless an
+    /// operator sets `COMPACT_TOOLS_ENABLED=1`.
+    pub compact_tools_enabled: bool,
+
+    /// Request classifier backend (P2): `"regex"` (default, the baseline) or
+    /// `"heuristic"` (local, uses query + context). Unknown values fall back to
+    /// `"regex"`. Set via `CLASSIFIER_BACKEND`.
+    pub classifier_backend: String,
+    /// Timeout (ms) for a classifier backend call; on timeout the router uses the
+    /// regex result and counts a fallback. Default 100. Set via
+    /// `CLASSIFIER_TIMEOUT_MS`.
+    pub classifier_timeout_ms: u64,
 }
 
 impl Default for GatewayConfig {
@@ -196,6 +211,9 @@ impl Default for GatewayConfig {
             compress_recovery_enabled: true,
             compress_recovery_min_bytes: 8192,
             compress_recovery_ttl_secs: 86_400,
+            compact_tools_enabled: false,
+            classifier_backend: "regex".into(),
+            classifier_timeout_ms: 100,
         }
     }
 }
@@ -308,6 +326,10 @@ impl GatewayConfig {
                 "TOKEN_COMPRESS_RECOVERY_TTL_SECS",
                 d.compress_recovery_ttl_secs as usize,
             ) as u64,
+            compact_tools_enabled: env_flag("COMPACT_TOOLS_ENABLED", d.compact_tools_enabled),
+            classifier_backend: env_or("CLASSIFIER_BACKEND", &d.classifier_backend),
+            classifier_timeout_ms: env_usize("CLASSIFIER_TIMEOUT_MS", d.classifier_timeout_ms as usize)
+                as u64,
         }
     }
 
