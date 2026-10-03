@@ -7,6 +7,7 @@ mod request;
 
 use anyhow::{Context, Result};
 use dataset::{Case, Dataset};
+use nasiko_tool_compact::{analyze_tools, decode_tools, encode_tools};
 use serde_json::json;
 use std::fs::File;
 
@@ -22,6 +23,11 @@ fn main() -> Result<()> {
         let tools = dataset::resolve(&lookup, &case.tools)?;
         let native = json!({"messages":case.messages,"tools":tools});
         let (compact, compacted) = request::build(case, &tools)?;
+        let schema_roundtrip_equal = if compacted {
+            Some(analyze_tools(&tools)? == analyze_tools(&decode_tools(&encode_tools(&tools)?)?)?)
+        } else {
+            None
+        };
         let native_tokens = tokenizer
             .encode_with_special_tokens(&serde_json::to_string(&native)?)
             .len();
@@ -30,7 +36,7 @@ fn main() -> Result<()> {
             .len();
         native_total += native_tokens;
         compact_total += compact_tokens;
-        cases.push(json!({"id":case.id,"compacted":compacted,"native_tokens":native_tokens,"compact_tokens":compact_tokens,"expected_call_count":case.expected.len()}));
+        cases.push(json!({"id":case.id,"compacted":compacted,"native_tokens":native_tokens,"compact_tokens":compact_tokens,"expected_call_count":case.expected.len(),"schema_roundtrip_equal":schema_roundtrip_equal}));
     }
     let reduction = if native_total == 0 {
         0.0

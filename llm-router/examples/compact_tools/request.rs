@@ -28,7 +28,13 @@ pub(super) fn build(case: &Case, tools: &[ToolDef]) -> Result<(Value, bool)> {
                 .get("tool_calls")
                 .is_some_and(|calls| !calls.is_null())
     });
-    if tools.is_empty() || unsafe_choice || history || case.extra.contains_key("response_format") {
+    let single_call_only = case.extra.get("parallel_tool_calls") == Some(&Value::Bool(false));
+    if tools.is_empty()
+        || unsafe_choice
+        || history
+        || single_call_only
+        || case.extra.contains_key("response_format")
+    {
         return Ok((native, false));
     }
     let Ok(compact) = encode_tools(tools) else {

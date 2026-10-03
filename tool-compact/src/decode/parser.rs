@@ -13,7 +13,75 @@ pub(super) fn parse_object(text: &str) -> Result<Value> {
     if !value.is_object() {
         return Err(CompactError::MalformedCall);
     }
+    verify_numbers(text)?;
     Ok(value)
+}
+
+fn verify_numbers(text: &str) -> Result<()> {
+    // Reject decimals that serde_json would round into a different value. In
+    // particular a fractional large number must not become a valid integer.
+    let bytes = text.as_bytes();
+    let mut index = 0;
+    let mut in_string = false;
+    let mut escaped = false;
+    while let Some(&byte) = bytes.get(index) {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            index += 1;
+        } else if byte == b'"' {
+            in_string = true;
+            index += 1;
+        } else if byte == b'-' || byte.is_ascii_digit() {
+            let start = index;
+            while bytes.get(index).is_some_and(|byte| {
+                byte.is_ascii_digit() || matches!(byte, b'-' | b'+' | b'.' | b'e' | b'E')
+            }) {
+                index += 1;
+            }
+            let original = text.get(start..index).ok_or(CompactError::MalformedCall)?;
+            let number: Number =
+                serde_json::from_str(original).map_err(|_| CompactError::MalformedCall)?;
+            let serialized = number.to_string();
+            if decimal(original).is_none() || decimal(original) != decimal(&serialized) {
+                return Err(CompactError::MalformedCall);
+            }
+        } else {
+            index += 1;
+        }
+    }
+    Ok(())
+}
+
+fn decimal(text: &str) -> Option<(bool, String, i64)> {
+    let negative = text.starts_with('-');
+    let unsigned = text.strip_prefix('-').unwrap_or(text);
+    let (mantissa, exponent) = match unsigned.split_once(['e', 'E']) {
+        Some((mantissa, exponent)) => (mantissa, exponent.parse::<i64>().ok()?),
+        None => (unsigned, 0),
+    };
+    let fraction = mantissa
+        .split_once('.')
+        .map(|(_, fraction)| fraction.len())
+        .unwrap_or(0);
+    let digits: String = mantissa
+        .chars()
+        .filter(|&character| character != '.')
+        .collect();
+    let significant = digits.trim_start_matches('0');
+    if significant.is_empty() {
+        return Some((false, "0".into(), 0));
+    }
+    let trimmed = significant.trim_end_matches('0');
+    let exponent = exponent
+        .checked_sub(i64::try_from(fraction).ok()?)?
+        .checked_add(i64::try_from(significant.len() - trimmed.len()).ok()?)?;
+    Some((negative, trimmed.into(), exponent))
 }
 
 struct StrictValue(Value);

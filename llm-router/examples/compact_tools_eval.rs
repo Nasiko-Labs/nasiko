@@ -148,6 +148,10 @@ mod tests {
         );
         assert!(!request::build(&case, &tools()).unwrap().1);
         case.extra.clear();
+        case.extra
+            .insert("parallel_tool_calls".into(), json!(false));
+        assert!(!request::build(&case, &tools()).unwrap().1);
+        case.extra.clear();
         case.messages
             .push(json!({"role":"tool","content":"done","tool_call_id":"existing"}));
         assert!(!request::build(&case, &tools()).unwrap().1);

@@ -98,3 +98,24 @@ fn generated_supported_schemas_preserve_canonical_semantics() {
         );
     }
 }
+
+#[test]
+fn lossy_numeric_parsing_cannot_turn_fractions_into_valid_values() {
+    let tools: Vec<ToolDef> = serde_json::from_value(json!([{"function":{"name":"number","parameters":{"type":"object","properties":{"x":{"type":"integer"}}}}}])).unwrap();
+    for text in [
+        "9007199254740993.1",
+        "1.00000000000000001",
+        "9007199254740993.0",
+    ] {
+        assert!(
+            decode_calls(&format!("<<call number {{\"x\":{text}}}>>"), &tools).is_err(),
+            "{text}"
+        );
+    }
+    for text in ["30.0", "1e3", "-0.0"] {
+        assert!(
+            decode_calls(&format!("<<call number {{\"x\":{text}}}>>"), &tools).is_ok(),
+            "{text}"
+        );
+    }
+}
