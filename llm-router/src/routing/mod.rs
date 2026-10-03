@@ -18,9 +18,12 @@
 pub mod attribution;
 pub mod boundary;
 pub mod cache;
+pub mod cascade_classifier;
 pub mod catalog;
 pub mod cells;
 pub mod classifier;
+pub mod hosted_classifier;
+pub mod local_classifier;
 // The salience classifier itself — feature engine, weight loading, scoring, banding.
 // Private to `routing`: only `salience.rs` (a sibling module) uses it directly, via
 // `ClassifierSalienceGate`; `request_features.rs` shares its hashing/tokenizer helpers.
@@ -39,6 +42,9 @@ pub use classifier::{
     ComplexityRouting, GuardedClassifier, RegexClassifier, RequestClassifier, RequestType, Tier,
     classify, classify_request_type, select_tier, signal,
 };
+pub use cascade_classifier::CascadeClassifier;
+pub use hosted_classifier::HostedClassifier;
+pub use local_classifier::LocalClassifier;
 pub use registry::{PgTierRegistry, TierRegistry};
 pub use salience::{AllowAllGate, ClassifierSalienceGate, SalienceGate};
 
