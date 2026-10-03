@@ -101,6 +101,20 @@ pub struct GatewayConfig {
     /// retuned. Default 0.80.
     pub salience_high_threshold: f64,
 
+    /// P2: Whether the ML request classifier is enabled for Level 3 routing.
+    /// Default `false` (`CLASSIFIER_ENABLED=false`).
+    /// When `false`, regex/keyword classification is used (legacy behavior).
+    pub classifier_enabled: bool,
+    /// Optional override: path to a trained P2 weights JSON to load.
+    /// Empty (the default) => use the statically embedded model.
+    pub classifier_weights_path: String,
+    /// Confidence threshold for the ML classifier. Below this threshold,
+    /// it falls back to regex classification for request type. Default 0.70.
+    pub classifier_threshold: f64,
+    /// Timeout in milliseconds for ML scoring before falling back to regex.
+    /// Default 100ms.
+    pub classifier_timeout_ms: u64,
+
     /// Fleet-wide kill switch for payload compression. Compression is opted into **per agent**
     /// (`agents.compress_enabled`); this only lets an operator stop all of it at once without
     /// editing every agent's row. Default on, so a UI toggle takes effect without a deploy.
@@ -185,6 +199,10 @@ impl Default for GatewayConfig {
             salience_weights_path: String::new(),
             salience_low_threshold: 0.20,
             salience_high_threshold: 0.80,
+            classifier_enabled: false,
+            classifier_weights_path: String::new(),
+            classifier_threshold: 0.42,
+            classifier_timeout_ms: 100,
             compress_kill_switch: true,
             compress_min_bytes: 2048,
             compress_types: nasiko_compress::TypeMask::DEFAULT,
@@ -274,6 +292,19 @@ impl GatewayConfig {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(d.salience_high_threshold),
+            classifier_enabled: std::env::var("CLASSIFIER_ENABLED")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(d.classifier_enabled),
+            classifier_weights_path: env_or("CLASSIFIER_WEIGHTS_PATH", &d.classifier_weights_path),
+            classifier_threshold: std::env::var("CLASSIFIER_THRESHOLD")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(d.classifier_threshold),
+            classifier_timeout_ms: std::env::var("CLASSIFIER_TIMEOUT_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(d.classifier_timeout_ms),
             compress_kill_switch: env_flag("TOKEN_COMPRESS_ENABLED", true),
             compress_min_bytes: env_usize("TOKEN_COMPRESS_MIN_BYTES", 2048),
             // A bad label must not silently widen or narrow what gets rewritten, so an
