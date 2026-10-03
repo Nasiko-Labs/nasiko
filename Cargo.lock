@@ -3800,6 +3800,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nasiko-tool-compact"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "nasiko-types"
 version = "0.1.0"
 dependencies = [
