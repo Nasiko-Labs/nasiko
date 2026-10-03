@@ -288,6 +288,26 @@ async fn chat_core(
         "brevity: directive decision"
     );
 
+    // ── tool-compact seam (opt-in, non-streaming) ─────────────────────────────────────────
+    // After compression and brevity, before `sent_bytes` is measured, so the ledger's byte count
+    // is the payload the provider will actually bill. Off by default: returns before touching `req`.
+    let tool_compact = crate::tool_compact::apply(&mut req, &ctx.cfg);
+    match &tool_compact {
+        Ok(applied) => tracing::info!(
+            target: "nasiko::llm_router::tool_compact",
+            %agent_id,
+            native_bytes = applied.native_bytes,
+            compact_bytes = applied.compact_bytes,
+            "tool_compact: tools replaced by compact signatures"
+        ),
+        Err(skip) => tracing::debug!(
+            target: "nasiko::llm_router::tool_compact",
+            %agent_id,
+            skipped = ?skip,
+            "tool_compact: request sent natively"
+        ),
+    }
+
     // ── savings ledger inputs ─────────────────────────────────────────────────────────────
     // Measured here, after both seams, because this is the payload the provider will actually
     // bill for — which is what makes `sent_bytes / reported_input_tokens` a calibration rather
@@ -325,6 +345,9 @@ async fn chat_core(
         nasiko.compress.bytes_out = tracing::field::Empty,
         nasiko.compress.elapsed_us = tracing::field::Empty,
         nasiko.brevity.applied = brevity.is_ok(),
+        nasiko.tool_compact.applied = tool_compact.is_ok(),
+        nasiko.tool_compact.native_bytes = tracing::field::Empty,
+        nasiko.tool_compact.compact_bytes = tracing::field::Empty,
         // The cache classes are recorded too, or the trace-derived cost of a
         // cached call is wrong in a way nothing downstream can detect: an
         // absent cache attribute is indistinguishable from a cache miss, so the
@@ -338,6 +361,11 @@ async fn chat_core(
         llm_span.record("nasiko.compress.bytes_in", compression.bytes_in);
         llm_span.record("nasiko.compress.bytes_out", compression.bytes_out);
         llm_span.record("nasiko.compress.elapsed_us", compression.elapsed_us);
+    }
+
+    if let Ok(applied) = &tool_compact {
+        llm_span.record("nasiko.tool_compact.native_bytes", applied.native_bytes);
+        llm_span.record("nasiko.tool_compact.compact_bytes", applied.compact_bytes);
     }
 
     let started = Instant::now();
@@ -371,9 +399,10 @@ async fn chat_core(
     }
 
     // Non-streaming: run with ordered fallbacks; usage records the effective provider/model.
-    let (resp, (provider, model)) = fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
-        .instrument(llm_span.clone())
-        .await?;
+    let (mut resp, (provider, model)) =
+        fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
+            .instrument(llm_span.clone())
+            .await?;
     let latency_ms = started.elapsed().as_millis() as i64;
 
     // Record effective model and token usage on the server-side gen_ai span.
@@ -404,6 +433,11 @@ async fn chat_core(
             request_bytes: Some(sent_bytes),
         },
     );
+
+    // Usage is logged above regardless: the tokens were spent even if the reply cannot be decoded.
+    if let Ok(applied) = &tool_compact {
+        crate::tool_compact::decode_response(&mut resp, applied)?;
+    }
 
     Ok(Json(inbound.render_chat_response(resp)).into_response())
 }
