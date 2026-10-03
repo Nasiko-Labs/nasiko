@@ -21,6 +21,8 @@ pub mod cache;
 pub mod catalog;
 pub mod cells;
 pub mod classifier;
+pub mod classifier_ensemble;
+pub mod classifier_tfidf;
 // The salience classifier itself — feature engine, weight loading, scoring, banding.
 // Private to `routing`: only `salience.rs` (a sibling module) uses it directly, via
 // `ClassifierSalienceGate`.
@@ -36,8 +38,10 @@ pub use cells::{CellStore, InMemoryCellStore, PgCellStore};
 pub use classifier::{
     ClassifyError, ClassifyInput, Classification, HeuristicClassifier, RegexClassifier,
     RequestClassifier, RequestType, Tier, classify, classify_request_type,
-    classifier_from_backend, classifier_from_config, signal,
+    classifier_from_backend, classifier_from_config, confidence_from_margin, signal,
 };
+pub use classifier_tfidf::TfidfClassifier;
+pub use classifier_ensemble::{EnsembleClassifier, WeightedBackend};
 pub use registry::{PgTierRegistry, TierRegistry};
 pub use salience::{AllowAllGate, ClassifierSalienceGate, SalienceGate};
 
