@@ -1,0 +1,148 @@
+{
+  "schema_version": "compact-tools-eval-v1",
+  "purpose": "Our own development cases for compact tool schemas (not the official set). Reference time: Friday 2026-10-02, Asia/Kolkata. Results are reported separately from the official sample.",
+  "tools": [
+    {"type": "function", "function": {
+      "name": "create_calendar_event",
+      "description": "Create an event in the user's calendar.",
+      "parameters": {"type": "object", "properties": {
+        "title": {"type": "string", "description": "Event title"},
+        "start": {"type": "string", "format": "date-time", "description": "Start time, ISO 8601"},
+        "duration_min": {"type": "integer", "description": "Duration in minutes"},
+        "attendees": {"type": "array", "items": {"type": "string"}, "description": "Attendee emails"},
+        "visibility": {"type": "string", "enum": ["public", "private"]}
+      }, "required": ["title", "start"]}}},
+    {"type": "function", "function": {
+      "name": "send_email",
+      "description": "Send an email from the user's account.",
+      "parameters": {"type": "object", "properties": {
+        "to": {"type": "array", "items": {"type": "string"}, "description": "Recipient emails"},
+        "subject": {"type": "string", "description": "Subject line"},
+        "body": {"type": "string", "description": "Plain-text body"},
+        "cc": {"type": "array", "items": {"type": "string"}, "description": "CC emails"}
+      }, "required": ["to", "subject", "body"]}}},
+    {"type": "function", "function": {
+      "name": "get_weather",
+      "description": "Get the current weather for a city.",
+      "parameters": {"type": "object", "properties": {
+        "city": {"type": "string", "description": "City name"},
+        "units": {"type": "string", "enum": ["metric", "imperial"], "description": "Unit system"}
+      }, "required": ["city"]}}},
+    {"type": "function", "function": {
+      "name": "set_thermostat",
+      "description": "Set the target temperature of a room.",
+      "parameters": {"type": "object", "properties": {
+        "room": {"type": "string", "enum": ["living_room", "bedroom", "kitchen"]},
+        "temperature_c": {"type": "number", "description": "Target temperature in Celsius"},
+        "mode": {"type": "string", "enum": ["heat", "cool", "auto"]}
+      }, "required": ["room", "temperature_c"]}}},
+    {"type": "function", "function": {
+      "name": "search_flights",
+      "description": "Search for flights.",
+      "parameters": {"type": "object", "properties": {
+        "from": {"type": "string", "description": "Origin IATA airport code"},
+        "to": {"type": "string", "description": "Destination IATA airport code"},
+        "date": {"type": "string", "format": "date", "description": "Departure date"},
+        "cabin": {"type": "string", "enum": ["economy", "premium_economy", "business", "first"]},
+        "passengers": {"type": "integer", "description": "Number of travellers"},
+        "nonstop": {"type": "boolean", "description": "Only nonstop flights"}
+      }, "required": ["from", "to", "date"]}}},
+    {"type": "function", "function": {
+      "name": "create_ticket",
+      "description": "Create an issue in the team's tracker.",
+      "parameters": {"type": "object", "properties": {
+        "title": {"type": "string", "description": "Short summary"},
+        "priority": {"type": "string", "enum": ["low", "medium", "high", "urgent"]},
+        "assignee": {"type": ["string", "null"], "description": "Username of the assignee"},
+        "labels": {"type": "array", "items": {"type": "string"}},
+        "steps": {"type": "array", "description": "Reproduction steps", "items": {
+          "type": "object",
+          "properties": {
+            "action": {"type": "string", "description": "What the user does"},
+            "expected": {"type": "string", "description": "What should happen"}
+          },
+          "required": ["action"]
+        }}
+      }, "required": ["title", "priority"]}}},
+    {"type": "function", "function": {
+      "name": "transfer_money",
+      "description": "Transfer money between accounts.",
+      "parameters": {"type": "object", "properties": {
+        "from_account": {"type": "string", "description": "Source account name or number"},
+        "to_account": {"type": "string", "description": "Destination account name or number"},
+        "amount": {"type": "number", "description": "Amount in currency units"},
+        "currency": {"type": "string", "enum": ["USD", "EUR", "INR"]},
+        "note": {"type": "string", "description": "Memo"}
+      }, "required": ["from_account", "to_account", "amount", "currency"]}}}
+  ],
+  "cases": [
+    {"id": "x-01", "tools": ["get_weather", "set_thermostat"],
+     "messages": [{"role": "user", "content": "What's the weather in Pune right now, in Fahrenheit?"}],
+     "expected": [{"name": "get_weather", "arguments": {"city": "Pune", "units": "imperial"}}]},
+    {"id": "x-02", "tools": ["set_thermostat", "get_weather"],
+     "messages": [{"role": "user", "content": "Set the bedroom to 22.5 degrees on cool mode."}],
+     "expected": [{"name": "set_thermostat", "arguments": {"room": "bedroom", "temperature_c": 22.5, "mode": "cool"}}]},
+    {"id": "x-03", "tools": ["search_flights"],
+     "messages": [{"role": "user", "content": "Find nonstop business class flights from BLR to SIN on October 15 for 2 people."}],
+     "expected": [{"name": "search_flights", "arguments": {"from": "BLR", "to": "SIN", "date": "2026-10-15", "cabin": "business", "passengers": 2, "nonstop": true}}]},
+    {"id": "x-04", "tools": ["create_ticket", "send_email"],
+     "messages": [{"role": "user", "content": "File an urgent ticket titled 'Login page crashes on Safari', labels frontend and safari, assigned to priya. One reproduction step: open the login page in Safari, expected result: the page loads."}],
+     "expected": [{"name": "create_ticket", "arguments": {"title": "Login page crashes on Safari", "priority": "urgent", "assignee": "priya", "labels": ["frontend", "safari"], "steps": [{"action": "Open the login page in Safari", "expected": "The page loads"}]}}],
+     "match": {"free_text_fields": ["action", "expected"]}},
+    {"id": "x-05", "tools": ["transfer_money"],
+     "messages": [{"role": "user", "content": "Send ₹2500 from my savings account to account 4421, note: rent"}],
+     "expected": [{"name": "transfer_money", "arguments": {"from_account": "savings", "to_account": "4421", "amount": 2500, "currency": "INR", "note": "rent"}}],
+     "match": {"free_text_fields": ["note"]}},
+    {"id": "x-06", "tools": ["send_email", "create_calendar_event"],
+     "messages": [{"role": "user", "content": "Thanks, that's all for now!"}],
+     "expected": []},
+    {"id": "x-07", "tools": ["get_weather", "set_thermostat"],
+     "messages": [{"role": "user", "content": "Check the weather in Delhi, and set the living room to 24 degrees."}],
+     "expected": [
+       {"name": "get_weather", "arguments": {"city": "Delhi"}},
+       {"name": "set_thermostat", "arguments": {"room": "living_room", "temperature_c": 24}}
+     ]},
+    {"id": "x-08", "tools": ["send_email"],
+     "messages": [{"role": "user", "content": "Email ops@example.com with the subject exactly 'Deploy >> prod done' and the body exactly 'All green {no errors}'."}],
+     "expected": [{"name": "send_email", "arguments": {"to": ["ops@example.com"], "subject": "Deploy >> prod done", "body": "All green {no errors}"}}]},
+    {"id": "x-09", "tools": ["create_ticket"],
+     "messages": [{"role": "user", "content": "Create a medium priority ticket titled 'Update README' and assign it to arjun."}],
+     "expected": [{"name": "create_ticket", "arguments": {"title": "Update README", "priority": "medium", "assignee": "arjun"}}]},
+    {"id": "x-10", "tools": ["create_calendar_event", "send_email"],
+     "messages": [{"role": "user", "content": "Book a public 45 minute sync on Wednesday at 4:30pm IST with a@example.com and b@example.com."}],
+     "expected": [{"name": "create_calendar_event", "arguments": {"title": "Sync", "start": "2026-10-07T16:30:00+05:30", "duration_min": 45, "attendees": ["a@example.com", "b@example.com"], "visibility": "public"}}],
+     "match": {"free_text_fields": ["title"]}},
+    {"id": "x-11", "tools": ["search_flights"],
+     "messages": [{"role": "user", "content": "Can you book me a flight?"}],
+     "expected": []},
+    {"id": "x-12", "tools": ["transfer_money", "send_email"],
+     "messages": [{"role": "user", "content": "Transfer $49.99 from checking to account 7788."}],
+     "expected": [{"name": "transfer_money", "arguments": {"from_account": "checking", "to_account": "7788", "amount": 49.99, "currency": "USD"}}]}
+  ],
+  "decoder_cases": [
+    {"id": "x-dc-01", "note": "text before, two calls, nested objects, markers split mid-token", "tools": ["create_ticket", "get_weather"],
+     "chunks": ["Sure! <", "<call create_ticket {\"title\":\"T\",\"priority\":\"low\",\"steps\":[{\"action\":\"click }\"}]}>", "> and <<", "call get_weather {\"city\":\"Goa\"}>> done."],
+     "expected": {"calls": [
+       {"name": "create_ticket", "arguments": {"title": "T", "priority": "low", "steps": [{"action": "click }"}]}},
+       {"name": "get_weather", "arguments": {"city": "Goa"}}
+     ]}},
+    {"id": "x-dc-02", "note": "escaped quotes and >> inside nested strings", "tools": ["send_email"],
+     "chunks": ["<<call send_email {\"to\":[\"a@b.co\"],\"subject\":\"say \\\"hi\\\" >>\",\"body\":\"<<call x {}>>\"}>>"],
+     "expected": {"calls": [{"name": "send_email", "arguments": {"to": ["a@b.co"], "subject": "say \"hi\" >>", "body": "<<call x {}>>"}}]}},
+    {"id": "x-dc-03", "note": "enum violation", "tools": ["search_flights"],
+     "chunks": ["<<call search_flights {\"from\":\"BLR\",\"to\":\"SIN\",\"date\":\"2026-10-15\",\"cabin\":\"luxury\"}>>"],
+     "expected": {"error": "invalid_arguments"}},
+    {"id": "x-dc-04", "note": "integer given as a string", "tools": ["search_flights"],
+     "chunks": ["<<call search_flights {\"from\":\"BLR\",\"to\":\"SIN\",\"date\":\"2026-10-15\",\"passengers\":\"2\"}>>"],
+     "expected": {"error": "invalid_arguments"}},
+    {"id": "x-dc-05", "note": "no call: << in ordinary text", "tools": ["get_weather"],
+     "chunks": ["Use x << 2 in C; <<calls are not calls."],
+     "expected": {"calls": []}},
+    {"id": "x-dc-06", "note": "output ends inside a call", "tools": ["get_weather"],
+     "chunks": ["<<call get_weather {\"city\":\"Go"],
+     "expected": {"error": "invalid_arguments"}},
+    {"id": "x-dc-07", "note": "valid call followed by an unknown tool", "tools": ["get_weather"],
+     "chunks": ["<<call get_weather {\"city\":\"Goa\"}>>\n<<call get_stock {\"t\":\"X\"}>>"],
+     "expected": {"error": "unknown_tool"}}
+  ]
+}
