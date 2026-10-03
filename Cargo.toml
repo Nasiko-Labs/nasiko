@@ -25,7 +25,7 @@ members = [
     "cli",
     "github",
     "bench",
-    "bench-support",
+    "bench-support", "tool-compact",
 ]
 
 [workspace.package]
