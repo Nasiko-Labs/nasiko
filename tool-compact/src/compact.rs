@@ -10,7 +10,7 @@
 //!  options?:{}!
 //!   visibility:public|private
 //! get_time()
-//! Call a tool by replying <<call NAME {JSON args}>> (one per call); otherwise answer normally.
+//! Call a tool by replying <<call NAME {JSON args}>> (one per call); otherwise answer normally. NO XML! NO TAGS! ONLY USE <<call NAME {JSON}>>!
 //! ```
 //!
 //! * Tool line: `NAME` then `()` (no parameters) or `!` (closed top-level object), then an
@@ -33,8 +33,7 @@ use crate::{Error, ToolDef};
 /// First line of every compact block.
 pub const HEADER: &str = "Tools (? = optional):";
 /// Last line of every compact block: how the model calls a tool.
-pub const INSTRUCTION: &str =
-    "Call a tool by replying <<call NAME {JSON args}>> (one per call); otherwise answer normally.";
+pub const INSTRUCTION: &str = "Call a tool by replying <<call NAME {JSON args}>> (one per call); otherwise answer normally. NO XML! NO TAGS! ONLY USE <<call NAME {JSON}>>!";
 
 /// Characters that are grammar syntax and so cannot appear inside an enum literal.
 const SYNTAX: &[char] = &['|', '#', ':', '?', '!', '[', ']', '{', '}', '(', ')'];
@@ -545,7 +544,7 @@ create_event # Create a calendar event
  options?:{}!
   visibility:public|private
 get_time()
-Call a tool by replying <<call NAME {JSON args}>> (one per call); otherwise answer normally.";
+Call a tool by replying <<call NAME {JSON args}>> (one per call); otherwise answer normally. NO XML! NO TAGS! ONLY USE <<call NAME {JSON}>>!";
         assert_eq!(ct.text, want);
     }
 
