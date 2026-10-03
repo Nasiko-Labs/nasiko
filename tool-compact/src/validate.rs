@@ -24,7 +24,7 @@ pub fn validate_arguments(tool: &ToolDef, args: &Value) -> Result<(), Error> {
     }
 }
 
-fn check(node: &Node, v: &Value, path: &str) -> Result<(), String> {
+pub(crate) fn check(node: &Node, v: &Value, path: &str) -> Result<(), String> {
     let ok = match (&node.kind, v) {
         (Kind::String(f), Value::String(s)) => f.is_none_or(|f| format_ok(f, s)),
         (Kind::Integer, Value::Number(n)) => n.is_i64() || n.is_u64(),

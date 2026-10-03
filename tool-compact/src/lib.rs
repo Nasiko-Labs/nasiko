@@ -27,9 +27,7 @@ mod stream;
 mod validate;
 
 pub use calls::{MARKER, decode_calls, render_call};
-pub use compact::{
-    CompactTools, HEADER, INSTRUCTION, canonical_schema, decode_tools, encode_tools,
-};
+pub use compact::{CompactTools, INSTRUCTION, canonical_schema, decode_tools, encode_tools};
 pub use error::Error;
 pub use schema::{Format, Kind, Node, Object, normalize_tool};
 pub use stream::{MAX_CALL_BYTES, StreamDecoder, StreamEvent};

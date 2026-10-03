@@ -17,7 +17,9 @@
 //!
 //! Live mode (format adherence): set `PROVIDER_BASE_URL` (OpenAI-compatible, e.g.
 //! `https://api.openai.com/v1`) and `MODEL`; `PROVIDER_API_KEY` is sent as a bearer token
-//! if set (never commit it). Each `compact_request` is sent at temperature 0 and the line
+//! if set (never commit it). Each `compact_request` is sent at temperature 0 with
+//! `max_tokens` from `MAX_TOKENS` (default 1024; without a cap some providers reserve the
+//! model's full output limit against the account balance) and the line
 //! gains `raw_output` (the model's text) and `live_calls` (decoded calls or error; for a
 //! bypassed case, the native `tool_calls` validated the same way).
 use std::io::Write;
@@ -81,6 +83,7 @@ struct Live {
     url: String,
     model: String,
     key: Option<String>,
+    max_tokens: u32,
     client: reqwest::Client,
     rt: tokio::runtime::Runtime,
 }
@@ -93,6 +96,9 @@ impl Live {
             url: format!("{}/chat/completions", base.trim_end_matches('/')),
             model,
             key: std::env::var("PROVIDER_API_KEY").ok(),
+            max_tokens: std::env::var("MAX_TOKENS")
+                .map(|v| v.parse().expect("MAX_TOKENS is a positive integer"))
+                .unwrap_or(1024),
             client: reqwest::Client::new(),
             rt: tokio::runtime::Runtime::new().expect("tokio runtime"),
         })
@@ -103,6 +109,7 @@ impl Live {
         let mut body = request.clone();
         body["model"] = json!(self.model);
         body["temperature"] = json!(0);
+        body["max_tokens"] = json!(self.max_tokens);
         let mut req = self.client.post(&self.url).json(&body);
         if let Some(key) = &self.key {
             req = req.bearer_auth(key);

@@ -64,11 +64,13 @@ pub enum Kind {
     },
 }
 
-/// One schema node: its kind plus the description the model reads.
+/// One schema node: its kind plus the description the model reads, and the `default` the
+/// client applies when the field is left out (scalars only; it must itself validate).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Node {
     pub kind: Kind,
     pub description: Option<String>,
+    pub default: Option<Value>,
 }
 
 pub(crate) fn unsupported(path: &str, reason: impl Into<String>) -> Error {
@@ -97,6 +99,7 @@ impl Node {
             "properties",
             "required",
             "additionalProperties",
+            "default",
         ];
         if let Some(k) = obj.keys().find(|k| !KNOWN.contains(&k.as_str())) {
             return Err(unsupported(path, format!("keyword `{k}`")));
@@ -120,17 +123,35 @@ impl Node {
             Ok(())
         };
 
-        if let Some(values) = obj.get("enum") {
-            allow(&["enum"])?;
-            return Ok(Node {
-                kind: parse_enum(values, ty, path)?,
-                description,
-            });
+        let kind = if let Some(values) = obj.get("enum") {
+            allow(&["enum", "default"])?;
+            parse_enum(values, ty, path)?
+        } else {
+            Self::parse_kind(obj, ty, path, allow)?
+        };
+        let mut node = Node {
+            kind,
+            description,
+            default: None,
+        };
+        if let Some(d) = obj.get("default") {
+            // A default the schema itself would reject cannot be stated as a valid value.
+            crate::validate::check(&node, d, path)
+                .map_err(|e| unsupported(path, format!("`default` does not validate: {e}")))?;
+            node.default = Some(d.clone());
         }
+        Ok(node)
+    }
 
-        let kind = match ty {
+    fn parse_kind(
+        obj: &Map<String, Value>,
+        ty: Option<&str>,
+        path: &str,
+        allow: impl Fn(&[&str]) -> Result<(), Error>,
+    ) -> Result<Kind, Error> {
+        Ok(match ty {
             Some("string") => {
-                allow(&["format"])?;
+                allow(&["format", "default"])?;
                 let format = match obj.get("format") {
                     None => None,
                     Some(Value::String(f)) => Some(
@@ -142,15 +163,15 @@ impl Node {
                 Kind::String(format)
             }
             Some("integer") => {
-                allow(&[])?;
+                allow(&["default"])?;
                 Kind::Integer
             }
             Some("number") => {
-                allow(&[])?;
+                allow(&["default"])?;
                 Kind::Number
             }
             Some("boolean") => {
-                allow(&[])?;
+                allow(&["default"])?;
                 Kind::Boolean
             }
             Some("array") => {
@@ -166,8 +187,7 @@ impl Node {
             }
             Some(other) => return Err(unsupported(path, format!("type `{other}`"))),
             None => return Err(unsupported(path, "missing `type`")),
-        };
-        Ok(Node { kind, description })
+        })
     }
 
     /// Render back to JSON Schema. Inverse of [`Node::from_json`] up to key order and the
@@ -220,6 +240,9 @@ impl Node {
         }
         if let Some(d) = &self.description {
             out.insert("description".into(), json!(d));
+        }
+        if let Some(d) = &self.default {
+            out.insert("default".into(), d.clone());
         }
         Value::Object(out)
     }
@@ -379,6 +402,13 @@ mod tests {
                 "status": {"type": "array", "items": {"type": "string", "enum": ["a", "b"]}},
                 "level": {"enum": [1, 2.5]}
             }, "required": ["price", "ok"]}),
+            json!({"type": "object", "properties": {
+                "limit": {"type": "integer", "default": 10},
+                "ratio": {"type": "number", "default": 0.5},
+                "exact": {"type": "boolean", "default": false},
+                "day": {"type": "string", "format": "date", "default": "2026-10-03"},
+                "kind": {"type": "string", "enum": ["A", "MX"], "default": "A"}
+            }}),
             json!({"type": "object"}),
         ] {
             let node = normalize_tool(&tool(schema.clone())).unwrap().unwrap();
@@ -423,8 +453,24 @@ mod tests {
                 "ipv4",
             ),
             (
-                json!({"type": "object", "properties": {"x": {"type": "string", "default": "a"}}}),
-                "default",
+                json!({"type": "object", "properties": {"x": {"type": "integer", "default": "1"}}}),
+                "`default` does not validate",
+            ),
+            (
+                json!({"type": "object", "properties": {"x": {"type": "string", "default": null}}}),
+                "`default` does not validate",
+            ),
+            (
+                json!({"type": "object", "properties": {"x": {"type": "string", "enum": ["a", "b"], "default": "c"}}}),
+                "`default` does not validate",
+            ),
+            (
+                json!({"type": "object", "properties": {"x": {"type": "array", "items": {"type": "string"}, "default": []}}}),
+                "`default` not valid here",
+            ),
+            (
+                json!({"type": "object", "default": {}}),
+                "`default` not valid here",
             ),
             (
                 json!({"type": "object", "additionalProperties": true}),
