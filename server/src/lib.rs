@@ -386,15 +386,8 @@ where
     // top level (outside `/api` and `auth::require_auth`) — it verifies the agent's
     // own identity JWT internally, not the user session. Deployed agents point their
     // SDK base URL (`LLM_GATEWAY_BASE_URL`) directly at these `/v1/...` routes.
-    let gateway_config = state
-        .gateway_config
-        .clone()
-        .unwrap_or_else(nasiko_llm_router::GatewayConfig::from_env);
-    let llm_ctx = nasiko_llm_router::LlmRouterCtx::from_shared_with_config(
-        state.db.clone(),
-        state.http_client.clone(),
-        gateway_config,
-    );
+    let llm_ctx =
+        nasiko_llm_router::LlmRouterCtx::from_shared(state.db.clone(), state.http_client.clone());
     // Both sync loops below read the router's effective config, resolved once here
     // rather than re-read from env per loop.
     let llm_cfg = llm_ctx.cfg.clone();

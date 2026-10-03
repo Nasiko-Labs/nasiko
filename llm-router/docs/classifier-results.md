@@ -58,3 +58,7 @@ Two fresh debug evaluation processes produced identical category, difficulty, co
 Classifier and cache-switch settings now load in the binary configuration module. The standalone binary, evaluation example, and server binary pass resolved settings into the router. Existing non-classifier environment loading remains for compatibility. The server host injection needs three small files outside llm-router; the strict submission scope must be reviewed before creating the fork PR.
 
 Final compliance checks passed with 400 tests across library, safety, binary-config, and evaluation-example suites, plus one existing ignored test. The in-process server library and binary passed cargo check. Three server host-injection files are outside the strict llm-router submission fence; they are included as integration work, not claimed scope-compliant. The running local server has not been rebuilt or restarted for this follow-up.
+
+## Submission scope
+
+The submission removes the server host-injection changes to comply with the llm-router-only scope. Configure the standalone router binary or evaluation example through their binary config module. In-process server integration of the opt-in settings is unsupported in this PR. The running local app predates this scope change.
