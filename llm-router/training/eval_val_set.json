@@ -30,636 +30,748 @@
     },
     {
       "id": "ex_0019",
-      "query": "Hello, I have a quick question. Refactor this synchronous HTTP handler into an asynchronous non-blocking Tokio handler. Looking forward to your response, thanks!",
+      "query": "Hello! Refactor this synchronous HTTP handler into an asynchronous non-blocking Tokio handler. Looking forward to your advice, thanks!",
       "context": null,
       "ground_truth_type": "code_generation",
       "ground_truth_complexity": 3
     },
     {
       "id": "ex_0020",
-      "query": "Can you refactor this synchronous HTTP handler into an asynchronous non-blocking Tokio handler.",
+      "query": "Could you essentially refactor this synchronous HTTP handler into an asynchronous non-blocking Tokio handler.",
       "context": null,
       "ground_truth_type": "code_generation",
       "ground_truth_complexity": 3
     },
     {
       "id": "ex_0021",
+      "query": "Refactor this synchronous HTTP handler into an asynchronous non-blocking Tokio handler.",
+      "context": "User context: production environment with tight SLA.",
+      "ground_truth_type": "code_generation",
+      "ground_truth_complexity": 3
+    },
+    {
+      "id": "ex_0022",
       "query": "Add comprehensive error handling and retry logic with exponential backoff to this DB connection pool.",
       "context": null,
       "ground_truth_type": "code_generation",
       "ground_truth_complexity": 3
     },
     {
-      "id": "ex_0022",
-      "query": "Hello, I have a quick question. Add comprehensive error handling and retry logic with exponential backoff to this DB connection pool. Looking forward to your response, thanks!",
-      "context": null,
-      "ground_truth_type": "code_generation",
-      "ground_truth_complexity": 3
-    },
-    {
       "id": "ex_0023",
-      "query": "Can you add comprehensive error handling and retry logic with exponential backoff to this DB connection pool.",
+      "query": "Hello! Add comprehensive error handling and retry logic with exponential backoff to this DB connection pool. Looking forward to your advice, thanks!",
       "context": null,
       "ground_truth_type": "code_generation",
       "ground_truth_complexity": 3
     },
     {
-      "id": "ex_0039",
+      "id": "ex_0024",
+      "query": "Could you kindly add comprehensive error handling and retry logic with exponential backoff to this DB connection pool.",
+      "context": null,
+      "ground_truth_type": "code_generation",
+      "ground_truth_complexity": 3
+    },
+    {
+      "id": "ex_0025",
+      "query": "Add comprehensive error handling and retry logic with exponential backoff to this DB connection pool.",
+      "context": "User context: production environment with tight SLA.",
+      "ground_truth_type": "code_generation",
+      "ground_truth_complexity": 3
+    },
+    {
+      "id": "ex_0045",
       "query": "Generate a Kubernetes Helm chart for a stateful PostgreSQL cluster with persistence and automated backup cronjob.",
       "context": null,
       "ground_truth_type": "code_generation",
       "ground_truth_complexity": 4
     },
     {
-      "id": "ex_0040",
-      "query": "Hello, I have a quick question. Generate a Kubernetes Helm chart for a stateful PostgreSQL cluster with persistence and automated backup cronjob. Looking forward to your response, thanks!",
+      "id": "ex_0046",
+      "query": "Hello! Generate a Kubernetes Helm chart for a stateful PostgreSQL cluster with persistence and automated backup cronjob. Looking forward to your advice, thanks!",
       "context": null,
       "ground_truth_type": "code_generation",
       "ground_truth_complexity": 4
     },
     {
-      "id": "ex_0041",
-      "query": "Can you generate a Kubernetes Helm chart for a stateful PostgreSQL cluster with persistence and automated backup cronjob.",
-      "context": null,
-      "ground_truth_type": "code_generation",
-      "ground_truth_complexity": 4
-    },
-    {
-      "id": "ex_0042",
-      "query": "Build a zero-copy parser in Rust using nom for the Redis RESP3 serialization protocol.",
-      "context": null,
-      "ground_truth_type": "code_generation",
-      "ground_truth_complexity": 4
-    },
-    {
-      "id": "ex_0043",
-      "query": "Hello, I have a quick question. Build a zero-copy parser in Rust using nom for the Redis RESP3 serialization protocol. Looking forward to your response, thanks!",
-      "context": null,
-      "ground_truth_type": "code_generation",
-      "ground_truth_complexity": 4
-    },
-    {
-      "id": "ex_0044",
-      "query": "Can you build a zero-copy parser in Rust using nom for the Redis RESP3 serialization protocol.",
+      "id": "ex_0047",
+      "query": "Could you urgently generate a Kubernetes Helm chart for a stateful PostgreSQL cluster with persistence and automated backup cronjob.",
       "context": null,
       "ground_truth_type": "code_generation",
       "ground_truth_complexity": 4
     },
     {
       "id": "ex_0048",
+      "query": "Generate a Kubernetes Helm chart for a stateful PostgreSQL cluster with persistence and automated backup cronjob.",
+      "context": "User context: production environment with tight SLA.",
+      "ground_truth_type": "code_generation",
+      "ground_truth_complexity": 4
+    },
+    {
+      "id": "ex_0049",
+      "query": "Build a zero-copy parser in Rust using nom for the Redis RESP3 serialization protocol.",
+      "context": null,
+      "ground_truth_type": "code_generation",
+      "ground_truth_complexity": 4
+    },
+    {
+      "id": "ex_0050",
+      "query": "Hello! Build a zero-copy parser in Rust using nom for the Redis RESP3 serialization protocol. Looking forward to your advice, thanks!",
+      "context": null,
+      "ground_truth_type": "code_generation",
+      "ground_truth_complexity": 4
+    },
+    {
+      "id": "ex_0051",
+      "query": "Could you basically build a zero-copy parser in Rust using nom for the Redis RESP3 serialization protocol.",
+      "context": null,
+      "ground_truth_type": "code_generation",
+      "ground_truth_complexity": 4
+    },
+    {
+      "id": "ex_0052",
+      "query": "Build a zero-copy parser in Rust using nom for the Redis RESP3 serialization protocol.",
+      "context": "User context: production environment with tight SLA.",
+      "ground_truth_type": "code_generation",
+      "ground_truth_complexity": 4
+    },
+    {
+      "id": "ex_0057",
       "query": "Write a quicksort function in C.",
       "context": null,
       "ground_truth_type": "code_generation",
       "ground_truth_complexity": 2
     },
     {
-      "id": "ex_0049",
-      "query": "Hello, I have a quick question. Write a quicksort function in C. Looking forward to your response, thanks!",
+      "id": "ex_0058",
+      "query": "Hello! Write a quicksort function in C. Looking forward to your advice, thanks!",
       "context": null,
       "ground_truth_type": "code_generation",
       "ground_truth_complexity": 2
     },
     {
-      "id": "ex_0050",
-      "query": "Can you write a quicksort function in C.",
+      "id": "ex_0059",
+      "query": "Could you FYI write a quicksort function in C.",
       "context": null,
       "ground_truth_type": "code_generation",
       "ground_truth_complexity": 2
     },
     {
-      "id": "ex_0062",
+      "id": "ex_0060",
+      "query": "Write a quicksort function in C.",
+      "context": "User context: production environment with tight SLA.",
+      "ground_truth_type": "code_generation",
+      "ground_truth_complexity": 2
+    },
+    {
+      "id": "ex_0074",
       "query": "Walk me through this Rust async code and explain why deadlocks occur on these locks.",
       "context": "async fn deadlocking() { let a = lock1.lock().await; let b = lock2.lock().await; }",
       "ground_truth_type": "code_understanding",
       "ground_truth_complexity": 3
     },
     {
-      "id": "ex_0063",
-      "query": "Hello, I have a quick question. Walk me through this Rust async code and explain why deadlocks occur on these locks. Looking forward to your response, thanks!",
+      "id": "ex_0075",
+      "query": "Hello! Walk me through this Rust async code and explain why deadlocks occur on these locks. Looking forward to your advice, thanks!",
       "context": "async fn deadlocking() { let a = lock1.lock().await; let b = lock2.lock().await; }",
       "ground_truth_type": "code_understanding",
       "ground_truth_complexity": 3
     },
     {
-      "id": "ex_0064",
-      "query": "Can you walk me through this Rust async code and explain why deadlocks occur on these locks.",
+      "id": "ex_0076",
+      "query": "Could you btw walk me through this Rust async code and explain why deadlocks occur on these locks.",
       "context": "async fn deadlocking() { let a = lock1.lock().await; let b = lock2.lock().await; }",
       "ground_truth_type": "code_understanding",
       "ground_truth_complexity": 3
     },
     {
-      "id": "ex_0068",
+      "id": "ex_0081",
       "query": "How does the borrow checker in Rust ensure memory safety without a garbage collector?",
       "context": null,
       "ground_truth_type": "code_understanding",
       "ground_truth_complexity": 3
     },
     {
-      "id": "ex_0069",
-      "query": "Hello, I have a quick question. How does the borrow checker in Rust ensure memory safety without a garbage collector? Looking forward to your response, thanks!",
+      "id": "ex_0082",
+      "query": "Hello! How does the borrow checker in Rust ensure memory safety without a garbage collector? Looking forward to your advice, thanks!",
       "context": null,
       "ground_truth_type": "code_understanding",
       "ground_truth_complexity": 3
     },
     {
-      "id": "ex_0070",
-      "query": "Can you how does the borrow checker in Rust ensure memory safety without a garbage collector?",
+      "id": "ex_0083",
+      "query": "Could you kindly how does the borrow checker in Rust ensure memory safety without a garbage collector?",
       "context": null,
       "ground_truth_type": "code_understanding",
       "ground_truth_complexity": 3
     },
     {
-      "id": "ex_0092",
+      "id": "ex_0084",
+      "query": "How does the borrow checker in Rust ensure memory safety without a garbage collector?",
+      "context": "User context: production environment with tight SLA.",
+      "ground_truth_type": "code_understanding",
+      "ground_truth_complexity": 3
+    },
+    {
+      "id": "ex_0109",
       "query": "What is the time and space complexity of merge sort vs heap sort?",
       "context": null,
       "ground_truth_type": "code_understanding",
       "ground_truth_complexity": 2
     },
     {
-      "id": "ex_0093",
-      "query": "Hello, I have a quick question. What is the time and space complexity of merge sort vs heap sort? Looking forward to your response, thanks!",
+      "id": "ex_0110",
+      "query": "Hello! What is the time and space complexity of merge sort vs heap sort? Looking forward to your advice, thanks!",
       "context": null,
       "ground_truth_type": "code_understanding",
       "ground_truth_complexity": 2
     },
     {
-      "id": "ex_0094",
-      "query": "Can you what is the time and space complexity of merge sort vs heap sort?",
+      "id": "ex_0111",
+      "query": "Could you basically what is the time and space complexity of merge sort vs heap sort?",
       "context": null,
       "ground_truth_type": "code_understanding",
       "ground_truth_complexity": 2
     },
     {
-      "id": "ex_0122",
+      "id": "ex_0112",
+      "query": "What is the time and space complexity of merge sort vs heap sort?",
+      "context": "User context: production environment with tight SLA.",
+      "ground_truth_type": "code_understanding",
+      "ground_truth_complexity": 2
+    },
+    {
+      "id": "ex_0145",
       "query": "Propose an observability architecture using OpenTelemetry, Prometheus, Jaeger, and Grafana for a Kubernetes cluster.",
       "context": null,
       "ground_truth_type": "technical_design",
       "ground_truth_complexity": 4
     },
     {
-      "id": "ex_0123",
-      "query": "Hello, I have a quick question. Propose an observability architecture using OpenTelemetry, Prometheus, Jaeger, and Grafana for a Kubernetes cluster. Looking forward to your response, thanks!",
+      "id": "ex_0146",
+      "query": "Hello! Propose an observability architecture using OpenTelemetry, Prometheus, Jaeger, and Grafana for a Kubernetes cluster. Looking forward to your advice, thanks!",
       "context": null,
       "ground_truth_type": "technical_design",
       "ground_truth_complexity": 4
     },
     {
-      "id": "ex_0124",
-      "query": "Can you propose an observability architecture using OpenTelemetry, Prometheus, Jaeger, and Grafana for a Kubernetes cluster.",
+      "id": "ex_0147",
+      "query": "Could you kindly propose an observability architecture using OpenTelemetry, Prometheus, Jaeger, and Grafana for a Kubernetes cluster.",
       "context": null,
       "ground_truth_type": "technical_design",
       "ground_truth_complexity": 4
     },
     {
-      "id": "ex_0125",
+      "id": "ex_0148",
+      "query": "Propose an observability architecture using OpenTelemetry, Prometheus, Jaeger, and Grafana for a Kubernetes cluster.",
+      "context": "User context: production environment with tight SLA.",
+      "ground_truth_type": "technical_design",
+      "ground_truth_complexity": 4
+    },
+    {
+      "id": "ex_0149",
       "query": "Design a fault-tolerant notification pipeline delivering push notifications, emails, and SMS with provider failover and rate limits.",
       "context": null,
       "ground_truth_type": "technical_design",
       "ground_truth_complexity": 3
     },
     {
-      "id": "ex_0126",
-      "query": "Hello, I have a quick question. Design a fault-tolerant notification pipeline delivering push notifications, emails, and SMS with provider failover and rate limits. Looking forward to your response, thanks!",
+      "id": "ex_0150",
+      "query": "Hello! Design a fault-tolerant notification pipeline delivering push notifications, emails, and SMS with provider failover and rate limits. Looking forward to your advice, thanks!",
       "context": null,
       "ground_truth_type": "technical_design",
       "ground_truth_complexity": 3
     },
     {
-      "id": "ex_0127",
-      "query": "Can you design a fault-tolerant notification pipeline delivering push notifications, emails, and SMS with provider failover and rate limits.",
+      "id": "ex_0151",
+      "query": "Could you btw design a fault-tolerant notification pipeline delivering push notifications, emails, and SMS with provider failover and rate limits.",
       "context": null,
       "ground_truth_type": "technical_design",
       "ground_truth_complexity": 3
     },
     {
-      "id": "ex_0153",
+      "id": "ex_0152",
+      "query": "Design a fault-tolerant notification pipeline delivering push notifications, emails, and SMS with provider failover and rate limits.",
+      "context": "User context: production environment with tight SLA.",
+      "ground_truth_type": "technical_design",
+      "ground_truth_complexity": 3
+    },
+    {
+      "id": "ex_0184",
       "query": "Derive the closed-form Black-Scholes formula for European call option pricing using risk-neutral expectation and geometric Brownian motion.",
       "context": null,
       "ground_truth_type": "analytical_reasoning",
       "ground_truth_complexity": 5
     },
     {
-      "id": "ex_0154",
-      "query": "Hello, I have a quick question. Derive the closed-form Black-Scholes formula for European call option pricing using risk-neutral expectation and geometric Brownian motion. Looking forward to your response, thanks!",
+      "id": "ex_0185",
+      "query": "Hello! Derive the closed-form Black-Scholes formula for European call option pricing using risk-neutral expectation and geometric Brownian motion. Looking forward to your advice, thanks!",
       "context": null,
       "ground_truth_type": "analytical_reasoning",
       "ground_truth_complexity": 5
     },
     {
-      "id": "ex_0155",
-      "query": "Can you derive the closed-form Black-Scholes formula for European call option pricing using risk-neutral expectation and geometric Brownian motion.",
+      "id": "ex_0186",
+      "query": "Could you kindly derive the closed-form Black-Scholes formula for European call option pricing using risk-neutral expectation and geometric Brownian motion.",
       "context": null,
       "ground_truth_type": "analytical_reasoning",
       "ground_truth_complexity": 5
     },
     {
-      "id": "ex_0168",
+      "id": "ex_0187",
+      "query": "Derive the closed-form Black-Scholes formula for European call option pricing using risk-neutral expectation and geometric Brownian motion.",
+      "context": "User context: production environment with tight SLA.",
+      "ground_truth_type": "analytical_reasoning",
+      "ground_truth_complexity": 5
+    },
+    {
+      "id": "ex_0203",
       "query": "Derive the optimal policy for a Markov Decision Process with state transition probabilities P and discount factor gamma using policy iteration.",
       "context": null,
       "ground_truth_type": "analytical_reasoning",
       "ground_truth_complexity": 5
     },
     {
-      "id": "ex_0169",
-      "query": "Hello, I have a quick question. Derive the optimal policy for a Markov Decision Process with state transition probabilities P and discount factor gamma using policy iteration. Looking forward to your response, thanks!",
+      "id": "ex_0204",
+      "query": "Hello! Derive the optimal policy for a Markov Decision Process with state transition probabilities P and discount factor gamma using policy iteration. Looking forward to your advice, thanks!",
       "context": null,
       "ground_truth_type": "analytical_reasoning",
       "ground_truth_complexity": 5
     },
     {
-      "id": "ex_0170",
-      "query": "Can you derive the optimal policy for a Markov Decision Process with state transition probabilities P and discount factor gamma using policy iteration.",
+      "id": "ex_0205",
+      "query": "Could you quickly derive the optimal policy for a Markov Decision Process with state transition probabilities P and discount factor gamma using policy iteration.",
       "context": null,
       "ground_truth_type": "analytical_reasoning",
       "ground_truth_complexity": 5
     },
     {
-      "id": "ex_0178",
+      "id": "ex_0206",
+      "query": "Derive the optimal policy for a Markov Decision Process with state transition probabilities P and discount factor gamma using policy iteration.",
+      "context": "User context: production environment with tight SLA.",
+      "ground_truth_type": "analytical_reasoning",
+      "ground_truth_complexity": 5
+    },
+    {
+      "id": "ex_0215",
       "query": "Draft an email to stakeholders explaining that the production database outage has been resolved.",
       "context": null,
       "ground_truth_type": "writing",
       "ground_truth_complexity": 2
     },
     {
-      "id": "ex_0179",
+      "id": "ex_0216",
       "query": "write an email update to executives regarding the database outage resolution",
       "context": null,
       "ground_truth_type": "writing",
       "ground_truth_complexity": 2
     },
     {
-      "id": "ex_0186",
+      "id": "ex_0224",
       "query": "Draft a detailed post-mortem report for a multi-hour cloud regional outage including timeline, root cause analysis, impact, and preventive action items.",
       "context": null,
       "ground_truth_type": "writing",
       "ground_truth_complexity": 4
     },
     {
-      "id": "ex_0187",
-      "query": "Hello, I have a quick question. Draft a detailed post-mortem report for a multi-hour cloud regional outage including timeline, root cause analysis, impact, and preventive action items. Looking forward to your response, thanks!",
+      "id": "ex_0225",
+      "query": "Hello! Draft a detailed post-mortem report for a multi-hour cloud regional outage including timeline, root cause analysis, impact, and preventive action items. Looking forward to your advice, thanks!",
       "context": null,
       "ground_truth_type": "writing",
       "ground_truth_complexity": 4
     },
     {
-      "id": "ex_0188",
-      "query": "Can you draft a detailed post-mortem report for a multi-hour cloud regional outage including timeline, root cause analysis, impact, and preventive action items.",
+      "id": "ex_0226",
+      "query": "Could you urgently draft a detailed post-mortem report for a multi-hour cloud regional outage including timeline, root cause analysis, impact, and preventive action items.",
       "context": null,
       "ground_truth_type": "writing",
       "ground_truth_complexity": 4
     },
     {
-      "id": "ex_0195",
+      "id": "ex_0227",
+      "query": "Draft a detailed post-mortem report for a multi-hour cloud regional outage including timeline, root cause analysis, impact, and preventive action items.",
+      "context": "User context: production environment with tight SLA.",
+      "ground_truth_type": "writing",
+      "ground_truth_complexity": 4
+    },
+    {
+      "id": "ex_0236",
       "query": "Draft a polite slack message declining an invitation to a meeting due to a deadline conflict.",
       "context": null,
       "ground_truth_type": "writing",
       "ground_truth_complexity": 1
     },
     {
-      "id": "ex_0196",
-      "query": "Hello, I have a quick question. Draft a polite slack message declining an invitation to a meeting due to a deadline conflict. Looking forward to your response, thanks!",
+      "id": "ex_0237",
+      "query": "Hello! Draft a polite slack message declining an invitation to a meeting due to a deadline conflict. Looking forward to your advice, thanks!",
       "context": null,
       "ground_truth_type": "writing",
       "ground_truth_complexity": 1
     },
     {
-      "id": "ex_0197",
-      "query": "Can you draft a polite slack message declining an invitation to a meeting due to a deadline conflict.",
+      "id": "ex_0238",
+      "query": "Could you FYI draft a polite slack message declining an invitation to a meeting due to a deadline conflict.",
       "context": null,
       "ground_truth_type": "writing",
       "ground_truth_complexity": 1
     },
     {
-      "id": "ex_0227",
+      "id": "ex_0273",
       "query": "List all countries bordering the Mediterranean Sea and their official languages.",
       "context": null,
       "ground_truth_type": "factual_lookup",
       "ground_truth_complexity": 3
     },
     {
-      "id": "ex_0228",
-      "query": "Hello, I have a quick question. List all countries bordering the Mediterranean Sea and their official languages. Looking forward to your response, thanks!",
+      "id": "ex_0274",
+      "query": "Hello! List all countries bordering the Mediterranean Sea and their official languages. Looking forward to your advice, thanks!",
       "context": null,
       "ground_truth_type": "factual_lookup",
       "ground_truth_complexity": 3
     },
     {
-      "id": "ex_0229",
-      "query": "Can you list all countries bordering the Mediterranean Sea and their official languages.",
+      "id": "ex_0275",
+      "query": "Could you urgently list all countries bordering the Mediterranean Sea and their official languages.",
       "context": null,
       "ground_truth_type": "factual_lookup",
       "ground_truth_complexity": 3
     },
     {
-      "id": "ex_0253",
+      "id": "ex_0276",
+      "query": "List all countries bordering the Mediterranean Sea and their official languages.",
+      "context": "User context: production environment with tight SLA.",
+      "ground_truth_type": "factual_lookup",
+      "ground_truth_complexity": 3
+    },
+    {
+      "id": "ex_0304",
       "query": "I am planning a 7-day trip to Kyoto in autumn. Can you recommend a balanced itinerary?",
       "context": null,
       "ground_truth_type": "general",
       "ground_truth_complexity": 3
     },
     {
-      "id": "ex_0254",
-      "query": "Hello, I have a quick question. I am planning a 7-day trip to Kyoto in autumn. Can you recommend a balanced itinerary? Looking forward to your response, thanks!",
+      "id": "ex_0305",
+      "query": "Hello! I am planning a 7-day trip to Kyoto in autumn. Can you recommend a balanced itinerary? Looking forward to your advice, thanks!",
       "context": null,
       "ground_truth_type": "general",
       "ground_truth_complexity": 3
     },
     {
-      "id": "ex_0255",
-      "query": "Can you i am planning a 7-day trip to Kyoto in autumn. Can you recommend a balanced itinerary?",
+      "id": "ex_0306",
+      "query": "Could you basically i am planning a 7-day trip to Kyoto in autumn. Can you recommend a balanced itinerary?",
       "context": null,
       "ground_truth_type": "general",
       "ground_truth_complexity": 3
     },
     {
-      "id": "ex_0267",
+      "id": "ex_0307",
+      "query": "I am planning a 7-day trip to Kyoto in autumn. Can you recommend a balanced itinerary?",
+      "context": "User context: production environment with tight SLA.",
+      "ground_truth_type": "general",
+      "ground_truth_complexity": 3
+    },
+    {
+      "id": "ex_0325",
       "query": "Good morning. What can you do?",
       "context": null,
       "ground_truth_type": "general",
       "ground_truth_complexity": 1
     },
     {
-      "id": "ex_0296",
+      "id": "ex_0326",
+      "query": "Hello! Good morning. What can you do? Looking forward to your advice, thanks!",
+      "context": null,
+      "ground_truth_type": "general",
+      "ground_truth_complexity": 1
+    },
+    {
+      "id": "ex_0327",
+      "query": "Could you btw good morning. What can you do?",
+      "context": null,
+      "ground_truth_type": "general",
+      "ground_truth_complexity": 1
+    },
+    {
+      "id": "ex_0396",
       "query": "Walk me through how the Linux epoll syscall handles I/O multiplexing under edge-triggered vs level-triggered modes.",
       "context": null,
       "ground_truth_type": "code_understanding",
       "ground_truth_complexity": 5
     },
     {
-      "id": "ex_0310",
+      "id": "ex_0410",
       "query": "Architect a high-throughput search autocomplete system with latency under 10ms at p99.",
       "context": null,
       "ground_truth_type": "technical_design",
       "ground_truth_complexity": 4
     },
     {
-      "id": "ex_0311",
+      "id": "ex_0411",
       "query": "What are the trade-offs between REST, gRPC, and GraphQL for internal service-to-service communication?",
       "context": null,
       "ground_truth_type": "technical_design",
       "ground_truth_complexity": 3
     },
     {
-      "id": "ex_0320",
+      "id": "ex_0420",
       "query": "Design an automated canary deployment pipeline using Istio and Argo Rollouts in Kubernetes.",
       "context": null,
       "ground_truth_type": "technical_design",
       "ground_truth_complexity": 4
     },
     {
-      "id": "ex_0326",
+      "id": "ex_0426",
       "query": "How many integers between 1 and 1000 are divisible by 3 or 5 but not both?",
       "context": null,
       "ground_truth_type": "analytical_reasoning",
       "ground_truth_complexity": 2
     },
     {
-      "id": "ex_0340",
+      "id": "ex_0440",
       "query": "Compose a descriptive paragraph capturing the atmosphere of a bustling rainy market in Tokyo.",
       "context": null,
       "ground_truth_type": "writing",
       "ground_truth_complexity": 2
     },
     {
-      "id": "ex_0341",
+      "id": "ex_0441",
       "query": "Write a persuasive proposal requesting approval to adopt Rust for our high-frequency trading engine.",
       "context": null,
       "ground_truth_type": "writing",
       "ground_truth_complexity": 3
     },
     {
-      "id": "ex_0347",
+      "id": "ex_0447",
       "query": "Draft a polite response to a negative customer review on our SaaS app store page.",
       "context": null,
       "ground_truth_type": "writing",
       "ground_truth_complexity": 2
     },
     {
-      "id": "ex_0353",
+      "id": "ex_0453",
       "query": "What is the tallest mountain in North America?",
       "context": null,
       "ground_truth_type": "factual_lookup",
       "ground_truth_complexity": 1
     },
     {
-      "id": "ex_0356",
+      "id": "ex_0456",
       "query": "What is the boiling point of liquid nitrogen at 1 atm?",
       "context": null,
       "ground_truth_type": "factual_lookup",
       "ground_truth_complexity": 1
     },
     {
-      "id": "ex_0362",
+      "id": "ex_0462",
       "query": "What are the three laws of robotics formulated by Isaac Asimov?",
       "context": null,
       "ground_truth_type": "factual_lookup",
       "ground_truth_complexity": 2
     },
     {
-      "id": "ex_0370",
+      "id": "ex_0470",
       "query": "Can you help me organize my daily schedule to fit in 30 minutes of exercise?",
       "context": null,
       "ground_truth_type": "general",
       "ground_truth_complexity": 2
     },
     {
-      "id": "ex_0371",
+      "id": "ex_0471",
       "query": "What are some fun team-building activities for a remote engineering team?",
       "context": null,
       "ground_truth_type": "general",
       "ground_truth_complexity": 2
     },
     {
-      "id": "ex_0376",
+      "id": "ex_0476",
       "query": "Can you help me choose between learning guitar or piano as an adult beginner?",
       "context": null,
       "ground_truth_type": "general",
       "ground_truth_complexity": 2
     },
     {
-      "id": "ex_0383",
+      "id": "ex_0483",
       "query": "Write a Lua script to parse Redis key expiration events.",
       "context": null,
       "ground_truth_type": "code_generation",
       "ground_truth_complexity": 2
     },
     {
-      "id": "ex_0390",
+      "id": "ex_0490",
       "query": "Write a C program to reverse a linked list iteratively and recursively.",
       "context": null,
       "ground_truth_type": "code_generation",
       "ground_truth_complexity": 2
     },
     {
-      "id": "ex_0399",
+      "id": "ex_0499",
       "query": "Implement the PageRank algorithm on a graph in PySpark.",
       "context": null,
       "ground_truth_type": "code_generation",
       "ground_truth_complexity": 4
     },
     {
-      "id": "ex_0404",
+      "id": "ex_0504",
       "query": "What does the `std::move` cast actually do in C++?",
       "context": null,
       "ground_truth_type": "code_understanding",
       "ground_truth_complexity": 2
     },
     {
-      "id": "ex_0407",
+      "id": "ex_0507",
       "query": "Explain how TLS session resumption via tickets works.",
       "context": null,
       "ground_truth_type": "code_understanding",
       "ground_truth_complexity": 3
     },
     {
-      "id": "ex_0408",
+      "id": "ex_0508",
       "query": "What is the difference between inner join, left join, and full outer join in SQL?",
       "context": null,
       "ground_truth_type": "code_understanding",
       "ground_truth_complexity": 1
     },
     {
-      "id": "ex_0413",
+      "id": "ex_0513",
       "query": "Explain the difference between TCP congestion control algorithms Cubic and BBR.",
       "context": null,
       "ground_truth_type": "code_understanding",
       "ground_truth_complexity": 4
     },
     {
-      "id": "ex_0421",
+      "id": "ex_0521",
       "query": "Explain how deep learning backpropagation uses the multivariable chain rule.",
       "context": null,
       "ground_truth_type": "code_understanding",
       "ground_truth_complexity": 3
     },
     {
-      "id": "ex_0424",
+      "id": "ex_0524",
       "query": "Architect a real-time multiplayer game server backend using WebSockets and UDP.",
       "context": null,
       "ground_truth_type": "technical_design",
       "ground_truth_complexity": 4
     },
     {
-      "id": "ex_0430",
+      "id": "ex_0530",
       "query": "Design a distributed tracing infrastructure collecting spans across 500 microservices.",
       "context": null,
       "ground_truth_type": "technical_design",
       "ground_truth_complexity": 4
     },
     {
-      "id": "ex_0436",
+      "id": "ex_0536",
       "query": "What are the trade-offs of using Cassandra vs DynamoDB for time-series sensor telemetry?",
       "context": null,
       "ground_truth_type": "technical_design",
       "ground_truth_complexity": 3
     },
     {
-      "id": "ex_0447",
+      "id": "ex_0547",
       "query": "Solve this logic puzzle: who owns the zebra among 5 houses of different colors and pets?",
       "context": null,
       "ground_truth_type": "analytical_reasoning",
       "ground_truth_complexity": 3
     },
     {
-      "id": "ex_0455",
+      "id": "ex_0555",
       "query": "Derive the formula for compound interest continuously compounded.",
       "context": null,
       "ground_truth_type": "analytical_reasoning",
       "ground_truth_complexity": 2
     },
     {
-      "id": "ex_0461",
+      "id": "ex_0561",
       "query": "Analyze the game of Nim with pile sizes (3, 4, 5) and determine the winning first move.",
       "context": null,
       "ground_truth_type": "analytical_reasoning",
       "ground_truth_complexity": 3
     },
     {
-      "id": "ex_0463",
+      "id": "ex_0563",
       "query": "Derive the closed-form Black-Scholes formula using risk-neutral pricing.",
       "context": null,
       "ground_truth_type": "analytical_reasoning",
       "ground_truth_complexity": 5
     },
     {
-      "id": "ex_0468",
+      "id": "ex_0568",
       "query": "Calculate the expected value and variance of a Poisson distributed variable.",
       "context": null,
       "ground_truth_type": "analytical_reasoning",
       "ground_truth_complexity": 2
     },
     {
-      "id": "ex_0471",
+      "id": "ex_0571",
       "query": "Calculate the eigenvalues and eigenvectors of a symmetric 3x3 covariance matrix.",
       "context": null,
       "ground_truth_type": "analytical_reasoning",
       "ground_truth_complexity": 3
     },
     {
-      "id": "ex_0472",
+      "id": "ex_0572",
       "query": "Solve the traveling salesperson problem for a 5-node graph using dynamic programming.",
       "context": null,
       "ground_truth_type": "analytical_reasoning",
       "ground_truth_complexity": 4
     },
     {
-      "id": "ex_0481",
+      "id": "ex_0581",
       "query": "Rewrite this email to make it more empathetic and understanding.",
       "context": null,
       "ground_truth_type": "writing",
       "ground_truth_complexity": 1
     },
     {
-      "id": "ex_0483",
+      "id": "ex_0583",
       "query": "Write a recommendation letter for an engineering intern applying to graduate school.",
       "context": null,
       "ground_truth_type": "writing",
       "ground_truth_complexity": 3
     },
     {
-      "id": "ex_0494",
+      "id": "ex_0594",
       "query": "Who was the 16th President of the United States?",
       "context": null,
       "ground_truth_type": "factual_lookup",
       "ground_truth_complexity": 1
     },
     {
-      "id": "ex_0500",
+      "id": "ex_0600",
       "query": "What are the primary colors in additive color mixing (RGB)?",
       "context": null,
       "ground_truth_type": "factual_lookup",
       "ground_truth_complexity": 1
     },
     {
-      "id": "ex_0508",
+      "id": "ex_0608",
       "query": "List the seven continents in order of land area.",
       "context": null,
       "ground_truth_type": "factual_lookup",
       "ground_truth_complexity": 2
     },
     {
-      "id": "ex_0512",
+      "id": "ex_0612",
       "query": "Define the economic concept of 'opportunity cost'.",
       "context": null,
       "ground_truth_type": "factual_lookup",
       "ground_truth_complexity": 1
     },
     {
-      "id": "ex_0522",
+      "id": "ex_0622",
       "query": "What is the etiquette for tipping in restaurants in European countries?",
       "context": null,
       "ground_truth_type": "general",
       "ground_truth_complexity": 1
     },
     {
-      "id": "ex_0525",
+      "id": "ex_0625",
       "query": "How do air fryers work compared to conventional convection ovens?",
       "context": null,
       "ground_truth_type": "general",
       "ground_truth_complexity": 2
     },
     {
-      "id": "ex_0528",
+      "id": "ex_0628",
       "query": "Could you give me some tips for starting a backyard vegetable garden?",
       "context": null,
       "ground_truth_type": "general",

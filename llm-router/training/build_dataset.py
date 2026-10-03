@@ -1141,31 +1141,38 @@ def build_full_dataset():
 
     print(f"Total base source groups: {len(groups)}")
 
-    # Add automatic derivations to reach ~130 derived examples:
-    # 1. Typos
-    # 2. Padded wrappers
-    # 3. Paraphrases
+    # Add automatic derivations with diverse perturbations (connecting dots):
+    # 1. Padded conversational wrapper
+    # 2. Direct question transformation
+    # 3. Conversational preamble with context markers
+    # 4. Light typo/noise injection
+    NOISE_WORDS = ["basically", "essentially", "quickly", "please", "kindly", "urgently", "FYI", "btw"]
     derived_count = 0
     for g in groups:
-        if derived_count >= 140:
+        if derived_count >= 240:
             break
         if not g["derived"]:
-            # Pick candidates for perturbation
             q = g["query"]
-            rt = g["request_type"]
             comp = g["complexity"]
 
-            # Padded wrapper
-            padded = f"Hello, I have a quick question. {q} Looking forward to your response, thanks!"
+            # Strategy A: Conversational wrapper
+            padded = f"Hello! {q} Looking forward to your advice, thanks!"
             g["derived"].append((padded, g["context"], comp))
             derived_count += 1
 
-            if derived_count < 140 and len(q.split()) > 5:
-                # Slight paraphrase / informal
-                informal = "Can you " + q[0].lower() + q[1:]
+            # Strategy B: Casual question with slight noise word
+            if derived_count < 240 and len(q.split()) > 4:
+                noise = NOISE_WORDS[derived_count % len(NOISE_WORDS)]
+                informal = f"Could you {noise} " + q[0].lower() + q[1:]
                 if not informal.endswith("?") and not informal.endswith("."):
                     informal += "?"
                 g["derived"].append((informal, g["context"], comp))
+                derived_count += 1
+
+            # Strategy C: Context connection
+            if derived_count < 240 and g["context"] is None and comp >= 2:
+                ctx_hint = f"Context: working on a production microservice.\nQuery: {q}"
+                g["derived"].append((q, "User context: production environment with tight SLA.", comp))
                 derived_count += 1
 
     # Stratified group splitting: partition groups by request_type
