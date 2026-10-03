@@ -48,7 +48,8 @@ pub use inbound::InboundFormat;
 pub use inject::{LlmInjectCtx, inject_llm_env};
 pub use resolver::{ConfigCache, ResolvedConfig};
 pub use routing::{
-    AllowAllGate, CellStore, ClassifierSalienceGate, DecisionCache, InMemoryCellStore, NoopCache,
+    AllowAllGate, CellStore, ClassifierSalienceGate, ClassifierSettings, ClassifierStats,
+    RequestClassifier, build_classifier, DecisionCache, InMemoryCellStore, NoopCache,
     PgCellStore, PgTierRegistry, RedisCache, SalienceGate, TierRegistry,
 };
 
@@ -82,6 +83,12 @@ pub struct LlmRouterCtx {
     /// classify + pin. [`ClassifierSalienceGate`] when `SALIENCE_GATE_ENABLED`; else [`AllowAllGate`]
     /// (classify at every boundary, i.e. behaviour before the gate existed).
     pub salience_gate: Arc<dyn SalienceGate>,
+    /// Request classifier backend for Level 3. `None` (the default) ⇒ the regex classifier,
+    /// i.e. unchanged behaviour. The standalone binary sets this from its own configuration;
+    /// the library never reads classifier settings from the environment.
+    pub classifier: Option<Arc<dyn RequestClassifier>>,
+    /// Counts classifier fallbacks (backend error, timeout, low confidence ⇒ regex).
+    pub classifier_stats: Arc<ClassifierStats>,
     /// The platform's single cost engine. Every `token_usage` row is priced
     /// through this — the DB trigger that used to do it returned NULL for any
     /// model missing from `model_pricing`, which booked 92.8% of calls at $0.
@@ -137,6 +144,8 @@ impl LlmRouterCtx {
             tier_registry,
             cell_store,
             salience_gate,
+            classifier: None,
+            classifier_stats: Arc::new(ClassifierStats::default()),
             pricing,
         }
     }

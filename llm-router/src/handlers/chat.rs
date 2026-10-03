@@ -483,6 +483,8 @@ pub(crate) async fn resolve_routed_request(
             tier3_model: resolved.tier3_model.as_deref(),
             signals: &boundary,
             query: signals.query.as_deref(),
+            classifier: ctx.classifier.clone(),
+            classifier_stats: Some(ctx.classifier_stats.clone()),
         },
     )
     .await;
@@ -957,6 +959,8 @@ mod tests {
             tier_registry: Arc::new(NoTiers),
             cell_store: Arc::new(crate::routing::InMemoryCellStore::new()),
             salience_gate: Arc::new(crate::routing::AllowAllGate),
+            classifier: None,
+            classifier_stats: Arc::new(crate::routing::ClassifierStats::default()),
             pricing: Arc::new(nasiko_pricing::PricingEngine::new(
                 PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
             )),

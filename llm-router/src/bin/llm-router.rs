@@ -9,11 +9,19 @@
 //! Env: `DATABASE_URL` (required), `LLM_ROUTER_BIND` (default `0.0.0.0:8081`), plus the
 //! gateway config read by `GatewayConfig::from_env` (`AGENT_JWT_SECRET`,
 //! `SECRETS_ENCRYPTION_KEY`, `PLATFORM_OPENAI_API_KEY`, provider bases, …).
+//!
+//! Request classifier (opt-in, default `regex`): `CLASSIFIER_BACKEND`, `CLASSIFIER_MODEL`,
+//! `CLASSIFIER_ENDPOINT`, `CLASSIFIER_API_KEY`, `CLASSIFIER_TIMEOUT_MS`,
+//! `CLASSIFIER_MIN_CONFIDENCE` — read in `llm-router/config.rs`, see `llm-router/README.md`.
 
 use std::time::Duration;
 
-use nasiko_llm_router::{LlmRouterCtx, router};
+use nasiko_llm_router::{LlmRouterCtx, build_classifier, router};
 use tracing_subscriber::EnvFilter;
+
+// Classifier backend settings live in the binary, not the library.
+#[path = "llm-router/config.rs"]
+mod config;
 
 #[tokio::main]
 async fn main() {
@@ -35,7 +43,20 @@ async fn main() {
         .expect("failed to build http client");
 
     // Same context + routes as the in-server mount; gateway config from env.
-    let ctx = LlmRouterCtx::from_shared(db, http);
+    let mut ctx = LlmRouterCtx::from_shared(db, http);
+
+    // Request classifier: regex unless the operator opts into another backend. A backend
+    // that fails or times out falls back to regex per request, so this never blocks routing.
+    let classifier_settings = config::classifier_settings_from(|k| std::env::var(k).ok());
+    tracing::info!(
+        backend = %classifier_settings.backend,
+        model = %classifier_settings.model,
+        endpoint = %classifier_settings.endpoint,
+        timeout_ms = classifier_settings.timeout_ms,
+        api_key_set = classifier_settings.api_key.is_some(),
+        "llm-router: request classifier configured"
+    );
+    ctx.classifier = Some(build_classifier(&classifier_settings));
     let app = router(ctx).route("/health", axum::routing::get(|| async { "ok" }));
 
     let listener = tokio::net::TcpListener::bind(&bind)

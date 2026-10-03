@@ -1,0 +1,357 @@
+{
+ "schema_version": "classifier-eval@dev",
+ "purpose": "Hand-labelled development set for the request classifier. Not the public smoke set or the private scoring set; small, so treat results as indicative only.",
+ "label_set": [
+  "code_generation",
+  "code_understanding",
+  "technical_design",
+  "analytical_reasoning",
+  "writing",
+  "factual_lookup",
+  "general"
+ ],
+ "complexity_rubric": {
+  "1": "trivial: one step, no reasoning (typo fix, greeting, single fact)",
+  "2": "simple: short bounded task or fact needing a sentence or two of reasoning",
+  "3": "moderate: several parts, some domain knowledge, or a trade-off to weigh",
+  "4": "substantial: multi-component work or analysis needing careful design",
+  "5": "expert: system-level, many interacting constraints, hard to get right"
+ },
+ "labelling_criteria": "request_type = what the user wants produced: new code (code_generation), an explanation/review of existing code (code_understanding), an architecture/system plan (technical_design), a comparison/evaluation/diagnosis (analytical_reasoning), prose for a reader (writing), a short verifiable fact (factual_lookup), anything else incl. chit-chat (general). Labelled on intent, not keywords; padded and multi-intent queries are labelled by the main request.",
+ "examples": [
+  {
+   "id": "dev-01",
+   "query": "Fix typo in this Python comment: `# retrun the cached value`.",
+   "request_type": "code_generation",
+   "complexity": 1,
+   "context": "No other files or changes needed."
+  },
+  {
+   "id": "dev-02",
+   "query": "Write a Python function that returns the n-th Fibonacci number.",
+   "request_type": "code_generation",
+   "complexity": 2
+  },
+  {
+   "id": "dev-03",
+   "query": "Give me a regex that matches a 5-digit US zip code.",
+   "request_type": "code_generation",
+   "complexity": 2
+  },
+  {
+   "id": "dev-04",
+   "query": "Implement a Rust function that merges overlapping intervals and add unit tests.",
+   "request_type": "code_generation",
+   "complexity": 3
+  },
+  {
+   "id": "dev-05",
+   "query": "Create a React component with a debounced search box that calls an API.",
+   "request_type": "code_generation",
+   "complexity": 3
+  },
+  {
+   "id": "dev-06",
+   "query": "Build a CLI in Go that watches a directory and syncs changes to S3 with retry and backoff.",
+   "request_type": "code_generation",
+   "complexity": 4
+  },
+  {
+   "id": "dev-07",
+   "query": "Implement a lock-free concurrent hash map in Rust with resizing and benchmark it against dashmap.",
+   "request_type": "code_generation",
+   "complexity": 5
+  },
+  {
+   "id": "dev-08",
+   "query": "What does this line do: `let v: Vec<_> = xs.iter().rev().collect();`",
+   "request_type": "code_understanding",
+   "complexity": 2
+  },
+  {
+   "id": "dev-09",
+   "query": "Explain why this SQL query is slow: SELECT * FROM orders o JOIN items i ON i.order_id = o.id WHERE o.created_at > now() - interval '7 days';",
+   "request_type": "code_understanding",
+   "complexity": 3,
+   "context": "orders has 40M rows, no index on created_at."
+  },
+  {
+   "id": "dev-10",
+   "query": "Why does this Python closure print 3 three times instead of 0 1 2?",
+   "request_type": "code_understanding",
+   "complexity": 3,
+   "context": "for i in range(3): fns.append(lambda: print(i))"
+  },
+  {
+   "id": "dev-11",
+   "query": "Walk me through what this Rust borrow checker error means: cannot borrow `x` as mutable more than once.",
+   "request_type": "code_understanding",
+   "complexity": 3
+  },
+  {
+   "id": "dev-12",
+   "query": "Review this Kubernetes deployment YAML and tell me why pods keep getting OOMKilled.",
+   "request_type": "code_understanding",
+   "complexity": 4
+  },
+  {
+   "id": "dev-13",
+   "query": "Trace through this recursive descent parser and explain how it handles operator precedence.",
+   "request_type": "code_understanding",
+   "complexity": 4
+  },
+  {
+   "id": "dev-14",
+   "query": "Explain how this custom Raft implementation could lose committed entries after a leader change.",
+   "request_type": "code_understanding",
+   "complexity": 5
+  },
+  {
+   "id": "dev-15",
+   "query": "Should I store user sessions in Redis or in Postgres for a small internal tool?",
+   "request_type": "technical_design",
+   "complexity": 2
+  },
+  {
+   "id": "dev-16",
+   "query": "Design a REST API for a library book-lending service.",
+   "request_type": "technical_design",
+   "complexity": 3
+  },
+  {
+   "id": "dev-17",
+   "query": "Design a scalable notification system that supports email, SMS and push for 10M users.",
+   "request_type": "technical_design",
+   "complexity": 4
+  },
+  {
+   "id": "dev-18",
+   "query": "How should I structure a multi-tenant SaaS database schema: shared tables or schema per tenant?",
+   "request_type": "technical_design",
+   "complexity": 4
+  },
+  {
+   "id": "dev-19",
+   "query": "Propose an architecture for ingesting 50k events per second with exactly-once processing.",
+   "request_type": "technical_design",
+   "complexity": 4
+  },
+  {
+   "id": "dev-20",
+   "query": "Design a globally distributed rate limiter with sub-10ms decisions and graceful degradation during regional outages.",
+   "request_type": "technical_design",
+   "complexity": 5
+  },
+  {
+   "id": "dev-21",
+   "query": "Sketch a CI pipeline for a monorepo with Rust and TypeScript packages.",
+   "request_type": "technical_design",
+   "complexity": 3
+  },
+  {
+   "id": "dev-22",
+   "query": "Compare BFS and DFS for finding the shortest path in an unweighted graph.",
+   "request_type": "analytical_reasoning",
+   "complexity": 2
+  },
+  {
+   "id": "dev-23",
+   "query": "Compare PostgreSQL and MongoDB for an analytics workload and recommend one.",
+   "request_type": "analytical_reasoning",
+   "complexity": 3
+  },
+  {
+   "id": "dev-24",
+   "query": "What are the trade-offs between microservices and a modular monolith for a team of five?",
+   "request_type": "analytical_reasoning",
+   "complexity": 3
+  },
+  {
+   "id": "dev-25",
+   "query": "Given these three quarterly revenue figures and churn rates, which pricing change would likely hurt growth least, and why?",
+   "request_type": "analytical_reasoning",
+   "complexity": 4,
+   "context": "Q1 $1.2M churn 4%, Q2 $1.4M churn 6%, Q3 $1.5M churn 9%."
+  },
+  {
+   "id": "dev-26",
+   "query": "Analyze the time and space complexity of this memoized solution and argue whether a bottom-up rewrite is worth it.",
+   "request_type": "analytical_reasoning",
+   "complexity": 4
+  },
+  {
+   "id": "dev-27",
+   "query": "Evaluate whether switching our inference fleet from GPUs to a distilled CPU model is cost-effective, given latency SLOs and a 30% accuracy drop on the long tail.",
+   "request_type": "analytical_reasoning",
+   "complexity": 5
+  },
+  {
+   "id": "dev-28",
+   "query": "Why might A/B test results flip sign when segmented by device type?",
+   "request_type": "analytical_reasoning",
+   "complexity": 3
+  },
+  {
+   "id": "dev-29",
+   "query": "Rewrite 'thx for ur help' to sound a bit more polite.",
+   "request_type": "writing",
+   "complexity": 1
+  },
+  {
+   "id": "dev-30",
+   "query": "Write a short thank-you note to my neighbour for watering my plants.",
+   "request_type": "writing",
+   "complexity": 2
+  },
+  {
+   "id": "dev-31",
+   "query": "Write a professional email requesting two days of leave next week.",
+   "request_type": "writing",
+   "complexity": 3
+  },
+  {
+   "id": "dev-32",
+   "query": "Draft a LinkedIn post announcing that I finished my internship at a fintech startup.",
+   "request_type": "writing",
+   "complexity": 3
+  },
+  {
+   "id": "dev-33",
+   "query": "Write an email to my professor asking for an extension on the databases assignment.",
+   "request_type": "writing",
+   "complexity": 3
+  },
+  {
+   "id": "dev-34",
+   "query": "Write a 600-word blog post explaining vector databases to non-technical product managers.",
+   "request_type": "writing",
+   "complexity": 4
+  },
+  {
+   "id": "dev-35",
+   "query": "Draft a cover letter for a data analyst internship that highlights my SQL and dashboard projects.",
+   "request_type": "writing",
+   "complexity": 4
+  },
+  {
+   "id": "dev-36",
+   "query": "What is the capital of Japan?",
+   "request_type": "factual_lookup",
+   "complexity": 1
+  },
+  {
+   "id": "dev-37",
+   "query": "Who wrote the novel Pride and Prejudice?",
+   "request_type": "factual_lookup",
+   "complexity": 1
+  },
+  {
+   "id": "dev-38",
+   "query": "How many bytes are in a kibibyte?",
+   "request_type": "factual_lookup",
+   "complexity": 1
+  },
+  {
+   "id": "dev-39",
+   "query": "When was the TCP protocol first standardized, and in which RFC?",
+   "request_type": "factual_lookup",
+   "complexity": 2
+  },
+  {
+   "id": "dev-40",
+   "query": "What is the difference between HTTP status codes 401 and 403?",
+   "request_type": "factual_lookup",
+   "complexity": 2
+  },
+  {
+   "id": "dev-41",
+   "query": "Which year did the first iPhone launch and what was its storage capacity?",
+   "request_type": "factual_lookup",
+   "complexity": 2
+  },
+  {
+   "id": "dev-42",
+   "query": "What are the main causes of the 2008 financial crisis, with the key dates?",
+   "request_type": "factual_lookup",
+   "complexity": 3
+  },
+  {
+   "id": "dev-43",
+   "query": "Hello, how are you?",
+   "request_type": "general",
+   "complexity": 1
+  },
+  {
+   "id": "dev-44",
+   "query": "Thanks, that helps!",
+   "request_type": "general",
+   "complexity": 1
+  },
+  {
+   "id": "dev-45",
+   "query": "Can you help me with something?",
+   "request_type": "general",
+   "complexity": 1
+  },
+  {
+   "id": "dev-46",
+   "query": "I have an interview tomorrow and I'm a bit nervous. Any general advice?",
+   "request_type": "general",
+   "complexity": 2
+  },
+  {
+   "id": "dev-47",
+   "query": "Tell me a fun fact.",
+   "request_type": "general",
+   "complexity": 2
+  },
+  {
+   "id": "dev-48",
+   "query": "I want to get better at learning new things quickly. How should I plan my week?",
+   "request_type": "general",
+   "complexity": 3
+  },
+  {
+   "id": "dev-49",
+   "query": "What can you do?",
+   "request_type": "general",
+   "complexity": 2
+  },
+  {
+   "id": "dev-50",
+   "query": "Hi there! Hope your day is going great. Quick one, no rush at all: could you write a SQL query that returns the top 5 customers by total order value? Thanks so much in advance!!",
+   "request_type": "code_generation",
+   "complexity": 2
+  },
+  {
+   "id": "dev-51",
+   "query": "We're thinking about moving off our monolith. Before we start, how should we split services and handle data ownership between them?",
+   "request_type": "technical_design",
+   "complexity": 4
+  },
+  {
+   "id": "dev-52",
+   "query": "what's the boiling point of water at sea level in fahrenheit",
+   "request_type": "factual_lookup",
+   "complexity": 1
+  },
+  {
+   "id": "dev-53",
+   "query": "Make this sentence shorter: 'In the event that it should happen to rain, the picnic will be postponed.'",
+   "request_type": "writing",
+   "complexity": 2
+  },
+  {
+   "id": "dev-54",
+   "query": "is `==` vs `is` different in python?",
+   "request_type": "code_understanding",
+   "complexity": 2
+  },
+  {
+   "id": "dev-55",
+   "query": "My team keeps missing sprint goals. Looking at velocity dropping 30% after we added two new hires, what are the most likely causes?",
+   "request_type": "analytical_reasoning",
+   "complexity": 4
+  }
+ ]
+}
