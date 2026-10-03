@@ -1,0 +1,17 @@
+[package]
+name = "nasiko-tool-compact"
+edition.workspace = true
+version.workspace = true
+
+# Pure library: no IO, no env reads, no provider code. `nasiko-llm-router` depends on this
+# crate, never the other way round, so it carries its own `ToolDef` / `ToolCall` types.
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+# JSON Schema `pattern` validation in the decoder. A pattern this engine cannot compile is
+# reported as unsupported at encode time, so the request bypasses compaction.
+regex = { workspace = true }
+
+[dev-dependencies]
+proptest = "1"

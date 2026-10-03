@@ -288,6 +288,11 @@ async fn chat_core(
         "brevity: directive decision"
     );
 
+    // ── compact tools seam (P1, opt-in) ───────────────────────────────────────────────────
+    // Last, so the definitions it writes are never compressed and never count toward brevity's
+    // floor. Off by default; with the flag off `req` is untouched (compact_tools::tests).
+    let compact_tools = crate::compact_tools::apply(&mut req, &ctx.cfg);
+
     // ── savings ledger inputs ─────────────────────────────────────────────────────────────
     // Measured here, after both seams, because this is the payload the provider will actually
     // bill for — which is what makes `sent_bytes / reported_input_tokens` a calibration rather
@@ -371,9 +376,28 @@ async fn chat_core(
     }
 
     // Non-streaming: run with ordered fallbacks; usage records the effective provider/model.
-    let (resp, (provider, model)) = fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
-        .instrument(llm_span.clone())
-        .await?;
+    let (mut resp, (mut provider, mut model)) =
+        fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
+            .instrument(llm_span.clone())
+            .await?;
+    // Compact calls back into native `tool_calls`. A reply that does not decode is never
+    // returned as a guessed call: the original request is resent with its native tools.
+    // (Usage is logged for the response actually returned; the discarded attempt is not.)
+    if let Some(applied) = &compact_tools
+        && let Err(e) = crate::compact_tools::restore_response(&mut resp, &applied.tools)
+    {
+        tracing::warn!(
+            target: "nasiko::llm_router::compact_tools",
+            %agent_id,
+            code = e.code(),
+            error = %e,
+            "compact_tools: reply did not decode; resending with native tools"
+        );
+        (resp, (provider, model)) =
+            fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &applied.original)
+                .instrument(llm_span.clone())
+                .await?;
+    }
     let latency_ms = started.elapsed().as_millis() as i64;
 
     // Record effective model and token usage on the server-side gen_ai span.
@@ -1132,6 +1156,157 @@ mod tests {
         assert!(
             sent.contains("why did the deploy fail?"),
             "the user's own question was altered"
+        );
+    }
+
+    // ── compact tools (P1): what reaches the wire, and what comes back ───────────────────
+
+    fn weather_request() -> Value {
+        json!({
+            "model": "gpt-4o",
+            "messages": [{ "role": "user", "content": "Weather in Pune?" }],
+            // Two tools: with one tiny tool the compact body is not smaller, and the size guard
+            // (correctly) sends it natively.
+            "tools": [{ "type": "function", "function": {
+                "name": "get_weather",
+                "description": "Get the current weather for a city.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "city": { "type": "string", "description": "City name" },
+                        "unit": { "type": "string", "enum": ["c", "f"], "description": "Temperature unit" },
+                        "days": { "type": "integer", "minimum": 1, "maximum": 7, "description": "Forecast days" }
+                    },
+                    "required": ["city"]
+                }
+            }}, { "type": "function", "function": {
+                "name": "set_reminder",
+                "description": "Set a reminder for the user.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "text": { "type": "string", "description": "What to remind about" },
+                        "at": { "type": "string", "format": "date-time", "description": "When, ISO 8601" },
+                        "repeat": { "type": "string", "enum": ["none", "daily", "weekly"] }
+                    },
+                    "required": ["text", "at"]
+                }
+            }}]
+        })
+    }
+
+    /// One request with the compact-tools flag set. The mock answers `compact_reply` to a
+    /// compact request and a native tool call to a request that still carries `tools`; every
+    /// body it receives is returned, in order, with the rendered response.
+    async fn compact_run(enabled: bool, compact_reply: &'static str) -> (Vec<Value>, Value) {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let capture = Arc::clone(&seen);
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body_from_request(move |request| {
+                let body: Value =
+                    serde_json::from_slice(request.body().map(Vec::as_slice).unwrap_or_default())
+                        .unwrap_or_default();
+                let message = if body.get("tools").is_some() {
+                    json!({ "role": "assistant", "content": null, "tool_calls": [{
+                        "id": "call_native", "type": "function",
+                        "function": { "name": "get_weather", "arguments": "{\"city\":\"Pune\"}" }
+                    }]})
+                } else {
+                    json!({ "role": "assistant", "content": compact_reply })
+                };
+                capture.lock().unwrap_or_else(|e| e.into_inner()).push(body);
+                json!({
+                    "id": "chatcmpl-x", "object": "chat.completion", "model": "gpt-4o",
+                    "choices": [{ "index": 0, "message": message, "finish_reason": "stop" }],
+                    "usage": { "prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7 }
+                })
+                .to_string()
+                .into_bytes()
+            })
+            .expect_at_least(1)
+            .create_async()
+            .await;
+
+        let mut ctx = ctx_with(server.url());
+        ctx.cfg = Arc::new(GatewayConfig {
+            compact_tools_enabled: enabled,
+            ..(*ctx.cfg).clone()
+        });
+        let store = Store {
+            config: None,
+            is_coding_agent: false,
+            compress_enabled: false,
+        };
+        let resp = chat_core(
+            &ctx,
+            &store,
+            &auth_headers(&token()),
+            weather_request(),
+            InboundFormat::OpenAi,
+            None,
+        )
+        .await
+        .unwrap();
+        let rendered: Value = serde_json::from_str(&body_string(resp).await).unwrap();
+        let bodies = seen.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        (bodies, rendered)
+    }
+
+    #[tokio::test]
+    async fn compact_tools_off_sends_the_native_request_unchanged() {
+        let (bodies, resp) = compact_run(false, "unused").await;
+        assert_eq!(bodies.len(), 1);
+        let original = weather_request();
+        assert_eq!(
+            bodies[0]["tools"], original["tools"],
+            "tools must reach the provider as sent"
+        );
+        assert_eq!(
+            bodies[0]["messages"], original["messages"],
+            "no message may be added"
+        );
+        assert_eq!(
+            resp["choices"][0]["message"]["tool_calls"][0]["id"],
+            "call_native"
+        );
+    }
+
+    #[tokio::test]
+    async fn compact_tools_on_sends_definitions_and_returns_native_tool_calls() {
+        let (bodies, resp) = compact_run(true, "<<call get_weather {\"city\":\"Pune\"}>>").await;
+        assert_eq!(bodies.len(), 1);
+        let sent = &bodies[0];
+        assert!(
+            sent.get("tools").is_none(),
+            "native tools must not be sent: {sent}"
+        );
+        let system = sent["messages"][0]["content"].as_str().unwrap();
+        assert!(system.contains("get_weather: Get the current weather for a city."));
+        assert!(system.contains(" city: str"));
+
+        let choice = &resp["choices"][0];
+        assert_eq!(choice["finish_reason"], "tool_calls");
+        let call = &choice["message"]["tool_calls"][0];
+        assert_eq!(call["type"], "function");
+        assert_eq!(call["function"]["name"], "get_weather");
+        assert_eq!(call["function"]["arguments"], "{\"city\":\"Pune\"}");
+        assert!(call["id"].as_str().unwrap().starts_with("call_"));
+    }
+
+    #[tokio::test]
+    async fn compact_tools_on_never_returns_an_invalid_call_and_falls_back_to_native() {
+        // Missing the required `city`: the decoder refuses, and the router asks again natively.
+        let (bodies, resp) = compact_run(true, "<<call get_weather {}>>").await;
+        assert_eq!(bodies.len(), 2, "expected a native retry");
+        assert!(bodies[0].get("tools").is_none());
+        assert_eq!(bodies[1]["tools"], weather_request()["tools"]);
+        assert_eq!(
+            resp["choices"][0]["message"]["tool_calls"][0]["id"],
+            "call_native"
         );
     }
 

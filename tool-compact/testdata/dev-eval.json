@@ -1,0 +1,379 @@
+{
+  "schema_version": "compact-tools-eval-v1",
+  "purpose": "Our own development set for compact tool calling: wider schemas (nested objects, arrays of objects, nullable, patterns, limits), multi-call, no-call, history, escaping and a forced tool_choice. Same shape as the public set. Dates are relative to the system message (Saturday 2026-10-03, IST).",
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "create_calendar_event",
+        "description": "Create an event in the user's calendar.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "title": {"type": "string", "description": "Event title"},
+            "start": {"type": "string", "format": "date-time", "description": "Start time, ISO 8601"},
+            "duration_min": {"type": "integer", "description": "Duration in minutes"},
+            "attendees": {"type": "array", "items": {"type": "string"}, "description": "Attendee emails"},
+            "visibility": {"type": "string", "enum": ["public", "private"]}
+          },
+          "required": ["title", "start"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "send_email",
+        "description": "Send an email from the user's account.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "to": {"type": "array", "items": {"type": "string"}, "description": "Recipient emails"},
+            "subject": {"type": "string", "description": "Subject line"},
+            "body": {"type": "string", "description": "Plain-text body"},
+            "cc": {"type": "array", "items": {"type": "string"}, "description": "CC emails"}
+          },
+          "required": ["to", "subject", "body"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_weather",
+        "description": "Get current conditions and an optional multi-day forecast for a city.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "city": {"type": "string", "description": "City name, e.g. 'Pune' or 'Austin, TX'"},
+            "unit": {"type": "string", "enum": ["c", "f"], "default": "c", "description": "Temperature unit"},
+            "days": {"type": "integer", "minimum": 1, "maximum": 7, "description": "Number of forecast days; omit for current conditions only"}
+          },
+          "required": ["city"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "search_flights",
+        "description": "Search one-way flights between two airports.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "origin": {"type": "string", "pattern": "^[A-Z]{3}$", "description": "Origin IATA airport code"},
+            "destination": {"type": "string", "pattern": "^[A-Z]{3}$", "description": "Destination IATA airport code"},
+            "date": {"type": "string", "format": "date", "description": "Departure date, YYYY-MM-DD"},
+            "cabin": {"type": "string", "enum": ["economy", "premium_economy", "business", "first"], "description": "Cabin class; omit for any"},
+            "passengers": {
+              "type": "object",
+              "description": "Traveller counts",
+              "properties": {
+                "adults": {"type": "integer", "minimum": 1},
+                "children": {"type": "integer", "minimum": 0, "description": "Travellers aged 2-11"}
+              },
+              "required": ["adults"]
+            },
+            "nonstop": {"type": "boolean", "description": "Only direct flights"}
+          },
+          "required": ["origin", "destination", "date", "passengers"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "create_order",
+        "description": "Place a retail order for the user.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "items": {
+              "type": "array",
+              "minItems": 1,
+              "description": "Products to order",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "sku": {"type": "string", "description": "Product SKU"},
+                  "qty": {"type": "integer", "minimum": 1, "description": "Quantity"},
+                  "gift_wrap": {"type": "boolean"}
+                },
+                "required": ["sku", "qty"]
+              }
+            },
+            "shipping": {
+              "type": "object",
+              "properties": {
+                "name": {"type": "string", "description": "Recipient full name"},
+                "address": {
+                  "type": "object",
+                  "properties": {
+                    "line1": {"type": "string", "description": "Street address"},
+                    "city": {"type": "string"},
+                    "postal_code": {"type": "string"},
+                    "country": {"type": "string", "enum": ["IN", "US", "GB", "DE"], "description": "ISO country code"}
+                  },
+                  "required": ["line1", "city", "postal_code", "country"]
+                }
+              },
+              "required": ["name", "address"]
+            },
+            "priority": {"type": "string", "enum": ["standard", "express"], "description": "Shipping speed"}
+          },
+          "required": ["items", "shipping"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "update_ticket",
+        "description": "Update a support ticket. Only the fields given are changed.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "ticket_id": {"type": "string", "pattern": "^TKT-[0-9]+$", "description": "Ticket ID like TKT-123"},
+            "status": {"type": "string", "enum": ["open", "pending", "resolved", "closed"]},
+            "assignee": {"type": ["string", "null"], "description": "Assignee username; null to unassign"},
+            "priority": {"type": "integer", "minimum": 1, "maximum": 4, "description": "1 = urgent, 4 = low"},
+            "tags": {"type": "array", "items": {"type": "string"}, "description": "Tags to set"}
+          },
+          "required": ["ticket_id"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "query_records",
+        "description": "Query rows from a business table.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "table": {"type": "string", "enum": ["customers", "orders", "invoices"]},
+            "filters": {
+              "type": "array",
+              "description": "All filters must match",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "field": {"type": "string", "description": "Column name"},
+                  "op": {"type": "string", "enum": ["eq", "neq", "gt", "lt", "contains"]},
+                  "value": {"type": ["string", "number", "boolean"]}
+                },
+                "required": ["field", "op", "value"]
+              }
+            },
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Max rows"},
+            "order_by": {"type": "string", "description": "Column to sort by; prefix '-' for descending"}
+          },
+          "required": ["table"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "set_reminder",
+        "description": "Set a reminder notification for the user.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "text": {"type": "string", "description": "What to remind about"},
+            "at": {"type": "string", "format": "date-time", "description": "First reminder time, ISO 8601 with offset"},
+            "repeat": {"type": "string", "enum": ["none", "daily", "weekly"], "default": "none"}
+          },
+          "required": ["text", "at"]
+        }
+      }
+    }
+  ],
+  "cases": [
+    {
+      "id": "dev-001",
+      "tools": ["get_weather", "set_reminder"],
+      "messages": [
+        {"role": "system", "content": "Today is Saturday 2026-10-03. The user's timezone is IST (UTC+05:30)."},
+        {"role": "user", "content": "What's the weather in Pune right now?"}
+      ],
+      "expected": [{"name": "get_weather", "arguments": {"city": "Pune"}}]
+    },
+    {
+      "id": "dev-002",
+      "tools": ["get_weather"],
+      "messages": [
+        {"role": "system", "content": "Today is Saturday 2026-10-03. The user's timezone is IST (UTC+05:30)."},
+        {"role": "user", "content": "Give me a 3-day forecast for Austin in Fahrenheit."}
+      ],
+      "expected": [{"name": "get_weather", "arguments": {"city": "Austin", "unit": "f", "days": 3}}],
+      "match": {"free_text_fields": ["city"]}
+    },
+    {
+      "id": "dev-003",
+      "tools": ["search_flights", "get_weather"],
+      "messages": [
+        {"role": "system", "content": "Today is Saturday 2026-10-03. The user's timezone is IST (UTC+05:30)."},
+        {"role": "user", "content": "Find nonstop business class flights from BOM to SFO on 2026-11-12 for 2 adults and 1 child."}
+      ],
+      "expected": [{"name": "search_flights", "arguments": {"origin": "BOM", "destination": "SFO", "date": "2026-11-12", "cabin": "business", "passengers": {"adults": 2, "children": 1}, "nonstop": true}}]
+    },
+    {
+      "id": "dev-004",
+      "tools": ["search_flights"],
+      "messages": [
+        {"role": "system", "content": "Today is Saturday 2026-10-03. The user's timezone is IST (UTC+05:30)."},
+        {"role": "user", "content": "Any flights from DEL to LHR next Friday? Just me travelling."}
+      ],
+      "expected": [{"name": "search_flights", "arguments": {"origin": "DEL", "destination": "LHR", "date": "2026-10-09", "passengers": {"adults": 1}}}]
+    },
+    {
+      "id": "dev-005",
+      "tools": ["create_order", "send_email"],
+      "messages": [
+        {"role": "system", "content": "Today is Saturday 2026-10-03. The user's timezone is IST (UTC+05:30)."},
+        {"role": "user", "content": "Order 2 units of SKU A-100 and 1 of B-200 gift wrapped. Ship express to Riya Shah, 12 MG Road, Bengaluru 560001, India."}
+      ],
+      "expected": [{"name": "create_order", "arguments": {"items": [{"sku": "A-100", "qty": 2}, {"sku": "B-200", "qty": 1, "gift_wrap": true}], "shipping": {"name": "Riya Shah", "address": {"line1": "12 MG Road", "city": "Bengaluru", "postal_code": "560001", "country": "IN"}}, "priority": "express"}}]
+    },
+    {
+      "id": "dev-006",
+      "tools": ["update_ticket", "send_email"],
+      "messages": [
+        {"role": "system", "content": "Today is Saturday 2026-10-03. The user's timezone is IST (UTC+05:30)."},
+        {"role": "user", "content": "Close ticket TKT-4821 and unassign it."}
+      ],
+      "expected": [{"name": "update_ticket", "arguments": {"ticket_id": "TKT-4821", "status": "closed", "assignee": null}}]
+    },
+    {
+      "id": "dev-007",
+      "tools": ["update_ticket"],
+      "messages": [
+        {"role": "system", "content": "Today is Saturday 2026-10-03. The user's timezone is IST (UTC+05:30)."},
+        {"role": "user", "content": "Mark TKT-77 as urgent and tag it billing and refund."}
+      ],
+      "expected": [{"name": "update_ticket", "arguments": {"ticket_id": "TKT-77", "priority": 1, "tags": ["billing", "refund"]}}]
+    },
+    {
+      "id": "dev-008",
+      "tools": ["query_records"],
+      "messages": [
+        {"role": "system", "content": "Today is Saturday 2026-10-03. The user's timezone is IST (UTC+05:30). Order rows have columns id, customer_id, amount, status, created_at."},
+        {"role": "user", "content": "Show the 10 most recent orders with an amount over 500."}
+      ],
+      "expected": [{"name": "query_records", "arguments": {"table": "orders", "filters": [{"field": "amount", "op": "gt", "value": 500}], "limit": 10, "order_by": "-created_at"}}]
+    },
+    {
+      "id": "dev-009",
+      "tools": ["set_reminder", "create_calendar_event"],
+      "messages": [
+        {"role": "system", "content": "Today is Saturday 2026-10-03. The user's timezone is IST (UTC+05:30)."},
+        {"role": "user", "content": "Remind me every day at 9am to take my vitamins, starting tomorrow."}
+      ],
+      "expected": [{"name": "set_reminder", "arguments": {"text": "Take vitamins", "at": "2026-10-04T09:00:00+05:30", "repeat": "daily"}}],
+      "match": {"free_text_fields": ["text"]}
+    },
+    {
+      "id": "dev-010",
+      "tools": ["send_email", "set_reminder", "create_calendar_event"],
+      "messages": [
+        {"role": "system", "content": "Today is Saturday 2026-10-03. The user's timezone is IST (UTC+05:30)."},
+        {"role": "user", "content": "Email priya@example.com the Q3 summary: revenue is up 12%. Then remind me Monday at 10am to follow up with her."}
+      ],
+      "expected": [
+        {"name": "send_email", "arguments": {"to": ["priya@example.com"], "subject": "Q3 summary", "body": "Revenue is up 12%."}},
+        {"name": "set_reminder", "arguments": {"text": "Follow up with Priya", "at": "2026-10-05T10:00:00+05:30"}}
+      ],
+      "match": {"free_text_fields": ["subject", "body", "text"]}
+    },
+    {
+      "id": "dev-011",
+      "tools": ["create_calendar_event", "send_email", "get_weather", "search_flights", "create_order", "update_ticket", "query_records", "set_reminder"],
+      "messages": [
+        {"role": "system", "content": "Today is Saturday 2026-10-03. The user's timezone is IST (UTC+05:30)."},
+        {"role": "user", "content": "Thanks, that's all for now!"}
+      ],
+      "expected": []
+    },
+    {
+      "id": "dev-012",
+      "tools": ["search_flights"],
+      "messages": [
+        {"role": "system", "content": "Today is Saturday 2026-10-03. The user's timezone is IST (UTC+05:30)."},
+        {"role": "user", "content": "What does IATA stand for?"}
+      ],
+      "expected": []
+    },
+    {
+      "id": "dev-013",
+      "tools": ["get_weather", "set_reminder"],
+      "messages": [
+        {"role": "system", "content": "Today is Saturday 2026-10-03. The user's timezone is IST (UTC+05:30)."},
+        {"role": "user", "content": "Weather in Pune?"},
+        {"role": "assistant", "content": null, "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "get_weather", "arguments": "{\"city\":\"Pune\"}"}}]},
+        {"role": "tool", "tool_call_id": "call_1", "content": "{\"temp_c\":31,\"conditions\":\"clear\"}"},
+        {"role": "assistant", "content": "It's 31°C and clear in Pune."},
+        {"role": "user", "content": "Nice. Remind me at 6pm today to water the plants."}
+      ],
+      "expected": [{"name": "set_reminder", "arguments": {"text": "Water the plants", "at": "2026-10-03T18:00:00+05:30"}}],
+      "match": {"free_text_fields": ["text"]}
+    },
+    {
+      "id": "dev-014",
+      "tools": ["create_calendar_event", "send_email", "get_weather", "search_flights", "create_order", "update_ticket", "query_records", "set_reminder"],
+      "messages": [
+        {"role": "system", "content": "Today is Saturday 2026-10-03. The user's timezone is IST (UTC+05:30)."},
+        {"role": "user", "content": "Book a private 45 minute 1:1 with arjun@example.com on Tuesday at 4pm."}
+      ],
+      "expected": [{"name": "create_calendar_event", "arguments": {"title": "1:1 with Arjun", "start": "2026-10-06T16:00:00+05:30", "duration_min": 45, "attendees": ["arjun@example.com"], "visibility": "private"}}],
+      "match": {"free_text_fields": ["title"]}
+    },
+    {
+      "id": "dev-015",
+      "tools": ["send_email"],
+      "messages": [
+        {"role": "system", "content": "Today is Saturday 2026-10-03. The user's timezone is IST (UTC+05:30)."},
+        {"role": "user", "content": "Email dev@example.com with the subject 'Fix >> operator' and this exact body: Use \"a >> b\" instead of {a > b}."}
+      ],
+      "expected": [{"name": "send_email", "arguments": {"to": ["dev@example.com"], "subject": "Fix >> operator", "body": "Use \"a >> b\" instead of {a > b}."}}]
+    },
+    {
+      "id": "dev-016",
+      "tools": ["get_weather"],
+      "tool_choice": "required",
+      "messages": [
+        {"role": "system", "content": "Today is Saturday 2026-10-03. The user's timezone is IST (UTC+05:30)."},
+        {"role": "user", "content": "Is it raining in Mumbai?"}
+      ],
+      "expected": [{"name": "get_weather", "arguments": {"city": "Mumbai"}}]
+    },
+    {
+      "id": "dev-017",
+      "tools": ["query_records", "update_ticket"],
+      "messages": [
+        {"role": "system", "content": "Today is Saturday 2026-10-03. The user's timezone is IST (UTC+05:30). Invoice rows have columns id, customer_id, total, status (paid|unpaid), due_date."},
+        {"role": "user", "content": "List unpaid invoices for customer C-1009."}
+      ],
+      "expected": [{"name": "query_records", "arguments": {"table": "invoices", "filters": [{"field": "status", "op": "eq", "value": "unpaid"}, {"field": "customer_id", "op": "eq", "value": "C-1009"}]}}]
+    },
+    {
+      "id": "dev-018",
+      "tools": ["get_weather", "send_email"],
+      "messages": [
+        {"role": "system", "content": "Today is Saturday 2026-10-03. The user's timezone is IST (UTC+05:30)."},
+        {"role": "user", "content": "Write me a haiku about rain."}
+      ],
+      "expected": []
+    }
+  ],
+  "decoder_cases": [
+    {"id": "dev-dc-001", "note": "call without the 'call' keyword", "tools": ["send_email"], "chunks": ["<<send_email {\"to\":[\"a@b.c\"],\"subject\":\"s\",\"body\":\"b\"}>>"], "expected": {"error": "malformed_call"}},
+    {"id": "dev-dc-002", "note": "comment inside JSON arguments", "tools": ["get_weather"], "chunks": ["<<call get_weather {\"city\":\"Pune\" # the city\n}>>"], "expected": {"error": "malformed_call"}},
+    {"id": "dev-dc-003", "note": "pattern violation", "tools": ["update_ticket"], "chunks": ["<<call update_ticket {\"ticket_id\":\"4821\"}>>"], "expected": {"error": "invalid_arguments"}},
+    {"id": "dev-dc-004", "note": "nested required field missing", "tools": ["search_flights"], "chunks": ["<<call search_flights {\"origin\":\"BOM\",\"destination\":\"SFO\",\"date\":\"2026-11-12\",\"passengers\":{}}>>"], "expected": {"error": "invalid_arguments"}},
+    {"id": "dev-dc-005", "note": "text, two calls split mid-name and mid-string, text", "tools": ["get_weather", "set_reminder"], "chunks": ["Sure.\n<<call get_wea", "ther {\"city\":\"Pu", "ne\"}>>\n<<call set_reminder {\"text\":\"a }>> b\",\"at\":\"2026-10-03T18:00:00+05:30\"}", ">>\nDone."], "expected": {"calls": [{"name": "get_weather", "arguments": {"city": "Pune"}}, {"name": "set_reminder", "arguments": {"text": "a }>> b", "at": "2026-10-03T18:00:00+05:30"}}]}},
+    {"id": "dev-dc-006", "note": "range violation", "tools": ["get_weather"], "chunks": ["<<call get_weather {\"city\":\"Pune\",\"days\":10}>>"], "expected": {"error": "invalid_arguments"}},
+    {"id": "dev-dc-007", "note": "nullable field accepts null", "tools": ["update_ticket"], "chunks": ["<<call update_ticket {\"ticket_id\":\"TKT-1\",\"assignee\":null}>>"], "expected": {"calls": [{"name": "update_ticket", "arguments": {"ticket_id": "TKT-1", "assignee": null}}]}},
+    {"id": "dev-dc-008", "note": "plain answer", "tools": ["get_weather"], "chunks": ["I can't help with ", "that, sorry."], "expected": {"calls": []}}
+  ]
+}
