@@ -1,0 +1,39 @@
+{
+  "examples": [
+    {
+      "id": "ex-001",
+      "query": "build me a python script that parses CSV",
+      "context": "working on data import pipeline",
+      "request_type": "code_generation",
+      "complexity": 4
+    },
+    {
+      "id": "ex-002",
+      "query": "what is the capital of France?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1
+    },
+    {
+      "id": "ex-003",
+      "query": "how should I design a distributed rate limiter API?",
+      "context": "high-scale cloud architecture",
+      "request_type": "technical_design",
+      "complexity": 5
+    },
+    {
+      "id": "ex-004",
+      "query": "explain how async/await works in Rust",
+      "context": null,
+      "request_type": "code_understanding",
+      "complexity": 3
+    },
+    {
+      "id": "ex-005",
+      "query": "calculate the probability of rolling two sixes",
+      "context": "math puzzle",
+      "request_type": "analytical_reasoning",
+      "complexity": 4
+    }
+  ]
+}

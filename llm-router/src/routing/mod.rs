@@ -33,7 +33,11 @@ mod salience_classifier;
 pub use boundary::{BoundarySignals, Mode, Phase};
 pub use cache::{CachedDecision, DecisionCache, NoopCache, RedisCache};
 pub use cells::{CellStore, InMemoryCellStore, PgCellStore};
-pub use classifier::{RequestType, Tier, classify, classify_request_type, signal};
+pub use classifier::{
+    AcrcClassifier, Classification, ClassifyError, ClassifyInput, FallbackClassifier,
+    HostedClassifier, LocalClassifier, RegexClassifier, RequestClassifier, RequestType, Tier,
+    classify, create_classifier, signal,
+};
 pub use registry::{PgTierRegistry, TierRegistry};
 pub use salience::{AllowAllGate, ClassifierSalienceGate, SalienceGate};
 
@@ -83,6 +87,10 @@ pub struct RouteInputs<'a> {
     pub signals: &'a BoundarySignals,
     /// The query to classify (latest user message text). `None` disables classification.
     pub query: Option<&'a str>,
+    /// Optional context (e.g. system history, code snippet, error log) for classification.
+    pub context: Option<&'a str>,
+    /// Optional RequestClassifier instance (defaults to RegexClassifier if None).
+    pub classifier: Option<&'a dyn RequestClassifier>,
 }
 
 /// The outcome of routing: the model to call and how it was chosen.
@@ -249,10 +257,30 @@ pub async fn route_model(
             // uses an entropy RNG (exploration drives learning); tests seed it. The RNG
             // (`ThreadRng`) is `!Send`, so it is scoped to drop before the next `.await` — the
             // handler future must stay `Send`.
+            let default_classifier = RegexClassifier::new();
+            let req_classifier: &dyn RequestClassifier =
+                inputs.classifier.copied().unwrap_or(&default_classifier);
+
+            let classification = req_classifier
+                .classify(ClassifyInput::new(query, inputs.context))
+                .await
+                .unwrap_or_else(|_| Classification {
+                    request_type: classify_request_type(query),
+                    complexity: 1,
+                    confidence: 0.70,
+                });
+            let request_type = classification.request_type;
+
             let learned = cell_store.load(inputs.provider).await;
-            let (tier, request_type) = {
+            let tier = {
                 let mut rng = rand::rng();
-                classify(query, inputs.provider, &learned, &mut rng)
+                pick_model_thompson(
+                    &learned,
+                    request_type,
+                    DEFAULT_W_QUALITY,
+                    DEFAULT_W_COST,
+                    &mut rng,
+                )
             };
             // Per-config tier override takes priority over the global registry.
             let config_override = match tier {
@@ -532,6 +560,8 @@ mod tests {
             tier3_model: None,
             signals,
             query: Some("hello"),
+            context: None,
+            classifier: None,
         }
     }
 
@@ -919,5 +949,58 @@ mod tests {
         ]));
         assert!(!is_tool_continuation(&[msg("user"), msg("assistant")]));
         assert!(!is_tool_continuation(&[]));
+    }
+
+    #[tokio::test]
+    async fn router_uses_request_classifier_at_boundary() {
+        struct CustomClassifier;
+        #[async_trait]
+        impl RequestClassifier for CustomClassifier {
+            async fn classify(
+                &self,
+                _input: ClassifyInput<'_>,
+            ) -> Result<Classification, ClassifyError> {
+                Ok(Classification {
+                    request_type: RequestType::TechnicalDesign,
+                    complexity: 5,
+                    confidence: 0.99,
+                })
+            }
+        }
+
+        let classifier = CustomClassifier;
+        let cache = FakeCache::empty();
+        let s = signals(Some("c1"), Phase::Switch, Mode::FreeFlowing);
+        let mut i = inputs("anthropic", &s, None);
+        i.classifier = Some(&classifier);
+
+        let d = route_model(
+            &cache,
+            &test_support::StubRegistry,
+            &InMemoryCellStore::new(),
+            &AllowAllGate,
+            &i,
+        )
+        .await;
+
+        assert_eq!(d.source, RouteSource::Classified);
+        assert!(d.tier.is_some());
+    }
+
+    #[tokio::test]
+    async fn router_preserves_sticky_tier_during_continue_phase() {
+        let cache = FakeCache::with_hit("cached-model");
+        let s = signals(Some("c1"), Phase::Continue, Mode::FreeFlowing);
+        let d = route_model(
+            &cache,
+            &test_support::StubRegistry,
+            &InMemoryCellStore::new(),
+            &AllowAllGate,
+            &inputs("anthropic", &s, None),
+        )
+        .await;
+
+        assert_eq!(d.source, RouteSource::CacheHit);
+        assert_eq!(d.model, "cached-model");
     }
 }

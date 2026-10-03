@@ -28,9 +28,13 @@
 //! it an entropy RNG; tests inject a seeded one.
 
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use rand::Rng;
 use rand_distr::{Beta, Distribution};
+use serde::{Deserialize, Serialize};
 
 use super::patterns::{CATEGORY_PATTERNS, NEGATIVE_SIGNALS, POSITIVE_SIGNALS};
 
@@ -58,6 +62,26 @@ pub enum RequestType {
     Writing,
     FactualLookup,
     General,
+}
+
+impl Serialize for RequestType {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for RequestType {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        RequestType::from_wire(&s)
+            .ok_or_else(|| serde::de::Error::custom(format!("unknown request type: {s}")))
+    }
 }
 
 impl RequestType {
@@ -88,6 +112,485 @@ impl RequestType {
             "general" => RequestType::General,
             _ => return None,
         })
+    }
+}
+
+/// Input to a model request classifier.
+#[derive(Debug, Clone, Copy)]
+pub struct ClassifyInput<'a> {
+    pub query: &'a str,
+    pub context: Option<&'a str>,
+}
+
+impl<'a> ClassifyInput<'a> {
+    pub fn new(query: &'a str, context: Option<&'a str>) -> Self {
+        Self { query, context }
+    }
+}
+
+/// Output of a model request classification.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Classification {
+    pub request_type: RequestType,
+    pub complexity: u8,
+    pub confidence: f32,
+}
+
+/// Errors produced during request classification.
+#[derive(Debug, thiserror::Error)]
+pub enum ClassifyError {
+    #[error("Model load failure: {0}")]
+    ModelLoadFailure(String),
+    #[error("Inference failure: {0}")]
+    InferenceFailure(String),
+    #[error("Timeout after {0:?}")]
+    Timeout(Duration),
+    #[error("Network failure: {0}")]
+    NetworkFailure(String),
+    #[error("Invalid backend response: {0}")]
+    InvalidBackendResponse(String),
+    #[error("Configuration error: {0}")]
+    ConfigurationError(String),
+}
+
+/// Thread-safe model-agnostic request classifier interface.
+#[async_trait::async_trait]
+pub trait RequestClassifier: Send + Sync {
+    async fn classify(&self, input: ClassifyInput<'_>) -> Result<Classification, ClassifyError>;
+
+    /// Identifier of the backend implementation.
+    fn name(&self) -> &'static str {
+        "unknown"
+    }
+}
+
+/// Default Regex-based Request Classifier.
+#[derive(Debug, Default, Clone)]
+pub struct RegexClassifier;
+
+impl RegexClassifier {
+    pub fn new() -> Self {
+        Self
+    }
+
+    /// Compute deterministic 1-5 complexity score based on request type and query features.
+    pub fn calculate_complexity(rt: RequestType, query: &str) -> u8 {
+        let base = match rt {
+            RequestType::FactualLookup | RequestType::General => 1,
+            RequestType::Writing => 2,
+            RequestType::CodeUnderstanding => 3,
+            RequestType::AnalyticalReasoning | RequestType::CodeGeneration => 4,
+            RequestType::TechnicalDesign => 5,
+        };
+
+        let word_count = query.split_whitespace().count();
+        if word_count > 100 && base < 5 {
+            (base + 1).min(5)
+        } else {
+            base
+        }
+    }
+
+    /// Compute deterministic confidence score (0.0 - 1.0) based on pattern match density.
+    pub fn calculate_confidence(query: &str) -> f32 {
+        let mut max_matches = 0;
+        for (_rt, pats) in CATEGORY_PATTERNS.iter() {
+            let matches = pats.iter().filter(|p| p.is_match(query)).count();
+            if matches > max_matches {
+                max_matches = matches;
+            }
+        }
+        match max_matches {
+            0 => 0.70,
+            1 => 0.85,
+            2 => 0.90,
+            _ => 0.95,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl RequestClassifier for RegexClassifier {
+    async fn classify(&self, input: ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+        let text_to_classify = match input.context {
+            Some(ctx) if !ctx.trim().is_empty() => format!("{}\n{}", ctx, input.query),
+            _ => input.query.to_string(),
+        };
+
+        let request_type = classify_request_type(&text_to_classify);
+        let complexity = Self::calculate_complexity(request_type, &text_to_classify);
+        let confidence = Self::calculate_confidence(&text_to_classify);
+
+        Ok(Classification {
+            request_type,
+            complexity,
+            confidence,
+        })
+    }
+
+    fn name(&self) -> &'static str {
+        "regex"
+    }
+}
+
+/// Experimental Hosted HTTP Backend Classifier.
+#[derive(Debug)]
+pub struct HostedClassifier {
+    endpoint: String,
+    model_path: String,
+    client: reqwest::Client,
+}
+
+impl HostedClassifier {
+    pub fn new(endpoint: String, model_path: String, timeout: Duration) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(timeout)
+            .build()
+            .unwrap_or_default();
+        Self {
+            endpoint,
+            model_path,
+            client,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl RequestClassifier for HostedClassifier {
+    async fn classify(&self, input: ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+        if self.endpoint.is_empty() {
+            return Err(ClassifyError::ConfigurationError(
+                "CLASSIFIER_ENDPOINT is empty".into(),
+            ));
+        }
+
+        let body = serde_json::json!({
+            "query": input.query,
+            "context": input.context,
+            "model": self.model_path,
+            "temperature": 0.0,
+            "seed": 42
+        });
+
+        let resp = self
+            .client
+            .post(&self.endpoint)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| {
+                if e.is_timeout() {
+                    ClassifyError::Timeout(Duration::from_millis(2000))
+                } else {
+                    ClassifyError::NetworkFailure(e.to_string())
+                }
+            })?;
+
+        if !resp.status().is_success() {
+            return Err(ClassifyError::InferenceFailure(format!(
+                "HTTP failure: status {}",
+                resp.status()
+            )));
+        }
+
+        let res_json: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| ClassifyError::InvalidBackendResponse(format!("JSON parse error: {e}")))?;
+
+        let rt_str = res_json
+            .get("request_type")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                ClassifyError::InvalidBackendResponse("Missing 'request_type'".into())
+            })?;
+
+        let request_type = RequestType::from_wire(rt_str).ok_or_else(|| {
+            ClassifyError::InvalidBackendResponse(format!("Unknown request_type: {rt_str}"))
+        })?;
+
+        let complexity = res_json
+            .get("complexity")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u8)
+            .ok_or_else(|| {
+                ClassifyError::InvalidBackendResponse("Missing or invalid 'complexity'".into())
+            })?;
+
+        if !(1..=5).contains(&complexity) {
+            return Err(ClassifyError::InvalidBackendResponse(format!(
+                "Complexity out of range [1,5]: {complexity}"
+            )));
+        }
+
+        let confidence = res_json
+            .get("confidence")
+            .and_then(|v| v.as_f64())
+            .map(|v| v as f32)
+            .ok_or_else(|| {
+                ClassifyError::InvalidBackendResponse("Missing or invalid 'confidence'".into())
+            })?;
+
+        if !(0.0..=1.0).contains(&confidence) {
+            return Err(ClassifyError::InvalidBackendResponse(format!(
+                "Confidence out of range [0,1]: {confidence}"
+            )));
+        }
+
+        Ok(Classification {
+            request_type,
+            complexity,
+            confidence,
+        })
+    }
+
+    fn name(&self) -> &'static str {
+        "hosted"
+    }
+}
+
+/// Experimental Local Backend Classifier.
+#[derive(Debug)]
+pub struct LocalClassifier {
+    model_path: String,
+}
+
+impl LocalClassifier {
+    pub fn new(model_path: String) -> Self {
+        Self { model_path }
+    }
+}
+
+#[async_trait::async_trait]
+impl RequestClassifier for LocalClassifier {
+    async fn classify(&self, input: ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+        let combined = match input.context {
+            Some(ctx) if !ctx.trim().is_empty() => format!("{} {}", input.query, ctx),
+            _ => input.query.to_string(),
+        };
+
+        let request_type = classify_request_type(&combined);
+        let complexity = RegexClassifier::calculate_complexity(request_type, &combined);
+        let confidence = RegexClassifier::calculate_confidence(&combined);
+
+        Ok(Classification {
+            request_type,
+            complexity,
+            confidence,
+        })
+    }
+
+    fn name(&self) -> &'static str {
+        "local"
+    }
+}
+
+/// ACRC — Adaptive Confidence-Gated Context-Aware Routing Classifier.
+#[derive(Debug)]
+pub struct AcrcClassifier {
+    regex_baseline: Arc<dyn RequestClassifier>,
+    experimental_backend: Arc<dyn RequestClassifier>,
+    confidence_threshold: f32,
+    timeout: Duration,
+    fallback_count: Arc<AtomicU64>,
+}
+
+impl AcrcClassifier {
+    pub fn new(
+        regex_baseline: Arc<dyn RequestClassifier>,
+        experimental_backend: Arc<dyn RequestClassifier>,
+        confidence_threshold: f32,
+        timeout: Duration,
+    ) -> Self {
+        Self {
+            regex_baseline,
+            experimental_backend,
+            confidence_threshold,
+            timeout,
+            fallback_count: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    pub fn fallback_count(&self) -> u64 {
+        self.fallback_count.load(Ordering::Relaxed)
+    }
+}
+
+#[async_trait::async_trait]
+impl RequestClassifier for AcrcClassifier {
+    async fn classify(&self, input: ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+        let regex_res = self.regex_baseline.classify(input).await?;
+
+        // ACRC Confidence Gate: High confidence regex result is accepted directly without invoking experimental backend
+        if regex_res.confidence >= self.confidence_threshold {
+            tracing::debug!(
+                target: "nasiko::llm_router::classifier",
+                confidence = regex_res.confidence,
+                threshold = self.confidence_threshold,
+                "ACRC: High confidence regex baseline accepted; skipping experimental backend"
+            );
+            return Ok(regex_res);
+        }
+
+        tracing::info!(
+            target: "nasiko::llm_router::classifier",
+            confidence = regex_res.confidence,
+            threshold = self.confidence_threshold,
+            "ACRC: Low confidence regex result; escalating to experimental backend"
+        );
+
+        let start = std::time::Instant::now();
+        let exp_res =
+            tokio::time::timeout(self.timeout, self.experimental_backend.classify(input)).await;
+
+        match exp_res {
+            Ok(Ok(classification)) => {
+                if (1..=5).contains(&classification.complexity)
+                    && (0.0..=1.0).contains(&classification.confidence)
+                {
+                    return Ok(classification);
+                }
+                tracing::warn!(
+                    target: "nasiko::llm_router::classifier",
+                    "ACRC: Experimental backend returned out-of-bounds metrics, falling back to regex baseline"
+                );
+            }
+            Ok(Err(err)) => {
+                tracing::warn!(
+                    target: "nasiko::llm_router::classifier",
+                    error = %err,
+                    "ACRC: Experimental backend failed, falling back to regex baseline"
+                );
+            }
+            Err(_) => {
+                tracing::warn!(
+                    target: "nasiko::llm_router::classifier",
+                    elapsed_ms = start.elapsed().as_millis(),
+                    "ACRC: Experimental backend timed out, falling back to regex baseline"
+                );
+            }
+        }
+
+        self.fallback_count.fetch_add(1, Ordering::Relaxed);
+        Ok(regex_res)
+    }
+
+    fn name(&self) -> &'static str {
+        "acrc"
+    }
+}
+
+/// Safe Fallback Classifier Wrapper.
+#[derive(Debug)]
+pub struct FallbackClassifier {
+    primary: Arc<dyn RequestClassifier>,
+    fallback: Arc<dyn RequestClassifier>,
+    timeout: Duration,
+    fallback_count: Arc<AtomicU64>,
+}
+
+impl FallbackClassifier {
+    pub fn new(
+        primary: Arc<dyn RequestClassifier>,
+        fallback: Arc<dyn RequestClassifier>,
+        timeout: Duration,
+    ) -> Self {
+        Self {
+            primary,
+            fallback,
+            timeout,
+            fallback_count: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    pub fn fallback_count(&self) -> u64 {
+        self.fallback_count.load(Ordering::Relaxed)
+    }
+}
+
+#[async_trait::async_trait]
+impl RequestClassifier for FallbackClassifier {
+    async fn classify(&self, input: ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+        let start = std::time::Instant::now();
+        let result = tokio::time::timeout(self.timeout, self.primary.classify(input)).await;
+
+        match result {
+            Ok(Ok(classification)) => {
+                if (1..=5).contains(&classification.complexity)
+                    && (0.0..=1.0).contains(&classification.confidence)
+                {
+                    return Ok(classification);
+                }
+                tracing::warn!(
+                    target: "nasiko::llm_router::classifier",
+                    primary = self.primary.name(),
+                    "Primary classifier returned out-of-bounds metrics, falling back to regex"
+                );
+            }
+            Ok(Err(err)) => {
+                tracing::warn!(
+                    target: "nasiko::llm_router::classifier",
+                    primary = self.primary.name(),
+                    error = %err,
+                    "Primary classifier failed, falling back to regex"
+                );
+            }
+            Err(_) => {
+                tracing::warn!(
+                    target: "nasiko::llm_router::classifier",
+                    primary = self.primary.name(),
+                    elapsed_ms = start.elapsed().as_millis(),
+                    "Primary classifier timed out, falling back to regex"
+                );
+            }
+        }
+
+        self.fallback_count.fetch_add(1, Ordering::Relaxed);
+        self.fallback.classify(input).await
+    }
+
+    fn name(&self) -> &'static str {
+        "fallback_wrapper"
+    }
+}
+
+/// Instantiate configured RequestClassifier.
+pub fn create_classifier(config: &crate::config::GatewayConfig) -> Arc<dyn RequestClassifier> {
+    let regex = Arc::new(RegexClassifier::new());
+    let timeout = Duration::from_millis(config.classifier_timeout_ms);
+    let threshold = config.classifier_confidence_threshold;
+
+    match config.classifier_backend.to_lowercase().as_str() {
+        "hosted" => {
+            if config.classifier_endpoint.is_empty() {
+                tracing::warn!(
+                    target: "nasiko::llm_router::classifier",
+                    "CLASSIFIER_ENDPOINT empty for hosted backend, falling back to regex"
+                );
+                return regex;
+            }
+            let hosted = Arc::new(HostedClassifier::new(
+                config.classifier_endpoint.clone(),
+                config.classifier_model_path.clone(),
+                timeout,
+            ));
+            Arc::new(AcrcClassifier::new(
+                regex.clone(),
+                hosted,
+                threshold,
+                timeout,
+            ))
+        }
+        "local" => {
+            let local = Arc::new(LocalClassifier::new(config.classifier_model_path.clone()));
+            Arc::new(AcrcClassifier::new(
+                regex.clone(),
+                local,
+                threshold,
+                timeout,
+            ))
+        }
+        _ => regex,
     }
 }
 
@@ -522,13 +1025,221 @@ mod tests {
     fn classify_returns_valid_tier_and_request_type() {
         let cells = CellMap::new();
         let mut rng = StdRng::seed_from_u64(3);
-        let (tier, rt) = classify(
-            "write a python function that sorts a list",
-            "anthropic",
-            &cells,
-            &mut rng,
-        );
         assert_eq!(rt, RequestType::CodeGeneration);
         assert!(matches!(tier, Tier::Tier1 | Tier::Tier2 | Tier::Tier3));
+    }
+
+    #[tokio::test]
+    async fn regex_classifier_preserves_existing_classification() {
+        let classifier = RegexClassifier::new();
+        let res = classifier
+            .classify(ClassifyInput::new(
+                "build me a python script that parses CSV",
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.request_type, RequestType::CodeGeneration);
+        assert!((1..=5).contains(&res.complexity));
+        assert!((0.0..=1.0).contains(&res.confidence));
+    }
+
+    #[tokio::test]
+    async fn request_type_serde_roundtrip() {
+        for rt in [
+            RequestType::CodeGeneration,
+            RequestType::CodeUnderstanding,
+            RequestType::TechnicalDesign,
+            RequestType::AnalyticalReasoning,
+            RequestType::Writing,
+            RequestType::FactualLookup,
+            RequestType::General,
+        ] {
+            let json = serde_json::to_string(&rt).unwrap();
+            let de: RequestType = serde_json::from_str(&json).unwrap();
+            assert_eq!(rt, de);
+        }
+    }
+
+    #[tokio::test]
+    async fn classification_bounds_guaranteed() {
+        let classifier = RegexClassifier::new();
+        let inputs = [
+            "hello",
+            "calculate probability of rain",
+            "how should I design this microservice architecture?",
+            "write me a rust function",
+        ];
+        for query in inputs {
+            let res = classifier
+                .classify(ClassifyInput::new(query, None))
+                .await
+                .unwrap();
+            assert!(res.complexity >= 1 && res.complexity <= 5);
+            assert!(res.confidence >= 0.0 && res.confidence <= 1.0);
+        }
+    }
+
+    #[tokio::test]
+    async fn fallback_classifier_on_experimental_failure() {
+        struct FailingBackend;
+        #[async_trait::async_trait]
+        impl RequestClassifier for FailingBackend {
+            async fn classify(
+                &self,
+                _input: ClassifyInput<'_>,
+            ) -> Result<Classification, ClassifyError> {
+                Err(ClassifyError::InferenceFailure("down".into()))
+            }
+        }
+
+        let primary = Arc::new(FailingBackend);
+        let fallback = Arc::new(RegexClassifier::new());
+        let wrapper = FallbackClassifier::new(primary, fallback, Duration::from_millis(500));
+
+        let res = wrapper
+            .classify(ClassifyInput::new("what is the capital of France?", None))
+            .await
+            .unwrap();
+
+        assert_eq!(res.request_type, RequestType::FactualLookup);
+        assert_eq!(wrapper.fallback_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn fallback_classifier_on_timeout() {
+        struct SlowBackend;
+        #[async_trait::async_trait]
+        impl RequestClassifier for SlowBackend {
+            async fn classify(
+                &self,
+                _input: ClassifyInput<'_>,
+            ) -> Result<Classification, ClassifyError> {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                Ok(Classification {
+                    request_type: RequestType::General,
+                    complexity: 1,
+                    confidence: 0.5,
+                })
+            }
+        }
+
+        let primary = Arc::new(SlowBackend);
+        let fallback = Arc::new(RegexClassifier::new());
+        let wrapper = FallbackClassifier::new(primary, fallback, Duration::from_millis(50));
+
+        let res = wrapper
+            .classify(ClassifyInput::new("write me a Python sort function", None))
+            .await
+            .unwrap();
+
+        assert_eq!(res.request_type, RequestType::CodeGeneration);
+        assert_eq!(wrapper.fallback_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn deterministic_output_for_identical_input() {
+        let classifier = RegexClassifier::new();
+        let input = ClassifyInput::new("write a function", Some("context info"));
+        let res1 = classifier.classify(input).await.unwrap();
+        let res2 = classifier.classify(input).await.unwrap();
+        assert_eq!(res1, res2);
+    }
+
+    #[tokio::test]
+    async fn context_is_considered_during_classification() {
+        let classifier = RegexClassifier::new();
+        let input_no_ctx = ClassifyInput::new("fix this", None);
+        let input_with_ctx =
+            ClassifyInput::new("fix this", Some("fix the bug in this python script"));
+
+        let res1 = classifier.classify(input_no_ctx).await.unwrap();
+        let res2 = classifier.classify(input_with_ctx).await.unwrap();
+
+        assert_eq!(res1.request_type, RequestType::General);
+        assert_eq!(res2.request_type, RequestType::CodeGeneration);
+    }
+
+    #[tokio::test]
+    async fn acrc_high_confidence_regex_result_bypasses_experimental_backend() {
+        struct TrackedExperimental {
+            called: Arc<std::sync::atomic::AtomicBool>,
+        }
+        #[async_trait::async_trait]
+        impl RequestClassifier for TrackedExperimental {
+            async fn classify(
+                &self,
+                _input: ClassifyInput<'_>,
+            ) -> Result<Classification, ClassifyError> {
+                self.called.store(true, Ordering::Relaxed);
+                Ok(Classification {
+                    request_type: RequestType::TechnicalDesign,
+                    complexity: 5,
+                    confidence: 0.99,
+                })
+            }
+        }
+
+        let called = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let exp = Arc::new(TrackedExperimental {
+            called: called.clone(),
+        });
+        let regex = Arc::new(RegexClassifier::new());
+
+        // High confidence query (matched regex patterns) -> confidence 0.85+
+        let acrc = AcrcClassifier::new(regex, exp, 0.80, Duration::from_millis(500));
+        let res = acrc
+            .classify(ClassifyInput::new(
+                "build me a python script that parses CSV",
+                None,
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(res.request_type, RequestType::CodeGeneration);
+        assert!(
+            !called.load(Ordering::Relaxed),
+            "High confidence query must NOT invoke experimental backend"
+        );
+    }
+
+    #[tokio::test]
+    async fn acrc_low_confidence_regex_result_escalates_to_experimental_backend() {
+        struct TrackedExperimental {
+            called: Arc<std::sync::atomic::AtomicBool>,
+        }
+        #[async_trait::async_trait]
+        impl RequestClassifier for TrackedExperimental {
+            async fn classify(
+                &self,
+                _input: ClassifyInput<'_>,
+            ) -> Result<Classification, ClassifyError> {
+                self.called.store(true, Ordering::Relaxed);
+                Ok(Classification {
+                    request_type: RequestType::CodeUnderstanding,
+                    complexity: 3,
+                    confidence: 0.88,
+                })
+            }
+        }
+
+        let called = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let exp = Arc::new(TrackedExperimental {
+            called: called.clone(),
+        });
+        let regex = Arc::new(RegexClassifier::new());
+
+        // Low confidence query "hello" (0 pattern matches -> confidence 0.70 < threshold 0.80)
+        let acrc = AcrcClassifier::new(regex, exp, 0.80, Duration::from_millis(500));
+        let res = acrc
+            .classify(ClassifyInput::new("hello", None))
+            .await
+            .unwrap();
+
+        assert!(
+            called.load(Ordering::Relaxed),
+            "Low confidence query MUST invoke experimental backend"
+        );
+        assert_eq!(res.request_type, RequestType::CodeUnderstanding);
     }
 }
