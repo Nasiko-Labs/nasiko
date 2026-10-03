@@ -41,7 +41,6 @@ fn get_call_start_regex() -> &'static Regex {
         .get_or_init(|| Regex::new(r"<<call\s+([a-zA-Z0-9_\-]+)\s+").expect("invalid call regex"))
 }
 
-/// Formats native JSON schema types into a concise signature
 pub fn format_type(schema: &Value) -> String {
     if let Some(enum_vals) = schema.get("enum").and_then(|v| v.as_array()) {
         let items: Vec<String> = enum_vals
@@ -75,8 +74,6 @@ pub fn format_type(schema: &Value) -> String {
     }
 }
 
-/// Encodes JSON schema tools into compact signature lines[cite: 4]
-/// Places required fields first, followed by optional fields[cite: 4]
 pub fn encode_tools(tools: &[ToolDef]) -> Result<CompactTools, CompactError> {
     let mut lines = Vec::new();
     for tool in tools {
@@ -99,7 +96,6 @@ pub fn encode_tools(tools: &[ToolDef]) -> Result<CompactTools, CompactError> {
             .and_then(|p| p.get("properties"))
             .and_then(|p| p.as_object())
         {
-            // 1. Required fields first (in defined order)
             for req_name in &required_fields {
                 if let Some(schema) = props.get(req_name) {
                     let ty = format_type(schema);
@@ -107,7 +103,6 @@ pub fn encode_tools(tools: &[ToolDef]) -> Result<CompactTools, CompactError> {
                 }
             }
 
-            // 2. Optional fields next
             for (name, schema) in props {
                 if !required_fields.contains(name) {
                     let ty = format_type(schema);
@@ -131,7 +126,6 @@ pub fn encode_tools(tools: &[ToolDef]) -> Result<CompactTools, CompactError> {
     })
 }
 
-/// Fail-closed argument and schema validator[cite: 4]
 pub fn validate_call(call: &ToolCall, tools: &[ToolDef]) -> Result<(), CompactError> {
     let tool = tools
         .iter()
@@ -175,16 +169,15 @@ pub fn validate_call(call: &ToolCall, tools: &[ToolDef]) -> Result<(), CompactEr
     Ok(())
 }
 
-/// Parses balanced JSON and extracts call markers, handling `>>` inside string args[cite: 4]
-fn extract_next_call(text: &str) -> Option<(usize, usize, String, String)> {
+fn extract_next_call(text: &str) -> Option<(usize, String, String)> {
     let re = get_call_start_regex();
     let marker_idx = text.find("<<call")?;
     let remainder = &text[marker_idx..];
-    let mat = re.find(remainder)?;
     let caps = re.captures(remainder)?;
+    let match_len = caps.get(0)?.end();
     let tool_name = caps.get(1)?.as_str().to_string();
 
-    let json_start = marker_idx + mat.end();
+    let json_start = marker_idx + match_len;
     if json_start >= text.len() || !text[json_start..].starts_with('{') {
         return None;
     }
@@ -227,19 +220,18 @@ fn extract_next_call(text: &str) -> Option<(usize, usize, String, String)> {
         let ws_len = tail.len() - after_ws.len();
         let full_end = j_end + ws_len + 2;
         let json_str = text[json_start..j_end].to_string();
-        Some((marker_idx, full_end, tool_name, json_str))
+        Some((full_end, tool_name, json_str))
     } else {
         None
     }
 }
 
-/// Decodes non-streaming compact tool calls[cite: 4]
 pub fn decode_calls(text: &str, tools: &[ToolDef]) -> Result<Vec<ToolCall>, CompactError> {
     let mut calls = Vec::new();
     let mut cursor = 0;
 
     while cursor < text.len() {
-        if let Some((_, end, name, raw_args)) = extract_next_call(&text[cursor..]) {
+        if let Some((end, name, raw_args)) = extract_next_call(&text[cursor..]) {
             let args: Value = serde_json::from_str(&raw_args)
                 .map_err(|e| CompactError::InvalidArguments(e.to_string()))?;
 
@@ -257,7 +249,6 @@ pub fn decode_calls(text: &str, tools: &[ToolDef]) -> Result<Vec<ToolCall>, Comp
     Ok(calls)
 }
 
-/// Incremental streaming decoder capable of parsing markers split across chunks[cite: 4]
 pub struct StreamDecoder<'a> {
     tools: &'a [ToolDef],
     buffer: String,
@@ -275,7 +266,7 @@ impl<'a> StreamDecoder<'a> {
         self.buffer.push_str(chunk);
         let mut calls = Vec::new();
 
-        while let Some((start, end, name, raw_args)) = extract_next_call(&self.buffer) {
+        while let Some((end, name, raw_args)) = extract_next_call(&self.buffer) {
             let args: Value = serde_json::from_str(&raw_args)
                 .map_err(|e| CompactError::InvalidArguments(e.to_string()))?;
 
@@ -286,18 +277,15 @@ impl<'a> StreamDecoder<'a> {
             validate_call(&call, self.tools)?;
             calls.push(call);
             self.buffer.drain(..end);
-            let _ = start;
         }
         Ok(calls)
     }
 
     pub fn finish(self) -> Result<Vec<ToolCall>, CompactError> {
-        let calls = decode_calls(&self.buffer, self.tools)?;
-        Ok(calls)
+        decode_calls(&self.buffer, self.tools)
     }
 }
 
-/// Recovers ToolDef schemas from compact function signatures
 pub fn decode_tools(compact: &CompactTools) -> Result<Vec<ToolDef>, CompactError> {
     let mut tools = Vec::new();
 
@@ -307,7 +295,6 @@ pub fn decode_tools(compact: &CompactTools) -> Result<Vec<ToolDef>, CompactError
             continue;
         }
 
-        // Split "name(params) - Description"
         let (func_part, desc_part) = match line.split_once(" - ") {
             Some((f, d)) => (f.trim(), Some(d.trim().to_string())),
             None => (line, None),
@@ -321,7 +308,7 @@ pub fn decode_tools(compact: &CompactTools) -> Result<Vec<ToolDef>, CompactError
         })?;
 
         let name = func_part[..open_paren].trim().to_string();
-        let params_str = &func_part[open_paren + 1..close_paren].trim();
+        let params_str = func_part[open_paren + 1..close_paren].trim();
 
         let mut properties = serde_json::Map::new();
         let mut required = Vec::new();
@@ -346,7 +333,6 @@ pub fn decode_tools(compact: &CompactTools) -> Result<Vec<ToolDef>, CompactError
                     required.push(serde_json::Value::String(clean_name.to_string()));
                 }
 
-                // Map compact type back to JSON schema representation
                 let prop_schema = if type_str.contains('|') {
                     let enum_vals: Vec<serde_json::Value> = type_str
                         .split('|')
@@ -360,7 +346,9 @@ pub fn decode_tools(compact: &CompactTools) -> Result<Vec<ToolDef>, CompactError
                     })
                 } else {
                     match type_str.trim() {
-                        "datetime" => serde_json::json!({ "type": "string", "format": "date-time" }),
+                        "datetime" => {
+                            serde_json::json!({ "type": "string", "format": "date-time" })
+                        }
                         "str" => serde_json::json!({ "type": "string" }),
                         "int" => serde_json::json!({ "type": "integer" }),
                         "float" => serde_json::json!({ "type": "number" }),
@@ -464,6 +452,17 @@ mod tests {
     }
 
     #[test]
+    fn test_schema_roundtrip_decode_tools() {
+        let tools = sample_tools();
+        let compact = encode_tools(&tools).unwrap();
+        let decoded = decode_tools(&compact).unwrap();
+
+        assert_eq!(decoded.len(), tools.len());
+        assert_eq!(decoded[0].name, tools[0].name);
+        assert_eq!(decoded[0].description, tools[0].description);
+    }
+
+    #[test]
     fn test_escaped_arrow_in_string_argument() {
         let tools = sample_tools();
         let input = r#"<<call send_email {"to":["a@b.com"],"subject":"Test","body":"Check this >> arrow"}>>"#;
@@ -494,14 +493,5 @@ mod tests {
         let input = "<<call create_calendar_event {\"title\":\"Sync\",\"start\":\"2026-10-05T15:00:00+05:30\",\"visibility\":\"secret\"}>>";
         let res = decode_calls(input, &tools);
         assert!(matches!(res, Err(CompactError::InvalidArguments(_))));
-    }
-    #[test]
-    fn test_schema_roundtrip_decode_tools() {
-        let tools = sample_tools();
-        let compact = encode_tools(&tools).unwrap();
-        let decoded = decode_tools(&compact).unwrap();
-        assert_eq!(decoded.len(), tools.len());
-        assert_eq!(decoded[0].name, tools[0].name);
-        assert_eq!(decoded[0].description, tools[0].description);
     }
 }
