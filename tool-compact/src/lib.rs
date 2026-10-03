@@ -23,6 +23,7 @@ mod calls;
 mod compact;
 mod error;
 mod schema;
+mod stream;
 mod validate;
 
 pub use calls::{MARKER, decode_calls};
@@ -31,6 +32,7 @@ pub use compact::{
 };
 pub use error::Error;
 pub use schema::{Format, Kind, Node, Object, normalize_tool};
+pub use stream::{MAX_CALL_BYTES, StreamDecoder, StreamEvent};
 pub use validate::validate_arguments;
 
 use serde_json::Value;
