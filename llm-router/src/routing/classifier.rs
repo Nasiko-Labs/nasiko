@@ -34,6 +34,13 @@ use rand_distr::{Beta, Distribution};
 
 use super::patterns::{CATEGORY_PATTERNS, NEGATIVE_SIGNALS, POSITIVE_SIGNALS};
 
+pub mod model;
+pub use model::{
+    Classification, ClassifyError, ClassifyInput, FallbackRequestClassifier,
+    LocalRequestClassifier, RegexRequestClassifier, RequestClassifier,
+    configured_request_classifier,
+};
+
 /// Coarse model strength tier. Tier 1 = most capable (complex queries), Tier 3 = smallest
 /// (very simple queries), Tier 2 = in between.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -309,6 +316,20 @@ pub fn classify<R: Rng + ?Sized>(
     rng: &mut R,
 ) -> (Tier, RequestType) {
     let request_type = classify_request_type(query);
+    classify_with_request_type(query, provider, request_type, cells, rng)
+}
+
+/// Select a provider-specific model tier using an already-computed request type.
+///
+/// This preserves the existing tier arms, provider registry mapping, and learned cells while
+/// allowing the configurable P2 classifier to supply the request-type label.
+pub fn classify_with_request_type<R: Rng + ?Sized>(
+    query: &str,
+    provider: &str,
+    request_type: RequestType,
+    cells: &CellMap,
+    rng: &mut R,
+) -> (Tier, RequestType) {
     let tier = pick_model_thompson(cells, request_type, DEFAULT_W_QUALITY, DEFAULT_W_COST, rng);
     let preview: String = query.chars().take(120).collect();
     tracing::info!(
