@@ -22,6 +22,6 @@ pub struct CompactTools {
 
 impl CompactTools {
     pub fn render(&self) -> String {
-        format!("{}\n\n{}", self.definitions, self.instructions)
+        format!("Tools:\n{}\n{}", self.definitions, self.instructions)
     }
 }

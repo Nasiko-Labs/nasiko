@@ -15,8 +15,10 @@ pub fn encode_tools(tools: &[ToolDef]) -> Result<CompactTools> {
     }
 
     let definitions_rendered = definitions.join("\n");
+    // Every word here is paid on every request, so it states only what models get
+    // wrong without it: act rather than ask, and one marker per requested action.
     let instructions = format!(
-        "To call a tool, emit: {OPEN}name {{json args}}{CLOSE}\nIf no tool call is needed, answer normally without tool markers."
+        "Use these tools without asking: emit one {OPEN}tool {{json args}}{CLOSE} per requested action. If none applies, answer normally."
     );
 
     Ok(CompactTools {
@@ -202,6 +204,13 @@ mod tests {
                 .contains(" - Create an event in the user's calendar.")
         );
         assert!(compact.instructions.contains("<<call "));
+        assert!(compact.instructions.contains("one <<call "));
+        assert!(compact.instructions.contains("per requested action"));
+        assert!(
+            compact
+                .render()
+                .starts_with("Tools:\ncreate_calendar_event(")
+        );
     }
 
     #[test]
