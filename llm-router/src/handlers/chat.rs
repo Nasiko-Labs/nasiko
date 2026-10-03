@@ -467,7 +467,12 @@ pub(crate) async fn resolve_routed_request(
             Some(attribution.source),
         )
     };
-    let decision = routing::route_model(
+    let mut boundary = boundary;
+    if signals.is_tool_continuation {
+        boundary.phase = routing::Phase::Continue;
+    }
+    let decision = routing::route_model_with_classifier(
+        ctx.request_classifier.as_ref(),
         ctx.router_cache.as_ref(),
         ctx.tier_registry.as_ref(),
         ctx.cell_store.as_ref(),
@@ -949,6 +954,7 @@ mod tests {
             ..Default::default()
         };
         LlmRouterCtx {
+            request_classifier: Arc::new(crate::routing::classifier::RegexClassifier),
             db: PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
             http: reqwest::Client::new(),
             cfg: Arc::new(cfg),

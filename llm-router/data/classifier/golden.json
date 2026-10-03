@@ -1,0 +1,30 @@
+[
+  {
+    "query": "Write a Python function that flattens nested lists without flattening strings, bytes, or arbitrary iterables. Detect cycles and raise a useful error.",
+    "context": "Inputs may contain lists nested inside tuples, but tuples should remain intact.",
+    "request_type": "code_generation",
+    "complexity": 3,
+    "confidence": 0.42949726983573644
+  },
+  {
+    "query": "Why does this return three copies of 2, and what changes if I replace the lambdas with async functions?",
+    "context": "funcs = [lambda: i for i in range(3)]\nprint([f() for f in funcs])",
+    "request_type": "code_understanding",
+    "complexity": 3,
+    "confidence": 0.43965291739580525
+  },
+  {
+    "query": "Design tenant isolation for our analytics platform. We need cross-tenant reporting for internal staff, tenant-specific encryption keys, and deletion within 24 hours of an account closing.",
+    "context": "About 8,000 tenants share PostgreSQL and an object store. Several enterprise customers require regional data residency.",
+    "request_type": "technical_design",
+    "complexity": 5,
+    "confidence": 0.4567315864974293
+  },
+  {
+    "query": "Our p99 latency doubled after adding a cache, while average latency improved. What hypotheses fit both observations, and which measurements would distinguish them?",
+    "context": "Cache hit rate is 92%. Misses fetch from the database. There are no obvious increases in CPU utilization.",
+    "request_type": "analytical_reasoning",
+    "complexity": 4,
+    "confidence": 0.4030020850489259
+  }
+]

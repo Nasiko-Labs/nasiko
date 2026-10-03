@@ -49,6 +49,51 @@ pub trait DecisionCache: Send + Sync {
 /// Redis is configured (`REDIS_URL` unset).
 pub struct NoopCache;
 
+/// Process-local write-through safety net for an experimental standalone router.
+/// Redis remains the cross-process authority; local entries cover temporary Redis errors.
+pub struct StickyCache {
+    inner: std::sync::Arc<dyn DecisionCache>,
+    entries: dashmap::DashMap<(String, String), (std::time::Instant, CachedDecision)>,
+    ttl: std::time::Duration,
+}
+
+impl StickyCache {
+    pub fn new(inner: std::sync::Arc<dyn DecisionCache>, ttl: std::time::Duration) -> Self {
+        Self {
+            inner,
+            entries: dashmap::DashMap::new(),
+            ttl,
+        }
+    }
+}
+
+#[async_trait]
+impl DecisionCache for StickyCache {
+    async fn get(&self, conv_id: &str, agent_id: &str) -> Option<CachedDecision> {
+        let key = (conv_id.to_string(), agent_id.to_string());
+        if let Some(entry) = self.entries.get(&key) {
+            if entry.0.elapsed() < self.ttl {
+                return Some(entry.1.clone());
+            }
+        }
+        self.entries.remove(&key);
+        let hit = self.inner.get(conv_id, agent_id).await?;
+        self.entries
+            .insert(key, (std::time::Instant::now(), hit.clone()));
+        Some(hit)
+    }
+
+    async fn put(&self, conv_id: &str, agent_id: &str, decision: &CachedDecision) {
+        self.entries
+            .retain(|_, (inserted, _)| inserted.elapsed() < self.ttl);
+        self.entries.insert(
+            (conv_id.to_string(), agent_id.to_string()),
+            (std::time::Instant::now(), decision.clone()),
+        );
+        self.inner.put(conv_id, agent_id, decision).await;
+    }
+}
+
 #[async_trait]
 impl DecisionCache for NoopCache {
     async fn get(&self, _conv_id: &str, _agent_id: &str) -> Option<CachedDecision> {

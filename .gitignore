@@ -57,3 +57,7 @@ ui/tests/fixtures/runs/
 
 # Private React/Next migration workspace; do not force-add before release approval.
 /react/
+
+# Generated classifier evaluation reports and logs.
+/reports/
+/llm-router/reports/

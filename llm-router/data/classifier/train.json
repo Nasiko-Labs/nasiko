@@ -1,0 +1,844 @@
+{
+  "examples": [
+    {
+      "id": "train-001",
+      "query": "Write a Python function that flattens nested lists without flattening strings, bytes, or arbitrary iterables. Detect cycles and raise a useful error.",
+      "context": "Inputs may contain lists nested inside tuples, but tuples should remain intact.",
+      "request_type": "code_generation",
+      "complexity": 3
+    },
+    {
+      "id": "train-002",
+      "query": "Why does this return three copies of 2, and what changes if I replace the lambdas with async functions?",
+      "context": "funcs = [lambda: i for i in range(3)]\nprint([f() for f in funcs])",
+      "request_type": "code_understanding",
+      "complexity": 3
+    },
+    {
+      "id": "train-003",
+      "query": "Design tenant isolation for our analytics platform. We need cross-tenant reporting for internal staff, tenant-specific encryption keys, and deletion within 24 hours of an account closing.",
+      "context": "About 8,000 tenants share PostgreSQL and an object store. Several enterprise customers require regional data residency.",
+      "request_type": "technical_design",
+      "complexity": 5
+    },
+    {
+      "id": "train-004",
+      "query": "Our p99 latency doubled after adding a cache, while average latency improved. What hypotheses fit both observations, and which measurements would distinguish them?",
+      "context": "Cache hit rate is 92%. Misses fetch from the database. There are no obvious increases in CPU utilization.",
+      "request_type": "analytical_reasoning",
+      "complexity": 4
+    },
+    {
+      "id": "train-005",
+      "query": "Rewrite this incident update so customers understand the impact without claiming we have identified the root cause.",
+      "context": "We think a bad deploy broke everything. Some uploads failed from 09:10 to 09:42 UTC. Rollback seems to have fixed it. Investigation ongoing.",
+      "request_type": "writing",
+      "complexity": 2
+    },
+    {
+      "id": "train-006",
+      "query": "Does HTTP 204 permit a response body? Cite the relevant specification and distinguish it from a response with an empty JSON object.",
+      "context": "",
+      "request_type": "factual_lookup",
+      "complexity": 2
+    },
+    {
+      "id": "train-007",
+      "query": "I'm exhausted from switching between five unfinished tickets. Help me plan the next two hours without making a productivity system out of it.",
+      "context": "One customer bug is urgent, two reviews are waiting, and the other work can wait until tomorrow.",
+      "request_type": "general",
+      "complexity": 2
+    },
+    {
+      "id": "train-008",
+      "query": "Implement a TypeScript debounce helper with cancel and flush methods. Preserve the wrapped function's argument types and explain your choice for what repeated calls return.",
+      "context": "It will wrap both synchronous search filtering and an asynchronous save operation.",
+      "request_type": "code_generation",
+      "complexity": 4
+    },
+    {
+      "id": "train-009",
+      "query": "Is this actually a race, or just a confusing log order? Walk through the possible executions before suggesting a fix.",
+      "context": "Go code launches two goroutines that increment a shared integer without synchronization, then prints the integer after sleeping for one second.",
+      "request_type": "code_understanding",
+      "complexity": 3
+    },
+    {
+      "id": "train-010",
+      "query": "We want exactly-once billing, but our queue delivers messages at least once and our payment provider can time out after charging. Propose a design and identify what guarantees we can honestly make.",
+      "context": "A relational database stores invoices. The provider supports idempotency keys but retains them for only 24 hours.",
+      "request_type": "technical_design",
+      "complexity": 5
+    },
+    {
+      "id": "train-011",
+      "query": "The benchmark says version B is 18% faster. Can we trust that conclusion, given these results and the way the experiment was run?",
+      "context": "A: 101, 103, 99, 102 ms. B: 80, 82, 81, 110 ms. All A runs preceded all B runs on a shared CI runner.",
+      "request_type": "analytical_reasoning",
+      "complexity": 3
+    },
+    {
+      "id": "train-012",
+      "query": "Draft a PR description for this change, including the compatibility caveat, but don't market it as a performance improvement.",
+      "context": "Replaced implicit local-time parsing with explicit UTC parsing. Existing timezone-less timestamps may now resolve to different instants. No benchmarks were run.",
+      "request_type": "writing",
+      "complexity": 2
+    },
+    {
+      "id": "train-013",
+      "query": "Which Rust edition introduced async/await, and is the edition alone enough to determine the minimum compiler version?",
+      "context": "I'm updating the toolchain requirements in a library README.",
+      "request_type": "factual_lookup",
+      "complexity": 2
+    },
+    {
+      "id": "train-014",
+      "query": "How should I respond when a teammate keeps calling my questions 'basic'? I want to address it directly without turning our next standup into a confrontation.",
+      "context": "We're peers, and this has happened in front of the team three times.",
+      "request_type": "general",
+      "complexity": 2
+    },
+    {
+      "id": "train-015",
+      "query": "Create a SQL query that returns each customer's latest paid order, including customers with no paid orders. Break timestamp ties by the larger order ID.",
+      "context": "PostgreSQL tables: customers(id, name), orders(id, customer_id, paid_at, status). Unpaid orders may also have a non-null paid_at due to historical imports.",
+      "request_type": "code_generation",
+      "complexity": 3
+    },
+    {
+      "id": "train-016",
+      "query": "Explain why this Rust function won't compile. I don't want a clone-based workaround unless ownership actually requires one.",
+      "context": "fn first(xs: Vec<String>) -> &str {\n    &xs[0]\n}",
+      "request_type": "code_understanding",
+      "complexity": 2
+    },
+    {
+      "id": "train-017",
+      "query": "Plan a migration from integer IDs to UUIDs without breaking old mobile clients, foreign keys, or bookmarked URLs. We cannot pause writes.",
+      "context": "A public API, six services, and a warehouse consume the IDs. Some mobile clients remain active for more than a year without updates.",
+      "request_type": "technical_design",
+      "complexity": 5
+    },
+    {
+      "id": "train-018",
+      "query": "Could this experiment show a real improvement even though total conversion declined? Check the arithmetic and explain whether the aggregate comparison is misleading.",
+      "context": "Control: mobile 90/1000, desktop 80/200. Treatment: mobile 38/400, desktop 246/600. Traffic allocation differed by device.",
+      "request_type": "analytical_reasoning",
+      "complexity": 3
+    },
+    {
+      "id": "train-019",
+      "query": "Write an onboarding guide explaining how to run our service locally. Make the missing setup details explicit instead of inventing commands.",
+      "context": "We use Docker Compose, PostgreSQL, Redis, and a private package registry. The only verified command is docker compose up --build.",
+      "request_type": "writing",
+      "complexity": 2
+    },
+    {
+      "id": "train-020",
+      "query": "What are the current supported Node.js LTS release lines and their scheduled end-of-life dates? Use official sources and state the lookup date.",
+      "context": "We need to choose a runtime for a new service.",
+      "request_type": "factual_lookup",
+      "complexity": 2
+    },
+    {
+      "id": "train-021",
+      "query": "Help me choose between mentoring a junior developer and finishing my own feature this afternoon. Both matter, and my manager hasn't set a priority.",
+      "context": "The junior is blocked on a release-critical task. My feature is due next week.",
+      "request_type": "general",
+      "complexity": 2
+    },
+    {
+      "id": "train-022",
+      "query": "Write a shell script that renames only top-level .jpeg files to .jpg, handles spaces and newlines in filenames, and refuses to overwrite existing files. Include a dry-run mode.",
+      "context": "The script runs on Linux with Bash. File contents must remain unchanged.",
+      "request_type": "code_generation",
+      "complexity": 3
+    },
+    {
+      "id": "train-023",
+      "query": "Why does my UI show the old count after this click? Explain what each line sees and whether moving the log into an effect changes its meaning.",
+      "context": "React handler: setCount(count + 1); setCount(count + 1); console.log(count);",
+      "request_type": "code_understanding",
+      "complexity": 3
+    },
+    {
+      "id": "train-024",
+      "query": "Design offline edits for a shared document app. Users can reorder paragraphs, edit text, and delete sections; explain how conflicts should appear to users as well as how they converge.",
+      "context": "Clients may be offline for weeks. Deleted content must not silently reappear after synchronization.",
+      "request_type": "technical_design",
+      "complexity": 5
+    },
+    {
+      "id": "train-025",
+      "query": "Should we buy reserved compute capacity or stay on demand? Calculate the break-even utilization and discuss how our burst pattern affects the decision.",
+      "context": "On-demand cost is $0.40 per instance-hour. A one-year reservation costs $1,900 per instance with no hourly charge. Usage varies between 4 and 40 instances.",
+      "request_type": "analytical_reasoning",
+      "complexity": 3
+    },
+    {
+      "id": "train-026",
+      "query": "Turn these notes into an architecture decision record that distinguishes agreed facts from assumptions and preserves the rejected option fairly.",
+      "context": "Choose managed queue. Ops team small. Kafka rejected, maybe overkill. Need replay for 7 days. Actual throughput not measured. Finance hasn't approved budget.",
+      "request_type": "writing",
+      "complexity": 3
+    },
+    {
+      "id": "train-027",
+      "query": "Are JavaScript Map keys compared using strict equality? Explain the documented behavior for NaN, -0, and two separate but identical object literals.",
+      "context": "",
+      "request_type": "factual_lookup",
+      "complexity": 2
+    },
+    {
+      "id": "train-028",
+      "query": "Suggest a short name for our internal tool that finds flaky tests. Avoid names that sound like employee monitoring.",
+      "context": "The tool groups intermittent CI failures and links likely causes.",
+      "request_type": "general",
+      "complexity": 1
+    },
+    {
+      "id": "train-029",
+      "query": "Implement a streaming CSV reader that sums the amount column using decimal arithmetic. Skip malformed records with line-numbered diagnostics, but fail if the header is missing or ambiguous.",
+      "context": "Python standard library only. Files may contain quoted fields with embedded newlines and duplicate column names.",
+      "request_type": "code_generation",
+      "complexity": 4
+    },
+    {
+      "id": "train-030",
+      "query": "This regex was added as a 'security fix.' What does it actually accept, and can an attacker make matching unreasonably expensive?",
+      "context": "A server validates a user-supplied string with the JavaScript regex /^(a+)+$/ before processing it.",
+      "request_type": "code_understanding",
+      "complexity": 3
+    },
+    {
+      "id": "train-031",
+      "query": "Design a plugin system for untrusted customer extensions. They need network access to approved domains and limited access to tenant data, but they must not block the host application.",
+      "context": "Extensions currently run as in-process Python modules. Customers want to upload their own code.",
+      "request_type": "technical_design",
+      "complexity": 5
+    },
+    {
+      "id": "train-032",
+      "query": "We have zero failures in 300 requests. Can we claim 99.99% reliability? Estimate what the evidence supports and call out assumptions about independent requests.",
+      "context": "All requests were sent during a ten-minute staging test against one server.",
+      "request_type": "analytical_reasoning",
+      "complexity": 3
+    },
+    {
+      "id": "train-033",
+      "query": "Write a concise deprecation notice and migration example. The replacement behaves differently for empty strings, so make that difference hard to miss.",
+      "context": "Old API: parsePort('') returns 0. New API: parsePortStrict('') throws. The old API will be removed in the next major release.",
+      "request_type": "writing",
+      "complexity": 2
+    },
+    {
+      "id": "train-034",
+      "query": "Does PostgreSQL automatically create an index on the referencing columns when I add a foreign key? Separate that from indexes needed on the referenced table.",
+      "context": "We're reviewing a slow delete operation on a parent table.",
+      "request_type": "factual_lookup",
+      "complexity": 2
+    },
+    {
+      "id": "train-035",
+      "query": "I keep avoiding a legacy module because nobody understands it. Help me find a manageable first step that gives me confidence without committing to a rewrite.",
+      "context": "It handles invoice calculations and has sparse tests. I have about 45 minutes today.",
+      "request_type": "general",
+      "complexity": 2
+    },
+    {
+      "id": "train-036",
+      "query": "Add tests for this authorization rule, including cases a naive role-name check would miss. Use pytest and avoid changing the rule to make tests pass.",
+      "context": "def can_edit(user, doc):\n    return user.active and user.tenant_id == doc.tenant_id and (user.id == doc.owner_id or 'editor' in user.roles)",
+      "request_type": "code_generation",
+      "complexity": 3
+    },
+    {
+      "id": "train-037",
+      "query": "Why can this transaction lose an increment even though both statements run inside a transaction? Explain which isolation levels or query changes matter.",
+      "context": "Each worker runs SELECT balance FROM accounts WHERE id = 7, computes balance + 1 in application code, then UPDATE accounts SET balance = computed_value WHERE id = 7. PostgreSQL uses READ COMMITTED.",
+      "request_type": "code_understanding",
+      "complexity": 4
+    },
+    {
+      "id": "train-038",
+      "query": "Propose an accessible authentication flow for a banking app that supports passkeys, account recovery, and users sharing a device. Include the threat model and recovery tradeoffs.",
+      "context": "The app has web and mobile clients. SMS is currently the only recovery mechanism, and support agents can reset accounts.",
+      "request_type": "technical_design",
+      "complexity": 5
+    },
+    {
+      "id": "train-039",
+      "query": "Which algorithm is preferable here: an O(n log n) implementation using contiguous arrays or an O(n) implementation using a hash table? Give a decision framework without treating Big O as a benchmark.",
+      "context": "n ranges from 20 to 2 million. Keys are short strings, and peak memory matters as much as latency.",
+      "request_type": "analytical_reasoning",
+      "complexity": 3
+    },
+    {
+      "id": "train-040",
+      "query": "Explain our retry policy to API consumers in plain English, then provide a compact technical reference. Don't promise that retrying POST requests is always safe.",
+      "context": "SDK retries transport failures and HTTP 429/503 up to three times with jitter. POST retries require an idempotency key. Retry-After is honored when present.",
+      "request_type": "writing",
+      "complexity": 3
+    },
+    {
+      "id": "train-041",
+      "query": "What does the C standard say about signed integer overflow, and how does that differ from unsigned wraparound? Please distinguish language rules from typical CPU behavior.",
+      "context": "A colleague argues that adding one to INT_MAX is guaranteed to produce INT_MIN.",
+      "request_type": "factual_lookup",
+      "complexity": 3
+    },
+    {
+      "id": "train-042",
+      "query": "Help me prepare for a conversation about moving from individual contributor work into management. I want to explore it without implying I've already decided.",
+      "context": "My manager asked whether I would lead a team next quarter. I enjoy mentoring but still want substantial coding time.",
+      "request_type": "general",
+      "complexity": 2
+    },
+    {
+      "id": "train-043",
+      "query": "Create a Kotlin coroutine-based adapter for this callback API. Handle cancellation and callbacks arriving twice, and don't leak the underlying request.",
+      "context": "fun fetch(callback: (Result<String>) -> Unit): Request\ninterface Request { fun cancel() }\nA callback may run synchronously before fetch returns.",
+      "request_type": "code_generation",
+      "complexity": 4
+    },
+    {
+      "id": "train-044",
+      "query": "Someone told me to add DISTINCT to fix these duplicate customers. Explain where the extra rows come from and whether DISTINCT would preserve the report's intended meaning.",
+      "context": "SELECT c.id, o.id, p.id FROM customers c JOIN orders o ON o.customer_id = c.id JOIN payments p ON p.order_id = o.id; Each order can have several payment attempts.",
+      "request_type": "code_understanding",
+      "complexity": 3
+    },
+    {
+      "id": "train-045",
+      "query": "Design reproducible builds for an embedded device fleet where releases must be auditable ten years later. Cover toolchains, dependency archives, signing, and emergency patches.",
+      "context": "Devices update over intermittent connections and have limited flash. The existing build downloads dependencies from public URLs without pinning checksums.",
+      "request_type": "technical_design",
+      "complexity": 5
+    },
+    {
+      "id": "train-046",
+      "query": "Our detector reports 99% accuracy, but responders say almost every alert is wrong. Use the base rate to reconcile those claims and estimate precision.",
+      "context": "Assume 0.1% of events are real incidents, sensitivity is 95%, and specificity is 99%. There are one million events per day.",
+      "request_type": "analytical_reasoning",
+      "complexity": 3
+    },
+    {
+      "id": "train-047",
+      "query": "Draft a bug report from this reproduction. Keep the expected behavior conditional because the product spec is unclear, and include a question for the product owner.",
+      "context": "Applying a coupon, switching currency, then returning to the original currency removes the coupon. Direct currency switching without a coupon works. The spec says only 'preserve checkout state.'",
+      "request_type": "writing",
+      "complexity": 2
+    },
+    {
+      "id": "train-048",
+      "query": "Can a service worker intercept requests on its first page visit? Explain registration, activation, control, and how clients.claim affects the answer.",
+      "context": "We're investigating why the first load bypasses our offline cache.",
+      "request_type": "factual_lookup",
+      "complexity": 3
+    },
+    {
+      "id": "train-049",
+      "query": "Build a minimal C++ RAII wrapper for a POSIX file descriptor with move semantics, explicit ownership transfer, and no accidental copies. Include a usage example.",
+      "context": "Use C++20. A descriptor value of 0 is valid. The destructor must not throw, and move assignment must handle an already-owned descriptor.",
+      "request_type": "code_generation",
+      "complexity": 3
+    },
+    {
+      "id": "train-050",
+      "query": "Review this proposed 'quick fix' and decide whether it addresses the failure or merely moves it. Then outline the smallest safe rollout and what evidence would change your recommendation.",
+      "context": "A worker sometimes processes jobs twice after a timeout. Proposal: increase the queue visibility timeout from 30 seconds to 15 minutes. Most jobs take 5 seconds, but a few exceed 20 minutes; duplicate execution can send duplicate customer emails.",
+      "request_type": "analytical_reasoning",
+      "complexity": 4
+    },
+    {
+      "id": "train-051",
+      "query": "Correct the misspelled variable in this assignment.",
+      "context": "const lenght = 8;",
+      "request_type": "code_generation",
+      "complexity": 1
+    },
+    {
+      "id": "train-052",
+      "query": "Give me the expression that reverses text in Python.",
+      "context": "Use a slice.",
+      "request_type": "code_generation",
+      "complexity": 1
+    },
+    {
+      "id": "train-053",
+      "query": "Implement an HTTP handler that validates an email and stores a registration.",
+      "context": "Return a conflict for an existing account.",
+      "request_type": "code_generation",
+      "complexity": 2
+    },
+    {
+      "id": "train-054",
+      "query": "Create a JavaScript helper to turn a date into ISO format.",
+      "context": "Reject invalid dates.",
+      "request_type": "code_generation",
+      "complexity": 2
+    },
+    {
+      "id": "train-055",
+      "query": "Patch the parser so quoted commas no longer split a CSV field.",
+      "context": "Preserve newline handling and report malformed records.",
+      "request_type": "code_generation",
+      "complexity": 3
+    },
+    {
+      "id": "train-056",
+      "query": "Develop a C# iterator to traverse a tree without recursion.",
+      "context": "Nodes contain a list of children.",
+      "request_type": "code_generation",
+      "complexity": 3
+    },
+    {
+      "id": "train-057",
+      "query": "Implement an idempotent webhook receiver with transaction handling and duplicate detection.",
+      "context": "Python and PostgreSQL; several workers may receive the same event.",
+      "request_type": "code_generation",
+      "complexity": 4
+    },
+    {
+      "id": "train-058",
+      "query": "Generate a database migration and an application compatibility patch for this renamed column.",
+      "context": "Old and new application versions run concurrently.",
+      "request_type": "code_generation",
+      "complexity": 4
+    },
+    {
+      "id": "train-059",
+      "query": "Please write unit tests for the formatter covering empty inputs and locale differences.",
+      "context": "Use Jest.",
+      "request_type": "code_generation",
+      "complexity": 2
+    },
+    {
+      "id": "train-060",
+      "query": "Produce the Terraform resources for a private bucket and least-privilege reader.",
+      "context": "Include policy and encryption settings.",
+      "request_type": "code_generation",
+      "complexity": 3
+    },
+    {
+      "id": "train-061",
+      "query": "Describe what this expression evaluates to.",
+      "context": "Python: 3 * 4 + 2",
+      "request_type": "code_understanding",
+      "complexity": 1
+    },
+    {
+      "id": "train-062",
+      "query": "Explain why the returned object changes when I update the original.",
+      "context": "Both names point to the same dictionary.",
+      "request_type": "code_understanding",
+      "complexity": 2
+    },
+    {
+      "id": "train-063",
+      "query": "Trace the order of promise callbacks and microtasks in this snippet.",
+      "context": "A resolved promise runs before a setTimeout callback.",
+      "request_type": "code_understanding",
+      "complexity": 3
+    },
+    {
+      "id": "train-064",
+      "query": "Identify the null dereference in this stack trace and describe its cause.",
+      "context": "The error occurs after an optional configuration value is accessed.",
+      "request_type": "code_understanding",
+      "complexity": 3
+    },
+    {
+      "id": "train-065",
+      "query": "What does this function do with an empty array?",
+      "context": "function first(xs) { return xs[0]; }",
+      "request_type": "code_understanding",
+      "complexity": 2
+    },
+    {
+      "id": "train-066",
+      "query": "Walk through the possible interleavings in this lock-free queue implementation.",
+      "context": "Two producers publish nodes and a consumer removes them.",
+      "request_type": "code_understanding",
+      "complexity": 4
+    },
+    {
+      "id": "train-067",
+      "query": "Explain the difference between these two overloads in our code.",
+      "context": "One takes a value; the other takes a reference.",
+      "request_type": "code_understanding",
+      "complexity": 2
+    },
+    {
+      "id": "train-068",
+      "query": "Review why this regular expression accepts a trailing newline.",
+      "context": "The implementation uses a dollar anchor and multiline mode.",
+      "request_type": "code_understanding",
+      "complexity": 3
+    },
+    {
+      "id": "train-069",
+      "query": "Why does my component render twice when I update state?",
+      "context": "React development mode enables StrictMode.",
+      "request_type": "code_understanding",
+      "complexity": 2
+    },
+    {
+      "id": "train-070",
+      "query": "Explain the resource lifecycle and potential leak in this asynchronous context manager.",
+      "context": "Exceptions can occur before initialization completes.",
+      "request_type": "code_understanding",
+      "complexity": 4
+    },
+    {
+      "id": "train-071",
+      "query": "Propose the service boundaries for an inventory application.",
+      "context": "Stock updates must be auditable.",
+      "request_type": "technical_design",
+      "complexity": 3
+    },
+    {
+      "id": "train-072",
+      "query": "Architect a notification pipeline that handles bursts and user preferences.",
+      "context": "Email, push and SMS share an event stream.",
+      "request_type": "technical_design",
+      "complexity": 4
+    },
+    {
+      "id": "train-073",
+      "query": "Design regional failover for a financial ledger without creating conflicting histories.",
+      "context": "Two regions; recovery point objective is zero.",
+      "request_type": "technical_design",
+      "complexity": 5
+    },
+    {
+      "id": "train-074",
+      "query": "Choose an API design for cursor pagination with stable sorting.",
+      "context": "Records may be inserted during pagination.",
+      "request_type": "technical_design",
+      "complexity": 3
+    },
+    {
+      "id": "train-075",
+      "query": "Plan a storage layout for a time-series product with retention and rollups.",
+      "context": "Thousands of customers and billions of samples.",
+      "request_type": "technical_design",
+      "complexity": 4
+    },
+    {
+      "id": "train-076",
+      "query": "Specify a disaster recovery architecture for encrypted multi-tenant backups.",
+      "context": "Tenant keys may be revoked; restores must be independently auditable.",
+      "request_type": "technical_design",
+      "complexity": 5
+    },
+    {
+      "id": "train-077",
+      "query": "Design the interfaces between a compiler front end and optimizer.",
+      "context": "We need extensible intermediate representations.",
+      "request_type": "technical_design",
+      "complexity": 3
+    },
+    {
+      "id": "train-078",
+      "query": "Outline a secure architecture for browser-based file uploads.",
+      "context": "Support malware scanning and signed download links.",
+      "request_type": "technical_design",
+      "complexity": 4
+    },
+    {
+      "id": "train-079",
+      "query": "Design a zero-downtime repartitioning protocol for a distributed database.",
+      "context": "Active writers, replica failures and rolling client upgrades must be handled.",
+      "request_type": "technical_design",
+      "complexity": 5
+    },
+    {
+      "id": "train-080",
+      "query": "Propose a module layout for a small command-line todo application.",
+      "context": "No network or persistence requirements beyond a local JSON file.",
+      "request_type": "technical_design",
+      "complexity": 2
+    },
+    {
+      "id": "train-081",
+      "query": "Estimate how much disk space these events require per week.",
+      "context": "10 events per second; 500 bytes each.",
+      "request_type": "analytical_reasoning",
+      "complexity": 2
+    },
+    {
+      "id": "train-082",
+      "query": "Compare the observed error rate before and after this deployment.",
+      "context": "Before: 12/1000. After: 7/1000. Account for uncertainty.",
+      "request_type": "analytical_reasoning",
+      "complexity": 3
+    },
+    {
+      "id": "train-083",
+      "query": "Find the most likely explanation for latency increasing while request volume falls.",
+      "context": "Queue time rises but execution time stays constant.",
+      "request_type": "analytical_reasoning",
+      "complexity": 4
+    },
+    {
+      "id": "train-084",
+      "query": "Determine whether an index will reduce the cost of this workload.",
+      "context": "Writes dominate, but a weekly report scans millions of rows.",
+      "request_type": "analytical_reasoning",
+      "complexity": 3
+    },
+    {
+      "id": "train-085",
+      "query": "Evaluate the consistency tradeoffs of accepting writes during a network partition.",
+      "context": "Two replicas must both remain available.",
+      "request_type": "analytical_reasoning",
+      "complexity": 4
+    },
+    {
+      "id": "train-086",
+      "query": "Calculate the worst-case number of comparisons for binary search.",
+      "context": "There are 1024 sorted values.",
+      "request_type": "analytical_reasoning",
+      "complexity": 2
+    },
+    {
+      "id": "train-087",
+      "query": "Assess whether we have enough samples to claim this optimization works.",
+      "context": "Three trials on a laptop improved elapsed time by 4 percent.",
+      "request_type": "analytical_reasoning",
+      "complexity": 3
+    },
+    {
+      "id": "train-088",
+      "query": "Analyze the failure combinations that can cause duplicate debits in this recovery protocol.",
+      "context": "Queue acknowledgements, database commits and provider responses can independently fail.",
+      "request_type": "analytical_reasoning",
+      "complexity": 5
+    },
+    {
+      "id": "train-089",
+      "query": "Decide whether sharding is justified by these bottleneck measurements.",
+      "context": "One hot tenant causes most database contention.",
+      "request_type": "analytical_reasoning",
+      "complexity": 3
+    },
+    {
+      "id": "train-090",
+      "query": "Evaluate the operational risks of this migration plan and propose the evidence needed to proceed.",
+      "context": "Writes and schema changes overlap for several hours.",
+      "request_type": "analytical_reasoning",
+      "complexity": 4
+    },
+    {
+      "id": "train-091",
+      "query": "Fix the typo in this release note sentence.",
+      "context": "The update improvs startup time.",
+      "request_type": "writing",
+      "complexity": 1
+    },
+    {
+      "id": "train-092",
+      "query": "Draft a professional response to a customer who reported lost data.",
+      "context": "Investigation is open; do not promise recovery.",
+      "request_type": "writing",
+      "complexity": 2
+    },
+    {
+      "id": "train-093",
+      "query": "Write documentation explaining the tradeoffs of our pagination API.",
+      "context": "Readers include frontend engineers and partner developers.",
+      "request_type": "writing",
+      "complexity": 3
+    },
+    {
+      "id": "train-094",
+      "query": "Summarize this pull request for reviewers.",
+      "context": "It removes a stale cache after authorization changes.",
+      "request_type": "writing",
+      "complexity": 2
+    },
+    {
+      "id": "train-095",
+      "query": "Turn these incident notes into a neutral postmortem.",
+      "context": "Include contributing factors, impact and action items.",
+      "request_type": "writing",
+      "complexity": 3
+    },
+    {
+      "id": "train-096",
+      "query": "Compose a deprecation announcement with a migration deadline.",
+      "context": "The old endpoint is removed in the next major version.",
+      "request_type": "writing",
+      "complexity": 2
+    },
+    {
+      "id": "train-097",
+      "query": "Rewrite this error message to make the next action clear.",
+      "context": "Operation unsuccessful.",
+      "request_type": "writing",
+      "complexity": 1
+    },
+    {
+      "id": "train-098",
+      "query": "Draft an RFC for our proposed tracing conventions.",
+      "context": "Document motivation, examples and unresolved questions.",
+      "request_type": "writing",
+      "complexity": 3
+    },
+    {
+      "id": "train-099",
+      "query": "Write a changelog entry describing this bug fix.",
+      "context": "A retry no longer sends the same email twice.",
+      "request_type": "writing",
+      "complexity": 2
+    },
+    {
+      "id": "train-100",
+      "query": "Create an architecture decision record explaining the evidence, alternatives and rollback plan.",
+      "context": "The team selected managed storage after a proof of concept.",
+      "request_type": "writing",
+      "complexity": 4
+    },
+    {
+      "id": "train-101",
+      "query": "What does UTF-8 stand for?",
+      "context": "Answer briefly.",
+      "request_type": "factual_lookup",
+      "complexity": 1
+    },
+    {
+      "id": "train-102",
+      "query": "What is the standard HTTPS port number?",
+      "context": "",
+      "request_type": "factual_lookup",
+      "complexity": 1
+    },
+    {
+      "id": "train-103",
+      "query": "Which specification defines HTTP PATCH?",
+      "context": "Give the RFC number.",
+      "request_type": "factual_lookup",
+      "complexity": 2
+    },
+    {
+      "id": "train-104",
+      "query": "Does a Java HashMap allow a null key?",
+      "context": "Distinguish it from ConcurrentHashMap.",
+      "request_type": "factual_lookup",
+      "complexity": 2
+    },
+    {
+      "id": "train-105",
+      "query": "What does the MIME acronym stand for?",
+      "context": "Give the expansion.",
+      "request_type": "factual_lookup",
+      "complexity": 1
+    },
+    {
+      "id": "train-106",
+      "query": "What is the documented difference between SQL DELETE and TRUNCATE?",
+      "context": "Use PostgreSQL terminology.",
+      "request_type": "factual_lookup",
+      "complexity": 2
+    },
+    {
+      "id": "train-107",
+      "query": "Which command shows the Git version installed?",
+      "context": "No repository changes requested.",
+      "request_type": "factual_lookup",
+      "complexity": 2
+    },
+    {
+      "id": "train-108",
+      "query": "What guarantee does the POSIX rename operation provide?",
+      "context": "Describe the standard rather than a filesystem benchmark.",
+      "request_type": "factual_lookup",
+      "complexity": 2
+    },
+    {
+      "id": "train-109",
+      "query": "Find the official lifecycle dates for this runtime release.",
+      "context": "Provide sources and state the date checked.",
+      "request_type": "factual_lookup",
+      "complexity": 3
+    },
+    {
+      "id": "train-110",
+      "query": "Is a JavaScript number always an integer?",
+      "context": "Describe the language-defined representation.",
+      "request_type": "factual_lookup",
+      "complexity": 2
+    },
+    {
+      "id": "train-111",
+      "query": "Hi!",
+      "context": "",
+      "request_type": "general",
+      "complexity": 1
+    },
+    {
+      "id": "train-112",
+      "query": "Thanks, that helped.",
+      "context": "",
+      "request_type": "general",
+      "complexity": 1
+    },
+    {
+      "id": "train-113",
+      "query": "Help me stay calm before a technical interview.",
+      "context": "I have ten minutes.",
+      "request_type": "general",
+      "complexity": 2
+    },
+    {
+      "id": "train-114",
+      "query": "How can I politely decline another meeting today?",
+      "context": "I need uninterrupted development time.",
+      "request_type": "general",
+      "complexity": 2
+    },
+    {
+      "id": "train-115",
+      "query": "Suggest a name for a developer book club.",
+      "context": "Keep it welcoming.",
+      "request_type": "general",
+      "complexity": 2
+    },
+    {
+      "id": "train-116",
+      "query": "I feel stuck and want a small achievable step for this afternoon.",
+      "context": "I have too many unfinished tasks.",
+      "request_type": "general",
+      "complexity": 2
+    },
+    {
+      "id": "train-117",
+      "query": "Help me prepare to ask my manager for clearer priorities.",
+      "context": "Two deadlines conflict.",
+      "request_type": "general",
+      "complexity": 2
+    },
+    {
+      "id": "train-118",
+      "query": "Tell me a short programming joke.",
+      "context": "",
+      "request_type": "general",
+      "complexity": 1
+    },
+    {
+      "id": "train-119",
+      "query": "Help me compare management and specialist career paths given my preferences.",
+      "context": "I enjoy teaching and deep technical work equally.",
+      "request_type": "general",
+      "complexity": 3
+    },
+    {
+      "id": "train-120",
+      "query": "How should I talk to a colleague who interrupts me in reviews?",
+      "context": "We have the same seniority.",
+      "request_type": "general",
+      "complexity": 2
+    }
+  ]
+}
