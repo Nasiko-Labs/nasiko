@@ -67,3 +67,6 @@ base64 = { workspace = true }
 mockito = { workspace = true }
 tower = { workspace = true }
 zstd.workspace = true
+
+# P1 compact tool schema evaluation
+nasiko-tool-compact = { path = "../tool-compact" }
