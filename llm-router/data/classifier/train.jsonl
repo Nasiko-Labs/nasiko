@@ -1,0 +1,113 @@
+{"request_type": "technical_design", "complexity": 3, "query": "Sketch the component diagram for an e-commerce checkout flow"}
+{"request_type": "analytical_reasoning", "complexity": 2, "query": "Which is the better deal: 12 oz for $3.60 or 20 oz for $5.50?"}
+{"request_type": "technical_design", "complexity": 3, "query": "How do I split this service into modules with clear boundaries?"}
+{"request_type": "general", "complexity": 2, "query": "ok"}
+{"request_type": "code_generation", "complexity": 4, "query": "Write a Rust async worker pool that processes jobs from an mpsc channel with graceful shutdown"}
+{"request_type": "factual_lookup", "complexity": 1, "query": "When did the Berlin Wall fall?"}
+{"request_type": "analytical_reasoning", "complexity": 4, "query": "Given quarterly revenue of 1.2M, 1.4M, 1.1M and 1.9M, analyze the trend and flag anomalies"}
+{"request_type": "factual_lookup", "complexity": 2, "query": "Which RFC defines JSON Web Tokens?"}
+{"request_type": "writing", "complexity": 3, "query": "Draft a 200-word product description for a stainless steel water bottle"}
+{"request_type": "code_understanding", "complexity": 3, "query": "why does my docker container exit immediately with code 137"}
+{"request_type": "writing", "complexity": 2, "query": "proofread this paragraph and fix grammar"}
+{"request_type": "factual_lookup", "complexity": 2, "query": "Name the longest river in Africa"}
+{"request_type": "writing", "complexity": 5, "query": "Write a 1500-word long-form essay on the ethics of automation with a clear thesis and counterarguments"}
+{"request_type": "code_understanding", "complexity": 2, "query": "What does this stack trace mean? NullPointerException at UserService.java:42"}
+{"request_type": "factual_lookup", "complexity": 1, "query": "What's the default port for PostgreSQL?"}
+{"request_type": "technical_design", "complexity": 3, "query": "How should I structure the database schema for a multi-tenant SaaS app?"}
+{"request_type": "factual_lookup", "complexity": 1, "query": "largest planet in the solar system"}
+{"request_type": "general", "complexity": 2, "query": "can you help me plan a weekend trip to Lisbon?"}
+{"request_type": "general", "complexity": 2, "query": "Any advice on learning guitar as an adult?"}
+{"request_type": "writing", "complexity": 3, "query": "Turn my bullet points into a polished project update for stakeholders"}
+{"request_type": "factual_lookup", "complexity": 1, "query": "Who is the current CEO of Microsoft?"}
+{"request_type": "code_understanding", "complexity": 2, "query": "Why does `[] + {}` give \"[object Object]\" in JS?"}
+{"request_type": "code_generation", "complexity": 2, "query": "write a function to check if a string is a palindrome ignoring punctuation"}
+{"request_type": "code_generation", "complexity": 3, "query": "Add retry with exponential backoff to this fetch wrapper"}
+{"request_type": "analytical_reasoning", "complexity": 4, "query": "Diagnose why our monthly active users plateaued, given retention fell in cohorts after March"}
+{"request_type": "general", "complexity": 3, "query": "Help me decide what to do this weekend"}
+{"request_type": "writing", "complexity": 4, "query": "Write a persuasive cover letter for a junior data analyst role at a healthcare company"}
+{"request_type": "technical_design", "complexity": 5, "query": "Architect a fault-tolerant ingestion pipeline for 1 TB of IoT telemetry per day with exactly-once semantics"}
+{"request_type": "general", "complexity": 3, "query": "Suggest a beginner workout routine for three days a week"}
+{"request_type": "writing", "complexity": 4, "query": "Write a blog post on remote work productivity in a friendly, conversational tone"}
+{"request_type": "factual_lookup", "complexity": 1, "query": "Define photosynthesis"}
+{"request_type": "general", "complexity": 3, "query": "Brainstorm names for my new puppy, a golden retriever"}
+{"request_type": "analytical_reasoning", "complexity": 4, "query": "Interpret this A/B test: control 4.1% on 20k visitors, variant 4.5% on 20k. Is it significant?"}
+{"request_type": "writing", "complexity": 4, "query": "Write the opening scene of a mystery novel set in 1920s Cairo"}
+{"request_type": "writing", "complexity": 3, "query": "Summarize the following article in three bullet points"}
+{"request_type": "analytical_reasoning", "complexity": 3, "query": "Solve: a train leaves at 3pm at 60 mph, another at 4pm at 80 mph. When does the second catch up?"}
+{"request_type": "writing", "complexity": 3, "query": "Draft a resignation letter that keeps the door open"}
+{"request_type": "general", "complexity": 2, "query": "What should I cook for dinner tonight, I have eggs and rice"}
+{"request_type": "writing", "complexity": 3, "query": "Help me write a LinkedIn post announcing my new job"}
+{"request_type": "technical_design", "complexity": 5, "query": "Propose an architecture for a real-time collaborative editor supporting offline edits and conflict resolution"}
+{"request_type": "factual_lookup", "complexity": 2, "query": "Who won the Nobel Prize in Physics in 2015?"}
+{"request_type": "analytical_reasoning", "complexity": 5, "query": "Reason through the trade-offs of three market entry strategies under uncertain demand and rank them with justification"}
+{"request_type": "code_generation", "complexity": 2, "query": "make a dockerfile for a node 20 express app"}
+{"request_type": "general", "complexity": 2, "query": "what's your favorite color"}
+{"request_type": "technical_design", "complexity": 3, "query": "Draft the REST API contract for a booking system with cancellations and waitlists"}
+{"request_type": "code_generation", "complexity": 3, "query": "Please convert this callback-style Node function to async/await and handle errors properly"}
+{"request_type": "code_generation", "complexity": 4, "query": "Refactor this class to use dependency injection and add unit tests with pytest"}
+{"request_type": "code_understanding", "complexity": 3, "query": "Why am I getting \"cannot borrow `self` as mutable more than once at a time\" in this Rust method?"}
+{"request_type": "writing", "complexity": 2, "query": "Write a polite email asking my landlord to fix the heating"}
+{"request_type": "factual_lookup", "complexity": 2, "query": "What is the difference between a virus and a bacterium, briefly?"}
+{"request_type": "writing", "complexity": 2, "query": "Rewrite this sentence to sound more professional: \"hey, got your stuff, will send later\""}
+{"request_type": "code_understanding", "complexity": 5, "query": "Audit this authentication middleware for security vulnerabilities and explain each finding and its exploit path"}
+{"request_type": "general", "complexity": 2, "query": "Recommend a good sci-fi book"}
+{"request_type": "code_generation", "complexity": 3, "query": "Script to bulk-resize all PNGs in a directory to 800px wide using Pillow"}
+{"request_type": "code_understanding", "complexity": 2, "query": "what's wrong with my for loop, it never terminates"}
+{"request_type": "analytical_reasoning", "complexity": 3, "query": "If a store offers 20% off then an extra 10% off the reduced price, what is the total discount?"}
+{"request_type": "writing", "complexity": 2, "query": "translate this paragraph into formal English"}
+{"request_type": "general", "complexity": 2, "query": "I'm feeling a bit stuck today, any tips to get motivated?"}
+{"request_type": "general", "complexity": 2, "query": "How do I politely end a conversation with a talkative coworker?"}
+{"request_type": "code_understanding", "complexity": 2, "query": "Explain what a closure captures in this JavaScript snippet"}
+{"request_type": "technical_design", "complexity": 3, "query": "Which authentication approach fits a mobile app plus a web dashboard: sessions, JWT or OAuth?"}
+{"request_type": "analytical_reasoning", "complexity": 4, "query": "Evaluate the pros and cons of raising prices 15% for a subscription product with 8% monthly churn"}
+{"request_type": "writing", "complexity": 3, "query": "Write release notes for version 2.4 based on these commit messages"}
+{"request_type": "code_generation", "complexity": 3, "query": "Generate a GitHub Actions workflow that runs cargo test and clippy on every pull request"}
+{"request_type": "factual_lookup", "complexity": 2, "query": "What year was Python first released and who created it?"}
+{"request_type": "factual_lookup", "complexity": 1, "query": "what language is spoken in Brazil"}
+{"request_type": "code_understanding", "complexity": 3, "query": "My React component re-renders on every keystroke, what is causing it? Here is the code"}
+{"request_type": "technical_design", "complexity": 4, "query": "Design the data model and sharding strategy for a chat application with 10M users"}
+{"request_type": "code_generation", "complexity": 3, "query": "Implement a debounce function in TypeScript with a cancel method"}
+{"request_type": "code_understanding", "complexity": 3, "query": "Explain how this decorator modifies the wrapped function's behaviour"}
+{"request_type": "code_understanding", "complexity": 2, "query": "what do the flags in this ffmpeg command mean"}
+{"request_type": "code_generation", "complexity": 4, "query": "Code a command-line todo app in Rust with clap, serde persistence and a --done flag"}
+{"request_type": "general", "complexity": 2, "query": "how do I deal with a noisy neighbour"}
+{"request_type": "technical_design", "complexity": 2, "query": "monolith vs microservices for a team of three?"}
+{"request_type": "analytical_reasoning", "complexity": 4, "query": "Estimate how many piano tuners work in Chicago and show your reasoning"}
+{"request_type": "writing", "complexity": 4, "query": "Write a short story about a lighthouse keeper who finds a message in a bottle"}
+{"request_type": "factual_lookup", "complexity": 2, "query": "What does the acronym GDPR stand for and when did it take effect?"}
+{"request_type": "code_understanding", "complexity": 4, "query": "This query takes 40 seconds. Explain why the planner picks a seq scan given this EXPLAIN output"}
+{"request_type": "analytical_reasoning", "complexity": 3, "query": "Why might our conversion rate drop after a redesign even though page speed improved? Think through possible causes"}
+{"request_type": "analytical_reasoning", "complexity": 3, "query": "Compare these two job offers considering salary, equity, commute and growth"}
+{"request_type": "code_generation", "complexity": 2, "query": "how do I write a function that reverses a linked list in java"}
+{"request_type": "code_understanding", "complexity": 3, "query": "Is there a race condition in this counter implementation?"}
+{"request_type": "technical_design", "complexity": 2, "query": "What queue should I put between my API and the email sender?"}
+{"request_type": "technical_design", "complexity": 3, "query": "Should I use Kafka or RabbitMQ for background job processing in a mid-size startup?"}
+{"request_type": "code_generation", "complexity": 2, "query": "Write a bash one-liner that renames every .jpeg file in a folder to .jpg"}
+{"request_type": "technical_design", "complexity": 5, "query": "Design an observability stack for 200 microservices including tracing, metrics, alert routing and cost controls"}
+{"request_type": "code_generation", "complexity": 5, "query": "Implement an LRU cache in Go that is thread safe, supports TTL eviction and exposes hit-rate metrics, with benchmarks"}
+{"request_type": "technical_design", "complexity": 4, "query": "How would you design the caching layer for a read-heavy product catalog with frequent price changes?"}
+{"request_type": "factual_lookup", "complexity": 1, "query": "how tall is mount everest"}
+{"request_type": "analytical_reasoning", "complexity": 2, "query": "how many minutes are in 3.5 days"}
+{"request_type": "code_understanding", "complexity": 2, "query": "what is the time complexity of this nested loop"}
+{"request_type": "code_understanding", "complexity": 2, "query": "summarize what this function does in one sentence"}
+{"request_type": "technical_design", "complexity": 4, "query": "Plan a zero-downtime migration from a monolith to microservices"}
+{"request_type": "code_understanding", "complexity": 3, "query": "Can you review this function for bugs and edge cases?"}
+{"request_type": "code_generation", "complexity": 2, "query": "give me a regex that matches ISO dates like 2024-03-09"}
+{"request_type": "code_generation", "complexity": 2, "query": "Write a Kubernetes deployment yaml for nginx with 3 replicas and a readiness probe"}
+{"request_type": "general", "complexity": 1, "query": "are you there?"}
+{"request_type": "technical_design", "complexity": 3, "query": "how to design idempotent webhooks for a payments integration"}
+{"request_type": "general", "complexity": 1, "query": "hello there"}
+{"request_type": "factual_lookup", "complexity": 2, "query": "Which country has the most time zones?"}
+{"request_type": "general", "complexity": 2, "query": "what are some good podcasts about history"}
+{"request_type": "general", "complexity": 1, "query": "thanks, that helped a lot"}
+{"request_type": "code_generation", "complexity": 1, "query": "python snippet to read a json file into a dict"}
+{"request_type": "analytical_reasoning", "complexity": 3, "query": "Why do experienced investors say diversification is the only free lunch? Break down the logic"}
+{"request_type": "writing", "complexity": 3, "query": "Compose a toast for my sister's wedding, funny but heartfelt"}
+{"request_type": "factual_lookup", "complexity": 2, "query": "What is the boiling point of ethanol in Celsius?"}
+{"request_type": "code_generation", "complexity": 3, "query": "I need a SQL query returning the top 5 customers by revenue per month from orders and customers tables"}
+{"request_type": "analytical_reasoning", "complexity": 3, "query": "What would happen to global shipping if the Suez canal closed for a month? Reason it out"}
+{"request_type": "analytical_reasoning", "complexity": 5, "query": "Build a break-even model for opening a second coffee shop with these fixed and variable costs, and stress test the assumptions"}
+{"request_type": "code_understanding", "complexity": 2, "query": "What does this line do? `x = [*map(int, input().split())]`"}
+{"request_type": "technical_design", "complexity": 4, "query": "Compare event sourcing and CRUD for an order management system and recommend one"}
+{"request_type": "general", "complexity": 3, "query": "I have two hours, how should I organise studying for my exam"}
+{"request_type": "factual_lookup", "complexity": 1, "query": "what does HTTP status 418 mean"}

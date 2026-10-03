@@ -21,6 +21,8 @@ pub mod cache;
 pub mod catalog;
 pub mod cells;
 pub mod classifier;
+pub mod classifier_hosted;
+pub mod classifier_local;
 // The salience classifier itself — feature engine, weight loading, scoring, banding.
 // Private to `routing`: only `salience.rs` (a sibling module) uses it directly, via
 // `ClassifierSalienceGate`.
@@ -33,7 +35,10 @@ mod salience_classifier;
 pub use boundary::{BoundarySignals, Mode, Phase};
 pub use cache::{CachedDecision, DecisionCache, NoopCache, RedisCache};
 pub use cells::{CellStore, InMemoryCellStore, PgCellStore};
-pub use classifier::{RequestType, Tier, classify, signal};
+pub use classifier::{
+    Classification, ClassifyError, ClassifyInput, GuardedClassifier, RegexClassifier,
+    RequestClassifier, RequestType, Tier, classify, signal,
+};
 pub use registry::{PgTierRegistry, TierRegistry};
 pub use salience::{AllowAllGate, ClassifierSalienceGate, SalienceGate};
 
@@ -120,6 +125,21 @@ pub struct RouteDecision {
 /// its first-turn tier (Level 2), while the reward it generates updates the shared
 /// provider-scoped cells that shape *future* conversations' cold-start picks.
 pub async fn route_model(
+    cache: &dyn DecisionCache,
+    registry: &dyn TierRegistry,
+    cell_store: &dyn CellStore,
+    gate: &dyn SalienceGate,
+    inputs: &RouteInputs<'_>,
+) -> RouteDecision {
+    route_model_with(&RegexClassifier, cache, registry, cell_store, gate, inputs).await
+}
+
+/// [`route_model`] with an explicit [`RequestClassifier`] for the request-type decision at
+/// Level 3. The classifier runs only where Level 3 already ran (a fireable `cold_start` /
+/// `switch` boundary with a cache miss); `continue` tool-loop steps and cache hits never call
+/// it, so the selected tier stays sticky exactly as before.
+pub async fn route_model_with(
+    classifier: &dyn RequestClassifier,
     cache: &dyn DecisionCache,
     registry: &dyn TierRegistry,
     cell_store: &dyn CellStore,
@@ -250,9 +270,22 @@ pub async fn route_model(
             // (`ThreadRng`) is `!Send`, so it is scoped to drop before the next `.await` — the
             // handler future must stay `Send`.
             let learned = cell_store.load(inputs.provider).await;
-            let (tier, request_type) = {
+            // The request type comes from the configured classifier (regex by default; a
+            // failing backend already degraded to regex inside `GuardedClassifier`). Only the
+            // tier is then Thompson-sampled, so provider-specific cost-aware mapping is intact.
+            let request_type = match classifier
+                .classify(&ClassifyInput {
+                    query,
+                    context: None,
+                })
+                .await
+            {
+                Ok(c) => c.request_type,
+                Err(_) => classifier::classify_request_type(query),
+            };
+            let tier = {
                 let mut rng = rand::rng();
-                classify(query, inputs.provider, &learned, &mut rng)
+                classifier::classify_typed(request_type, &learned, &mut rng)
             };
             // Per-config tier override takes priority over the global registry.
             let config_override = match tier {
@@ -598,6 +631,147 @@ mod tests {
         assert_eq!(puts[0].0, "c1");
         assert_eq!(puts[0].1, "agent-1");
         assert_eq!(puts[0].2, d.model);
+    }
+
+    // -- request classifier seam (`route_model_with`) -------------------------------------
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Counts calls and answers a fixed type, or errors — to prove *when* the router asks.
+    struct CountingClassifier {
+        calls: AtomicUsize,
+        answer: Result<RequestType, ()>,
+    }
+    #[async_trait]
+    impl RequestClassifier for CountingClassifier {
+        fn name(&self) -> &str {
+            "counting"
+        }
+        async fn classify(&self, _: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            match self.answer {
+                Ok(request_type) => Ok(Classification {
+                    request_type,
+                    complexity: 2,
+                    confidence: 0.9,
+                }),
+                Err(()) => Err(ClassifyError::Backend("down".into())),
+            }
+        }
+    }
+    fn counting(answer: Result<RequestType, ()>) -> CountingClassifier {
+        CountingClassifier {
+            calls: AtomicUsize::new(0),
+            answer,
+        }
+    }
+
+    #[tokio::test]
+    async fn classifier_runs_once_at_cold_start_and_never_on_continue_or_cache_hit() {
+        let clf = counting(Ok(RequestType::Writing));
+        let cache = FakeCache::empty();
+        let cold = signals(Some("c1"), Phase::ColdStart, Mode::FreeFlowing);
+        let first = route_model_with(
+            &clf,
+            &cache,
+            &test_support::StubRegistry,
+            &InMemoryCellStore::new(),
+            &AllowAllGate,
+            &inputs("anthropic", &cold, None),
+        )
+        .await;
+        assert_eq!(first.source, RouteSource::Classified);
+        assert_eq!(clf.calls.load(Ordering::SeqCst), 1);
+
+        // Tool-loop step: phase Continue is not a fireable boundary. With the decision cached
+        // from cold start the tier is sticky; with nothing cached it still must not classify.
+        let cont = signals(Some("c1"), Phase::Continue, Mode::FreeFlowing);
+        let cache_hit = FakeCache::with_hit(&first.model);
+        let sticky = route_model_with(
+            &clf,
+            &cache_hit,
+            &test_support::StubRegistry,
+            &InMemoryCellStore::new(),
+            &AllowAllGate,
+            &inputs("anthropic", &cont, None),
+        )
+        .await;
+        assert_eq!(
+            (sticky.source, sticky.model.as_str()),
+            (RouteSource::CacheHit, first.model.as_str())
+        );
+        let uncached = route_model_with(
+            &clf,
+            &FakeCache::empty(),
+            &test_support::StubRegistry,
+            &InMemoryCellStore::new(),
+            &AllowAllGate,
+            &inputs("anthropic", &cont, None),
+        )
+        .await;
+        assert_ne!(uncached.source, RouteSource::Classified);
+        assert_eq!(
+            clf.calls.load(Ordering::SeqCst),
+            1,
+            "continue must never classify"
+        );
+
+        // Even at a fireable boundary, a cache hit short-circuits before the classifier.
+        let again = route_model_with(
+            &clf,
+            &cache_hit,
+            &test_support::StubRegistry,
+            &InMemoryCellStore::new(),
+            &AllowAllGate,
+            &inputs("anthropic", &cold, None),
+        )
+        .await;
+        assert_eq!(
+            clf.calls.load(Ordering::SeqCst),
+            1,
+            "cache hit must not classify"
+        );
+        assert_eq!(again.source, RouteSource::CacheHit);
+    }
+
+    #[tokio::test]
+    async fn failing_classifier_degrades_to_regex_and_still_routes() {
+        let clf = counting(Err(()));
+        let cache = FakeCache::empty();
+        let s = signals(Some("c2"), Phase::Switch, Mode::FreeFlowing);
+        let d = route_model_with(
+            &clf,
+            &cache,
+            &test_support::StubRegistry,
+            &InMemoryCellStore::new(),
+            &AllowAllGate,
+            &inputs("anthropic", &s, None),
+        )
+        .await;
+        assert_eq!(
+            d.source,
+            RouteSource::Classified,
+            "an Err must not become an outage"
+        );
+        assert_eq!(clf.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(cache.puts.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn pinned_flow_never_calls_the_classifier() {
+        let clf = counting(Ok(RequestType::General));
+        let s = signals(Some("c3"), Phase::Switch, Mode::FreeFlowing);
+        let d = route_model_with(
+            &clf,
+            &FakeCache::empty(),
+            &test_support::StubRegistry,
+            &InMemoryCellStore::new(),
+            &AllowAllGate,
+            &inputs("anthropic", &s, Some("pinned-model")),
+        )
+        .await;
+        assert_eq!(d.model, "pinned-model");
+        assert_eq!(clf.calls.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]

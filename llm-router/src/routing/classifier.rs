@@ -28,7 +28,11 @@
 //! it an entropy RNG; tests inject a seeded one.
 
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
+use async_trait::async_trait;
 use rand::Rng;
 use rand_distr::{Beta, Distribution};
 
@@ -309,7 +313,7 @@ pub fn classify<R: Rng + ?Sized>(
     rng: &mut R,
 ) -> (Tier, RequestType) {
     let request_type = classify_request_type(query);
-    let tier = pick_model_thompson(cells, request_type, DEFAULT_W_QUALITY, DEFAULT_W_COST, rng);
+    let tier = classify_typed(request_type, cells, rng);
     let preview: String = query.chars().take(120).collect();
     tracing::info!(
         target: "nasiko::llm_router::classifier",
@@ -322,6 +326,273 @@ pub fn classify<R: Rng + ?Sized>(
         "classifier: classified query into request type and Thompson-sampled a model tier"
     );
     (tier, request_type)
+}
+
+// --------------------------------------------------------------------------
+// 4. Pluggable request classifier — `RequestClassifier`
+// --------------------------------------------------------------------------
+//
+// `classify_request_type` answers from the query text alone with keyword votes. The trait below
+// is the seam that lets a different decision model (a local model or a hosted API) answer the
+// same question, with the regex as the default and as the fallback for every failure mode.
+//
+// ## Contract
+//
+// * **`request_type`** — the router's [`RequestType`]. Same label set as the regex.
+// * **`complexity`** — 1..=5 on a documented rubric ([`estimate_complexity`]). Reported with the
+//   decision; the tier bandit is still keyed on `(provider, tier, request_type)`, so complexity
+//   does not change tier selection today (no feedback simulation is needed).
+// * **`confidence`** — in `[0, 1]`: the backend's probability for the chosen `request_type`
+//   (local: temperature-scaled posterior; hosted: the model's self-report, clamped). Regex
+//   returns fixed values (see [`RegexClassifier`]) because a vote count is not a probability.
+//
+// ## Failure and low-confidence behaviour ([`GuardedClassifier`])
+//
+// * backend `Err` or timeout -> the regex answer, counted as a fallback;
+// * `confidence < min_confidence` -> the *safe default* `RequestType::General` (the router's
+//   neutral cell), counted as a low-confidence fallback — never a confident wrong guess.
+//
+// Determinism: the regex and local backends are pure functions of `(query, context)`.
+
+/// What the classifier is asked about. `context` is optional supporting text (e.g. the code or
+/// file the request refers to); the regex baseline ignores it, learned backends may use it.
+#[derive(Debug, Clone, Copy)]
+pub struct ClassifyInput<'a> {
+    pub query: &'a str,
+    pub context: Option<&'a str>,
+}
+
+/// A classifier verdict. See the module notes for the meaning of each field.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Classification {
+    pub request_type: RequestType,
+    /// 1 (trivial) ..= 5 (multi-constraint / multi-step engineering or analysis).
+    pub complexity: u8,
+    /// Probability-like score in `[0, 1]` for `request_type`.
+    pub confidence: f32,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ClassifyError {
+    #[error("classifier backend failed: {0}")]
+    Backend(String),
+    #[error("classifier timed out")]
+    Timeout,
+    #[error("classifier returned invalid output: {0}")]
+    InvalidOutput(String),
+}
+
+/// A request-type decision model. Implementations must be cheap to call concurrently.
+#[async_trait]
+pub trait RequestClassifier: Send + Sync {
+    fn name(&self) -> &str;
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError>;
+}
+
+/// Fixed complexity the regex baseline reports (it cannot measure complexity).
+pub const REGEX_COMPLEXITY: u8 = 3;
+/// Fixed confidence when at least one category pattern matched.
+pub const REGEX_CONFIDENCE_MATCHED: f32 = 0.5;
+/// Fixed confidence when nothing matched and `General` is just the default.
+pub const REGEX_CONFIDENCE_DEFAULT: f32 = 0.25;
+
+/// The default classifier: [`classify_request_type`] unchanged. Complexity is fixed at
+/// [`REGEX_COMPLEXITY`]; confidence is [`REGEX_CONFIDENCE_MATCHED`] if any pattern matched, else
+/// [`REGEX_CONFIDENCE_DEFAULT`]. Infallible and never touches the network.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct RegexClassifier;
+
+#[async_trait]
+impl RequestClassifier for RegexClassifier {
+    fn name(&self) -> &str {
+        "regex"
+    }
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+        let request_type = classify_request_type(input.query);
+        let matched = request_type != RequestType::General
+            || CATEGORY_PATTERNS
+                .iter()
+                .any(|(_, pats)| pats.iter().any(|p| p.is_match(input.query)));
+        Ok(Classification {
+            request_type,
+            complexity: REGEX_COMPLEXITY,
+            confidence: if matched {
+                REGEX_CONFIDENCE_MATCHED
+            } else {
+                REGEX_CONFIDENCE_DEFAULT
+            },
+        })
+    }
+}
+
+/// Complexity rubric (1..=5), a deterministic function of the text:
+///
+/// | points | signal |
+/// |---|---|
+/// | 0-3 | query length: <=8 words 0, <=25 words 1, <=60 words 2, longer 3 |
+/// | +1 | supporting context longer than 150 words, or any code fence |
+/// | +1 | two or more sequencing markers (first/then/finally/step/numbered list) |
+/// | +1 / +2 | one / two-or-more constraint or scale markers (must, without, at most, per second, multi-region, trade-off, thread-safe, ...) |
+///
+/// `complexity = 1 + points / 2`, clamped to 5 (0-1 pts -> 1, 2-3 -> 2, 4-5 -> 3, 6-7 -> 4, 8+ -> 5).
+pub fn estimate_complexity(query: &str, context: Option<&str>) -> u8 {
+    const SEQUENCING: [&str; 6] = ["first", "then", "finally", "step", "after that", "1."];
+    const CONSTRAINT: [&str; 22] = [
+        "must",
+        "without",
+        "at most",
+        "at least",
+        "exactly",
+        "per second",
+        "per day",
+        "scale",
+        "distributed",
+        "concurren",
+        "thread",
+        "secur",
+        "trade-off",
+        "tradeoff",
+        "multi-region",
+        "benchmark",
+        "fault",
+        "latency",
+        "throughput",
+        "consisten",
+        "sharding",
+        "stress test",
+    ];
+    let q = query.to_lowercase();
+    let words = q.split_whitespace().count();
+    let mut points = match words {
+        0..=8 => 0,
+        9..=25 => 1,
+        26..=60 => 2,
+        _ => 3,
+    };
+    let ctx_words = context.map_or(0, |c| c.split_whitespace().count());
+    if ctx_words > 150 || q.contains("```") || context.is_some_and(|c| c.contains("```")) {
+        points += 1;
+    }
+    if SEQUENCING.iter().filter(|m| q.contains(**m)).count() >= 2 {
+        points += 1;
+    }
+    points += match CONSTRAINT.iter().filter(|m| q.contains(**m)).count() {
+        0 => 0,
+        1 => 1,
+        _ => 2,
+    };
+    (1 + points / 2).min(5) as u8
+}
+
+/// Counters for how often the guard had to step in. Cheap to read for metrics.
+#[derive(Debug, Default)]
+pub struct ClassifierStats {
+    calls: AtomicU64,
+    errors: AtomicU64,
+    timeouts: AtomicU64,
+    low_confidence: AtomicU64,
+}
+
+/// Point-in-time copy of [`ClassifierStats`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StatsSnapshot {
+    pub calls: u64,
+    pub errors: u64,
+    pub timeouts: u64,
+    pub low_confidence: u64,
+}
+
+impl StatsSnapshot {
+    /// Fraction of calls that did not use the backend's own answer.
+    pub fn fallback_rate(&self) -> f64 {
+        if self.calls == 0 {
+            return 0.0;
+        }
+        (self.errors + self.timeouts + self.low_confidence) as f64 / self.calls as f64
+    }
+}
+
+impl ClassifierStats {
+    pub fn snapshot(&self) -> StatsSnapshot {
+        StatsSnapshot {
+            calls: self.calls.load(Ordering::Relaxed),
+            errors: self.errors.load(Ordering::Relaxed),
+            timeouts: self.timeouts.load(Ordering::Relaxed),
+            low_confidence: self.low_confidence.load(Ordering::Relaxed),
+        }
+    }
+}
+
+/// Wraps any backend with a timeout, regex fallback on failure, and the low-confidence safe
+/// default. This is what the router and `classifier_eval` both hold, so they exercise one path.
+pub struct GuardedClassifier {
+    inner: Arc<dyn RequestClassifier>,
+    timeout: Duration,
+    min_confidence: f32,
+    stats: ClassifierStats,
+}
+
+impl GuardedClassifier {
+    pub fn new(inner: Arc<dyn RequestClassifier>, timeout: Duration, min_confidence: f32) -> Self {
+        Self {
+            inner,
+            timeout,
+            min_confidence: min_confidence.clamp(0.0, 1.0),
+            stats: ClassifierStats::default(),
+        }
+    }
+    pub fn stats(&self) -> StatsSnapshot {
+        self.stats.snapshot()
+    }
+}
+
+#[async_trait]
+impl RequestClassifier for GuardedClassifier {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+        self.stats.calls.fetch_add(1, Ordering::Relaxed);
+        let outcome = match tokio::time::timeout(self.timeout, self.inner.classify(input)).await {
+            Ok(r) => r,
+            Err(_) => {
+                self.stats.timeouts.fetch_add(1, Ordering::Relaxed);
+                Err(ClassifyError::Timeout)
+            }
+        };
+        match outcome {
+            Ok(c) if c.confidence.is_finite() && c.confidence >= self.min_confidence => Ok(c),
+            Ok(c) => {
+                self.stats.low_confidence.fetch_add(1, Ordering::Relaxed);
+                Ok(Classification {
+                    request_type: RequestType::General,
+                    ..c
+                })
+            }
+            Err(e) => {
+                if !matches!(e, ClassifyError::Timeout) {
+                    self.stats.errors.fetch_add(1, Ordering::Relaxed);
+                }
+                tracing::warn!(
+                    target: "nasiko::llm_router::classifier",
+                    backend = %self.inner.name(), error = %e,
+                    "classifier backend failed; falling back to the regex classifier"
+                );
+                RegexClassifier.classify(input).await
+            }
+        }
+    }
+}
+
+/// [`classify`] with the request type already decided (by a [`RequestClassifier`]); only the
+/// tier is Thompson-sampled. `classify` is this plus the regex type.
+pub fn classify_typed<R: Rng + ?Sized>(
+    request_type: RequestType,
+    cells: &CellMap,
+    rng: &mut R,
+) -> Tier {
+    pick_model_thompson(cells, request_type, DEFAULT_W_QUALITY, DEFAULT_W_COST, rng)
 }
 
 #[cfg(test)]
@@ -530,5 +801,140 @@ mod tests {
         );
         assert_eq!(rt, RequestType::CodeGeneration);
         assert!(matches!(tier, Tier::Tier1 | Tier::Tier2 | Tier::Tier3));
+    }
+
+    // --- RequestClassifier / GuardedClassifier ---
+
+    struct Scripted(Result<Classification, fn() -> ClassifyError>, Duration);
+    #[async_trait]
+    impl RequestClassifier for Scripted {
+        fn name(&self) -> &str {
+            "scripted"
+        }
+        async fn classify(&self, _: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+            tokio::time::sleep(self.1).await;
+            self.0.map_err(|f| f())
+        }
+    }
+    fn verdict(rt: RequestType, confidence: f32) -> Classification {
+        Classification {
+            request_type: rt,
+            complexity: 4,
+            confidence,
+        }
+    }
+    fn guard(inner: Scripted, min: f32) -> GuardedClassifier {
+        GuardedClassifier::new(Arc::new(inner), Duration::from_millis(50), min)
+    }
+    const Q: ClassifyInput<'static> = ClassifyInput {
+        query: "write me a Python sort function",
+        context: None,
+    };
+
+    #[tokio::test]
+    async fn regex_classifier_wraps_the_baseline_with_fixed_values() {
+        let c = RegexClassifier.classify(&Q).await.unwrap();
+        assert_eq!(c.request_type, classify_request_type(Q.query));
+        assert_eq!(
+            (c.complexity, c.confidence),
+            (REGEX_COMPLEXITY, REGEX_CONFIDENCE_MATCHED)
+        );
+        let g = RegexClassifier
+            .classify(&ClassifyInput {
+                query: "hmm",
+                context: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            (g.request_type, g.confidence),
+            (RequestType::General, REGEX_CONFIDENCE_DEFAULT)
+        );
+    }
+
+    #[tokio::test]
+    async fn guard_passes_a_confident_answer_through() {
+        let g = guard(
+            Scripted(Ok(verdict(RequestType::Writing, 0.9)), Duration::ZERO),
+            0.4,
+        );
+        assert_eq!(
+            g.classify(&Q).await.unwrap(),
+            verdict(RequestType::Writing, 0.9)
+        );
+        assert_eq!(g.stats().fallback_rate(), 0.0);
+    }
+
+    #[tokio::test]
+    async fn guard_falls_back_to_regex_on_error_and_counts_it() {
+        let g = guard(
+            Scripted(
+                Err(|| ClassifyError::Backend("boom".into())),
+                Duration::ZERO,
+            ),
+            0.0,
+        );
+        let c = g.classify(&Q).await.unwrap();
+        assert_eq!(c.request_type, classify_request_type(Q.query));
+        let s = g.stats();
+        assert_eq!((s.calls, s.errors, s.timeouts), (1, 1, 0));
+    }
+
+    #[tokio::test]
+    async fn guard_falls_back_to_regex_on_timeout_and_counts_it() {
+        let g = guard(
+            Scripted(
+                Ok(verdict(RequestType::Writing, 0.99)),
+                Duration::from_millis(500),
+            ),
+            0.0,
+        );
+        let c = g.classify(&Q).await.unwrap();
+        assert_eq!(c.request_type, classify_request_type(Q.query));
+        let s = g.stats();
+        assert_eq!((s.timeouts, s.errors), (1, 0));
+        assert_eq!(s.fallback_rate(), 1.0);
+    }
+
+    #[tokio::test]
+    async fn low_confidence_routes_to_the_safe_default_and_counts_as_fallback() {
+        let g = guard(
+            Scripted(
+                Ok(verdict(RequestType::CodeGeneration, 0.3)),
+                Duration::ZERO,
+            ),
+            0.5,
+        );
+        let c = g.classify(&Q).await.unwrap();
+        assert_eq!(c.request_type, RequestType::General);
+        assert_eq!(c.complexity, 4, "complexity is kept");
+        assert_eq!(g.stats().low_confidence, 1);
+    }
+
+    #[tokio::test]
+    async fn non_finite_confidence_is_treated_as_low() {
+        let g = guard(
+            Scripted(Ok(verdict(RequestType::Writing, f32::NAN)), Duration::ZERO),
+            0.1,
+        );
+        assert_eq!(
+            g.classify(&Q).await.unwrap().request_type,
+            RequestType::General
+        );
+    }
+
+    #[test]
+    fn complexity_rubric_is_bounded_and_monotonic() {
+        let trivial = estimate_complexity("fix typo", None);
+        let hard = estimate_complexity(
+            "First design a distributed rate limiter, then benchmark it, and it must be fault tolerant at 50k requests per second with strong consistency across regions, without a single point of failure",
+            Some(&"context ".repeat(200)),
+        );
+        assert_eq!(trivial, 1);
+        assert!(hard >= 4 && hard <= 5, "hard={hard}");
+        assert_eq!(
+            estimate_complexity("same", None),
+            estimate_complexity("same", None)
+        );
     }
 }

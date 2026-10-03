@@ -1,0 +1,250 @@
+{
+ "schema": "classifier-eval@v1-local-heldout",
+ "examples": [
+  {
+   "id": "val-00",
+   "query": "speed of light in km/s",
+   "context": null,
+   "request_type": "factual_lookup",
+   "complexity": 1
+  },
+  {
+   "id": "val-01",
+   "query": "Give me a catchy tagline for a bakery",
+   "context": null,
+   "request_type": "writing",
+   "complexity": 2
+  },
+  {
+   "id": "val-02",
+   "query": "Can you be my accountability partner for a reading habit?",
+   "context": null,
+   "request_type": "general",
+   "complexity": 3
+  },
+  {
+   "id": "val-03",
+   "query": "Design a rate limiter for a multi-region API gateway handling 50k requests per second",
+   "context": null,
+   "request_type": "technical_design",
+   "complexity": 4
+  },
+  {
+   "id": "val-04",
+   "query": "Read this diff and tell me whether it changes the public behaviour of the API",
+   "context": null,
+   "request_type": "code_understanding",
+   "complexity": 4
+  },
+  {
+   "id": "val-05",
+   "query": "what is 15% of 240 plus 8",
+   "context": null,
+   "request_type": "analytical_reasoning",
+   "complexity": 2
+  },
+  {
+   "id": "val-06",
+   "query": "Who wrote Pride and Prejudice?",
+   "context": null,
+   "request_type": "factual_lookup",
+   "complexity": 1
+  },
+  {
+   "id": "val-07",
+   "query": "make this text shorter and punchier",
+   "context": null,
+   "request_type": "writing",
+   "complexity": 2
+  },
+  {
+   "id": "val-08",
+   "query": "Write a parser for arithmetic expressions with precedence and parentheses, no libraries",
+   "context": null,
+   "request_type": "code_generation",
+   "complexity": 4
+  },
+  {
+   "id": "val-09",
+   "query": "tell me a joke",
+   "context": null,
+   "request_type": "general",
+   "complexity": 1
+  },
+  {
+   "id": "val-10",
+   "query": "Say no to a meeting invite nicely",
+   "context": null,
+   "request_type": "writing",
+   "complexity": 2
+  },
+  {
+   "id": "val-11",
+   "query": "What are the second-order effects of a sudden minimum wage increase on small businesses?",
+   "context": null,
+   "request_type": "analytical_reasoning",
+   "complexity": 4
+  },
+  {
+   "id": "val-12",
+   "query": "Fix the typo in this Python comment: `# retrun the value`",
+   "context": null,
+   "request_type": "code_generation",
+   "complexity": 1
+  },
+  {
+   "id": "val-13",
+   "query": "What deployment topology would you use for a latency-sensitive ML inference service on Kubernetes?",
+   "context": null,
+   "request_type": "technical_design",
+   "complexity": 4
+  },
+  {
+   "id": "val-14",
+   "query": "good morning",
+   "context": null,
+   "request_type": "general",
+   "complexity": 1
+  },
+  {
+   "id": "val-15",
+   "query": "Write a haiku sequence about autumn rain",
+   "context": null,
+   "request_type": "writing",
+   "complexity": 3
+  },
+  {
+   "id": "val-16",
+   "query": "Explain the difference between what these two git commands do to my history",
+   "context": null,
+   "request_type": "code_understanding",
+   "complexity": 3
+  },
+  {
+   "id": "val-17",
+   "query": "What is the capital of Australia?",
+   "context": null,
+   "request_type": "factual_lookup",
+   "complexity": 1
+  },
+  {
+   "id": "val-18",
+   "query": "Create a React hook that syncs state to localStorage and across browser tabs",
+   "context": null,
+   "request_type": "code_generation",
+   "complexity": 4
+  },
+  {
+   "id": "val-19",
+   "query": "Trace through this code and tell me what it prints for input 5",
+   "context": null,
+   "request_type": "code_understanding",
+   "complexity": 3
+  },
+  {
+   "id": "val-20",
+   "query": "Weigh the risks of expanding to Brazil versus Mexico first",
+   "context": null,
+   "request_type": "analytical_reasoning",
+   "complexity": 4
+  },
+  {
+   "id": "val-21",
+   "query": "Is Postgres or MongoDB better for storing user profiles?",
+   "context": null,
+   "request_type": "technical_design",
+   "complexity": 2
+  },
+  {
+   "id": "val-22",
+   "query": "Help me understand why this goroutine leaks, here's the full file",
+   "context": null,
+   "request_type": "code_understanding",
+   "complexity": 4
+  },
+  {
+   "id": "val-23",
+   "query": "build me a small Flask endpoint that accepts a CSV upload and returns row counts",
+   "context": null,
+   "request_type": "code_generation",
+   "complexity": 3
+  },
+  {
+   "id": "val-24",
+   "query": "How many bones are in the adult human body?",
+   "context": null,
+   "request_type": "factual_lookup",
+   "complexity": 2
+  },
+  {
+   "id": "val-25",
+   "query": "How do I get better at public speaking?",
+   "context": null,
+   "request_type": "general",
+   "complexity": 2
+  },
+  {
+   "id": "val-26",
+   "query": "suggest five subject lines for a newsletter about gardening",
+   "context": null,
+   "request_type": "writing",
+   "complexity": 2
+  },
+  {
+   "id": "val-27",
+   "query": "Outline a disaster recovery plan with RPO of 5 minutes for our primary database",
+   "context": null,
+   "request_type": "technical_design",
+   "complexity": 4
+  },
+  {
+   "id": "val-28",
+   "query": "If the probability of rain is 30% each day, what's the chance it rains at least once in 4 days?",
+   "context": null,
+   "request_type": "analytical_reasoning",
+   "complexity": 3
+  },
+  {
+   "id": "val-29",
+   "query": "Walk me through how this recursive descent parser handles operator precedence",
+   "context": null,
+   "request_type": "code_understanding",
+   "complexity": 4
+  },
+  {
+   "id": "val-30",
+   "query": "What's a good folder structure for a large Next.js project?",
+   "context": null,
+   "request_type": "technical_design",
+   "complexity": 3
+  },
+  {
+   "id": "val-31",
+   "query": "Give me ideas for a 10-year-old's birthday party",
+   "context": null,
+   "request_type": "general",
+   "complexity": 3
+  },
+  {
+   "id": "val-32",
+   "query": "Can you turn this for-loop into a list comprehension? total = []; for x in xs: total.append(x*2)",
+   "context": null,
+   "request_type": "code_generation",
+   "complexity": 2
+  },
+  {
+   "id": "val-33",
+   "query": "when is the next leap year",
+   "context": null,
+   "request_type": "factual_lookup",
+   "complexity": 1
+  },
+  {
+   "id": "val-34",
+   "query": "Is this argument valid? All managers attend meetings; Sam attends meetings; so Sam is a manager",
+   "context": null,
+   "request_type": "analytical_reasoning",
+   "complexity": 3
+  }
+ ]
+}

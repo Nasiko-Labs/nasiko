@@ -101,6 +101,23 @@ pub struct GatewayConfig {
     /// retuned. Default 0.80.
     pub salience_high_threshold: f64,
 
+    /// Request classifier backend: `regex` (default; no network, behaviour unchanged),
+    /// `local` (Naive Bayes trained at load, no network) or `hosted` (OpenAI-compatible
+    /// endpoint, opt-in). Unknown values are treated as `regex`.
+    pub classifier_backend: String,
+    /// `local` only: JSONL training set to use instead of the embedded one. Empty = embedded.
+    pub classifier_model_path: String,
+    /// `hosted` only: full chat-completions URL. Only this host receives the key.
+    pub classifier_endpoint: String,
+    /// `hosted` only: model id sent in the request.
+    pub classifier_model: String,
+    /// `hosted` only: bearer key for the endpoint. Never logged.
+    pub classifier_api_key: String,
+    /// Per-decision budget. Past it the router uses the regex answer and counts a fallback.
+    pub classifier_timeout_ms: u64,
+    /// Below this confidence the router uses the safe default (`general`). 0 disables.
+    pub classifier_min_confidence: f32,
+
     /// Fleet-wide kill switch for payload compression. Compression is opted into **per agent**
     /// (`agents.compress_enabled`); this only lets an operator stop all of it at once without
     /// editing every agent's row. Default on, so a UI toggle takes effect without a deploy.
@@ -185,6 +202,13 @@ impl Default for GatewayConfig {
             salience_weights_path: String::new(),
             salience_low_threshold: 0.20,
             salience_high_threshold: 0.80,
+            classifier_backend: "regex".into(),
+            classifier_model_path: String::new(),
+            classifier_endpoint: String::new(),
+            classifier_model: String::new(),
+            classifier_api_key: String::new(),
+            classifier_timeout_ms: 250,
+            classifier_min_confidence: 0.0,
             compress_kill_switch: true,
             compress_min_bytes: 2048,
             compress_types: nasiko_compress::TypeMask::DEFAULT,
@@ -265,6 +289,19 @@ impl GatewayConfig {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(d.salience_gate_enabled),
+            classifier_backend: env_or("CLASSIFIER_BACKEND", &d.classifier_backend),
+            classifier_model_path: env_or("CLASSIFIER_MODEL_PATH", &d.classifier_model_path),
+            classifier_endpoint: env_or("CLASSIFIER_ENDPOINT", &d.classifier_endpoint),
+            classifier_model: env_or("CLASSIFIER_MODEL", &d.classifier_model),
+            classifier_api_key: env_or("CLASSIFIER_API_KEY", &d.classifier_api_key),
+            classifier_timeout_ms: env_parse_first(
+                &["CLASSIFIER_TIMEOUT_MS"],
+                d.classifier_timeout_ms,
+            ),
+            classifier_min_confidence: env_parse_first(
+                &["CLASSIFIER_MIN_CONFIDENCE"],
+                d.classifier_min_confidence,
+            ),
             salience_weights_path: env_or("SALIENCE_WEIGHTS_PATH", &d.salience_weights_path),
             salience_low_threshold: std::env::var("SALIENCE_LOW_THRESHOLD")
                 .ok()

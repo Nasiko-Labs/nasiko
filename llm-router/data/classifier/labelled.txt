@@ -1,0 +1,148 @@
+code_generation|1|Fix the typo in this Python comment: `# retrun the value`
+code_generation|2|Write a bash one-liner that renames every .jpeg file in a folder to .jpg
+code_generation|2|give me a regex that matches ISO dates like 2024-03-09
+code_generation|2|Can you turn this for-loop into a list comprehension? total = []; for x in xs: total.append(x*2)
+code_generation|3|Implement a debounce function in TypeScript with a cancel method
+code_generation|3|I need a SQL query returning the top 5 customers by revenue per month from orders and customers tables
+code_generation|3|build me a small Flask endpoint that accepts a CSV upload and returns row counts
+code_generation|3|Add retry with exponential backoff to this fetch wrapper
+code_generation|4|Write a Rust async worker pool that processes jobs from an mpsc channel with graceful shutdown
+code_generation|4|Create a React hook that syncs state to localStorage and across browser tabs
+code_generation|4|Refactor this class to use dependency injection and add unit tests with pytest
+code_generation|5|Implement an LRU cache in Go that is thread safe, supports TTL eviction and exposes hit-rate metrics, with benchmarks
+code_generation|2|make a dockerfile for a node 20 express app
+code_generation|3|Script to bulk-resize all PNGs in a directory to 800px wide using Pillow
+code_generation|2|how do I write a function that reverses a linked list in java
+code_generation|3|Generate a GitHub Actions workflow that runs cargo test and clippy on every pull request
+code_generation|4|Write a parser for arithmetic expressions with precedence and parentheses, no libraries
+code_generation|1|python snippet to read a json file into a dict
+code_generation|3|Please convert this callback-style Node function to async/await and handle errors properly
+code_generation|2|Write a Kubernetes deployment yaml for nginx with 3 replicas and a readiness probe
+code_generation|4|Code a command-line todo app in Rust with clap, serde persistence and a --done flag
+code_generation|2|write a function to check if a string is a palindrome ignoring punctuation
+code_understanding|2|What does this line do? `x = [*map(int, input().split())]`
+code_understanding|3|Why am I getting "cannot borrow `self` as mutable more than once at a time" in this Rust method?
+code_understanding|2|Explain what a closure captures in this JavaScript snippet
+code_understanding|3|Can you review this function for bugs and edge cases?
+code_understanding|3|My React component re-renders on every keystroke, what is causing it? Here is the code
+code_understanding|4|Walk me through how this recursive descent parser handles operator precedence
+code_understanding|2|what is the time complexity of this nested loop
+code_understanding|3|Trace through this code and tell me what it prints for input 5
+code_understanding|4|This query takes 40 seconds. Explain why the planner picks a seq scan given this EXPLAIN output
+code_understanding|2|Why does `[] + {}` give "[object Object]" in JS?
+code_understanding|3|Explain the difference between what these two git commands do to my history
+code_understanding|2|What does this stack trace mean? NullPointerException at UserService.java:42
+code_understanding|4|Help me understand why this goroutine leaks, here's the full file
+code_understanding|3|Is there a race condition in this counter implementation?
+code_understanding|2|what's wrong with my for loop, it never terminates
+code_understanding|3|Explain how this decorator modifies the wrapped function's behaviour
+code_understanding|5|Audit this authentication middleware for security vulnerabilities and explain each finding and its exploit path
+code_understanding|2|summarize what this function does in one sentence
+code_understanding|3|why does my docker container exit immediately with code 137
+code_understanding|4|Read this diff and tell me whether it changes the public behaviour of the API
+code_understanding|2|what do the flags in this ffmpeg command mean
+technical_design|4|Design a rate limiter for a multi-region API gateway handling 50k requests per second
+technical_design|3|How should I structure the database schema for a multi-tenant SaaS app?
+technical_design|4|Compare event sourcing and CRUD for an order management system and recommend one
+technical_design|5|Propose an architecture for a real-time collaborative editor supporting offline edits and conflict resolution
+technical_design|3|Should I use Kafka or RabbitMQ for background job processing in a mid-size startup?
+technical_design|4|Plan a zero-downtime migration from a monolith to microservices
+technical_design|3|What's a good folder structure for a large Next.js project?
+technical_design|4|How would you design the caching layer for a read-heavy product catalog with frequent price changes?
+technical_design|3|Draft the REST API contract for a booking system with cancellations and waitlists
+technical_design|5|Architect a fault-tolerant ingestion pipeline for 1 TB of IoT telemetry per day with exactly-once semantics
+technical_design|2|monolith vs microservices for a team of three?
+technical_design|4|Design the data model and sharding strategy for a chat application with 10M users
+technical_design|3|How do I split this service into modules with clear boundaries?
+technical_design|4|What deployment topology would you use for a latency-sensitive ML inference service on Kubernetes?
+technical_design|3|Which authentication approach fits a mobile app plus a web dashboard: sessions, JWT or OAuth?
+technical_design|2|Is Postgres or MongoDB better for storing user profiles?
+technical_design|4|Outline a disaster recovery plan with RPO of 5 minutes for our primary database
+technical_design|3|Sketch the component diagram for an e-commerce checkout flow
+technical_design|5|Design an observability stack for 200 microservices including tracing, metrics, alert routing and cost controls
+technical_design|3|how to design idempotent webhooks for a payments integration
+technical_design|2|What queue should I put between my API and the email sender?
+analytical_reasoning|3|If a store offers 20% off then an extra 10% off the reduced price, what is the total discount?
+analytical_reasoning|4|Estimate how many piano tuners work in Chicago and show your reasoning
+analytical_reasoning|3|Why might our conversion rate drop after a redesign even though page speed improved? Think through possible causes
+analytical_reasoning|4|Given quarterly revenue of 1.2M, 1.4M, 1.1M and 1.9M, analyze the trend and flag anomalies
+analytical_reasoning|2|Which is the better deal: 12 oz for $3.60 or 20 oz for $5.50?
+analytical_reasoning|4|Evaluate the pros and cons of raising prices 15% for a subscription product with 8% monthly churn
+analytical_reasoning|5|Build a break-even model for opening a second coffee shop with these fixed and variable costs, and stress test the assumptions
+analytical_reasoning|3|Solve: a train leaves at 3pm at 60 mph, another at 4pm at 80 mph. When does the second catch up?
+analytical_reasoning|3|Is this argument valid? All managers attend meetings; Sam attends meetings; so Sam is a manager
+analytical_reasoning|4|What are the second-order effects of a sudden minimum wage increase on small businesses?
+analytical_reasoning|2|what is 15% of 240 plus 8
+analytical_reasoning|3|Compare these two job offers considering salary, equity, commute and growth
+analytical_reasoning|4|Interpret this A/B test: control 4.1% on 20k visitors, variant 4.5% on 20k. Is it significant?
+analytical_reasoning|5|Reason through the trade-offs of three market entry strategies under uncertain demand and rank them with justification
+analytical_reasoning|3|Why do experienced investors say diversification is the only free lunch? Break down the logic
+analytical_reasoning|2|how many minutes are in 3.5 days
+analytical_reasoning|4|Diagnose why our monthly active users plateaued, given retention fell in cohorts after March
+analytical_reasoning|3|If the probability of rain is 30% each day, what's the chance it rains at least once in 4 days?
+analytical_reasoning|4|Weigh the risks of expanding to Brazil versus Mexico first
+analytical_reasoning|3|What would happen to global shipping if the Suez canal closed for a month? Reason it out
+writing|2|Write a polite email asking my landlord to fix the heating
+writing|3|Draft a 200-word product description for a stainless steel water bottle
+writing|2|Rewrite this sentence to sound more professional: "hey, got your stuff, will send later"
+writing|4|Write a persuasive cover letter for a junior data analyst role at a healthcare company
+writing|3|Summarize the following article in three bullet points
+writing|2|Give me a catchy tagline for a bakery
+writing|4|Write a short story about a lighthouse keeper who finds a message in a bottle
+writing|3|Help me write a LinkedIn post announcing my new job
+writing|2|proofread this paragraph and fix grammar
+writing|3|Compose a toast for my sister's wedding, funny but heartfelt
+writing|4|Write a blog post on remote work productivity in a friendly, conversational tone
+writing|2|make this text shorter and punchier
+writing|3|Draft a resignation letter that keeps the door open
+writing|5|Write a 1500-word long-form essay on the ethics of automation with a clear thesis and counterarguments
+writing|2|translate this paragraph into formal English
+writing|3|Write release notes for version 2.4 based on these commit messages
+writing|2|suggest five subject lines for a newsletter about gardening
+writing|3|Write a haiku sequence about autumn rain
+writing|4|Write the opening scene of a mystery novel set in 1920s Cairo
+writing|3|Turn my bullet points into a polished project update for stakeholders
+writing|2|Say no to a meeting invite nicely
+factual_lookup|1|What is the capital of Australia?
+factual_lookup|1|Who wrote Pride and Prejudice?
+factual_lookup|1|When did the Berlin Wall fall?
+factual_lookup|1|what does HTTP status 418 mean
+factual_lookup|2|How many bones are in the adult human body?
+factual_lookup|1|Define photosynthesis
+factual_lookup|2|What is the boiling point of ethanol in Celsius?
+factual_lookup|1|Who is the current CEO of Microsoft?
+factual_lookup|2|What year was Python first released and who created it?
+factual_lookup|1|how tall is mount everest
+factual_lookup|2|What does the acronym GDPR stand for and when did it take effect?
+factual_lookup|1|largest planet in the solar system
+factual_lookup|2|Which country has the most time zones?
+factual_lookup|1|What's the default port for PostgreSQL?
+factual_lookup|2|Who won the Nobel Prize in Physics in 2015?
+factual_lookup|1|speed of light in km/s
+factual_lookup|2|What is the difference between a virus and a bacterium, briefly?
+factual_lookup|1|when is the next leap year
+factual_lookup|2|Name the longest river in Africa
+factual_lookup|1|what language is spoken in Brazil
+factual_lookup|2|Which RFC defines JSON Web Tokens?
+general|1|hello there
+general|1|thanks, that helped a lot
+general|2|I'm feeling a bit stuck today, any tips to get motivated?
+general|2|What should I cook for dinner tonight, I have eggs and rice
+general|2|Recommend a good sci-fi book
+general|3|Brainstorm names for my new puppy, a golden retriever
+general|2|can you help me plan a weekend trip to Lisbon?
+general|1|tell me a joke
+general|2|How do I get better at public speaking?
+general|3|Give me ideas for a 10-year-old's birthday party
+general|2|what's your favorite color
+general|3|Suggest a beginner workout routine for three days a week
+general|2|Any advice on learning guitar as an adult?
+general|1|are you there?
+general|3|Help me decide what to do this weekend
+general|2|How do I politely end a conversation with a talkative coworker?
+general|2|ok
+general|3|Can you be my accountability partner for a reading habit?
+general|2|what are some good podcasts about history
+general|3|I have two hours, how should I organise studying for my exam
+general|1|good morning
+general|2|how do I deal with a noisy neighbour
