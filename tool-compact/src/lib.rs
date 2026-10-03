@@ -40,3 +40,8 @@ pub struct ToolCall {
 pub(crate) fn is_name_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.')
 }
+
+/// Compiles and runs the README's code examples as doctests, so they cannot go stale.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
