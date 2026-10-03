@@ -21,6 +21,7 @@ pub mod cache;
 pub mod catalog;
 pub mod cells;
 pub mod classifier;
+pub mod request_classifier;
 // The salience classifier itself — feature engine, weight loading, scoring, banding.
 // Private to `routing`: only `salience.rs` (a sibling module) uses it directly, via
 // `ClassifierSalienceGate`.
@@ -35,6 +36,10 @@ pub use cache::{CachedDecision, DecisionCache, NoopCache, RedisCache};
 pub use cells::{CellStore, InMemoryCellStore, PgCellStore};
 pub use classifier::{RequestType, Tier, classify, classify_request_type, signal};
 pub use registry::{PgTierRegistry, TierRegistry};
+pub use request_classifier::{
+    Classification, ClassifyError, ClassifyInput, GuardedClassifier, LocalClassifier,
+    RegexClassifier, RequestClassifier, build_classifier,
+};
 pub use salience::{AllowAllGate, ClassifierSalienceGate, SalienceGate};
 
 /// Which precedence level produced a routing decision — emitted as a structured tag so we
@@ -83,6 +88,9 @@ pub struct RouteInputs<'a> {
     pub signals: &'a BoundarySignals,
     /// The query to classify (latest user message text). `None` disables classification.
     pub query: Option<&'a str>,
+    /// Bounded prior conversation context. Kept separate from `query` so backends can
+    /// distinguish the current instruction from earlier turns.
+    pub context: Option<&'a str>,
 }
 
 /// The outcome of routing: the model to call and how it was chosen.
@@ -124,6 +132,19 @@ pub async fn route_model(
     registry: &dyn TierRegistry,
     cell_store: &dyn CellStore,
     gate: &dyn SalienceGate,
+    inputs: &RouteInputs<'_>,
+) -> RouteDecision {
+    route_model_with_classifier(cache, registry, cell_store, gate, None, inputs).await
+}
+
+/// [`route_model`] with an injected request classifier. Kept separate so existing callers
+/// retain source compatibility and the default path remains byte-for-byte regex based.
+pub async fn route_model_with_classifier(
+    cache: &dyn DecisionCache,
+    registry: &dyn TierRegistry,
+    cell_store: &dyn CellStore,
+    gate: &dyn SalienceGate,
+    request_classifier: Option<&GuardedClassifier>,
     inputs: &RouteInputs<'_>,
 ) -> RouteDecision {
     tracing::info!(
@@ -250,9 +271,30 @@ pub async fn route_model(
             // (`ThreadRng`) is `!Send`, so it is scoped to drop before the next `.await` — the
             // handler future must stay `Send`.
             let learned = cell_store.load(inputs.provider).await;
+            let classification = match request_classifier {
+                Some(classifier) => Some(
+                    classifier
+                        .decide(&ClassifyInput {
+                            query,
+                            context: inputs.context,
+                        })
+                        .await,
+                ),
+                None => None,
+            };
             let (tier, request_type) = {
                 let mut rng = rand::rng();
-                classify(query, inputs.provider, &learned, &mut rng)
+                let request_type = classification
+                    .map(|value| value.request_type)
+                    .unwrap_or_else(|| classify_request_type(query));
+                let tier = classifier::pick_model_thompson(
+                    &learned,
+                    request_type,
+                    classifier::DEFAULT_W_QUALITY,
+                    classifier::DEFAULT_W_COST,
+                    &mut rng,
+                );
+                (tier, request_type)
             };
             // Per-config tier override takes priority over the global registry.
             let config_override = match tier {
@@ -532,6 +574,7 @@ mod tests {
             tier3_model: None,
             signals,
             query: Some("hello"),
+            context: None,
         }
     }
 

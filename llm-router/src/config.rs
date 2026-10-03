@@ -101,6 +101,13 @@ pub struct GatewayConfig {
     /// retuned. Default 0.80.
     pub salience_high_threshold: f64,
 
+    /// Request-type backend. `regex` preserves the pre-existing behaviour; `local` enables
+    /// the embedded calibrated subword model.
+    pub classifier_backend: String,
+    pub classifier_model_path: String,
+    pub classifier_timeout_ms: u64,
+    pub classifier_min_confidence: f32,
+
     /// Fleet-wide kill switch for payload compression. Compression is opted into **per agent**
     /// (`agents.compress_enabled`); this only lets an operator stop all of it at once without
     /// editing every agent's row. Default on, so a UI toggle takes effect without a deploy.
@@ -185,6 +192,10 @@ impl Default for GatewayConfig {
             salience_weights_path: String::new(),
             salience_low_threshold: 0.20,
             salience_high_threshold: 0.80,
+            classifier_backend: "regex".into(),
+            classifier_model_path: String::new(),
+            classifier_timeout_ms: 50,
+            classifier_min_confidence: 0.30,
             compress_kill_switch: true,
             compress_min_bytes: 2048,
             compress_types: nasiko_compress::TypeMask::DEFAULT,
@@ -274,6 +285,17 @@ impl GatewayConfig {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(d.salience_high_threshold),
+            classifier_backend: env_or("CLASSIFIER_BACKEND", &d.classifier_backend),
+            classifier_model_path: env_or("CLASSIFIER_MODEL_PATH", &d.classifier_model_path),
+            classifier_timeout_ms: std::env::var("CLASSIFIER_TIMEOUT_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(d.classifier_timeout_ms),
+            classifier_min_confidence: std::env::var("CLASSIFIER_MIN_CONFIDENCE")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .filter(|v| (0.0..=1.0).contains(v))
+                .unwrap_or(d.classifier_min_confidence),
             compress_kill_switch: env_flag("TOKEN_COMPRESS_ENABLED", true),
             compress_min_bytes: env_usize("TOKEN_COMPRESS_MIN_BYTES", 2048),
             // A bad label must not silently widen or narrow what gets rewritten, so an

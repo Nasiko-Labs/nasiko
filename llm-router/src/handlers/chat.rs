@@ -48,6 +48,8 @@ pub(crate) struct RequestSignals {
     /// Latest user turn's text — the classifier's `query` input (Level 3) for every agent,
     /// and (for a coding-agent integration) also the `conv_id` anchor for *this* turn.
     pub query: Option<String>,
+    /// Bounded prior user turns supplied separately to context-aware classifiers.
+    pub context: Option<String>,
     /// Count of top-level user turns so far. Combined with `query`, anchors a coding-agent's
     /// `conv_id` to the current turn rather than the whole session — see
     /// `BoundarySignals::for_coding_agent`'s doc comment for why that distinction matters.
@@ -57,6 +59,28 @@ pub(crate) struct RequestSignals {
     /// in-flight tool loop sticky. Only used when the resolved agent is a coding-agent
     /// integration.
     pub is_tool_continuation: bool,
+}
+
+fn classifier_context(messages: &[crate::ir::Message]) -> Option<String> {
+    let mut turns: Vec<String> = messages
+        .iter()
+        .filter(|message| message.role == "user")
+        .filter_map(crate::ir::Message::text)
+        .collect();
+    if turns.len() <= 1 {
+        return None;
+    }
+    turns.pop();
+    let mut recent: Vec<String> = turns.into_iter().rev().take(3).collect();
+    recent.reverse();
+    let joined = recent.join("\n");
+    let chars: Vec<char> = joined.chars().collect();
+    let bounded = if chars.len() > 4096 {
+        chars[chars.len() - 4096..].iter().collect::<String>()
+    } else {
+        joined
+    };
+    (!bounded.trim().is_empty()).then_some(bounded)
 }
 
 /// Record a call's four token classes on its `gen_ai` span.
@@ -194,6 +218,7 @@ async fn chat_core(
     };
     let signals = RequestSignals {
         query: routing::latest_user_query(&req.messages),
+        context: classifier_context(&req.messages),
         turn_ordinal: routing::user_turn_ordinal(&req.messages),
         is_tool_continuation: routing::is_tool_continuation(&req.messages),
     };
@@ -467,11 +492,12 @@ pub(crate) async fn resolve_routed_request(
             Some(attribution.source),
         )
     };
-    let decision = routing::route_model(
+    let decision = routing::route_model_with_classifier(
         ctx.router_cache.as_ref(),
         ctx.tier_registry.as_ref(),
         ctx.cell_store.as_ref(),
         ctx.salience_gate.as_ref(),
+        Some(ctx.request_classifier.as_ref()),
         &RouteInputs {
             agent_id: &agent_id,
             provider: &resolved.provider,
@@ -483,6 +509,7 @@ pub(crate) async fn resolve_routed_request(
             tier3_model: resolved.tier3_model.as_deref(),
             signals: &boundary,
             query: signals.query.as_deref(),
+            context: signals.context.as_deref(),
         },
     )
     .await;
@@ -957,6 +984,7 @@ mod tests {
             tier_registry: Arc::new(NoTiers),
             cell_store: Arc::new(crate::routing::InMemoryCellStore::new()),
             salience_gate: Arc::new(crate::routing::AllowAllGate),
+            request_classifier: Arc::new(crate::routing::build_classifier("regex", "", 50, 0.3)),
             pricing: Arc::new(nasiko_pricing::PricingEngine::new(
                 PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
             )),
@@ -1441,6 +1469,7 @@ mod tests {
             },
             RequestSignals {
                 query: Some("write a function that reverses a string".into()),
+                context: None,
                 turn_ordinal: 1,
                 is_tool_continuation: false,
             },
@@ -1487,6 +1516,7 @@ mod tests {
             },
             RequestSignals {
                 query: Some("write a function that reverses a string".into()),
+                context: None,
                 turn_ordinal: 1,
                 is_tool_continuation: false,
             },
