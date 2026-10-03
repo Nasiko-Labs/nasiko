@@ -224,25 +224,15 @@ impl GatewayConfig {
     pub fn from_env() -> Self {
         let d = Self::default();
         Self {
-            classifier_backend: env_or("CLASSIFIER_BACKEND", &d.classifier_backend),
-            classifier_endpoint: env_or("CLASSIFIER_ENDPOINT", &d.classifier_endpoint),
-            classifier_model: env_or("CLASSIFIER_MODEL", &d.classifier_model),
-            classifier_timeout_ms: env_parse_first(
-                &["CLASSIFIER_TIMEOUT_MS"],
-                d.classifier_timeout_ms,
-            ),
-            classifier_min_confidence: env_parse_first(
-                &["CLASSIFIER_MIN_CONFIDENCE"],
-                d.classifier_min_confidence,
-            ),
-            classifier_context_chars: env_usize(
-                "CLASSIFIER_CONTEXT_CHARS",
-                d.classifier_context_chars,
-            )
-            .min(24000),
-            classifier_seed: env_parse_first(&["CLASSIFIER_SEED"], d.classifier_seed),
-            cache_switch_enabled: env_flag("CACHE_SWITCH_ENABLED", d.cache_switch_enabled),
-            cache_switch_margin: env_parse_first(&["CACHE_SWITCH_MARGIN"], d.cache_switch_margin),
+            classifier_backend: d.classifier_backend.clone(),
+            classifier_endpoint: d.classifier_endpoint.clone(),
+            classifier_model: d.classifier_model.clone(),
+            classifier_timeout_ms: d.classifier_timeout_ms,
+            classifier_min_confidence: d.classifier_min_confidence,
+            classifier_context_chars: d.classifier_context_chars,
+            classifier_seed: d.classifier_seed,
+            cache_switch_enabled: d.cache_switch_enabled,
+            cache_switch_margin: d.cache_switch_margin,
             agent_jwt_secret: env_or("AGENT_JWT_SECRET", &d.agent_jwt_secret),
             agent_jwt_algorithm: env_or("AGENT_JWT_ALGORITHM", &d.agent_jwt_algorithm),
             default_provider: env_or("DEFAULT_PROVIDER", &d.default_provider),

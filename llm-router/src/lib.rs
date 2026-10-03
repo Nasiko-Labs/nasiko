@@ -94,6 +94,10 @@ impl LlmRouterCtx {
     /// client). Gateway-specific config is read from the environment.
     pub fn from_shared(db: PgPool, http: reqwest::Client) -> Self {
         let cfg = GatewayConfig::from_env();
+        Self::from_shared_with_config(db, http, cfg)
+    }
+
+    pub fn from_shared_with_config(db: PgPool, http: reqwest::Client, cfg: GatewayConfig) -> Self {
         tracing::info!(
             target: "nasiko::llm_router::startup",
             default_provider = %cfg.default_provider,

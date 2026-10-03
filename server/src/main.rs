@@ -7,6 +7,9 @@ use nasiko_server::spa::{self, Spa};
 use nasiko_server::telemetry::{TelemetryConfig, init_telemetry};
 use rust_embed::Embed;
 
+#[path = "../../llm-router/src/bin/llm-router/config.rs"]
+mod gateway_config;
+
 // `NASIKO_UI` is resolved by build.rs — see the comment there for why this
 // path cannot be a literal (this crate sits at a different depth in the public
 // repo, where the `oss/` prefix is stripped).
@@ -117,9 +120,10 @@ async fn main() {
     };
 
     nasiko_server::state::AppState::run_migrations(&db).await;
-    let state =
+    let mut state =
         nasiko_server::state::AppState::from_config_with_db(config, auth, runtime, oci_storage, db)
             .await;
+    state.gateway_config = Some(gateway_config::from_env());
     state.init().await;
     let app = nasiko_server::build_app(state, static_handler);
 

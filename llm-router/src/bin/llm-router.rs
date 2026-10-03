@@ -15,6 +15,9 @@ use std::time::Duration;
 use nasiko_llm_router::{LlmRouterCtx, router};
 use tracing_subscriber::EnvFilter;
 
+#[path = "llm-router/config.rs"]
+mod config;
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()
@@ -35,7 +38,7 @@ async fn main() {
         .expect("failed to build http client");
 
     // Same context + routes as the in-server mount; gateway config from env.
-    let ctx = LlmRouterCtx::from_shared(db, http);
+    let ctx = LlmRouterCtx::from_shared_with_config(db, http, config::from_env());
     let app = router(ctx).route("/health", axum::routing::get(|| async { "ok" }));
 
     let listener = tokio::net::TcpListener::bind(&bind)

@@ -38,6 +38,10 @@ use std::sync::{
 };
 use std::time::Duration;
 
+#[path = "local_classifier.rs"]
+mod local_classifier;
+pub use local_classifier::LocalClassifier;
+
 #[derive(Debug, Clone, Copy)]
 pub struct Classification {
     pub request_type: RequestType,
@@ -61,6 +65,18 @@ pub trait RequestClassifier: Send + Sync {
         "custom"
     }
     async fn classify(&self, query: &str, context: &str) -> Result<Classification, String>;
+}
+
+struct UnavailableClassifier;
+
+#[async_trait]
+impl RequestClassifier for UnavailableClassifier {
+    fn name(&self) -> &str {
+        "unavailable"
+    }
+    async fn classify(&self, _query: &str, _context: &str) -> Result<Classification, String> {
+        Err("classifier initialization failed".into())
+    }
 }
 
 pub struct RegexClassifier;
@@ -222,16 +238,25 @@ pub fn build_classifier(
     tracing::info!(target: "nasiko::llm_router::classifier", backend = %cfg.classifier_backend,
         model = %cfg.classifier_model, timeout_ms = cfg.classifier_timeout_ms,
         "request classifier initialized");
-    if cfg.classifier_backend == "regex" {
-        return Arc::new(RegexClassifier);
-    }
-    let backend: Arc<dyn RequestClassifier> = Arc::new(JevClassifier {
-        http,
-        endpoint: cfg.classifier_endpoint.clone(),
-        model: cfg.classifier_model.clone(),
-        api_key: cfg.platform_openrouter_api_key.clone(),
-        context_chars: cfg.classifier_context_chars,
-    });
+    let backend: Arc<dyn RequestClassifier> = match cfg.classifier_backend.as_str() {
+        "local" => match LocalClassifier::load(&cfg.classifier_model, cfg.classifier_context_chars)
+        {
+            Ok(classifier) => Arc::new(classifier),
+            Err(error) => {
+                tracing::warn!(%error, "local classifier initialization failed; using regex");
+                Arc::new(UnavailableClassifier)
+            }
+        },
+        "jev" => Arc::new(JevClassifier {
+            http,
+            endpoint: cfg.classifier_endpoint.clone(),
+            model: cfg.classifier_model.clone(),
+            api_key: cfg.platform_openrouter_api_key.clone(),
+            context_chars: cfg.classifier_context_chars,
+        }),
+        "regex" => return Arc::new(RegexClassifier),
+        _ => Arc::new(UnavailableClassifier),
+    };
     Arc::new(GuardedClassifier::new(
         backend,
         Duration::from_millis(cfg.classifier_timeout_ms),

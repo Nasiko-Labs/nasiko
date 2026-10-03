@@ -9,12 +9,14 @@
 use std::io::Write;
 use std::time::Instant;
 
-use nasiko_llm_router::config::GatewayConfig;
 use nasiko_llm_router::routing::classifier::build_classifier;
+
+#[path = "../src/bin/llm-router/config.rs"]
+mod config;
 
 #[tokio::main]
 async fn main() {
-    let cfg = GatewayConfig::from_env();
+    let cfg = config::from_env();
     let load_started = Instant::now();
     let classifier = build_classifier(&cfg, reqwest::Client::new());
     eprintln!(

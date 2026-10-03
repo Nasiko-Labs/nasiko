@@ -48,3 +48,13 @@ The local application was rebuilt and restarted with JEV and the cache policy en
 No downstream answer-model workload has been evaluated. Do not claim cheaper or better answers yet. Strict hosted reproducibility, confidence calibration on a larger set, and downstream answer-quality and cost comparisons remain before a qualifying submission can be claimed. No fork PR has been submitted.
 
 Final verification repeated after the database timeout guard. All 388 tests passed across the library and safety suites, with one existing ignored test. Server and examples rebuilt successfully.
+
+## Repeatable local backend and startup configuration
+
+A separate `CLASSIFIER_BACKEND=local` backend uses `CLASSIFIER_MODEL=local-training-v1`. It fits smoothed multinomial naive Bayes category and difficulty models once from the embedded 21-case training set. It reads neither validation nor public scoring data during model construction. Confidence is a softened posterior multiplied by known-vocabulary coverage; it is not calibrated. No validation-based tuning was performed.
+
+Two fresh debug evaluation processes produced identical category, difficulty, confidence, and fallback results on both datasets. Timing and model initialization times are measurements, not repeatable predictions. With the unchanged 0.6 cutoff, all 10 public and all 21 validation cases fell back to regex. Guarded accuracy was therefore 3/10 and 7/21. This backend provides repeatability but no measured accuracy gain. API charge is zero; local CPU cost has not been priced. JEV retains its measured hosted variability and is not claimed deterministic.
+
+Classifier and cache-switch settings now load in the binary configuration module. The standalone binary, evaluation example, and server binary pass resolved settings into the router. Existing non-classifier environment loading remains for compatibility. The server host injection needs three small files outside llm-router; the strict submission scope must be reviewed before creating the fork PR.
+
+Final compliance checks passed with 400 tests across library, safety, binary-config, and evaluation-example suites, plus one existing ignored test. The in-process server library and binary passed cargo check. Three server host-injection files are outside the strict llm-router submission fence; they are included as integration work, not claimed scope-compliant. The running local server has not been rebuilt or restarted for this follow-up.
