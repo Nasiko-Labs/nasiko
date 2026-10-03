@@ -55,7 +55,9 @@ src/
   providers/    ProviderClient + openai / anthropic / gemini, sse, fallback
   usage.rs      token_usage writer (fire-and-forget; cost via DB trigger)
   handlers/     chat / embeddings / models / health
-examples/mint_token.rs   dev/test JWT minter
+  compact_tools.rs  opt-in compact tool schemas at the egress seam
+examples/mint_token.rs          dev/test JWT minter
+examples/compact_tools_eval.rs  compact tool schemas eval (offline by default)
 ```
 
 ## Configuration (env)
@@ -68,6 +70,26 @@ Reuses the platform's `SECRETS_ENCRYPTION_KEY` (per-user HKDF AES-256-GCM) and
 
 Storage: `agents.llm_config` (JSONB; NULL → defaults), `user_secrets` (decrypt via
 `SecretsCrypto::try_for_user`), `token_usage` (written), `model_pricing` (cost trigger).
+
+## Compact tool schemas (opt-in, `TOKEN_TOOL_COMPACT`)
+
+Off by default; when off, requests and responses are byte-identical to a build without it.
+When on, a non-streaming request's `tools` are replaced by one signature line per tool in a
+leading system message (grammar: `nasiko-tool-compact`), and the model's
+`<<call NAME {json}>>` replies are decoded back into standard tool calls before any inbound
+renderer runs, so OpenAI, Anthropic and Gemini clients all get native tool calls.
+
+Skipped (request sent untouched): streaming, `tool_choice` other than `auto`,
+`parallel_tool_calls`, transcripts that already contain tool calls or results, and schemas the
+grammar cannot carry exactly. A reply that fails validation is never repaired: that attempt is
+logged to `token_usage` (`finish_reason = compact_tools_invalid`) and the original native request
+is sent instead.
+
+```sh
+curl -fsSL https://registry.nasiko.dev/r/nasiko/compact-tools-eval -o /tmp/compact-tools-eval.json
+EVAL_SET=/tmp/compact-tools-eval.json OUT=/tmp/out.jsonl \
+  cargo run --release -p nasiko-llm-router --example compact_tools_eval
+```
 
 ## Tests
 

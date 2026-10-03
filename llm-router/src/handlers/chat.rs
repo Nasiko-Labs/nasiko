@@ -288,12 +288,25 @@ async fn chat_core(
         "brevity: directive decision"
     );
 
+    // ── compact tool schemas (opt-in, TOKEN_TOOL_COMPACT) ─────────────────────────────────
+    // Last of the request transforms: brevity's tool-loop carve-out still sees the native
+    // `tools`, and `sent_bytes` below measures what is really sent. Off, or skipped for any
+    // reason, it leaves `req` untouched.
+    let tool_compact = crate::compact_tools::apply(&mut req, &ctx.cfg);
+    tracing::debug!(
+        target: "nasiko::llm_router::compact_tools",
+        %agent_id,
+        applied = tool_compact.is_ok(),
+        skipped = tool_compact.as_ref().err().map(|s| s.as_label()),
+        "compact tools: decision"
+    );
+
     // ── savings ledger inputs ─────────────────────────────────────────────────────────────
     // Measured here, after both seams, because this is the payload the provider will actually
     // bill for — which is what makes `sent_bytes / reported_input_tokens` a calibration rather
     // than a guess (savings.rs). Only a reduction that really happened is credited: `applied` is
     // already false for a dry run and for a pass that found nothing to shrink.
-    let sent_bytes = crate::brevity::estimated_bytes(&req);
+    let mut sent_bytes = crate::brevity::estimated_bytes(&req);
     let compress_bytes = compression
         .applied
         .then_some((compression.bytes_in, compression.bytes_out));
@@ -371,9 +384,54 @@ async fn chat_core(
     }
 
     // Non-streaming: run with ordered fallbacks; usage records the effective provider/model.
-    let (resp, (provider, model)) = fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
-        .instrument(llm_span.clone())
-        .await?;
+    let (mut resp, (mut provider, mut model)) =
+        fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
+            .instrument(llm_span.clone())
+            .await?;
+
+    // Compact calls back to standard tool calls. Fail closed: a reply that does not validate
+    // against the original schemas is never repaired. That attempt was billed, so it is logged,
+    // and the native request goes out instead; savings are credited once, on the call that
+    // answered.
+    if let Ok(session) = &tool_compact
+        && let Err(error) = crate::compact_tools::decode_response(&mut resp, session)
+    {
+        tracing::warn!(
+            target: "nasiko::llm_router::compact_tools",
+            %agent_id,
+            %error,
+            "compact tools: reply failed validation; re-sending with native tools"
+        );
+        usage::spawn_log(
+            ctx.db.clone(),
+            ctx.pricing.clone(),
+            UsageRecord {
+                owner_id: owner_id.clone(),
+                agent_id: agent_id.clone(),
+                operation_type: "direct_llm",
+                provider,
+                model,
+                usage: resp.usage.clone(),
+                cached_tokens: None,
+                reasoning_tokens: None,
+                latency_ms: started.elapsed().as_millis() as i64,
+                streaming: false,
+                finish_reason: Some("compact_tools_invalid".into()),
+                flow_id: flow_id.clone(),
+                attribution_source,
+                platform_paid,
+                compress_metadata: None,
+                brevity_metadata: None,
+                compress_bytes: None,
+                request_bytes: None,
+            },
+        );
+        (resp, (provider, model)) =
+            fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &session.native)
+                .instrument(llm_span.clone())
+                .await?;
+        sent_bytes = crate::brevity::estimated_bytes(&session.native);
+    }
     let latency_ms = started.elapsed().as_millis() as i64;
 
     // Record effective model and token usage on the server-side gen_ai span.
@@ -1132,6 +1190,200 @@ mod tests {
         assert!(
             sent.contains("why did the deploy fail?"),
             "the user's own question was altered"
+        );
+    }
+
+    // ── compact tool schemas: the switch reaches the wire, and off changes nothing ────────
+    //
+    // `compact_tools::tests` covers the transform. These cover the wiring: what the provider is
+    // actually sent, what the client actually gets back, and the native fallback.
+
+    const NATIVE_ARGS: &str = r#"{"title":"Retro","start":"2026-10-03T10:00:00+05:30"}"#;
+
+    fn calendar_tool() -> Value {
+        json!({"type": "function", "function": {
+            "name": "create_calendar_event", "description": "Create an event.",
+            "parameters": {"type": "object", "properties": {
+                "title": {"type": "string"},
+                "start": {"type": "string", "format": "date-time"}
+            }, "required": ["title", "start"]}
+        }})
+    }
+
+    fn openai_tools_request() -> Value {
+        json!({
+            "model": "gpt-4o",
+            "messages": [{ "role": "user", "content": "Book a retro tomorrow at 10am" }],
+            "tools": [calendar_tool()]
+        })
+    }
+
+    fn ctx_compact(base: String, enabled: bool) -> LlmRouterCtx {
+        let mut ctx = ctx_with(base);
+        let mut cfg = (*ctx.cfg).clone();
+        cfg.tool_compact_enabled = enabled;
+        ctx.cfg = Arc::new(cfg);
+        ctx
+    }
+
+    /// One request against a provider that answers native tool calls when it is sent `tools`,
+    /// and `compact_reply` as plain text when it is not. Returns every body the provider received
+    /// and the client's response.
+    async fn compact_round(
+        enabled: bool,
+        body: Value,
+        format: InboundFormat,
+        compact_reply: &str,
+    ) -> (Vec<Value>, Value) {
+        let seen = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let capture = Arc::clone(&seen);
+        let compact_reply = compact_reply.to_string();
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body_from_request(move |request| {
+                let raw = request.body().map(Vec::as_slice).unwrap_or_default();
+                let sent: Value = serde_json::from_slice(raw).unwrap_or_default();
+                let message = if sent.get("tools").is_some() {
+                    json!({"role": "assistant", "content": null, "tool_calls": [{
+                        "id": "call_native", "type": "function",
+                        "function": {"name": "create_calendar_event", "arguments": NATIVE_ARGS}
+                    }]})
+                } else {
+                    json!({"role": "assistant", "content": compact_reply})
+                };
+                capture.lock().unwrap_or_else(|e| e.into_inner()).push(sent);
+                json!({
+                    "id": "chatcmpl-x", "object": "chat.completion", "model": "gpt-4o",
+                    "choices": [{ "index": 0, "message": message, "finish_reason": "stop" }],
+                    "usage": { "prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7 }
+                })
+                .to_string()
+                .into_bytes()
+            })
+            .expect_at_least(1)
+            .create_async()
+            .await;
+
+        let ctx = ctx_compact(server.url(), enabled);
+        let store = Store {
+            config: Some(openai_config()),
+            is_coding_agent: false,
+            compress_enabled: false,
+        };
+        let resp = chat_core(&ctx, &store, &auth_headers(&token()), body, format, None)
+            .await
+            .unwrap();
+        let client: Value = serde_json::from_str(&body_string(resp).await).unwrap();
+        let seen = seen.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        (seen, client)
+    }
+
+    #[tokio::test]
+    async fn compact_tools_off_sends_the_request_unchanged() {
+        let (seen, client) = compact_round(
+            false,
+            openai_tools_request(),
+            InboundFormat::OpenAi,
+            "unused",
+        )
+        .await;
+        assert_eq!(seen.len(), 1);
+        let sent = &seen[0];
+        assert_eq!(
+            sent["tools"],
+            json!([calendar_tool()]),
+            "native tools must pass through"
+        );
+        assert_eq!(sent["messages"], openai_tools_request()["messages"]);
+        assert_eq!(
+            client["choices"][0]["message"]["tool_calls"][0]["id"],
+            "call_native"
+        );
+    }
+
+    #[tokio::test]
+    async fn compact_tools_on_sends_signatures_and_returns_standard_tool_calls() {
+        let reply = format!("<<call create_calendar_event {NATIVE_ARGS}>>");
+        let (seen, client) =
+            compact_round(true, openai_tools_request(), InboundFormat::OpenAi, &reply).await;
+        assert_eq!(seen.len(), 1, "a valid compact reply needs no second call");
+        let sent = &seen[0];
+        assert!(sent.get("tools").is_none(), "native tools were still sent");
+        assert_eq!(sent["messages"][0]["role"], "system");
+        let prompt = sent["messages"][0]["content"].as_str().unwrap();
+        assert!(prompt.contains("create_calendar_event(start:datetime, title:string)"));
+        assert_eq!(sent["messages"][1], openai_tools_request()["messages"][0]);
+
+        let choice = &client["choices"][0];
+        assert_eq!(choice["finish_reason"], "tool_calls");
+        let call = &choice["message"]["tool_calls"][0];
+        assert_eq!(call["type"], "function");
+        assert_eq!(call["function"]["name"], "create_calendar_event");
+        let args: Value =
+            serde_json::from_str(call["function"]["arguments"].as_str().unwrap()).unwrap();
+        assert_eq!(args, serde_json::from_str::<Value>(NATIVE_ARGS).unwrap());
+        assert!(
+            !client.to_string().contains("<<call"),
+            "compact format leaked to the client"
+        );
+    }
+
+    #[tokio::test]
+    async fn compact_tools_invalid_reply_falls_back_to_the_native_request() {
+        // Missing the required `title`: must not be guessed or passed on.
+        let reply = r#"<<call create_calendar_event {"start":"2026-10-03T10:00:00+05:30"}>>"#;
+        let (seen, client) =
+            compact_round(true, openai_tools_request(), InboundFormat::OpenAi, reply).await;
+        assert_eq!(
+            seen.len(),
+            2,
+            "expected the compact attempt, then the native retry"
+        );
+        assert!(seen[0].get("tools").is_none());
+        let (off, _) = compact_round(
+            false,
+            openai_tools_request(),
+            InboundFormat::OpenAi,
+            "unused",
+        )
+        .await;
+        assert_eq!(
+            seen[1], off[0],
+            "the retry must be exactly the request sent with the switch off"
+        );
+        assert_eq!(
+            client["choices"][0]["message"]["tool_calls"][0]["id"],
+            "call_native"
+        );
+    }
+
+    #[tokio::test]
+    async fn compact_tools_reach_anthropic_clients_as_tool_use_blocks() {
+        let body = json!({
+            "model": "claude-3-5-sonnet-20241022",
+            "max_tokens": 256,
+            "messages": [{ "role": "user", "content": "Book a retro tomorrow at 10am" }],
+            "tools": [{
+                "name": "create_calendar_event", "description": "Create an event.",
+                "input_schema": calendar_tool()["function"]["parameters"]
+            }]
+        });
+        let reply = format!("Booking it.\n<<call create_calendar_event {NATIVE_ARGS}>>");
+        let (seen, client) = compact_round(true, body, InboundFormat::Anthropic, &reply).await;
+        assert!(seen[0].get("tools").is_none());
+        assert_eq!(client["stop_reason"], "tool_use");
+        assert_eq!(
+            client["content"][0],
+            json!({"type": "text", "text": "Booking it."})
+        );
+        assert_eq!(client["content"][1]["type"], "tool_use");
+        assert_eq!(client["content"][1]["name"], "create_calendar_event");
+        assert_eq!(
+            client["content"][1]["input"],
+            serde_json::from_str::<Value>(NATIVE_ARGS).unwrap()
         );
     }
 

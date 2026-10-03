@@ -1,0 +1,13 @@
+[package]
+name = "nasiko-tool-compact"
+edition.workspace = true
+version.workspace = true
+
+# Pure library: no IO, no environment reads, no provider code, and no dependency on
+# nasiko-llm-router (the router depends on this crate and converts types at the seam).
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+# Validates `format: date-time` / `format: date` arguments. Parsing only; no clock reads.
+chrono = { workspace = true }
