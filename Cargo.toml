@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+    "tool-compact",
     # ─── OSS crates ─────────────────────────────────────────────────────────
     "auth",
     "compress",
