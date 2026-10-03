@@ -66,6 +66,13 @@ examples/mint_token.rs   dev/test JWT minter
 Reuses the platform's `SECRETS_ENCRYPTION_KEY` (per-user HKDF AES-256-GCM) and
 `DATABASE_URL`.
 
+Request classification is offline regex by default. To opt into Jev as primary while keeping
+regex as the fallback, set `CLASSIFIER_BACKEND=jev` and `JEV_API_KEY` (or
+`CLASSIFIER_API_KEY`). Optional controls are `CLASSIFIER_ENDPOINT` (defaults to TypeSafe's
+System One endpoint), `CLASSIFIER_TIMEOUT_MS` (1000), and `CLASSIFIER_MIN_CONFIDENCE` (0.60).
+An unavailable key, client setup failure, HTTP error, timeout, malformed answer, or low-confidence
+answer always produces the regex result instead.
+
 Storage: `agents.llm_config` (JSONB; NULL → defaults), `user_secrets` (decrypt via
 `SecretsCrypto::try_for_user`), `token_usage` (written), `model_pricing` (cost trigger).
 

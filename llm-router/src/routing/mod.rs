@@ -21,6 +21,7 @@ pub mod cache;
 pub mod catalog;
 pub mod cells;
 pub mod classifier;
+pub mod jev;
 // The salience classifier itself — feature engine, weight loading, scoring, banding.
 // Private to `routing`: only `salience.rs` (a sibling module) uses it directly, via
 // `ClassifierSalienceGate`.
@@ -33,7 +34,7 @@ mod salience_classifier;
 pub use boundary::{BoundarySignals, Mode, Phase};
 pub use cache::{CachedDecision, DecisionCache, NoopCache, RedisCache};
 pub use cells::{CellStore, InMemoryCellStore, PgCellStore};
-pub use classifier::{RequestType, Tier, classify, signal};
+pub use classifier::{RequestClassifier, RequestType, Tier, classify, signal};
 pub use registry::{PgTierRegistry, TierRegistry};
 pub use salience::{AllowAllGate, ClassifierSalienceGate, SalienceGate};
 
@@ -124,6 +125,7 @@ pub async fn route_model(
     registry: &dyn TierRegistry,
     cell_store: &dyn CellStore,
     gate: &dyn SalienceGate,
+    classifier: &dyn RequestClassifier,
     inputs: &RouteInputs<'_>,
 ) -> RouteDecision {
     tracing::info!(
@@ -249,10 +251,34 @@ pub async fn route_model(
             // uses an entropy RNG (exploration drives learning); tests seed it. The RNG
             // (`ThreadRng`) is `!Send`, so it is scoped to drop before the next `.await` — the
             // handler future must stay `Send`.
+            let classification = classifier::classify_with_regex_fallback(
+                classifier,
+                &classifier::ClassifyInput {
+                    query,
+                    context: None,
+                },
+            )
+            .await;
+            let request_type = classification.request_type;
+            tracing::info!(
+                target: "nasiko::llm_router::routing",
+                backend = classifier.name(),
+                request_type = %request_type.as_str(),
+                complexity = classification.complexity,
+                confidence = classification.confidence,
+                fallback = classification.fallback,
+                "route_model: request type classified"
+            );
             let learned = cell_store.load(inputs.provider).await;
             let (tier, request_type) = {
                 let mut rng = rand::rng();
-                classify(query, inputs.provider, &learned, &mut rng)
+                classifier::pick_model_thompson(
+                    &learned,
+                    request_type,
+                    classifier::DEFAULT_W_QUALITY,
+                    classifier::DEFAULT_W_COST,
+                    &mut rng,
+                )
             };
             // Per-config tier override takes priority over the global registry.
             let config_override = match tier {
@@ -546,6 +572,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &classifier::RegexClassifier,
             &inputs("anthropic", &s, Some("pinned-model")),
         )
         .await;
@@ -563,6 +590,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &classifier::RegexClassifier,
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -582,6 +610,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &classifier::RegexClassifier,
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -612,6 +641,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &DenyGate,
+            &classifier::RegexClassifier,
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -638,6 +668,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &DenyGate,
+            &classifier::RegexClassifier,
             &i,
         )
         .await;
@@ -658,6 +689,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &DenyGate,
+            &classifier::RegexClassifier,
             &i,
         )
         .await;
@@ -677,6 +709,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &DenyGate,
+            &classifier::RegexClassifier,
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -699,6 +732,7 @@ mod tests {
             &test_support::StubRegistry,
             &cells,
             &AllowAllGate,
+            &classifier::RegexClassifier,
             &i,
         )
         .await;
@@ -726,6 +760,7 @@ mod tests {
             &test_support::StubRegistry,
             &cells,
             &AllowAllGate,
+            &classifier::RegexClassifier,
             &i,
         )
         .await;
@@ -743,6 +778,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &classifier::RegexClassifier,
             &inputs("gemini", &s, None),
         )
         .await;
@@ -761,6 +797,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &classifier::RegexClassifier,
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -777,6 +814,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &classifier::RegexClassifier,
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -795,6 +833,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &classifier::RegexClassifier,
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -814,6 +853,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &classifier::RegexClassifier,
             &i,
         )
         .await;

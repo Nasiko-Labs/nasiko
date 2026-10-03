@@ -28,11 +28,22 @@
 //! it an entropy RNG; tests inject a seeded one.
 
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
+use async_trait::async_trait;
 use rand::Rng;
 use rand_distr::{Beta, Distribution};
 
 use super::patterns::{CATEGORY_PATTERNS, NEGATIVE_SIGNALS, POSITIVE_SIGNALS};
+use super::vector_classifier::VectorSimilarityClassifier;
+
+/// Regex buckets are uncalibrated keyword votes. Fixed confidence so downstream ECE is
+/// honest: this is not a model posterior. `General` is the catch-all, so it is lower.
+pub const REGEX_CONFIDENCE: f32 = 0.55;
+/// Confidence when the regex match set is empty and the type is `General`.
+pub const REGEX_GENERAL_CONFIDENCE: f32 = 0.40;
 
 /// Coarse model strength tier. Tier 1 = most capable (complex queries), Tier 3 = smallest
 /// (very simple queries), Tier 2 = in between.
@@ -175,6 +186,243 @@ pub fn classify_request_type(text: &str) -> RequestType {
     }
     best
 }
+
+/// Complexity 1–5 implied by a regex [`RequestType`]. The regex does not inspect length or
+/// nesting; these are documented constants so bandit keys stay deterministic.
+///
+/// 1 factual one-shot · 2 catch-all / short writing · 3 reading existing code ·
+/// 4 implementation or quantitative reasoning · 5 system design.
+pub fn regex_complexity(rt: RequestType) -> u8 {
+    match rt {
+        RequestType::FactualLookup => 1,
+        RequestType::General | RequestType::Writing => 2,
+        RequestType::CodeUnderstanding => 3,
+        RequestType::CodeGeneration | RequestType::AnalyticalReasoning => 4,
+        RequestType::TechnicalDesign => 5,
+    }
+}
+
+fn regex_confidence(rt: RequestType) -> f32 {
+    if rt == RequestType::General {
+        REGEX_GENERAL_CONFIDENCE
+    } else {
+        REGEX_CONFIDENCE
+    }
+}
+
+/// Query (+ optional extra context) for [`RequestClassifier::classify`].
+#[derive(Debug, Clone, Copy)]
+pub struct ClassifyInput<'a> {
+    pub query: &'a str,
+    pub context: Option<&'a str>,
+}
+
+/// Model-agnostic decision the router and `classifier_eval` both consume.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Classification {
+    pub request_type: RequestType,
+    /// 1 (trivial) through 5 (hardest).
+    pub complexity: u8,
+    /// Calibrated [0, 1] for a model backend; fixed constants for regex.
+    pub confidence: f32,
+    /// True when this result came from the regex fallback (error, timeout, or low confidence).
+    pub fallback: bool,
+}
+
+/// Why a non-regex backend refused to answer. The router never surfaces this to the user:
+/// [`classify_with_regex_fallback`] substitutes the regex result and counts a fallback.
+#[derive(Debug, thiserror::Error)]
+pub enum ClassifyError {
+    #[error("classifier backend timed out after {0:?}")]
+    Timeout(Duration),
+    #[error("classifier backend unavailable: {0}")]
+    Backend(String),
+    #[error("classifier returned an unusable result: {0}")]
+    Invalid(String),
+}
+
+/// Async so a hosted backend (Jev) can perform HTTP. Implementations must not read env
+/// vars — the binary's [`crate::config::GatewayConfig`] supplies endpoint, key, timeout.
+#[async_trait]
+pub trait RequestClassifier: Send + Sync {
+    fn name(&self) -> &str;
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError>;
+}
+
+/// Default out-of-the-box classifier: [`classify_request_type`] plus the fixed complexity
+/// and confidence tables above. Infallible.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct RegexClassifier;
+
+#[async_trait]
+impl RequestClassifier for RegexClassifier {
+    fn name(&self) -> &str {
+        "regex"
+    }
+
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+        Ok(regex_classification(input.query))
+    }
+}
+
+/// Regex decision for `query`. Context is ignored: the keyword tables only see the text.
+pub fn regex_classification(query: &str) -> Classification {
+    let request_type = classify_request_type(query);
+    Classification {
+        request_type,
+        complexity: regex_complexity(request_type),
+        confidence: regex_confidence(request_type),
+        fallback: false,
+    }
+}
+
+/// Runs `primary`, then regex on `Err` or when `confidence` is below `min_confidence`.
+///
+/// Low-confidence Jev answers are treated as fallbacks (not confident wrong labels) so the
+/// cost-aware bandit is not trained on an unsure class. Identical inputs are deterministic
+/// for the regex path; Jev itself is a remote model.
+pub struct FallbackClassifier {
+    primary: Arc<dyn RequestClassifier>,
+    fallback: Arc<dyn RequestClassifier>,
+    min_confidence: f32,
+    fallbacks: AtomicU64,
+}
+
+impl FallbackClassifier {
+    pub fn new(
+        primary: Arc<dyn RequestClassifier>,
+        fallback: Arc<dyn RequestClassifier>,
+        min_confidence: f32,
+    ) -> Self {
+        Self {
+            primary,
+            fallback,
+            min_confidence: min_confidence.clamp(0.0, 1.0),
+            fallbacks: AtomicU64::new(0),
+        }
+    }
+
+    pub fn fallback_count(&self) -> u64 {
+        self.fallbacks.load(Ordering::Relaxed)
+    }
+
+    async fn regex_fallback(
+        &self,
+        input: &ClassifyInput<'_>,
+        reason: &str,
+    ) -> Result<Classification, ClassifyError> {
+        self.fallbacks.fetch_add(1, Ordering::Relaxed);
+        tracing::warn!(
+            target: "nasiko::llm_router::classifier",
+            primary = self.primary.name(),
+            reason,
+            "request classifier: using regex fallback"
+        );
+        let mut c = self.fallback.classify(input).await?;
+        c.fallback = true;
+        Ok(c)
+    }
+}
+
+#[async_trait]
+impl RequestClassifier for FallbackClassifier {
+    fn name(&self) -> &str {
+        self.primary.name()
+    }
+
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+        match self.primary.classify(input).await {
+            Ok(c) if c.confidence + f32::EPSILON < self.min_confidence => {
+                self.regex_fallback(
+                    input,
+                    &format!(
+                        "confidence {:.3} below min {:.3}",
+                        c.confidence, self.min_confidence
+                    ),
+                )
+                .await
+            }
+            Ok(c) => Ok(c),
+            Err(err) => self.regex_fallback(input, &err.to_string()).await,
+        }
+    }
+}
+
+/// Trait classify, then regex if the backend errors. Used at the `route_model` seam so a
+/// bare Jev client still fail-closes instead of skipping Level 3.
+pub async fn classify_with_regex_fallback(
+    classifier: &dyn RequestClassifier,
+    input: &ClassifyInput<'_>,
+) -> Classification {
+    match classifier.classify(input).await {
+        Ok(c) => c,
+        Err(err) => {
+            tracing::warn!(
+                target: "nasiko::llm_router::classifier",
+                classifier = classifier.name(),
+                error = %err,
+                "request classifier failed; falling back to regex"
+            );
+            let mut c = regex_classification(input.query);
+            c.fallback = true;
+            c
+        }
+    }
+}
+
+/// Wire a classifier from already-parsed config (no env reads here).
+///
+/// * `CLASSIFIER_BACKEND=regex` (default) — regex only, no network.
+/// * `jev` / `hosted` — Jev primary when `classifier_api_key` is set; regex if the key is
+///   empty (not configured) or wrapped with [`FallbackClassifier`] for call failures.
+// Updated classifier builder to use vector similarity when JEV is not configured.
+pub fn build_request_classifier(cfg: &crate::config::GatewayConfig) -> Arc<dyn RequestClassifier> {
+    let regex: Arc<dyn RequestClassifier> = Arc::new(RegexClassifier);
+    let vector: Arc<dyn RequestClassifier> = Arc::new(VectorSimilarityClassifier);
+    let backend = cfg.classifier_backend.trim().to_ascii_lowercase();
+    let jev_requested = matches!(backend.as_str(), "jev" | "hosted");
+
+    if jev_requested && !cfg.classifier_api_key.is_empty() {
+        // Try to build JEV classifier
+        match super::jev::JevClassifier::from_config(cfg) {
+            Ok(jev) => {
+                tracing::info!(
+                    target: "nasiko::llm_router::startup",
+                    endpoint = %cfg.classifier_endpoint,
+                    model = %cfg.classifier_model,
+                    timeout_ms = cfg.classifier_timeout_ms,
+                    min_confidence = cfg.classifier_min_confidence,
+                    "llm-router: request classifier = jev (regex fallback on timeout, HTTP error, or low confidence)"
+                );
+                Arc::new(FallbackClassifier::new(Arc::new(jev), regex, cfg.classifier_min_confidence))
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "nasiko::llm_router::startup",
+                    error = %e,
+                    "llm-router: failed to build Jev classifier; using vector primary"
+                );
+                Arc::new(FallbackClassifier::new(vector, regex, cfg.classifier_min_confidence))
+            }
+        }
+    } else {
+        // JEV not requested or missing API key – use vector similarity as primary.
+        if !jev_requested {
+            tracing::info!(
+                target: "nasiko::llm_router::startup",
+                backend = %cfg.classifier_backend,
+                "llm-router: request classifier = vector (regex fallback; JEV not requested)"
+            );
+        } else {
+            tracing::warn!(
+                target: "nasiko::llm_router::startup",
+                "llm-router: CLASSIFIER_BACKEND={backend} but no CLASSIFIER_API_KEY; using vector primary"
+            );
+        }
+        Arc::new(FallbackClassifier::new(vector, regex, cfg.classifier_min_confidence))
+    }
+}
+
 
 // --------------------------------------------------------------------------
 // 2. Feedback signal — port of classifier/signals.rs (patterns in `super::patterns`)
@@ -329,6 +577,38 @@ mod tests {
     use super::*;
     use rand::SeedableRng;
     use rand::rngs::StdRng;
+
+    struct UnavailableClassifier;
+
+    #[async_trait]
+    impl RequestClassifier for UnavailableClassifier {
+        fn name(&self) -> &str {
+            "unavailable-test"
+        }
+
+        async fn classify(&self, _: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+            Err(ClassifyError::Backend("test outage".into()))
+        }
+    }
+
+    #[tokio::test]
+    async fn unavailable_primary_uses_regex_fallback() {
+        let classifier = FallbackClassifier::new(
+            Arc::new(UnavailableClassifier),
+            Arc::new(RegexClassifier),
+            0.60,
+        );
+        let result = classifier
+            .classify(&ClassifyInput {
+                query: "write a Python script",
+                context: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(result.request_type, RequestType::CodeGeneration);
+        assert!(result.fallback);
+        assert_eq!(classifier.fallback_count(), 1);
+    }
 
     // --- request-type classifier (ports of the reference self-test) ---
 

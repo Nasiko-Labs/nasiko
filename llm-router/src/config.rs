@@ -101,6 +101,20 @@ pub struct GatewayConfig {
     /// retuned. Default 0.80.
     pub salience_high_threshold: f64,
 
+    /// Request-type classifier backend. `regex` is the offline default; `jev` opts into
+    /// the hosted Jev decision API and retains regex as its fallback.
+    pub classifier_backend: String,
+    /// Bearer credential for the hosted classifier. Kept separate from provider keys.
+    pub classifier_api_key: String,
+    /// Hosted classifier endpoint. The default is TypeSafe's official System One API.
+    pub classifier_endpoint: String,
+    /// Optional Jev model identifier. Empty preserves the provider default.
+    pub classifier_model: String,
+    /// Per-decision deadline in milliseconds. Expiry falls back to regex.
+    pub classifier_timeout_ms: u64,
+    /// A hosted result below this confidence falls back to regex.
+    pub classifier_min_confidence: f32,
+
     /// Fleet-wide kill switch for payload compression. Compression is opted into **per agent**
     /// (`agents.compress_enabled`); this only lets an operator stop all of it at once without
     /// editing every agent's row. Default on, so a UI toggle takes effect without a deploy.
@@ -185,6 +199,12 @@ impl Default for GatewayConfig {
             salience_weights_path: String::new(),
             salience_low_threshold: 0.20,
             salience_high_threshold: 0.80,
+            classifier_backend: "regex".into(),
+            classifier_api_key: String::new(),
+            classifier_endpoint: "https://api.typesafe.ai/v1/systemone".into(),
+            classifier_model: String::new(),
+            classifier_timeout_ms: 1_000,
+            classifier_min_confidence: 0.60,
             compress_kill_switch: true,
             compress_min_bytes: 2048,
             compress_types: nasiko_compress::TypeMask::DEFAULT,
@@ -274,6 +294,22 @@ impl GatewayConfig {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(d.salience_high_threshold),
+            classifier_backend: env_or("CLASSIFIER_BACKEND", &d.classifier_backend),
+            classifier_api_key: env_first(
+                &["CLASSIFIER_API_KEY", "JEV_API_KEY", "TYPESAFE_API_KEY"],
+                &d.classifier_api_key,
+            ),
+            classifier_endpoint: env_or("CLASSIFIER_ENDPOINT", &d.classifier_endpoint),
+            classifier_model: env_or("CLASSIFIER_MODEL", &d.classifier_model),
+            classifier_timeout_ms: env_usize(
+                "CLASSIFIER_TIMEOUT_MS",
+                d.classifier_timeout_ms as usize,
+            ) as u64,
+            classifier_min_confidence: std::env::var("CLASSIFIER_MIN_CONFIDENCE")
+                .ok()
+                .and_then(|v| v.parse::<f32>().ok())
+                .unwrap_or(d.classifier_min_confidence)
+                .clamp(0.0, 1.0),
             compress_kill_switch: env_flag("TOKEN_COMPRESS_ENABLED", true),
             compress_min_bytes: env_usize("TOKEN_COMPRESS_MIN_BYTES", 2048),
             // A bad label must not silently widen or narrow what gets rewritten, so an
