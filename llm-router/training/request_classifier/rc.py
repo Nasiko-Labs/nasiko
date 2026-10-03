@@ -152,7 +152,7 @@ def cmd_build(args):
             item = {
                 "id": base_id, "group_id": raw.get("g", base_id), "query": raw["q"],
                 "context": raw.get("x"), "request_type": rt, "complexity": int(raw["c"]),
-                "slice": raw["s"], "source": "llm-a", "adjudicated": False,
+                "slice": raw["s"], "source": "llm-a", "adjudicated": bool(raw.get("adj", False)),
                 "train_only": bool(raw.get("train_only", False)),
             }
             item["tags"] = auto_tags(item["query"], item["context"], tags)
