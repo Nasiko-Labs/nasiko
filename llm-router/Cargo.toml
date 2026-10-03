@@ -19,6 +19,8 @@ nasiko-pricing.workspace = true
 nasiko-savings.workspace = true
 # Internal — structural payload compression at the egress seam (src/compress.rs)
 nasiko-compress.workspace = true
+# Internal — compact tool schemas at egress/ingress (src/compact.rs)
+nasiko-tool-compact.workspace = true
 
 # Web / async
 axum = { workspace = true }
