@@ -15,6 +15,7 @@
 //! `src/bin` that builds the same context from the environment).
 
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
 use axum::{
@@ -82,6 +83,10 @@ pub struct LlmRouterCtx {
     /// classify + pin. [`ClassifierSalienceGate`] when `SALIENCE_GATE_ENABLED`; else [`AllowAllGate`]
     /// (classify at every boundary, i.e. behaviour before the gate existed).
     pub salience_gate: Arc<dyn SalienceGate>,
+    /// Typed request classifier. The regex backend is the compatibility default.
+    pub request_classifier: Arc<dyn routing::RequestClassifier>,
+    /// Error/timeout/low-confidence decisions that fell back to the regex classifier.
+    pub classifier_fallbacks: Arc<AtomicU64>,
     /// The platform's single cost engine. Every `token_usage` row is priced
     /// through this — the DB trigger that used to do it returned NULL for any
     /// model missing from `model_pricing`, which booked 92.8% of calls at $0.
@@ -109,6 +114,11 @@ impl LlmRouterCtx {
             anthropic_api_base = %cfg.anthropic_api_base,
             gemini_api_base = %cfg.gemini_api_base,
             llm_gateway_base_url = %cfg.llm_gateway_base_url,
+            classifier_backend = %cfg.classifier_backend,
+            classifier_model_path_set = !cfg.classifier_model_path.is_empty(),
+            classifier_endpoint_set = !cfg.classifier_endpoint.is_empty(),
+            classifier_timeout_ms = cfg.classifier_timeout_ms,
+            classifier_min_confidence = cfg.classifier_min_confidence,
             "llm-router: initializing with effective GatewayConfig"
         );
         let cache = Arc::new(ConfigCache::new(Duration::from_secs(
@@ -127,6 +137,7 @@ impl LlmRouterCtx {
         let router_cache = build_router_cache(&cfg);
         let cfg = Arc::new(cfg);
         let salience_gate = build_salience_gate(&cfg);
+        let request_classifier = build_request_classifier(&cfg);
         let pricing = Arc::new(PricingEngine::new(db.clone()));
         Self {
             db,
@@ -137,7 +148,31 @@ impl LlmRouterCtx {
             tier_registry,
             cell_store,
             salience_gate,
+            request_classifier,
+            classifier_fallbacks: Arc::new(AtomicU64::new(0)),
             pricing,
+        }
+    }
+}
+
+fn build_request_classifier(cfg: &GatewayConfig) -> Arc<dyn routing::RequestClassifier> {
+    match routing::classifier::builtin_classifier(&cfg.classifier_backend) {
+        Ok(classifier) => {
+            tracing::info!(
+                target: "nasiko::llm_router::startup",
+                backend = classifier.name(),
+                "llm-router: request classifier initialized"
+            );
+            Arc::from(classifier)
+        }
+        Err(error) => {
+            tracing::warn!(
+                target: "nasiko::llm_router::startup",
+                backend = %cfg.classifier_backend,
+                error = %error,
+                "llm-router: classifier backend unavailable; using regex fallback"
+            );
+            Arc::new(routing::RegexRequestClassifier)
         }
     }
 }

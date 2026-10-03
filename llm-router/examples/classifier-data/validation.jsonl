@@ -1,0 +1,7 @@
+{"id":"valid-01","query":"Create a Go command that verifies signed webhook payloads.","context":"Reject malformed signatures and add table-driven tests.","request_type":"code_generation","complexity":3}
+{"id":"valid-02","query":"Trace how a request reaches the cache invalidation branch in this service.","context":"Start from Router::handle and account for feature flags.","request_type":"code_understanding","complexity":3}
+{"id":"valid-03","query":"Outline a multi-region failover plan for the API.","context":"RPO is five minutes and clients need a single hostname.","request_type":"technical_design","complexity":4}
+{"id":"valid-04","query":"Given the error rates for three regions, determine whether the aggregate SLO is met.","context":"Use a weighted request volume for each region.","request_type":"analytical_reasoning","complexity":4}
+{"id":"valid-05","query":"Draft a respectful note declining a vendor proposal.","context":"Mention that the budget is committed this quarter.","request_type":"writing","complexity":2}
+{"id":"valid-06","query":"Who maintains the OpenAPI specification?","context":null,"request_type":"factual_lookup","complexity":1}
+{"id":"valid-07","query":"Suggest a few low-effort ways to make a remote retrospective more engaging.","context":null,"request_type":"general","complexity":2}

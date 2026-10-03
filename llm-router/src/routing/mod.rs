@@ -33,7 +33,10 @@ mod salience_classifier;
 pub use boundary::{BoundarySignals, Mode, Phase};
 pub use cache::{CachedDecision, DecisionCache, NoopCache, RedisCache};
 pub use cells::{CellStore, InMemoryCellStore, PgCellStore};
-pub use classifier::{RequestType, Tier, classify, classify_request_type, signal};
+pub use classifier::{
+    Classification, ClassifyInput, RegexRequestClassifier, RequestClassifier, RequestType, Tier,
+    classify, signal,
+};
 pub use registry::{PgTierRegistry, TierRegistry};
 pub use salience::{AllowAllGate, ClassifierSalienceGate, SalienceGate};
 
@@ -83,6 +86,9 @@ pub struct RouteInputs<'a> {
     pub signals: &'a BoundarySignals,
     /// The query to classify (latest user message text). `None` disables classification.
     pub query: Option<&'a str>,
+    /// A typed classifier result obtained at the safe routing boundary. `None` preserves the
+    /// historic regex-only path used by existing callers and tests.
+    pub request_type_override: Option<RequestType>,
 }
 
 /// The outcome of routing: the model to call and how it was chosen.
@@ -250,9 +256,18 @@ pub async fn route_model(
             // (`ThreadRng`) is `!Send`, so it is scoped to drop before the next `.await` — the
             // handler future must stay `Send`.
             let learned = cell_store.load(inputs.provider).await;
-            let (tier, request_type) = {
+            let request_type = inputs
+                .request_type_override
+                .unwrap_or_else(|| classifier::classify_request_type(query));
+            let tier = {
                 let mut rng = rand::rng();
-                classify(query, inputs.provider, &learned, &mut rng)
+                classifier::pick_model_thompson(
+                    &learned,
+                    request_type,
+                    classifier::DEFAULT_W_QUALITY,
+                    classifier::DEFAULT_W_COST,
+                    &mut rng,
+                )
             };
             // Per-config tier override takes priority over the global registry.
             let config_override = match tier {
@@ -532,6 +547,7 @@ mod tests {
             tier3_model: None,
             signals,
             query: Some("hello"),
+            request_type_override: None,
         }
     }
 
