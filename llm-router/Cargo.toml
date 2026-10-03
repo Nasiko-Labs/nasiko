@@ -59,6 +59,8 @@ tracing = { workspace = true }
 # Used only by the standalone `llm-router` binary for log output.
 tracing-subscriber = { workspace = true }
 
+[features]
+compact-tools-example = []
 [dev-dependencies]
 tokio = { workspace = true }
 serde_json = { workspace = true }

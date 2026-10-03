@@ -154,6 +154,16 @@ pub struct GatewayConfig {
     pub compress_recovery_min_bytes: usize,
     /// How long an original stays recoverable. Sized to outlive the flow that produced it.
     pub compress_recovery_ttl_secs: u64,
+
+    /// Request classification backend for cost-aware routing. The default is `regex` so the
+    /// router remains deterministic and network-free unless an operator opts in.
+    pub classifier_backend: String,
+    /// Optional endpoint for the hosted classifier backend.
+    pub classifier_endpoint: String,
+    /// Optional local model-path override for a place-bound classifier backend.
+    pub classifier_model_path: String,
+    /// Timeout for hosted inference / model fetch calls.
+    pub classifier_timeout_ms: u64,
 }
 
 impl Default for GatewayConfig {
@@ -196,6 +206,10 @@ impl Default for GatewayConfig {
             compress_recovery_enabled: true,
             compress_recovery_min_bytes: 8192,
             compress_recovery_ttl_secs: 86_400,
+            classifier_backend: "regex".into(),
+            classifier_endpoint: String::new(),
+            classifier_model_path: String::new(),
+            classifier_timeout_ms: 2_000,
         }
     }
 }
@@ -308,6 +322,13 @@ impl GatewayConfig {
                 "TOKEN_COMPRESS_RECOVERY_TTL_SECS",
                 d.compress_recovery_ttl_secs as usize,
             ) as u64,
+            classifier_backend: env_or("CLASSIFIER_BACKEND", &d.classifier_backend),
+            classifier_endpoint: env_or("CLASSIFIER_ENDPOINT", &d.classifier_endpoint),
+            classifier_model_path: env_or("CLASSIFIER_MODEL_PATH", &d.classifier_model_path),
+            classifier_timeout_ms: env_parse_first(
+                &["CLASSIFIER_TIMEOUT_MS", "ROUTER_CLASSIFIER_TIMEOUT_MS"],
+                d.classifier_timeout_ms,
+            ),
         }
     }
 

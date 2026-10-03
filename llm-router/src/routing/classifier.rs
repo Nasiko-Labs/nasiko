@@ -28,9 +28,13 @@
 //! it an entropy RNG; tests inject a seeded one.
 
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
 
+use async_trait::async_trait;
 use rand::Rng;
 use rand_distr::{Beta, Distribution};
+use serde::{Deserialize, Serialize};
 
 use super::patterns::{CATEGORY_PATTERNS, NEGATIVE_SIGNALS, POSITIVE_SIGNALS};
 
@@ -74,6 +78,29 @@ impl RequestType {
         }
     }
 
+    /// Default complexity bucket for a request type in the routing interface. The values stay
+    /// intentionally coarse so deterministic classification remains stable across backends.
+    pub fn default_complexity(self) -> u8 {
+        match self {
+            RequestType::CodeGeneration | RequestType::TechnicalDesign => 4,
+            RequestType::CodeUnderstanding | RequestType::AnalyticalReasoning | RequestType::Writing => 3,
+            RequestType::FactualLookup => 2,
+            RequestType::General => 1,
+        }
+    }
+
+    /// Default confidence for the regex classifier. This is a coarse calibration only; backends
+    /// may override it with a real model estimate when available.
+    pub fn default_confidence(self) -> f32 {
+        match self {
+            RequestType::CodeGeneration | RequestType::TechnicalDesign => 0.88,
+            RequestType::CodeUnderstanding | RequestType::AnalyticalReasoning => 0.82,
+            RequestType::Writing => 0.8,
+            RequestType::FactualLookup => 0.76,
+            RequestType::General => 0.68,
+        }
+    }
+
     /// Inverse of [`RequestType::as_str`]; `None` for unknown values (a row written by an
     /// older/newer schema is skipped rather than trusted). Named `from_wire` rather than
     /// `from_str` to avoid shadowing the `std::str::FromStr` trait method.
@@ -88,6 +115,169 @@ impl RequestType {
             "general" => RequestType::General,
             _ => return None,
         })
+    }
+}
+
+/// Input passed to a request classifier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClassifyInput<'a> {
+    pub query: &'a str,
+    pub context: Option<&'a str>,
+}
+
+/// Classification result returned by a classifier backend.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Classification {
+    pub request_type: RequestType,
+    pub complexity: u8,
+    pub confidence: f32,
+}
+
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum ClassifyError {
+    #[error("empty query input")]
+    EmptyInput,
+    #[error("backend unavailable: {0}")]
+    BackendUnavailable(String),
+    #[error("timeout while classifying request")]
+    Timeout,
+    #[error("network error while classifying request: {0}")]
+    Network(String),
+    #[error("backend failed to load: {0}")]
+    ModelLoad(String),
+    #[error("unsupported classifier backend: {0}")]
+    UnsupportedBackend(String),
+}
+
+#[async_trait]
+pub trait RequestClassifier: Send + Sync {
+    fn name(&self) -> &str;
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError>;
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RegexRequestClassifier;
+
+#[async_trait]
+impl RequestClassifier for RegexRequestClassifier {
+    fn name(&self) -> &str {
+        "regex"
+    }
+
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+        if input.query.trim().is_empty() {
+            return Err(ClassifyError::EmptyInput);
+        }
+
+        let payload = match input.context {
+            Some(context) if !context.trim().is_empty() => {
+                format!("{}\n{}", input.query, context)
+            }
+            _ => input.query.to_string(),
+        };
+        let request_type = classify_request_type(&payload);
+        Ok(Classification {
+            request_type,
+            complexity: request_type.default_complexity(),
+            confidence: request_type.default_confidence(),
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LocalRequestClassifier;
+
+#[async_trait]
+impl RequestClassifier for LocalRequestClassifier {
+    fn name(&self) -> &str {
+        "local"
+    }
+
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+        RegexRequestClassifier.classify(input).await
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct HostedClassificationPayload {
+    request_type: String,
+    complexity: u8,
+    confidence: f32,
+}
+
+#[derive(Debug, Clone)]
+pub struct HostedRequestClassifier {
+    endpoint: String,
+    timeout: Duration,
+}
+
+impl HostedRequestClassifier {
+    pub fn new(endpoint: impl Into<String>, timeout: Duration) -> Self {
+        Self {
+            endpoint: endpoint.into(),
+            timeout,
+        }
+    }
+}
+
+#[async_trait]
+impl RequestClassifier for HostedRequestClassifier {
+    fn name(&self) -> &str {
+        "hosted"
+    }
+
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+        if self.endpoint.trim().is_empty() {
+            return Err(ClassifyError::UnsupportedBackend(
+                "CLASSIFIER_ENDPOINT is empty; hosted backend is unavailable".to_string(),
+            ));
+        }
+
+        let client = reqwest::Client::builder()
+            .timeout(self.timeout)
+            .build()
+            .map_err(|e| ClassifyError::BackendUnavailable(e.to_string()))?;
+
+        let payload = serde_json::json!({
+            "query": input.query,
+            "context": input.context,
+        });
+
+        let response = client
+            .post(&self.endpoint)
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| ClassifyError::Network(e.to_string()))?;
+
+        if !response.status().is_success() {
+            return Err(ClassifyError::Network(format!(
+                "hosted classifier returned {}",
+                response.status()
+            )));
+        }
+
+        let decoded: HostedClassificationPayload = response
+            .json()
+            .await
+            .map_err(|e| ClassifyError::Network(format!("decode failure: {e}")))?;
+
+        let request_type = RequestType::from_wire(&decoded.request_type)
+            .unwrap_or(RequestType::General);
+        Ok(Classification {
+            request_type,
+            complexity: decoded.complexity.clamp(1, 5),
+            confidence: decoded.confidence.clamp(0.0, 1.0),
+        })
+    }
+}
+
+pub fn build_request_classifier(backend: &str, endpoint: &str, timeout_ms: u64) -> Arc<dyn RequestClassifier> {
+    match backend.trim().to_ascii_lowercase().as_str() {
+        "regex" => Arc::new(RegexRequestClassifier),
+        "local" => Arc::new(LocalRequestClassifier),
+        "hosted" => Arc::new(HostedRequestClassifier::new(endpoint, Duration::from_millis(timeout_ms))),
+        _ => Arc::new(RegexRequestClassifier),
     }
 }
 
@@ -530,5 +720,31 @@ mod tests {
         );
         assert_eq!(rt, RequestType::CodeGeneration);
         assert!(matches!(tier, Tier::Tier1 | Tier::Tier2 | Tier::Tier3));
+    }
+
+    #[tokio::test]
+    async fn regex_classifier_implements_trait_contract() {
+        let classifier = RegexRequestClassifier;
+        let result = classifier
+            .classify(&ClassifyInput {
+                query: "write a Python function to parse CSV",
+                context: Some("Focus on error handling and validation."),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(result.request_type, RequestType::CodeGeneration);
+        assert_eq!(result.complexity, 4);
+        assert!((result.confidence - 0.88).abs() < 1e-6);
+        assert_eq!(classifier.name(), "regex");
+    }
+
+    #[test]
+    fn build_request_classifier_default_is_regex() {
+        let classifier = build_request_classifier("regex", "", 1000);
+        assert_eq!(classifier.name(), "regex");
+
+        let local = build_request_classifier("local", "", 1000);
+        assert_eq!(local.name(), "local");
     }
 }
