@@ -288,6 +288,20 @@ async fn chat_core(
         "brevity: directive decision"
     );
 
+    let compact_tools = if format == InboundFormat::OpenAi {
+        crate::compact_tools::prepare(
+            &mut req,
+            ctx.cfg.compact_tools_enabled,
+            &resolved.provider,
+            !resolved.fallback_models.is_empty(),
+        )
+    } else {
+        None
+    };
+    if compact_tools.is_some() {
+        tracing::debug!(target:"nasiko::llm_router::compact_tools",%agent_id,"compact tool schemas applied");
+    }
+
     // ── savings ledger inputs ─────────────────────────────────────────────────────────────
     // Measured here, after both seams, because this is the payload the provider will actually
     // bill for — which is what makes `sent_bytes / reported_input_tokens` a calibration rather
@@ -371,9 +385,10 @@ async fn chat_core(
     }
 
     // Non-streaming: run with ordered fallbacks; usage records the effective provider/model.
-    let (resp, (provider, model)) = fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
-        .instrument(llm_span.clone())
-        .await?;
+    let (mut resp, (provider, model)) =
+        fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
+            .instrument(llm_span.clone())
+            .await?;
     let latency_ms = started.elapsed().as_millis() as i64;
 
     // Record effective model and token usage on the server-side gen_ai span.
@@ -405,6 +420,9 @@ async fn chat_core(
         },
     );
 
+    if let Some(session) = compact_tools {
+        session.restore(&mut resp)?;
+    }
     Ok(Json(inbound.render_chat_response(resp)).into_response())
 }
 
@@ -1533,5 +1551,130 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, GatewayError::BadRequest(_)));
+    }
+    async fn compact_http_case(
+        enabled: bool,
+        output: &str,
+    ) -> (String, Result<Response, GatewayError>) {
+        let seen = Arc::new(Mutex::new(String::new()));
+        let capture = seen.clone();
+        let mut server = mockito::Server::new_async().await;
+        let response = json!({
+            "id": "compact-http",
+            "model": "gpt-4o-mini",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": output
+                    },
+                    "finish_reason": "stop"
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "total_tokens": 15
+            }
+        })
+        .to_string();
+        let mock = server
+            .mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body_from_request(move |request| {
+                *capture.lock().unwrap() =
+                    String::from_utf8(request.body().unwrap().to_vec()).unwrap();
+                response.clone().into_bytes()
+            })
+            .create_async()
+            .await;
+        let mut ctx = ctx_with(server.url());
+        Arc::make_mut(&mut ctx.cfg).compact_tools_enabled = enabled;
+        let store = Store {
+            config: Some(openai_config()),
+            is_coding_agent: false,
+            compress_enabled: false,
+        };
+        let body = json!({
+            "model": "client-model",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "send hello"
+                }
+            ],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "send",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "text": {
+                                    "type": "string"
+                                }
+                            },
+                            "required": [
+                                "text"
+                            ]
+                        }
+                    }
+                }
+            ]
+        });
+        let response = chat_core(
+            &ctx,
+            &store,
+            &auth_headers(&token()),
+            body,
+            InboundFormat::OpenAi,
+            None,
+        )
+        .await;
+        mock.assert_async().await;
+        let body = seen.lock().unwrap().clone();
+        (body, response)
+    }
+    #[tokio::test]
+    async fn compact_tools_http_default_wire_unchanged() {
+        let (body, response) = compact_http_case(false, "hello").await;
+        response.unwrap();
+        let expected = r#"{"model":"gpt-4o-mini","messages":[{"role":"user","content":"send hello"}],"tools":[{"type":"function","function":{"name":"send","parameters":{"properties":{"text":{"type":"string"}},"required":["text"],"type":"object"}}}],"stream":false}"#;
+        assert_eq!(body, expected);
+    }
+    #[tokio::test]
+    async fn compact_tools_http_restores_standard_call() {
+        let (body, response) = compact_http_case(true, "<<call send {\"text\":\"hello\"}>>").await;
+        let sent: Value = serde_json::from_str(&body).unwrap();
+        assert!(sent.get("tools").is_none());
+        assert!(
+            sent["messages"][0]["content"]
+                .as_str()
+                .unwrap()
+                .contains("send null {text!:str}")
+        );
+        let returned: Value = serde_json::from_str(&body_string(response.unwrap()).await).unwrap();
+        let call = &returned["choices"][0]["message"]["tool_calls"][0];
+        assert_eq!(call["type"], "function");
+        assert_eq!(call["function"]["name"], "send");
+        assert_eq!(
+            serde_json::from_str::<Value>(call["function"]["arguments"].as_str().unwrap()).unwrap(),
+            json!({"text":"hello"})
+        );
+        assert_eq!(returned["choices"][0]["finish_reason"], "tool_calls");
+        assert!(!returned.to_string().contains("<<call"));
+    }
+    #[tokio::test]
+    async fn compact_tools_http_rejects_unknown_without_retry() {
+        let (_, response) = compact_http_case(true, "<<call delete_everything {}>>").await;
+        let error = response.unwrap_err();
+        assert_eq!(error.status(), axum::http::StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            error.to_string(),
+            "Upstream LLM error: compact-tools: unknown_tool"
+        );
     }
 }

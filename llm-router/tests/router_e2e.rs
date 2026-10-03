@@ -2,22 +2,37 @@
 use std::collections::HashMap;
 
 use nasiko_llm_router::routing::classifier::CellMap;
-use nasiko_llm_router::routing::{BoundarySignals, Mode, Phase, RequestType, classify, classify_request_type};
+use nasiko_llm_router::routing::{
+    BoundarySignals, Mode, Phase, RequestType, classify, classify_request_type,
+};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 
 #[test]
 fn requests_classify_to_expected_types() {
-    assert_eq!(classify_request_type("what is the capital of France?"), RequestType::FactualLookup);
+    assert_eq!(
+        classify_request_type("what is the capital of France?"),
+        RequestType::FactualLookup
+    );
     assert_eq!(classify_request_type("hello there"), RequestType::General);
-    assert_eq!(classify_request_type("build me a python script that parses CSV"), RequestType::CodeGeneration);
-    assert_eq!(classify_request_type("how should I design this API?"), RequestType::TechnicalDesign);
+    assert_eq!(
+        classify_request_type("build me a python script that parses CSV"),
+        RequestType::CodeGeneration
+    );
+    assert_eq!(
+        classify_request_type("how should I design this API?"),
+        RequestType::TechnicalDesign
+    );
 }
 
 #[test]
 fn same_seed_same_tier() {
     let cells: CellMap = HashMap::new();
-    for q in ["hello there", "design a sharded queue", "fix typo in comment"] {
+    for q in [
+        "hello there",
+        "design a sharded queue",
+        "fix typo in comment",
+    ] {
         let a = classify(q, "openai", &cells, &mut StdRng::seed_from_u64(7));
         let b = classify(q, "openai", &cells, &mut StdRng::seed_from_u64(7));
         assert_eq!(a, b, "non-deterministic for {q}");
