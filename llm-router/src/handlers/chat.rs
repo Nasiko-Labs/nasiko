@@ -288,6 +288,88 @@ async fn chat_core(
         "brevity: directive decision"
     );
 
+    // ── compact tools seam (Track P1) ────────────────────────────────────────────────────
+    let has_forced_tool_choice = req.tool_choice.as_ref().is_some_and(|tc| match tc {
+        Value::String(s) => s != "none" && s != "auto",
+        _ => true,
+    });
+
+    let compact_tool_defs: Option<Vec<nasiko_tool_compact::ToolDef>> =
+        if ctx.cfg.compact_tools_enabled && !req.is_streaming() && !has_forced_tool_choice {
+            if let Some(ref ir_tools) = req.tools {
+                if !ir_tools.is_empty() {
+                    let defs: Vec<nasiko_tool_compact::ToolDef> = ir_tools
+                        .iter()
+                        .map(|t| nasiko_tool_compact::ToolDef {
+                            kind: t.kind.clone(),
+                            function: nasiko_tool_compact::FunctionDef {
+                                name: t.function.name.clone(),
+                                description: t.function.description.clone(),
+                                parameters: t.function.parameters.clone(),
+                            },
+                        })
+                        .collect();
+
+                    match nasiko_tool_compact::encode_tools(&defs) {
+                        Ok(encoded) => {
+                            req.tools = None;
+                            let prompt_content = encoded.full_prompt;
+                            if let Some(sys_msg) =
+                                req.messages.iter_mut().find(|m| m.role == "system")
+                            {
+                                if let Some(ref mut c) = sys_msg.content {
+                                    match c {
+                                        Value::String(s) => {
+                                            s.push_str("\n\n");
+                                            s.push_str(&prompt_content);
+                                        }
+                                        Value::Array(arr) => {
+                                            arr.push(serde_json::json!({
+                                                "type": "text",
+                                                "text": format!("\n\n{}", prompt_content)
+                                            }));
+                                        }
+                                        _ => {
+                                            *c = Value::String(prompt_content);
+                                        }
+                                    }
+                                } else {
+                                    sys_msg.content = Some(Value::String(prompt_content));
+                                }
+                            } else {
+                                req.messages.insert(
+                                    0,
+                                    crate::ir::chat::Message {
+                                        role: "system".to_string(),
+                                        content: Some(Value::String(prompt_content)),
+                                        name: None,
+                                        tool_calls: None,
+                                        tool_call_id: None,
+                                        extra: Default::default(),
+                                    },
+                                );
+                            }
+                            Some(defs)
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                target: "nasiko::llm_router::compact_tools",
+                                error = %e,
+                                "Bypassing tool compaction due to encoding error"
+                            );
+                            None
+                        }
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
     // ── savings ledger inputs ─────────────────────────────────────────────────────────────
     // Measured here, after both seams, because this is the payload the provider will actually
     // bill for — which is what makes `sent_bytes / reported_input_tokens` a calibration rather
@@ -371,9 +453,45 @@ async fn chat_core(
     }
 
     // Non-streaming: run with ordered fallbacks; usage records the effective provider/model.
-    let (resp, (provider, model)) = fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
-        .instrument(llm_span.clone())
-        .await?;
+    let (mut resp, (provider, model)) =
+        fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
+            .instrument(llm_span.clone())
+            .await?;
+
+    if let Some(ref defs) = compact_tool_defs {
+        for choice in &mut resp.choices {
+            let Some(text) = choice.message.text() else {
+                continue;
+            };
+            let Ok(calls) = nasiko_tool_compact::decode_calls(&text, defs) else {
+                continue;
+            };
+            if !calls.is_empty() {
+                let ir_calls: Vec<crate::ir::chat::ToolCall> = calls
+                    .into_iter()
+                    .map(|c| crate::ir::chat::ToolCall {
+                        id: c.id,
+                        kind: c.kind,
+                        function: crate::ir::chat::FunctionCall {
+                            name: c.function.name,
+                            arguments: c.function.arguments,
+                        },
+                        extra: Default::default(),
+                    })
+                    .collect();
+                choice.message.tool_calls = Some(ir_calls);
+                choice.finish_reason = Some("tool_calls".to_string());
+
+                let cleaned = nasiko_tool_compact::strip_calls(&text);
+                let trimmed = cleaned.trim();
+                if trimmed.is_empty() {
+                    choice.message.content = None;
+                } else {
+                    choice.message.content = Some(Value::String(trimmed.to_string()));
+                }
+            }
+        }
+    }
     let latency_ms = started.elapsed().as_millis() as i64;
 
     // Record effective model and token usage on the server-side gen_ai span.
@@ -1533,5 +1651,215 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, GatewayError::BadRequest(_)));
+    }
+
+    #[tokio::test]
+    async fn compact_tools_default_is_byte_identical() {
+        let tools_payload = json!([
+            {
+                "type": "function",
+                "function": {
+                    "name": "create_calendar_event",
+                    "description": "Create an event in the user's calendar.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string"}
+                        },
+                        "required": ["title"]
+                    }
+                }
+            }
+        ]);
+        let input_body = json!({
+            "model": "gpt-4o-mini",
+            "messages": [
+                { "role": "user", "content": "schedule meeting" }
+            ],
+            "tools": tools_payload
+        });
+
+        // 1. Run with default config (compact_tools_enabled = false)
+        let seen = Arc::new(Mutex::new(String::new()));
+        let capture = Arc::clone(&seen);
+
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body_from_request(move |request| {
+                let body = request.body().map(Vec::as_slice).unwrap_or_default();
+                *capture.lock().unwrap_or_else(|e| e.into_inner()) =
+                    String::from_utf8_lossy(body).into_owned();
+                json!({
+                    "id": "chatcmpl-default",
+                    "object": "chat.completion",
+                    "model": "gpt-4o-mini",
+                    "choices": [{
+                        "index": 0,
+                        "message": { "role": "assistant", "content": "Done" },
+                        "finish_reason": "stop"
+                    }],
+                    "usage": { "prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15 }
+                })
+                .to_string()
+                .into_bytes()
+            })
+            .create_async()
+            .await;
+
+        let ctx = ctx_with(server.url());
+        assert!(!ctx.cfg.compact_tools_enabled, "must be false by default");
+
+        let store = Store {
+            config: None,
+            is_coding_agent: false,
+            compress_enabled: false,
+        };
+
+        let resp = chat_core(
+            &ctx,
+            &store,
+            &auth_headers(&token()),
+            input_body.clone(),
+            InboundFormat::OpenAi,
+            None,
+        )
+        .await
+        .unwrap();
+
+        mock.assert_async().await;
+
+        let sent_str = seen.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let sent_json: Value = serde_json::from_str(&sent_str).unwrap();
+
+        // The request sent to provider must contain the native tools array untouched
+        assert!(
+            sent_json.get("tools").is_some(),
+            "tools field must be preserved"
+        );
+        let tools_in_req = sent_json.get("tools").unwrap();
+        assert_eq!(
+            tools_in_req, &tools_payload,
+            "tools payload must be byte-identical"
+        );
+
+        // Response must also be untouched
+        let resp_body = body_string(resp).await;
+        let resp_json: Value = serde_json::from_str(&resp_body).unwrap();
+        assert_eq!(resp_json["choices"][0]["message"]["content"], "Done");
+        assert_eq!(resp_json["choices"][0]["finish_reason"], "stop");
+    }
+
+    #[tokio::test]
+    async fn compact_tools_opt_in_transforms_request_and_decodes_response() {
+        let tools_payload = json!([
+            {
+                "type": "function",
+                "function": {
+                    "name": "create_calendar_event",
+                    "description": "Create calendar event",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string"},
+                            "start": {"type": "string"}
+                        },
+                        "required": ["title", "start"]
+                    }
+                }
+            }
+        ]);
+        let input_body = json!({
+            "model": "gpt-4o-mini",
+            "messages": [
+                { "role": "user", "content": "schedule meeting" }
+            ],
+            "tools": tools_payload
+        });
+
+        let seen = Arc::new(Mutex::new(String::new()));
+        let capture = Arc::clone(&seen);
+
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body_from_request(move |request| {
+                let body = request.body().map(Vec::as_slice).unwrap_or_default();
+                *capture.lock().unwrap_or_else(|e| e.into_inner()) =
+                    String::from_utf8_lossy(body).into_owned();
+                json!({
+                    "id": "chatcmpl-compact",
+                    "object": "chat.completion",
+                    "model": "gpt-4o-mini",
+                    "choices": [{
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": "<<call create_calendar_event {\"title\":\"Meeting\",\"start\":\"2026-10-05T10:00:00Z\"}>>"
+                        },
+                        "finish_reason": "stop"
+                    }],
+                    "usage": { "prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15 }
+                })
+                .to_string()
+                .into_bytes()
+            })
+            .create_async()
+            .await;
+
+        let mut ctx = ctx_with(server.url());
+        let mut cfg = (*ctx.cfg).clone();
+        cfg.compact_tools_enabled = true;
+        ctx.cfg = Arc::new(cfg);
+
+        let store = Store {
+            config: None,
+            is_coding_agent: false,
+            compress_enabled: false,
+        };
+
+        let resp = chat_core(
+            &ctx,
+            &store,
+            &auth_headers(&token()),
+            input_body,
+            InboundFormat::OpenAi,
+            None,
+        )
+        .await
+        .unwrap();
+
+        mock.assert_async().await;
+
+        let sent_str = seen.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let sent_json: Value = serde_json::from_str(&sent_str).unwrap();
+
+        // Native tools field should have been removed
+        assert!(sent_json.get("tools").is_none() || sent_json.get("tools") == Some(&Value::Null));
+
+        // System message should contain the compact tool signature
+        let messages = sent_json["messages"].as_array().unwrap();
+        let has_compact_signature = messages.iter().any(|m| {
+            m["content"]
+                .as_str()
+                .map(|s| s.contains("create_calendar_event"))
+                .unwrap_or(false)
+        });
+        assert!(
+            has_compact_signature,
+            "compact tool signature must be injected"
+        );
+
+        // The returned response should have tool_calls populated
+        let resp_body = body_string(resp).await;
+        let resp_json: Value = serde_json::from_str(&resp_body).unwrap();
+        let tool_calls = &resp_json["choices"][0]["message"]["tool_calls"];
+        assert!(tool_calls.is_array());
+        assert_eq!(tool_calls[0]["function"]["name"], "create_calendar_event");
+        assert_eq!(resp_json["choices"][0]["finish_reason"], "tool_calls");
     }
 }
