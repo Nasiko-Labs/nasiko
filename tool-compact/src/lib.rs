@@ -395,6 +395,19 @@ fn validate_schema_shape(schema: &Value, tool: &str) -> Result<()> {
                 reason: "required must be an array of strings".into(),
             });
         }
+        if let Some(properties) = object.get("properties").and_then(Value::as_object)
+            && let Some(missing) = required
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .find(|name| !properties.contains_key(*name))
+        {
+            return Err(Error::UnsupportedSchema {
+                tool: tool.into(),
+                reason: format!("required field `{missing}` has no property schema"),
+            });
+        }
     }
     if let Some(items) = object.get("items") {
         validate_schema_shape(items, tool)?;
@@ -422,6 +435,20 @@ fn validate_schema_shape(schema: &Value, tool: &str) -> Result<()> {
             tool: tool.into(),
             reason: "format must be a string".into(),
         });
+    }
+    if let Some(format) = object.get("format").and_then(Value::as_str) {
+        let has_string_type = match object.get("type") {
+            Some(Value::String(kind)) => kind == "string",
+            Some(Value::Array(kinds)) => kinds.iter().any(|kind| kind.as_str() == Some("string")),
+            None => false,
+            _ => false,
+        };
+        if !has_string_type || format != "date-time" {
+            return Err(Error::UnsupportedSchema {
+                tool: tool.into(),
+                reason: format!("format `{format}` cannot be represented exactly"),
+            });
+        }
     }
     if let Some(value) = object.get("additionalProperties")
         && !value.is_boolean()
@@ -738,6 +765,24 @@ mod tests {
         assert!(matches!(
             encode_tools(&[tool.clone(), tool]),
             Err(Error::UnsupportedSchema { reason, .. }) if reason == "duplicate tool name"
+        ));
+    }
+
+    #[test]
+    fn bypasses_unsupported_formats_and_invalid_required_lists() {
+        let mut tool = calendar();
+        tool.function.parameters.as_mut().unwrap()["properties"]["title"]["format"] =
+            json!("email");
+        assert!(matches!(
+            encode_tools(&[tool]),
+            Err(Error::UnsupportedSchema { .. })
+        ));
+
+        let mut tool = calendar();
+        tool.function.parameters.as_mut().unwrap()["required"] = json!(["missing"]);
+        assert!(matches!(
+            encode_tools(&[tool]),
+            Err(Error::UnsupportedSchema { .. })
         ));
     }
 
