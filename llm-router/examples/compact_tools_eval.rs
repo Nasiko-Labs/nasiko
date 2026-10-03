@@ -1,6 +1,9 @@
-use nasiko_llm_router::compact_tools::prepare_request;
+use nasiko_llm_router::compact_tools::{StreamDecoder, StreamEvent, prepare_request};
 use nasiko_llm_router::ir::{ChatRequest, FunctionDef, Message, ToolDef};
 use serde_json::{Map, Value, json};
+use std::collections::HashMap;
+use std::fs;
+use std::io::{BufWriter, Write};
 
 fn make_tool(index: usize) -> ToolDef {
     ToolDef {
@@ -126,7 +129,212 @@ fn evaluate(tool_count: usize) -> ResultRow {
     }
 }
 
+fn error_kind(error: &impl std::fmt::Display) -> &'static str {
+    let message = error.to_string().to_lowercase();
+
+    if message.contains("unknown tool") {
+        "unknown_tool"
+    } else if message.contains("required")
+        || message.contains("enum")
+        || message.contains("argument")
+        || message.contains("type")
+    {
+        "invalid_arguments"
+    } else {
+        "decoder_error"
+    }
+}
+
+fn normalized_calls(events: &[StreamEvent]) -> Vec<Value> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            StreamEvent::ToolCall(call) => {
+                let arguments: Value =
+                    serde_json::from_str(&call.function.arguments).unwrap_or(Value::Null);
+
+                Some(json!({
+                    "name": call.function.name,
+                    "arguments": arguments
+                }))
+            }
+            StreamEvent::Text(_) => None,
+        })
+        .collect()
+}
+
+fn run_eval_set(path: &str, out_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let raw = fs::read_to_string(path)?;
+    let root: Value = serde_json::from_str(&raw)?;
+
+    let tool_values = root
+        .get("tools")
+        .and_then(Value::as_array)
+        .ok_or("eval set missing tools array")?;
+
+    let all_tools: Vec<ToolDef> = tool_values
+        .iter()
+        .cloned()
+        .map(serde_json::from_value)
+        .collect::<Result<_, _>>()?;
+
+    let tool_map: HashMap<String, ToolDef> = all_tools
+        .into_iter()
+        .map(|tool| (tool.function.name.clone(), tool))
+        .collect();
+
+    let decoder_cases = root
+        .get("decoder_cases")
+        .and_then(Value::as_array)
+        .ok_or("eval set missing decoder_cases array")?;
+
+    let file = fs::File::create(out_path)?;
+    let mut writer = BufWriter::new(file);
+
+    let mut passed = 0usize;
+    let mut failed = 0usize;
+
+    for case in decoder_cases {
+        let id = case
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or("decoder case missing id")?;
+
+        let names = case
+            .get("tools")
+            .and_then(Value::as_array)
+            .ok_or("decoder case missing tools")?;
+
+        let mut tools = Vec::new();
+
+        for name in names {
+            let name = name.as_str().ok_or("tool name must be string")?;
+
+            let tool = tool_map
+                .get(name)
+                .ok_or_else(|| format!("eval references unknown tool {name}"))?;
+
+            tools.push(tool.clone());
+        }
+
+        let chunks = case
+            .get("chunks")
+            .and_then(Value::as_array)
+            .ok_or("decoder case missing chunks")?;
+
+        let expected = case
+            .get("expected")
+            .ok_or("decoder case missing expected")?;
+
+        let mut decoder = StreamDecoder::new();
+        let mut events = Vec::new();
+        let mut actual_error: Option<String> = None;
+
+        for chunk in chunks {
+            let chunk = chunk.as_str().ok_or("decoder chunk must be a string")?;
+
+            match decoder.push(chunk, &tools) {
+                Ok(mut produced) => events.append(&mut produced),
+                Err(error) => {
+                    actual_error = Some(error_kind(&error).to_string());
+                    break;
+                }
+            }
+        }
+
+        if actual_error.is_none() {
+            match decoder.finish() {
+                Ok(mut produced) => events.append(&mut produced),
+                Err(error) => {
+                    actual_error = Some(error_kind(&error).to_string());
+                }
+            }
+        }
+
+        let actual_calls = normalized_calls(&events);
+
+        let expected_error = expected
+            .get("error")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+
+        let expected_calls = expected
+            .get("calls")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+
+        let case_passed = match expected_error.as_deref() {
+            Some(error) => actual_error.as_deref() == Some(error),
+            None => actual_error.is_none() && actual_calls == expected_calls,
+        };
+
+        if case_passed {
+            passed += 1;
+        } else {
+            failed += 1;
+        }
+
+        let record = json!({
+            "id": id,
+            "kind": "decoder",
+            "passed": case_passed,
+            "expected": expected,
+            "actual": {
+                "calls": actual_calls,
+                "error": actual_error
+            }
+        });
+
+        writeln!(writer, "{}", serde_json::to_string(&record)?)?;
+    }
+
+    let model_cases = root
+        .get("cases")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+
+    let summary = json!({
+        "kind": "summary",
+        "decoder_total": decoder_cases.len(),
+        "decoder_passed": passed,
+        "decoder_failed": failed,
+        "model_cases": model_cases,
+        "model_cases_executed": 0,
+        "note": "Natural-language model cases require a live model/provider evaluation."
+    });
+
+    writeln!(writer, "{}", serde_json::to_string(&summary)?)?;
+    writer.flush()?;
+
+    eprintln!(
+        "Eval complete: {}/{} decoder cases passed; {} model cases not executed",
+        passed,
+        decoder_cases.len(),
+        model_cases
+    );
+
+    if failed > 0 {
+        return Err(format!("{failed} decoder case(s) failed").into());
+    }
+
+    Ok(())
+}
+
 fn main() {
+    if let Ok(eval_set) = std::env::var("EVAL_SET") {
+        let out =
+            std::env::var("OUT").unwrap_or_else(|_| "/tmp/compact-tools-results.jsonl".to_string());
+
+        if let Err(error) = run_eval_set(&eval_set, &out) {
+            eprintln!("compact tools evaluation failed: {error}");
+            std::process::exit(1);
+        }
+
+        return;
+    }
+
     let counts = [1usize, 3, 5, 10, 20, 50];
 
     // Machine-readable mode for external tokenization/evaluation.
