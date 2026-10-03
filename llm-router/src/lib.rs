@@ -24,6 +24,7 @@ use axum::{
 use nasiko_pricing::PricingEngine;
 use serde_json::{Value, json};
 use sqlx::PgPool;
+use tower_http::cors::CorsLayer;
 use tower_http::decompression::RequestDecompressionLayer;
 
 pub mod auth;
@@ -245,7 +246,10 @@ pub fn router(ctx: LlmRouterCtx) -> Router {
     Router::new()
         // Liveness probe owned by this router. The host server keeps its own
         // top-level `/health`; a future standalone binary will also map `/health`.
+        .route("/health", get(health))
         .route("/v1/health", get(health))
+        .route("/classify", post(handlers::classifier::classify_handler))
+        .route("/v1/classify", post(handlers::classifier::classify_handler))
         .route(
             "/v1/chat/completions",
             post(handlers::chat::chat_completions),
@@ -264,10 +268,21 @@ pub fn router(ctx: LlmRouterCtx) -> Router {
         .route("/v1/embeddings", post(handlers::embeddings::embeddings))
         .route("/v1/models", get(handlers::models::models))
         .with_state(ctx)
+        .layer(CorsLayer::permissive())
         .layer(RequestDecompressionLayer::new())
 }
 
-/// `GET /v1/health` → `{"status":"ok"}`.
+/// Standalone classifier router for when full LlmRouterCtx / Postgres is not needed.
+pub fn classifier_router() -> Router {
+    Router::new()
+        .route("/health", get(health))
+        .route("/v1/health", get(health))
+        .route("/classify", post(handlers::classifier::classify_handler))
+        .route("/v1/classify", post(handlers::classifier::classify_handler))
+        .layer(CorsLayer::permissive())
+}
+
+/// `GET /v1/health` and `GET /health` → `{"status":"ok"}`.
 async fn health() -> Json<Value> {
     Json(json!({ "status": "ok" }))
 }

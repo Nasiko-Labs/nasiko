@@ -60,4 +60,6 @@ export interface HealthCheckResponse {
   configured: boolean;
   railwayUrlConfigured: boolean;
   environment: string;
+  backendHealthy?: boolean;
+  backendStatus?: string;
 }

@@ -49,20 +49,12 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    const railwayApiUrl = process.env.RAILWAY_API_URL?.trim();
+    const railwayApiUrl =
+      process.env.RAILWAY_API_URL?.trim() ||
+      process.env.BACKEND_API_URL?.trim() ||
+      process.env.CLASSIFIER_API_URL?.trim() ||
+      'http://127.0.0.1:8081/classify';
     const railwayApiToken = process.env.RAILWAY_API_TOKEN?.trim();
-
-    if (!railwayApiUrl) {
-      return NextResponse.json<ApiResponse>(
-        {
-          success: false,
-          error: 'Classifier backend is not configured.',
-          details:
-            'The RAILWAY_API_URL environment variable is missing on this server. Set RAILWAY_API_URL in .env.local (or in Vercel project environment variables) pointing to your Railway classifier endpoint.',
-        },
-        { status: 503 }
-      );
-    }
 
     // Forward request to Railway classifier backend
     const controller = new AbortController();
