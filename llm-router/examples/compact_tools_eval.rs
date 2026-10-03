@@ -18,8 +18,8 @@
 use std::io::Write;
 
 use nasiko_tool_compact::{
-    CompactError, Event, StreamDecoder, ToolCall, ToolDef, decode_calls, encode_tools,
-    render_calls,
+    CompactError, CompactTools, Event, StreamDecoder, ToolCall, ToolDef, decode_calls,
+    encode_tools, render_calls,
 };
 use serde_json::{Value, json};
 
@@ -85,7 +85,13 @@ async fn main() {
                 json!({"messages": all, "tools": native})
             }
         };
-        tokens.add(&messages, &native, &compact_request);
+        tokens.add(
+            case["id"].as_str().unwrap_or_default(),
+            &messages,
+            &native,
+            &compact_request,
+            encoded.as_ref(),
+        );
 
         let mut line = json!({
             "id": case["id"],
@@ -137,11 +143,8 @@ async fn main() {
         lines.push(json!({"id": case["id"], "decoded": outcome_object(decoded)}));
     }
 
-    let written = std::fs::File::create(&out).and_then(|mut file| {
-        lines
-            .iter()
-            .try_for_each(|line| writeln!(file, "{line}"))
-    });
+    let written = std::fs::File::create(&out)
+        .and_then(|mut file| lines.iter().try_for_each(|line| writeln!(file, "{line}")));
     if let Err(e) = written {
         eprintln!("cannot write {out}: {e}");
         std::process::exit(2);
@@ -257,16 +260,36 @@ struct Tokens {
 }
 
 impl Tokens {
-    fn add(&mut self, messages: &[Value], native: &[Value], compact_request: &Value) {
+    fn add(
+        &mut self,
+        id: &str,
+        messages: &[Value],
+        native: &[Value],
+        compact_request: &Value,
+        compact: Option<&CompactTools>,
+    ) {
         let Ok(bpe) = tiktoken_rs::o200k_base() else {
             return;
         };
-        let count = |body: &Value| bpe.encode_ordinary(&body.to_string()).len();
+        let text = |s: &str| bpe.encode_ordinary(s).len();
+        let count = |body: &Value| text(&body.to_string());
         let mut timed = vec![json!({"role": "system", "content": REFERENCE_TIME})];
         timed.extend(messages.iter().cloned());
         self.baseline += count(&json!({"messages": messages, "tools": native}));
         self.baseline_with_time += count(&json!({"messages": timed, "tools": native}));
-        self.compact += count(compact_request);
+        let total = count(compact_request);
+        self.compact += total;
+
+        // Where a compacted case's tokens go. Parts are counted on their own, so they are
+        // approximate; `rest` is the reference time, the messages and the JSON around them.
+        if let Some(compact) = compact {
+            let lines = text(&compact.definitions);
+            let fixed = text(&compact.prompt()).saturating_sub(lines);
+            let rest = total.saturating_sub(lines + fixed);
+            eprintln!(
+                "{id}: {total} tokens = instruction text {fixed} + tool lines {lines} + rest {rest}"
+            );
+        }
     }
 
     fn report(&self, lines: usize, out: &str) {

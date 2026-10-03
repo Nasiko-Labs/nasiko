@@ -7,11 +7,11 @@ use crate::types::{CompactTools, ToolCall, ToolDef};
 
 /// First line of [`CompactTools::prompt`]. `?` is the only sigil a model cannot be expected to
 /// guess; `[T]`, `{..}` and `a|b` read the way they do in every typed language.
-pub(crate) const HEADER: &str = "Tools (? marks an optional param):";
+pub(crate) const HEADER: &str = "Tools (? = optional):";
 
 /// Kept short on purpose: this is paid on every request, against the tokens the definitions save.
-pub(crate) const INSTRUCTIONS: &str = "To call a tool, emit <<call name {json args}>>. \
-Emit one per call; if no tool fits, reply in plain text.";
+pub(crate) const INSTRUCTIONS: &str =
+    "To call a tool, emit <<call name {json args}>>, one per call. Otherwise reply in plain text.";
 
 pub(crate) const CALL_OPEN: &str = "<<call";
 pub(crate) const CALL_CLOSE: &str = ">>";
