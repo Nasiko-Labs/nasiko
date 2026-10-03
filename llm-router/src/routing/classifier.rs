@@ -583,6 +583,21 @@ pub fn classifier_from_backend(name: &str) -> std::sync::Arc<dyn RequestClassifi
     }
 }
 
+/// Build the configured classifier backend. This is the single entry point the
+/// router uses: it reads the backend name from [`GatewayConfig`] and returns an
+/// `Arc<dyn RequestClassifier>` ready to hold. Unknown names fall back to the
+/// regex baseline, so a misconfigured deployment keeps routing (on the baseline)
+/// instead of failing.
+///
+/// The timeout lives in config alongside the backend choice; callers apply it
+/// with `tokio::time::timeout` around [`RequestClassifier::classify`] and treat
+/// a timeout exactly like [`ClassifyError::Timeout`] — regex fallback + counted.
+pub fn classifier_from_config(
+    config: &crate::config::GatewayConfig,
+) -> std::sync::Arc<dyn RequestClassifier> {
+    classifier_from_backend(&config.classifier_backend)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -913,5 +928,17 @@ mod tests {
         assert_eq!(classifier_from_backend("heuristic").name(), "heuristic");
         assert_eq!(classifier_from_backend("nonsense-backend").name(), "regex");
         assert_eq!(classifier_from_backend("").name(), "regex");
+    }
+
+    #[test]
+    fn config_factory_selects_backend_from_gateway_config() {
+        let mut config = crate::config::GatewayConfig::default();
+        assert_eq!(config.classifier_backend, "regex");
+        assert_eq!(classifier_from_config(&config).name(), "regex");
+        config.classifier_backend = "heuristic".into();
+        assert_eq!(classifier_from_config(&config).name(), "heuristic");
+        // Unknown backend in config still falls back to regex (never breaks routing).
+        config.classifier_backend = "typo-backend".into();
+        assert_eq!(classifier_from_config(&config).name(), "regex");
     }
 }
