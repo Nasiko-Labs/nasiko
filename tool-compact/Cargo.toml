@@ -1,0 +1,10 @@
+[package]
+name = "nasiko-tool-compact"
+edition.workspace = true
+version.workspace = true
+description = "Compact tool-schema encoding for LLM prompts, with a validating, streaming decoder for the calls a model writes back."
+
+[dependencies]
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }

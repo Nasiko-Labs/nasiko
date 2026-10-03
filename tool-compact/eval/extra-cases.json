@@ -1,0 +1,210 @@
+{
+  "schema_version": "compact-tools-eval-v1",
+  "purpose": "Team-authored cases for nasiko-tool-compact (same schema as compact-tools-eval@v1-sample). Reported separately from the public set. Reference time: Friday 2026-10-02, Asia/Kolkata.",
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "create_calendar_event",
+        "description": "Create an event in the user's calendar.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "title": {"type": "string", "description": "Event title"},
+            "start": {"type": "string", "format": "date-time", "description": "Start time, ISO 8601"},
+            "duration_min": {"type": "integer", "description": "Duration in minutes"},
+            "attendees": {"type": "array", "items": {"type": "string"}, "description": "Attendee emails"},
+            "visibility": {"type": "string", "enum": ["public", "private"]}
+          },
+          "required": ["title", "start"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "send_email",
+        "description": "Send an email from the user's account.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "to": {"type": "array", "items": {"type": "string"}, "description": "Recipient emails"},
+            "subject": {"type": "string", "description": "Subject line"},
+            "body": {"type": "string", "description": "Plain-text body"},
+            "cc": {"type": "array", "items": {"type": "string"}, "description": "CC emails"}
+          },
+          "required": ["to", "subject", "body"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_weather",
+        "description": "Get the weather forecast for a city.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "city": {"type": "string", "description": "City name"},
+            "unit": {"type": "string", "enum": ["celsius", "fahrenheit"], "description": "Temperature unit"},
+            "days": {"type": "integer", "minimum": 1, "maximum": 7, "description": "Number of forecast days"}
+          },
+          "required": ["city"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "search_flights",
+        "description": "Search for flights between two airports.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "origin": {"type": "string", "description": "Departure airport IATA code, e.g. BLR"},
+            "destination": {"type": "string", "description": "Arrival airport IATA code"},
+            "depart_date": {"type": "string", "format": "date"},
+            "return_date": {"type": "string", "format": "date", "description": "Omit for one-way trips"},
+            "passengers": {
+              "type": "object",
+              "properties": {
+                "adults": {"type": "integer", "minimum": 1},
+                "children": {"type": "integer", "minimum": 0}
+              },
+              "required": ["adults"]
+            },
+            "cabin": {"type": "string", "enum": ["economy", "premium_economy", "business", "first"]}
+          },
+          "required": ["origin", "destination", "depart_date"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "create_ticket",
+        "description": "Open an issue in the team tracker.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "title": {"type": "string", "description": "Short summary"},
+            "priority": {"type": "string", "enum": ["low", "medium", "high", "urgent"]},
+            "labels": {"type": "array", "items": {"type": "string"}},
+            "assignee": {"type": "string", "description": "Assignee email"},
+            "steps": {
+              "type": "array",
+              "description": "Reproduction steps",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "action": {"type": "string"},
+                  "expected": {"type": "string"}
+                },
+                "required": ["action"]
+              }
+            }
+          },
+          "required": ["title", "priority"]
+        }
+      }
+    }
+  ],
+  "cases": [
+    {"id": "ex-001", "tools": ["get_weather", "send_email"],
+     "messages": [{"role": "user", "content": "What's the weather in Pune?"}],
+     "expected": [{"name": "get_weather", "arguments": {"city": "Pune"}}]},
+    {"id": "ex-002", "tools": ["get_weather"],
+     "messages": [{"role": "user", "content": "Give me a 3-day forecast for Boston in Fahrenheit."}],
+     "expected": [{"name": "get_weather", "arguments": {"city": "Boston", "unit": "fahrenheit", "days": 3}}]},
+    {"id": "ex-003", "tools": ["get_weather", "search_flights"],
+     "messages": [{"role": "user", "content": "7-day forecast for Tokyo in celsius please"}],
+     "expected": [{"name": "get_weather", "arguments": {"city": "Tokyo", "unit": "celsius", "days": 7}}]},
+    {"id": "ex-004", "tools": ["search_flights", "create_calendar_event"],
+     "messages": [{"role": "user", "content": "Find business class flights from BLR to DEL on 2026-10-10 for 2 adults and 1 child."}],
+     "expected": [{"name": "search_flights", "arguments": {"origin": "BLR", "destination": "DEL", "depart_date": "2026-10-10", "passengers": {"adults": 2, "children": 1}, "cabin": "business"}}]},
+    {"id": "ex-005", "tools": ["search_flights"],
+     "messages": [{"role": "user", "content": "Search flights BOM to GOI, leaving 2026-10-16 and returning 2026-10-19."}],
+     "expected": [{"name": "search_flights", "arguments": {"origin": "BOM", "destination": "GOI", "depart_date": "2026-10-16", "return_date": "2026-10-19"}}]},
+    {"id": "ex-006", "tools": ["search_flights", "get_weather"],
+     "messages": [{"role": "user", "content": "Find premium economy flights from SFO to JFK on 2026-11-02."}],
+     "expected": [{"name": "search_flights", "arguments": {"origin": "SFO", "destination": "JFK", "depart_date": "2026-11-02", "cabin": "premium_economy"}}]},
+    {"id": "ex-007", "tools": ["create_ticket", "send_email"],
+     "messages": [{"role": "user", "content": "File an urgent ticket 'Login page crashes on Safari', labels frontend and auth, assign it to dev@example.com."}],
+     "expected": [{"name": "create_ticket", "arguments": {"title": "Login page crashes on Safari", "priority": "urgent", "labels": ["frontend", "auth"], "assignee": "dev@example.com"}}],
+     "match": {"free_text_fields": ["title"]}},
+    {"id": "ex-008", "tools": ["create_ticket"],
+     "messages": [{"role": "user", "content": "Open a low priority ticket 'Typo on pricing page'. Steps: open /pricing, expect the page to load; read the header, expect 'Pricing' (it shows 'Prcing')."}],
+     "expected": [{"name": "create_ticket", "arguments": {"title": "Typo on pricing page", "priority": "low", "steps": [{"action": "Open /pricing", "expected": "The page loads"}, {"action": "Read the header", "expected": "Header reads 'Pricing'"}]}}],
+     "match": {"free_text_fields": ["title", "steps"]}},
+    {"id": "ex-009", "tools": ["create_ticket", "get_weather"],
+     "messages": [{"role": "user", "content": "Create a high priority ticket titled 'Rotate API keys'."}],
+     "expected": [{"name": "create_ticket", "arguments": {"title": "Rotate API keys", "priority": "high"}}],
+     "match": {"free_text_fields": ["title"]}},
+    {"id": "ex-010", "tools": ["send_email", "create_calendar_event"],
+     "messages": [{"role": "user", "content": "Send an email to ana@example.com, cc bob@example.com, subject 'Q3 report', body 'Attached is the Q3 report.'"}],
+     "expected": [{"name": "send_email", "arguments": {"to": ["ana@example.com"], "cc": ["bob@example.com"], "subject": "Q3 report", "body": "Attached is the Q3 report."}}]},
+    {"id": "ex-011", "tools": ["create_calendar_event", "send_email"],
+     "messages": [{"role": "user", "content": "Schedule a 45 minute public 'All hands' on 2026-10-07 at 4:30pm IST."}],
+     "expected": [{"name": "create_calendar_event", "arguments": {"title": "All hands", "start": "2026-10-07T16:30:00+05:30", "duration_min": 45, "visibility": "public"}}],
+     "match": {"free_text_fields": ["title"]}},
+    {"id": "ex-012", "tools": ["create_calendar_event"],
+     "messages": [{"role": "user", "content": "Book 'Standup' tomorrow 9am IST and 'Planning' on Monday 2pm IST."}],
+     "expected": [
+       {"name": "create_calendar_event", "arguments": {"title": "Standup", "start": "2026-10-03T09:00:00+05:30"}},
+       {"name": "create_calendar_event", "arguments": {"title": "Planning", "start": "2026-10-05T14:00:00+05:30"}}
+     ],
+     "match": {"free_text_fields": ["title"]}},
+    {"id": "ex-013", "tools": ["create_calendar_event"],
+     "messages": [{"role": "user", "content": "Block my calendar on 2026-10-09 at noon IST for lunch with riya@example.com."}],
+     "expected": [{"name": "create_calendar_event", "arguments": {"title": "Lunch with Riya", "start": "2026-10-09T12:00:00+05:30", "attendees": ["riya@example.com"]}}],
+     "match": {"free_text_fields": ["title"]}},
+    {"id": "ex-014", "tools": ["send_email"],
+     "messages": [{"role": "user", "content": "Email sam@example.com with subject 'Syntax' and this exact body: Use a >> b to shift; close the block with }."}],
+     "expected": [{"name": "send_email", "arguments": {"to": ["sam@example.com"], "subject": "Syntax", "body": "Use a >> b to shift; close the block with }."}}],
+     "match": {"free_text_fields": ["body"]}},
+    {"id": "ex-015", "tools": ["send_email"],
+     "messages": [{"role": "user", "content": "Email priya@example.com: subject 'नमस्ते', body 'Meeting confirmed ✓'."}],
+     "expected": [{"name": "send_email", "arguments": {"to": ["priya@example.com"], "subject": "नमस्ते", "body": "Meeting confirmed ✓"}}]},
+    {"id": "ex-016", "tools": ["get_weather", "create_ticket"],
+     "messages": [{"role": "user", "content": "What's 17 times 23?"}],
+     "expected": []},
+    {"id": "ex-017", "tools": ["create_calendar_event", "send_email"],
+     "messages": [{"role": "user", "content": "Write a haiku about autumn."}],
+     "expected": []},
+    {"id": "ex-018", "tools": ["send_email"],
+     "messages": [{"role": "user", "content": "How do I send an email with an attachment in Gmail?"}],
+     "expected": []}
+  ],
+  "decoder_cases": [
+    {"id": "ex-dc-001", "note": "two calls with text around them", "tools": ["get_weather", "send_email"],
+     "chunks": ["Sure.\n<<call get_weather {\"city\":\"Pune\"}>>\n", "<<call send_email {\"to\":[\"a@example.com\"],\"subject\":\"Hi\",\"body\":\"B\"}>> done"],
+     "expected": {"calls": [{"name": "get_weather", "arguments": {"city": "Pune"}}, {"name": "send_email", "arguments": {"to": ["a@example.com"], "subject": "Hi", "body": "B"}}]}},
+    {"id": "ex-dc-002", "note": "plain answer, no call", "tools": ["get_weather"],
+     "chunks": ["17 times 23 ", "is 391."],
+     "expected": {"calls": []}},
+    {"id": "ex-dc-003", "note": "nested object, split inside a key", "tools": ["search_flights"],
+     "chunks": ["<<call search_flights {\"origin\":\"BLR\",\"destination\":\"DEL\",\"depart_date\":\"2026-10-10\",\"passengers\":{\"adu", "lts\":2}}>", ">"],
+     "expected": {"calls": [{"name": "search_flights", "arguments": {"origin": "BLR", "destination": "DEL", "depart_date": "2026-10-10", "passengers": {"adults": 2}}}]}},
+    {"id": "ex-dc-004", "note": "call marker inside a string argument", "tools": ["send_email"],
+     "chunks": ["<<call send_email {\"to\":[\"a@example.com\"],\"subject\":\"<<call x {}>>\",\"body\":\"}\"}>>"],
+     "expected": {"calls": [{"name": "send_email", "arguments": {"to": ["a@example.com"], "subject": "<<call x {}>>", "body": "}"}}]}},
+    {"id": "ex-dc-005", "note": "out-of-range integer", "tools": ["get_weather"],
+     "chunks": ["<<call get_weather {\"city\":\"Paris\",\"days\":15}>>"],
+     "expected": {"error": "invalid_arguments"}},
+    {"id": "ex-dc-006", "note": "date-time without offset", "tools": ["create_calendar_event"],
+     "chunks": ["<<call create_calendar_event {\"title\":\"A\",\"start\":\"2026-10-05 15:00\"}>>"],
+     "expected": {"error": "invalid_arguments"}},
+    {"id": "ex-dc-007", "note": "stream ends inside a call", "tools": ["get_weather"],
+     "chunks": ["<<call get_weather {\"city\":", "\"Pune\"}"],
+     "expected": {"error": "malformed_call"}},
+    {"id": "ex-dc-008", "note": "unknown tool split across chunks", "tools": ["get_weather"],
+     "chunks": ["<<call get_wea", "ther_now {\"city\":\"Pune\"}>>"],
+     "expected": {"error": "unknown_tool"}},
+    {"id": "ex-dc-009", "note": "unicode split mid-string", "tools": ["send_email"],
+     "chunks": ["<<call send_email {\"to\":[\"p@example.com\"],\"subject\":\"नम", "स्ते\",\"body\":\"✓\"}>>"],
+     "expected": {"calls": [{"name": "send_email", "arguments": {"to": ["p@example.com"], "subject": "नमस्ते", "body": "✓"}}]}},
+    {"id": "ex-dc-010", "note": "wrong enum value", "tools": ["create_ticket"],
+     "chunks": ["<<call create_ticket {\"title\":\"x\",\"priority\":\"critical\"}>>"],
+     "expected": {"error": "invalid_arguments"}}
+  ]
+}

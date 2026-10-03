@@ -288,6 +288,18 @@ async fn chat_core(
         "brevity: directive decision"
     );
 
+    // ── compact tool schemas (opt-in, `TOKEN_COMPACT_TOOLS`) ──────────────────────────────
+    // After brevity and before `sent_bytes`, so the ledger measures the payload actually sent.
+    // Off (the default) or skipped, `req` is untouched and the reply is not inspected.
+    let compact = crate::compact_tools::apply(&mut req, &ctx.cfg, &resolved);
+    tracing::debug!(
+        target: "nasiko::llm_router::compact_tools",
+        %agent_id,
+        applied = compact.is_ok(),
+        skipped = compact.as_ref().err().map(|s| s.as_label()),
+        "compact_tools: decision"
+    );
+
     // ── savings ledger inputs ─────────────────────────────────────────────────────────────
     // Measured here, after both seams, because this is the payload the provider will actually
     // bill for — which is what makes `sent_bytes / reported_input_tokens` a calibration rather
@@ -371,9 +383,51 @@ async fn chat_core(
     }
 
     // Non-streaming: run with ordered fallbacks; usage records the effective provider/model.
-    let (resp, (provider, model)) = fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
-        .instrument(llm_span.clone())
-        .await?;
+    let (mut resp, (mut provider, mut model)) =
+        fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
+            .instrument(llm_span.clone())
+            .await?;
+
+    // Compact calls → native `tool_calls`. A reply that does not decode is never guessed at:
+    // the failed attempt is billed as its own row and the original native request is re-sent.
+    if let Ok(compacted) = &compact
+        && let Err(e) = crate::compact_tools::decode_response(&mut resp, &compacted.tools)
+    {
+        tracing::warn!(
+            target: "nasiko::llm_router::compact_tools",
+            %agent_id,
+            error = e,
+            "compact_tools: reply did not decode; retrying with native tools"
+        );
+        usage::spawn_log(
+            ctx.db.clone(),
+            ctx.pricing.clone(),
+            UsageRecord {
+                owner_id: owner_id.clone(),
+                agent_id: agent_id.clone(),
+                operation_type: "direct_llm",
+                provider: provider.clone(),
+                model: model.clone(),
+                usage: resp.usage.clone(),
+                cached_tokens: None,
+                reasoning_tokens: None,
+                latency_ms: started.elapsed().as_millis() as i64,
+                streaming: false,
+                finish_reason: Some("compact_decode_error".into()),
+                flow_id: flow_id.clone(),
+                attribution_source,
+                platform_paid,
+                compress_metadata: compression.to_metadata(),
+                brevity_metadata: brevity_metadata.clone(),
+                compress_bytes,
+                request_bytes: Some(sent_bytes),
+            },
+        );
+        (resp, (provider, model)) =
+            fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &compacted.native)
+                .instrument(llm_span.clone())
+                .await?;
+    }
     let latency_ms = started.elapsed().as_millis() as i64;
 
     // Record effective model and token usage on the server-side gen_ai span.
@@ -1533,5 +1587,168 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, GatewayError::BadRequest(_)));
+    }
+
+    // ── compact tool schemas: the opt-in flag reaches the wire, and off means untouched ────
+
+    fn weather_params() -> Value {
+        json!({"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]})
+    }
+
+    fn weather_request() -> Value {
+        json!({
+            "model": "gpt-4o",
+            "messages": [{ "role": "user", "content": "Weather in Pune?" }],
+            "tools": [{ "type": "function", "function": {
+                "name": "get_weather", "description": "Weather for a city.", "parameters": weather_params()
+            }}]
+        })
+    }
+
+    /// One request against a mock provider that answers with `replies` in order. Returns every
+    /// body the provider received and the client's response.
+    async fn compact_round(
+        flag: bool,
+        replies: Vec<Value>,
+        format: InboundFormat,
+        body: Value,
+    ) -> (Vec<Value>, Value) {
+        let seen = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let capture = Arc::clone(&seen);
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body_from_request(move |request| {
+                let mut seen = capture.lock().unwrap_or_else(|e| e.into_inner());
+                let body = request.body().map(Vec::as_slice).unwrap_or_default();
+                seen.push(serde_json::from_slice(body).unwrap_or(Value::Null));
+                let reply = &replies[(seen.len() - 1).min(replies.len() - 1)];
+                json!({
+                    "id": "chatcmpl-c", "object": "chat.completion", "model": "gpt-4o-mini",
+                    "choices": [{ "index": 0, "message": reply, "finish_reason": "stop" }],
+                    "usage": { "prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7 }
+                })
+                .to_string()
+                .into_bytes()
+            })
+            .create_async()
+            .await;
+
+        let mut ctx = ctx_with(server.url());
+        ctx.cfg = Arc::new(GatewayConfig {
+            compact_tools_enabled: flag,
+            ..(*ctx.cfg).clone()
+        });
+        let store = Store {
+            config: Some(openai_config()),
+            is_coding_agent: false,
+            compress_enabled: true,
+        };
+        let resp = chat_core(&ctx, &store, &auth_headers(&token()), body, format, None)
+            .await
+            .unwrap();
+        let out: Value = serde_json::from_str(&body_string(resp).await).unwrap();
+        let bodies = seen.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        (bodies, out)
+    }
+
+    const COMPACT_CALL: &str = r#"<<call get_weather {"city":"Pune"}>>"#;
+
+    #[tokio::test]
+    async fn compact_tools_off_sends_native_tools_and_leaves_the_reply_alone() {
+        let reply = json!({ "role": "assistant", "content": COMPACT_CALL });
+        let (bodies, out) =
+            compact_round(false, vec![reply], InboundFormat::OpenAi, weather_request()).await;
+        assert_eq!(bodies.len(), 1);
+        assert_eq!(
+            bodies[0]["tools"],
+            weather_request()["tools"],
+            "native tools changed"
+        );
+        assert!(
+            !bodies[0].to_string().contains("<<call"),
+            "compact instructions leaked"
+        );
+        // Off, the reply is not inspected: compact-looking text reaches the client verbatim.
+        assert_eq!(out["choices"][0]["message"]["content"], COMPACT_CALL);
+        assert!(out["choices"][0]["message"]["tool_calls"].is_null());
+    }
+
+    #[tokio::test]
+    async fn compact_tools_on_sends_signatures_and_returns_native_tool_calls() {
+        let reply = json!({ "role": "assistant", "content": COMPACT_CALL });
+        let (bodies, out) =
+            compact_round(true, vec![reply], InboundFormat::OpenAi, weather_request()).await;
+        assert_eq!(bodies.len(), 1);
+        assert!(bodies[0].get("tools").is_none(), "native tools still sent");
+        let messages = bodies[0]["messages"].as_array().unwrap();
+        let system = messages.last().unwrap();
+        assert_eq!(system["role"], "system");
+        assert!(
+            system["content"].as_str().unwrap().starts_with(
+                "get_weather(city:str) - Weather for a city.
+"
+            ),
+            "{system}"
+        );
+        let choice = &out["choices"][0];
+        assert_eq!(choice["finish_reason"], "tool_calls");
+        let call = &choice["message"]["tool_calls"][0];
+        assert_eq!(call["type"], "function");
+        assert_eq!(call["function"]["name"], "get_weather");
+        assert_eq!(call["function"]["arguments"], r#"{"city":"Pune"}"#);
+        assert!(call["id"].as_str().unwrap().starts_with("call_"));
+    }
+
+    #[tokio::test]
+    async fn compact_reply_that_does_not_decode_is_retried_with_native_tools() {
+        let bad =
+            json!({ "role": "assistant", "content": r#"<<call get_weather {"town":"Pune"}>>"# });
+        let native = json!({ "role": "assistant", "content": null, "tool_calls": [{
+            "id": "call_native", "type": "function",
+            "function": { "name": "get_weather", "arguments": "{\"city\":\"Pune\"}" }
+        }]});
+        let (bodies, out) = compact_round(
+            true,
+            vec![bad, native],
+            InboundFormat::OpenAi,
+            weather_request(),
+        )
+        .await;
+        assert_eq!(
+            bodies.len(),
+            2,
+            "expected one compact attempt and one native retry"
+        );
+        assert!(bodies[0].get("tools").is_none());
+        assert_eq!(bodies[1]["tools"], weather_request()["tools"]);
+        assert_eq!(
+            out["choices"][0]["message"]["tool_calls"][0]["id"],
+            "call_native"
+        );
+    }
+
+    #[tokio::test]
+    async fn anthropic_client_gets_tool_use_blocks_from_compact_calls() {
+        let body = json!({
+            "model": "claude-3-5-sonnet-20241022",
+            "max_tokens": 256,
+            "messages": [{ "role": "user", "content": "Weather in Pune?" }],
+            "tools": [{ "name": "get_weather", "description": "Weather for a city.", "input_schema": weather_params() }]
+        });
+        let reply = json!({ "role": "assistant", "content": COMPACT_CALL });
+        let (bodies, out) = compact_round(true, vec![reply], InboundFormat::Anthropic, body).await;
+        assert!(bodies[0].get("tools").is_none());
+        let block = out["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["type"] == "tool_use")
+            .unwrap_or_else(|| panic!("no tool_use block: {out}"));
+        assert_eq!(block["name"], "get_weather");
+        assert_eq!(block["input"], json!({"city": "Pune"}));
+        assert_eq!(out["stop_reason"], "tool_use");
     }
 }
