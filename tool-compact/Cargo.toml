@@ -1,0 +1,17 @@
+[package]
+name = "nasiko-tool-compact"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+cucumber = "0.21"
+tokio = { workspace = true }
+
+[[test]]
+name = "behavior"
+harness = false

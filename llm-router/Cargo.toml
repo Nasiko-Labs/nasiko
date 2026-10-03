@@ -19,6 +19,8 @@ nasiko-pricing.workspace = true
 nasiko-savings.workspace = true
 # Internal — structural payload compression at the egress seam (src/compress.rs)
 nasiko-compress.workspace = true
+# Compact function-tool schemas. The router seam calls this; the eval example does too.
+nasiko-tool-compact.workspace = true
 
 # Web / async
 axum = { workspace = true }
@@ -60,6 +62,8 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
+# Token counts for the eval example only. Not a dependency of the router library.
+tiktoken-rs = "=0.6.0"
 tokio = { workspace = true }
 serde_json = { workspace = true }
 serial_test = { workspace = true }
