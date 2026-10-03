@@ -2,13 +2,38 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+mod decode;
 mod error;
 mod schema;
 mod types;
 
+pub use decode::StreamDecoder;
 pub use error::{CompactError, Result};
 pub use schema::{CanonicalTool, Property, SchemaKind, SchemaNode, analyze_tools};
 pub use types::{CompactTools, FunctionDef, ToolCall, ToolDef};
+
+/// Decode atomically: any malformed or invalid detected call fails the response.
+pub fn decode_calls(text: &str, tools: &[ToolDef]) -> Result<Vec<ToolCall>> {
+    let mut decoder = StreamDecoder::new(tools)?;
+    decoder.push(text)?;
+    decoder.finish()
+}
+
+/// Render calls generically with JSON arguments, without implying validation.
+pub fn render_calls(calls: &[ToolCall]) -> Result<String> {
+    calls
+        .iter()
+        .map(|call| {
+            if !schema::safe_identifier(&call.name) || !call.arguments.is_object() {
+                return Err(CompactError::MalformedCall);
+            }
+            let arguments =
+                serde_json::to_string(&call.arguments).map_err(|_| CompactError::MalformedCall)?;
+            Ok(format!("<<call {} {arguments}>>", call.name))
+        })
+        .collect::<Result<Vec<_>>>()
+        .map(|lines| lines.join("\n"))
+}
 
 /// Compile all tools, or return an error so the caller can use native tools.
 pub fn encode_tools(tools: &[ToolDef]) -> Result<CompactTools> {
