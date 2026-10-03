@@ -446,11 +446,19 @@ mod tests {
 
     #[test]
     fn escaped_quote_and_backslash_in_string() {
-        let args = r#"{"s":"say \"hi\" >> \\","t":"}"}"#;
-        assert_eq!(
-            scan(&[&format!("<<call t {args}>>")]).unwrap(),
-            vec![call("t", args)]
-        );
+        // An odd number of escaped quotes before "}>>": ignoring escapes would end the
+        // object at the '}' inside the string and treat the following ">>" as the close.
+        for args in [
+            r#"{"s":"say \"hi\" >> \\","t":"}"}"#,
+            r#"{"s":"\"}>>"}"#,
+            r#"{"s":"\\\"}>>"}"#,
+        ] {
+            assert_eq!(
+                scan(&[&format!("<<call t {args}>>")]).unwrap(),
+                vec![call("t", args)],
+                "{args}"
+            );
+        }
     }
 
     #[test]
