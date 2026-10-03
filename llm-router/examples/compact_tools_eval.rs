@@ -247,7 +247,7 @@ fn normal_record(
         Ok(compact) if tool_choice_allows_compaction(&native_request) => {
             (post_compaction_request(&native_request, &compact), true)
         }
-        Ok(_) | Err(_) => (native_request, false),
+        Ok(_) | Err(_) => (native_request.clone(), false),
     };
     let roundtrip_calls = decode_calls(&rendered_calls, &tools)
         .map_err(compact_error_message)
@@ -450,7 +450,7 @@ fn native_tool_call(call: &Value) -> CompactResult<ToolCall> {
 fn decoder_chunks(case: &Map<String, Value>) -> AppResult<Vec<String>> {
     case_value(case, &["chunks", "stream_chunks"])
         .and_then(Value::as_array)
-        .ok_or_else(|| "decoder case is missing ordered chunks".into())?
+        .ok_or_else(|| String::from("decoder case is missing ordered chunks"))?
         .iter()
         .enumerate()
         .map(|(index, value)| {
@@ -557,7 +557,11 @@ mod tests {
         let tools = vec![ToolDef {
             name: "lookup".into(),
             description: None,
-            parameters: None,
+            parameters: Some(json!({
+                "type": "object",
+                "properties": {"q": {"type": "string"}},
+                "required": ["q"]
+            })),
         }];
         let calls =
             decode_stream_chunks(&["<<call look".into(), "up {\"q\":\"x\"}>>".into()], &tools)
