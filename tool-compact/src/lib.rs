@@ -15,8 +15,6 @@
 
 mod decode;
 mod encode;
-#[cfg(test)]
-mod fixtures;
 mod grammar;
 mod schema;
 mod stream;

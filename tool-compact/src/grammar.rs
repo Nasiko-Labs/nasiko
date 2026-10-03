@@ -82,25 +82,3 @@ pub(crate) fn malformed(name: &str) -> CompactError {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use crate::fixtures::calendar;
-    use serde_json::Value;
-
-    #[test]
-    fn greater_than_inside_a_string_stays_in_the_title() {
-        let text = r#"<<call create_calendar_event {"title":"meet >> review","start":"2026-10-05T15:00:00+05:30"}>> trailing"#;
-        let calls = crate::decode_calls(text, &[calendar()]).unwrap();
-        let args: Value = serde_json::from_str(&calls[0].arguments).unwrap();
-        assert_eq!(args["title"], "meet >> review");
-        assert!(!calls[0].arguments.contains("trailing"));
-    }
-
-    #[test]
-    fn escaped_quote_does_not_end_the_json_string() {
-        let text = r#"<<call create_calendar_event {"title":"say \"hi\"","start":"2026-10-05T15:00:00+05:30"}>>"#;
-        let calls = crate::decode_calls(text, &[calendar()]).unwrap();
-        let args: Value = serde_json::from_str(&calls[0].arguments).unwrap();
-        assert_eq!(args["title"], "say \"hi\"");
-    }
-}

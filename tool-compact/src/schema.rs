@@ -31,16 +31,6 @@ pub(crate) struct Field {
     pub shape: Shape,
 }
 
-impl Shape {
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn fields(&self) -> &[Field] {
-        match self {
-            Shape::Object { fields } => fields,
-            _ => &[],
-        }
-    }
-}
-
 pub(crate) fn check(shape: &Shape, value: &Value) -> Result<(), crate::types::ArgumentFault> {
     match shape {
         Shape::Object { fields } => check_object(fields, value, ""),
@@ -216,50 +206,5 @@ fn read_node(tool: &ToolDef, node: &Value, root: bool) -> Result<Shape, CompactE
             Ok(Shape::Object { fields })
         }
         _ => Err(unsupported(tool, "type")),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::fixtures::calendar;
-    use crate::types::ToolDef;
-    use serde_json::json;
-
-    #[test]
-    fn calendar_schema_is_supported() {
-        let shape = classify(&calendar()).unwrap();
-        let fields = shape.fields();
-        assert!(fields.iter().any(|f| {
-            f.name == "title" && f.required && f.shape == Shape::Scalar(Scalar::Str)
-        }));
-        assert!(
-            fields
-                .iter()
-                .any(|f| f.name == "duration_min" && !f.required)
-        );
-        assert!(fields.iter().any(|f| {
-            f.name == "visibility"
-                && matches!(&f.shape, Shape::Enum(v) if v.as_slice() == ["public", "private"])
-        }));
-        assert!(
-            fields
-                .iter()
-                .any(|f| f.name == "attendees" && matches!(f.shape, Shape::Array(_)))
-        );
-    }
-
-    #[test]
-    fn ref_schema_is_unsupported_and_not_simplified() {
-        let tool = ToolDef {
-            name: "lookup".into(),
-            description: None,
-            parameters: Some(json!({
-                "type": "object",
-                "properties": {"id": {"$ref": "#/$defs/Id"}}
-            })),
-        };
-        let err = classify(&tool).unwrap_err();
-        assert!(matches!(err, CompactError::UnsupportedSchema { feature, .. } if feature == "$ref"));
     }
 }

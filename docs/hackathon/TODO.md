@@ -16,8 +16,8 @@ Status is `Not started`, `In progress`, or `Done`. Update this file when a task 
 | T10 | Decode a call split across stream chunks | [lld/10-stream-decoder.md](lld/10-stream-decoder.md) | Done |
 | T11 | Prove a successful decode always matches the schema | [lld/11-no-invalid-success.md](lld/11-no-invalid-success.md) | Done |
 | T12 | Write the offline eval example | [lld/12-offline-eval.md](lld/12-offline-eval.md) | Done |
-| T13 | Round-trip the public sample | [lld/13-public-sample.md](lld/13-public-sample.md) | Not started |
-| T14 | Show two eval runs write the same output | [lld/14-deterministic-eval.md](lld/14-deterministic-eval.md) | Not started |
+| T13 | Round-trip the public sample | [lld/13-public-sample.md](lld/13-public-sample.md) | Done |
+| T14 | Show two eval runs write the same output | [lld/14-deterministic-eval.md](lld/14-deterministic-eval.md) | Done |
 | T15 | Measure token reduction on the public sample | [lld/15-token-count.md](lld/15-token-count.md) | Not started |
 | T16 | Add the router flag and keep it off by default | [lld/16-flag-defaults-off.md](lld/16-flag-defaults-off.md) | Not started |
 | T17 | Compact and decode OpenAI non-streaming requests | [lld/17-openai-non-streaming.md](lld/17-openai-non-streaming.md) | Not started |

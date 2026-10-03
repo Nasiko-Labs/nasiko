@@ -93,26 +93,52 @@ Match `compress/` and `docs/CLEAN_CODE_GUIDE.md`.
 
 ## Testing guidelines
 
-Tests are hermetic: no network, no database, no Docker, no API key, no clock. They call the public functions.
+Tests are hermetic: no network, no database, no Docker, no API key, no clock. They call the public functions. They do not live in `src/`. The library does not read fixture files.
+
+```text
+tool-compact/tests/features/          Gherkin scenarios, the review document
+tool-compact/tests/fixtures/          JSON fixtures, including the public sample
+tool-compact/tests/behavior.rs        Cucumber runner (dev-dependency only)
+tool-compact/tests/schema_valid_calls.rs
+```
+
+Read the `.feature` files to see what a test checks. Each scenario is `Given` / `When` / `Then`. The examples tables name every public-sample id and what that id is for. Do not special-case a sample id in Rust.
 
 ```sh
 cargo test -p nasiko-tool-compact
+cargo test -p nasiko-tool-compact schema_valid_calls_only
 ```
 
-Once the crate exists, add `-p nasiko-tool-compact` to the `test-unit` recipe in the root `justfile`, next to `nasiko-compress`.
+`cucumber` and `tokio` are dev-dependencies of this crate so the runner can execute the features. They are not library dependencies. Do not add them to `[dependencies]`.
 
-Name a test for the behavior: `missing_required_title_is_invalid_arguments`, `marker_split_across_chunks_decodes_once`, `greater_than_inside_string_does_not_end_call`.
+Keep line coverage of `tool-compact/src` at or above 90%. Measure it from the repo root with the system `llvm-cov` (Xcode command-line tools). Do not add a test that only constructs an error and matches the same value.
 
-Cover at least:
+```sh
+export CARGO_INCREMENTAL=0
+export RUSTFLAGS="-C instrument-coverage"
+export LLVM_PROFILE_FILE="$PWD/target/coverage/%p-%m.profraw"
+mkdir -p target/coverage
+cargo test -p nasiko-tool-compact
+xcrun llvm-profdata merge -sparse target/coverage/*.profraw -o target/coverage/coverage.profdata
+xcrun llvm-cov report --instr-profile=target/coverage/coverage.profdata \
+  --ignore-filename-regex='(/tests/|/.cargo/)' \
+  target/debug/deps/behavior-* --sources tool-compact/src
+```
 
-- Round trip of a tool with required and optional fields, enums, arrays, and one nested object. `decode_tools` agrees with the input schema on those facts.
+The binary name includes a hash. Pass the `behavior` test binary from the `cargo test` log. Count lines in `tool-compact/src` only.
+
+Cover at least what the features already state:
+
+- Round trip of a tool with required and optional fields, enums, arrays, numbers, booleans, and one nested object. `decode_tools` agrees with the input schema on those facts.
 - Several calls in one reply, prose before and after a call, and a reply with no call (success, empty list).
 - Unknown tool name → `UnknownTool`, and the `Ok` value contains no call.
 - Missing required field, wrong JSON type, and an enum value not in the schema → `InvalidArguments`, and no call.
 - `>>` inside a JSON string.
 - `StreamDecoder` fed the published split (`<<ca` | `ll create_...` | rest) yields one call.
 - A schema feature on the unsupported list returns `UnsupportedSchema` and does not emit a compact form that drops that feature.
-- Property: every `Ok(calls)` from `decode_calls` validates against the original schema. A generated or table-driven malformed string never comes back as `Ok` with a guessed call.
+- Property: every bad string in `schema_valid_calls_only` is `Err` from `decode_calls`, and the stream emits no guessed call. The design-review call still decodes.
+
+Add `-p nasiko-tool-compact` to the `test-unit` recipe in the root `justfile`, next to `nasiko-compress`, when that recipe is updated. The public sample used by the features is `tool-compact/tests/fixtures/compact-tools-eval.json`. The organizers still download their own copy for the eval example. Do not commit `OUT` files.
 
 Router tests live in `llm-router`, not here:
 

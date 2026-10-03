@@ -1,4 +1,4 @@
-//! Compact text back to schemas and, in later tasks, tool calls.
+//! Compact text back to schemas and tool calls.
 //!
 //! `decode_tools` reads the signature text. It does not return the originals
 //! stored on [`CompactTools`], so a renderer that drops a type fails the test.
@@ -85,18 +85,43 @@ fn parse_fields(body: &str) -> Result<Vec<Field>, CompactError> {
 
 fn parse_field(raw: &str) -> Result<Field, CompactError> {
     let raw = raw.trim();
-    let (name, required, ty) = if let Some((name, ty)) = raw.split_once("?:") {
-        (name, false, ty)
-    } else if let Some((name, ty)) = raw.split_once(':') {
-        (name, true, ty)
-    } else {
-        return Err(malformed());
-    };
+    let (name, required, ty) = split_mark(raw)?;
     Ok(Field {
         name: name.trim().to_string(),
         required,
         shape: parse_shape(ty.trim())?,
     })
+}
+
+/// Split `name:type` or `name?:type` on the mark at depth 0.
+/// A nested `rooms?:int` must not steal the mark from `place:{...}`.
+fn split_mark(raw: &str) -> Result<(String, bool, String), CompactError> {
+    let chars: Vec<char> = raw.chars().collect();
+    let mut depth = 0i32;
+    let mut index = 0;
+    while index < chars.len() {
+        match chars[index] {
+            '{' | '[' => depth += 1,
+            '}' | ']' => depth -= 1,
+            '?' if depth == 0 && chars.get(index + 1) == Some(&':') => {
+                return Ok((
+                    chars[..index].iter().collect(),
+                    false,
+                    chars[index + 2..].iter().collect(),
+                ));
+            }
+            ':' if depth == 0 => {
+                return Ok((
+                    chars[..index].iter().collect(),
+                    true,
+                    chars[index + 1..].iter().collect(),
+                ));
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    Err(malformed())
 }
 
 fn parse_shape(token: &str) -> Result<Shape, CompactError> {
@@ -223,177 +248,3 @@ pub(crate) fn accept_call(raw: grammar::RawCall, tools: &[ToolDef]) -> Result<To
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use crate::fixtures::calendar;
-    use crate::types::ToolDef;
-    use serde_json::{Value, json};
-
-    #[test]
-    fn decoded_calendar_keeps_schema_facts() {
-        let compact = crate::encode_tools(&[calendar()]).unwrap();
-        let decoded = crate::decode_tools(&compact).unwrap();
-        assert_eq!(decoded.len(), 1);
-        assert_eq!(decoded[0].name, "create_calendar_event");
-        assert_eq!(decoded[0].description, calendar().description);
-        let params = decoded[0].parameters.as_ref().unwrap();
-        let required = params["required"].as_array().unwrap();
-        assert!(required.contains(&json!("title")) && required.contains(&json!("start")));
-        assert_eq!(required.len(), 2);
-        assert_eq!(params["properties"]["start"]["format"], "date-time");
-        assert_eq!(
-            params["properties"]["visibility"]["enum"],
-            json!(["public", "private"])
-        );
-        assert_eq!(params["properties"]["attendees"]["items"]["type"], "string");
-        assert_eq!(params["properties"]["duration_min"]["type"], "integer");
-    }
-
-    #[test]
-    fn design_review_call_decodes_to_one_tool_call() {
-        let calls = crate::decode_calls(crate::fixtures::design_review(), &[calendar()]).unwrap();
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].name, "create_calendar_event");
-        let args: Value = serde_json::from_str(&calls[0].arguments).unwrap();
-        assert_eq!(args["title"], "Design review");
-        assert_eq!(args["start"], "2026-10-05T15:00:00+05:30");
-        assert_eq!(args["attendees"], json!(["riya@example.com"]));
-    }
-
-    #[test]
-    fn argument_key_order_does_not_matter() {
-        let text = r#"<<call create_calendar_event {"start":"2026-10-05T15:00:00+05:30","title":"Design review"}>>"#;
-        let calls = crate::decode_calls(text, &[calendar()]).unwrap();
-        let args: Value = serde_json::from_str(&calls[0].arguments).unwrap();
-        assert_eq!(args["title"], "Design review");
-        assert_eq!(args["start"], "2026-10-05T15:00:00+05:30");
-    }
-
-    #[test]
-    fn prose_around_a_call_is_ignored() {
-        let text = format!(
-            "Sure.\n{design_review}\nDone.",
-            design_review = crate::fixtures::design_review()
-        );
-        let calls = crate::decode_calls(&text, &[calendar()]).unwrap();
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].name, "create_calendar_event");
-    }
-
-    #[test]
-    fn two_calls_come_back_in_source_order() {
-        let text = r#"<<call send_email {"to":["sam@example.com"]}>> then <<call create_calendar_event {"title":"Retro","start":"2026-10-04T10:00:00+05:30"}>>"#;
-        let email = ToolDef {
-            name: "send_email".into(),
-            description: None,
-            parameters: Some(json!({
-                "type": "object",
-                "properties": {"to": {"type": "array", "items": {"type": "string"}}},
-                "required": ["to"]
-            })),
-        };
-        let calls = crate::decode_calls(text, &[calendar(), email]).unwrap();
-        assert_eq!(calls[0].name, "send_email");
-        assert_eq!(calls[1].name, "create_calendar_event");
-    }
-
-    #[test]
-    fn plain_answer_has_no_calls_and_is_not_an_error() {
-        let calls = crate::decode_calls("What's the weather?", &[calendar()]).unwrap();
-        assert!(calls.is_empty());
-    }
-
-    #[test]
-    fn schema_valid_calls_only() {
-        let bad = [
-            r#"<<call weather {"city":"Pune"}>>"#,
-            r#"<<call create_calendar_event {"start":"2026-10-05T15:00:00+05:30"}>>"#,
-            r#"<<call create_calendar_event {"title":"Retro","start":"2026-10-05T15:00:00+05:30","visibility":"secret"}>>"#,
-            r#"<<call create_calendar_event {"title":"Retro"}"#,
-            "not a call <<call",
-        ];
-        for text in bad {
-            assert!(crate::decode_calls(text, &[calendar()]).is_err(), "{text}");
-            let tools = [calendar()];
-            let mut dec = crate::StreamDecoder::new(&tools);
-            let pushed = dec.push(text);
-            let rejected = match pushed {
-                Err(_) => true,
-                Ok(calls) if calls.is_empty() => dec.finish().map(|left| left.is_empty()).unwrap_or(true),
-                Ok(_) => false,
-            };
-            assert!(rejected, "{text}");
-        }
-        let ok = crate::decode_calls(crate::fixtures::design_review(), &[calendar()]).unwrap();
-        let shape = crate::schema::classify(&calendar()).unwrap();
-        let args: Value = serde_json::from_str(&ok[0].arguments).unwrap();
-        assert!(crate::schema::check(&shape, &args).is_ok());
-    }
-
-    #[test]
-    fn unknown_tool_is_unknown_tool() {
-        let text = r#"<<call weather {"city":"Pune"}>>"#;
-        let err = crate::decode_calls(text, &[calendar()]).unwrap_err();
-        assert!(matches!(err, crate::CompactError::UnknownTool { name } if name == "weather"));
-    }
-
-    #[test]
-    fn missing_title_is_invalid_arguments() {
-        let text = r#"<<call create_calendar_event {"start":"2026-10-05T15:00:00+05:30"}>>"#;
-        let err = crate::decode_calls(text, &[calendar()]).unwrap_err();
-        assert!(matches!(
-            err,
-            crate::CompactError::InvalidArguments { reason: crate::ArgumentFault::MissingField(ref f), .. } if f == "title"
-        ));
-    }
-
-    #[test]
-    fn string_duration_is_wrong_type() {
-        let text = r#"<<call create_calendar_event {"title":"Retro","start":"2026-10-05T15:00:00+05:30","duration_min":"30"}>>"#;
-        let err = crate::decode_calls(text, &[calendar()]).unwrap_err();
-        assert!(matches!(
-            err,
-            crate::CompactError::InvalidArguments { reason: crate::ArgumentFault::WrongType { ref field }, .. } if field == "duration_min"
-        ));
-    }
-
-    #[test]
-    fn secret_visibility_is_a_bad_enum() {
-        let text = r#"<<call create_calendar_event {"title":"Retro","start":"2026-10-05T15:00:00+05:30","visibility":"secret"}>>"#;
-        let err = crate::decode_calls(text, &[calendar()]).unwrap_err();
-        assert!(matches!(
-            err,
-            crate::CompactError::InvalidArguments { reason: crate::ArgumentFault::BadEnum { ref field }, .. } if field == "visibility"
-        ));
-    }
-
-    #[test]
-    fn truncated_marker_is_malformed() {
-        let text = r#"<<call create_calendar_event {"title":"Retro"}"#;
-        let err = crate::decode_calls(text, &[calendar()]).unwrap_err();
-        assert!(matches!(
-            err,
-            crate::CompactError::InvalidArguments { reason: crate::ArgumentFault::Malformed, .. }
-        ));
-    }
-
-    #[test]
-    fn two_tools_keep_both_names() {
-        let email = ToolDef {
-            name: "send_email".into(),
-            description: Some("Send an email.".into()),
-            parameters: Some(json!({
-                "type": "object",
-                "properties": { "to": {"type": "array", "items": {"type": "string"}} },
-                "required": ["to"]
-            })),
-        };
-        let compact = crate::encode_tools(&[calendar(), email]).unwrap();
-        let names: Vec<_> = crate::decode_tools(&compact)
-            .unwrap()
-            .into_iter()
-            .map(|tool| tool.name)
-            .collect();
-        assert_eq!(names, ["create_calendar_event", "send_email"]);
-    }
-}
