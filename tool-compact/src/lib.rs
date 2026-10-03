@@ -56,7 +56,8 @@ pub use parse::decode_tools;
 pub use schema::normalize;
 pub use stream::{MAX_ARGS_BYTES, StreamDecoder};
 pub use types::{
-    CompactTools, Decoded, DescriptionPolicy, EncodeOptions, Event, ToolCall, ToolDef,
+    CompactTools, DecodeOptions, Decoded, DescriptionPolicy, EncodeOptions, Event, ToolCall,
+    ToolDef,
 };
 
 /// Decode a complete model response into its text and validated calls.
@@ -64,7 +65,16 @@ pub use types::{
 /// Implemented on [`StreamDecoder`] (one `feed` + `finish`), so the eval, the round trip and the
 /// router all exercise the same state machine.
 pub fn decode(text: &str, tools: &[ToolDef]) -> Result<Decoded, DecodeError> {
-    let mut decoder = StreamDecoder::new(tools).map_err(DecodeError::from_encode)?;
+    decode_with(text, tools, DecodeOptions::default())
+}
+
+/// [`decode`] with explicit [`DecodeOptions`].
+pub fn decode_with(
+    text: &str,
+    tools: &[ToolDef],
+    opts: DecodeOptions,
+) -> Result<Decoded, DecodeError> {
+    let mut decoder = StreamDecoder::with_options(tools, opts).map_err(DecodeError::from_encode)?;
     let mut events = decoder.feed(text)?;
     events.extend(decoder.finish()?);
     Ok(Decoded::from_events(events))

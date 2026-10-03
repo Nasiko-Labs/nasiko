@@ -21,6 +21,7 @@ model text ─► StreamDecoder (chunk-safe) ─► Text / Call events ─► va
 | `render_calls(&[ToolCall]) -> String` | Calls → canonical `<<call …>>` lines |
 | `decode_calls(&str, &[ToolDef]) -> Result<Vec<ToolCall>, DecodeError>` | Whole text → validated calls |
 | `decode(&str, &[ToolDef]) -> Result<Decoded, DecodeError>` | Whole text → text + validated calls |
+| `decode_with(&str, &[ToolDef], DecodeOptions)` / `StreamDecoder::with_options` | Same, with `bare_tool_markers` (see below) |
 | `StreamDecoder::{new, feed, finish}` | Incremental decoding; `decode` is built on it |
 | `DecodeError::code()` | `"unknown_tool"` or `"invalid_arguments"` |
 
@@ -40,6 +41,14 @@ call   = "<<call" , ws1 , name , ws , json_object , ws , ">>" ;
 6. Arguments must be strict JSON. After validation the model's exact text is passed through
    verbatim as `ToolCall.arguments` (never re-serialized).
 
+**Bare-name alias (opt-in, `DecodeOptions { bare_tool_markers: true }`).** Live models (the
+OpenAI family especially) often drop the keyword and write `<<send_email {…}>>`. With the
+option on, `<<NAME` also opens a call when `NAME` is *exactly* one of the request's tools and is
+followed by `{` or whitespace. Arguments are validated identically; `<<unknown {…}>>`,
+`<<pings`, `a << b` stay text. Default **off**, so `StreamDecoder::new`/`decode` accept only the
+brief's grammar (the eval's offline decoder cases run strict); the router and the eval's live
+mode turn it on.
+
 **Errors.** An unknown tool name gives `unknown_tool` as soon as the name ends, even if broken
 JSON follows. Everything else (bad syntax, bad JSON, schema violations, an incomplete stream,
 over 1 MiB of arguments) gives `invalid_arguments`. **One invalid call fails the whole
@@ -48,7 +57,7 @@ decode**: there are no partial results, and the first error in stream order sets
 ## Definition language (what the model reads)
 
 ```text
-To use a tool write <<call NAME {JSON args}>> per call (?=optional). Else answer normally.
+Act via lines <<call tool_name {"arg":1} >>, no narration (?=optional). Else answer normally.
 ## create_calendar_event: Create an event in the user's calendar.
 title: str # Event title
 start: datetime # Start time, ISO 8601
@@ -157,3 +166,32 @@ guessing. Failures carry a JSON-pointer path.
 | Panic-free, UTF-8 safe | `deny(clippy::panic, unwrap_used, expect_used, string_slice)` + 10k garbage strings |
 | Bounded | `MAX_ARGS_BYTES` (1 MiB) |
 | No environment | Nothing in this crate reads env vars |
+
+## Live adherence (measured 2026-10-03, OpenRouter, temperature 0, `max_tokens` 1024)
+
+Public sample (3 cases) + own extra cases (8), compact arm vs native tool calling, same date
+line in both arms. "Exact" = same calls in order, same argument keys, equal values (free-text
+fields only need to be strings).
+
+| Model | Compact exact | Native exact | Compact valid-format | False calls |
+|---|---|---|---|---|
+| openai/gpt-4o-mini | **6/11** | 4/11 | 8/11 | 0 |
+| openai/gpt-4.1-mini | **7/11** | 6/11 | 11/11 | 0 |
+| google/gemini-2.5-flash | **7/11** | 3/11 | 11/11 | 0 |
+
+Token reduction with these instructions: **32.2%** public, 30.4% extra (o200k_base, vs
+compact-JSON native body).
+
+How the instruction line was chosen (gpt-4o-mini unless noted):
+
+| Instruction | Public tokens | Observed failure |
+|---|---|---|
+| `To use a tool write <<call NAME {JSON args}>> per call …` (v1) | 33.1% | `{…}}>>` stray brace; narration without calling |
+| `Call tools directly as <<call NAME JSON_OBJECT>> …` | 34.0% | Dropped `call` (`<<send_email {…}>>`); stray brace |
+| `Act by writing calls like <<call get_time {"tz":"UTC"}>> …` | 31.2% | Dropped `call` on 5/8 |
+| `Each tool call is one line: <<call tool_name {"arg":1}>> …` | 29.0% | Below token target |
+| **`Act via lines <<call tool_name {"arg":1} >>, no narration …`** (shipped) | **32.2%** | Remaining errors are schema mistakes the validator rightly rejects |
+
+Remaining compact failures are genuine argument errors (`"to":"a, b"` for an array, keys put
+inside the wrong nested object, a stray `}`); native calling hides these because the provider
+enforces the schema. The decoder rejects them (fail-closed) rather than repairing them.

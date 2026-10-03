@@ -13,6 +13,8 @@
 //! every turn and provider prompt-cache prefixes stay stable.
 //!
 //! Fail-closed: a response whose calls do not decode and validate is an error, never a guess.
+//! Decoding accepts the bare-name alias `<<NAME {…}>>` for the request's own tools (live models
+//! often drop the `call` keyword); arguments are validated exactly the same either way.
 
 use futures::StreamExt;
 use futures::stream::BoxStream;
@@ -77,6 +79,11 @@ pub(crate) struct Applied {
 }
 
 pub(crate) type Outcome = Result<Applied, Skipped>;
+
+/// Production decoding: the brief's `<<call …>>` grammar plus the exact-tool-name alias.
+const DECODE: tc::DecodeOptions = tc::DecodeOptions {
+    bare_tool_markers: true,
+};
 
 /// Replace `req.tools` with compact definitions, or leave the request untouched.
 pub(crate) fn apply(
@@ -188,7 +195,7 @@ pub(crate) fn decode_response(
     let mut total = 0;
     for choice in &mut resp.choices {
         let text = choice.message.text().unwrap_or_default();
-        let decoded = tc::decode(&text, &applied.tools)?;
+        let decoded = tc::decode_with(&text, &applied.tools, DECODE)?;
         if decoded.calls.is_empty() {
             continue;
         }
@@ -223,7 +230,7 @@ pub(crate) fn wrap_stream(
     stream: BoxStream<'static, Result<ChatChunk, ProviderError>>,
     tools: Vec<tc::ToolDef>,
 ) -> BoxStream<'static, Result<ChatChunk, ProviderError>> {
-    let decoder = match tc::StreamDecoder::new(&tools) {
+    let decoder = match tc::StreamDecoder::with_options(&tools, DECODE) {
         Ok(d) => d,
         // `apply` already encoded these tools, so this cannot fail; never pass raw text through.
         Err(e) => {
@@ -587,6 +594,14 @@ mod tests {
         assert!(choice.message.content.is_none());
         let call = &choice.message.tool_calls.as_ref().unwrap()[0];
         assert_eq!(call.id, "call_create_calendar_event_0");
+        assert_eq!(call.function.arguments, CAL);
+    }
+
+    #[test]
+    fn bare_name_alias_is_decoded_in_production() {
+        let mut resp = response(&format!("<<create_calendar_event {CAL} >>"));
+        assert_eq!(decode_response(&mut resp, &applied()).unwrap(), 1);
+        let call = &resp.choices[0].message.tool_calls.as_ref().unwrap()[0];
         assert_eq!(call.function.arguments, CAL);
     }
 

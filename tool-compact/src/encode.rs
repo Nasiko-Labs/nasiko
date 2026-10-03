@@ -18,9 +18,13 @@ use crate::schema::{Prop, Tool, Ty, build_tool, is_bare_enum_value};
 use crate::types::{CompactTools, EncodeOptions, ToolDef};
 
 /// The call-format instructions placed before the definitions. Kept deliberately short: on
-/// small tool sets this fixed cost dominates the token budget (≈ 20 tokens, `o200k_base`).
-pub const INSTRUCTIONS: &str =
-    "To use a tool write <<call NAME {JSON args}>> per call (?=optional). Else answer normally.";
+/// small tool sets this fixed cost dominates the token budget (≈ 22 tokens, `o200k_base`).
+///
+/// Wording chosen from live runs (gpt-4o-mini, gpt-4.1-mini, gemini-2.5-flash), see `README.md`:
+/// a concrete example beats `NAME`/`{JSON args}` placeholders (which produced `{…}}>>` and
+/// dropped the `call` keyword), the space before `>>` stops models fusing `}>>` into `}}`, and
+/// "no narration" stops "Let's proceed…" answers that never call.
+pub const INSTRUCTIONS: &str = r#"Act via lines <<call tool_name {"arg":1} >>, no narration (?=optional). Else answer normally."#;
 
 /// Encode with default options ([`crate::DescriptionPolicy::Verbatim`]).
 pub fn encode_tools(tools: &[ToolDef]) -> Result<CompactTools, EncodeError> {
@@ -239,7 +243,7 @@ mod tests {
         );
         assert_eq!(c.instructions, INSTRUCTIONS);
         assert!(
-            !c.system_text().contains('"'),
+            !c.definitions.contains('"'),
             "definitions must be quote-free"
         );
     }

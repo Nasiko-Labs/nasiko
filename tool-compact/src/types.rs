@@ -57,6 +57,15 @@ pub struct EncodeOptions {
     pub descriptions: DescriptionPolicy,
 }
 
+/// Decoder options. The default is the strict brief grammar.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DecodeOptions {
+    /// Also accept `<<NAME {…}>>` (no `call` keyword) when `NAME` is exactly one of the tools.
+    /// Live models frequently drop the keyword; the call is otherwise decoded and validated
+    /// exactly as `<<call NAME {…}>>`. An unknown `<<name` stays text.
+    pub bare_tool_markers: bool,
+}
+
 /// One unit of decoder output, in stream order.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
