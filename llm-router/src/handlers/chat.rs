@@ -298,6 +298,15 @@ async fn chat_core(
         .applied
         .then_some((compression.bytes_in, compression.bytes_out));
 
+    // ── compact tools seam ─────────────────────────────────────────────────────────────
+    // If enabled, compress OpenAI-shaped function tools into compact definitions and
+    // inject into prompt, retaining original tools for response decoding.
+    let compacted_tools = if ctx.cfg.compact_tools_enabled {
+        crate::compact_tools::apply_compaction(&mut req)
+    } else {
+        None
+    };
+
     tracing::info!(
         target: "nasiko::llm_router::chat",
         %agent_id,
@@ -371,10 +380,20 @@ async fn chat_core(
     }
 
     // Non-streaming: run with ordered fallbacks; usage records the effective provider/model.
-    let (resp, (provider, model)) = fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
+    let (mut resp, (provider, model)) = fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
         .instrument(llm_span.clone())
         .await?;
     let latency_ms = started.elapsed().as_millis() as i64;
+
+    if let Some(ref tools) = compacted_tools {
+        if let Err(err) = crate::compact_tools::restore_response_calls(&mut resp, tools) {
+            tracing::warn!(
+                target: "nasiko::llm_router::compact_tools",
+                %err,
+                "compact_tools: failed to decode tool calls from response"
+            );
+        }
+    }
 
     // Record effective model and token usage on the server-side gen_ai span.
     llm_span.record("gen_ai.response.model", model.as_str());
