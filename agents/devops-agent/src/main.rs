@@ -3,6 +3,7 @@ use std::sync::Arc;
 use a2a::*;
 use a2a_server::*;
 use futures::stream::BoxStream;
+use tool_compact::{CompactToolSet, StreamDecoder};
 mod telemetry;
 mod tools;
 
@@ -51,14 +52,20 @@ impl DevOpsAgent {
         if capture {
             tracing::Span::current().record(
                 "gen_ai.input.messages",
-                telemetry::genai_input_messages(messages).to_string().as_str(),
+                telemetry::genai_input_messages(messages)
+                    .to_string()
+                    .as_str(),
             );
         }
+        let temperature: f64 = std::env::var("OPENAI_TEMPERATURE")
+            .ok()
+            .and_then(|t| t.parse().ok())
+            .unwrap_or(0.0);
         let mut body = serde_json::json!({
             "model": self.model,
             "messages": messages,
             "tools": tools,
-            "temperature": 0.2,
+            "temperature": temperature,
         });
         // OpenAI-compatible APIs reject an empty tools array.
         if tools.is_empty() {
@@ -80,7 +87,8 @@ impl DevOpsAgent {
             return Err(format!("LLM API {status}: {body}"));
         }
 
-        let response = resp.json::<serde_json::Value>()
+        let response = resp
+            .json::<serde_json::Value>()
             .await
             .map_err(|e| format!("JSON parse: {e}"))?;
 
@@ -98,7 +106,11 @@ impl DevOpsAgent {
             let msg = &response["choices"][0]["message"];
             let text = msg["content"].as_str().unwrap_or("");
             let tool_calls = msg["tool_calls"].as_array().cloned().unwrap_or_default();
-            let finish_reason = if tool_calls.is_empty() { "stop" } else { "tool_call" };
+            let finish_reason = if tool_calls.is_empty() {
+                "stop"
+            } else {
+                "tool_call"
+            };
             tracing::Span::current().record(
                 "gen_ai.output.messages",
                 telemetry::genai_output_message(text, &tool_calls, finish_reason)
@@ -112,7 +124,10 @@ impl DevOpsAgent {
 }
 
 impl AgentExecutor for DevOpsAgent {
-    fn execute(&self, ctx: ExecutorContext) -> BoxStream<'static, Result<StreamResponse, A2AError>> {
+    fn execute(
+        &self,
+        ctx: ExecutorContext,
+    ) -> BoxStream<'static, Result<StreamResponse, A2AError>> {
         // Join the caller's W3C trace (the platform forwards `traceparent`
         // through the agent proxy/orchestrator). Without adopting it, the OTel
         // SDK mints a fresh root trace id per request and the control plane's
@@ -145,8 +160,8 @@ impl AgentExecutor for DevOpsAgent {
         // invocation, so record it as invoke_agent with the exchanged messages
         // (content gated by the platform capture flag). `session.id` lets the
         // control plane find this trace by A2A contextId directly in Tempo.
-        let agent_name = std::env::var("OTEL_SERVICE_NAME")
-            .unwrap_or_else(|_| env!("CARGO_PKG_NAME").into());
+        let agent_name =
+            std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| env!("CARGO_PKG_NAME").into());
         let span = tracing::info_span!(
             "a2a.execute",
             otel.kind = "server",
@@ -181,22 +196,27 @@ impl AgentExecutor for DevOpsAgent {
 
             let agent = DevOpsAgent { model, api_key, base_url, http };
             let tool_defs = tools::definitions();
+            let cts = CompactToolSet::new(tool_defs.clone());
+            let compact_block = cts.compact_system_block();
+            let bypass_tools: Vec<serde_json::Value> =
+                cts.bypass_tools().into_iter().cloned().collect();
 
-            let system = "\
-You are a DevOps Engineer agent. You MUST use your tools for every answer — never respond from \
-memory alone. Every claim must be backed by tool output.\n\n\
-Tools:\n\
-- github_repo_info — repository details (stars, forks, language, issues)\n\
-- github_actions_runs — recent CI/CD workflow run status\n\
-- docker_hub_search — find container images\n\
-- check_endpoint — verify service health and latency\n\
-- web_search — documentation, tutorials, best practices, troubleshooting\n\n\
-Rules:\n\
-- ALWAYS call at least one tool before answering\n\
-- For how-to questions, use web_search to find current documentation\n\
-- For repo questions, use github_repo_info or github_actions_runs\n\
-- Cite your sources (URLs from tool results)\n\
-- Be concise and actionable";
+            let system = format!(
+        "You are a DevOps Engineer agent. You MUST use your tools for every answer — never respond from \
+memory alone. Every claim must be backed by tool output.
+
+Available tools:
+{compact_block}
+When you need to call a tool, output:
+tool_name({{\"argument\":\"value\"}})
+
+Rules:
+- ALWAYS call at least one tool before answering
+- For how-to questions, use web_search to find current documentation
+- For repo questions, use github_repo_info or github_actions_runs
+- Cite your sources (URLs from tool results)
+- Be concise and actionable"
+            );
 
             let mut messages = vec![
                 serde_json::json!({"role": "system", "content": system}),
@@ -206,7 +226,7 @@ Rules:\n\
             let mut final_text = String::new();
 
             for _ in 0..4 {
-                let resp = match agent.chat(&messages, &tool_defs, remote_cx.as_ref()).await {
+                let resp = match agent.chat(&messages, &bypass_tools, remote_cx.as_ref()).await {
                     Ok(r) => r,
                     Err(e) => {
                         yield Ok(status_failed(&task_id, &context_id, &e));
@@ -215,9 +235,44 @@ Rules:\n\
                 };
 
                 let choice = &resp["choices"][0]["message"];
-                messages.push(choice.clone());
+                let raw_content = choice["content"].as_str().unwrap_or("");
 
-                if let Some(calls) = choice["tool_calls"].as_array() {
+                // Decode compact tool calls via StreamDecoder
+                let mut decoder = StreamDecoder::new(tool_defs.clone());
+                let compact_calls = match decoder.push(raw_content) {
+                    Ok(calls) => calls,
+                    Err(e) => {
+                        yield Ok(status_failed(
+                            &task_id,
+                            &context_id,
+                            &format!("Failed to decode tool call: {e}"),
+                        ));
+                        return;
+                    }
+                };
+
+                if !compact_calls.is_empty() {
+                    messages.push(choice.clone());
+                    for call in compact_calls {
+                        let name = call["function"]["name"].as_str().unwrap_or("");
+                        let args_val = &call["function"]["arguments"];
+                        let args_str = serde_json::to_string(args_val).unwrap_or_else(|_| "{}".into());
+
+                        let preview = extract_preview(&args_str);
+                        yield Ok(status_working(
+                            &task_id, &context_id,
+                            Some(&format!("{name}: {preview}")),
+                        ));
+
+                        let result = tools::execute(name, &args_str).await;
+
+                        messages.push(serde_json::json!({
+                            "role": "user",
+                            "content": format!("Tool `{name}` result:\n{result}"),
+                        }));
+                    }
+                } else if let Some(calls) = choice["tool_calls"].as_array() {
+                    messages.push(choice.clone());
                     for tc in calls {
                         let name = tc["function"]["name"].as_str().unwrap_or("");
                         let args = tc["function"]["arguments"].as_str().unwrap_or("{}");
@@ -238,7 +293,7 @@ Rules:\n\
                         }));
                     }
                 } else {
-                    final_text = strip_tool_markup(choice["content"].as_str().unwrap_or(""));
+                    final_text = strip_tool_markup(raw_content);
                     break;
                 }
             }
@@ -329,7 +384,9 @@ async fn main() {
 
     let agent_card = AgentCard {
         name: "DevOps Engineer".to_string(),
-        description: "CI/CD pipelines, infrastructure provisioning, K8s operations, and incident response".to_string(),
+        description:
+            "CI/CD pipelines, infrastructure provisioning, K8s operations, and incident response"
+                .to_string(),
         version: "1.0.0".to_string(),
         provider: Some(AgentProvider {
             organization: "Nasiko".to_string(),
@@ -345,10 +402,15 @@ async fn main() {
             AgentSkill {
                 id: "repo-info".into(),
                 name: "GitHub Repository Info".into(),
-                description: "Look up GitHub repo details, stars, forks, and recent activity".into(),
+                description: "Look up GitHub repo details, stars, forks, and recent activity"
+                    .into(),
                 tags: vec!["devops".into(), "github".into(), "repositories".into()],
-                examples: Some(vec!["What's the status of the kubernetes/kubernetes repo?".into()]),
-                input_modes: None, output_modes: None, security_requirements: None,
+                examples: Some(vec![
+                    "What's the status of the kubernetes/kubernetes repo?".into(),
+                ]),
+                input_modes: None,
+                output_modes: None,
+                security_requirements: None,
             },
             AgentSkill {
                 id: "ci-cd-status".into(),
@@ -356,7 +418,9 @@ async fn main() {
                 description: "Check recent GitHub Actions workflow runs and their results".into(),
                 tags: vec!["devops".into(), "ci-cd".into(), "pipelines".into()],
                 examples: Some(vec!["Show recent CI runs for tokio-rs/tokio".into()]),
-                input_modes: None, output_modes: None, security_requirements: None,
+                input_modes: None,
+                output_modes: None,
+                security_requirements: None,
             },
             AgentSkill {
                 id: "container-search".into(),
@@ -364,25 +428,28 @@ async fn main() {
                 description: "Search Docker Hub for container images".into(),
                 tags: vec!["devops".into(), "docker".into(), "containers".into()],
                 examples: Some(vec!["Find official PostgreSQL images on Docker Hub".into()]),
-                input_modes: None, output_modes: None, security_requirements: None,
+                input_modes: None,
+                output_modes: None,
+                security_requirements: None,
             },
             AgentSkill {
                 id: "web-search".into(),
                 name: "Web Search".into(),
-                description: "Search the web for DevOps documentation, tutorials, and best practices".into(),
+                description:
+                    "Search the web for DevOps documentation, tutorials, and best practices".into(),
                 tags: vec!["devops".into(), "documentation".into(), "search".into()],
                 examples: Some(vec!["How do I set up GitHub Actions for Rust?".into()]),
-                input_modes: None, output_modes: None, security_requirements: None,
+                input_modes: None,
+                output_modes: None,
+                security_requirements: None,
             },
         ],
         default_input_modes: vec!["text/plain".to_string()],
         default_output_modes: vec!["text/plain".to_string()],
-        supported_interfaces: vec![
-            AgentInterface::new(
-                &format!("http://0.0.0.0:{port}/"),
-                TRANSPORT_PROTOCOL_JSONRPC,
-            ),
-        ],
+        supported_interfaces: vec![AgentInterface::new(
+            format!("http://0.0.0.0:{port}/"),
+            TRANSPORT_PROTOCOL_JSONRPC,
+        )],
         security_schemes: None,
         security_requirements: None,
         documentation_url: None,
@@ -449,7 +516,11 @@ fn extract_preview(args: &str) -> String {
         .and_then(|v| {
             v.as_object()?.values().find_map(|val| {
                 val.as_str().map(|s| {
-                    if s.len() > 60 { format!("{}...", &s[..60]) } else { s.to_string() }
+                    if s.len() > 60 {
+                        format!("{}...", &s[..60])
+                    } else {
+                        s.to_string()
+                    }
                 })
             })
         })
@@ -486,5 +557,140 @@ fn strip_tool_markup(content: &str) -> String {
     match content.find("<｜") {
         Some(idx) => content[..idx].trim().to_string(),
         None => content.trim().to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_compact_system_prompt_and_bypass() {
+        let tool_defs = tools::definitions();
+        let cts = CompactToolSet::new(tool_defs.clone());
+        let analysis = cts.analyze();
+
+        assert_eq!(analysis.compacted_count(), 5);
+        assert_eq!(analysis.bypassed_count(), 0);
+
+        let compact_block = cts.compact_system_block();
+        assert!(compact_block.contains("github_repo_info(owner:string, repo:string)"));
+        assert!(compact_block.contains("github_actions_runs(owner:string, repo:string)"));
+        assert!(compact_block.contains("docker_hub_search(query:string)"));
+        assert!(compact_block.contains("check_endpoint(url:string)"));
+        assert!(compact_block.contains("web_search(query:string)"));
+
+        let bypass_tools = cts.bypass_tools();
+        assert!(
+            bypass_tools.is_empty(),
+            "all 5 DevOps tools should be compactable"
+        );
+    }
+
+    #[test]
+    fn test_local_integration_github_repo_info() {
+        let tool_defs = tools::definitions();
+        let mut decoder = StreamDecoder::new(tool_defs);
+
+        let raw_call = r#"github_repo_info({"owner":"octocat","repo":"hello-world"})"#;
+        let decoded = decoder.push(raw_call).expect("decode should succeed");
+        assert_eq!(decoded.len(), 1);
+
+        let call = &decoded[0];
+        let name = call["function"]["name"].as_str().unwrap();
+        assert_eq!(name, "github_repo_info");
+
+        let args_val = &call["function"]["arguments"];
+        assert_eq!(args_val["owner"].as_str(), Some("octocat"));
+        assert_eq!(args_val["repo"].as_str(), Some("hello-world"));
+
+        // Verify arguments serialize to string format expected by tools::execute
+        let args_str = serde_json::to_string(args_val).expect("arguments must serialize");
+        assert!(args_str.contains(r#""owner":"octocat""#));
+        assert!(args_str.contains(r#""repo":"hello-world""#));
+
+        // Verify parsed back
+        let parsed: serde_json::Value =
+            serde_json::from_str(&args_str).expect("serialized args must be valid JSON");
+        assert_eq!(parsed["owner"].as_str(), Some("octocat"));
+        assert_eq!(parsed["repo"].as_str(), Some("hello-world"));
+
+        decoder.finish().expect("stream should finish cleanly");
+    }
+
+    #[test]
+    fn test_local_integration_check_endpoint() {
+        let tool_defs = tools::definitions();
+        let mut decoder = StreamDecoder::new(tool_defs);
+
+        let raw_call = r#"check_endpoint({"url":"https://example.com"})"#;
+        let decoded = decoder.push(raw_call).expect("decode should succeed");
+        assert_eq!(decoded.len(), 1);
+
+        let call = &decoded[0];
+        let name = call["function"]["name"].as_str().unwrap();
+        assert_eq!(name, "check_endpoint");
+
+        let args_val = &call["function"]["arguments"];
+        assert_eq!(args_val["url"].as_str(), Some("https://example.com"));
+
+        let args_str = serde_json::to_string(args_val).expect("arguments must serialize");
+        assert_eq!(args_str, r#"{"url":"https://example.com"}"#);
+    }
+
+    #[test]
+    fn test_local_integration_docker_hub_search() {
+        let tool_defs = tools::definitions();
+        let mut decoder = StreamDecoder::new(tool_defs);
+
+        let raw_call = r#"docker_hub_search({"query":"postgres"})"#;
+        let decoded = decoder.push(raw_call).expect("decode should succeed");
+        assert_eq!(decoded.len(), 1);
+
+        let call = &decoded[0];
+        assert_eq!(call["function"]["name"].as_str(), Some("docker_hub_search"));
+        assert_eq!(
+            call["function"]["arguments"]["query"].as_str(),
+            Some("postgres")
+        );
+    }
+
+    #[test]
+    fn test_local_integration_markdown_surrounded_call() {
+        let tool_defs = tools::definitions();
+        let mut decoder = StreamDecoder::new(tool_defs);
+
+        let text = "I will check the repository:\n```\ngithub_repo_info({\"owner\":\"rust-lang\",\"repo\":\"rust\"})\n```";
+        let decoded = decoder.push(text).expect("decode should succeed");
+        assert_eq!(decoded.len(), 1);
+
+        let call = &decoded[0];
+        assert_eq!(call["function"]["name"].as_str(), Some("github_repo_info"));
+        assert_eq!(
+            call["function"]["arguments"]["owner"].as_str(),
+            Some("rust-lang")
+        );
+        assert_eq!(call["function"]["arguments"]["repo"].as_str(), Some("rust"));
+    }
+
+    #[test]
+    fn test_local_integration_reject_invalid_tool_call() {
+        let tool_defs = tools::definitions();
+        let mut decoder = StreamDecoder::new(tool_defs);
+
+        // Unknown tool
+        let res = decoder.push(r#"non_existent_tool({"foo":"bar"})"#);
+        assert!(res.is_err());
+
+        // Missing required arg
+        let mut decoder2 = StreamDecoder::new(tools::definitions());
+        let res2 = decoder2.push(r#"github_repo_info({"owner":"octocat"})"#);
+        assert!(res2.is_err());
+
+        // Extra arg
+        let mut decoder3 = StreamDecoder::new(tools::definitions());
+        let res3 =
+            decoder3.push(r#"github_repo_info({"owner":"octocat","repo":"hello","extra":"bad"})"#);
+        assert!(res3.is_err());
     }
 }

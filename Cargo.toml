@@ -22,7 +22,7 @@ members = [
     "github",
     "oidc",
     "bench",
-    "bench-support",
+    "bench-support", "tool-compact",
 ]
 
 [workspace.package]
