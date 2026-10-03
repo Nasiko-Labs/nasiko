@@ -88,6 +88,11 @@ impl StatefulFlowGuard {
         tokens: u64,
         cost_usd: f64,
     ) -> Result<(), CircuitBreakerTrip> {
+        let max_depth = self.config.max_depth;
+        let max_budget_usd = self.config.max_budget_usd;
+        let cycle_threshold = self.config.cycle_repetition_threshold;
+        let window_size = self.config.sliding_window_size;
+
         let telemetry = self.active_traces.entry(trace_id.to_string()).or_insert_with(|| {
             TraceTelemetry {
                 trace_id: trace_id.to_string(),
@@ -111,29 +116,29 @@ impl StatefulFlowGuard {
         };
 
         telemetry.recent_tools.push_back(record);
-        if telemetry.recent_tools.len() > self.config.sliding_window_size {
+        if telemetry.recent_tools.len() > window_size {
             telemetry.recent_tools.pop_front();
         }
 
         // 2. Check depth ceiling
-        if telemetry.current_depth > self.config.max_depth {
+        if telemetry.current_depth > max_depth {
             return Err(CircuitBreakerTrip::MaxDepthExceeded {
                 depth: telemetry.current_depth,
-                max: self.config.max_depth,
+                max: max_depth,
             });
         }
 
         // 3. Check budget ceiling
-        if telemetry.cumulative_cost_usd > self.config.max_budget_usd {
+        if telemetry.cumulative_cost_usd > max_budget_usd {
             return Err(CircuitBreakerTrip::BudgetExceeded {
                 spent_usd: telemetry.cumulative_cost_usd,
-                max_usd: self.config.max_budget_usd,
+                max_usd: max_budget_usd,
             });
         }
 
         // 4. Detect anomalous cyclic patterns in the sliding window
-        if let Some((pattern, reps)) = self.detect_cycle(&telemetry.recent_tools) {
-            if reps >= self.config.cycle_repetition_threshold {
+        if let Some((pattern, reps)) = Self::detect_cycle(cycle_threshold, &telemetry.recent_tools) {
+            if reps >= cycle_threshold {
                 return Err(CircuitBreakerTrip::AnomalousCycleDetected {
                     pattern,
                     repetitions: reps,
@@ -145,7 +150,10 @@ impl StatefulFlowGuard {
     }
 
     /// Detect if the end of the window consists of a repeating pattern of length 1, 2, or 3.
-    fn detect_cycle(&self, window: &VecDeque<ToolCallRecord>) -> Option<(Vec<String>, usize)> {
+    fn detect_cycle(
+        threshold: usize,
+        window: &VecDeque<ToolCallRecord>,
+    ) -> Option<(Vec<String>, usize)> {
         let items: Vec<String> = window.iter().map(|t| t.tool_name.clone()).collect();
         let n = items.len();
 
@@ -166,7 +174,7 @@ impl StatefulFlowGuard {
                 }
             }
 
-            if reps >= self.config.cycle_repetition_threshold {
+            if reps >= threshold {
                 return Some((pattern.to_vec(), reps));
             }
         }
