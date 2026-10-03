@@ -333,6 +333,13 @@ async fn chat_core(
     let started = Instant::now();
     let platform_paid = resolved.platform_paid;
 
+    // ── compact tools seam ─────────────────────────────────────────────────────────────────
+    let compact_tools = if ctx.cfg.compact_tools_enabled && !req.is_streaming() {
+        crate::tool_compact::apply_compaction(&mut req)
+    } else {
+        None
+    };
+
     if req.is_streaming() {
         let (stream, (provider, model)) =
             fallback::execute_chat_stream(&ctx.http, &ctx.cfg, &resolved, &req)
@@ -359,10 +366,14 @@ async fn chat_core(
     }
 
     // Non-streaming: run with ordered fallbacks; usage records the effective provider/model.
-    let (resp, (provider, model)) = fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
+    let (mut resp, (provider, model)) = fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
         .instrument(llm_span.clone())
         .await?;
     let latency_ms = started.elapsed().as_millis() as i64;
+
+    if let Some(ref tools) = compact_tools {
+        crate::tool_compact::restore_response_tool_calls(&mut resp, tools);
+    }
 
     // Record effective model and token usage on the server-side gen_ai span.
     llm_span.record("gen_ai.response.model", model.as_str());
@@ -710,6 +721,7 @@ mod tests {
     use sqlx::PgPool;
     use std::time::Duration;
     use uuid::Uuid;
+    use crate::ir::{ChatRequest, FunctionDef, Message, ToolDef};
 
     #[derive(Clone, Default)]
     struct CapturedUsage(std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, i64>>>);
@@ -1503,4 +1515,51 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, GatewayError::BadRequest(_)));
     }
+
+    #[tokio::test]
+    async fn agent_with_compact_tools_transforms_request() {
+        let mut cfg = GatewayConfig::default();
+        cfg.compact_tools_enabled = true;
+        let mut req = ChatRequest {
+            model: Some("gpt-4o".into()),
+            messages: vec![Message {
+                role: "user".into(),
+                content: Some(serde_json::Value::String("Schedule retro".into())),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+                extra: Default::default(),
+            }],
+            tools: Some(vec![ToolDef {
+                kind: "function".into(),
+                function: FunctionDef {
+                    name: "create_calendar_event".into(),
+                    description: Some("Create calendar event".into()),
+                    parameters: Some(json!({
+                        "type": "object",
+                        "properties": {"title": {"type": "string"}},
+                        "required": ["title"]
+                    })),
+                },
+                extra: Default::default(),
+            }]),
+            tool_choice: None,
+            temperature: None,
+            max_tokens: None,
+            stream: None,
+            extra: Default::default(),
+        };
+
+        let compact_tools = if cfg.compact_tools_enabled && !req.is_streaming() {
+            crate::tool_compact::apply_compaction(&mut req)
+        } else {
+            None
+        };
+
+        assert!(compact_tools.is_some());
+        assert!(req.tools.is_none());
+        assert_eq!(req.messages[0].role, "system");
+        assert!(req.messages[0].text().unwrap().contains("create_calendar_event(title:str)"));
+    }
 }
+
