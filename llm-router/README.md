@@ -56,6 +56,34 @@ src/
   usage.rs      token_usage writer (fire-and-forget; cost via DB trigger)
   handlers/     chat / embeddings / models / health
 examples/mint_token.rs   dev/test JWT minter
+examples/classifier_eval.rs  P2 request-classifier eval harness
+```
+
+## Request classifier (P2, cost-aware routing)
+
+`routing::RequestClassifier` (`routing/classifier.rs`) is the model-agnostic
+decision interface: `classify(query, context) -> {request_type, complexity
+1-5, confidence 0-1}`. Complexity maps to tiers 1–2 → Tier3, 3 → Tier2, 4–5 →
+Tier1, resolved to concrete models by the tier registry — token savings come
+from routing simple prompts to cheap models, never from rewriting prompts.
+The router holds an `Arc<dyn RequestClassifier>` (`LlmRouterCtx::classifier`);
+classification fires only at `cold_start`/`switch` boundaries and stays sticky
+on `continue` tool-loop turns. Any error/timeout, or confidence below
+`CLASSIFIER_LOW_CONFIDENCE`, falls back to the regex tier (counted, never an
+error).
+
+```sh
+# defaults: regex backend (behavior unchanged); opt in per backend:
+CLASSIFIER_BACKEND=heuristic  # deterministic local, no download, no network
+CLASSIFIER_BACKEND=minilm     # startup-loaded MiniLM (MINILM_*), else regex
+CLASSIFIER_BACKEND=hosted     # CLASSIFIER_ENDPOINT (+CLASSIFIER_MODEL) via proxy
+CLASSIFIER_TIMEOUT_MS=250 CLASSIFIER_LOW_CONFIDENCE=0.40
+
+# eval: reads EVAL_SET (examples array; embedded 10-case smoke set when unset),
+# writes one JSONL decision per case to OUT (or stdout)
+EVAL_SET=/tmp/classifier-eval.json OUT=/tmp/classifier-out.jsonl \
+  CLASSIFIER_BACKEND=heuristic \
+  cargo run --release -p nasiko-llm-router --example classifier_eval
 ```
 
 ## Configuration (env)

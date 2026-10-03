@@ -21,6 +21,8 @@ pub mod cache;
 pub mod catalog;
 pub mod cells;
 pub mod classifier;
+pub mod complexity;
+pub mod minilm;
 // The salience classifier itself — feature engine, weight loading, scoring, banding.
 // Private to `routing`: only `salience.rs` (a sibling module) uses it directly, via
 // `ClassifierSalienceGate`.
@@ -33,7 +35,13 @@ mod salience_classifier;
 pub use boundary::{BoundarySignals, Mode, Phase};
 pub use cache::{CachedDecision, DecisionCache, NoopCache, RedisCache};
 pub use cells::{CellStore, InMemoryCellStore, PgCellStore};
-pub use classifier::{RequestType, Tier, classify, signal};
+pub use classifier::{
+    Classification, ClassifyError, ClassifyInput, HeuristicClassifier, HostedClassifier,
+    RegexClassifier, RequestClassifier, RequestType, Tier, build_classifier,
+    classify, classify_by_complexity, classify_with_fallback, signal,
+};
+pub use complexity::{ComplexityScore, official_complexity, score_complexity, tier_for_internal_score};
+pub use minilm::{SemanticClassifier, SemanticHit};
 pub use registry::{PgTierRegistry, TierRegistry};
 pub use salience::{AllowAllGate, ClassifierSalienceGate, SalienceGate};
 
@@ -83,6 +91,22 @@ pub struct RouteInputs<'a> {
     pub signals: &'a BoundarySignals,
     /// The query to classify (latest user message text). `None` disables classification.
     pub query: Option<&'a str>,
+    /// When true, Level 3 uses the deterministic 0–5 complexity policy instead of
+    /// Thompson sampling. Set `COMPLEXITY_ROUTER_ENABLED=false` to keep the bandit.
+    pub complexity_router: bool,
+    /// Startup-loaded MiniLM classifier. `None` ⇒ regex request-type only.
+    pub semantic: Option<&'a SemanticClassifier>,
+    /// P2 decision backend behind Level 3 (`Arc<dyn RequestClassifier>`).
+    /// `None` ⇒ legacy `classify_by_complexity` path (identical tiers for the
+    /// regex default). The eval example always sets this, so it exercises the
+    /// same code path as the router.
+    pub classifier: Option<std::sync::Arc<dyn RequestClassifier>>,
+    /// Timeout (ms) for one `classify` call at Level 3; expiry falls back to regex.
+    pub classifier_timeout_ms: u64,
+    /// Below this confidence the decision is treated as a fallback: the router
+    /// reuses the regex tier instead of the predicted one (safe low-confidence
+    /// behavior — a counted fallback, never an error).
+    pub classifier_low_confidence: f32,
 }
 
 /// The outcome of routing: the model to call and how it was chosen.
@@ -243,14 +267,59 @@ pub async fn route_model(
             tracing::info!(
                 target: "nasiko::llm_router::routing",
                 agent_id = %inputs.agent_id, %conv_id, provider = %inputs.provider,
+                complexity_router = inputs.complexity_router,
+                minilm_loaded = inputs.semantic.is_some(),
                 "route_model: LEVEL 3 (Classified) — at fireable boundary with a query; invoking classifier"
             );
-            // Load the provider's learned quality, then Thompson-sample a tier. Production
-            // uses an entropy RNG (exploration drives learning); tests seed it. The RNG
-            // (`ThreadRng`) is `!Send`, so it is scoped to drop before the next `.await` — the
-            // handler future must stay `Send`.
+            // Load the provider's learned quality for Thompson (when enabled). The RNG
+            // (`ThreadRng`) is `!Send`, so it is scoped to drop before the next `.await`.
             let learned = cell_store.load(inputs.provider).await;
-            let (tier, request_type) = {
+            let (tier, request_type) = if inputs.complexity_router {
+                match inputs.classifier.as_deref() {
+                    Some(clf) => {
+                        // P2 trait path: same complexity→tier policy as the legacy
+                        // branch (Classification::tier matches
+                        // tier_for_internal_score), with timeout + regex fallback
+                        // and safe low-confidence behavior (regex tier wins).
+                        let trait_input = classifier::ClassifyInput { query, context: None };
+                        let (decision, fell_back) = classifier::classify_with_fallback(
+                            clf,
+                            &trait_input,
+                            inputs.classifier_timeout_ms,
+                        )
+                        .await;
+                        if fell_back {
+                            tracing::info!(
+                                target: "nasiko::llm_router::routing",
+                                backend = clf.name(),
+                                "route_model: LEVEL 3 — classifier timed out/failed; regex fallback used"
+                            );
+                        }
+                        if !fell_back
+                            && decision.confidence >= inputs.classifier_low_confidence
+                        {
+                            (decision.tier(), decision.request_type)
+                        } else {
+                            if !fell_back {
+                                tracing::info!(
+                                    target: "nasiko::llm_router::routing",
+                                    confidence = decision.confidence,
+                                    threshold = inputs.classifier_low_confidence,
+                                    "route_model: LEVEL 3 — low confidence; using regex tier (safe default)"
+                                );
+                            }
+                            let routed =
+                                classify_by_complexity(query, inputs.provider, inputs.semantic);
+                            (routed.tier, routed.request_type)
+                        }
+                    }
+                    None => {
+                        let routed =
+                            classify_by_complexity(query, inputs.provider, inputs.semantic);
+                        (routed.tier, routed.request_type)
+                    }
+                }
+            } else {
                 let mut rng = rand::rng();
                 classify(query, inputs.provider, &learned, &mut rng)
             };
@@ -532,6 +601,11 @@ mod tests {
             tier3_model: None,
             signals,
             query: Some("hello"),
+            complexity_router: false,
+            semantic: None,
+            classifier: None,
+            classifier_timeout_ms: 250,
+            classifier_low_confidence: 0.40,
         }
     }
 
@@ -801,6 +875,199 @@ mod tests {
         assert_eq!(d.source, RouteSource::Config);
         assert_eq!(d.model, "cfg-model");
         assert!(cache.puts.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn complexity_router_maps_trivial_prompt_to_tier3_and_caches() {
+        let cache = FakeCache::empty();
+        let s = signals(Some("c1"), Phase::Switch, Mode::FreeFlowing);
+        let mut i = inputs("anthropic", &s, None);
+        i.complexity_router = true;
+        i.query = Some("hello there");
+        let d = route_model(
+            &cache,
+            &test_support::StubRegistry,
+            &InMemoryCellStore::new(),
+            &AllowAllGate,
+            &i,
+        )
+        .await;
+        assert_eq!(d.source, RouteSource::Classified);
+        assert_eq!(d.tier, Some(Tier::Tier3));
+        assert_eq!(d.model, "claude-haiku-4-5");
+        assert_eq!(cache.puts.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn complexity_router_maps_architecture_prompt_to_tier1() {
+        let cache = FakeCache::empty();
+        let s = signals(Some("c1"), Phase::Switch, Mode::FreeFlowing);
+        let mut i = inputs("anthropic", &s, None);
+        i.complexity_router = true;
+        i.query = Some(
+            "how should I design this API for a globally distributed multi-tenant architecture?",
+        );
+        let d = route_model(
+            &cache,
+            &test_support::StubRegistry,
+            &InMemoryCellStore::new(),
+            &AllowAllGate,
+            &i,
+        )
+        .await;
+        assert_eq!(d.source, RouteSource::Classified);
+        assert_eq!(d.tier, Some(Tier::Tier1));
+        assert_eq!(d.model, "claude-opus-4-8");
+    }
+
+    #[tokio::test]
+    async fn complexity_router_stays_sticky_on_cache_hit() {
+        let cache = FakeCache::with_hit("cached-model");
+        let s = signals(Some("c1"), Phase::Switch, Mode::FreeFlowing);
+        let mut i = inputs("anthropic", &s, None);
+        i.complexity_router = true;
+        i.query = Some(
+            "how should I design this API for a globally distributed multi-tenant architecture?",
+        );
+        let d = route_model(
+            &cache,
+            &test_support::StubRegistry,
+            &InMemoryCellStore::new(),
+            &AllowAllGate,
+            &i,
+        )
+        .await;
+        assert_eq!(d.source, RouteSource::CacheHit);
+        assert_eq!(d.model, "cached-model");
+        assert!(cache.puts.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn complexity_router_skips_classify_on_tool_continuation() {
+        let cache = FakeCache::empty();
+        let s = signals(Some("c1"), Phase::Continue, Mode::FreeFlowing);
+        let mut i = inputs("anthropic", &s, None);
+        i.complexity_router = true;
+        i.query = Some("write a python function that sorts a list");
+        let d = route_model(
+            &cache,
+            &test_support::StubRegistry,
+            &InMemoryCellStore::new(),
+            &AllowAllGate,
+            &i,
+        )
+        .await;
+        assert_eq!(d.source, RouteSource::Config);
+        assert_eq!(d.model, "cfg-model");
+    }
+
+    #[tokio::test]
+    async fn trait_path_with_regex_backend_matches_legacy_tiers() {
+        // The P2 trait path with the default backend must agree with the legacy
+        // path tier-for-tier (same votes, same complexity policy).
+        for query in [
+            "hello there",
+            "what is the capital of France?",
+            "write a python function that sorts a list",
+            "how should I design this API for a globally distributed multi-tenant architecture?",
+        ] {
+            let cache = FakeCache::empty();
+            let s = signals(Some("c1"), Phase::Switch, Mode::FreeFlowing);
+            let mut legacy = inputs("anthropic", &s, None);
+            legacy.complexity_router = true;
+            legacy.query = Some(query);
+            let legacy_d = route_model(
+                &cache,
+                &test_support::StubRegistry,
+                &InMemoryCellStore::new(),
+                &AllowAllGate,
+                &legacy,
+            )
+            .await;
+
+            let cache = FakeCache::empty();
+            let mut via_trait = inputs("anthropic", &s, None);
+            via_trait.complexity_router = true;
+            via_trait.query = Some(query);
+            via_trait.classifier =
+                Some(crate::routing::build_classifier("regex", None));
+            let trait_d = route_model(
+                &cache,
+                &test_support::StubRegistry,
+                &InMemoryCellStore::new(),
+                &AllowAllGate,
+                &via_trait,
+            )
+            .await;
+            assert_eq!(legacy_d.tier, trait_d.tier, "query: {query}");
+            assert_eq!(legacy_d.model, trait_d.model, "query: {query}");
+        }
+    }
+
+    #[tokio::test]
+    async fn trait_path_low_confidence_falls_back_to_regex_tier() {
+        // A confident-sounding backend that reports ~0 confidence must not move
+        // the tier: the safe default (regex tier) wins.
+        struct Unsure;
+        #[async_trait]
+        impl crate::routing::RequestClassifier for Unsure {
+            fn name(&self) -> &str {
+                "unsure"
+            }
+            async fn classify(
+                &self,
+                input: &crate::routing::ClassifyInput<'_>,
+            ) -> Result<crate::routing::Classification, crate::routing::ClassifyError> {
+                Ok(crate::routing::Classification {
+                    request_type: crate::routing::RequestType::TechnicalDesign,
+                    complexity: 5,
+                    confidence: 0.01,
+                })
+            }
+        }
+        let cache = FakeCache::empty();
+        let s = signals(Some("c1"), Phase::Switch, Mode::FreeFlowing);
+        let mut i = inputs("anthropic", &s, None);
+        i.complexity_router = true;
+        i.query = Some("hello there");
+        i.classifier = Some(std::sync::Arc::new(Unsure));
+        i.classifier_low_confidence = 0.40;
+        let d = route_model(
+            &cache,
+            &test_support::StubRegistry,
+            &InMemoryCellStore::new(),
+            &AllowAllGate,
+            &i,
+        )
+        .await;
+        assert_eq!(d.source, RouteSource::Classified);
+        assert_eq!(d.tier, Some(Tier::Tier3));
+        assert_eq!(d.model, "claude-haiku-4-5");
+    }
+
+    #[tokio::test]
+    async fn trait_path_is_deterministic_across_runs() {
+        // Same input twice ⇒ same tier and model (no sampling in the trait path).
+        async fn decide() -> RouteDecision {
+            let cache = FakeCache::empty();
+            let s = signals(Some("c1"), Phase::Switch, Mode::FreeFlowing);
+            let mut i = inputs("anthropic", &s, None);
+            i.complexity_router = true;
+            i.query = Some("draft an email to my team about the outage");
+            i.classifier =
+                Some(crate::routing::build_classifier("heuristic", None));
+            route_model(
+                &cache,
+                &test_support::StubRegistry,
+                &InMemoryCellStore::new(),
+                &AllowAllGate,
+                &i,
+            )
+            .await
+        }
+        let (a, b) = (decide().await, decide().await);
+        assert_eq!(a.tier, b.tier);
+        assert_eq!(a.model, b.model);
     }
 
     #[tokio::test]

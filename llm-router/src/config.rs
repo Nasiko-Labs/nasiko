@@ -101,6 +101,44 @@ pub struct GatewayConfig {
     /// retuned. Default 0.80.
     pub salience_high_threshold: f64,
 
+    /// When true (default), Level 3 picks a model tier from the deterministic 0–5
+    /// complexity score. When false, the original Thompson-sampling classifier runs.
+    pub complexity_router_enabled: bool,
+    /// P2 decision backend behind Level 3 (`CLASSIFIER_BACKEND`):
+    /// `regex` (default — behaviour unchanged), `heuristic`/`local`
+    /// (deterministic, no model download, no network), `minilm`/`semantic`
+    /// (startup-loaded MiniLM; falls back to regex when unloaded), `hosted`
+    /// (explicit `HostedClassifier` with `CLASSIFIER_ENDPOINT`; without an
+    /// endpoint the router stays on regex — never fails open to network).
+    /// Read in the binary/config layer, never in the library hot path.
+    pub classifier_backend: String,
+    /// Optional local model path/identifier for a file-backed classifier
+    /// (`CLASSIFIER_MODEL_PATH`). Reserved for backends that load weights from
+    /// disk; the shipped backends need no files.
+    pub classifier_model_path: String,
+    /// Hosted classifier endpoint (`CLASSIFIER_ENDPOINT`, OpenAI-compatible).
+    /// Empty (default) ⇒ hosted backend is not configured and the router
+    /// falls back to regex. Only this host may be allow-listed for egress.
+    pub classifier_endpoint: String,
+    /// Per-call timeout (ms) for `classify` at Level 3 and in
+    /// `classifier_eval` (`CLASSIFIER_TIMEOUT_MS`). Expiry ⇒ regex fallback,
+    /// counted in the fallback rate. Default 250.
+    pub classifier_timeout_ms: u64,
+    /// Below this confidence a decision is treated as a fallback: the router
+    /// reuses the regex tier (`CLASSIFIER_LOW_CONFIDENCE`, default 0.40).
+    /// Low-confidence cases count as fallback, not error.
+    pub classifier_low_confidence: f32,
+    /// Load MiniLM (`all-MiniLM-L6-v2`) at startup for semantic request-type
+    /// classification. A load failure falls back to the regex classifier; routing
+    /// still uses the complexity score. Default on.
+    pub minilm_enabled: bool,
+    /// Optional fastembed/Hugging Face cache directory. Empty ⇒ library default.
+    /// Request handling never downloads; only startup load may populate the cache.
+    pub minilm_cache_dir: String,
+    /// Minimum cosine similarity before MiniLM's category is trusted; below this
+    /// the regex request type is used. Default 0.28.
+    pub minilm_min_confidence: f32,
+
     /// Fleet-wide kill switch for payload compression. Compression is opted into **per agent**
     /// (`agents.compress_enabled`); this only lets an operator stop all of it at once without
     /// editing every agent's row. Default on, so a UI toggle takes effect without a deploy.
@@ -185,6 +223,15 @@ impl Default for GatewayConfig {
             salience_weights_path: String::new(),
             salience_low_threshold: 0.20,
             salience_high_threshold: 0.80,
+            complexity_router_enabled: true,
+            classifier_backend: "regex".into(),
+            classifier_model_path: String::new(),
+            classifier_endpoint: String::new(),
+            classifier_timeout_ms: 250,
+            classifier_low_confidence: 0.40,
+            minilm_enabled: true,
+            minilm_cache_dir: String::new(),
+            minilm_min_confidence: 0.28,
             compress_kill_switch: true,
             compress_min_bytes: 2048,
             compress_types: nasiko_compress::TypeMask::DEFAULT,
@@ -274,6 +321,24 @@ impl GatewayConfig {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(d.salience_high_threshold),
+            complexity_router_enabled: env_flag("COMPLEXITY_ROUTER_ENABLED", d.complexity_router_enabled),
+            classifier_backend: env_or("CLASSIFIER_BACKEND", &d.classifier_backend),
+            classifier_model_path: env_or("CLASSIFIER_MODEL_PATH", &d.classifier_model_path),
+            classifier_endpoint: env_or("CLASSIFIER_ENDPOINT", &d.classifier_endpoint),
+            classifier_timeout_ms: std::env::var("CLASSIFIER_TIMEOUT_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(d.classifier_timeout_ms),
+            classifier_low_confidence: std::env::var("CLASSIFIER_LOW_CONFIDENCE")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(d.classifier_low_confidence),
+            minilm_enabled: env_flag("MINILM_CLASSIFIER_ENABLED", d.minilm_enabled),
+            minilm_cache_dir: env_or("MINILM_CACHE_DIR", &d.minilm_cache_dir),
+            minilm_min_confidence: std::env::var("MINILM_MIN_CONFIDENCE")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(d.minilm_min_confidence),
             compress_kill_switch: env_flag("TOKEN_COMPRESS_ENABLED", true),
             compress_min_bytes: env_usize("TOKEN_COMPRESS_MIN_BYTES", 2048),
             // A bad label must not silently widen or narrow what gets rewritten, so an

@@ -48,8 +48,9 @@ pub use inbound::InboundFormat;
 pub use inject::{LlmInjectCtx, inject_llm_env};
 pub use resolver::{ConfigCache, ResolvedConfig};
 pub use routing::{
-    AllowAllGate, CellStore, ClassifierSalienceGate, DecisionCache, InMemoryCellStore, NoopCache,
-    PgCellStore, PgTierRegistry, RedisCache, SalienceGate, TierRegistry,
+    AllowAllGate, CellStore, Classification, ClassifyError, ClassifyInput, ClassifierSalienceGate,
+    DecisionCache, InMemoryCellStore, NoopCache, PgCellStore, PgTierRegistry, RedisCache,
+    RequestClassifier, SalienceGate, TierRegistry,
 };
 
 /// Shared context for the LLM router.
@@ -82,6 +83,15 @@ pub struct LlmRouterCtx {
     /// classify + pin. [`ClassifierSalienceGate`] when `SALIENCE_GATE_ENABLED`; else [`AllowAllGate`]
     /// (classify at every boundary, i.e. behaviour before the gate existed).
     pub salience_gate: Arc<dyn SalienceGate>,
+    /// Optional MiniLM semantic classifier, loaded once at startup. `None` when disabled
+    /// or when the ONNX model failed to load (regex request-type still works).
+    pub semantic_classifier: Option<Arc<crate::routing::SemanticClassifier>>,
+    /// P2 decision backend behind Level 3 routing. Built once at startup from
+    /// `CLASSIFIER_BACKEND` via [`crate::routing::build_classifier`]; the
+    /// default is the regex backend, so behavior is unchanged unless the
+    /// operator opts in. The eval example (`classifier_eval`) builds the same
+    /// trait object, so it exercises the same code path as the router.
+    pub classifier: Arc<dyn crate::routing::RequestClassifier>,
     /// The platform's single cost engine. Every `token_usage` row is priced
     /// through this — the DB trigger that used to do it returned NULL for any
     /// model missing from `model_pricing`, which booked 92.8% of calls at $0.
@@ -127,6 +137,15 @@ impl LlmRouterCtx {
         let router_cache = build_router_cache(&cfg);
         let cfg = Arc::new(cfg);
         let salience_gate = build_salience_gate(&cfg);
+        let semantic_classifier = build_semantic_classifier(&cfg);
+        let classifier =
+            crate::routing::build_classifier(&cfg.classifier_backend, semantic_classifier.clone());
+        tracing::info!(
+            target: "nasiko::llm_router::startup",
+            backend = classifier.name(),
+            configured = %cfg.classifier_backend,
+            "llm-router: P2 request classifier backend ready (regex default; opt-in via CLASSIFIER_BACKEND)"
+        );
         let pricing = Arc::new(PricingEngine::new(db.clone()));
         Self {
             db,
@@ -137,6 +156,8 @@ impl LlmRouterCtx {
             tier_registry,
             cell_store,
             salience_gate,
+            semantic_classifier,
+            classifier,
             pricing,
         }
     }
@@ -201,6 +222,42 @@ fn build_salience_gate(cfg: &Arc<GatewayConfig>) -> Arc<dyn SalienceGate> {
                 "llm-router: salience model failed to load; falling back to AllowAllGate (classify at every fireable boundary)"
             );
             Arc::new(AllowAllGate)
+        }
+    }
+}
+
+/// Load MiniLM once at startup. Failure is fail-open: regex request types + the
+/// complexity scorer still route. Never called from the request path.
+fn build_semantic_classifier(
+    cfg: &Arc<GatewayConfig>,
+) -> Option<Arc<crate::routing::SemanticClassifier>> {
+    if !cfg.minilm_enabled {
+        tracing::info!(
+            target: "nasiko::llm_router::startup",
+            "llm-router: MiniLM classifier disabled (MINILM_CLASSIFIER_ENABLED=false); regex request types only"
+        );
+        return None;
+    }
+    match crate::routing::SemanticClassifier::load_minilm(
+        &cfg.minilm_cache_dir,
+        cfg.minilm_min_confidence,
+    ) {
+        Ok(clf) => {
+            tracing::info!(
+                target: "nasiko::llm_router::startup",
+                model = crate::routing::minilm::MINILM_MODEL_ID,
+                min_confidence = cfg.minilm_min_confidence,
+                "llm-router: MiniLM semantic classifier ready (category embeddings cached)"
+            );
+            Some(Arc::new(clf))
+        }
+        Err(e) => {
+            tracing::warn!(
+                target: "nasiko::llm_router::startup",
+                error = %e,
+                "llm-router: MiniLM failed to load; falling back to regex request-type classification"
+            );
+            None
         }
     }
 }

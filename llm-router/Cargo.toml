@@ -13,11 +13,10 @@ name = "llm-router"
 path = "src/bin/llm-router.rs"
 
 [dependencies]
-# Internal — AES-GCM (per-user HKDF) decrypt of user_secrets via try_for_user
+# Internal
 nasiko-secrets.workspace = true
 nasiko-pricing.workspace = true
 nasiko-savings.workspace = true
-# Internal — structural payload compression at the egress seam (src/compress.rs)
 nasiko-compress.workspace = true
 
 # Web / async
@@ -30,34 +29,40 @@ async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
-# Query classifier — regex categories + Thompson-sampling tier selection
+# Query classifier
 regex = { workspace = true }
 rand = { workspace = true }
 rand_distr = { workspace = true }
 
-# Storage & outbound HTTP (the crate owns these via LlmRouterCtx — no nasiko-server dep)
+# Optional MiniLM
+fastembed = { version = "5", optional = true }
+
+# Storage & outbound HTTP
 sqlx = { workspace = true }
 reqwest = { workspace = true, features = ["json", "stream"] }
 futures = { workspace = true }
 async-stream = { workspace = true }
 bytes = { workspace = true }
 
-# Auth (agent-identity JWT verify)
+# Auth
 jsonwebtoken = { workspace = true }
 
 # Resolver cache + identifiers
 dashmap = { workspace = true }
 uuid = { workspace = true }
 
-# Router decision cache (S3) — sticky (conv_id, agent_id) → model across turns/scale
+# Router decision cache
 redis = { workspace = true }
 
 # Errors / time / logging
 thiserror = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }
-# Used only by the standalone `llm-router` binary for log output.
 tracing-subscriber = { workspace = true }
+
+[features]
+default = ["minilm"]
+minilm = ["dep:fastembed"]
 
 [dev-dependencies]
 tokio = { workspace = true }
