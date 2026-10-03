@@ -1,4 +1,4 @@
-use nasiko_tool_compact::{decode_calls, encode_tools, StreamDecoder, ToolCall, ToolDef};
+use nasiko_tool_compact::{StreamDecoder, ToolCall, ToolDef, decode_calls, encode_tools};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::env;
@@ -60,7 +60,10 @@ fn resolve_tools(names: &[String], tool_definitions: &Value) -> Vec<ToolDef> {
             if let Some(schema) = obj.get(name) {
                 resolved.push(ToolDef {
                     name: name.clone(),
-                    description: schema.get("description").and_then(|d| d.as_str()).map(|s| s.to_string()),
+                    description: schema
+                        .get("description")
+                        .and_then(|d| d.as_str())
+                        .map(|s| s.to_string()),
                     parameters: schema.get("parameters").cloned(),
                 });
             }

@@ -37,9 +37,8 @@ pub struct CompactTools {
 static CALL_START_REGEX: OnceLock<Regex> = OnceLock::new();
 
 fn get_call_start_regex() -> &'static Regex {
-    CALL_START_REGEX.get_or_init(|| {
-        Regex::new(r"<<call\s+([a-zA-Z0-9_\-]+)\s+").expect("invalid call regex")
-    })
+    CALL_START_REGEX
+        .get_or_init(|| Regex::new(r"<<call\s+([a-zA-Z0-9_\-]+)\s+").expect("invalid call regex"))
 }
 
 /// Formats native JSON schema types into a concise signature
@@ -298,6 +297,98 @@ impl<'a> StreamDecoder<'a> {
     }
 }
 
+/// Recovers ToolDef schemas from compact function signatures
+pub fn decode_tools(compact: &CompactTools) -> Result<Vec<ToolDef>, CompactError> {
+    let mut tools = Vec::new();
+
+    for line in compact.prompt_injection.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with("To call a tool") || line.starts_with("<<") {
+            continue;
+        }
+
+        // Split "name(params) - Description"
+        let (func_part, desc_part) = match line.split_once(" - ") {
+            Some((f, d)) => (f.trim(), Some(d.trim().to_string())),
+            None => (line, None),
+        };
+
+        let open_paren = func_part.find('(').ok_or_else(|| {
+            CompactError::ParseError(format!("missing opening parenthesis: {}", line))
+        })?;
+        let close_paren = func_part.rfind(')').ok_or_else(|| {
+            CompactError::ParseError(format!("missing closing parenthesis: {}", line))
+        })?;
+
+        let name = func_part[..open_paren].trim().to_string();
+        let params_str = &func_part[open_paren + 1..close_paren].trim();
+
+        let mut properties = serde_json::Map::new();
+        let mut required = Vec::new();
+
+        if !params_str.is_empty() {
+            for param in params_str.split(',') {
+                let param = param.trim();
+                if param.is_empty() {
+                    continue;
+                }
+                let (param_name, type_str) = param.split_once(':').ok_or_else(|| {
+                    CompactError::ParseError(format!("invalid parameter declaration: {}", param))
+                })?;
+
+                let (clean_name, is_req) = if let Some(stripped) = param_name.strip_suffix('?') {
+                    (stripped.trim(), false)
+                } else {
+                    (param_name.trim(), true)
+                };
+
+                if is_req {
+                    required.push(serde_json::Value::String(clean_name.to_string()));
+                }
+
+                // Map compact type back to JSON schema representation
+                let prop_schema = if type_str.contains('|') {
+                    let enum_vals: Vec<serde_json::Value> = type_str
+                        .split('|')
+                        .map(|v| serde_json::Value::String(v.trim().to_string()))
+                        .collect();
+                    serde_json::json!({ "type": "string", "enum": enum_vals })
+                } else if type_str.starts_with('[') && type_str.ends_with(']') {
+                    serde_json::json!({
+                        "type": "array",
+                        "items": { "type": "string" }
+                    })
+                } else {
+                    match type_str.trim() {
+                        "datetime" => serde_json::json!({ "type": "string", "format": "date-time" }),
+                        "str" => serde_json::json!({ "type": "string" }),
+                        "int" => serde_json::json!({ "type": "integer" }),
+                        "float" => serde_json::json!({ "type": "number" }),
+                        "bool" => serde_json::json!({ "type": "boolean" }),
+                        _ => serde_json::json!({ "type": "string" }),
+                    }
+                };
+
+                properties.insert(clean_name.to_string(), prop_schema);
+            }
+        }
+
+        let parameters = serde_json::json!({
+            "type": "object",
+            "properties": properties,
+            "required": required
+        });
+
+        tools.push(ToolDef {
+            name,
+            description: desc_part,
+            parameters: Some(parameters),
+        });
+    }
+
+    Ok(tools)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -340,9 +431,13 @@ mod tests {
         let tools = sample_tools();
         let compact = encode_tools(&tools).unwrap();
         assert!(compact.prompt_injection.contains("create_calendar_event("));
-        assert!(compact.prompt_injection.contains("title:str, start:datetime"));
+        assert!(compact
+            .prompt_injection
+            .contains("title:str, start:datetime"));
         assert!(compact.prompt_injection.contains("duration_min?:int"));
-        assert!(compact.prompt_injection.contains("visibility?:public|private"));
+        assert!(compact
+            .prompt_injection
+            .contains("visibility?:public|private"));
     }
 
     #[test]
@@ -399,5 +494,14 @@ mod tests {
         let input = "<<call create_calendar_event {\"title\":\"Sync\",\"start\":\"2026-10-05T15:00:00+05:30\",\"visibility\":\"secret\"}>>";
         let res = decode_calls(input, &tools);
         assert!(matches!(res, Err(CompactError::InvalidArguments(_))));
+    }
+    #[test]
+    fn test_schema_roundtrip_decode_tools() {
+        let tools = sample_tools();
+        let compact = encode_tools(&tools).unwrap();
+        let decoded = decode_tools(&compact).unwrap();
+        assert_eq!(decoded.len(), tools.len());
+        assert_eq!(decoded[0].name, tools[0].name);
+        assert_eq!(decoded[0].description, tools[0].description);
     }
 }

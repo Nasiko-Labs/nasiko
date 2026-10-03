@@ -154,12 +154,15 @@ pub struct GatewayConfig {
     pub compress_recovery_min_bytes: usize,
     /// How long an original stays recoverable. Sized to outlive the flow that produced it.
     pub compress_recovery_ttl_secs: u64,
+    /// Enable compact tool format for agents that support it.
+    pub enable_compact_tools: bool,
 }
 
 impl Default for GatewayConfig {
     /// The canonical defaults (also the values `from_env` falls back to per key).
     fn default() -> Self {
         Self {
+            enable_compact_tools: false,
             agent_jwt_secret: String::new(),
             agent_jwt_algorithm: "HS256".into(),
             default_provider: "openai".into(),
@@ -206,6 +209,9 @@ impl GatewayConfig {
     pub fn from_env() -> Self {
         let d = Self::default();
         Self {
+            enable_compact_tools: std::env::var("ENABLE_COMPACT_TOOLS")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false),
             agent_jwt_secret: env_or("AGENT_JWT_SECRET", &d.agent_jwt_secret),
             agent_jwt_algorithm: env_or("AGENT_JWT_ALGORITHM", &d.agent_jwt_algorithm),
             default_provider: env_or("DEFAULT_PROVIDER", &d.default_provider),
