@@ -1,7 +1,7 @@
 //! Tools → compact definition lines.
 
 use crate::error::{CompactError, Result};
-use crate::schema::{self, Fields, Node, Tool, Ty};
+use crate::schema::{self, Fields, Node, Nullable, Tool, Ty};
 use crate::text;
 use crate::types::{CompactTools, ToolCall, ToolDef};
 
@@ -74,6 +74,10 @@ fn tool_line(tool: &Tool) -> String {
         if params.closed {
             out.push('!');
         }
+        if let Some(title) = &tool.params_title {
+            out.push('@');
+            out.push_str(&text::quote(title));
+        }
     }
     if let Some(description) = &tool.description {
         out.push_str(" - ");
@@ -105,13 +109,15 @@ fn fields(fields: &Fields) -> String {
                 text::quote(&field.key)
             };
             let optional = if field.required { "" } else { "?" };
-            format!("{key}{optional}:{}", node(&field.node))
+            format!("{key}{optional}:{}", node(&field.node, Some(&field.key)))
         })
         .collect();
     parts.join(", ")
 }
 
-fn node(node: &Node) -> String {
+/// `key` is the field the node belongs to, if any; it lets a title that merely restates the key
+/// be written as a bare `@`.
+fn node(node: &Node, key: Option<&str>) -> String {
     let mut out = ty(&node.ty);
     if let Some(range) = &node.range {
         let bound = |b: &Option<serde_json::Number>| b.as_ref().map(ToString::to_string);
@@ -121,13 +127,22 @@ fn node(node: &Node) -> String {
             bound(&range.max).unwrap_or_default()
         ));
     }
-    if node.nullable {
-        out.push_str("|null");
-    }
+    out.push_str(match node.nullable {
+        Nullable::No => "",
+        Nullable::TypeList => "|null",
+        Nullable::AnyOf => "|null~",
+        Nullable::AnyOfNullFirst => "|null~~",
+    });
     match &node.default {
         Some(serde_json::Value::String(s)) => out.push_str(&format!("={}", text::quote(s))),
         Some(scalar) => out.push_str(&format!("={scalar}")),
         None => {}
+    }
+    if let Some(title) = &node.title {
+        out.push('@');
+        if key.map(schema::derived_title).as_ref() != Some(title) {
+            out.push_str(&text::quote(title));
+        }
     }
     if let Some(description) = &node.description {
         out.push(' ');
@@ -168,7 +183,7 @@ fn ty(ty: &Ty) -> String {
             let parts: Vec<String> = values.iter().map(bool::to_string).collect();
             format!("bool({})", parts.join("|"))
         }
-        Ty::Array(items) => format!("[{}]", node(items)),
+        Ty::Array(items) => format!("[{}]", node(items, None)),
         Ty::Object(inner) => {
             let closed = if inner.closed { "!" } else { "" };
             format!("{{{}}}{closed}", fields(inner))

@@ -52,7 +52,7 @@ fn node(node: &Node, value: &Value, path: &str) -> Result<(), String> {
             Err(format!("{path} must be {what}"))
         }
     };
-    if node.nullable && value.is_null() {
+    if node.nullable.admits_null() && value.is_null() {
         return Ok(());
     }
     if let Some(range) = &node.range {

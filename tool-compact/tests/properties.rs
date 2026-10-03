@@ -18,9 +18,10 @@ fn description() -> impl Strategy<Value = Option<String>> {
     proptest::option::of(any::<String>())
 }
 
-type Extras = (Option<String>, bool, Option<Value>);
+/// Description, how the node admits null (0 = it does not), default, title.
+type Extras = (Option<String>, u8, Option<Value>, Option<String>);
 
-/// What any node may carry besides its type: a description, nullability, a scalar default.
+/// What any node may carry besides its type.
 fn extras() -> impl Strategy<Value = Extras> {
     let default = prop_oneof![
         Just(Value::Null),
@@ -28,17 +29,38 @@ fn extras() -> impl Strategy<Value = Extras> {
         any::<i64>().prop_map(Value::from),
         any::<String>().prop_map(Value::String),
     ];
-    (description(), any::<bool>(), proptest::option::of(default))
+    (
+        description(),
+        0u8..4,
+        proptest::option::of(default),
+        proptest::option::of(any::<String>()),
+    )
 }
 
-fn decorated(mut schema: Value, (description, nullable, default): Extras) -> Value {
+fn decorated(mut schema: Value, (description, nullable, default, title): Extras) -> Value {
     if let Some(map) = schema.as_object_mut() {
-        if nullable {
-            let kind = map["type"].clone();
-            map.insert("type".into(), json!([kind, "null"]));
-            if let Some(Value::Array(choices)) = map.get_mut("enum") {
-                choices.push(Value::Null);
+        match nullable {
+            0 => {}
+            // `type: [T, "null"]`, with null listed in the enum too.
+            1 => {
+                let kind = map["type"].clone();
+                map.insert("type".into(), json!([kind, "null"]));
+                if let Some(Value::Array(choices)) = map.get_mut("enum") {
+                    choices.push(Value::Null);
+                }
             }
+            // `anyOf: [T, null]`, in either order; the annotations go on the wrapper.
+            order => {
+                let mut branches = vec![Value::Object(map.clone()), json!({"type": "null"})];
+                if order == 3 {
+                    branches.reverse();
+                }
+                map.clear();
+                map.insert("anyOf".into(), Value::Array(branches));
+            }
+        }
+        if let Some(title) = title {
+            map.insert("title".into(), Value::String(title));
         }
         if let Some(default) = default {
             map.insert("default".into(), default);
@@ -178,16 +200,22 @@ fn tools() -> impl Strategy<Value = Vec<ToolDef>> {
         "[A-Za-z0-9_.-]{1,10}",
         description(),
         proptest::option::of(object(node())),
+        proptest::option::of(any::<String>()),
     );
     vec(tool, 1..4).prop_map(|tools| {
         tools
             .into_iter()
             .enumerate()
-            .map(|(i, (name, description, parameters))| ToolDef {
-                // The index keeps generated names distinct.
-                name: format!("{name}{i}"),
-                description,
-                parameters,
+            .map(|(i, (name, description, mut parameters, title))| {
+                if let (Some(Value::Object(map)), Some(title)) = (&mut parameters, title) {
+                    map.insert("title".into(), Value::String(title));
+                }
+                ToolDef {
+                    // The index keeps generated names distinct.
+                    name: format!("{name}{i}"),
+                    description,
+                    parameters,
+                }
             })
             .collect()
     })
@@ -195,6 +223,11 @@ fn tools() -> impl Strategy<Value = Vec<ToolDef>> {
 
 /// A value that satisfies `schema`.
 fn instance(schema: &Value) -> BoxedStrategy<Value> {
+    if let Some(branches) = schema.get("anyOf").and_then(Value::as_array) {
+        let null = json!({"type": "null"});
+        let inner = branches.iter().find(|b| **b != null).unwrap();
+        return prop_oneof![Just(Value::Null), instance(inner)].boxed();
+    }
     // A nullable type is `[T, "null"]`; its enum, if any, already lists null as a choice.
     let (kind, nullable) = match &schema["type"] {
         Value::Array(pair) => (pair[0].as_str(), true),

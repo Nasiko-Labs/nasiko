@@ -34,10 +34,11 @@
 //! One tool per line.
 //!
 //! ```text
-//! tool    = name [ "(" [ fields ] ")" [ "!" ] ] [ " - " ( quoted | rest-of-line ) ]
+//! tool    = name [ "(" [ fields ] ")" [ "!" ] [ "@" quoted ] ] [ " - " ( quoted | rest-of-line ) ]
 //! fields  = field { "," " " field }
 //! field   = key [ "?" ] ":" typed
-//! typed   = type [ range ] [ "|null" ] [ "=" default ] [ " " quoted ]
+//! typed   = type [ range ] [ null ] [ "=" default ] [ "@" [ quoted ] ] [ " " quoted ]
+//! null    = "|null" | "|null~" | "|null~~"
 //! type    = "str" | "str<" format ">" | "datetime" | "int" | "num" | "bool" | "obj"
 //!         | "[" typed "]"                          ; array
 //!         | "{" [ fields ] "}" [ "!" ]             ; object
@@ -65,6 +66,12 @@
 //!   (`minLength`/`maxLength`) or an array's item count (`minItems`/`maxItems`):
 //!   `int(1..10)`, `str(..80)`, `[str](1..)`.
 //! * `|null` is `type: [T, "null"]`; on an enum, `null` is also its last listed value.
+//! * `|null~` is the same thing spelled `anyOf: [T, {"type": "null"}]`, as Pydantic writes an
+//!   optional field; `|null~~` is that with the null branch first. All three admit null alike;
+//!   the marks differ only so the schema can be written back exactly.
+//! * `@` is the schema's `title`, an annotation that never affects validation. `@'Text'` gives
+//!   it in full; a bare `@` on a field means the title is the field name with underscores as
+//!   spaces and each word capitalised (`min_score` → `Min Score`), which is what Pydantic emits.
 //! * `=` gives the schema's `default`, which must be a scalar: `limit?:int(1..100)=20`.
 //! * A tool with no `parameters` has no parentheses; `name()` is an object with no properties.
 //! * An enum of bare integers is an integer enum. String values that are not plain identifiers,
@@ -87,13 +94,14 @@
 //!
 //! # Unsupported schema features
 //!
-//! Supported keywords: `type`, `description`, `properties`, `required`, `items`, `enum`,
+//! Supported keywords: `type`, `description`, `title`, `properties`, `required`, `items`, `enum`,
 //! `format`, `default` (scalars), `minimum`/`maximum`, `minLength`/`maxLength`,
-//! `minItems`/`maxItems`, and `additionalProperties: false`. Decoding enforces all of them except
-//! `format` and `default`, which describe a value without constraining its JSON type.
+//! `minItems`/`maxItems`, `additionalProperties: false`, and `anyOf` in the one shape
+//! `[T, {"type": "null"}]` (either order). Decoding enforces all of them except `format`,
+//! `default` and `title`, which describe a value without constraining its JSON type.
 //!
-//! Everything else is refused: `$ref`/`$defs`, `oneOf`/`anyOf`/`allOf`, `not`, `const`,
-//! `pattern`, `title`, `exclusiveMinimum`/`exclusiveMaximum`, `multipleOf`, `uniqueItems`,
+//! Everything else is refused: `$ref`/`$defs`, `oneOf`/`allOf`, any other `anyOf`, `not`, `const`,
+//! `pattern`, `exclusiveMinimum`/`exclusiveMaximum`, `multipleOf`, `uniqueItems`,
 //! `additionalProperties` set to `true` or a schema, array or object defaults, type unions other
 //! than `[T, "null"]`, a bare `null` type, arrays without `items`, and mixed-type enums. One
 //! unsupported tool fails the whole [`encode_tools`] call; the caller sends the native

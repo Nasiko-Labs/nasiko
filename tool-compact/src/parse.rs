@@ -3,7 +3,7 @@
 use crate::error::{CompactError, Result};
 use serde_json::{Number, Value};
 
-use crate::schema::{self, Field, Fields, MAX_DEPTH, Node, Range, Tool, Ty};
+use crate::schema::{self, Field, Fields, MAX_DEPTH, Node, Nullable, Range, Tool, Ty};
 use crate::text::{self, Cursor};
 use crate::types::{CompactTools, ToolDef};
 
@@ -36,12 +36,14 @@ fn tool_line(line: &str) -> std::result::Result<Tool, String> {
     if name.is_empty() {
         return Err("missing tool name".into());
     }
+    let mut params_title = None;
     let params = if c.eat('(') {
         let fields = fields(&mut c, ')', 0)?;
-        Some(Fields {
-            fields,
-            closed: c.eat('!'),
-        })
+        let closed = c.eat('!');
+        if c.eat('@') {
+            params_title = Some(c.quoted()?);
+        }
+        Some(Fields { fields, closed })
     } else {
         None
     };
@@ -69,6 +71,7 @@ fn tool_line(line: &str) -> std::result::Result<Tool, String> {
         name,
         description,
         params,
+        params_title,
     })
 }
 
@@ -90,7 +93,7 @@ fn fields(c: &mut Cursor, close: char, depth: usize) -> std::result::Result<Vec<
         };
         let required = !c.eat('?');
         c.expect(':')?;
-        let node = node(c, depth + 1)?;
+        let node = node(c, depth + 1, Some(&key))?;
         if out.iter().any(|f| f.key == key) {
             return Err(format!("param `{key}` appears twice"));
         }
@@ -108,7 +111,8 @@ fn fields(c: &mut Cursor, close: char, depth: usize) -> std::result::Result<Vec<
     }
 }
 
-fn node(c: &mut Cursor, depth: usize) -> std::result::Result<Node, String> {
+/// `key` is the field being parsed, if any: a bare `@` stands for the title derived from it.
+fn node(c: &mut Cursor, depth: usize, key: Option<&str>) -> std::result::Result<Node, String> {
     if depth > MAX_DEPTH {
         return Err(format!("types nest deeper than {MAX_DEPTH} levels"));
     }
@@ -118,8 +122,22 @@ fn node(c: &mut Cursor, depth: usize) -> std::result::Result<Node, String> {
     } else {
         None
     };
-    let nullable = c.eat_null();
+    let nullable = match (c.eat_null(), c.eat('~'), c.eat('~')) {
+        (false, ..) => Nullable::No,
+        (true, false, _) => Nullable::TypeList,
+        (true, true, false) => Nullable::AnyOf,
+        (true, true, true) => Nullable::AnyOfNullFirst,
+    };
     let default = if c.eat('=') { Some(default(c)?) } else { None };
+    let title = if !c.eat('@') {
+        None
+    } else if c.peek() == Some('\'') {
+        Some(c.quoted()?)
+    } else {
+        Some(schema::derived_title(key.ok_or(
+            "a bare `@` needs a field name to derive the title from",
+        )?))
+    };
     let description = if c.peek() == Some(' ') && c.peek_at(1) == Some('\'') {
         c.bump();
         Some(c.quoted()?)
@@ -131,6 +149,7 @@ fn node(c: &mut Cursor, depth: usize) -> std::result::Result<Node, String> {
         nullable,
         range,
         default,
+        title,
         description,
     })
 }
@@ -192,7 +211,7 @@ fn ty(c: &mut Cursor, depth: usize) -> std::result::Result<Ty, String> {
     match c.peek() {
         Some('[') => {
             c.bump();
-            let items = node(c, depth + 1)?;
+            let items = node(c, depth + 1, None)?;
             c.expect(']')?;
             Ok(Ty::Array(Box::new(items)))
         }

@@ -18,12 +18,33 @@ pub(crate) const MAX_DEPTH: usize = 32;
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Node {
     pub ty: Ty,
-    /// `type: [T, "null"]`.
-    pub nullable: bool,
+    pub nullable: Nullable,
     pub range: Option<Range>,
     /// Always a scalar.
     pub default: Option<Value>,
+    /// An annotation; never affects validation.
+    pub title: Option<String>,
     pub description: Option<String>,
+}
+
+/// Whether a node admits `null`, and which of the equivalent schema spellings said so. The
+/// spelling is kept only so the schema can be written back exactly; validation treats all
+/// three alike.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Nullable {
+    No,
+    /// `type: [T, "null"]`.
+    TypeList,
+    /// `anyOf: [T, {"type": "null"}]`.
+    AnyOf,
+    /// `anyOf: [{"type": "null"}, T]`.
+    AnyOfNullFirst,
+}
+
+impl Nullable {
+    pub(crate) fn admits_null(self) -> bool {
+        self != Nullable::No
+    }
 }
 
 /// Inclusive bounds: on a number, on the length of a string, or on the item count of an array.
@@ -71,6 +92,8 @@ pub(crate) struct Tool {
     pub description: Option<String>,
     /// `None` when the tool declares no `parameters` at all.
     pub params: Option<Fields>,
+    /// `title` of the `parameters` object itself.
+    pub params_title: Option<String>,
 }
 
 /// Convert every tool, or fail on the first one that cannot be carried.
@@ -89,14 +112,18 @@ pub(crate) fn compile(tools: &[ToolDef]) -> Result<Vec<Tool>> {
         if out.iter().any(|t| t.name == def.name) {
             return Err(unsupported("duplicate tool name".into()));
         }
-        let params = match &def.parameters {
-            None => None,
-            Some(schema) => Some(params_from(schema).map_err(unsupported)?),
+        let (params, params_title) = match &def.parameters {
+            None => (None, None),
+            Some(schema) => {
+                let (fields, title) = params_from(schema).map_err(unsupported)?;
+                (Some(fields), title)
+            }
         };
         out.push(Tool {
             name: def.name.clone(),
             description: def.description.clone(),
             params,
+            params_title,
         });
     }
     Ok(out)
@@ -106,14 +133,91 @@ pub(crate) fn to_def(tool: &Tool) -> ToolDef {
     ToolDef {
         name: tool.name.clone(),
         description: tool.description.clone(),
-        parameters: tool
-            .params
-            .as_ref()
-            .map(|fields| Value::Object(fields_to_schema(fields))),
+        parameters: tool.params.as_ref().map(|fields| {
+            let mut schema = fields_to_schema(fields);
+            if let Some(title) = &tool.params_title {
+                schema.insert("title".into(), Value::String(title.clone()));
+            }
+            Value::Object(schema)
+        }),
     }
 }
 
-fn params_from(schema: &Value) -> std::result::Result<Fields, String> {
+/// The title Pydantic derives from a field name: `first_name` → `First Name`. A title equal to
+/// this is written as a bare `@`, since the key already says it.
+pub(crate) fn derived_title(key: &str) -> String {
+    let mut out = String::with_capacity(key.len());
+    let mut in_word = false;
+    for c in key.chars() {
+        let c = if c == '_' { ' ' } else { c };
+        if c.is_alphabetic() {
+            if in_word {
+                out.extend(c.to_lowercase());
+            } else {
+                out.extend(c.to_uppercase());
+            }
+        } else {
+            out.push(c);
+        }
+        in_word = c.is_alphabetic();
+    }
+    out
+}
+
+fn text_key(obj: &Map<String, Value>, key: &str) -> std::result::Result<Option<String>, String> {
+    match obj.get(key) {
+        None => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s.clone())),
+        Some(_) => Err(format!("`{key}` is not a string")),
+    }
+}
+
+fn scalar_default(obj: &Map<String, Value>) -> std::result::Result<Option<Value>, String> {
+    match obj.get("default") {
+        None => Ok(None),
+        Some(Value::Array(_) | Value::Object(_)) => Err("`default` is not a scalar".into()),
+        Some(scalar) => Ok(Some(scalar.clone())),
+    }
+}
+
+fn is_null_schema(schema: &Value) -> bool {
+    schema.as_object().is_some_and(|obj| {
+        obj.len() == 1 && obj.get("type").and_then(Value::as_str) == Some("null")
+    })
+}
+
+/// `anyOf: [T, {"type": "null"}]` in either order — how Pydantic spells an optional field — is a
+/// nullable `T`. Any other `anyOf` is a real union and is refused.
+fn nullable_any_of(obj: &Map<String, Value>, depth: usize) -> std::result::Result<Node, String> {
+    only(obj, &["anyOf", "description", "default", "title"])?;
+    let branches = obj.get("anyOf").and_then(Value::as_array);
+    let (inner, nullable) = match branches.map(Vec::as_slice) {
+        Some([inner, null]) if is_null_schema(null) && !is_null_schema(inner) => {
+            (inner, Nullable::AnyOf)
+        }
+        Some([null, inner]) if is_null_schema(null) && !is_null_schema(inner) => {
+            (inner, Nullable::AnyOfNullFirst)
+        }
+        _ => return Err("`anyOf` other than `[T, {\"type\": \"null\"}]`".into()),
+    };
+    let mut node = node_from(inner, depth + 1)?;
+    // The annotations live on the outer schema. A branch carrying its own could not be told
+    // apart from them once written on one line.
+    if node.nullable.admits_null()
+        || node.description.is_some()
+        || node.default.is_some()
+        || node.title.is_some()
+    {
+        return Err("`anyOf` branch is nullable or carries its own annotations".into());
+    }
+    node.nullable = nullable;
+    node.description = text_key(obj, "description")?;
+    node.default = scalar_default(obj)?;
+    node.title = text_key(obj, "title")?;
+    Ok(node)
+}
+
+fn params_from(schema: &Value) -> std::result::Result<(Fields, Option<String>), String> {
     let obj = schema
         .as_object()
         .ok_or("`parameters` is not a JSON object")?;
@@ -125,9 +229,15 @@ fn params_from(schema: &Value) -> std::result::Result<Fields, String> {
     }
     only(
         obj,
-        &["type", "properties", "required", "additionalProperties"],
+        &[
+            "type",
+            "properties",
+            "required",
+            "additionalProperties",
+            "title",
+        ],
     )?;
-    fields_from(obj, 0)
+    Ok((fields_from(obj, 0)?, text_key(obj, "title")?))
 }
 
 fn node_from(schema: &Value, depth: usize) -> std::result::Result<Node, String> {
@@ -135,11 +245,10 @@ fn node_from(schema: &Value, depth: usize) -> std::result::Result<Node, String> 
         return Err(format!("schema nests deeper than {MAX_DEPTH} levels"));
     }
     let obj = schema.as_object().ok_or("schema is not a JSON object")?;
-    let description = match obj.get("description") {
-        None => None,
-        Some(Value::String(s)) => Some(s.clone()),
-        Some(_) => return Err("`description` is not a string".into()),
-    };
+    if obj.contains_key("anyOf") {
+        return nullable_any_of(obj, depth);
+    }
+    let description = text_key(obj, "description")?;
     let (kind, nullable) = match obj.get("type") {
         Some(Value::String(s)) => (s.as_str(), false),
         Some(Value::Array(pair)) => match pair.as_slice() {
@@ -152,13 +261,13 @@ fn node_from(schema: &Value, depth: usize) -> std::result::Result<Node, String> 
         // A schema with no `type` is usually a combinator (`oneOf`, `anyOf`, `$ref`); naming it
         // says more than "no type".
         None => {
-            only(obj, &["description", "default"])?;
+            only(obj, &["description", "default", "title"])?;
             return Err("schema has no `type`".into());
         }
     };
     let has_enum = obj.contains_key("enum");
     // Keywords any node may carry; each type adds its own below.
-    let mut allowed = vec!["type", "description", "default"];
+    let mut allowed = vec!["type", "description", "default", "title"];
     let ty = match kind {
         "string" if has_enum => {
             allowed.push("enum");
@@ -206,18 +315,16 @@ fn node_from(schema: &Value, depth: usize) -> std::result::Result<Node, String> 
         other => return Err(format!("unsupported type `{other}`")),
     };
     only(obj, &allowed)?;
-    let default = match obj.get("default") {
-        None => None,
-        Some(Value::Array(_) | Value::Object(_)) => {
-            return Err("`default` is not a scalar".into());
-        }
-        Some(scalar) => Some(scalar.clone()),
-    };
     Ok(Node {
         range: range_from(obj, &ty)?,
         ty,
-        nullable,
-        default,
+        nullable: if nullable {
+            Nullable::TypeList
+        } else {
+            Nullable::No
+        },
+        default: scalar_default(obj)?,
+        title: text_key(obj, "title")?,
         description,
     })
 }
@@ -382,14 +489,15 @@ fn node_to_schema(node: &Node) -> Value {
         }
         Ty::Object(_) | Ty::AnyObject => "object",
     };
+    let in_type_list = node.nullable == Nullable::TypeList;
     if let Some(mut choices) = choices {
-        if node.nullable {
+        if in_type_list {
             choices.push(Value::Null);
         }
         out.insert("enum".into(), Value::Array(choices));
     }
     let kind = Value::String(kind.into());
-    let kind = if node.nullable {
+    let kind = if in_type_list {
         Value::Array(vec![kind, Value::String("null".into())])
     } else {
         kind
@@ -402,8 +510,22 @@ fn node_to_schema(node: &Node) -> Value {
             }
         }
     }
+    // The `anyOf` spelling wraps what was built so far; the annotations go on the wrapper.
+    if matches!(node.nullable, Nullable::AnyOf | Nullable::AnyOfNullFirst) {
+        let mut null = Map::new();
+        null.insert("type".into(), Value::String("null".into()));
+        let mut branches = vec![Value::Object(out), Value::Object(null)];
+        if node.nullable == Nullable::AnyOfNullFirst {
+            branches.reverse();
+        }
+        out = Map::new();
+        out.insert("anyOf".into(), Value::Array(branches));
+    }
     if let Some(default) = &node.default {
         out.insert("default".into(), default.clone());
+    }
+    if let Some(title) = &node.title {
+        out.insert("title".into(), Value::String(title.clone()));
     }
     if let Some(description) = &node.description {
         out.insert("description".into(), Value::String(description.clone()));
@@ -518,7 +640,6 @@ mod tests {
                 "maxLength",
             ),
             (json!({"type": "string", "const": "x"}), "const"),
-            (json!({"type": "string", "title": "T"}), "title"),
             (
                 json!({"type": "array", "items": {"type": "string"}, "uniqueItems": true}),
                 "uniqueItems",
@@ -536,6 +657,14 @@ mod tests {
     fn schema_shapes_outside_the_subset_are_refused() {
         for property in [
             json!({"anyOf": [{"type": "string"}, {"type": "integer"}]}),
+            json!({"anyOf": [{"type": "string"}]}),
+            json!({"anyOf": [{"type": "null"}, {"type": "null"}]}),
+            json!({"anyOf": [{"type": "string"}, {"type": "null"}], "type": "string"}),
+            json!({"anyOf": [{"type": "string", "description": "inner"}, {"type": "null"}]}),
+            json!({"anyOf": [{"type": ["string", "null"]}, {"type": "null"}]}),
+            json!({"anyOf": [{"type": "string"}, {"type": "null", "description": "d"}]}),
+            json!({"oneOf": [{"type": "string"}, {"type": "null"}]}),
+            json!({"type": "string", "title": 5}),
             json!({"$ref": "#/definitions/x"}),
             json!({"type": ["null", "string"]}),
             json!({"type": ["string", "integer"]}),

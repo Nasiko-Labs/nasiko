@@ -424,6 +424,86 @@ fn cases() -> Vec<Case> {
                 json!({"item_id": "i1"}),
             ],
         ),
+        // ── Pydantic-style: Optional fields as `anyOf: [T, null]`, plus titles ────────────
+        compacts(
+            tool(
+                "find_contact",
+                Some("Look a contact up (schema as Pydantic emits it)."),
+                Some(json!({
+                    "type": "object",
+                    "properties": {
+                        "query": {"anyOf": [{"type": "string"}, {"type": "null"}], "description": "Name or email"}
+                    }
+                })),
+            ),
+            json!({"query": null}),
+            vec![json!({"query": 5}), json!({"q": "x"})],
+        ),
+        // What FastMCP emits for a function with optional arguments: every field titled from
+        // its name, optionals as `anyOf` with a null default, a titled arguments object.
+        compacts(
+            tool(
+                "search_contacts",
+                Some("Search the address book."),
+                Some(json!({
+                    "type": "object",
+                    "title": "search_contactsArguments",
+                    "properties": {
+                        "query": {"type": "string", "title": "Query", "description": "Name or email fragment"},
+                        "limit": {"type": "integer", "title": "Limit", "default": 20, "minimum": 1, "maximum": 100},
+                        "company": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": null, "title": "Company"},
+                        "tags": {"anyOf": [{"type": "array", "items": {"type": "string"}}, {"type": "null"}], "default": null, "title": "Tags"},
+                        "min_score": {"anyOf": [{"type": "number", "minimum": 0, "maximum": 1}, {"type": "null"}], "default": null, "title": "Min Score"},
+                        "status": {"anyOf": [{"type": "string", "enum": ["active", "archived"]}, {"type": "null"}],
+                                   "default": null, "title": "Status", "description": "Filter by status"}
+                    },
+                    "required": ["query"]
+                })),
+            ),
+            json!({"query": "asha", "limit": 5, "company": null, "tags": ["vip"], "min_score": 0.5, "status": "active"}),
+            vec![
+                json!({"query": "a", "min_score": 1.5}),
+                json!({"query": "a", "status": "deleted"}),
+                json!({"query": "a", "tags": "vip"}),
+                json!({"query": null}),
+                json!({"query": "a", "limit": 0}),
+            ],
+        ),
+        // Titles that do not follow from the key, a null-first `anyOf`, titles on a nested
+        // object and on array items.
+        compacts(
+            tool(
+                "book_meeting",
+                Some("Book a meeting room."),
+                Some(json!({
+                    "type": "object",
+                    "title": "BookMeetingArgs",
+                    "properties": {
+                        "start_time": {"type": "string", "format": "date-time", "title": "Start (UTC)"},
+                        "room": {"anyOf": [{"type": "null"}, {"type": "string", "maxLength": 40}], "title": "Room"},
+                        "organizer": {
+                            "type": "object",
+                            "title": "Organizer",
+                            "properties": {
+                                "user_id": {"type": "integer", "title": "User Id"},
+                                "display_name": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": null, "title": "Display Name"}
+                            },
+                            "required": ["user_id"]
+                        },
+                        "attendee_ids": {"type": "array", "items": {"type": "integer", "title": "Attendee"}, "title": "Attendee Ids"},
+                        "is_private": {"type": "boolean", "default": false, "title": "Is Private"}
+                    },
+                    "required": ["start_time", "organizer"]
+                })),
+            ),
+            json!({"start_time": "2026-10-05T09:00:00Z", "room": null, "organizer": {"user_id": 7, "display_name": null},
+                   "attendee_ids": [1, 2], "is_private": true}),
+            vec![
+                json!({"start_time": "t", "organizer": {"display_name": "A"}}),
+                json!({"start_time": "t", "organizer": {"user_id": 7}, "attendee_ids": ["1"]}),
+                json!({"start_time": "t", "organizer": {"user_id": 7}, "room": "x".repeat(41)}),
+            ],
+        ),
         // ── must be bypassed ──────────────────────────────────────────────────────────────
         bypassed(
             tool(
@@ -443,18 +523,34 @@ fn cases() -> Vec<Case> {
             ),
             "oneOf",
         ),
+        // A real union: `anyOf` that is not `[T, null]`.
         bypassed(
             tool(
-                "find_contact",
-                Some("Look a contact up (schema as Pydantic emits it)."),
+                "set_recipient",
+                Some("Set the recipient by name or by numeric id."),
                 Some(json!({
                     "type": "object",
-                    "properties": {
-                        "query": {"anyOf": [{"type": "string"}, {"type": "null"}], "description": "Name or email"}
-                    }
+                    "properties": {"recipient": {"anyOf": [{"type": "string"}, {"type": "integer"}]}},
+                    "required": ["recipient"]
                 })),
             ),
             "anyOf",
+        ),
+        // Pydantic's optional nested model: the non-null branch is a `$ref`.
+        bypassed(
+            tool(
+                "link_account",
+                Some("Link a billing address to an account."),
+                Some(json!({
+                    "type": "object",
+                    "properties": {
+                        "account_id": {"type": "string", "title": "Account Id"},
+                        "address": {"anyOf": [{"$ref": "#/$defs/Address"}, {"type": "null"}], "default": null}
+                    },
+                    "required": ["account_id"]
+                })),
+            ),
+            "$ref",
         ),
         bypassed(
             tool(
@@ -583,7 +679,7 @@ fn stress_set_compacts_round_trips_or_is_refused_for_a_stated_reason() {
         cases.len(),
         bypassed.len()
     );
-    assert_eq!((compacted, bypassed.len()), (14, 6));
+    assert_eq!((compacted, bypassed.len()), (17, 7));
 }
 
 #[test]
@@ -605,4 +701,17 @@ fn the_supported_tools_compact_together_and_come_back_in_order() {
     let compact = encode_tools(&supported).unwrap();
     assert_eq!(compact.definitions.lines().count(), supported.len());
     assert_eq!(decode_tools(&compact).unwrap(), supported);
+}
+
+#[test]
+fn a_title_that_restates_its_key_costs_one_character() {
+    let case = cases()
+        .into_iter()
+        .find(|case| case.tool.name == "search_contacts")
+        .unwrap();
+    let line = encode_tools(&[case.tool]).unwrap().definitions;
+    println!("{line}");
+    assert!(line.contains("company?:str|null~=null@,"), "{line}");
+    assert!(line.contains("min_score?:num(0..1)|null~=null@,"), "{line}");
+    assert!(line.contains(")@'search_contactsArguments' - "), "{line}");
 }
