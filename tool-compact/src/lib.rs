@@ -1,4 +1,5 @@
 //! Pure, deterministic tool-schema compaction and validated call decoding.
+#![doc = include_str!("../README.md")]
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
