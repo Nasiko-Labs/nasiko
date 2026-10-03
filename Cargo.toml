@@ -37,7 +37,6 @@ version = "0.1.0"
 # ─── Internal OSS crates ────────────────────────────────────────────────────
 nasiko-auth = { path = "auth" }
 nasiko-compress = { path = "compress" }
-nasiko-tool-compact = { path = "tool-compact" }
 nasiko-config = { path = "config" }
 nasiko-pricing = { path = "pricing" }
 nasiko-savings = { path = "savings" }

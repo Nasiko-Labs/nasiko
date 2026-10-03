@@ -20,7 +20,7 @@ nasiko-savings.workspace = true
 # Internal — structural payload compression at the egress seam (src/compress.rs)
 nasiko-compress.workspace = true
 # Internal — opt-in compact tool schemas at the egress seam (src/tool_compact.rs)
-nasiko-tool-compact.workspace = true
+nasiko-tool-compact = { path = "../tool-compact" }
 
 # Web / async
 axum = { workspace = true }
