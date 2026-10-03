@@ -113,6 +113,9 @@ pub struct GatewayConfig {
     /// Measure without mutating: stats are recorded, the request is sent untouched.
     pub compress_dry_run: bool,
 
+    /// Experimental compact function declarations; off unless explicitly enabled.
+    pub tool_compaction_enabled: bool,
+
     /// Append the brevity directive to outbound requests (IP-2, output tokens).
     ///
     /// Defaults **on**, like every layer here: nothing runs until an agent's own
@@ -190,6 +193,7 @@ impl Default for GatewayConfig {
             compress_types: nasiko_compress::TypeMask::DEFAULT,
             compress_level: nasiko_compress::Level::Conservative,
             compress_dry_run: false,
+            tool_compaction_enabled: false,
             brevity_enabled: true,
             brevity_min_bytes: 0,
             brevity_holdout_pct: 5,
@@ -289,6 +293,7 @@ impl GatewayConfig {
                 nasiko_compress::Level::Conservative,
             ),
             compress_dry_run: env_flag("TOKEN_COMPRESS_DRY_RUN", false),
+            tool_compaction_enabled: env_flag("NASIKO_TOOL_COMPACTION", false),
             brevity_enabled: env_flag("TOKEN_BREVITY", d.brevity_enabled),
             brevity_min_bytes: env_usize("TOKEN_BREVITY_MIN_BYTES", d.brevity_min_bytes),
             brevity_holdout_pct: env_usize(

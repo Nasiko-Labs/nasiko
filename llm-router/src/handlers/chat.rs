@@ -207,6 +207,10 @@ async fn chat_core(
         attribution_source,
     } = routed;
 
+    // Compaction is an explicit non-streaming experiment. Routing signals above
+    // always see the original messages and native tool definitions.
+    let compact_tools = crate::tool_compaction::apply(&mut req, &ctx.cfg);
+
     // ── compression seam ──────────────────────────────────────────────────────────────────
     // After `resolve_routed_request`, not before it: `RequestSignals` (built at :159 from
     // `req.messages`) feeds the classifier, the salience gate and the `conv_id` that keys the
@@ -371,9 +375,13 @@ async fn chat_core(
     }
 
     // Non-streaming: run with ordered fallbacks; usage records the effective provider/model.
-    let (resp, (provider, model)) = fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
-        .instrument(llm_span.clone())
-        .await?;
+    let (mut resp, (provider, model)) =
+        fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
+            .instrument(llm_span.clone())
+            .await?;
+    if let Some(applied) = &compact_tools {
+        crate::tool_compaction::decode_response(&mut resp, applied)?;
+    }
     let latency_ms = started.elapsed().as_millis() as i64;
 
     // Record effective model and token usage on the server-side gen_ai span.
@@ -1133,6 +1141,84 @@ mod tests {
             sent.contains("why did the deploy fail?"),
             "the user's own question was altered"
         );
+    }
+
+    #[tokio::test]
+    async fn compact_tools_roundtrip_through_provider_wire() {
+        let sent = Arc::new(Mutex::new(String::new()));
+        let captured = Arc::clone(&sent);
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body_from_request(move |request| {
+                *captured.lock().unwrap() =
+                    String::from_utf8_lossy(request.body().map(Vec::as_slice).unwrap_or_default())
+                        .into_owned();
+                json!({
+                    "id":"chatcmpl-compact","object":"chat.completion","model":"gpt-4o",
+                    "choices":[{
+                        "index":0,
+                        "message":{"role":"assistant","content":"<<call make_event {\"title\":\"Review\"}>>"},
+                        "finish_reason":"stop"
+                    }]
+                }).to_string().into_bytes()
+            })
+            .create_async()
+            .await;
+        let mut ctx = ctx_with(server.url());
+        ctx.cfg = Arc::new(GatewayConfig {
+            tool_compaction_enabled: true,
+            ..(*ctx.cfg).clone()
+        });
+        let store = Store {
+            config: None,
+            is_coding_agent: false,
+            compress_enabled: false,
+        };
+        let body = json!({
+            "model":"gpt-4o",
+            "messages":[{"role":"user","content":"Plan a review"}],
+            "tools":[{"type":"function","function":{
+                "name":"make_event",
+                "description":"Create an event",
+                "parameters":{"type":"object","properties":{"title":{"type":"string"}},"required":["title"]}
+            }}]
+        });
+        let resp = chat_core(
+            &ctx,
+            &store,
+            &auth_headers(&token()),
+            body,
+            InboundFormat::OpenAi,
+            None,
+        )
+        .await
+        .unwrap();
+        mock.assert_async().await;
+        let provider_body: Value = serde_json::from_str(&sent.lock().unwrap()).unwrap();
+        assert!(provider_body.get("tools").is_none());
+        assert!(
+            provider_body["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|m| m["content"]
+                    .as_str()
+                    .is_some_and(|s| s.contains("make_event(title!:str")))
+        );
+        let client_body: Value = serde_json::from_str(&body_string(resp).await).unwrap();
+        assert_eq!(
+            client_body["choices"][0]["message"]["tool_calls"][0]["function"]["name"],
+            "make_event"
+        );
+        assert_eq!(
+            client_body["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"],
+            "{\"title\":\"Review\"}"
+        );
+        assert_eq!(client_body["choices"][0]["finish_reason"], "tool_calls");
+        assert!(client_body["choices"][0]["message"]["content"].is_null());
     }
 
     #[tokio::test]

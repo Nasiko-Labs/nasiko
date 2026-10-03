@@ -78,6 +78,35 @@ Provider translation + streaming are tested against the REQUEST_JOURNEY fixtures
 `mockito`; the resolver/handler use a mockable `RegistryStore`, so the full path runs
 without Postgres. Crypto byte-compatibility is guarded in `nasiko-secrets`.
 
+## Compact tool schemas experiment
+
+Set `NASIKO_TOOL_COMPACTION=true` to opt into compact function declarations
+for non-streaming chat requests. It defaults to `false`. The router applies it
+after routing decisions and before provider dispatch, then validates and
+converts compact responses back to standard tool calls. Streaming requests,
+unsupported schemas, forced `tool_choice`, prior tool-result turns, and
+provider-specific tool fields retain native tool handling. A malformed compact
+call produces an upstream error; it is never guessed or passed through.
+The protocol and supported schema subset are documented in
+[`tool-compact/README.md`](../tool-compact/README.md).
+
+Run the public evaluation sample without a model or API key:
+
+```sh
+curl -fsSL https://registry.nasiko.dev/r/nasiko/compact-tools-eval -o /tmp/compact-tools-eval.json
+EVAL_SET=/tmp/compact-tools-eval.json OUT=/tmp/out.jsonl \
+  cargo run --release -p nasiko-llm-router --example compact_tools_eval
+```
+
+The example writes one JSONL line per case and prints local `o200k_base`
+request token totals to stderr. Offline runs are deterministic. For live
+format-adherence checks, set `PROVIDER_BASE_URL`, `MODEL`, and optionally
+`PROVIDER_API_KEY`; the example sends temperature-zero requests through an
+OpenAI-compatible `/chat/completions` endpoint and adds `raw_output` and
+`live_calls` to each case line. `REQUEST_TIMEOUT_SECS` defaults to 60.
+The call grammar matches the public decoder cases, so their chunks are fed
+to `StreamDecoder` unchanged; no case-specific conversion is needed.
+
 ## Manual end-to-end smoke
 
 ```sh
