@@ -30,8 +30,11 @@ pub(super) static CATEGORY_PATTERNS: LazyLock<Vec<(RequestType, Vec<Regex>)>> = 
                 RequestType::CodeGeneration,
                 compile(&[
                     r"(?i)\b(write|implement|create|build|generate)\b.{0,40}\b(function|script|code|class|program|api|endpoint|method|module)\b",
+                    r"(?i)\bimplement\b.{0,40}\b(parser|converter|validator|algorithm)\b",
                     r"(?i)\bwrite (a|an|the|me)\b.*\b(python|javascript|typescript|rust|golang|go|java|c\+\+|sql)\b",
                     r"(?i)\bfix (this|the) bug\b",
+                    r"(?i)\bfix\b.{0,40}\b(typo|spelling|comment|formatting)\b",
+                    r"(?i)\b(change|replace|update)\b.{0,40}\b(todo|note|comment|typo)\b",
                     r"(?i)\brefactor\b",
                     r"(?i)\badd error handling\b",
                 ]),
@@ -50,8 +53,10 @@ pub(super) static CATEGORY_PATTERNS: LazyLock<Vec<(RequestType, Vec<Regex>)>> = 
                 RequestType::TechnicalDesign,
                 compile(&[
                     r"(?i)\bhow should i design\b",
+                    r"(?i)\bdesign\b.{0,40}\b(migration|architecture|workflow|pipeline)\b",
                     r"(?i)\b(api|system|database|schema) design\b",
                     r"(?i)\barchitecture\b",
+                    r"(?i)\b(state transitions|idempotency boundary|rollout phases)\b",
                     r"(?i)\bdesign (a|an|the) (system|api|service|schema|database)\b",
                     r"(?i)\btrade-?offs?\b",
                 ]),
@@ -61,6 +66,9 @@ pub(super) static CATEGORY_PATTERNS: LazyLock<Vec<(RequestType, Vec<Regex>)>> = 
                 compile(&[
                     r"(?i)\bcalculate\b",
                     r"(?i)\bprobability\b",
+                    r"(?i)\b(diagnose|investigate|reconcile)\b",
+                    r"(?i)\b(event by event|failure interleavings)\b",
+                    r"(?i)\b(infer|invariants|ordering assumptions)\b",
                     r"(?i)\bsolve\b",
                     r"(?i)\bprove\b",
                     r"(?i)\bproof\b",
@@ -73,6 +81,7 @@ pub(super) static CATEGORY_PATTERNS: LazyLock<Vec<(RequestType, Vec<Regex>)>> = 
                 RequestType::Writing,
                 compile(&[
                     r"(?i)\bdraft\b",
+                    r"(?i)\bsummarize\b",
                     r"(?i)\bwrite (an?|the)\b.*\b(email|blog|article|essay|post|letter|story|poem)\b",
                     r"(?i)\bcompose\b",
                     r"(?i)\brewrite (this|that|the)\b",
@@ -83,6 +92,7 @@ pub(super) static CATEGORY_PATTERNS: LazyLock<Vec<(RequestType, Vec<Regex>)>> = 
                 RequestType::FactualLookup,
                 compile(&[
                     r"(?i)\bwhat is (the )?capital of\b",
+                    r"(?i)\bwhat does\b.{0,60}\bdo\b",
                     r"(?i)^\s*(who|what|when|where) (is|was|are|were)\b",
                     r"(?i)\bdefine\b",
                     r"(?i)\bhow many\b.*\b(are there|exist)\b",

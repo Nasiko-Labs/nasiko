@@ -50,6 +50,7 @@ src/
   auth.rs       agent-identity JWT verify (+ mint_agent_token dev helper)
   error.rs      GatewayError → (status, {"detail"})
   resolver/     resolve() + TTL ConfigCache + RegistryStore (PgRegistry)
+  routing/      boundary-safe tier selection + injectable model-agnostic request classifier
   ir/           canonical OpenAI-shaped IR (chat + embeddings), permissive/passthrough
   inbound/      InboundParser + OpenAiInbound (identity)
   providers/    ProviderClient + openai / anthropic / gemini, sse, fallback
@@ -62,9 +63,17 @@ examples/mint_token.rs   dev/test JWT minter
 
 `AGENT_JWT_SECRET` (required; fail-closed if empty), `AGENT_JWT_ALGORITHM` (HS256),
 `DEFAULT_PROVIDER` (openai), `DEFAULT_MODEL` (gpt-4o-mini), `PLATFORM_OPENAI_API_KEY`,
-`LLM_CONFIG_CACHE_TTL` (30s), `{OPENAI,ANTHROPIC,GEMINI}_API_BASE` (test overrides).
+`LLM_CONFIG_CACHE_TTL` (30s), `CLASSIFIER_TIMEOUT_MS` (250ms default),
+`{OPENAI,ANTHROPIC,GEMINI}_API_BASE` (test overrides).
 Reuses the platform's `SECRETS_ENCRYPTION_KEY` (per-user HKDF AES-256-GCM) and
 `DATABASE_URL`.
+
+Request classification defaults to `RegexClassifier`. Hosts can inject a
+`RequestClassifier` through `LlmRouterCtx`; hosted/local model adapters implement
+`ModelClassifierBackend` and can use `ModelAgnosticClassifier` for deterministic
+prompt settings, strict output validation, timeout enforcement, and regex fallback.
+Classification is only run at `cold_start`/`switch` routing boundaries; cached
+continuation/tool-loop turns retain their sticky model.
 
 Storage: `agents.llm_config` (JSONB; NULL → defaults), `user_secrets` (decrypt via
 `SecretsCrypto::try_for_user`), `token_usage` (written), `model_pricing` (cost trigger).
