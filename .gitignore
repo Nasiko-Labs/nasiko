@@ -57,3 +57,6 @@ ui/tests/fixtures/runs/
 
 # Private React/Next migration workspace; do not force-add before release approval.
 /react/
+
+# Eval output artifacts
+out*.jsonl
