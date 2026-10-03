@@ -324,6 +324,265 @@ pub fn classify<R: Rng + ?Sized>(
     (tier, request_type)
 }
 
+// --------------------------------------------------------------------------
+// 5. Pluggable request classifier ([classifier] track)
+//
+// A typed decision interface over the regex baseline: `classify(query, context)`
+// returns the request type plus a 1–5 complexity estimate and a 0–1 confidence.
+// The regex stays the out-of-the-box default; richer backends are selected by
+// name and the router falls back to the regex on any backend error or timeout.
+// --------------------------------------------------------------------------
+
+/// Input to a [`RequestClassifier`]: the user's query plus optional context
+/// (conversation history, file snippets, …). The regex baseline ignores context;
+/// richer backends use it as an additional signal.
+pub struct ClassifyInput<'a> {
+    pub query: &'a str,
+    pub context: Option<&'a str>,
+}
+
+/// One classifier decision.
+pub struct Classification {
+    pub request_type: RequestType,
+    pub complexity: u8, // 1–5
+    pub confidence: f32, // 0–1
+}
+
+/// Why a backend failed. The router treats any error as a signal to fall back
+/// to the regex classifier and counts the fallback.
+#[derive(Debug)]
+pub enum ClassifyError {
+    Backend(String),
+    Timeout,
+}
+
+impl std::fmt::Display for ClassifyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ClassifyError::Backend(msg) => write!(f, "classifier backend failed: {msg}"),
+            ClassifyError::Timeout => write!(f, "classifier backend timed out"),
+        }
+    }
+}
+
+impl std::error::Error for ClassifyError {}
+
+/// A pluggable classifier backend. Implementations must be deterministic for
+/// identical inputs (no sampling, or a seeded RNG with reported variance).
+#[async_trait::async_trait]
+pub trait RequestClassifier: Send + Sync {
+    /// Stable backend name, e.g. `"regex"`, `"heuristic"`.
+    fn name(&self) -> &str;
+    /// Classify one request. Never panics; unexpected input yields a low-
+    /// confidence `General` rather than an error.
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError>;
+}
+
+/// The regex baseline as a [`RequestClassifier`]. Wraps [`classify_request_type`]
+/// (query only; context is ignored, exactly like the baseline).
+///
+/// Fixed semantics, documented here: `complexity` is always 2 (the baseline
+/// cannot estimate effort) and `confidence` is always 0.6 (a vote-count has no
+/// calibrated margin). Backends that estimate these properly should report
+/// higher confidence when they are more certain than this default.
+pub struct RegexClassifier;
+
+#[async_trait::async_trait]
+impl RequestClassifier for RegexClassifier {
+    fn name(&self) -> &str {
+        "regex"
+    }
+
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+        Ok(Classification {
+            request_type: classify_request_type(input.query),
+            complexity: 2,
+            confidence: 0.6,
+        })
+    }
+}
+
+/// A deterministic local backend that scores categories with weighted signals
+/// from both the query and the context (which the regex baseline ignores).
+///
+/// Scoring: each category accumulates 1.0 per pattern match in the query plus
+/// 0.5 per match in the context; the highest total wins, ties broken by the
+/// category declaration order (same as the baseline).
+///
+/// On top of the shared category patterns, the heuristic adds supplemental
+/// patterns for gaps the baseline misses (code edits like "fix typo", "parser"
+/// as a code artifact, "summarize" as writing, backticked API factuals). These
+/// are general language patterns, not per-case rules.
+///
+/// Complexity rubric (1–5):
+/// - 1: trivial — under 30 chars, or a greeting / single factoid with no
+///   technical terms.
+/// - 2: simple — one clear intent, under ~120 chars.
+/// - 3: moderate — multi-step wording, 120–300 chars, or some technical terms.
+/// - 4: complex — multiple intents (`and`/`also`/several `?`), code blocks, or
+///   over 300 chars.
+/// - 5: very complex — over 500 chars, or multi-domain / highly ambiguous.
+///
+/// Confidence (0–1) comes from the winning margin:
+/// `0.3 + 0.7 * (top − second) / (top + 1)`, so a lone weak signal is ~0.3 and
+/// a decisive win approaches 1.0. No signal at all yields `General` at 0.25.
+pub struct HeuristicClassifier;
+
+/// Supplemental patterns for gaps in the shared tables, in the same
+/// `(RequestType, &[patterns])` shape. Case-insensitive.
+static HEURISTIC_EXTRA_PATTERNS: std::sync::LazyLock<Vec<(RequestType, Vec<regex::Regex>)>> =
+    std::sync::LazyLock::new(|| {
+        let compile = |pats: &[&str]| {
+            pats.iter()
+                .map(|p| regex::Regex::new(p).expect("valid heuristic pattern"))
+                .collect()
+        };
+        vec![
+            (
+                RequestType::CodeGeneration,
+                compile(&[
+                    r"(?i)\b(fix|correct)\b.{0,30}\b(typo|comment|spelling)\b",
+                    r"(?i)\b(implement|write|build|create)\b.{0,40}\b(parser|lexer|compiler|interpreter|serializer)\b",
+                    r"(?i)\b(todo|fixme)\b.{0,20}\bcomment\b",
+                ]),
+            ),
+            (
+                RequestType::FactualLookup,
+                compile(&[
+                    r"(?i)what does `[^`]+` do\b",
+                    r"(?i)\bwhat is (the|a|an)\b.{0,30}\b(mean|definition of)\b",
+                ]),
+            ),
+            (
+                RequestType::Writing,
+                compile(&[
+                    r"(?i)\bsummarize\b",
+                    r"(?i)\bin (three|3|five|5) bullets?\b",
+                    r"(?i)\bfor a nontechnical\b",
+                ]),
+            ),
+        ]
+    });
+
+impl HeuristicClassifier {
+    fn category_scores(query: &str, context: Option<&str>) -> Vec<(RequestType, f64)> {
+        let mut scores: HashMap<RequestType, f64> = HashMap::new();
+        // Shared tables: query matches count 1.0, context matches 0.5.
+        for (rt, pats) in CATEGORY_PATTERNS.iter() {
+            let q = pats.iter().filter(|p| p.is_match(query)).count() as f64;
+            if q > 0.0 {
+                *scores.entry(*rt).or_insert(0.0) += q;
+            }
+            if let Some(ctx) = context {
+                let c = pats.iter().filter(|p| p.is_match(ctx)).count() as f64 * 0.5;
+                if c > 0.0 {
+                    *scores.entry(*rt).or_insert(0.0) += c;
+                }
+            }
+        }
+        // Heuristic supplements (same weighting).
+        for (rt, pats) in HEURISTIC_EXTRA_PATTERNS.iter() {
+            let q = pats.iter().filter(|p| p.is_match(query)).count() as f64;
+            if q > 0.0 {
+                *scores.entry(*rt).or_insert(0.0) += q;
+            }
+            if let Some(ctx) = context {
+                let c = pats.iter().filter(|p| p.is_match(ctx)).count() as f64 * 0.5;
+                if c > 0.0 {
+                    *scores.entry(*rt).or_insert(0.0) += c;
+                }
+            }
+        }
+        // Emit in declaration order so ties break exactly like the baseline.
+        CATEGORY_PATTERNS
+            .iter()
+            .map(|(rt, _)| (*rt, scores.get(rt).copied().unwrap_or(0.0)))
+            .collect()
+    }
+
+    fn estimate_complexity(query: &str, context: Option<&str>) -> u8 {
+        let text = match context {
+            Some(ctx) => format!("{query}\n{ctx}"),
+            None => query.to_string(),
+        };
+        let chars = text.chars().count();
+        let lower = text.to_lowercase();
+
+        // Trivial: very short with no technical markers.
+        let technical = lower.contains("```")
+            || lower.contains("fn ")
+            || lower.contains("class ")
+            || lower.contains("api")
+            || lower.contains("database")
+            || lower.contains("algorithm");
+        if chars < 30 && !technical {
+            return 1;
+        }
+
+        let mut level: u8 = 2;
+        // Multi-intent markers.
+        let multi = lower.matches(" and ").count()
+            + lower.matches(" also ").count()
+            + lower.matches('?').count().saturating_sub(1);
+        if multi >= 2 {
+            level += 1;
+        }
+        // Technical depth.
+        if technical || lower.contains("step by step") || lower.contains("detailed") {
+            level += 1;
+        }
+        // Length.
+        if chars > 300 {
+            level += 1;
+        }
+        if chars > 500 {
+            return 5;
+        }
+        level.min(5)
+    }
+}
+
+#[async_trait::async_trait]
+impl RequestClassifier for HeuristicClassifier {
+    fn name(&self) -> &str {
+        "heuristic"
+    }
+
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+        let mut scores = Self::category_scores(input.query, input.context);
+        // Stable sort keeps declaration order on ties (same as the baseline).
+        scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        let (request_type, top) = scores[0];
+        // No signal at all: default to General, exactly like the baseline.
+        let request_type = if top <= 0.0 {
+            RequestType::General
+        } else {
+            request_type
+        };
+        let second = scores.get(1).map(|(_, s)| *s).unwrap_or(0.0);
+        let confidence = if top <= 0.0 {
+            0.25
+        } else {
+            0.3 + 0.7 * (top - second) / (top + 1.0)
+        };
+        Ok(Classification {
+            request_type,
+            complexity: Self::estimate_complexity(input.query, input.context),
+            confidence: confidence.clamp(0.0, 1.0) as f32,
+        })
+    }
+}
+
+/// Select a backend by name. Unknown names fall back to the regex baseline so a
+/// misconfigured backend can never break routing. Backends: `"regex"` (default),
+/// `"heuristic"` (local, deterministic, uses query + context).
+pub fn classifier_from_backend(name: &str) -> std::sync::Arc<dyn RequestClassifier> {
+    match name {
+        "heuristic" => std::sync::Arc::new(HeuristicClassifier),
+        _ => std::sync::Arc::new(RegexClassifier),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -530,5 +789,129 @@ mod tests {
         );
         assert_eq!(rt, RequestType::CodeGeneration);
         assert!(matches!(tier, Tier::Tier1 | Tier::Tier2 | Tier::Tier3));
+    }
+
+    // --- pluggable classifier backends ([classifier] track) ---
+
+    #[tokio::test]
+    async fn regex_backend_matches_baseline_and_documents_fixed_values() {
+        let backend = RegexClassifier;
+        assert_eq!(backend.name(), "regex");
+        let out = backend
+            .classify(&ClassifyInput {
+                query: "write me a Python sort function",
+                context: Some("this context is ignored by the baseline"),
+            })
+            .await
+            .expect("regex never fails");
+        assert_eq!(out.request_type, RequestType::CodeGeneration);
+        assert_eq!(out.request_type, classify_request_type("write me a Python sort function"));
+        // Documented fixed semantics.
+        assert_eq!(out.complexity, 2);
+        assert!((out.confidence - 0.6).abs() < 1e-6);
+    }
+
+    #[tokio::test]
+    async fn heuristic_backend_uses_context_the_baseline_ignores() {
+        let backend = HeuristicClassifier;
+        assert_eq!(backend.name(), "heuristic");
+        // Query alone is ambiguous; the context carries the explanation signal.
+        let without = backend
+            .classify(&ClassifyInput {
+                query: "what does it do",
+                context: None,
+            })
+            .await
+            .expect("heuristic never fails");
+        assert_eq!(without.request_type, RequestType::General);
+        let with = backend
+            .classify(&ClassifyInput {
+                query: "what does it do",
+                context: Some("explain what this function does, walk me through this code"),
+            })
+            .await
+            .expect("heuristic never fails");
+        assert_eq!(with.request_type, RequestType::CodeUnderstanding);
+        assert!(
+            with.confidence >= without.confidence,
+            "context should not reduce confidence"
+        );
+    }
+
+    #[tokio::test]
+    async fn heuristic_complexity_spans_the_rubric() {
+        let backend = HeuristicClassifier;
+        let trivial = backend
+            .classify(&ClassifyInput {
+                query: "hi",
+                context: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(trivial.complexity, 1);
+        let complex = backend
+            .classify(&ClassifyInput {
+                query: "Design a distributed rate limiter for our API gateway and also explain how the token bucket algorithm works step by step? Also compare it with leaky bucket?",
+                context: Some("```rust\nfn allow(key: &str) -> bool { todo!() }\n```"),
+            })
+            .await
+            .unwrap();
+        assert!(
+            complex.complexity >= 4,
+            "multi-intent + code + detail should be complex, got {}",
+            complex.complexity
+        );
+    }
+
+    #[tokio::test]
+    async fn heuristic_confidence_reflects_winning_margin() {
+        let backend = HeuristicClassifier;
+        // Decisive single-category signal → high confidence.
+        let decisive = backend
+            .classify(&ClassifyInput {
+                query: "write a python function that sorts a list",
+                context: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(decisive.request_type, RequestType::CodeGeneration);
+        assert!(
+            decisive.confidence > 0.6,
+            "decisive signal should beat the regex default confidence"
+        );
+        // No signal at all → low-confidence General, never a panic.
+        let none = backend
+            .classify(&ClassifyInput {
+                query: "asdf qwerty zxcv",
+                context: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(none.request_type, RequestType::General);
+        assert!(none.confidence < 0.5);
+        assert!((1..=5).contains(&none.complexity));
+        assert!((0.0..=1.0).contains(&none.confidence));
+    }
+
+    #[tokio::test]
+    async fn heuristic_is_deterministic() {
+        let backend = HeuristicClassifier;
+        let input = ClassifyInput {
+            query: "Explain why this function returns the old value, not the incremented value.",
+            context: Some("```rust\nfn next(n: &mut u64) -> u64 { let old = *n; *n += 1; old }\n```"),
+        };
+        let a = backend.classify(&input).await.unwrap();
+        let b = backend.classify(&input).await.unwrap();
+        assert_eq!(a.request_type, b.request_type);
+        assert_eq!(a.complexity, b.complexity);
+        assert!((a.confidence - b.confidence).abs() < 1e-9);
+    }
+
+    #[test]
+    fn backend_factory_falls_back_to_regex_on_unknown_names() {
+        assert_eq!(classifier_from_backend("regex").name(), "regex");
+        assert_eq!(classifier_from_backend("heuristic").name(), "heuristic");
+        assert_eq!(classifier_from_backend("nonsense-backend").name(), "regex");
+        assert_eq!(classifier_from_backend("").name(), "regex");
     }
 }
