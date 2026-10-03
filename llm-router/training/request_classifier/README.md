@@ -63,27 +63,32 @@ Measured on an Apple M4 (10 cores), with a release build.
 | local v2 | train out-of-fold (CV) | 0.778 | — | 0.039 | — | — |
 | regex / local v2 | public 10 (smoke test, not evidence) | 0.3 / 1.0 | — | — | 0.2 / 0.5 exact | — |
 
-Second machine (Intel i3-1215U, Linux, release build): the regex and local v2 test rows reproduce exactly except for latency. Local p50 57–60 µs / p95 132–141 µs and load 15–25 ms over four runs.
+Second machine (Intel i3-1215U, Linux, release build): the regex and local v2 test rows reproduce exactly except for latency. On commit `5597a59a`, three local runs gave p50 59–66 µs, p95 137–158 µs and load 14–32 ms.
 
-Hosted and cascade, final code, via OpenRouter (`mistralai/ministral-8b-2512`, i.e. Ministral 3 8B), default timeouts. Latency includes the network.
+Hosted and cascade via OpenRouter (`mistralai/ministral-8b-2512`, i.e. Ministral 3 8B), default timeouts, measured on commit `5597a59a`. Latency includes the network.
 
 | System | Split | Type acc | Macro-F1 | ECE (10) | Cx exact / ±1 / MAE | p50 / p95 |
 |---|---|---|---|---|---|---|
-| hosted (2/219 timed out → regex) | test (219) | 0.886 | 0.879 | 0.193 | 0.607 / 0.982 / 0.411 | 428 ms / 1.007 s |
-| hosted, second identical run | test (219) | 0.890 | 0.884 | 0.190 | 0.621 / 0.977 / 0.402 | 493 ms / 1.024 s |
-| cascade local → hosted, escalate below 0.6 | test (219) | 0.822 | 0.828 | 0.067 | 0.676 / 0.982 / 0.342 | 385 µs / 507 ms |
+| hosted (0 timeouts) | test (219) | 0.895 | 0.888 | 0.195 | 0.626 / 0.982 / 0.393 | 414 ms / 716 ms |
+| cascade local → hosted, escalate below 0.6 | test (219) | 0.822 | 0.828 | 0.067 | 0.680 / 0.982 / 0.338 | 335 µs / 511 ms |
 
-- **Cascade accounting:**
-  - 46 escalations (21.0%); all 46 answered by hosted.
+- **Cascade = selective escalation.**
+  - 46 escalations (21.0%), all answered by hosted.
   - 0 failed escalations, 0 regex fallbacks, 0 unclassified.
+  - It is **less accurate than hosted alone** (0.822 vs 0.895). Its benefit is that 79% of decisions never leave the process.
   - See `reports/test_report_cascade.md`.
-- **Hosted-only beats the cascade on accuracy (0.886 vs 0.822).** The cascade sends 21% of requests to the hosted model and answers the rest locally in microseconds.
-- **Measured hosted cost:** $3.02e-5 per escalation on average (45/46 hit the prompt cache) and $6.35e-6 per cascade request. Both come from OpenRouter's per-response `usage.cost`, recorded by a measurement proxy.
-- **Hosted reproducibility:** two identical runs agreed on type for 216/217 items answered in both, and on type and complexity for 211/217.
+- **Hosted run-to-run variance (best-effort determinism):**
+  - Two earlier hosted runs with the same classify code scored 0.886 and 0.890.
+  - Type agreement with the final run: 217/217 and 217/219.
+- **Measured hosted cost (OpenRouter `usage.cost`, instrumented cascade runs):**
+  - Final-code run: $1.99e-5 mean per billed escalation, all prompt-cached; $4.09e-6 per request; $0.00089493 for 45 billed calls.
+  - Earlier run: $3.02e-5 mean, including one uncached call at $9.72e-5.
+  - Hosted-only runs were not cost-instrumented. Local dollar compute cost was not measured.
+- **Hosted confidence is uncalibrated.** The model returns no logprobs, so every hosted answer carries the fixed default 0.7. That explains the hosted ECE, and it is mixed into the cascade ECE.
 - **Earlier Bedrock run (pre-audit code, `mistral.ministral-3-8b-instruct`):**
   - hosted 0.840, with 20 timeouts;
   - cascade 0.822, where 5 of 46 escalations hit the 1.2 s budget and kept the local answer.
-- **Hosted confidence is uncalibrated.** The model returns no logprobs on either route, so every hosted answer carries the fixed default 0.7. That explains the hosted ECE, and it is mixed into the cascade ECE.
+- **Only one hosted model family was evaluated.** No multi-provider claim is made.
 
 Notes:
 - **v1 vs v2.** v1 fitted its temperature on val, which had already informed one error-analysis round. On test it was overconfident (135 items averaged 0.978 confidence at 0.881 accuracy). v2 picks C and T by cross-validation on train only. We report both because v2 was evaluated on test after we had seen v1's test result.

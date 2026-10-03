@@ -1,16 +1,25 @@
 # Report on eval_test.json
 
-> **Provenance.** Final-code `classifier_eval` run on 2026-10-03 with `CLASSIFIER_BACKEND=cascade`. Settings: hosted OpenRouter `mistralai/ministral-8b-2512`, `CLASSIFIER_ESCALATE_BELOW=0.6`, `CLASSIFIER_TIMEOUT_MS=1500` (hosted budget 1.2 s), `EVAL_VERBOSE=1`. The stderr accounting line was `cascade answers: local=173 hosted=46 local-after-failed-escalation=0 regex=0 unclassified=0`.
-> - Escalations: 46/219 (21.0%), exactly the 46 test items where local confidence is below 0.6. All 46 were answered by the hosted model (37 correct; the local answers for these 46 items would have scored 23). Failed escalations: 0. Regex fallbacks: 0.
-> - The 173 non-escalated items (143 correct) are byte-identical to the local run.
-> - Latency includes the network round trip on escalated items: escalated p50 426 ms, max 1.001 s. Non-escalated items measured p50 311 µs, against 57–60 µs in local-only runs on the same code path. The cause was not investigated.
-> - Hosted confidences are the fixed 0.7 default (no logprobs), so the cascade ECE mixes calibrated local and uncalibrated hosted confidences.
-> - **Cost (measured).** A separate cascade run went through a local proxy that recorded OpenRouter's per-response `usage` (timeout raised to 5 s for that run; its latency is not reported). Results: 46 escalations cost $0.00139092 in total, $3.02e-5 mean per escalation (range $1.14e-5–$9.72e-5; 45/46 hit the provider prompt cache), ~652 prompt + 3 completion tokens per call. That is $6.35e-6 per request over all 219 requests. The run scored 0.831; hosted answers vary slightly between runs.
-> - An earlier saved run on Bedrock (`mistral.ministral-3-8b-instruct`, pre-audit code) scored 0.822 with 46 escalations; 5 of them hit the 1.2 s budget and kept the local answer.
+> **Provenance.**
+> - **Run:** `classifier_eval` on commit `5597a59a` (2026-10-03).
+> - **Configuration:** `CLASSIFIER_BACKEND=cascade`, hosted OpenRouter `mistralai/ministral-8b-2512`, `CLASSIFIER_ESCALATE_BELOW=0.6`, `CLASSIFIER_TIMEOUT_MS=1500` (hosted budget 1.2 s), `EVAL_VERBOSE=1`.
+> - **Stderr accounting:** `escalations=46 (failed 0)`; `cascade answers: local=173 hosted=46 local-after-failed-escalation=0 regex=0 unclassified=0`.
+> - **Escalations:** 46/219 (21.0%), exactly the 46 test items where local confidence is below 0.6.
+>   - 37 of the hosted answers are correct; the local answers for those items would have scored 23.
+>   - The 173 non-escalated items (143 correct) are byte-identical to the local run.
+> - **Selective escalation, not higher accuracy.** The cascade (0.822) is less accurate than hosted alone (0.895 in the same session). It sends 21% of requests to the provider and answers the rest in-process.
+> - **Latency:** p50 and p95 cover all 219 calls. Escalated items: p50 414 ms, max 1.026 s, network included. Non-escalated items: p50 274 µs, versus 59–66 µs in local-only runs on the same code path; the cause was not investigated.
+> - **Calibration:** hosted confidences are the fixed 0.7 default (no logprobs), so the cascade ECE mixes calibrated local and uncalibrated hosted confidences.
+> - **Cost, measured on a separate instrumented cascade run (same commit):**
+>   - **Method:** a local proxy forwarded requests unchanged and recorded OpenRouter's per-response `usage`. `CLASSIFIER_TIMEOUT_MS=5000` was used so the extra hop would not cause timeouts; that run's latency is not reported.
+>   - **Result:** 46 escalations, 45 answered and billed. 1 (`wr-0054-v2`) hit the 4 s hosted budget and kept the local answer. Accuracy 0.822.
+>   - **Billed:** $0.00089493 in total, $1.99e-5 mean per billed call (range $1.05e-5–$2.73e-5), $4.09e-6 per request over 219. All 45 calls hit the provider's prompt cache; ~652 prompt + 3 completion tokens each.
+>   - **Earlier instrumented run:** 46 billed calls, $0.00139092 in total, $3.02e-5 mean. One uncached call cost $9.72e-5.
+> - **Earlier comparison:** a Bedrock run (pre-audit code) scored 0.822; 5 of its 46 escalations hit the 1.2 s budget and kept the local answer.
 
 ### cascade local→hosted OpenRouter mistralai/ministral-8b-2512 (test)
 
-n=219 · **type accuracy 0.822** · macro-F1 0.828 · ECE(10) 0.067 · top-label Brier 0.141 · complexity exact 0.676, ±1 0.982, MAE 0.342 · latency p50 385µs p95 507491µs
+n=219 · **type accuracy 0.822** · macro-F1 0.828 · ECE(10) 0.067 · top-label Brier 0.141 · complexity exact 0.680, ±1 0.982, MAE 0.338 · latency p50 335µs p95 511151µs
 
 | class | support | precision | recall | F1 |
 |---|---|---|---|---|
@@ -73,7 +82,7 @@ Per slice / tag accuracy:
 
 ### local (test)
 
-n=219 · **type accuracy 0.758** · macro-F1 0.764 · ECE(10) 0.072 · top-label Brier 0.154 · complexity exact 0.685, ±1 0.986, MAE 0.329 · latency p50 60µs p95 134µs
+n=219 · **type accuracy 0.758** · macro-F1 0.764 · ECE(10) 0.072 · top-label Brier 0.154 · complexity exact 0.685, ±1 0.986, MAE 0.329 · latency p50 66µs p95 158µs
 
 | class | support | precision | recall | F1 |
 |---|---|---|---|---|
