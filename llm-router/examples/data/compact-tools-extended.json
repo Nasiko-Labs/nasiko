@@ -1,0 +1,980 @@
+{
+  "schema_version": "compact-tools-eval-v1",
+  "purpose": "Team-authored extended cases for compact tool schemas, reported separately from the official set. Relative dates assume Friday 2026-10-02, Asia/Kolkata.",
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "create_calendar_event",
+        "description": "Create an event in the user's calendar.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "title": {
+              "type": "string",
+              "description": "Event title"
+            },
+            "start": {
+              "type": "string",
+              "format": "date-time",
+              "description": "Start time, ISO 8601"
+            },
+            "duration_min": {
+              "type": "integer",
+              "description": "Duration in minutes"
+            },
+            "attendees": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Attendee emails"
+            },
+            "visibility": {
+              "type": "string",
+              "enum": [
+                "public",
+                "private"
+              ]
+            }
+          },
+          "required": [
+            "title",
+            "start"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "send_email",
+        "description": "Send an email from the user's account.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "to": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Recipient emails"
+            },
+            "subject": {
+              "type": "string",
+              "description": "Subject line"
+            },
+            "body": {
+              "type": "string",
+              "description": "Plain-text body"
+            },
+            "cc": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "CC emails"
+            }
+          },
+          "required": [
+            "to",
+            "subject",
+            "body"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_weather",
+        "description": "Get the current weather for a city.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "city": {
+              "type": "string",
+              "description": "City name"
+            },
+            "unit": {
+              "type": "string",
+              "enum": [
+                "celsius",
+                "fahrenheit"
+              ]
+            }
+          },
+          "required": [
+            "city"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "create_task",
+        "description": "Add a task to the user's to-do list.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "title": {
+              "type": "string",
+              "description": "Task title"
+            },
+            "due": {
+              "type": "string",
+              "format": "date-time",
+              "description": "Due time, ISO 8601"
+            },
+            "priority": {
+              "type": "string",
+              "enum": [
+                "low",
+                "medium",
+                "high"
+              ]
+            },
+            "tags": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Labels"
+            }
+          },
+          "required": [
+            "title"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "set_thermostat",
+        "description": "Set the home thermostat.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "temperature_c": {
+              "type": "number",
+              "description": "Target temperature in Celsius"
+            },
+            "eco_mode": {
+              "type": "boolean",
+              "description": "Enable energy saving"
+            }
+          },
+          "required": [
+            "temperature_c"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "update_contact",
+        "description": "Create or update a saved contact.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "contact": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "description": "Full name"
+                },
+                "email": {
+                  "type": "string"
+                },
+                "phone": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name"
+              ]
+            },
+            "notes": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "contact"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "search_docs",
+        "description": "Search the company knowledge base.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "Search text"
+            },
+            "limit": {
+              "type": "integer",
+              "description": "Max results"
+            }
+          },
+          "required": [
+            "query"
+          ]
+        }
+      }
+    }
+  ],
+  "cases": [
+    {
+      "id": "ext-001",
+      "note": "single call with an enum argument",
+      "tools": [
+        "get_weather",
+        "create_calendar_event"
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "content": "What's the weather in Pune right now, in celsius?"
+        }
+      ],
+      "expected": [
+        {
+          "name": "get_weather",
+          "arguments": {
+            "city": "Pune",
+            "unit": "celsius"
+          }
+        }
+      ]
+    },
+    {
+      "id": "ext-002",
+      "note": "three actions across three tools, in request order",
+      "tools": [
+        "send_email",
+        "create_task",
+        "get_weather"
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "content": "Email priya@example.com that the notes are ready, add a high priority task to review the notes due tomorrow 6pm IST, and check the weather in Mumbai"
+        }
+      ],
+      "expected": [
+        {
+          "name": "send_email",
+          "arguments": {
+            "to": [
+              "priya@example.com"
+            ],
+            "subject": "Notes ready",
+            "body": "The notes are ready."
+          }
+        },
+        {
+          "name": "create_task",
+          "arguments": {
+            "title": "Review the notes",
+            "due": "2026-10-03T18:00:00+05:30",
+            "priority": "high"
+          }
+        },
+        {
+          "name": "get_weather",
+          "arguments": {
+            "city": "Mumbai"
+          }
+        }
+      ],
+      "match": {
+        "free_text_fields": [
+          "subject",
+          "body",
+          "title"
+        ]
+      }
+    },
+    {
+      "id": "ext-003",
+      "note": "two calls to the same tool",
+      "tools": [
+        "create_task"
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "content": "Add two tasks: buy milk, and call the plumber"
+        }
+      ],
+      "expected": [
+        {
+          "name": "create_task",
+          "arguments": {
+            "title": "Buy milk"
+          }
+        },
+        {
+          "name": "create_task",
+          "arguments": {
+            "title": "Call the plumber"
+          }
+        }
+      ],
+      "match": {
+        "free_text_fields": [
+          "title"
+        ]
+      }
+    },
+    {
+      "id": "ext-004",
+      "note": "general question while unrelated tools are offered: no call",
+      "tools": [
+        "create_calendar_event",
+        "send_email"
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "content": "In one sentence, what is a sprint retrospective?"
+        }
+      ],
+      "expected": []
+    },
+    {
+      "id": "ext-005",
+      "note": "small talk with tools offered: no call",
+      "tools": [
+        "create_task"
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "content": "Thanks, that's all for now!"
+        }
+      ],
+      "expected": []
+    },
+    {
+      "id": "ext-006",
+      "note": "arithmetic needs no tool",
+      "tools": [
+        "search_docs",
+        "get_weather"
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "content": "What is 15% of 240?"
+        }
+      ],
+      "expected": []
+    },
+    {
+      "id": "ext-007",
+      "note": "number and boolean arguments",
+      "tools": [
+        "set_thermostat"
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "content": "Set the thermostat to 21.5 degrees with eco mode on"
+        }
+      ],
+      "expected": [
+        {
+          "name": "set_thermostat",
+          "arguments": {
+            "temperature_c": 21.5,
+            "eco_mode": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "ext-008",
+      "note": "nested object argument, optional inner field omitted",
+      "tools": [
+        "update_contact"
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "content": "Save Arjun's email as arjun@example.com in my contacts"
+        }
+      ],
+      "expected": [
+        {
+          "name": "update_contact",
+          "arguments": {
+            "contact": {
+              "name": "Arjun",
+              "email": "arjun@example.com"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "ext-009",
+      "note": "integer argument plus free-text query",
+      "tools": [
+        "search_docs"
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "content": "Find the 3 most relevant docs about the refund policy"
+        }
+      ],
+      "expected": [
+        {
+          "name": "search_docs",
+          "arguments": {
+            "query": "refund policy",
+            "limit": 3
+          }
+        }
+      ],
+      "match": {
+        "free_text_fields": [
+          "query"
+        ]
+      }
+    },
+    {
+      "id": "ext-010",
+      "note": "to and cc arrays",
+      "tools": [
+        "send_email"
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "content": "Email ops@example.com, cc lead@example.com, subject 'Deploy done', saying the deploy finished cleanly"
+        }
+      ],
+      "expected": [
+        {
+          "name": "send_email",
+          "arguments": {
+            "to": [
+              "ops@example.com"
+            ],
+            "cc": [
+              "lead@example.com"
+            ],
+            "subject": "Deploy done",
+            "body": "The deploy finished cleanly."
+          }
+        }
+      ],
+      "match": {
+        "free_text_fields": [
+          "subject",
+          "body"
+        ]
+      }
+    },
+    {
+      "id": "ext-011",
+      "note": "relative date: day after tomorrow",
+      "tools": [
+        "create_calendar_event"
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "content": "Put a 15 minute standup on my calendar the day after tomorrow at 9am IST"
+        }
+      ],
+      "expected": [
+        {
+          "name": "create_calendar_event",
+          "arguments": {
+            "title": "Standup",
+            "start": "2026-10-04T09:00:00+05:30",
+            "duration_min": 15
+          }
+        }
+      ],
+      "match": {
+        "free_text_fields": [
+          "title"
+        ]
+      }
+    },
+    {
+      "id": "ext-012",
+      "note": "weekday date, duration and public visibility",
+      "tools": [
+        "create_calendar_event",
+        "send_email"
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "content": "Schedule a public all-hands on Wednesday at 4pm IST for 60 minutes"
+        }
+      ],
+      "expected": [
+        {
+          "name": "create_calendar_event",
+          "arguments": {
+            "title": "All-hands",
+            "start": "2026-10-07T16:00:00+05:30",
+            "duration_min": 60,
+            "visibility": "public"
+          }
+        }
+      ],
+      "match": {
+        "free_text_fields": [
+          "title"
+        ]
+      }
+    },
+    {
+      "id": "ext-013",
+      "note": "explicit tool_choice auto still compacts",
+      "tools": [
+        "create_task"
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "content": "Remind me with a task to submit the report by Monday 5pm IST"
+        }
+      ],
+      "expected": [
+        {
+          "name": "create_task",
+          "arguments": {
+            "title": "Submit the report",
+            "due": "2026-10-05T17:00:00+05:30"
+          }
+        }
+      ],
+      "match": {
+        "free_text_fields": [
+          "title"
+        ]
+      },
+      "tool_choice": "auto"
+    },
+    {
+      "id": "ext-014",
+      "note": "multi-turn: the action is in the last user turn",
+      "tools": [
+        "create_calendar_event"
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "content": "I need to plan next week"
+        },
+        {
+          "role": "assistant",
+          "content": "Sure, what should I set up?"
+        },
+        {
+          "role": "user",
+          "content": "Block Tuesday 11am IST for a 45 minute 1:1 with dev@example.com"
+        }
+      ],
+      "expected": [
+        {
+          "name": "create_calendar_event",
+          "arguments": {
+            "title": "1:1",
+            "start": "2026-10-06T11:00:00+05:30",
+            "duration_min": 45,
+            "attendees": [
+              "dev@example.com"
+            ]
+          }
+        }
+      ],
+      "match": {
+        "free_text_fields": [
+          "title"
+        ]
+      }
+    },
+    {
+      "id": "ext-015",
+      "note": "client system prompt alongside the injected one",
+      "tools": [
+        "get_weather"
+      ],
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are a concise assistant."
+        },
+        {
+          "role": "user",
+          "content": "Check the weather in Bengaluru in fahrenheit"
+        }
+      ],
+      "expected": [
+        {
+          "name": "get_weather",
+          "arguments": {
+            "city": "Bengaluru",
+            "unit": "fahrenheit"
+          }
+        }
+      ]
+    }
+  ],
+  "decoder_cases": [
+    {
+      "id": "edc-001",
+      "note": "prose before and after a call",
+      "tools": [
+        "get_weather"
+      ],
+      "chunks": [
+        "Sure, checking now. ",
+        "<<call get_weather {\"city\":\"Pune\"}>>",
+        " One moment."
+      ],
+      "expected": {
+        "calls": [
+          {
+            "name": "get_weather",
+            "arguments": {
+              "city": "Pune"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "edc-002",
+      "note": "two calls in one stream, second split mid-name",
+      "tools": [
+        "get_weather",
+        "create_task"
+      ],
+      "chunks": [
+        "<<call get_weather {\"city\":\"Pune\"}>>\n<<call create_",
+        "task {\"title\":\"Buy milk\",\"priority\":\"low\"}>>"
+      ],
+      "expected": {
+        "calls": [
+          {
+            "name": "get_weather",
+            "arguments": {
+              "city": "Pune"
+            }
+          },
+          {
+            "name": "create_task",
+            "arguments": {
+              "title": "Buy milk",
+              "priority": "low"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "edc-003",
+      "note": "one character per chunk",
+      "tools": [
+        "get_weather"
+      ],
+      "chunks": [
+        "<",
+        "<",
+        "c",
+        "a",
+        "l",
+        "l",
+        " ",
+        "g",
+        "e",
+        "t",
+        "_",
+        "w",
+        "e",
+        "a",
+        "t",
+        "h",
+        "e",
+        "r",
+        " ",
+        "{",
+        "\"",
+        "c",
+        "i",
+        "t",
+        "y",
+        "\"",
+        ":",
+        "\"",
+        "P",
+        "u",
+        "n",
+        "e",
+        "\"",
+        "}",
+        ">",
+        ">"
+      ],
+      "expected": {
+        "calls": [
+          {
+            "name": "get_weather",
+            "arguments": {
+              "city": "Pune"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "edc-004",
+      "note": "escaped quote split between backslash and quote",
+      "tools": [
+        "send_email"
+      ],
+      "chunks": [
+        "<<call send_email {\"to\":[\"a@example.com\"],\"subject\":\"Quote\",\"body\":\"She said \\",
+        "\"ship it\\\"\"}>>"
+      ],
+      "expected": {
+        "calls": [
+          {
+            "name": "send_email",
+            "arguments": {
+              "to": [
+                "a@example.com"
+              ],
+              "subject": "Quote",
+              "body": "She said \"ship it\""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "edc-005",
+      "note": "'>>' inside a string split across chunks",
+      "tools": [
+        "send_email"
+      ],
+      "chunks": [
+        "<<call send_email {\"to\":[\"a@example.com\"],\"subject\":\"a >",
+        "> b\",\"body\":\"x\"}>>"
+      ],
+      "expected": {
+        "calls": [
+          {
+            "name": "send_email",
+            "arguments": {
+              "to": [
+                "a@example.com"
+              ],
+              "subject": "a >> b",
+              "body": "x"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "edc-006",
+      "note": "non-ASCII argument text",
+      "tools": [
+        "get_weather"
+      ],
+      "chunks": [
+        "<<call get_weather {\"city\":\"São Paulo\"}>>"
+      ],
+      "expected": {
+        "calls": [
+          {
+            "name": "get_weather",
+            "arguments": {
+              "city": "São Paulo"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "edc-007",
+      "note": "marker lookalikes are plain text",
+      "tools": [
+        "get_weather"
+      ],
+      "chunks": [
+        "Write <<caller>> in the template",
+        ", or compare a << b."
+      ],
+      "expected": {
+        "calls": []
+      }
+    },
+    {
+      "id": "edc-008",
+      "note": "plain answer with no markers",
+      "tools": [
+        "get_weather"
+      ],
+      "chunks": [
+        "It is usually sunny there in October."
+      ],
+      "expected": {
+        "calls": []
+      }
+    },
+    {
+      "id": "edc-009",
+      "note": "integer field given as a string",
+      "tools": [
+        "create_calendar_event"
+      ],
+      "chunks": [
+        "<<call create_calendar_event {\"title\":\"Sync\",\"start\":\"2026-10-05T15:00:00+05:30\",\"duration_min\":\"30\"}>>"
+      ],
+      "expected": {
+        "error": "invalid_arguments"
+      }
+    },
+    {
+      "id": "edc-010",
+      "note": "integer field given a fraction",
+      "tools": [
+        "create_calendar_event"
+      ],
+      "chunks": [
+        "<<call create_calendar_event {\"title\":\"Sync\",\"start\":\"2026-10-05T15:00:00+05:30\",\"duration_min\":30.5}>>"
+      ],
+      "expected": {
+        "error": "invalid_arguments"
+      }
+    },
+    {
+      "id": "edc-011",
+      "note": "field not in the schema",
+      "tools": [
+        "create_calendar_event"
+      ],
+      "chunks": [
+        "<<call create_calendar_event {\"title\":\"Sync\",\"start\":\"2026-10-05T15:00:00+05:30\",\"room\":\"4B\"}>>"
+      ],
+      "expected": {
+        "error": "invalid_arguments"
+      }
+    },
+    {
+      "id": "edc-012",
+      "note": "nested object missing its required field",
+      "tools": [
+        "update_contact"
+      ],
+      "chunks": [
+        "<<call update_contact {\"contact\":{\"email\":\"x@example.com\"}}>>"
+      ],
+      "expected": {
+        "error": "invalid_arguments"
+      }
+    },
+    {
+      "id": "edc-013",
+      "note": "date-time without an offset",
+      "tools": [
+        "create_calendar_event"
+      ],
+      "chunks": [
+        "<<call create_calendar_event {\"title\":\"Sync\",\"start\":\"next Monday 3pm\"}>>"
+      ],
+      "expected": {
+        "error": "invalid_arguments"
+      }
+    },
+    {
+      "id": "edc-014",
+      "note": "enum values are case-sensitive",
+      "tools": [
+        "get_weather"
+      ],
+      "chunks": [
+        "<<call get_weather {\"city\":\"Pune\",\"unit\":\"Celsius\"}>>"
+      ],
+      "expected": {
+        "error": "invalid_arguments"
+      }
+    },
+    {
+      "id": "edc-015",
+      "note": "malformed JSON arguments",
+      "tools": [
+        "get_weather"
+      ],
+      "chunks": [
+        "<<call get_weather {\"city\": \"Pune\",}>>"
+      ],
+      "expected": {
+        "error": "invalid_arguments"
+      }
+    },
+    {
+      "id": "edc-016",
+      "note": "stream ends inside a call",
+      "tools": [
+        "get_weather"
+      ],
+      "chunks": [
+        "Checking. ",
+        "<<call get_weather {\"city\":\"Pu"
+      ],
+      "expected": {
+        "error": "invalid_arguments"
+      }
+    },
+    {
+      "id": "edc-017",
+      "note": "a known tool not offered in this request",
+      "tools": [
+        "get_weather"
+      ],
+      "chunks": [
+        "<<call send_email {\"to\":[\"a@example.com\"],\"subject\":\"s\",\"body\":\"b\"}>>"
+      ],
+      "expected": {
+        "error": "unknown_tool"
+      }
+    },
+    {
+      "id": "edc-018",
+      "note": "a bad call after a good one fails the whole output",
+      "tools": [
+        "get_weather"
+      ],
+      "chunks": [
+        "<<call get_weather {\"city\":\"Pune\"}>>",
+        " then ",
+        "<<call delete_everything {}>>"
+      ],
+      "expected": {
+        "error": "unknown_tool"
+      }
+    }
+  ]
+}

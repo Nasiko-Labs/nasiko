@@ -30,6 +30,13 @@
 //!
 //! The harness only calls the public `nasiko_tool_compact` API; it has no
 //! case-specific logic.
+//!
+//! # Extended cases
+//!
+//! `examples/data/compact-tools-extended.json` is a team-authored set in the same
+//! format (more tools, multi-call, no-call, nested and numeric arguments, and stream
+//! edge cases). Run it by pointing `EVAL_SET` at it; report its results separately
+//! from the official set.
 
 use std::{
     collections::BTreeMap,
@@ -682,6 +689,34 @@ mod tests {
         }
     }
 
+    /// The team's extended set is held to its own expectations offline: every case
+    /// compacts and round-trips, and every decoder case yields its calls or error code.
+    #[test]
+    fn extended_dataset_meets_its_expectations() {
+        let path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/data/compact-tools-extended.json");
+        let dataset = Dataset::load(&path).unwrap();
+        assert!(!dataset.cases.is_empty() && !dataset.decoder_cases.is_empty());
+        for (index, case) in dataset.cases.iter().enumerate() {
+            let normal = normal_record(&dataset, case, index, None).unwrap();
+            assert_eq!(normal.record["compacted"], json!(true), "{}", normal.id);
+            assert_eq!(
+                normal.record["roundtrip_calls"],
+                json!(normal.expected),
+                "{}",
+                normal.id
+            );
+        }
+        for (index, case) in dataset.decoder_cases.iter().enumerate() {
+            let record = decoder_record(&dataset, case, index).unwrap();
+            let expected = &case["expected"];
+            match expected.get("error") {
+                Some(code) => assert_eq!(&record["decoded"]["error"], code, "{}", record["id"]),
+                None => assert_eq!(&record["decoded"], expected, "{}", record["id"]),
+            }
+        }
+    }
+
     #[test]
     fn normal_case_resolves_named_tools_and_round_trips_expected_calls() {
         let case = json!({
@@ -718,7 +753,7 @@ mod tests {
         let system = normal.record["compact_request"]["messages"][0]["content"]
             .as_str()
             .unwrap();
-        assert!(system.starts_with("lookup(") && !system.contains("2026-10-02"));
+        assert!(system.starts_with("Tools:\nlookup(") && !system.contains("2026-10-02"));
         assert_eq!(
             normal.native_request["messages"],
             json!([{"role": "user", "content": "hi"}])
