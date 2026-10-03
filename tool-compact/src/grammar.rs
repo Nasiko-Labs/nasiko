@@ -1,9 +1,16 @@
 //! Scan `<<call name {json}>>` out of model text.
 //!
-//! The closer is the first `>>` for now. A later task treats `>>` inside a
-//! JSON string as argument text.
+//! `>>` ends a call only outside a JSON string. Inside a string it is argument
+//! text, including when the quote before it is escaped.
 
 use crate::types::{ArgumentFault, CompactError};
+
+#[derive(Clone, Copy)]
+enum Scan {
+    Outside,
+    InString,
+    Escaped,
+}
 
 pub(crate) struct RawCall {
     pub name: String,
@@ -14,28 +21,82 @@ pub(crate) fn scan_one(text: &str) -> Result<Option<RawCall>, CompactError> {
     let Some((_, after_marker)) = text.split_once("<<call ") else {
         return Ok(None);
     };
-    let Some((name, after_name)) = after_marker.split_once(' ') else {
-        return Err(malformed(&String::new()));
-    };
+    Ok(Some(take_call(after_marker)?))
+}
+
+fn take_call(after_marker: &str) -> Result<RawCall, CompactError> {
+    let mut chars = after_marker.chars().peekable();
+    let mut name = String::new();
+    while let Some(ch) = chars.next() {
+        if ch == ' ' {
+            break;
+        }
+        name.push(ch);
+    }
     if name.is_empty() || !name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_') {
-        return Err(malformed(name));
+        return Err(malformed(&name));
     }
-    let Some((arguments, _)) = after_name.split_once(">>") else {
-        return Err(malformed(name));
-    };
-    let arguments = arguments.trim().to_string();
-    if !arguments.starts_with('{') {
-        return Err(malformed(name));
+
+    let mut arguments = String::new();
+    let mut state = Scan::Outside;
+    while let Some(ch) = chars.next() {
+        match state {
+            Scan::Outside if ch == '>' && chars.peek() == Some(&'>') => {
+                chars.next();
+                let arguments = arguments.trim().to_string();
+                if !arguments.starts_with('{') {
+                    return Err(malformed(&name));
+                }
+                return Ok(RawCall { name, arguments });
+            }
+            Scan::Outside if ch == '"' => {
+                arguments.push(ch);
+                state = Scan::InString;
+            }
+            Scan::InString if ch == '\\' => {
+                arguments.push(ch);
+                state = Scan::Escaped;
+            }
+            Scan::InString if ch == '"' => {
+                arguments.push(ch);
+                state = Scan::Outside;
+            }
+            Scan::Escaped => {
+                arguments.push(ch);
+                state = Scan::InString;
+            }
+            _ => arguments.push(ch),
+        }
     }
-    Ok(Some(RawCall {
-        name: name.to_string(),
-        arguments,
-    }))
+    Err(malformed(&name))
 }
 
 pub(crate) fn malformed(name: &str) -> CompactError {
     CompactError::InvalidArguments {
         name: name.to_string(),
         reason: ArgumentFault::Malformed,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::fixtures::calendar;
+    use serde_json::Value;
+
+    #[test]
+    fn greater_than_inside_a_string_stays_in_the_title() {
+        let text = r#"<<call create_calendar_event {"title":"meet >> review","start":"2026-10-05T15:00:00+05:30"}>> trailing"#;
+        let calls = crate::decode_calls(text, &[calendar()]).unwrap();
+        let args: Value = serde_json::from_str(&calls[0].arguments).unwrap();
+        assert_eq!(args["title"], "meet >> review");
+        assert!(!calls[0].arguments.contains("trailing"));
+    }
+
+    #[test]
+    fn escaped_quote_does_not_end_the_json_string() {
+        let text = r#"<<call create_calendar_event {"title":"say \"hi\"","start":"2026-10-05T15:00:00+05:30"}>>"#;
+        let calls = crate::decode_calls(text, &[calendar()]).unwrap();
+        let args: Value = serde_json::from_str(&calls[0].arguments).unwrap();
+        assert_eq!(args["title"], "say \"hi\"");
     }
 }
