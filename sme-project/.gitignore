@@ -1,0 +1,8 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Environment files - never commit these
+.env
+.env.*

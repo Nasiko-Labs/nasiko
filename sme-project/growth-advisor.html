@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Vyapaar AI - Growth Advisor</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #f5f6fa;
+      color: #1a1a2e;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 40px 16px 60px;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 900px;
+    }
+
+    header {
+      margin-bottom: 24px;
+      text-align: center;
+    }
+
+    header h1 {
+      font-size: 1.75rem;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+      color: #1a1a2e;
+    }
+
+    header h1 span {
+      color: #6c63ff;
+    }
+
+    header p {
+      margin-top: 8px;
+      font-size: 0.95rem;
+      color: #555;
+    }
+
+    .badge {
+      display: inline-block;
+      margin-top: 10px;
+      padding: 3px 10px;
+      background: #ede9fe;
+      color: #6c63ff;
+      border-radius: 999px;
+      font-size: 0.78rem;
+      font-weight: 500;
+      letter-spacing: 0.3px;
+    }
+
+    .iframe-wrapper {
+      background: #ffffff;
+      border-radius: 14px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.08);
+      overflow: hidden;
+    }
+
+    iframe {
+      display: block;
+      width: 100%;
+      height: 650px;
+      border: none;
+    }
+
+    .open-link {
+      margin-top: 12px;
+      text-align: center;
+      font-size: 0.85rem;
+      color: #888;
+    }
+
+    .open-link a {
+      color: #6c63ff;
+      text-decoration: none;
+      font-weight: 500;
+    }
+
+    .open-link a:hover {
+      text-decoration: underline;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Growth Advisor <span>built on DronaHQ</span></h1>
+      <p>Ask for a ranked action plan, overdue payment follow-ups, or a weekly focus list.</p>
+      <span class="badge">Vyapaar AI</span>
+    </header>
+
+    <div class="iframe-wrapper">
+      <iframe
+        src="https://agents.dronahq.com/chat/26ea5d85-3f9b-4595-a133-885b99f072dd"
+        width="100%"
+        height="650"
+        frameborder="0"
+        allow="microphone"
+        title="Vyapaar AI Growth Advisor"
+      ></iframe>
+    </div>
+
+    <p class="open-link">
+      If the chat does not load above &mdash;
+      <a href="https://agents.dronahq.com/chat/26ea5d85-3f9b-4595-a133-885b99f072dd"
+         target="_blank" rel="noopener noreferrer">Open in a new tab ↗</a>
+    </p>
+  </div>
+</body>
+</html>
