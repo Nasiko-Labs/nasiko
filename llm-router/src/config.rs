@@ -4,12 +4,17 @@
 //! can be promoted to a standalone binary later without dragging in the platform's
 //! full `Config`. Env-var *names* match the platform for deployment consistency.
 
+mod classifier;
+pub use classifier::{ClassifierConfig, build_classifier};
+
 /// Configuration for the LLM router, read from the environment.
 ///
 /// See `RUST_PLAN_V1.md` §5. All fields have sane defaults so `from_env` never fails;
 /// fail-closed behaviour (e.g. an empty `agent_jwt_secret`) is enforced at use sites.
 #[derive(Debug, Clone)]
 pub struct GatewayConfig {
+    /// Experimental request classification. Regex remains the default.
+    pub classifier: ClassifierConfig,
     /// Shared HS256 secret the orchestrator mints agent-identity JWTs with. Empty ⇒
     /// every request is rejected 401 (fail closed) — never fail open.
     pub agent_jwt_secret: String,
@@ -160,6 +165,7 @@ impl Default for GatewayConfig {
     /// The canonical defaults (also the values `from_env` falls back to per key).
     fn default() -> Self {
         Self {
+            classifier: ClassifierConfig::default(),
             agent_jwt_secret: String::new(),
             agent_jwt_algorithm: "HS256".into(),
             default_provider: "openai".into(),
@@ -206,6 +212,7 @@ impl GatewayConfig {
     pub fn from_env() -> Self {
         let d = Self::default();
         Self {
+            classifier: ClassifierConfig::from_env(),
             agent_jwt_secret: env_or("AGENT_JWT_SECRET", &d.agent_jwt_secret),
             agent_jwt_algorithm: env_or("AGENT_JWT_ALGORITHM", &d.agent_jwt_algorithm),
             default_provider: env_or("DEFAULT_PROVIDER", &d.default_provider),

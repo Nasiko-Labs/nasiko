@@ -34,6 +34,80 @@ use rand_distr::{Beta, Distribution};
 
 use super::patterns::{CATEGORY_PATTERNS, NEGATIVE_SIGNALS, POSITIVE_SIGNALS};
 
+/// Provider-independent input. Context explains the query; it is not a new instruction.
+pub struct ClassifyInput<'a> {
+    pub query: &'a str,
+    pub context: Option<&'a str>,
+}
+
+/// A classification, independent of tier selection and destination provider.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Classification {
+    pub request_type: RequestType,
+    pub complexity: u8,
+    /// Probability assigned to the selected request type. Regex uses 0 (uncalibrated).
+    pub confidence: f32,
+    /// Optional certainty in the discrete complexity level, used for safe routing.
+    pub complexity_confidence: Option<f32>,
+    /// Hosted decision usage, when available; never contains input text or credentials.
+    pub usage: Option<DecisionUsage>,
+}
+
+/// Usage of the decision backend, separate from the routed answer's usage.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DecisionUsage {
+    pub model: String,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+}
+
+/// Errors are deliberately free of response bodies, URLs and credentials.
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+pub enum ClassifyError {
+    #[error("classifier configuration is unavailable")]
+    Configuration,
+    #[error("classifier transport failed")]
+    Transport,
+    #[error("classifier HTTP status {0}")]
+    Http(u16),
+    #[error("classifier returned an invalid response")]
+    InvalidResponse,
+    #[error("classifier timed out")]
+    Timeout,
+}
+
+/// Replaceable decision backend. Construction and configuration belong to startup.
+#[async_trait::async_trait]
+pub trait RequestClassifier: Send + Sync {
+    fn name(&self) -> &str;
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError>;
+}
+
+/// Original query-only regex baseline. Complexity 3 is a fixed neutral placeholder;
+/// confidence 0 means uncalibrated, not an estimated probability of correctness.
+pub struct RegexClassifier;
+
+#[async_trait::async_trait]
+impl RequestClassifier for RegexClassifier {
+    fn name(&self) -> &str {
+        "regex"
+    }
+
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+        Ok(regex_classification(input.query))
+    }
+}
+
+pub(super) fn regex_classification(query: &str) -> Classification {
+    Classification {
+        request_type: classify_request_type(query),
+        complexity: 3,
+        confidence: 0.0,
+        complexity_confidence: None,
+        usage: None,
+    }
+}
+
 /// Coarse model strength tier. Tier 1 = most capable (complex queries), Tier 3 = smallest
 /// (very simple queries), Tier 2 = in between.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -251,6 +325,19 @@ pub fn pick_model_thompson<R: Rng + ?Sized>(
     w_cost: f64,
     rng: &mut R,
 ) -> Tier {
+    pick_model_thompson_for_complexity(cells, request_type, 1, w_quality, w_cost, rng)
+}
+
+/// Opt-in capability floor: 1–2 allow all arms, 3 excludes Tier3, 4–5 allow Tier1 only.
+/// Quality/cost weights, priors and learned `(tier, request_type)` keys stay unchanged.
+pub fn pick_model_thompson_for_complexity<R: Rng + ?Sized>(
+    cells: &CellMap,
+    request_type: RequestType,
+    complexity: u8,
+    w_quality: f64,
+    w_cost: f64,
+    rng: &mut R,
+) -> Tier {
     let lo = TIER_ARMS
         .iter()
         .map(|a| a.cost)
@@ -264,6 +351,11 @@ pub fn pick_model_thompson<R: Rng + ?Sized>(
     let mut best = TIER_ARMS[0].tier;
     let mut best_score = f64::NEG_INFINITY;
     for arm in TIER_ARMS.iter() {
+        if (complexity >= 4 && arm.tier != Tier::Tier1)
+            || (complexity == 3 && arm.tier == Tier::Tier3)
+        {
+            continue;
+        }
         let prior = cold_start_prior(arm.quality_tier, arm.strengths, request_type);
         let (successes, failures) = match cells.get(&(arm.tier, request_type)) {
             Some(cell) => {

@@ -48,6 +48,8 @@ pub(crate) struct RequestSignals {
     /// Latest user turn's text — the classifier's `query` input (Level 3) for every agent,
     /// and (for a coding-agent integration) also the `conv_id` anchor for *this* turn.
     pub query: Option<String>,
+    /// Bounded conversation context for opt-in request classification.
+    pub context: Option<String>,
     /// Count of top-level user turns so far. Combined with `query`, anchors a coding-agent's
     /// `conv_id` to the current turn rather than the whole session — see
     /// `BoundarySignals::for_coding_agent`'s doc comment for why that distinction matters.
@@ -194,6 +196,11 @@ async fn chat_core(
     };
     let signals = RequestSignals {
         query: routing::latest_user_query(&req.messages),
+        context: ctx
+            .request_classifier
+            .is_experimental()
+            .then(|| routing::classification_context(&req.messages))
+            .flatten(),
         turn_ordinal: routing::user_turn_ordinal(&req.messages),
         is_tool_continuation: routing::is_tool_continuation(&req.messages),
     };
@@ -426,7 +433,7 @@ pub(crate) async fn resolve_routed_request(
     // otherwise pins every request to Level 4 (the agent's configured `llm_config`) and
     // makes the prompt classifier (Level 3) unreachable. Derive signals from the transcript
     // itself instead for these agents.
-    let (boundary, flow_id, billed_user_id, attribution_source) = if resolved.is_coding_agent {
+    let (mut boundary, flow_id, billed_user_id, attribution_source) = if resolved.is_coding_agent {
         (
             BoundarySignals::for_coding_agent(
                 &agent_id,
@@ -467,7 +474,12 @@ pub(crate) async fn resolve_routed_request(
             Some(attribution.source),
         )
     };
-    let decision = routing::route_model(
+    // Ordinary flows currently mark every in-flow call Switch. Guard tool loops even
+    // when their sticky cache is unavailable; the default path stays unchanged.
+    if ctx.request_classifier.is_experimental() && signals.is_tool_continuation {
+        boundary.phase = routing::Phase::Continue;
+    }
+    let decision = routing::route_model_with_classifier(
         ctx.router_cache.as_ref(),
         ctx.tier_registry.as_ref(),
         ctx.cell_store.as_ref(),
@@ -484,6 +496,8 @@ pub(crate) async fn resolve_routed_request(
             signals: &boundary,
             query: signals.query.as_deref(),
         },
+        ctx.request_classifier.as_ref(),
+        signals.context.as_deref(),
     )
     .await;
     tracing::info!(
@@ -957,6 +971,9 @@ mod tests {
             tier_registry: Arc::new(NoTiers),
             cell_store: Arc::new(crate::routing::InMemoryCellStore::new()),
             salience_gate: Arc::new(crate::routing::AllowAllGate),
+            request_classifier: Arc::new(
+                crate::routing::classifier_runtime::ClassifierRuntime::regex(),
+            ),
             pricing: Arc::new(nasiko_pricing::PricingEngine::new(
                 PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
             )),
@@ -1080,6 +1097,53 @@ mod tests {
         let body = seen.lock().unwrap_or_else(|e| e.into_inner()).clone();
         assert!(!body.is_empty(), "provider was never called");
         body
+    }
+
+    #[tokio::test]
+    async fn experimental_in_flow_tool_continuation_skips_classifier_on_cache_miss() {
+        let mut ctx = ctx_with("http://127.0.0.1:1".into());
+        ctx.request_classifier = Arc::new(crate::config::build_classifier(
+            &crate::config::ClassifierConfig {
+                backend: "unavailable-test".into(),
+                ..Default::default()
+            },
+        ));
+        let store = Store {
+            config: Some(openai_config()),
+            is_coding_agent: false,
+            compress_enabled: false,
+        };
+        let result = resolve_routed_request(
+            &ctx,
+            &store,
+            &auth_headers(&token()),
+            AGENT.into(),
+            OWNER.into(),
+            RequestHint {
+                provider: Some("openai"),
+                model: None,
+            },
+            RequestSignals {
+                query: Some("implement a complicated feature".into()),
+                context: None,
+                turn_ordinal: 1,
+                is_tool_continuation: true,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.resolved.model, "gpt-4o-mini");
+        assert_eq!(ctx.request_classifier.counts(), (0, 0));
+    }
+
+    #[tokio::test]
+    async fn regex_default_keeps_outbound_tool_transcript_byte_identical() {
+        let sent = provider_saw(false).await;
+        let mut expected: crate::ir::ChatRequest =
+            serde_json::from_value(tool_transcript(&noisy_tool_result())).unwrap();
+        // The unchanged OpenAI provider sets stream=false for non-streaming requests.
+        expected.stream = Some(false);
+        assert_eq!(sent, serde_json::to_string(&expected).unwrap());
     }
 
     #[tokio::test]
@@ -1441,6 +1505,7 @@ mod tests {
             },
             RequestSignals {
                 query: Some("write a function that reverses a string".into()),
+                context: None,
                 turn_ordinal: 1,
                 is_tool_continuation: false,
             },
@@ -1487,6 +1552,7 @@ mod tests {
             },
             RequestSignals {
                 query: Some("write a function that reverses a string".into()),
+                context: None,
                 turn_ordinal: 1,
                 is_tool_continuation: false,
             },
