@@ -13,6 +13,7 @@ use crate::ir::ChatRequest;
 pub enum Skip {
     Disabled,
     UnsupportedSchema,
+    ForcedToolChoice,
     UnsupportedPath,
 }
 
@@ -33,6 +34,9 @@ pub fn apply(req: &mut ChatRequest, enabled: bool, provider: &str) -> Outcome {
     }
     if provider != "openai" || req.is_streaming() {
         return skipped(Skip::UnsupportedPath);
+    }
+    if forced_tool_choice(&req.tool_choice) {
+        return skipped(Skip::ForcedToolChoice);
     }
     let Some(tools) = req.tools.clone() else {
         return skipped_quiet();
@@ -112,6 +116,15 @@ fn system_message(text: String) -> Message {
         tool_calls: None,
         tool_call_id: None,
         extra: Map::new(),
+    }
+}
+
+/// Anything other than an absent choice or the string `"auto"` is a forced choice.
+fn forced_tool_choice(choice: &Option<Value>) -> bool {
+    match choice {
+        None => false,
+        Some(Value::String(value)) if value == "auto" => false,
+        Some(_) => true,
     }
 }
 
@@ -223,5 +236,57 @@ mod tests {
             Some(Skip::UnsupportedPath)
         ));
         assert_eq!(serde_json::to_vec(&anthropic).unwrap(), before);
+    }
+
+    #[test]
+    fn unsupported_schema_keeps_native_tools() {
+        let mut req = sample_chat_request();
+        req.tools.as_mut().unwrap()[0].function.parameters = Some(json!({ "$ref": "#/$defs/Id" }));
+        let before = serde_json::to_vec(&req).unwrap();
+        let outcome = apply(&mut req, true, "openai");
+        assert!(matches!(outcome.skip, Some(Skip::UnsupportedSchema)));
+        assert!(!outcome.applied);
+        assert_eq!(serde_json::to_vec(&req).unwrap(), before);
+    }
+
+    #[test]
+    fn forced_tool_choice_keeps_native_tools() {
+        let mut req = sample_chat_request();
+        req.tool_choice = Some(json!({
+            "type": "function",
+            "function": {"name": "create_calendar_event"}
+        }));
+        let before = serde_json::to_vec(&req).unwrap();
+        let outcome = apply(&mut req, true, "openai");
+        assert!(matches!(outcome.skip, Some(Skip::ForcedToolChoice)));
+        assert!(!outcome.applied);
+        assert_eq!(serde_json::to_vec(&req).unwrap(), before);
+
+        let mut none = sample_chat_request();
+        none.tool_choice = Some(Value::String("none".into()));
+        let before = serde_json::to_vec(&none).unwrap();
+        let outcome = apply(&mut none, true, "openai");
+        assert!(matches!(outcome.skip, Some(Skip::ForcedToolChoice)));
+        assert_eq!(serde_json::to_vec(&none).unwrap(), before);
+    }
+
+    #[test]
+    fn auto_tool_choice_still_compacts() {
+        let mut req = sample_chat_request();
+        req.tool_choice = Some(Value::String("auto".into()));
+        let outcome = apply(&mut req, true, "openai");
+        assert!(outcome.applied);
+        assert!(req.tools.is_none());
+    }
+
+    #[test]
+    fn gemini_streaming_keeps_native_tools() {
+        let mut req = sample_chat_request();
+        req.stream = Some(true);
+        let before = serde_json::to_vec(&req).unwrap();
+        let outcome = apply(&mut req, true, "gemini");
+        assert!(matches!(outcome.skip, Some(Skip::UnsupportedPath)));
+        assert!(!outcome.applied);
+        assert_eq!(serde_json::to_vec(&req).unwrap(), before);
     }
 }
