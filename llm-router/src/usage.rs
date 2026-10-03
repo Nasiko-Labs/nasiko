@@ -57,6 +57,18 @@ pub struct UsageRecord {
     /// having: IP-1 leaves a row only when it acted, so a missing block is ambiguous between
     /// "off" and "nothing to do". This one always says which.
     pub brevity_metadata: Option<serde_json::Value>,
+    /// `(bytes_in, bytes_out)` from IP-1 when it actually reduced the payload, for the
+    /// `token_savings` ledger. Two integers rather than the compression module's type, so this
+    /// module stays a pure DB concern.
+    ///
+    /// The ledger write lives here, beside the `token_usage` write, because pricing the saving
+    /// needs the same `PricingEngine` result that prices the call — computing it anywhere else
+    /// would price a saving at a different rate than the spend it is subtracted from, and the
+    /// reduction percentage would stop being coherent.
+    pub compress_bytes: Option<(usize, usize)>,
+    /// Total text bytes actually sent, after compression and the brevity directive. Calibrates
+    /// chars-per-token against this very call rather than a fixed divisor (see `savings.rs`).
+    pub request_bytes: Option<usize>,
 }
 
 /// Spawn the usage write so it never blocks the response.
@@ -131,6 +143,17 @@ pub async fn log_usage(
         )
         .await;
 
+    // Captured before the insert below consumes the record's owned fields.
+    let record_ids = SavingsIds {
+        owner,
+        agent,
+        flow_id: record.flow_id.clone(),
+        provider: record.provider.clone(),
+        model: record.model.clone(),
+        compress_bytes: record.compress_bytes,
+        request_bytes: record.request_bytes,
+    };
+
     let metadata = build_metadata(MetadataInputs {
         platform_paid: record.platform_paid,
         attribution_source: record.attribution_source,
@@ -173,7 +196,74 @@ pub async fn log_usage(
     .execute(&db)
     .await
     .map_err(|e| e.to_string())?;
+
+    write_savings(
+        &db,
+        &record_ids,
+        &priced.cost,
+        input,
+        cache_read,
+        cache_creation,
+    )
+    .await;
     Ok(())
+}
+
+/// Identity carried from the record into the savings write, so that `log_usage` does not have to
+/// keep the whole `UsageRecord` alive past the insert that consumes its owned fields.
+struct SavingsIds {
+    owner: Uuid,
+    agent: Option<Uuid>,
+    flow_id: Option<String>,
+    provider: String,
+    model: String,
+    compress_bytes: Option<(usize, usize)>,
+    request_bytes: Option<usize>,
+}
+
+/// Write the per-layer savings row for this call, if any layer saved anything.
+///
+/// Separate from the `token_usage` insert and best-effort within an already best-effort path: a
+/// missing savings row costs a dashboard a data point, while a failed one must not cost a request
+/// that has already succeeded.
+async fn write_savings(
+    db: &PgPool,
+    ids: &SavingsIds,
+    cost: &nasiko_pricing::CostBreakdown,
+    input: Option<i64>,
+    cache_read: Option<i64>,
+    cache_creation: Option<i64>,
+) {
+    let Some((bytes_in, bytes_out)) = ids.compress_bytes else {
+        return;
+    };
+    // The denominator of the blended rate must match the numerator's scope: `input` is already
+    // disjoint from the cache counts by this point (`normalize_openai_details`), so prompt-side
+    // tokens is their sum, not `input` alone.
+    let prompt_side_tokens =
+        input.unwrap_or(0) + cache_read.unwrap_or(0) + cache_creation.unwrap_or(0);
+
+    let row = crate::savings::compress_payload_row(
+        bytes_in,
+        bytes_out,
+        crate::savings::CallContext {
+            user_id: ids.owner,
+            agent_id: ids.agent,
+            flow_id: ids.flow_id.clone(),
+            provider: ids.provider.clone(),
+            model: ids.model.clone(),
+            cost,
+            prompt_side_tokens,
+            calibration: crate::savings::CalibrationInputs {
+                request_bytes: ids.request_bytes,
+                input_tokens: Some(prompt_side_tokens).filter(|t| *t > 0),
+            },
+        },
+    );
+
+    if let Some(row) = row {
+        nasiko_savings::insert(db, &row).await;
+    }
 }
 
 /// What the row's `metadata` JSONB records about one call.

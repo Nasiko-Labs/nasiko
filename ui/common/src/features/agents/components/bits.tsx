@@ -183,18 +183,20 @@ export function AgentMark({
 
 export function Section({
   title,
+  subtitle,
   action,
   children,
   className,
 }: {
   title: string
+  subtitle?: ReactNode
   action?: ReactNode
   children: ReactNode
   className?: string
 }) {
   const id = useId()
   return (
-    <Panel title={title} labelledBy={id} actions={action} className={className}>
+    <Panel title={title} subtitle={subtitle} labelledBy={id} actions={action} className={className}>
       {children}
     </Panel>
   )

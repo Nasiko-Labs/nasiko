@@ -22,6 +22,7 @@ import type {
 } from '@/features/tokenops/types'
 import { round6 as r6, type Seed, type SeedTrace } from './seed'
 import { adminHarnessAgents, harnessTurns, type HarnessSeed } from './seed-harness'
+import type { Savings, SavingsData } from '@/features/tokenops/types'
 
 /**
  * The finops endpoints' view of the data: the seed plus the seed admin's coding-harness agents and one trace row per
@@ -570,5 +571,138 @@ export function topTraces(
       started_at: t.started_at,
     })),
     has_more: rows.length > offset + limit,
+  }
+}
+
+/**
+ * Savings payload for `GET /finops/savings`.
+ *
+ * Shaped like the real one rather than minimally: one measured category, one factor-derived
+ * category sitting at zero with its reason, and a `null` percentage nowhere — because those three
+ * are what the panel has to render differently, and a mock that only covers the happy path lets
+ * the other two regress silently.
+ */
+export function savings(): SavingsData {
+  const block = (over: Partial<Savings> = {}): Savings => ({
+    saved_tokens: 0,
+    saved_input_tokens: 0,
+    saved_output_tokens: 0,
+    saved_cost_usd: 0,
+    actual_tokens: 0,
+    actual_cost_usd: 0,
+    baseline_tokens: 0,
+    baseline_cost_usd: 0,
+    token_reduction_pct: null,
+    cost_reduction_pct: null,
+    basis: 'measured',
+    ...over,
+  })
+
+  return {
+    window: { start: '2026-03-01T00:00:00Z', end: '2026-03-31T00:00:00Z' },
+    total: block({
+      saved_tokens: 1_210_000,
+      saved_input_tokens: 1_210_000,
+      saved_cost_usd: 91,
+      actual_tokens: 4_920_000,
+      actual_cost_usd: 740,
+      baseline_tokens: 6_130_000,
+      baseline_cost_usd: 831,
+      token_reduction_pct: 19.7,
+      cost_reduction_pct: 11,
+      basis: 'mixed',
+    }),
+    by_program: [
+      {
+        ...block({
+          saved_tokens: 1_210_000,
+          saved_input_tokens: 1_210_000,
+          saved_cost_usd: 91,
+          token_reduction_pct: 19.7,
+          cost_reduction_pct: 11,
+        }),
+        program: 'caveman',
+        label: 'Smaller prompts',
+        layers: [
+          {
+            ...block({ saved_tokens: 900_000, saved_input_tokens: 900_000, saved_cost_usd: 60 }),
+            layer: 'compress_payload',
+          },
+          {
+            ...block({ saved_tokens: 310_000, saved_input_tokens: 310_000, saved_cost_usd: 31 }),
+            layer: 'compress_history',
+          },
+        ],
+      },
+      {
+        ...block({ basis: 'seed_default' }),
+        program: 'ponytail',
+        label: 'Less code written',
+        note: 'No coding agent has this turned on.',
+        layers: [
+          {
+            ...block({ basis: 'seed_default' }),
+            layer: 'minimal_code',
+            factor: {
+              input_token_delta_pct: -30,
+              output_token_delta_pct: -30,
+              basis: 'seed_default',
+              measured_at: '2026-03-01T00:00:00Z',
+              notes: 'Seed, replaced by the holdout once the sample floor is cleared.',
+              eligible_input_tokens: 0,
+              eligible_output_tokens: 0,
+            },
+          },
+        ],
+      },
+    ],
+    by_agent: [
+      {
+        ...block({
+          saved_tokens: 1_210_000,
+          saved_input_tokens: 1_210_000,
+          saved_cost_usd: 91,
+          token_reduction_pct: 24.59,
+          cost_reduction_pct: 12.3,
+        }),
+        agent_id: 'sample-1',
+        agent_name: 'Support Bot',
+        calls: 8214,
+        input_tokens_before: 4_920_000,
+        input_tokens_after: 3_710_000,
+      },
+    ],
+    by_session: [
+      {
+        ...block({
+          saved_tokens: 820_000,
+          saved_input_tokens: 820_000,
+          saved_cost_usd: 61,
+          token_reduction_pct: 22.4,
+          cost_reduction_pct: 9.8,
+        }),
+        session_id: 'ctx-9f3ad21b0c74',
+        started_at: '2026-03-14T09:12:00Z',
+        turn_count: 18,
+        agent_names: ['Support Bot'],
+      },
+    ],
+    coverage: {
+      calls_in_window: 8214,
+      calls_with_any_layer_enabled: 8214,
+      agents_total: 22,
+      agents_optimized: 1,
+      agents_with_compress_enabled: 1,
+      agents_with_minimal_code_enabled: 0,
+      agents_with_prompt_comments: 0,
+      optimized_spend_usd: 740,
+      unoptimized_spend_usd: 3204,
+      top_unoptimized: {
+        agent_id: 'sample-5',
+        agent_name: 'Sales Assistant',
+        spend_usd: 1492,
+      },
+      calibrated_pct: 100,
+    },
   }
 }

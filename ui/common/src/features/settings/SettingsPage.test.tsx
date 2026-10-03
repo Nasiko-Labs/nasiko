@@ -30,7 +30,15 @@ describe('Settings: workspace sections (plans/feat-settings.md §1.1)', () => {
       within(nav)
         .getAllByRole('link')
         .map((l) => l.textContent),
-    ).toEqual(['General', 'Flow limits', 'Registry', 'Secrets', 'Appearance', 'Password'])
+    ).toEqual([
+      'General',
+      'Flow limits',
+      'Registry',
+      'Secrets',
+      'Chat context',
+      'Appearance',
+      'Password',
+    ])
     expect(within(nav).getByRole('link', { name: 'General' })).toHaveAttribute(
       'aria-current',
       'page',
@@ -116,7 +124,7 @@ describe('Settings: workspace sections (plans/feat-settings.md §1.1)', () => {
     expect(await screen.findByRole('heading', { level: 1, name: 'General' }, T)).toBeInTheDocument()
   })
 
-  it('sends a member to their secrets, with only Secrets, Appearance and Password in the nav', async () => {
+  it('sends a member to their secrets, with only Secrets, Chat context, Appearance and Password in the nav', async () => {
     configureMocks({ superuser: false })
     const { router } = renderApp('/settings')
     await waitFor(() => expect(router.state.location.pathname).toBe('/settings/secrets'), T)
@@ -125,6 +133,6 @@ describe('Settings: workspace sections (plans/feat-settings.md §1.1)', () => {
       within(nav)
         .getAllByRole('link')
         .map((l) => l.textContent),
-    ).toEqual(['Secrets', 'Appearance', 'Password'])
+    ).toEqual(['Secrets', 'Chat context', 'Appearance', 'Password'])
   })
 })

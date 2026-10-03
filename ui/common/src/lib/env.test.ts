@@ -3,6 +3,20 @@ import { describe, expect, it, vi } from 'vitest'
 import { MOCKABLE, readEnv } from './env'
 
 describe('env', () => {
+  it('waitlist: an http(s) URL gets ref=oss-app (its own query and hash kept); the Nasiko waitlist page by default', () => {
+    const url = (raw: Record<string, string | boolean>) => readEnv(raw).waitlistUrl
+    expect(
+      url({ VITE_NASIKO_WAITLIST_URL: 'https://example.com/join?form=a#top', PROD: true }),
+    ).toBe('https://example.com/join?form=a&ref=oss-app#top')
+    expect(url({ VITE_NASIKO_WAITLIST_URL: 'https://example.com/?ref=x', PROD: true })).toBe(
+      'https://example.com/?ref=oss-app',
+    )
+    expect(url({ PROD: true })).toBe('https://nasiko-waitlist.vercel.app/?ref=oss-app')
+    expect(url({ DEV: true })).toBe('https://nasiko-waitlist.vercel.app/?ref=oss-app')
+    for (const bad of ['javascript:alert(1)', '//example.com', 'example.com', 'https://'])
+      expect(url({ VITE_NASIKO_WAITLIST_URL: bad, DEV: true }), bad).toBeNull()
+  })
+
   it('.env.example lists exactly the partial-mock keys (auth is never partially mocked)', () => {
     const example = readFileSync('.env.example', 'utf8')
     const line = example.split('\n').find((l) => l.startsWith('# Keys:'))!

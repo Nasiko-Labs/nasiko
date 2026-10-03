@@ -209,7 +209,26 @@ export const copy = {
   // Verified live (QA 2026-09-27): Restart redeploys and injects the new value; the running container doesn't see it before.
   secretsHowItWorks:
     'Available to the agent as environment variables. Restart or redeploy the agent to apply a change.',
+  // Agent flags (catalog/routes.rs `AgentDetailResponse` at nasiko-cloud-rs 1a305a63): the legacy Settings tab's copy.
+  features: 'Features',
+  featuresHint: 'Agent-level feature flags. Changes take effect on next restart.',
+  promptComments: 'Prompt comments',
+  promptCommentsHint:
+    'Lets the agent record, prune, and maintain workspace instructions with rationale annotations. Workspaces can opt out with',
+  promptCommentsOptOut: '<!-- @prompt-comments disabled -->',
+  tokenOptimization: 'Token optimization',
+  tokenOptimizationIntro:
+    'One switch over the whole stack: shrinks large tool results (JSON, logs and diffs) before they reach the model, trims the reply instruction, and compresses what the Orchestrator keeps between turns. Errors and structure are kept, and a counted note is left wherever something was removed. Turning it off stops every part of it.',
+  tokenOptimizationHint: 'Off by default. Your own messages are never changed.',
+  codingBehavior: 'Coding agent behavior',
+  minimalCode: 'Minimal-code mode',
+  minimalCodeHint:
+    'Checks for existing code, the standard library, or an installed dependency before writing new code. Applies immediately, no restart needed.',
+  selfReview: 'Self-review',
+  selfReviewHint:
+    'Adds a review turn that catches duplicated or unnecessary code — one extra model call per edit, so it is off until you ask for it. Needs Minimal-code mode. Restart the agent to apply.',
   dangerZone: 'Danger zone',
+  deleteThisAgent: 'Delete this agent',
   deleteAgent: 'Delete agent',
   deleteTitle: (name: string) => `Delete ${name}?`,
   deleteBody: 'The container stops and callers get 404. Traces and past usage stay.',

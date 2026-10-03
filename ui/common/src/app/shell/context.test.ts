@@ -28,7 +28,7 @@ describe('URL contract', () => {
     expect(traceSearchSchema.parse({ span: 'ABCdef0123' }).span).toBe('ABCdef0123')
 
     expect(tokenopsSearchSchema.parse({ open: 'all' }).open).toBe(
-      'spend,drivers,perf,month,metrics',
+      'spend,optimise,drivers,perf,month,metrics',
     )
     expect(tokenopsSearchSchema.parse({ open: 'metrics, junk,spend' }).open).toBe('spend,metrics')
     expect(tokenopsSearchSchema.parse({ open: 'junk' }).open).toBeUndefined()

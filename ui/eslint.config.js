@@ -53,7 +53,17 @@ const PUBLIC = {
   observability: ['StateCard', 'tuning', 'types', 'spans', 'copy', 'sessions', 'limiter'],
   router: ['components/RoutingCard', 'api', 'types', 'budgets', 'routing'],
   sessions: ['api', 'search', 'LogDrawer'],
-  tokenops: ['api', 'types', 'window', 'stats', 'forecast', 'csv', 'attribution', 'series'],
+  tokenops: [
+    'api',
+    'types',
+    'window',
+    'stats',
+    'forecast',
+    'optimisation',
+    'csv',
+    'attribution',
+    'series',
+  ],
   trace: ['api', 'Waterfall'],
   workflows: [],
 }

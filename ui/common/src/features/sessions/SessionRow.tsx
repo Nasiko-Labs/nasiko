@@ -1,7 +1,8 @@
 /**
  * One session row. The whole row is a real link to the session trace (middle-click opens
  * a tab); expand is a separate chevron button. Status sits in a fixed-width column so rows
- * don't reflow as checks resolve. At 375 px the row becomes two lines.
+ * don't reflow as checks resolve. The columns follow the list's width, not the viewport's (the
+ * sidebar takes 240 px): below 672 px the row becomes two lines.
  */
 import { Link } from '@tanstack/react-router'
 import { m } from 'motion/react'
@@ -81,11 +82,11 @@ export const SessionRow = memo(function SessionRow({
           to="/sessions/$sessionId"
           params={{ sessionId: s.session_id }}
           search={linkSearch}
-          className="min-w-0 flex-1 px-2 py-2.5 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring md:grid md:grid-cols-[5.5rem_10rem_minmax(0,1fr)_5rem_4.5rem_8.5rem] md:items-center md:gap-x-3"
+          className="min-w-0 flex-1 px-2 py-2.5 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring @[672px]:grid @[672px]:grid-cols-[5.5rem_10rem_minmax(0,1fr)_5rem_4.5rem_8.5rem] @[672px]:items-center @[672px]:gap-x-3"
           aria-label={label}
         >
-          {/* 375 px: two lines — agent · cost · status, then the input and time. */}
-          <span className="flex flex-col gap-0.5 md:hidden">
+          {/* Narrow list: two lines — agent · cost · status, then the input and time. */}
+          <span className="flex flex-col gap-0.5 @[672px]:hidden">
             <span className="flex items-baseline gap-2">
               <span className="min-w-0 flex-1 truncate font-medium" title={rawName || undefined}>
                 {agentLabel}
@@ -100,13 +101,13 @@ export const SessionRow = memo(function SessionRow({
               <span className="text-xs tabular-nums">{timeLabel(s.start_time, withDay)}</span>
             </span>
           </span>
-          <span className="hidden text-muted-foreground tabular-nums md:inline">
+          <span className="hidden text-muted-foreground tabular-nums @[672px]:inline">
             {timeLabel(s.start_time, withDay)}
           </span>
-          <span className="hidden truncate md:inline" title={rawName || undefined}>
+          <span className="hidden truncate @[672px]:inline" title={rawName || undefined}>
             {agentLabel}
           </span>
-          <span className="hidden truncate md:inline">
+          <span className="hidden truncate @[672px]:inline">
             “{input}”
             {badges.length ? (
               <span className="ml-2 inline-flex gap-1 align-middle">
@@ -126,13 +127,13 @@ export const SessionRow = memo(function SessionRow({
               </span>
             ) : null}
           </span>
-          <span className="hidden text-right font-medium tabular-nums md:inline">
+          <span className="hidden text-right font-medium tabular-nums @[672px]:inline">
             {fmtMoney(sessionCost(s))}
           </span>
-          <span className="hidden text-right text-muted-foreground tabular-nums md:inline">
+          <span className="hidden text-right text-muted-foreground tabular-nums @[672px]:inline">
             {fmtDuration(s.duration_ms)}
           </span>
-          <span className={cn('hidden w-34 md:inline', STATUS_TONE[status])}>
+          <span className={cn('hidden w-34 @[672px]:inline', STATUS_TONE[status])}>
             {STATUS_LABEL[status]}
           </span>
         </Link>
@@ -160,8 +161,8 @@ function RowDetail({ s, agentLabel }: { s: SessionSummary; agentLabel: string })
   const d = useSessionDetail(s.session_id)
   const [logs, setLogs] = useState(false)
   return (
-    <div className="grid gap-2 bg-muted/40 px-3 py-3 text-sm md:grid-cols-3">
-      <div className="md:col-span-2">
+    <div className="grid gap-2 bg-muted/40 px-3 py-3 text-sm @[672px]:grid-cols-3">
+      <div className="@[672px]:col-span-2">
         <div className="text-xs text-muted-foreground">Last output</div>
         <div className="line-clamp-3">{s.last_output ?? '—'}</div>
       </div>

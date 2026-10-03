@@ -6,7 +6,8 @@
  * are nasiko-cloud-rs (`origin/development` a4853db4) `ui/oss/navigation.js` `MODULE_NAVS.settings` plus
  * whatever an edition layer appends:
  * - Workspace: General, (EE: Orchestrator), Flow limits, Registry. `/settings?section=`.
- * - Security: (EE: Single sign-on), Secrets (`/settings/secrets`).
+ * - Security: (EE: Single sign-on), Secrets (`/settings/secrets`), Chat context (`/settings/chat-context`; nasiko-cloud-rs
+ *   `35c749af`, every user's own).
  * - Account: Appearance (`/settings/appearance`; the lab's, this browser's mode and theme), Password
  *   (`/settings/password`; Change password).
  * A layer's rows come from the `settingsSections` slot, placed after the row they name. A member sees Secrets and
@@ -38,7 +39,12 @@ import { CORE_SECTIONS } from './search'
 interface Row {
   key: string
   label: string
-  to: '/settings' | '/settings/secrets' | '/settings/appearance' | '/settings/password'
+  to:
+    | '/settings'
+    | '/settings/secrets'
+    | '/settings/chat-context'
+    | '/settings/appearance'
+    | '/settings/password'
   section?: string
 }
 
@@ -88,6 +94,7 @@ export function SettingsLayout({ children }: { children: ReactNode }) {
       rows: [
         ...withLayer([], admin ? inGroup('security') : []),
         { key: 'secrets', label: copy.secrets.title, to: '/settings/secrets' },
+        { key: 'chat-context', label: copy.chatContext.label, to: '/settings/chat-context' },
       ],
     },
     {
@@ -101,7 +108,7 @@ export function SettingsLayout({ children }: { children: ReactNode }) {
   ]
   const known = new Set(groups.flatMap((g) => g.rows.map((r) => r.key)))
   const raw = (location.search as { section?: unknown }).section
-  // A sub-page (Secrets, Appearance, Password) is current by its path; the workspace page by `?section=`.
+  // A sub-page (Secrets, Chat context, Appearance, Password) is current by its path; the workspace page by `?section=`.
   const page = groups
     .flatMap((g) => g.rows)
     .find((r) => r.to === location.pathname && r.to !== '/settings')

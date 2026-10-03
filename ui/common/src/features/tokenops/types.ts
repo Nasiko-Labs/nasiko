@@ -294,3 +294,128 @@ export const providerCatalogSchema = z.looseObject({
     }),
   ),
 }) satisfies z.ZodType<WireSubset<{ data: ProviderCatalogEntry[] }>>
+
+/**
+ * Proposed: token optimisation savings for a window. No endpoint exists yet, so the Token
+ * optimisation section shows `SAMPLE_OPTIMISATION` (optimisation.ts) until one does. Lists only
+ * agents with optimisation on; savings are input tokens the optimiser removed before the call.
+ */
+export interface OptimisationAgentRow {
+  agent_id: string
+  agent_name: string
+  calls: number
+  input_tokens_before: number
+  input_tokens_after: number
+  /** At API list price. */
+  est_cost_saved_usd: number
+}
+
+export interface OptimisationSummary {
+  agents: OptimisationAgentRow[]
+  total_agents: number
+  fleet_spend_usd: number
+  /** What the optimised agents were billed (after optimisation). */
+  optimised_spend_usd: number
+  /** The biggest spender with optimisation off. */
+  top_unoptimised: { agent_id: string; agent_name: string; spend_usd: number } | null
+}
+
+/**
+ * Savings wire types — `GET /api/observability/finops/savings`
+ * (`oss/server/src/observability/savings.rs`: SavingsData, Savings, ProgramSavings, LayerSavings,
+ * AgentSavings, Coverage).
+ *
+ * `Savings` is `#[serde(flatten)]`-ed into every level, so a program, a layer, an agent and the
+ * total all carry the same ten fields. Both percentages are server-computed on purpose: deriving
+ * them here would let two surfaces disagree about what the denominator was.
+ */
+export interface Savings {
+  saved_tokens: number
+  saved_input_tokens: number
+  saved_output_tokens: number
+  saved_cost_usd: number
+  actual_tokens: number
+  actual_cost_usd: number
+  /** `actual + saved` — what it would have cost without the layer. */
+  baseline_tokens: number
+  baseline_cost_usd: number
+  /** Null when the baseline is zero: undefined, not a fabricated 0. */
+  token_reduction_pct: number | null
+  cost_reduction_pct: number | null
+  basis: SavingsBasis
+}
+
+/**
+ * How a figure was arrived at. `measured` is a subtraction the server actually performed;
+ * `seed_default` and `fixture` are a percentage applied to counted eligible traffic, for the two
+ * layers whose counterfactual cannot be observed. `mixed` is a roll-up of both kinds.
+ */
+export type SavingsBasis = 'measured' | 'fixture' | 'seed_default' | 'mixed'
+
+export interface SavingsFactor {
+  input_token_delta_pct: number
+  output_token_delta_pct: number
+  basis: string
+  measured_at: string
+  /** One sentence on where the number came from. Served verbatim; show it, don't paraphrase. */
+  notes: string
+  sample_count?: number
+  confidence_pct?: number
+  /** Counted, never assumed — which is why a seeded row still reacts to the feature being off. */
+  eligible_input_tokens: number
+  eligible_output_tokens: number
+}
+
+export interface LayerSavings extends Savings {
+  layer: string
+  factor?: SavingsFactor
+}
+
+export interface ProgramSavings extends Savings {
+  program: string
+  /** How this program is named to users, decided server-side. */
+  label: string
+  layers: LayerSavings[]
+  by_tier?: { tier: string; saved_tokens: number; saved_cost_usd: number }[]
+  /** Why this program's figure is zero, when it is. */
+  note?: string
+}
+
+export interface AgentSavingsRow extends Savings {
+  agent_id: string
+  agent_name: string
+  calls: number
+  input_tokens_before: number
+  input_tokens_after: number
+}
+
+export interface SessionSavingsRow extends Savings {
+  session_id: string
+  started_at: string
+  turn_count: number
+  agent_names: string[]
+}
+
+export interface SavingsCoverage {
+  calls_in_window: number
+  calls_with_any_layer_enabled: number
+  agents_total: number
+  agents_optimized: number
+  agents_with_compress_enabled: number
+  agents_with_minimal_code_enabled: number
+  agents_with_prompt_comments: number
+  optimized_spend_usd: number
+  unoptimized_spend_usd: number
+  top_unoptimized?: { agent_id: string; agent_name: string; spend_usd: number }
+  /** Share of measured savings calibrated against real usage rather than the fallback divisor. */
+  calibrated_pct: number | null
+}
+
+export interface SavingsData {
+  window: { start: string; end: string }
+  total: Savings
+  by_program: ProgramSavings[]
+  by_agent: AgentSavingsRow[]
+  by_session: SessionSavingsRow[]
+  coverage: SavingsCoverage
+}

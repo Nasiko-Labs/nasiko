@@ -38,6 +38,23 @@ export const copy = {
     intro:
       'Deploy an agent from the app, or use the CLI. Cost, health and sessions show up on the Overview once it runs.',
   },
+  // Overview's token-optimisation band. One figure, one next step, then hand off to TokenOps.
+  savings: {
+    eyebrow: 'Token optimisation',
+    eyebrowOff: 'Token optimisation — not switched on',
+    savedSuffix: 'saved',
+    neverSent: (tokens: string) => `${tokens} tokens never sent.`,
+    couldSave: (agent: string, spend: string) =>
+      `${agent} has it switched off and spent ${spend} this period — turning it on is the biggest win left.`,
+    mostly: (what: string) => `Mostly from ${what}.`,
+    allOn: 'Every agent that can use it already has it on.',
+    detail: 'See the breakdown',
+    // Money on the table, not "$0 saved": one is a reason to act, the other reads as a broken feature.
+    idleSuffix: 'spent that could be trimmed',
+    idleLine:
+      'Your agents re-send tool output and chat history the model does not need. Turning optimisation on for one agent shows what it would save.',
+    idleCta: 'Choose an agent',
+  },
   kpi: {
     spend: 'Spend',
     runs: 'Agent runs',

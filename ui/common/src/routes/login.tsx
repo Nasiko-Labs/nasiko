@@ -19,6 +19,7 @@ import { Spinner } from '@/components/ui/spinner'
 import { copy } from '@/app/shell/copy'
 import { LoginGlow, LoginShowcase } from '@/app/shell/LoginShowcase'
 import { NasikoLockup } from '@/app/shell/NasikoMark'
+import { WaitlistLoginLink } from '@/app/shell/WaitlistCta'
 import { LOGIN_ACCENT, pinAccent } from '@/app/shell/theme'
 import {
   endServerSession,
@@ -224,6 +225,7 @@ function LoginPage() {
                 </Button>
               </FieldGroup>
             </form>
+            <WaitlistLoginLink />
           </div>
         </div>
       </div>

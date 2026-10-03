@@ -4,6 +4,7 @@
  * copy was wrong about the server (marked).
  */
 import type { SecretNameProblem } from './logic'
+import type { BudgetLevel, ContextStrategy } from './types'
 
 export const copy = {
   title: 'Settings',
@@ -65,6 +66,28 @@ export const copy = {
     changed: 'Password changed. Your other sessions have been signed out.',
     failed: 'Could not change password',
     unreachable: 'Could not reach the server. Try again.',
+  },
+
+  // Settings → Security → Chat context (/settings/chat-context): the caller's own, worded as nasiko-cloud-rs `35c749af`
+  // ui/common/pages/chat-context-page.js.
+  chatContext: {
+    label: 'Chat context',
+    sub: 'How much of your conversation history is carried into each request, and which algorithm picks it. Applies to every chat you send, across all agents.',
+    strategy: 'Context strategy',
+    strategyHint: 'Which algorithm selects prior messages to carry into a new request.',
+    strategies: {
+      pacms: 'PACMS (budget-aware, recommended)',
+      topk: 'Top-K (relevance ranked)',
+      lastk: 'Last-K (most recent)',
+    } satisfies Record<ContextStrategy, string>,
+    budget: 'History budget',
+    budgetHint:
+      'How much history the strategy may keep: a token budget under PACMS, an item count under Top-K and Last-K.',
+    levels: { low: 'Low', medium: 'Medium', high: 'High' } satisfies Record<BudgetLevel, string>,
+    saved: 'Chat context settings saved',
+    loadWhat: 'your chat context settings',
+    loading: 'Loading chat context settings',
+    newerServer: 'Chat context needs a newer OpenRuntime server',
   },
 
   sections: {

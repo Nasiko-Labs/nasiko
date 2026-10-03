@@ -27,6 +27,15 @@ export interface AgentView {
   canManage: boolean
   isHarness: boolean
   integrationId: string | null
+  /** The raw `metadata` bag: a PUT replaces the whole column, so feature writes spread it (catalog/routes.rs). */
+  metadata: Record<string, unknown>
+  /** `metadata.features.prompt_comments === 'enabled'` (state.rs `agent_env` → `NASIKO_PROMPT_COMMENTS`). */
+  promptComments: boolean
+  /** `compress_enabled`: token optimization across the stack. */
+  compress: boolean
+  /** `minimal_code_enabled`, offered only when `has_coding_skills` (the server's own gate). */
+  minimalCode: boolean
+  codingSkills: boolean
   createdAt: string
   updatedAt: string
 }
@@ -36,6 +45,19 @@ const strOrNull = (v: unknown): string | null => (typeof v === 'string' && v.tri
 const strings = (v: unknown): string[] =>
   Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
 const bool = (v: unknown): boolean => v === true
+const record = (v: unknown): Record<string, unknown> =>
+  v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {}
+
+/**
+ * The `metadata` PUT body that sets one `features.*` flag. The PUT replaces the whole column, so every other key
+ * stays; `agent_env` reads string values only (`enabled` / `disabled`, state.rs).
+ */
+export function withFeature(metadata: Record<string, unknown>, key: string, on: boolean) {
+  return {
+    ...metadata,
+    features: { ...record(metadata.features), [key]: on ? 'enabled' : 'disabled' },
+  }
+}
 
 function skills(v: unknown): Skill[] {
   if (!Array.isArray(v)) return []
@@ -67,6 +89,7 @@ export function normalizeDetail(d: AgentDetailResponse): AgentView {
   const raw = d as unknown as Record<string, unknown>
   // Capabilities are stored as the agent card sent them (camelCase keys, utils.rs:51);
   // accept snake_case too, in case a hand-registered agent used it.
+  const metadata = record(raw.metadata)
   const caps = (
     raw.capabilities && typeof raw.capabilities === 'object' ? raw.capabilities : {}
   ) as Record<string, unknown>
@@ -99,6 +122,11 @@ export function normalizeDetail(d: AgentDetailResponse): AgentView {
       metadata: raw.metadata,
     }),
     integrationId: strOrNull(raw.coding_agent_integration_id),
+    metadata,
+    promptComments: record(metadata.features).prompt_comments === 'enabled',
+    compress: bool(raw.compress_enabled),
+    minimalCode: bool(raw.minimal_code_enabled),
+    codingSkills: bool(raw.has_coding_skills),
     createdAt: str(raw.created_at),
     updatedAt: str(raw.updated_at),
   }

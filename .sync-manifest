@@ -91,6 +91,7 @@ agents/finance-agent/justfile
 agents/finance-agent/src/main.rs
 agents/finance-agent/src/telemetry.rs
 agents/finance-agent/src/tools.rs
+agents/general-assistant-1.1.1.zip
 agents/github/AgentCard.json
 agents/github/Dockerfile
 agents/github/go.mod
@@ -179,6 +180,7 @@ agents/openai/src/__main__.py
 agents/openai/src/agent.py
 agents/openai/src/agent_executor.py
 agents/openai/src/telemetry.py
+agents/opencode-agent-v1.zip
 agents/paper/AgentCard.json
 agents/paper/Cargo.toml
 agents/paper/Dockerfile
@@ -457,6 +459,7 @@ llm-router/src/routing/pricing_sync.rs
 llm-router/src/routing/registry.rs
 llm-router/src/routing/salience.rs
 llm-router/src/routing/salience_classifier.rs
+llm-router/src/savings.rs
 llm-router/src/usage.rs
 llm-router/tests/provider_translation.rs
 mcp-gateway/Cargo.toml
@@ -545,6 +548,8 @@ migrations/0048_agent_embedding.sql
 migrations/0049_maf_draft_origin.sql
 migrations/0050_session_type.sql
 migrations/0051_user_onboarding.sql
+migrations/0052_token_savings.sql
+migrations/0053_optimization_effect_factors.sql
 observability/Cargo.toml
 observability/config/otel-collector.yaml
 observability/config/tempo.yaml
@@ -645,6 +650,8 @@ runtime/src/stats.rs
 runtime/src/types.rs
 runtime/tests/docker_runtime.rs
 runtime/tests/types.rs
+savings/Cargo.toml
+savings/src/lib.rs
 secrets/Cargo.toml
 secrets/src/lib.rs
 secrets/tests/crypto.rs
@@ -735,6 +742,8 @@ server/src/observability/mod.rs
 server/src/observability/receipt_materializer.rs
 server/src/observability/resources.rs
 server/src/observability/routes.rs
+server/src/observability/savings.rs
+server/src/observability/savings_factors.rs
 server/src/observability/service.rs
 server/src/observability/session_resolver.rs
 server/src/observability/trace_materializer.rs
@@ -794,6 +803,7 @@ server/tests/chat_sessions.rs
 server/tests/coding_agent_telemetry.rs
 server/tests/common/mod.rs
 server/tests/cost_path_differential.rs
+server/tests/finops_savings.rs
 server/tests/fixtures/mcp-echo-server/Dockerfile
 server/tests/fixtures/mcp-echo-server/pyproject.toml
 server/tests/fixtures/mcp-echo-server/requirements.txt
@@ -849,6 +859,7 @@ server/tests/router_flow.rs
 server/tests/runtime_gaps.rs
 server/tests/titling.rs
 server/tests/token_attribution.rs
+server/tests/token_savings_write.rs
 server/tests/usage_search.rs
 server/tests/users_create.rs
 server/tests/version_immutability_fixes.rs
@@ -889,6 +900,8 @@ ui/common/src/app/shell/PresenterCard.tsx
 ui/common/src/app/shell/RouteStates.test.tsx
 ui/common/src/app/shell/RouteStates.tsx
 ui/common/src/app/shell/SidebarPanel.tsx
+ui/common/src/app/shell/WaitlistCta.test.tsx
+ui/common/src/app/shell/WaitlistCta.tsx
 ui/common/src/app/shell/context.test.ts
 ui/common/src/app/shell/context.ts
 ui/common/src/app/shell/contrast.test.ts
@@ -989,6 +1002,7 @@ ui/common/src/components/charts/y-axis-scales.ts
 ui/common/src/components/charts/y-axis-ticks.ts
 ui/common/src/components/charts/y-axis.tsx
 ui/common/src/components/charts/y-domain-utils.ts
+ui/common/src/components/shared/beta-badge.tsx
 ui/common/src/components/shared/chart-marks.tsx
 ui/common/src/components/shared/composites.stories.tsx
 ui/common/src/components/shared/copy-button.tsx
@@ -1298,6 +1312,7 @@ ui/common/src/features/onboarding/GuideHost.tsx
 ui/common/src/features/onboarding/ModelStep.tsx
 ui/common/src/features/onboarding/OnboardingDialog.test.tsx
 ui/common/src/features/onboarding/OnboardingDialog.tsx
+ui/common/src/features/onboarding/OptimiseStep.tsx
 ui/common/src/features/onboarding/api.ts
 ui/common/src/features/onboarding/copy.ts
 ui/common/src/features/onboarding/index.ts
@@ -1328,6 +1343,7 @@ ui/common/src/features/overview/components/NeedsYou.tsx
 ui/common/src/features/overview/components/QuickActions.tsx
 ui/common/src/features/overview/components/RecentChats.tsx
 ui/common/src/features/overview/components/RecentSessions.tsx
+ui/common/src/features/overview/components/Savings.tsx
 ui/common/src/features/overview/components/SetupGuide.tsx
 ui/common/src/features/overview/components/Spend.tsx
 ui/common/src/features/overview/components/SpendChart.tsx
@@ -1389,6 +1405,8 @@ ui/common/src/features/sessions/followTheMoney.test.tsx
 ui/common/src/features/sessions/live.ts
 ui/common/src/features/sessions/search.ts
 ui/common/src/features/settings/AppearancePage.tsx
+ui/common/src/features/settings/ChatContextPage.test.tsx
+ui/common/src/features/settings/ChatContextPage.tsx
 ui/common/src/features/settings/PasswordPage.test.tsx
 ui/common/src/features/settings/PasswordPage.tsx
 ui/common/src/features/settings/SecretsPage.test.tsx
@@ -1422,6 +1440,8 @@ ui/common/src/features/tokenops/components/CostScatter.tsx
 ui/common/src/features/tokenops/components/DayPanel.tsx
 ui/common/src/features/tokenops/components/KpiStrip.tsx
 ui/common/src/features/tokenops/components/MonthHero.tsx
+ui/common/src/features/tokenops/components/OptimisationPanel.tsx
+ui/common/src/features/tokenops/components/SavingsHighlight.tsx
 ui/common/src/features/tokenops/components/SpendTimeline.tsx
 ui/common/src/features/tokenops/components/SummaryHero.tsx
 ui/common/src/features/tokenops/components/TracesDrawer.tsx
@@ -1430,12 +1450,14 @@ ui/common/src/features/tokenops/csv.ts
 ui/common/src/features/tokenops/forecast.ts
 ui/common/src/features/tokenops/links.ts
 ui/common/src/features/tokenops/logic.test.ts
+ui/common/src/features/tokenops/optimisation.ts
 ui/common/src/features/tokenops/prefetch.ts
 ui/common/src/features/tokenops/search.ts
 ui/common/src/features/tokenops/series.ts
 ui/common/src/features/tokenops/stats.ts
 ui/common/src/features/tokenops/types.ts
 ui/common/src/features/tokenops/window.ts
+ui/common/src/features/trace/SessionOptimisation.tsx
 ui/common/src/features/trace/SessionTracePage.test.tsx
 ui/common/src/features/trace/SessionTracePage.tsx
 ui/common/src/features/trace/SpanPanel.tsx
@@ -1557,6 +1579,7 @@ ui/common/src/routes/_app/router.tsx
 ui/common/src/routes/_app/sessions.$sessionId.tsx
 ui/common/src/routes/_app/sessions.index.tsx
 ui/common/src/routes/_app/settings.appearance.tsx
+ui/common/src/routes/_app/settings.chat-context.tsx
 ui/common/src/routes/_app/settings.index.tsx
 ui/common/src/routes/_app/settings.password.tsx
 ui/common/src/routes/_app/settings.secrets.tsx

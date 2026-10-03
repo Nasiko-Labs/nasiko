@@ -36,7 +36,7 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { meQuery } from '@/lib/api/auth'
 import { ApiError } from '@/lib/api/client'
 import { env } from '@/lib/env'
-import { fmtLocalTime, fmtShortDay } from '@/lib/format'
+import { fmtLocalTime, fmtPct, fmtShortDay } from '@/lib/format'
 import { prefersReducedMotion, useMediaQuery } from '@/lib/useMediaQuery'
 import { useFrozenNow, useReturnTick } from '@/lib/useReturnTick'
 import {
@@ -44,6 +44,7 @@ import {
   useCalendar,
   useDay,
   useProviders,
+  useSavings,
   useTimeseries,
   useTopTraces,
   type Filters,
@@ -67,6 +68,9 @@ import { DayPanel } from './components/DayPanel'
 import { Disclosure } from '@/components/shared/disclosure'
 import { KpiStrip } from './components/KpiStrip'
 import { MonthHero } from './components/MonthHero'
+import { OptimisationPanel } from './components/OptimisationPanel'
+import { SavingsHighlight } from './components/SavingsHighlight'
+import { summarizeOptimisation } from './optimisation'
 import { PageHeader } from '@/components/shared/page-header'
 import { PanelError } from '@/components/shared/panel'
 import { PageLoader } from '@/components/shared/page-loader'
@@ -79,6 +83,9 @@ import { TracesDrawer } from './components/TracesDrawer'
 export type SetSearch = (patch: Partial<TokenopsSearch>, opts?: { replace?: boolean }) => void
 
 const ALL = '__all'
+
+/** `null` reduction means there was no baseline to compare against, not a zero saving. */
+const showOptPct = (v: number | null) => (v == null ? '—' : fmtPct(v))
 
 export function TokenopsPage({
   search,
@@ -124,6 +131,11 @@ export function TokenopsPage({
   const dash = useDashboard(win, filters, search.view, 'current', ready)
   const prevDash = useDashboard(win, filters, search.view, 'previous', ready)
   const timeseries = useTimeseries(win, filters, ready)
+  const savings = useSavings(win, filters, 'agent', ready)
+  const optimisation = useMemo(
+    () => (savings.data ? summarizeOptimisation(savings.data) : undefined),
+    [savings.data],
+  )
   const thisMonth = utcMonthStart(now)
   const lastMonth = utcMonthStart(now, -1)
   const calThis = useCalendar(monthKey(thisMonth), filters, ready)
@@ -260,13 +272,48 @@ export function TokenopsPage({
       block: 'start',
       behavior: prefersReducedMotion() ? 'auto' : 'smooth',
     })
-  }, [search.open])
+  }, [search.open, showLoader])
+  /**
+   * Put the optimisation section under the sticky bar.
+   *
+   * One function for both ways in — the in-page button and the Overview's link — because they are
+   * the same request and must land in the same place. They did not: the button scrolled without the
+   * sticky-bar offset, so it stopped with the heading hidden behind the bar.
+   */
+  const scrollToOptimise = () => {
+    const header = document.getElementById('disclosure-optimise-title')
+    if (!header) return false
+    header.style.scrollMarginTop = `${(stickyBar.current?.offsetHeight ?? 0) + 8}px`
+    header.scrollIntoView?.({
+      block: 'start',
+      behavior: prefersReducedMotion() ? 'auto' : 'smooth',
+    })
+    return true
+  }
+
+  // Arriving from the Overview's "See the breakdown" should land on the section, not the top of a
+  // page with four other panels above it.
+  //
+  // No dependency array on purpose. The disclosures sit behind the page loader, so on a cold load
+  // the element does not exist yet, and there is no single piece of state whose change reliably
+  // marks the moment it appears — `painted` is set during render, so it is already settled by the
+  // time effects run. Retrying each render until the element is there, then latching on the ref,
+  // is both simpler and correct; the cost is one `getElementById` per render, and only until it
+  // succeeds. The ref also stops a later toggle of the same section from yanking the viewport.
+  const scrolledToOpened = useRef(false)
+  useEffect(() => {
+    if (scrolledToOpened.current || !openSet(search.open).has('optimise')) return
+    if (scrollToOptimise()) scrolledToOpened.current = true
+  })
   const collapsed = (id: DisclosureId) =>
     closed.has(id) && (closed.get(id) === forcedBy(id) || (id === 'spend' && !search.day))
   const isOpen = (id: DisclosureId) =>
     !collapsed(id) &&
     (open.has(id) ||
       id === 'spend' ||
+      // Open by default: savings are the one piece of good news on this page, and burying them
+      // behind an expand made them invisible to anyone who did not already know to look.
+      id === 'optimise' ||
       (id === 'drivers' &&
         (!!search.q || search.sort !== 'cost' || search.view !== 'agent' || open.has('perf'))) ||
       (id === 'metrics' && !!search.more))
@@ -495,6 +542,14 @@ export function TokenopsPage({
             onRetry={() => void dash.refetch()}
           />
 
+          <SavingsHighlight
+            data={optimisation}
+            onSeeDetail={() => {
+              if (!isOpen('optimise')) toggle('optimise')
+              scrollToOptimise()
+            }}
+          />
+
           <div className="flex flex-col">
             <Disclosure
               id="spend"
@@ -542,6 +597,37 @@ export function TokenopsPage({
                   }
                 />
               ) : null}
+            </Disclosure>
+
+            <Disclosure
+              id="optimise"
+              title="Token optimisation"
+              hint={
+                optimisation
+                  ? `${optimisation.optimisedCount} of ${optimisation.totalAgents} agents · ${showOptPct(optimisation.savedPct)} tokens saved`
+                  : 'savings per layer and per agent'
+              }
+              open={isOpen('optimise')}
+              onToggle={() => toggle('optimise')}
+            >
+              {savings.isError ? (
+                <StateCard
+                  tone="warning"
+                  title="Savings could not be loaded"
+                  fix="Retry, or check the control plane logs for the finops savings query."
+                  action={
+                    <Button variant="outline" size="sm" onClick={() => void savings.refetch()}>
+                      Retry
+                    </Button>
+                  }
+                >
+                  {savings.error instanceof Error ? savings.error.message : 'Request failed.'}
+                </StateCard>
+              ) : optimisation ? (
+                <OptimisationPanel data={optimisation} />
+              ) : (
+                <div className="h-48 animate-pulse rounded-md bg-muted" aria-busy />
+              )}
             </Disclosure>
 
             <Disclosure

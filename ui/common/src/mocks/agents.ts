@@ -44,6 +44,10 @@ export interface MockAgent {
   agentAcl: string[]
   /** Set by roll back: status reads Deploying for ROLLBACK_MS, then the target goes live. */
   rollback: { at: number; to: string; build: string } | null
+  /** Written by `PUT /api/agents/{id}`; absent reads as the column defaults (`metadataOf`, false, false). */
+  metadata?: Record<string, unknown>
+  compress_enabled?: boolean
+  minimal_code_enabled?: boolean
 }
 
 export interface AgentsState {
@@ -80,7 +84,7 @@ const SKILLS: Record<string, [string, string, string][]> = {
     ['brief', 'Write a research brief', 'Compare three vector databases for our search'],
   ],
   'code-reviewer': [
-    ['review', 'Review a pull request', 'Review PR #481 for race conditions'],
+    ['review', 'Review code in a pull request', 'Review PR #481 for race conditions'],
     ['explain', 'Explain a diff', 'What does this migration change?'],
   ],
   'triage-router': [['route', 'Route a request', 'Who should handle a failed card payment?']],
@@ -299,10 +303,7 @@ export function listRow(a: MockAgent, now: number): S['Agent'] {
     capabilities: capabilities(a),
     url: null,
     transport_path: null,
-    metadata:
-      a.harness !== null || a.tags.includes('coding-agent')
-        ? { source: 'nasiko-cli-integration', integration_id: a.harness ?? 'claude' }
-        : {},
+    metadata: metadataOf(a),
     security_schemes: {},
     default_input_modes: ['text'],
     default_output_modes: ['text'],
@@ -317,6 +318,17 @@ export function listRow(a: MockAgent, now: number): S['Agent'] {
 }
 
 /** `AgentDetailResponse`: camelCase except the renamed fields (catalog/routes.rs:616). Status NOT reconciled. */
+function metadataOf(a: MockAgent): Record<string, unknown> {
+  if (a.metadata) return a.metadata
+  return a.harness !== null || a.tags.includes('coding-agent')
+    ? { source: 'nasiko-cli-integration', integration_id: a.harness ?? 'claude' }
+    : {}
+}
+
+/** nasiko-coding-policy `CODING_TERMS`: a word of a skill's id, name or tag starts with one (models.rs `has_coding_skills`). */
+const CODING = /^(cod|program|software|refactor|debug|bug|lint|compil)/i
+const mentionsCoding = (text: string) => text.split(/[^a-z0-9]+/i).some((w) => CODING.test(w))
+
 export function detailBody(a: MockAgent, canManage: boolean) {
   return {
     id: a.id,
@@ -346,6 +358,12 @@ export function detailBody(a: MockAgent, canManage: boolean) {
     can_manage: canManage,
     is_coding_agent: a.harness !== null,
     coding_agent_integration_id: a.harness,
+    compress_enabled: a.compress_enabled ?? false,
+    minimal_code_enabled: a.minimal_code_enabled ?? false,
+    has_coding_skills: a.skills.some((k) =>
+      [k.id, k.name, ...(k.tags ?? [])].some((t) => mentionsCoding(t)),
+    ),
+    metadata: metadataOf(a),
     created_at: a.created_at,
     updated_at: a.updated_at,
   }

@@ -42,7 +42,7 @@ describe('startMocks', () => {
     const store = memoryStorage()
     store.setItem(KEY, '1')
     vi.stubGlobal('localStorage', store)
-    await startMocks({ mode: 'mock', partialMocks: [], legacyUiUrl: null })
+    await startMocks({ mode: 'mock', partialMocks: [], legacyUiUrl: null, waitlistUrl: null })
     expect(setupWorker).toHaveBeenCalledTimes(1)
     expect(start).toHaveBeenCalledWith(expect.objectContaining({ onUnhandledRequest: 'bypass' }))
     expect((await fetch(url('/api/me'))).status).toBe(401)
@@ -68,20 +68,25 @@ describe('startMocks', () => {
       removeItem: fail,
       setItem: fail,
     } satisfies Storage)
-    await startMocks({ mode: 'mock', partialMocks: [], legacyUiUrl: null })
+    await startMocks({ mode: 'mock', partialMocks: [], legacyUiUrl: null, waitlistUrl: null })
     expect((await fetch(url('/api/me'))).status).toBe(200)
     expect((await fetch(url('/api/auth/logout'), { method: 'POST' })).status).toBe(204)
   })
 
   it('does nothing in live mode with no partial mocks', async () => {
-    await startMocks({ mode: 'live', partialMocks: [], legacyUiUrl: null })
+    await startMocks({ mode: 'live', partialMocks: [], legacyUiUrl: null, waitlistUrl: null })
     expect(setupWorker).not.toHaveBeenCalled()
   })
 
   it('partial-live mode starts only the requested groups and never persists a session', async () => {
     const store = memoryStorage()
     vi.stubGlobal('localStorage', store)
-    await startMocks({ mode: 'live', partialMocks: ['top-traces'], legacyUiUrl: null })
+    await startMocks({
+      mode: 'live',
+      partialMocks: ['top-traces'],
+      legacyUiUrl: null,
+      waitlistUrl: null,
+    })
     expect(setupWorker).toHaveBeenCalledTimes(1)
     const handlers = setupWorker.mock.calls[0]!
     expect(handlers.length).toBeGreaterThan(0)

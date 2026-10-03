@@ -29,6 +29,7 @@ import {
   dashboard,
   dayDrilldown,
   MockHttpError,
+  savings,
   spendCalendar,
   spendTimeseries,
   topTraces,
@@ -401,6 +402,9 @@ let settingsRow: Record<string, unknown> | null = null
 // Secret values the mock was sent (the router state keeps names only); a seed secret reads as a fake key.
 let secretValues = new Map<string, string>()
 let mockPassword: string | null = null
+// context_selection.rs: the viewer's chat-context preferences, at the migrations' defaults (0038, 0039).
+const CHAT_CONTEXT_DEFAULTS = { strategy: 'pacms', level: 'medium' }
+let chatContext = { ...CHAT_CONTEXT_DEFAULTS }
 /** settings.rs `get_settings` with no row: its hard-coded defaults (not the env's, ST-1). */
 const SETTINGS_DEFAULTS = {
   router_model: 'deepseek-v4-pro',
@@ -472,6 +476,7 @@ export function resetAgentsMock() {
   settingsRow = null
   secretValues = new Map()
   mockPassword = null
+  chatContext = { ...CHAT_CONTEXT_DEFAULTS }
   onboardingRow = ONBOARDED
   resetChatMock()
   // The chat knobs tests can turn (v1c DX3).
@@ -743,9 +748,17 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
       const body = (await request.json().catch(() => ({}))) as {
         display_name?: string
         description?: string
+        metadata?: Record<string, unknown>
+        compress_enabled?: boolean
+        minimal_code_enabled?: boolean
       }
+      // COALESCE per field (catalog/routes.rs update); `metadata` replaces the whole column.
       if (typeof body.display_name === 'string') a.display_name = body.display_name
       if (typeof body.description === 'string') a.description = body.description
+      if (body.metadata && typeof body.metadata === 'object') a.metadata = body.metadata
+      if (typeof body.compress_enabled === 'boolean') a.compress_enabled = body.compress_enabled
+      if (typeof body.minimal_code_enabled === 'boolean')
+        a.minimal_code_enabled = body.minimal_code_enabled
       a.updated_at = new Date(nowFn()).toISOString()
       return HttpResponse.json(listRow(a, nowFn()))
     }),
@@ -1125,6 +1138,7 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
       respond(() => topTraces(getFinopsSeed(), params(request), nowFn())),
     ),
   ],
+  savings: [http.get(`${FINOPS}/savings`, () => respond(() => savings()))],
   observability: [
     // `owner=` lists are the Harnesses live fallback's (harnesses group): pass them through, so
     // VITE_NASIKO_MOCK=observability alone never answers them from the harness seed.
@@ -1589,6 +1603,29 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
       )
       return HttpResponse.json(settingsRow)
     }),
+    // context_selection.rs (nasiko-cloud-rs 1a305a63): bare objects, any signed-in user, the caller's own. A value
+    // outside the enum never reaches the handler: Axum's Json extractor answers a plain-text 422.
+    ...(
+      [
+        ['/api/me/context-strategy', 'strategy', ['pacms', 'topk', 'lastk']],
+        ['/api/me/pacms-budget', 'level', ['low', 'medium', 'high']],
+      ] as const
+    ).flatMap(([path, key, values]) => [
+      http.get(path, () =>
+        loggedIn ? HttpResponse.json({ [key]: chatContext[key] }) : unauthorized(),
+      ),
+      http.patch(path, async ({ request }) => {
+        if (!loggedIn) return unauthorized()
+        const v = ((await request.json().catch(() => ({}))) as Record<string, unknown>)[key]
+        if (typeof v !== 'string' || !(values as readonly string[]).includes(v))
+          return text(
+            `Failed to deserialize the JSON body into the target type: ${key}: unknown variant`,
+            422,
+          )
+        chatContext[key] = v
+        return HttpResponse.json({ [key]: v })
+      }),
+    ]),
   ],
 }
 

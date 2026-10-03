@@ -1,8 +1,9 @@
 // Bundle budgets (plan §2, §8 Phase 4), from the Vite manifest, gzipped: the shell (the entry and its static
 // imports, what every page loads first) ≤ 200 KB JS and ≤ 40 KB CSS; every lazily loaded chunk ≤ 120 KB.
 // The mock worker (MSW + seed) only loads in mock mode and is reported, not budgeted.
+// An edition may raise its own limits in `<app>/budgets.json` ({"shellJs": 205}, KB), next to its dist/.
 // Usage: node scripts/check-budgets.ts [dist…]   (default: every edition's dist/, scripts/editions.ts)
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { findEditions } from './editions.ts'
@@ -21,6 +22,13 @@ export function check(dist: string, log: (line: string) => void = console.log): 
     Chunk
   >
   const gz = (file: string) => gzipSync(readFileSync(join(dist, file))).length
+  const own = join(dist, '../budgets.json')
+  const budget = { ...BUDGET }
+  if (existsSync(own))
+    for (const [k, kb] of Object.entries(
+      JSON.parse(readFileSync(own, 'utf8')) as Record<string, number>,
+    ))
+      if (k in budget) budget[k as keyof typeof BUDGET] = kb * KB
   let ok = true
   const report = (label: string, size: number, max: number | null) => {
     const over = max !== null && size > max
@@ -40,13 +48,13 @@ export function check(dist: string, log: (line: string) => void = console.log): 
   report(
     'shell JS',
     chunks.reduce((n, c) => n + gz(c.file), 0),
-    BUDGET.shellJs,
+    budget.shellJs,
   )
   const css = [...new Set(chunks.flatMap((c) => c.css ?? []))]
   report(
     'shell CSS',
     css.reduce((n, f) => n + gz(f), 0),
-    BUDGET.shellCss,
+    budget.shellCss,
   )
   // Every lazy chunk is checked; the output lists the largest few and anything over budget.
   const lazy = Object.entries(manifest)
@@ -54,7 +62,7 @@ export function check(dist: string, log: (line: string) => void = console.log): 
     .map(([key, c]) => ({
       file: c.file,
       size: gz(c.file),
-      max: MOCK_ONLY.test(key) ? null : BUDGET.lazy,
+      max: MOCK_ONLY.test(key) ? null : budget.lazy,
     }))
     .sort((a, b) => b.size - a.size)
   lazy.forEach((c, i) => {

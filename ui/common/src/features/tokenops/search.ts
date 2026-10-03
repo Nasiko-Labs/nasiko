@@ -11,7 +11,7 @@ const SORTS = ['cost', 'tokens', 'operations', 'latency', 'hours', 'name'] as co
 export type SortKey = (typeof SORTS)[number]
 
 /** TokenOps disclosure ids (the `open` param). */
-export const DISCLOSURES = ['spend', 'drivers', 'perf', 'month', 'metrics'] as const
+export const DISCLOSURES = ['spend', 'optimise', 'drivers', 'perf', 'month', 'metrics'] as const
 export type Disclosure = (typeof DISCLOSURES)[number]
 
 /** Normalise `open` to a canonical CSV (kept a string so the URL stays `open=spend,drivers`). */

@@ -9,7 +9,15 @@ import { routerKeys } from '@/features/router/api'
 import type { SecretEntry } from '@/features/router/types'
 import { apiData, apiFetch } from '@/lib/api/client'
 import { settingsBody, type SettingsValues } from './logic'
-import { settingsSchema, type Settings, type SettingsField } from './types'
+import {
+  contextStrategySchema,
+  pacmsBudgetSchema,
+  settingsSchema,
+  type BudgetLevel,
+  type ContextStrategy,
+  type Settings,
+  type SettingsField,
+} from './types'
 
 const settingsQuery = {
   queryKey: ['settings'] as const,
@@ -68,4 +76,35 @@ export function useSecretWrites() {
           .value,
     }),
   }
+}
+
+export interface ChatContext {
+  strategy: ContextStrategy
+  level: BudgetLevel
+}
+
+const chatContextQuery = {
+  queryKey: ['chat-context'] as const,
+  queryFn: async ({ signal }: { signal: AbortSignal }): Promise<ChatContext> => {
+    const [s, b] = await Promise.all([
+      apiFetch('/api/me/context-strategy', { signal, schema: contextStrategySchema }),
+      apiFetch('/api/me/pacms-budget', { signal, schema: pacmsBudgetSchema }),
+    ])
+    return { strategy: s.strategy, level: b.level }
+  },
+}
+
+export const useChatContext = () => useQuery(chatContextQuery)
+
+/** Two routes, so only the changed ones are sent; either may fail alone, so the page re-reads both after. */
+export function useSaveChatContext() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (v: Partial<ChatContext>) =>
+      Promise.all([
+        v.strategy && apiFetch('/api/me/context-strategy', json('PATCH', { strategy: v.strategy })),
+        v.level && apiFetch('/api/me/pacms-budget', json('PATCH', { level: v.level })),
+      ]),
+    onSettled: () => qc.invalidateQueries({ queryKey: chatContextQuery.queryKey }),
+  })
 }

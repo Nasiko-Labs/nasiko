@@ -117,6 +117,7 @@ Presets in `common/src/lib/motion.ts`; new motion uses the names, never raw numb
 | `--animate-beam` / `--animate-stage` | 4 s linear loop | the onboarding Welcome step's flow and the router's "How routing works": a beam crosses the stages and each icon lights as it passes (CSS); still under reduced motion, the first stage lit |
 | `--animate-mark-draw` | 1.6 s ease-in-out, alternating | the page loader (`PageLoader`, our take on Aceternity's LoaderThree): each bar of the Nasiko mark draws its outline, then fills, 40 ms apart (CSS); reduced motion shows the filled mark, still |
 | `--animate-float` | 7 s ease-in-out loop | the login showcase's layer stack bobs 8 px (CSS); still under reduced motion |
+| `--animate-orbit` / `--animate-flag-wave` | 3 s linear / 1.4 s ease-in-out loops | the sidebar's waitlist badge (`WaitlistCta`, our take on Aceternity's Moving Border): a glint circles the pill's edge and the flag's cloth waves (CSS); under reduced motion the glint is hidden and the flag still |
 
 `tw-animate-css` provides the `animate-in` / `slide-in-*` / `fade-*` utilities; a build test checks they are emitted.
 
@@ -131,6 +132,7 @@ Presets in `common/src/lib/motion.ts`; new motion uses the names, never raw numb
 | Active item | `--accent` tint fill, `--accent-foreground` label, medium weight, 6 px radius, `aria-current="page"`; hover on other rows is `--muted`, never the tint |
 | Drill-in panel | a page with its own nav (Chat's history, Settings' sections) renders `SidebarPanel`: in the expanded sidebar and the phone sheet it replaces the nav groups under a row reading "Back" (its name and tooltip say where: "Back to TokenOps"): it returns to the last page visited outside the module (with its search; moves inside Chat or Settings don't count; repeated Backs keep going back, like history), or, when the page was opened directly ("Back to main menu"), shows the app nav until the next navigation; the collapsed rail keeps the nav icons and the page shows its own fallback beside it (Chat's rail column or sheet, Settings' section column). Never two sidebars side by side at full width |
 | Footer | status (health + MOCK DATA / LIVE, links to Status at `/status`; dev servers and mock builds only), account (Theme submenu: Mode and Theme radios; Settings; Sign out) |
+| Waitlist (OSS only) | above the footer, linking to the waitlist page (`env.waitlistUrl`): a `--card` card (8 px radius, hairline) with an "Early access" pill on its top edge (`--primary` fill, mono 10 px caps, a waving flag, a glint circling its edge: `--animate-orbit` / `--animate-flag-wave`), a title, one muted line and a full-width outline "Join the waitlist" that opens a new tab; in the rail one ticket-icon row with a tooltip. Not shown while a page's panel holds the sidebar (Chat, Settings), so Chat's dot background stays its one effect; no dismiss. The login page has the plain line "New to Nasiko? Join the waitlist" under Sign in |
 | State | shadcn's `sidebar_state` cookie; first visit opens at ≥ 1280 px, on every page |
 
 Add a nav item in `common/src/app/shell/nav.ts` (label, icon, route, group, `shared`, `also`) once its page exists.

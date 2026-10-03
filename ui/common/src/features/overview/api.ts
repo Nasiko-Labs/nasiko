@@ -20,11 +20,18 @@ import { useBudgetStatus, useBudgets } from '@/features/router/api'
 import { budgetForecast, usedPercent, type Forecast } from '@/features/router/budgets'
 import type { BudgetAction, BudgetState } from '@/features/router/types'
 import { findSpike, type Spike } from '@/features/narrative/tokenops'
-import { timeseriesQuery, useCalendar, useDashboard, useTimeseries } from '@/features/tokenops/api'
+import {
+  timeseriesQuery,
+  useCalendar,
+  useDashboard,
+  useSavings,
+  useTimeseries,
+} from '@/features/tokenops/api'
 import { buildAttribution, type AttributionRow } from '@/features/tokenops/attribution'
 import { summarizeMonth, type MonthSummary } from '@/features/tokenops/forecast'
 import { zeroFillTimeline, type TimelinePoint } from '@/features/tokenops/series'
 import type { AgentFinopsRow, FinopsSpendTimeseries } from '@/features/tokenops/types'
+import { summarizeOptimisation } from '@/features/tokenops/optimisation'
 import {
   monthKey,
   resolveWindow,
@@ -733,4 +740,18 @@ export function useBudgetCard(fleet: FleetHealth, enabled: boolean): BudgetCard 
       void status.refetch()
     },
   }
+}
+
+/**
+ * Token-optimisation savings for the header's range.
+ *
+ * Reuses TokenOps' own query and window so the two pages can never disagree about a figure, and so
+ * the 90-day range works — the endpoint's `range` shorthand only understands 24h/7d/30d, while a
+ * resolved window carries explicit timestamps.
+ */
+export function useOverviewSavings(now: Date, range: Range, enabled = true) {
+  const win = useMemo(() => rangeWindow(range, now), [range, now])
+  const q = useSavings(win, {}, 'total', enabled)
+  const view = useMemo(() => (q.data ? summarizeOptimisation(q.data) : undefined), [q.data])
+  return { view, isPending: q.isPending, isError: q.isError }
 }

@@ -28,6 +28,7 @@ export const copy = {
     role: { title: 'Your role', sub: 'Tailor the guide' },
     model: { title: 'Connect a model', sub: 'Provider and keys' },
     agent: { title: 'Deploy an agent', sub: 'Zip, GitHub or registry' },
+    optimise: { title: 'Spend less', sub: 'Trim what agents send' },
     ready: { title: 'Ready', sub: 'Start exploring' },
   } satisfies Record<StepId, { title: string; sub: string }>,
   welcome: {
@@ -113,6 +114,32 @@ export const copy = {
     openBuild: 'Open the build',
     openAgent: 'Open the agent',
   },
+  optimise: {
+    title: 'Cut what your agents spend',
+    intro:
+      'Agents re-send a lot of text they do not need: raw tool output, the whole conversation so far, long answers. Each switch below removes one of those before the call reaches the model. Your own messages are never changed.',
+    items: [
+      {
+        title: 'Smaller prompts',
+        line: 'Trims bulky tool output like logs, JSON and diffs to what the model actually needs.',
+        where: 'Agent → Settings → Token optimization',
+      },
+      {
+        title: 'Shorter chat history',
+        line: 'Carries a relevant slice of the conversation on each message instead of all of it.',
+        where: 'Settings → Chat context',
+      },
+      {
+        title: 'Less code written',
+        line: 'For coding agents: check for an existing solution before writing new code.',
+        where: 'Agent → Settings → Coding agent behavior',
+      },
+    ],
+    beta: 'All of these are new and still being tuned. Turn one on for a single agent first — every switch is reversible and takes effect on the next message.',
+    cta: 'Open agent settings',
+    ctaLine: 'Turn the switches on for an agent',
+    skip: 'I will do this later',
+  },
   ready: {
     title: 'Your workspace is ready',
     intro: 'Here is what we set up. Everything can be changed later.',
@@ -123,6 +150,14 @@ export const copy = {
     building: 'Building',
     edit: (what: string) => `Edit ${what.toLowerCase()}`,
     editShort: 'Edit',
+    // Named here because nothing else in the product tells a new user these switches exist: they
+    // live one tab deep on an agent, are off by default, and are the difference between a normal
+    // bill and a much smaller one.
+    savings: {
+      title: 'Spend less per agent',
+      line: 'Each agent has switches that trim what it sends to the model — bulky tool output, old chat history, long answers. Find them under Agent → Settings → Optimisation, and see what they saved on TokenOps.',
+      beta: 'These are new and still being tuned, so try them on one agent first. You can turn any of them off at any time.',
+    },
     overview: 'Open the Overview',
     overviewLine: 'Spend, sessions and agent health',
     open: (page: string) => `Open ${page}`,

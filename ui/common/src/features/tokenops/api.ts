@@ -10,6 +10,7 @@ import type {
   FinopsSpendCalendar,
   FinopsSpendTimeseries,
   ProviderCatalogEntry,
+  SavingsData,
   TopTracesData,
 } from './types'
 import { finopsDashboardSchema, finopsDaySchema, providerCatalogSchema } from './types'
@@ -38,6 +39,7 @@ const tokenopsKeys = {
   calendar: (month: string, f: Filters) => ['tokenops', 'calendar', month, f] as const,
   day: (date: string, f: Filters) => ['tokenops', 'day', date, f] as const,
   topTraces: (w: string, f: Filters) => ['tokenops', 'top-traces', w, f] as const,
+  savings: (w: string, f: Filters, scope: string) => ['tokenops', 'savings', w, f, scope] as const,
   /** Outside the 'tokenops' root: the router shares the catalog, and TokenOps' return refresh leaves it. */
   providers: ['providers'] as const,
 }
@@ -146,4 +148,48 @@ export const providersQuery = queryOptions({
 
 export function useProviders(enabled: boolean) {
   return useQuery({ ...providersQuery, enabled })
+}
+
+/**
+ * Token-optimisation savings for the window. `scope` picks the rollup; every scope returns the
+ * total and the category breakdown, so the panel needs one request rather than three.
+ */
+export function useSavings(
+  win: ResolvedWindow,
+  f: Filters,
+  scope: 'total' | 'agent' | 'session',
+  enabled: boolean,
+) {
+  const path = withQuery(`${FINOPS}/savings`, { ...win.params, ...filterParams(f), scope })
+  return useQuery({
+    queryKey: tokenopsKeys.savings(win.key, f, scope),
+    queryFn: ({ signal }) => apiData<SavingsData>(path, { signal }),
+    placeholderData: keepPreviousData,
+    enabled,
+    meta: { path },
+  })
+}
+
+/**
+ * Savings for one session.
+ *
+ * A fixed 90-day lookback rather than the page's range: a session page has no range control, and a
+ * conversation opened from a link can be older than any default window — returning nothing for it
+ * would read as "this session saved nothing" rather than "you are looking outside the window".
+ */
+export function useSessionSavings(sessionId: string, enabled = true) {
+  return useQuery({
+    queryKey: ['tokenops', 'savings', 'session', sessionId] as const,
+    // The window is resolved here, not during render: a clock read in the component body is impure,
+    // and a start_time that moved every render would change the key and refetch forever.
+    queryFn: ({ signal }) =>
+      apiData<SavingsData>(
+        withQuery(`${FINOPS}/savings`, {
+          session_id: sessionId,
+          start_time: new Date(Date.now() - 90 * 86_400_000).toISOString(),
+        }),
+        { signal },
+      ),
+    enabled: enabled && !!sessionId,
+  })
 }

@@ -100,6 +100,9 @@ describe('first-run guide', () => {
     await user.click(screen.getByRole('button', { name: /continue/i }))
     await user.click(await screen.findByRole('button', { name: 'Skip this step' }))
     await user.click(await screen.findByRole('button', { name: 'Skip this step' }))
+    // Spend less: informational, so its opt-out is worded as a decision, not as skipping a task.
+    await screen.findByRole('heading', { name: 'Cut what your agents spend' })
+    await user.click(screen.getByRole('button', { name: 'I will do this later' }))
     await screen.findByRole('heading', { name: 'Your workspace is ready' })
     expect(screen.getByText('SRE / On-call')).toBeInTheDocument()
     expect(screen.getAllByText('Skipped')).toHaveLength(2)
@@ -127,7 +130,37 @@ describe('first-run guide', () => {
     expect(await screen.findByText(/Your agent is on its way/)).toBeInTheDocument()
     expect(router.state.location.pathname).toBe('/')
     await user.click(screen.getByRole('button', { name: /continue/i }))
+    await screen.findByRole('heading', { name: 'Cut what your agents spend' })
+    await user.click(screen.getByRole('button', { name: /continue/i }))
     expect(await screen.findByText('Building')).toBeInTheDocument()
+  })
+
+  it('teaches the optimisation switches and says where each one lives', async () => {
+    // The only place in the product that tells a new user these exist: they are one tab deep on an
+    // agent and every one is off by default, so a feature nobody discovers may as well not ship.
+    firstTime()
+    const user = userEvent.setup()
+    const { router } = renderApp('/')
+    await guide()
+    await user.click(screen.getByRole('button', { name: /get started/i }))
+    await user.click(screen.getByRole('radio', { name: /sre/i }))
+    await user.click(screen.getByRole('button', { name: /continue/i }))
+    await user.click(await screen.findByRole('button', { name: 'Skip this step' }))
+    await user.click(await screen.findByRole('button', { name: 'Skip this step' }))
+
+    const step = await screen.findByRole('heading', { name: 'Cut what your agents spend' })
+    expect(step).toBeInTheDocument()
+    // Each switch is named for what it trims, with the path to find it.
+    for (const name of ['Smaller prompts', 'Shorter chat history', 'Less code written']) {
+      expect(screen.getByText(name)).toBeInTheDocument()
+    }
+    expect(screen.getByText(/Agent → Settings → Token optimization/)).toBeInTheDocument()
+    expect(screen.getByText(/Settings → Chat context/)).toBeInTheDocument()
+    expect(screen.getByText(/still being tuned/)).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Open agent settings' }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/agents'))
+    expect(screen.queryByRole('dialog')).toBeNull()
   })
 
   it('never opens for a finished user or a server without the endpoint', async () => {

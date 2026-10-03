@@ -63,6 +63,7 @@ import type { SessionsSearch, TraceSearch } from '@/features/sessions/search'
 import { fmtLatency, fmtMoney, fmtShortDay, fmtTokens, fmtUtcDayTime } from '@/lib/format'
 import { useMediaQuery } from '@/lib/useMediaQuery'
 import { useAgentCallTargets, useKnownFailing, useTraceDetail, useWasteCosts } from './api'
+import { SessionOptimisation } from './SessionOptimisation'
 import { SpanPanel, type SpanTab } from './SpanPanel'
 import { Legend, SpanTable, Waterfall } from './Waterfall'
 import { useCopy } from '@/lib/useCopy'
@@ -324,6 +325,7 @@ export function SessionTracePage({
               </span>{' '}
               · {copy.rollup({ spans: trace.data.num_spans, ...counts })}
               {total ? ` · ${fmtLatency(total)}` : ''}
+              <SessionOptimisation sessionId={sessionId} />
             </>
           ) : undefined
         }

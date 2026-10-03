@@ -30,7 +30,7 @@ import { meQuery, type Me } from '@/lib/api/auth'
 import { useReturnTick } from '@/lib/useReturnTick'
 // import { fmtMonthYear } from '@/lib/format' // Budgets hidden: used only by the Budgets card.
 // import { useBudgetCard, useFleetHealth, useHarnessSummary, useNeedsYou, useSpend } from './api'
-import { useFleetHealth, useHarnessSummary, useNeedsYou, useSpend } from './api'
+import { useFleetHealth, useHarnessSummary, useNeedsYou, useOverviewSavings, useSpend } from './api'
 // Budgets hidden: no server support for /api/budgets yet (R-L10). Restore when it lands.
 // import { Budget } from './components/Budget'
 import { FirstRun, FirstRunLead, FirstRunPreview } from './components/FirstRun'
@@ -38,6 +38,7 @@ import { FleetHealth } from './components/FleetHealth'
 import { Harnesses, HarnessesLine } from './components/Harnesses'
 import { Headline } from './components/Headline'
 import { AgentsTile, RunsTile, SpendTile } from './components/Kpis'
+import { Savings } from './components/Savings'
 import { MonthBar } from './components/MonthBar'
 import { NeedsYou } from './components/NeedsYou'
 import { QuickActions } from './components/QuickActions'
@@ -220,6 +221,7 @@ function Overview({
   // First run: the directory answered with no agents but harnesses (design review 7A).
   const firstRun = !!fleet.summary && fleet.agentCount === 0
   const spend = useSpend(now, range, ready)
+  const savings = useOverviewSavings(now, range, ready)
   const needsYou = useNeedsYou(now, me, fleet, ready)
   const harnesses = useHarnessSummary(now, me, range)
   // The Recent chats card's own query (same key): first paint waits for it too.
@@ -301,6 +303,7 @@ function Overview({
             </Badge>
             <Headline narrative={narrative} nothing={needs.empty} />
             <MonthBar spend={spend} />
+            <Savings view={savings.view} isPending={savings.isPending} />
           </div>
           {/* The tiles drop their own card chrome here: the hairlines between them are the grid's gap. */}
           <div className="grid grid-cols-1 gap-px border-t border-border bg-border *:rounded-none *:border-0 @[560px]/overview:grid-cols-2 @[1100px]/overview:border-t-0 @[1100px]/overview:border-l">

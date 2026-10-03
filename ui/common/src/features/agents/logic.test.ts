@@ -14,7 +14,7 @@ import { dedupeById, hasFreshDeploying } from './api'
 import { copy, errorCopy } from './copy'
 import { firstRunCommands } from './format'
 import { grantsBodySchema, grantWrite, normalizeGrants } from './grants'
-import { isUuid, normalizeDetail, safeHttpsUrl, safeHttpUrl } from './normalize'
+import { isUuid, normalizeDetail, safeHttpsUrl, safeHttpUrl, withFeature } from './normalize'
 import { actionsFor, displayStatus, isHarness, STATUS } from './status'
 import { GRACE_MS, POLL_MS, WATCH_CAP_MS } from './tuning'
 import type { AgentDetailResponse } from './types'
@@ -434,5 +434,18 @@ describe('grants in both editions (grants.ts, recorded at ea233d20)', () => {
     expect(grantWrite('ee', 'a', 'users', 'u1')).toEqual({ path: '/api/agents/a/grants/users/u1' })
     // Unknown edition: never guess (an OSS-shaped write to EE reaches the agent through the proxy).
     expect(() => grantWrite(undefined, 'a', 'users', 'u1')).toThrow(/edition/)
+  })
+})
+
+describe('withFeature', () => {
+  it('sets one flag and keeps every other metadata key (the PUT replaces the column)', () => {
+    const meta = { source: 'cli', features: { other: 'enabled', prompt_comments: 'enabled' } }
+    expect(withFeature(meta, 'prompt_comments', false)).toEqual({
+      source: 'cli',
+      features: { other: 'enabled', prompt_comments: 'disabled' },
+    })
+    expect(withFeature({ features: 'junk' }, 'prompt_comments', true)).toEqual({
+      features: { prompt_comments: 'enabled' },
+    })
   })
 })

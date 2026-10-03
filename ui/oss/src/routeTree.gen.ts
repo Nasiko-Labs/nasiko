@@ -30,6 +30,7 @@ import { Route as AppSessionsIndexRouteImport } from './../../common/src/routes/
 import { Route as AppSessionsSessionIdRouteImport } from './../../common/src/routes/_app/sessions.$sessionId'
 import { Route as AppSettingsIndexRouteImport } from './../../common/src/routes/_app/settings.index'
 import { Route as AppSettingsAppearanceRouteImport } from './../../common/src/routes/_app/settings.appearance'
+import { Route as AppSettingsChatContextRouteImport } from './../../common/src/routes/_app/settings.chat-context'
 import { Route as AppSettingsPasswordRouteImport } from './../../common/src/routes/_app/settings.password'
 import { Route as AppSettingsSecretsRouteImport } from './../../common/src/routes/_app/settings.secrets'
 import { Route as AppWorkflowsIndexRouteImport } from './../../common/src/routes/_app/workflows.index'
@@ -142,6 +143,11 @@ const AppSettingsAppearanceRoute = AppSettingsAppearanceRouteImport.update({
   path: '/settings/appearance',
   getParentRoute: () => AppRoute,
 } as any)
+const AppSettingsChatContextRoute = AppSettingsChatContextRouteImport.update({
+  id: '/settings/chat-context',
+  path: '/settings/chat-context',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppSettingsPasswordRoute = AppSettingsPasswordRouteImport.update({
   id: '/settings/password',
   path: '/settings/password',
@@ -193,6 +199,7 @@ export interface FileRoutesByFullPath {
   '/mcp/$connectorId': typeof AppMcpConnectorIdRoute
   '/sessions/$sessionId': typeof AppSessionsSessionIdRoute
   '/settings/appearance': typeof AppSettingsAppearanceRoute
+  '/settings/chat-context': typeof AppSettingsChatContextRoute
   '/settings/password': typeof AppSettingsPasswordRoute
   '/settings/secrets': typeof AppSettingsSecretsRoute
   '/workflows/$workflowId': typeof AppWorkflowsWorkflowIdRoute
@@ -222,6 +229,7 @@ export interface FileRoutesByTo {
   '/mcp/$connectorId': typeof AppMcpConnectorIdRoute
   '/sessions/$sessionId': typeof AppSessionsSessionIdRoute
   '/settings/appearance': typeof AppSettingsAppearanceRoute
+  '/settings/chat-context': typeof AppSettingsChatContextRoute
   '/settings/password': typeof AppSettingsPasswordRoute
   '/settings/secrets': typeof AppSettingsSecretsRoute
   '/workflows/$workflowId': typeof AppWorkflowsWorkflowIdRoute
@@ -253,6 +261,7 @@ export interface FileRoutesById {
   '/_app/mcp/$connectorId': typeof AppMcpConnectorIdRoute
   '/_app/sessions/$sessionId': typeof AppSessionsSessionIdRoute
   '/_app/settings/appearance': typeof AppSettingsAppearanceRoute
+  '/_app/settings/chat-context': typeof AppSettingsChatContextRoute
   '/_app/settings/password': typeof AppSettingsPasswordRoute
   '/_app/settings/secrets': typeof AppSettingsSecretsRoute
   '/_app/workflows/$workflowId': typeof AppWorkflowsWorkflowIdRoute
@@ -284,6 +293,7 @@ export interface FileRouteTypes {
     | '/mcp/$connectorId'
     | '/sessions/$sessionId'
     | '/settings/appearance'
+    | '/settings/chat-context'
     | '/settings/password'
     | '/settings/secrets'
     | '/workflows/$workflowId'
@@ -313,6 +323,7 @@ export interface FileRouteTypes {
     | '/mcp/$connectorId'
     | '/sessions/$sessionId'
     | '/settings/appearance'
+    | '/settings/chat-context'
     | '/settings/password'
     | '/settings/secrets'
     | '/workflows/$workflowId'
@@ -343,6 +354,7 @@ export interface FileRouteTypes {
     | '/_app/mcp/$connectorId'
     | '/_app/sessions/$sessionId'
     | '/_app/settings/appearance'
+    | '/_app/settings/chat-context'
     | '/_app/settings/password'
     | '/_app/settings/secrets'
     | '/_app/workflows/$workflowId'
@@ -512,6 +524,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppSettingsAppearanceRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/settings/chat-context': {
+      id: '/_app/settings/chat-context'
+      path: '/settings/chat-context'
+      fullPath: '/settings/chat-context'
+      preLoaderRoute: typeof AppSettingsChatContextRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/settings/password': {
       id: '/_app/settings/password'
       path: '/settings/password'
@@ -578,6 +597,7 @@ interface AppRouteChildren {
   AppMcpConnectorIdRoute: typeof AppMcpConnectorIdRoute
   AppSessionsSessionIdRoute: typeof AppSessionsSessionIdRoute
   AppSettingsAppearanceRoute: typeof AppSettingsAppearanceRoute
+  AppSettingsChatContextRoute: typeof AppSettingsChatContextRoute
   AppSettingsPasswordRoute: typeof AppSettingsPasswordRoute
   AppSettingsSecretsRoute: typeof AppSettingsSecretsRoute
   AppWorkflowsWorkflowIdRoute: typeof AppWorkflowsWorkflowIdRoute
@@ -607,6 +627,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppMcpConnectorIdRoute: AppMcpConnectorIdRoute,
   AppSessionsSessionIdRoute: AppSessionsSessionIdRoute,
   AppSettingsAppearanceRoute: AppSettingsAppearanceRoute,
+  AppSettingsChatContextRoute: AppSettingsChatContextRoute,
   AppSettingsPasswordRoute: AppSettingsPasswordRoute,
   AppSettingsSecretsRoute: AppSettingsSecretsRoute,
   AppWorkflowsWorkflowIdRoute: AppWorkflowsWorkflowIdRoute,

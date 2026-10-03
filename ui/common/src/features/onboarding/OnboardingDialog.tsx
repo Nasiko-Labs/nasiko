@@ -12,6 +12,7 @@ import {
   LayoutDashboard,
   Play,
   Plug,
+  Scissors,
   ShieldCheck,
   Sparkles,
   WandSparkles,
@@ -31,6 +32,7 @@ import type { DeployStarted } from '@/features/deploy/UploadTab'
 import { cn } from '@/lib/utils'
 import { useGuide, useSavePersona } from './api'
 import { AgentStep } from './AgentStep'
+import { OptimiseStep } from './OptimiseStep'
 import { copy } from './copy'
 import { minutesLeft, opensFor, STEPS, type StepId } from './logic'
 import { ModelStep } from './ModelStep'
@@ -193,6 +195,14 @@ export function OnboardingDialog({
             {step === 'agent' ? (
               <AgentStep started={agent} onStarted={setAgent} onLeave={onClose} />
             ) : null}
+            {step === 'optimise' ? (
+              <OptimiseStep
+                onOpenAgents={() => {
+                  onClose()
+                  void navigate({ to: '/agents' })
+                }}
+              />
+            ) : null}
             {step === 'ready' ? (
               <Ready
                 rows={[
@@ -239,6 +249,13 @@ export function OnboardingDialog({
             {(step === 'model' && !model) || (step === 'agent' && !agent) ? (
               <Button type="button" variant="outline" onClick={next}>
                 {copy.guide.skipStep}
+              </Button>
+            ) : null}
+            {/* Informational, so there is nothing to complete: the opt-out is worded as a
+                decision rather than as skipping an unfinished task. */}
+            {step === 'optimise' ? (
+              <Button type="button" variant="outline" onClick={next}>
+                {copy.optimise.skip}
               </Button>
             ) : null}
             <Button
@@ -404,6 +421,14 @@ function Ready({
           </li>
         ))}
       </ul>
+      <div className="rounded-xl border border-dashed bg-muted/40 px-4 py-3 text-sm">
+        <p className="flex items-center gap-2 font-medium">
+          <Scissors aria-hidden className="size-4 text-muted-foreground" />
+          {copy.ready.savings.title}
+        </p>
+        <p className="mt-1 text-xs text-muted-foreground">{copy.ready.savings.line}</p>
+        <p className="mt-1 text-xs text-muted-foreground italic">{copy.ready.savings.beta}</p>
+      </div>
       <div className="grid gap-3 sm:grid-cols-2">
         <Choice
           icon={LayoutDashboard}

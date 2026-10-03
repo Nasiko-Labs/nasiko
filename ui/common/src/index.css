@@ -626,6 +626,26 @@
       fill-opacity: 1;
     }
   }
+  /* The sidebar's waitlist badge (our take on Aceternity's Moving Border, in CSS): a glint circles the pill's 1 px
+     edge while the flag's cloth waves, both looping. Under reduced motion the glint is hidden and the flag still. */
+  --animate-orbit: orbit 3s linear infinite;
+  @keyframes orbit {
+    to {
+      rotate: 360deg;
+    }
+  }
+  --animate-flag-wave: flag-wave 1.4s ease-in-out infinite;
+  @keyframes flag-wave {
+    25% {
+      transform: skewY(-8deg) scaleX(0.92);
+    }
+    50% {
+      transform: none;
+    }
+    75% {
+      transform: skewY(8deg) scaleX(0.95);
+    }
+  }
   --animate-word-in: word-in 0.7s cubic-bezier(0.2, 0.8, 0.2, 1) both;
   @keyframes word-in {
     from {

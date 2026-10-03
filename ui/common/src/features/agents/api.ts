@@ -752,21 +752,34 @@ export function useDeleteAgent(id: string) {
   })
 }
 
+/** `PUT /api/agents/{id}` (models.rs `UpdateAgentRequest`): the fields the Settings tab writes. */
+export interface AgentUpdate {
+  display_name?: string
+  description?: string
+  metadata?: Record<string, unknown>
+  compress_enabled?: boolean
+  minimal_code_enabled?: boolean
+}
+
 export function useUpdateAgent(id: string) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (v: { display_name: string; description: string }) =>
+    // Every field is COALESCEd server-side, so a body carries only what it changes (catalog/routes.rs update).
+    mutationFn: (v: AgentUpdate) =>
       apiFetch<Agent>(`/api/agents/${id}`, { ...json(v), method: 'PUT' }),
     onSettled: () => {
       invalidateAgent(qc, id)
       invalidateNameLists(qc)
+      // Pending until the detail is re-read, so a Settings switch never flashes back to its old state.
+      return qc.refetchQueries({ queryKey: agentKeys.detail(id) }, { cancelRefetch: false })
     },
   })
 }
 
 export function useSecretMutations(id: string) {
   const qc = useQueryClient()
-  const done = () => void qc.invalidateQueries({ queryKey: agentKeys.secrets(id) })
+  // Returned, so a write stays pending until the list is re-read (the Self-review switch reads it).
+  const done = () => qc.invalidateQueries({ queryKey: agentKeys.secrets(id) })
   return {
     // gcTime 0 + the caller's reset(): the value must not stay in the mutation cache as `variables`.
     set: useMutation({

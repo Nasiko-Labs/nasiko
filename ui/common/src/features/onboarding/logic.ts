@@ -2,7 +2,7 @@
 import { DRAFT_PREFIX } from '@/lib/draftKeys'
 import type { Onboarding, Persona } from './types'
 
-export const STEPS = ['welcome', 'role', 'model', 'agent', 'ready'] as const
+export const STEPS = ['welcome', 'role', 'model', 'agent', 'optimise', 'ready'] as const
 export type StepId = (typeof STEPS)[number]
 
 /** The page a persona opens first (spec §3). Data analysts get TokenOps: Weave is EE and dev only. */
@@ -36,7 +36,13 @@ export function ticks(v: { persona: Persona | null; configs: number; agents: num
   return { role: v.persona !== null, model: v.configs > 0, agent: v.agents > 0 }
 }
 
-/** Resume at the first step not done yet; all done: Ready. */
+/**
+ * Resume at the first step not done yet; all done: Ready.
+ *
+ * `optimise` has no tick of its own and is skipped on resume: it configures nothing by itself, so a
+ * returning user would be stopped by a page they have already read. A first run still walks through
+ * it, which is the audience it exists for.
+ */
 export function firstOpenStep(t: Ticks): StepId {
   if (!t.role) return 'role'
   if (!t.model) return 'model'

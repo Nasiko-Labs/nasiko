@@ -75,6 +75,7 @@ import {
   type Theme,
 } from './theme'
 import { SidebarPanelContext } from './panelSlot'
+import { WaitlistCard } from './WaitlistCta'
 
 /** How long a pending health check stays quiet before "Checking…" shows (design review 2A). */
 const CHECKING_DELAY_MS = 1_000
@@ -196,6 +197,9 @@ export function AppSidebar({
           className="flex min-h-0 flex-1 flex-col"
         />
       ) : null}
+      {/* Not while a page's panel holds the sidebar: Chat's history and Settings' sections keep the room, and Chat's dot
+          background stays its page's one effect (CLAUDE.md, Aceternity effects). */}
+      {holds ? null : <WaitlistCard />}
       <SidebarFooter className={cn(GROUP, 'gap-0 border-t border-sidebar-border py-2')}>
         <SidebarMenu>
           {SHOW_STATUS ? <StatusRow /> : null}

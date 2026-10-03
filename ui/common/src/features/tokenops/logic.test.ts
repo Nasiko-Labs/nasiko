@@ -25,6 +25,8 @@ import {
   fmtUtcTime,
 } from '@/lib/format'
 import { traceLink } from './links'
+import { isUnconfigured, summarizeOptimisation } from './optimisation'
+import type { Savings, SavingsData } from './types'
 import { isRealDate } from '@/lib/search'
 import { tokenopsSearchSchema } from './search'
 import { MAX_BUCKETS, toTimeline, zeroFillTimeline } from './series'
@@ -800,5 +802,146 @@ describe('UTC date formatters', () => {
     expect(fmtUtcTime(iso)).toBe('00:05')
     expect(fmtUtcTime(iso, true)).toBe('00:05:09')
     expect(fmtUtcDayTime(iso)).toBe('Mar 4 00:05')
+  })
+})
+
+/**
+ * A `Savings` block with every field present. The server flattens this into the total, each
+ * program, each layer and each agent, so one builder covers all of them.
+ */
+function measured(over: Partial<Savings> = {}): Savings {
+  return {
+    saved_tokens: 0,
+    saved_input_tokens: 0,
+    saved_output_tokens: 0,
+    saved_cost_usd: 0,
+    actual_tokens: 0,
+    actual_cost_usd: 0,
+    baseline_tokens: 0,
+    baseline_cost_usd: 0,
+    token_reduction_pct: null,
+    cost_reduction_pct: null,
+    basis: 'measured',
+    ...over,
+  }
+}
+
+describe('summarizeOptimisation', () => {
+  /** A savings payload with one agent, shaped exactly as the server flattens it. */
+  const savings = (over: Partial<SavingsData> = {}): SavingsData => ({
+    window: { start: '2026-03-01T00:00:00Z', end: '2026-03-31T00:00:00Z' },
+    total: measured({
+      saved_tokens: 250,
+      saved_input_tokens: 250,
+      actual_tokens: 1000,
+      baseline_tokens: 1250,
+      token_reduction_pct: 20,
+      saved_cost_usd: 2.5,
+      actual_cost_usd: 47.5,
+      baseline_cost_usd: 50,
+      cost_reduction_pct: 5,
+    }),
+    by_program: [
+      {
+        ...measured({ saved_tokens: 250, saved_cost_usd: 2.5, token_reduction_pct: 20 }),
+        program: 'caveman',
+        label: 'Payload optimisation',
+        layers: [],
+      },
+    ],
+    by_agent: [
+      {
+        ...measured({ saved_tokens: 250, saved_cost_usd: 2.5, token_reduction_pct: 20 }),
+        agent_id: 'a1',
+        agent_name: 'Support Bot',
+        calls: 12,
+        input_tokens_before: 1250,
+        input_tokens_after: 1000,
+      },
+    ],
+    by_session: [],
+    coverage: {
+      calls_in_window: 12,
+      calls_with_any_layer_enabled: 12,
+      agents_total: 4,
+      agents_optimized: 1,
+      agents_with_compress_enabled: 1,
+      agents_with_minimal_code_enabled: 0,
+      agents_with_prompt_comments: 0,
+      optimized_spend_usd: 47.5,
+      unoptimized_spend_usd: 52.5,
+      top_unoptimized: { agent_id: 'a2', agent_name: 'Sales Assistant', spend_usd: 52.5 },
+      calibrated_pct: 100,
+    },
+    ...over,
+  })
+
+  it('passes the server percentages through rather than recomputing them', () => {
+    // The one arithmetic mistake that would discredit the feature is this panel and another
+    // consumer disagreeing about the denominator, so these are never derived here.
+    const s = summarizeOptimisation(savings())
+    expect(s.savedPct).toBe(20)
+    expect(s.costSavedPct).toBe(5)
+    expect(s.tokensBefore).toBe(1250)
+    expect(s.tokensSaved).toBe(250)
+  })
+
+  it('reports coverage and the biggest unoptimised spender', () => {
+    const s = summarizeOptimisation(savings())
+    expect(s.optimisedCount).toBe(1)
+    expect(s.totalAgents).toBe(4)
+    expect(s.unoptimisedCount).toBe(3)
+    expect(s.unoptimisedSpend).toBe(52.5)
+    expect(s.topUnoptimised?.agent_name).toBe('Sales Assistant')
+  })
+
+  it('keeps a zero category so it can explain itself', () => {
+    // An absent row reads as "this feature does nothing"; a zero row with a reason is actionable.
+    const s = summarizeOptimisation(
+      savings({
+        by_program: [
+          {
+            ...measured({ basis: 'seed_default' }),
+            program: 'ponytail',
+            label: 'Minimal code',
+            note: 'No agent has minimal code enabled with a coding agent card.',
+            layers: [],
+          },
+        ],
+      }),
+    )
+    expect(s.categories).toHaveLength(1)
+    expect(s.categories[0].savedTokens).toBe(0)
+    expect(s.categories[0].note).toContain('minimal code')
+    expect(s.categories[0].basis).toBe('seed_default')
+  })
+
+  it('treats a null percentage as unknown rather than zero', () => {
+    const s = summarizeOptimisation(
+      savings({ total: measured({ token_reduction_pct: null, cost_reduction_pct: null }) }),
+    )
+    expect(s.savedPct).toBeNull()
+    expect(s.costSavedPct).toBeNull()
+  })
+
+  it('never divides by zero', () => {
+    const s = summarizeOptimisation(
+      savings({
+        by_agent: [],
+        coverage: { ...savings().coverage, optimized_spend_usd: 0, unoptimized_spend_usd: 0 },
+      }),
+    )
+    expect([s.optimisedSharePct, s.unoptimisedSharePct]).toEqual([0, 0])
+    expect(s.rows).toEqual([])
+  })
+
+  it('flags a fleet with nothing switched on as unconfigured', () => {
+    const empty = savings({
+      total: measured({}),
+      by_agent: [],
+      coverage: { ...savings().coverage, agents_optimized: 0 },
+    })
+    expect(isUnconfigured(summarizeOptimisation(empty))).toBe(true)
+    expect(isUnconfigured(summarizeOptimisation(savings()))).toBe(false)
   })
 })

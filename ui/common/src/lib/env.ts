@@ -5,6 +5,7 @@
  * VITE_NASIKO_ALLOW_MOCK_BUILD  true           let a production build honour mock mode (deliberate demo builds only)
  * VITE_NASIKO_MOCK              comma list     in live mode, endpoints MSW still mocks (e.g. "top-traces")
  * VITE_NASIKO_LEGACY_UI_URL     http(s) URL    where trace links open (the existing nasiko UI)
+ * VITE_NASIKO_WAITLIST_URL      http(s) URL    the Nasiko waitlist page the OSS app links to (default https://nasiko-waitlist.vercel.app)
  * NASIKO_API_URL                (vite.config.ts) proxy target for /api — server-side only
  */
 type ApiMode = 'mock' | 'live'
@@ -21,6 +22,7 @@ export const MOCKABLE = [
   'spend-calendar',
   'providers',
   'top-traces',
+  'savings',
   'observability',
   'harnesses',
   'chat',
@@ -38,6 +40,8 @@ export interface EnvConfig {
   /** Endpoints mocked while in live mode. Empty in mock mode (everything is mocked). */
   partialMocks: Mockable[]
   legacyUiUrl: string | null
+  /** The waitlist page, tagged `ref=oss-app`; null hides every waitlist link. */
+  waitlistUrl: string | null
 }
 
 type RawEnv = Record<string, string | boolean | undefined>
@@ -118,6 +122,23 @@ export function readEnv(
     mode,
     partialMocks,
     legacyUiUrl: validHttpUrl(String(env.VITE_NASIKO_LEGACY_UI_URL || fallbackUi)),
+    waitlistUrl: waitlistHref(String(env.VITE_NASIKO_WAITLIST_URL || WAITLIST_URL)),
+  }
+}
+
+/** The Nasiko waitlist page, in dev servers and builds alike, unless VITE_NASIKO_WAITLIST_URL names another. */
+const WAITLIST_URL = 'https://nasiko-waitlist.vercel.app'
+
+/** An absolute http(s) URL with `ref=oss-app` added (its own query and hash kept), so the page can count sign-ups. */
+function waitlistHref(value: string): string | null {
+  const v = value.trim()
+  if (!/^https?:\/\//i.test(v)) return null
+  try {
+    const u = new URL(v)
+    u.searchParams.set('ref', 'oss-app')
+    return u.href
+  } catch {
+    return null
   }
 }
 

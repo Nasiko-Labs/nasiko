@@ -132,6 +132,7 @@ pub fn router() -> Router<AppState> {
 pub fn protected_router(state: AppState) -> Router<AppState> {
     let finops_routes = Router::new()
         .route("/finops/dashboard", get(handler::get_finops_dashboard))
+        .route("/finops/savings", get(handler::get_finops_savings))
         .route("/finops/insights", post(handler::get_finops_insights))
         .route("/finops/agent-hours", get(handler::get_agent_hours))
         .route(

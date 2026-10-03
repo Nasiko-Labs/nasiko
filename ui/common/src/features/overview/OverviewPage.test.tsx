@@ -371,6 +371,8 @@ describe('structure (design 14A)', () => {
     await loaded()
     expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1)
     const ids = [
+      // Savings sits between the summary and the detail grid: a headline feature, above the fold.
+      'overview-savings',
       'overview-needs',
       'overview-spend',
       // 'overview-budget', // Budgets hidden: no server support yet (R-L10).
@@ -405,5 +407,143 @@ describe('Loading', () => {
     await userEvent.click(screen.getByRole('radio', { name: copy.range.item(90) }))
     expect(screen.queryByTestId('page-loader')).toBeNull()
     expect(card('overview-spend')).toBeInTheDocument()
+  })
+})
+
+describe('Savings', () => {
+  it('shows what optimisation saved plus one next step, then hands off to TokenOps', async () => {
+    // Not a small TokenOps: one number and one thing to do about it. Repeating the breakdown here
+    // would give the reader the same work twice and a reason to skip both.
+    renderApp('/')
+    const row = await screen.findByTestId('overview-savings')
+    expect(row).toHaveAttribute('data-state', 'saving')
+    expect(row).toHaveTextContent(/Token optimisation/)
+    expect(row).toHaveTextContent(/fewer tokens/)
+    // The insight names the agent worth switching on, not the layer that happened to win.
+    expect(row).toHaveTextContent(/biggest win left|Mostly from/)
+    // Deep-links to the section, not the top of a page with four other panels above it.
+    expect(within(row).getByRole('link', { name: /See the breakdown/ })).toHaveAttribute(
+      'href',
+      '/tokenops?open=optimise',
+    )
+  })
+
+  it('the breakdown link lands on the optimisation section', async () => {
+    const user = userEvent.setup()
+    const { router } = renderApp('/')
+    const row = await screen.findByTestId('overview-savings')
+    await user.click(within(row).getByRole('link', { name: /See the breakdown/ }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/tokenops'))
+    const section = await screen.findByRole('button', { name: /^Token optimisation/ })
+    expect(section).toHaveAttribute('aria-expanded', 'true')
+  })
+
+  it('keeps the tile grid to the four like-for-like counters', async () => {
+    // A fifth tile wrapping onto its own row was what made the grid look broken.
+    renderApp('/')
+    await screen.findByTestId('kpi-spend')
+    expect(screen.queryByTestId('kpi-savings')).toBeNull()
+  })
+
+  it('turns into an opportunity when nothing is switched on, rather than reading $0 saved', async () => {
+    // Money on the table is a reason to act; "$0 saved" reads as a broken feature.
+    server.use(
+      http.get('*/finops/savings', () =>
+        HttpResponse.json({
+          data: {
+            window: { start: '2026-03-01T00:00:00Z', end: '2026-03-31T00:00:00Z' },
+            total: {
+              saved_tokens: 0,
+              saved_input_tokens: 0,
+              saved_output_tokens: 0,
+              saved_cost_usd: 0,
+              actual_tokens: 0,
+              actual_cost_usd: 0,
+              baseline_tokens: 0,
+              baseline_cost_usd: 0,
+              token_reduction_pct: null,
+              cost_reduction_pct: null,
+              basis: 'measured',
+            },
+            by_program: [],
+            by_agent: [],
+            by_session: [],
+            coverage: {
+              calls_in_window: 0,
+              calls_with_any_layer_enabled: 0,
+              agents_total: 3,
+              agents_optimized: 0,
+              agents_with_compress_enabled: 0,
+              agents_with_minimal_code_enabled: 0,
+              agents_with_prompt_comments: 0,
+              optimized_spend_usd: 0,
+              unoptimized_spend_usd: 412.5,
+              top_unoptimized: {
+                agent_id: 'a9',
+                agent_name: 'Sales Assistant',
+                spend_usd: 412.5,
+              },
+              calibrated_pct: null,
+            },
+          },
+          status_code: 200,
+          message: 'ok',
+        }),
+      ),
+    )
+    renderApp('/')
+    const band = await screen.findByTestId('overview-savings')
+    expect(band).toHaveAttribute('data-state', 'idle')
+    expect(band).toHaveTextContent(/could be trimmed/)
+    expect(band).not.toHaveTextContent(/\$0\.00 saved/)
+    expect(within(band).getByRole('link', { name: /Choose an agent/ })).toHaveAttribute(
+      'href',
+      '/agents',
+    )
+  })
+
+  it('says nothing at all on a workspace with no spend to talk about', async () => {
+    server.use(
+      http.get('*/finops/savings', () =>
+        HttpResponse.json({
+          data: {
+            window: { start: '2026-03-01T00:00:00Z', end: '2026-03-31T00:00:00Z' },
+            total: {
+              saved_tokens: 0,
+              saved_input_tokens: 0,
+              saved_output_tokens: 0,
+              saved_cost_usd: 0,
+              actual_tokens: 0,
+              actual_cost_usd: 0,
+              baseline_tokens: 0,
+              baseline_cost_usd: 0,
+              token_reduction_pct: null,
+              cost_reduction_pct: null,
+              basis: 'measured',
+            },
+            by_program: [],
+            by_agent: [],
+            by_session: [],
+            coverage: {
+              calls_in_window: 0,
+              calls_with_any_layer_enabled: 0,
+              agents_total: 0,
+              agents_optimized: 0,
+              agents_with_compress_enabled: 0,
+              agents_with_minimal_code_enabled: 0,
+              agents_with_prompt_comments: 0,
+              optimized_spend_usd: 0,
+              unoptimized_spend_usd: 0,
+              calibrated_pct: null,
+            },
+          },
+          status_code: 200,
+          message: 'ok',
+        }),
+      ),
+    )
+    renderApp('/')
+    await screen.findByTestId('kpi-spend')
+    expect(screen.queryByTestId('overview-savings')).toBeNull()
   })
 })

@@ -8,6 +8,7 @@ members = [
     "secrets",
     "observability",
     "pricing",
+    "savings",
     "runtime",
     "react-agent",
     "orchestrator",
@@ -38,6 +39,7 @@ nasiko-auth = { path = "auth" }
 nasiko-compress = { path = "compress" }
 nasiko-config = { path = "config" }
 nasiko-pricing = { path = "pricing" }
+nasiko-savings = { path = "savings" }
 nasiko-flow = { path = "flow" }
 nasiko-hitl = { path = "hitl" }
 nasiko-agent-proxy = { path = "agent-proxy" }

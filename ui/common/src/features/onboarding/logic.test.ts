@@ -14,8 +14,15 @@ import {
 import { PERSONAS } from './types'
 
 describe('onboarding logic', () => {
-  it('has the five steps in order', () => {
-    expect(STEPS).toEqual(['welcome', 'role', 'model', 'agent', 'ready'])
+  it('has the six steps in order', () => {
+    expect(STEPS).toEqual(['welcome', 'role', 'model', 'agent', 'optimise', 'ready'])
+  })
+
+  it('skips the optimise step when resuming, because it completes nothing', () => {
+    // It configures nothing by itself: stopping a returning user on a page they have already read
+    // would be a step backwards, while a first run still walks through it linearly.
+    expect(firstOpenStep({ role: true, model: true, agent: true })).toBe('ready')
+    expect(firstOpenStep({ role: true, model: true, agent: false })).toBe('agent')
   })
 
   it('opens a nav page for every persona', () => {
@@ -45,7 +52,7 @@ describe('onboarding logic', () => {
   })
 
   it('estimates minutes left like the prototype', () => {
-    expect([1, 2, 3, 4, 5].map(minutesLeft)).toEqual([3, 3, 2, 2, 0])
+    expect([1, 2, 3, 4, 5, 6].map(minutesLeft)).toEqual([3, 3, 2, 2, 1, 0])
   })
 
   it('keeps the skip flag under the drafts prefix', () => {

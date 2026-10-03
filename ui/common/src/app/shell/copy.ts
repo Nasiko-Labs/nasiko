@@ -71,6 +71,15 @@ export const copy = {
     plum: 'Plum',
     carbon: 'Carbon',
   },
+  // The early-access card at the foot of the sidebar, its rail button and the login line (OSS only; WaitlistCta.tsx).
+  waitlist: {
+    badge: 'Early access',
+    title: 'Join the Nasiko waitlist',
+    line: 'Get managed OpenRuntime early, with help from the team.',
+    cta: 'Join the waitlist',
+    newTab: '(opens in a new tab)',
+    loginLead: 'New to Nasiko?',
+  },
   account: {
     menu: (name: string) => `Account: ${name}`,
     unavailable: 'Account unavailable',
