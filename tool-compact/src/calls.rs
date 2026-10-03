@@ -25,6 +25,11 @@ use crate::{Error, ToolCall, ToolDef, validate_arguments};
 pub const MARKER: &str = "<<call";
 const CLOSE: &str = ">>";
 
+/// Write `call` in the call grammar (what the model is asked to produce).
+pub fn render_call(call: &ToolCall) -> String {
+    format!("{MARKER} {} {}{CLOSE}", call.name, call.arguments)
+}
+
 /// Decode every call in a complete model output. Fails on the first malformed, unknown or
 /// invalid call: a partial or guessed result is never returned.
 pub fn decode_calls(text: &str, tools: &[ToolDef]) -> Result<Vec<ToolCall>, Error> {
@@ -265,6 +270,18 @@ mod tests {
         assert_eq!(calls[1].name, "get_time");
         let spaced = "<<call  get_time\n{ }\n>>";
         assert_eq!(decode_calls(spaced, &t).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn render_call_round_trips() {
+        let call = ToolCall {
+            name: "create_calendar_event".into(),
+            arguments: json!({"title": "Ünïcode \"q\" >>", "start": "2026-10-04T10:00:00Z"}),
+        };
+        assert_eq!(
+            decode_calls(&render_call(&call), &tools()).unwrap(),
+            vec![call]
+        );
     }
 
     #[test]
