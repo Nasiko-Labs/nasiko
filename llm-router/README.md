@@ -55,19 +55,47 @@ src/
   providers/    ProviderClient + openai / anthropic / gemini, sse, fallback
   usage.rs      token_usage writer (fire-and-forget; cost via DB trigger)
   handlers/     chat / embeddings / models / health
-examples/mint_token.rs   dev/test JWT minter
+  tool_compact.rs  opt-in compact tool schemas at the egress seam (TOKEN_TOOL_COMPACT)
+examples/mint_token.rs          dev/test JWT minter
+examples/compact_tools_eval.rs  compact tool schemas eval (offline by default)
 ```
 
 ## Configuration (env)
 
 `AGENT_JWT_SECRET` (required; fail-closed if empty), `AGENT_JWT_ALGORITHM` (HS256),
 `DEFAULT_PROVIDER` (openai), `DEFAULT_MODEL` (gpt-4o-mini), `PLATFORM_OPENAI_API_KEY`,
-`LLM_CONFIG_CACHE_TTL` (30s), `{OPENAI,ANTHROPIC,GEMINI}_API_BASE` (test overrides).
+`LLM_CONFIG_CACHE_TTL` (30s), `{OPENAI,ANTHROPIC,GEMINI}_API_BASE` (test overrides),
+`TOKEN_TOOL_COMPACT` (false; see below).
 Reuses the platform's `SECRETS_ENCRYPTION_KEY` (per-user HKDF AES-256-GCM) and
 `DATABASE_URL`.
 
 Storage: `agents.llm_config` (JSONB; NULL → defaults), `user_secrets` (decrypt via
 `SecretsCrypto::try_for_user`), `token_usage` (written), `model_pricing` (cost trigger).
+
+## Compact tool schemas (experimental, off by default)
+
+`TOKEN_TOOL_COMPACT=true` replaces a request's native `tools` with one compact signature line
+per tool (from the `nasiko-tool-compact` crate), appended to the leading system message, and
+decodes the model's `<<call name {json}>>` replies back into standard `tool_calls`. The client
+never sees the compact format. Scope and rules:
+
+- Non-streaming chat only (all inbound surfaces, since it runs on the IR). Streaming requests,
+  forced or forbidding `tool_choice`, `parallel_tool_calls: false`, non-function tools and schema
+  features outside the crate's subset all **bypass** compaction: the request goes out unchanged.
+- Earlier native calls and tool results in the history are replayed in the compact text form.
+- A reply that does not decode (unknown tool, invalid arguments, malformed marker) is never
+  repaired: the original native request is re-sent and its answer returned; both are billed.
+- With the flag off, nothing in the seam runs (`tool_compact_off_is_byte_identical_on_the_wire_and_back`).
+
+Eval (offline, deterministic; reports outputs, not scores):
+
+```sh
+curl -fsSL https://registry.nasiko.dev/r/nasiko/compact-tools-eval -o /tmp/compact-tools-eval.json
+EVAL_SET=/tmp/compact-tools-eval.json OUT=/tmp/out.jsonl   cargo run --release -p nasiko-llm-router --example compact_tools_eval
+```
+
+Add `PROVIDER_BASE_URL` (OpenAI-compatible, ending in `/v1`), `MODEL` and `PROVIDER_API_KEY` for
+live mode (`raw_output` + `live_calls` per case; `LIVE_NATIVE=1` also records native calls).
 
 ## Tests
 
