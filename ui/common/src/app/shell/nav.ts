@@ -13,6 +13,7 @@ import {
   ListTree,
   MessageSquare,
   Plug,
+  Shrink,
   SquareTerminal,
   Waypoints,
   Workflow,
@@ -42,6 +43,7 @@ export interface NavItem {
     | '/workflows'
     | '/sessions'
     | '/tokenops'
+    | '/compact-tools'
     | '/harnesses'
   label: string
   icon: LucideIcon
@@ -70,6 +72,13 @@ export const NAV_ITEMS: readonly NavItem[] = [
   { to: '/mcp', label: copy.nav.mcp, icon: Plug, group: 'connect', shared: false },
   { to: '/sessions', label: copy.nav.sessions, icon: ListTree, group: 'observe', shared: true },
   { to: '/tokenops', label: copy.nav.tokenops, icon: DollarSign, group: 'observe', shared: true },
+  {
+    to: '/compact-tools',
+    label: copy.nav.compactTools,
+    icon: Shrink,
+    group: 'observe',
+    shared: false,
+  },
   {
     to: '/harnesses',
     label: copy.nav.harnesses,

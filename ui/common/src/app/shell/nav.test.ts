@@ -24,6 +24,7 @@ describe('nav items', () => {
       { to: '/workflows', label: 'Workflows', shared: false },
       { to: '/router', label: 'LLM router', shared: false },
       { to: '/mcp', label: 'MCP servers', shared: false },
+      { to: '/compact-tools', label: 'Compact tools', shared: false },
     ])
   })
 
@@ -44,6 +45,7 @@ describe('nav items', () => {
       'MCP servers',
       'Sessions',
       'TokenOps',
+      'Compact tools',
       'Harnesses',
     ])
     // Items of one group are contiguous and follow the group order.

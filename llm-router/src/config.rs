@@ -154,6 +154,11 @@ pub struct GatewayConfig {
     pub compress_recovery_min_bytes: usize,
     /// How long an original stays recoverable. Sized to outlive the flow that produced it.
     pub compress_recovery_ttl_secs: u64,
+
+    /// Replace OpenAI tool definitions with a compact prompt and decode the
+    /// model's `<<call …>>` text back into tool calls. Default **off**. When
+    /// off, the router does not read or rewrite tools.
+    pub compact_tools: bool,
 }
 
 impl Default for GatewayConfig {
@@ -196,6 +201,7 @@ impl Default for GatewayConfig {
             compress_recovery_enabled: true,
             compress_recovery_min_bytes: 8192,
             compress_recovery_ttl_secs: 86_400,
+            compact_tools: false,
         }
     }
 }
@@ -308,6 +314,7 @@ impl GatewayConfig {
                 "TOKEN_COMPRESS_RECOVERY_TTL_SECS",
                 d.compress_recovery_ttl_secs as usize,
             ) as u64,
+            compact_tools: env_flag("LLM_COMPACT_TOOLS", false),
         }
     }
 
