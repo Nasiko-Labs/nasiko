@@ -1,0 +1,14 @@
+[package]
+name = "nasiko-tool-compact"
+version = "0.1.0"
+edition = "2021"
+description = "Compact schema and streaming tool call parser for LLMs"
+authors = ["Nasiko Team"]
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+
+[dev-dependencies]
+tiktoken-rs = "0.5"

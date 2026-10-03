@@ -1,0 +1,23 @@
+pub mod api;
+pub mod compact_decoder;
+pub mod compact_encoder;
+pub mod compact_stream;
+pub mod decoder;
+pub mod encoder;
+pub mod error;
+pub mod schema;
+pub mod stream;
+pub mod types;
+pub mod validator;
+
+pub use api::{decode_calls, decode_tools};
+pub use compact_decoder::decode_compact_calls;
+pub use compact_encoder::{encode_tools, schema_from_def, CompactTools, CALL_INSTRUCTIONS};
+pub use compact_stream::{StreamDecoder, StreamItem};
+pub use decoder::decode_call;
+pub use encoder::{encode_call, encode_schemas, encode_value};
+pub use error::{Result, ToolCompactError};
+pub use schema::{ParameterSchema, ToolRegistry, ToolSchema, ValueType};
+pub use stream::{CompactStreamDecoder, StreamEvent};
+pub use types::{FunctionCall, FunctionDef, ToolCall, ToolDef};
+pub use validator::{validate_call, validate_call_with_schema};
