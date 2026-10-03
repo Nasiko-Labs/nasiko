@@ -54,10 +54,15 @@ nasiko-server = { path = "server" }
 nasiko-coding-policy = { path = "coding-policy" }
 nasiko-oci = { path = "oci" }
 nasiko-llm-router = { path = "llm-router" }
+nasiko-tool-compact = { path = "tool-compact" }
 nasiko-bench-support = { path = "bench-support" }
 
 # ─── Testing ────────────────────────────────────────────────────────────────
 serial_test = "3"
+proptest = "1"
+# Token counting in llm-router's compact_tools_eval example only. Exact-pinned so counts are
+# reproducible across runs and machines.
+tiktoken-rs = "=0.12.1"
 
 # ─── Async runtime & web ────────────────────────────────────────────────────
 tokio = { version = "1", features = ["full"] }

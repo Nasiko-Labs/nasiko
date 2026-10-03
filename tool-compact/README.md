@@ -15,6 +15,15 @@ create_calendar_event(title:str 'Event title', start:datetime, duration_min?:int
 
 Pure library: no I/O, no env reads, no provider dependency. `nasiko-llm-router` depends on this crate, not the other way around.
 
+## Highlights
+
+- **Lossless or refused.** `decode_tools(encode_tools(x)) == x` exactly — proven by property tests over generated schemas, not just examples. A schema feature that cannot be carried is refused with the keyword named, never dropped.
+- **Real-world schemas compact.** Ranges, defaults, nullable types in both the `type: [T, "null"]` and Pydantic `anyOf: [T, null]` spellings, titles, number/boolean enums, nested objects and arrays of objects — the shapes FastMCP/Pydantic tools actually ship with.
+- **One decoding path.** `decode_calls` is `StreamDecoder` fed one chunk, and a property test checks that every way of splitting any output decodes identically.
+- **Fail-closed, shown live.** Every malformed call a weaker model wrote was rejected; no call is ever guessed, repaired, or partly returned.
+- **The brief's own `<<call …>>` grammar.** Decoder cases run exactly as given — no conversion step to get wrong on unseen cases.
+- **House style.** Same invariants and lints as `nasiko-compress` (`forbid(unsafe_code)`, no `unwrap`/`expect`/`panic`/string slicing); deterministic, byte-identical eval output.
+
 ## Grammar
 
 ### Definitions
@@ -119,25 +128,35 @@ EVAL_SET=/tmp/compact-tools-eval.json OUT=/tmp/out.jsonl \
   cargo run --release -p nasiko-llm-router --example compact_tools_eval
 ```
 
-Offline and deterministic by default: writes one JSONL line per case to `OUT` and prints a human-readable summary to stdout (per-case token counts against both baselines, one tool definition before/after, a pass/fail table for decoder cases).
+On Windows PowerShell, `curl` is an alias for `Invoke-WebRequest`; use `curl.exe` and `$env:` variables:
 
-**Live mode** (optional, for checking model format adherence): set `PROVIDER_BASE_URL` and `MODEL` (and `PROVIDER_API_KEY` if the endpoint requires one). Each compact request is sent to `{PROVIDER_BASE_URL}/chat/completions` with `model` and `temperature: 0`; the output line gains `raw_output` and `live_calls`.
+```powershell
+curl.exe -fsSL https://registry.nasiko.dev/r/nasiko/compact-tools-eval -o "$env:TEMP\compact-tools-eval.json"
+$env:EVAL_SET = "$env:TEMP\compact-tools-eval.json"; $env:OUT = "$env:TEMP\out.jsonl"
+cargo run --release -p nasiko-llm-router --example compact_tools_eval
+```
+
+Offline and deterministic by default: writes one JSONL line per case to `OUT` and prints a human-readable summary to stdout (per-case native vs compact token counts, one tool definition before/after, a pass/fail table for decoder cases).
+
+**Live mode** (optional, for checking model format adherence): set `PROVIDER_BASE_URL` and `MODEL` (and `PROVIDER_API_KEY` if the endpoint requires one; it is sent as `Authorization: Bearer`). Each compact request is sent to `{PROVIDER_BASE_URL}/chat/completions` with `model` and `temperature: 0`; the output line gains `raw_output` and `live_calls`. Only live requests carry the brief's reference-time line (`Today is Friday 2026-10-02, timezone Asia/Kolkata.`): it is context for resolving relative dates, not part of compaction, and the scorer's native baseline is built from `tools` and `messages` alone — so the offline request is compared like for like.
 
 ## Results
 
 ### Public sample set (`compact-tools-eval@v1-sample`)
 
-- **Token reduction:** 25.2% against the plain baseline (656 → 491 tokens), **32.0%** against the baseline that also carries the fixed reference-time system message the compact request pays for (722 → 491 tokens) — counted with `tiktoken-rs`, `o200k_base`.
+- **Token reduction: 32.9%** (656 → 440 tokens) against the scorer's baseline, `{messages, tools}` as each case gives them — counted with `tiktoken-rs` `o200k_base` over the full request body. Per case: 36.4%, 35.1%, 22.7%; the fixed call-format text (29 tokens) weighs most on the one-tool case.
 - **Bypassed:** 0 of 3 cases (`create_calendar_event` and `send_email` both compact fully).
+- **Round trip:** 3 of 3 — the expected calls, written in the compact grammar, decode back to themselves.
 - **Decoder cases:** 5 of 5 pass, including the split-marker case and the `>>`-inside-a-string case.
-- **Crate tests:** 76 pass.
+- **Determinism:** two runs give byte-identical `OUT`.
+- **Crate tests:** 77 pass (44 unit, 19 invariant, 10 property, 4 stress).
 
-### Stress set (`tests/stress.rs`, no overlap with the sample)
+### Stress set (`tests/stress.rs`, no overlap with the sample — reported separately)
 
-20 schemas covering nested objects, arrays of objects, every scalar and enum kind (including number and boolean enums), nullable types in both the `type: [T, "null"]` and Pydantic's `anyOf: [T, null]` spellings, ranges, scalar defaults, titles, tools with no parameters or no description, and descriptions with apostrophes, quotes, newlines, and non-ASCII text, plus schemas written the way Pydantic/FastMCP actually emits them (every field titled, optionals as `anyOf` with a null default).
+24 hand-written schemas covering nested objects, arrays of objects, every scalar and enum kind (including number and boolean enums), nullable types in both spellings, ranges, scalar defaults, titles, tools with no parameters or no description, and descriptions with apostrophes, quotes, newlines, and non-ASCII text — including three written the way Pydantic/FastMCP emits them (every field titled, optionals as `anyOf` with a `null` default).
 
-- **14 of 20 compact and round-trip exactly** — `decode_tools(encode_tools(x))` returns the original schema, and a rendered call decodes back to itself.
-- **6 bypassed**, each refused for the keyword named in the error: `oneOf`, `anyOf` (real union), `$ref`/`$defs`, `pattern`, `additionalProperties`-as-schema, `exclusiveMinimum`.
+- **17 of 24 compact and round-trip exactly** — `decode_tools(encode_tools(x))` returns the original schema, a rendered call decodes back to itself, and every call the schema rejects is an error. Definitions shrink from 8,313 to 3,301 bytes across the 17.
+- **7 bypassed**, each refused for the keyword named in the error: `oneOf`; a real `anyOf` union; `$ref` inside an optional; `pattern`; `additionalProperties` as a schema; `$defs`; `exclusiveMinimum`.
 
 ### Live model results
 
@@ -147,7 +166,7 @@ Tested via an OpenAI-compatible endpoint (`PROVIDER_BASE_URL` + `MODEL`; no netw
 - **Qwen3-32B** — produced a malformed closing marker (`}}>` instead of `>>`) on roughly 5 of 8 call attempts across 4 runs; the decoder correctly rejected every one rather than guessing.
 - **Claude models** — not tested; not served on the provided route.
 
-Note: models sometimes get relative-date arithmetic wrong (a model reasoning issue, not a decoder issue).
+Note: models sometimes get relative-date arithmetic wrong (a model reasoning issue, not a decoder issue). The public sample also disagrees with its own reference date in one place: with today = 2026-10-02, ct-002's "tomorrow" is 2026-10-03, but its expected `start` is 2026-10-04. Nothing here special-cases it.
 
 ## Known Limits
 

@@ -73,18 +73,24 @@ async fn main() {
         let encoded = (tools.len() == native.len())
             .then(|| encode_tools(&tools).ok())
             .flatten();
+        // The reference time is context for live runs, where relative dates must resolve the same
+        // way for everyone; it is not part of compaction. The scorer builds its native baseline
+        // from `tools` and `messages` alone, so an offline request carries no date line either,
+        // and a bypassed case is then exactly the baseline.
+        let reference = live.as_ref().map(|_| REFERENCE_TIME);
+        let system: Vec<String> = reference
+            .map(str::to_string)
+            .into_iter()
+            .chain(encoded.as_ref().map(CompactTools::prompt))
+            .collect();
+        let mut all = Vec::new();
+        if !system.is_empty() {
+            all.push(json!({"role": "system", "content": system.join("\n")}));
+        }
+        all.extend(messages.iter().cloned());
         let compact_request = match &encoded {
-            Some(compact) => {
-                let system = format!("{REFERENCE_TIME}\n{}", compact.prompt());
-                let mut all = vec![json!({"role": "system", "content": system})];
-                all.extend(messages.iter().cloned());
-                json!({"messages": all})
-            }
-            None => {
-                let mut all = vec![json!({"role": "system", "content": REFERENCE_TIME})];
-                all.extend(messages.iter().cloned());
-                json!({"messages": all, "tools": native})
-            }
+            Some(_) => json!({"messages": all}),
+            None => json!({"messages": all, "tools": native}),
         };
         summary.case(
             case["id"].as_str().unwrap_or_default(),
@@ -92,6 +98,7 @@ async fn main() {
             &native,
             &compact_request,
             encoded.as_ref(),
+            reference,
         );
 
         let mut line = json!({
@@ -263,10 +270,9 @@ struct Summary {
 
 struct CaseTokens {
     id: String,
-    /// `{messages, tools}` exactly as the case gives them.
+    /// `{messages, tools}` as the case gives them, plus the reference-time line when the compact
+    /// request carries one, so the two are always compared like for like.
     native: usize,
-    /// The same, plus the reference-time system message the compact request also carries.
-    native_timed: usize,
     compact: usize,
     /// Call-format text, tool lines, everything else. `None` for a bypassed case.
     parts: Option<(usize, usize, usize)>,
@@ -297,6 +303,7 @@ impl Summary {
         native: &[Value],
         compact_request: &Value,
         compact: Option<&CompactTools>,
+        reference: Option<&str>,
     ) {
         if self.example.is_none()
             && let (Some(tool), Some(compact)) = (native.first(), compact)
@@ -309,11 +316,14 @@ impl Summary {
         };
         let text = |s: &str| bpe.encode_ordinary(s).len();
         let count = |body: &Value| text(&body.to_string());
-        let mut timed = vec![json!({"role": "system", "content": REFERENCE_TIME})];
-        timed.extend(messages.iter().cloned());
+        let mut baseline: Vec<Value> = reference
+            .map(|time| json!({"role": "system", "content": time}))
+            .into_iter()
+            .collect();
+        baseline.extend(messages.iter().cloned());
         let total = count(compact_request);
         // Parts are counted on their own, so they are approximate; the remainder is the
-        // reference time, the messages and the JSON around them.
+        // messages, any reference-time line, and the JSON around them.
         let parts = compact.map(|compact| {
             let lines = text(&compact.definitions);
             let fixed = text(&compact.prompt()).saturating_sub(lines);
@@ -321,8 +331,7 @@ impl Summary {
         });
         self.cases.push(CaseTokens {
             id: id.to_string(),
-            native: count(&json!({"messages": messages, "tools": native})),
-            native_timed: count(&json!({"messages": timed, "tools": native})),
+            native: count(&json!({"messages": baseline, "tools": native})),
             compact: total,
             parts,
         });
@@ -368,18 +377,16 @@ impl Summary {
             )
         };
         println!("\nTokens per case (o200k_base, counted locally over the full request body)");
-        println!("  native       {{messages, tools}} exactly as the case gives them");
-        println!("  native+time  the same, plus the reference-time system message that the");
-        println!("               compact request also carries (like for like)");
+        println!("  native  {{messages, tools}} as the case gives them, the scorer's baseline;");
+        println!("          in live mode both sides also carry the reference-time line");
         println!(
-            "\n  {:<10} {:>7} {:>12} {:>8} {:>10} {:>15}   compact = call text + tool lines + rest",
-            "case", "native", "native+time", "compact", "vs native", "vs native+time"
+            "\n  {:<10} {:>7} {:>8} {:>7}   compact = call text + tool lines + rest",
+            "case", "native", "compact", "saved"
         );
-        let row = |id: &str, native: usize, timed: usize, compact: usize, detail: String| {
+        let row = |id: &str, native: usize, compact: usize, detail: String| {
             println!(
-                "  {id:<10} {native:>7} {timed:>12} {compact:>8} {:>10} {:>15}   {detail}",
-                saved(compact, native),
-                saved(compact, timed)
+                "  {id:<10} {native:>7} {compact:>8} {:>7}   {detail}",
+                saved(compact, native)
             );
         };
         for case in &self.cases {
@@ -387,20 +394,13 @@ impl Summary {
                 Some((fixed, lines, rest)) => format!("{fixed} + {lines} + {rest}"),
                 None => "bypassed (compacted: false)".to_string(),
             };
-            row(
-                &case.id,
-                case.native,
-                case.native_timed,
-                case.compact,
-                detail,
-            );
+            row(&case.id, case.native, case.compact, detail);
         }
         let sum = |pick: fn(&CaseTokens) -> usize| self.cases.iter().map(pick).sum::<usize>();
         let bypassed = self.cases.iter().filter(|c| c.parts.is_none()).count();
         row(
             "total",
             sum(|c| c.native),
-            sum(|c| c.native_timed),
             sum(|c| c.compact),
             format!("{bypassed} of {} cases bypassed", self.cases.len()),
         );

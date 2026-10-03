@@ -10,4 +10,4 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-proptest = "1"
+proptest.workspace = true
