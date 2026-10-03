@@ -121,7 +121,7 @@ export const copy = {
     items: [
       {
         title: 'Smaller prompts',
-        line: 'Trims bulky tool output — logs, JSON, diffs — down to what the model actually needs.',
+        line: 'Trims bulky tool output like logs, JSON and diffs to what the model actually needs.',
         where: 'Agent → Settings → Token optimization',
       },
       {

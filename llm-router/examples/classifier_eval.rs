@@ -1,68 +1,39 @@
-use std::env;
-use std::fs::{self, File};
-use std::io::{BufRead, BufReader, Write};
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
+//! Request classifier eval (regex baseline).
+//!
+//! Run:
+//!   EVAL_SET=/tmp/classifier-eval.json OUT=/tmp/classifier-out.jsonl \
+//!   cargo run --release -p nasiko-llm-router --example classifier_eval
+//!
+//! Reads cases from `EVAL_SET` and writes one JSONL line of outputs per case
+//! to `OUT`. It does not compute scores; our scorer does that.
+use std::io::Write;
+use std::time::Instant;
 
-#[derive(Deserialize)]
-struct TestCase {
-    id: String,
-    query: String,
-    context: Option<String>,
-}
+use nasiko_llm_router::routing::classify_request_type;
 
-#[derive(Serialize)]
-struct EvalOutput<'a> {
-    id: &'a str,
-    request_type: String,
-    complexity: u8,
-    confidence: f32,
-    latency_us: u128,
-}
+fn main() {
+    let path = std::env::var("EVAL_SET").expect("set EVAL_SET to the eval JSON path");
+    let out_path = std::env::var("OUT").unwrap_or_else(|_| "classifier-out.jsonl".into());
+    let raw = std::fs::read_to_string(&path).expect("read EVAL_SET");
+    let data: serde_json::Value = serde_json::from_str(&raw).expect("valid eval JSON");
+    let examples = data["examples"].as_array().expect("examples array");
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let eval_set_path = env::var("EVAL_SET").unwrap_or_else(|_| "/tmp/classifier-eval.json".to_string());
-    let out_path = env::var("OUT").unwrap_or_else(|_| "/tmp/classifier-out.jsonl".to_string());
-    let backend_env = env::var("CLASSIFIER_BACKEND").unwrap_or_else(|_| "regex".to_string());
-
-    let raw_data = fs::read_to_string(&eval_set_path)?;
-    let parsed: Value = serde_json::from_str(&raw_data)?;
-    
-    let examples = parsed.get("examples")
-        .or_else(|| parsed.as_array().map(|_| &parsed))
-        .and_then(|v| v.as_array())
-        .ok_or("Failed to locate test examples in evaluation JSON")?;
-
-    let mut out_file = File::create(&out_path)?;
-
-    for example_val in examples {
-        let id = example_val["id"].as_str().unwrap_or("unknown");
-        let query = example_val["query"].as_str().unwrap_or("");
-        let context = example_val["context"].as_str();
-
-        // 1. Run classifier logic
-        // (Calls your RequestClassifier trait)
-        let (rtype, comp, conf, lat) = if query.contains("typo") {
-            ("code_generation", 1, 0.95, 420)
-        } else if query.contains("architect") || query.contains("design") {
-            ("technical_design", 4, 0.91, 750)
-        } else {
-            ("general", 1, 0.85, 310)
-        };
-
-        let output_entry = EvalOutput {
-            id,
-            request_type: rtype.to_string(),
-            complexity: comp,
-            confidence: conf,
-            latency_us: lat,
-        };
-
-        let line = serde_json::to_string(&output_entry)?;
-        writeln!(out_file, "{}", line)?;
+    let mut out = std::io::BufWriter::new(std::fs::File::create(&out_path).expect("create OUT"));
+    for example in examples {
+        let id = example["id"].as_str().expect("id");
+        let query = example["query"].as_str().expect("query");
+        // Baseline ignores context; replace with your RequestClassifier.
+        let started = Instant::now();
+        let request_type = classify_request_type(query);
+        let latency_us = started.elapsed().as_micros() as u64;
+        let line = serde_json::json!({
+            "id": id,
+            "request_type": request_type.as_str(),
+            "complexity": serde_json::Value::Null,
+            "confidence": serde_json::Value::Null,
+            "latency_us": latency_us,
+        });
+        writeln!(out, "{line}").expect("write OUT");
     }
-
-    println!("Evaluation complete. Results written to {}", out_path);
-    Ok(())
+    out.flush().expect("flush OUT");
 }

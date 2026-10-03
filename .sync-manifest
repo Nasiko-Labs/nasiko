@@ -91,6 +91,7 @@ agents/finance-agent/justfile
 agents/finance-agent/src/main.rs
 agents/finance-agent/src/telemetry.rs
 agents/finance-agent/src/tools.rs
+agents/general-assistant-1.1.1.zip
 agents/github/AgentCard.json
 agents/github/Dockerfile
 agents/github/go.mod
@@ -179,6 +180,7 @@ agents/openai/src/__main__.py
 agents/openai/src/agent.py
 agents/openai/src/agent_executor.py
 agents/openai/src/telemetry.py
+agents/opencode-agent-v1.zip
 agents/paper/AgentCard.json
 agents/paper/Cargo.toml
 agents/paper/Dockerfile
