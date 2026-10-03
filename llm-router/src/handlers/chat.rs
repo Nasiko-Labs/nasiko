@@ -288,6 +288,18 @@ async fn chat_core(
         "brevity: directive decision"
     );
 
+    // ── compact-tools seam ───────────────────────────────────────────────────────────────
+    // Compact-tools operates on the OpenAI wire format and tool calling protocol.
+    // Anthropic and Gemini inbound requests use native provider-specific schemas
+    // and content-block streaming topologies, and are intentionally bypassed.
+    let compact_tools_ctx = if matches!(format, InboundFormat::OpenAi) {
+        crate::compact_tools::apply_egress(&mut req, &ctx.cfg)
+            .ok()
+            .flatten()
+    } else {
+        None
+    };
+
     // ── savings ledger inputs ─────────────────────────────────────────────────────────────
     // Measured here, after both seams, because this is the payload the provider will actually
     // bill for — which is what makes `sent_bytes / reported_input_tokens` a calibration rather
@@ -367,13 +379,18 @@ async fn chat_core(
             compress_bytes,
             request_bytes: Some(sent_bytes),
             span: llm_span.clone(),
+            compact_tools_ctx,
         });
     }
 
     // Non-streaming: run with ordered fallbacks; usage records the effective provider/model.
-    let (resp, (provider, model)) = fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
-        .instrument(llm_span.clone())
-        .await?;
+    let (mut resp, (provider, model)) =
+        fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
+            .instrument(llm_span.clone())
+            .await?;
+    if let Some(ref cctx) = compact_tools_ctx {
+        crate::compact_tools::apply_ingress(&mut resp, cctx)?;
+    }
     let latency_ms = started.elapsed().as_millis() as i64;
 
     // Record effective model and token usage on the server-side gen_ai span.
@@ -576,6 +593,7 @@ struct StreamChatArgs<'a> {
     /// `compress_metadata` is: on this path the `UsageRecord` is only built once the stream ends.
     compress_bytes: Option<(usize, usize)>,
     request_bytes: Option<usize>,
+    compact_tools_ctx: Option<crate::compact_tools::CompactToolsContext>,
 }
 
 /// Stream provider chunks back as OpenAI SSE: `data: <chunk>\n\n` … `data: [DONE]\n\n`.
@@ -600,6 +618,7 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
         brevity_metadata,
         compress_bytes,
         request_bytes,
+        compact_tools_ctx,
     } = args;
     let state = Arc::new(Mutex::new(StreamState::default()));
     let guard = UsageGuard {
@@ -629,6 +648,9 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
         let _guard = guard;
         let mut renderer = renderer;
         futures::pin_mut!(provider_stream);
+        let mut compact_decoder = compact_tools_ctx.map(|c| nasiko_tool_compact::StreamDecoder::new(c.original_tools));
+        let mut call_counter = 0usize;
+
         while let Some(item) = provider_stream.next().await {
             match item {
                 Ok(mut chunk) => {
@@ -642,8 +664,98 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
                             st.finish_reason = Some(fr);
                         }
                     }
-                    for frame in renderer.render(chunk) {
-                        yield Ok::<String, std::io::Error>(frame);
+                    if let Some(ref mut dec) = compact_decoder {
+                        let text = chunk.choices.first().and_then(|c| c.delta.content.as_deref()).unwrap_or("");
+                        let events = dec.push(text);
+                        if events.is_empty() {
+                            // Forward non-content fields (e.g. role-only first delta, empty final delta
+                            // carrying finish_reason, usage-only chunk) which would otherwise be dropped.
+                            let mut non_content_chunk = chunk.clone();
+                            let has_non_content = non_content_chunk.usage.is_some()
+                                || non_content_chunk.choices.iter().any(|c| {
+                                    c.delta.role.is_some() || c.finish_reason.is_some()
+                                });
+                            if has_non_content {
+                                for choice in non_content_chunk.choices.iter_mut() {
+                                    choice.delta.content = None;
+                                    choice.delta.tool_calls = None;
+                                    if choice.finish_reason.is_some() && call_counter > 0 {
+                                        choice.finish_reason = Some("tool_calls".to_string());
+                                    }
+                                }
+                                for frame in renderer.render(non_content_chunk) {
+                                    yield Ok::<String, std::io::Error>(frame);
+                                }
+                            }
+                        } else {
+                            let event_count = events.len();
+                            for (idx, ev) in events.into_iter().enumerate() {
+                                let is_last = idx + 1 == event_count;
+                                match ev {
+                                    nasiko_tool_compact::StreamEvent::Text(t) => {
+                                        let mut text_chunk = chunk.clone();
+                                        if let Some(choice) = text_chunk.choices.first_mut() {
+                                            choice.delta.content = Some(t);
+                                            choice.delta.tool_calls = None;
+                                            if !is_last {
+                                                choice.finish_reason = None;
+                                            } else if choice.finish_reason.is_some() && call_counter > 0 {
+                                                choice.finish_reason = Some("tool_calls".to_string());
+                                            }
+                                        }
+                                        for frame in renderer.render(text_chunk) {
+                                            yield Ok::<String, std::io::Error>(frame);
+                                        }
+                                    }
+                                    nasiko_tool_compact::StreamEvent::Call(call) => {
+                                        call_counter += 1;
+                                        let mut call_chunk = chunk.clone();
+                                        if let Some(choice) = call_chunk.choices.first_mut() {
+                                            choice.delta.content = None;
+                                            choice.delta.tool_calls = Some(vec![
+                                                crate::ir::chat::ToolCallDelta {
+                                                    index: (call_counter - 1) as i64,
+                                                    id: Some(format!("call_{}", call_counter)),
+                                                    kind: Some("function".into()),
+                                                    function: Some(crate::ir::chat::FunctionCallDelta {
+                                                        name: Some(call.name),
+                                                        arguments: Some(call.arguments.to_string()),
+                                                    }),
+                                                }
+                                            ]);
+                                            if !is_last {
+                                                choice.finish_reason = None;
+                                            } else if choice.finish_reason.is_some() {
+                                                choice.finish_reason = Some("tool_calls".to_string());
+                                            }
+                                        }
+                                        for frame in renderer.render(call_chunk) {
+                                            yield Ok::<String, std::io::Error>(frame);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if let Some(err) = dec.take_error() {
+                            // Mid-stream decode error: fail closed immediately.
+                            // Note: earlier calls or text emitted in prior SSE frames were already sent
+                            // across the wire because SSE frames cannot be un-sent once flushed over HTTP.
+                            // Emitting an error frame and aborting without [DONE] terminates the stream.
+                            tracing::error!(error = %err, "compact-tools stream decode error mid-stream");
+                            let error_json = serde_json::json!({
+                                "error": {
+                                    "message": format!("compact-tools decode error: {err}"),
+                                    "type": "invalid_request_error",
+                                    "code": "invalid_arguments"
+                                }
+                            });
+                            yield Ok::<String, std::io::Error>(format!("data: {error_json}\n\n"));
+                            break;
+                        }
+                    } else {
+                        for frame in renderer.render(chunk) {
+                            yield Ok::<String, std::io::Error>(frame);
+                        }
                     }
                 }
                 Err(e) => {
@@ -653,8 +765,63 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
                 }
             }
         }
-        for frame in renderer.finish() {
-            yield Ok(frame);
+        {
+            let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
+            if call_counter > 0 {
+                st.finish_reason = Some("tool_calls".to_string());
+            }
+        }
+        if let Some(mut dec) = compact_decoder {
+            // Flush any held-back plain text at end of stream (e.g. "x <<" without call syntax).
+            for ev in dec.flush() {
+                if let nasiko_tool_compact::StreamEvent::Text(t) = ev {
+                    let text_chunk = ChatChunk {
+                        id: format!("chatcmpl-{}", uuid::Uuid::new_v4()),
+                        object: "chat.completion.chunk".into(),
+                        created: Some(chrono::Utc::now().timestamp()),
+                        model: model.clone(),
+                        choices: vec![crate::ir::chat::ChunkChoice {
+                            index: 0,
+                            delta: crate::ir::chat::Delta {
+                                role: None,
+                                content: Some(t),
+                                tool_calls: None,
+                            },
+                            finish_reason: None,
+                        }],
+                        usage: None,
+                        extra: Default::default(),
+                    };
+                    for frame in renderer.render(text_chunk) {
+                        yield Ok(frame);
+                    }
+                }
+            }
+            match dec.finish() {
+                Ok(_) => {
+                    for frame in renderer.finish() {
+                        yield Ok(frame);
+                    }
+                }
+                Err(e) => {
+                    // Mid-stream or terminal decode error: fail closed by returning error payload.
+                    // Prior frames were already emitted to TCP socket as tokens arrived; aborting
+                    // here prevents emitting `data: [DONE]` and alerts the client.
+                    tracing::error!(error = %e, "compact-tools stream finish error");
+                    let error_json = serde_json::json!({
+                        "error": {
+                            "message": format!("compact-tools decode error: {e}"),
+                            "type": "invalid_request_error",
+                            "code": "invalid_arguments"
+                        }
+                    });
+                    yield Ok(format!("data: {error_json}\n\n"));
+                }
+            }
+        } else {
+            for frame in renderer.finish() {
+                yield Ok(frame);
+            }
         }
     };
 
