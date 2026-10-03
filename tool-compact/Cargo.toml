@@ -1,0 +1,15 @@
+[package]
+name = "nasiko-tool-compact"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+# `pattern` keywords are enforced when a call is validated; fail-closed decoding needs a real
+# regex engine, not a substring guess.
+regex = { workspace = true }
+
+[dev-dependencies]
+proptest = "1"

@@ -66,6 +66,15 @@ examples/mint_token.rs   dev/test JWT minter
 Reuses the platform's `SECRETS_ENCRYPTION_KEY` (per-user HKDF AES-256-GCM) and
 `DATABASE_URL`.
 
+`TOKEN_COMPACT_TOOLS` (default **off**): replaces a request's native `tools` with short text
+definitions and turns the model's `<<call …>>` replies back into standard `tool_calls`. The
+agent's own token-optimization switch has to allow it too. It covers non-streaming chat on the
+OpenAI, Anthropic and Gemini inbound surfaces. Streaming, `/v1/responses`, a forced
+`tool_choice`, `parallel_tool_calls: false`, `response_format`, earlier tool calls in the
+history and schemas the format can't carry exactly all go out unchanged. If a reply doesn't
+decode, the original native request is sent once instead. Code: `src/compact_tools.rs`; format,
+diagrams and limits: [`tool-compact/README.md`](../tool-compact/README.md).
+
 Storage: `agents.llm_config` (JSONB; NULL → defaults), `user_secrets` (decrypt via
 `SecretsCrypto::try_for_user`), `token_usage` (written), `model_pricing` (cost trigger).
 

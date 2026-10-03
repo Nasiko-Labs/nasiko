@@ -288,6 +288,19 @@ async fn chat_core(
         "brevity: directive decision"
     );
 
+    // ── compact tools seam (opt-in) ───────────────────────────────────────────────────────
+    // After brevity, so its directive stays the trailing message and the definitions lead the
+    // prompt; before the savings inputs, so `sent_bytes` measures what is actually sent.
+    // Streaming requests bypass inside `apply`, so only the non-streaming path restores replies.
+    let compact_tools = crate::compact_tools::apply(&mut req, &ctx.cfg, &resolved);
+    tracing::debug!(
+        target: "nasiko::llm_router::compact_tools",
+        %agent_id,
+        applied = compact_tools.is_ok(),
+        skipped = ?compact_tools.as_ref().err().map(|s| s.as_label()),
+        "compact_tools: decision"
+    );
+
     // ── savings ledger inputs ─────────────────────────────────────────────────────────────
     // Measured here, after both seams, because this is the payload the provider will actually
     // bill for — which is what makes `sent_bytes / reported_input_tokens` a calibration rather
@@ -325,6 +338,8 @@ async fn chat_core(
         nasiko.compress.bytes_out = tracing::field::Empty,
         nasiko.compress.elapsed_us = tracing::field::Empty,
         nasiko.brevity.applied = brevity.is_ok(),
+        nasiko.compact_tools.applied = compact_tools.is_ok(),
+        nasiko.compact_tools.native_retry = tracing::field::Empty,
         // The cache classes are recorded too, or the trace-derived cost of a
         // cached call is wrong in a way nothing downstream can detect: an
         // absent cache attribute is indistinguishable from a cache miss, so the
@@ -371,9 +386,31 @@ async fn chat_core(
     }
 
     // Non-streaming: run with ordered fallbacks; usage records the effective provider/model.
-    let (resp, (provider, model)) = fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
-        .instrument(llm_span.clone())
-        .await?;
+    let (mut resp, (mut provider, mut model)) =
+        fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
+            .instrument(llm_span.clone())
+            .await?;
+    // A compact reply that does not decode is never passed on or repaired: the request the
+    // client actually sent goes out once more, natively.
+    if let Ok(session) = &compact_tools
+        && let Err(error) = crate::compact_tools::restore(&mut resp, session)
+    {
+        tracing::warn!(
+            target: "nasiko::llm_router::compact_tools",
+            %agent_id,
+            %error,
+            "compact_tools: reply did not decode; sending the native request instead"
+        );
+        llm_span.record("nasiko.compact_tools.native_retry", true);
+        let failed_usage = resp.usage.take();
+        let (native, effective) =
+            fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, session.native_request())
+                .instrument(llm_span.clone())
+                .await?;
+        resp = native;
+        (provider, model) = effective;
+        crate::compact_tools::add_failed_attempt_usage(&mut resp.usage, failed_usage);
+    }
     let latency_ms = started.elapsed().as_millis() as i64;
 
     // Record effective model and token usage on the server-side gen_ai span.
@@ -1133,6 +1170,248 @@ mod tests {
             sent.contains("why did the deploy fail?"),
             "the user's own question was altered"
         );
+    }
+
+    // ── compact tools: the opt-in seam, end to end ─────────────────────────────────────────
+    //
+    // `compact_tools::tests` covers the transform. These prove what reaches the wire and what
+    // the client gets back, through the real handler.
+
+    fn weather_request() -> Value {
+        json!({
+            "model": "gpt-4o-mini",
+            "messages": [{ "role": "user", "content": "Weather in Paris?" }],
+            "tools": [{ "type": "function", "function": {
+                "name": "get_weather",
+                "description": "Current weather for a city.",
+                "parameters": { "type": "object",
+                    "properties": { "city": { "type": "string" } }, "required": ["city"] }
+            }}]
+        })
+    }
+
+    fn completion(message: Value) -> String {
+        json!({
+            "id": "chatcmpl-c", "object": "chat.completion", "model": "gpt-4o-mini",
+            "choices": [{ "index": 0, "message": message, "finish_reason": "stop" }],
+            "usage": { "prompt_tokens": 40, "completion_tokens": 10, "total_tokens": 50 }
+        })
+        .to_string()
+    }
+
+    /// One compact-tools exchange: the flags in force and what the provider answers.
+    struct Exchange {
+        fleet_flag: bool,
+        agent_switch: bool,
+        reply: Value,
+    }
+
+    /// Runs one request through `chat_core` against a mocked provider and returns the body the
+    /// provider received and the body the client got back.
+    async fn exchange(x: Exchange) -> (Value, Value) {
+        let seen = Arc::new(Mutex::new(String::new()));
+        let capture = Arc::clone(&seen);
+        let reply = completion(x.reply);
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body_from_request(move |request| {
+                let body = request.body().map(Vec::as_slice).unwrap_or_default();
+                *capture.lock().unwrap_or_else(|e| e.into_inner()) =
+                    String::from_utf8_lossy(body).into_owned();
+                reply.clone().into_bytes()
+            })
+            .create_async()
+            .await;
+        let mut ctx = ctx_with(server.url());
+        ctx.cfg = Arc::new(GatewayConfig {
+            compact_tools_enabled: x.fleet_flag,
+            ..(*ctx.cfg).clone()
+        });
+        let store = Store {
+            config: None,
+            is_coding_agent: false,
+            compress_enabled: x.agent_switch,
+        };
+        let resp = chat_core(
+            &ctx,
+            &store,
+            &auth_headers(&token()),
+            weather_request(),
+            InboundFormat::OpenAi,
+            None,
+        )
+        .await
+        .unwrap();
+        let client: Value = serde_json::from_str(&body_string(resp).await).unwrap();
+        let sent = seen.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        (serde_json::from_str(&sent).unwrap(), client)
+    }
+
+    #[tokio::test]
+    async fn compact_tools_off_sends_the_native_tools_untouched() {
+        let (sent, client) = exchange(Exchange {
+            fleet_flag: false,
+            agent_switch: true,
+            reply: json!({ "role": "assistant", "content": "ok" }),
+        })
+        .await;
+        assert_eq!(sent["tools"], weather_request()["tools"]);
+        assert!(!sent.to_string().contains("<<call"));
+        assert_eq!(client["choices"][0]["message"]["content"], "ok");
+    }
+
+    #[tokio::test]
+    async fn the_agent_switch_still_decides_when_the_fleet_flag_is_on() {
+        let (sent, _) = exchange(Exchange {
+            fleet_flag: true,
+            agent_switch: false,
+            reply: json!({ "role": "assistant", "content": "ok" }),
+        })
+        .await;
+        assert_eq!(sent["tools"], weather_request()["tools"]);
+    }
+
+    #[tokio::test]
+    async fn compact_tools_on_sends_definitions_and_returns_standard_tool_calls() {
+        let (sent, client) = exchange(Exchange {
+            fleet_flag: true,
+            agent_switch: true,
+            reply: json!({ "role": "assistant",
+                "content": "<<call get_weather {\"city\":\"Paris\"}>>" }),
+        })
+        .await;
+
+        assert!(
+            sent.get("tools").is_none(),
+            "native tools still sent: {sent}"
+        );
+        let block = sent["messages"][0]["content"].as_str().unwrap();
+        assert!(block.contains("get_weather: Current weather for a city.\n city: string"));
+
+        let choice = &client["choices"][0];
+        assert_eq!(choice["finish_reason"], "tool_calls");
+        let call = &choice["message"]["tool_calls"][0];
+        assert_eq!(call["type"], "function");
+        assert_eq!(call["function"]["name"], "get_weather");
+        assert_eq!(call["function"]["arguments"], "{\"city\":\"Paris\"}");
+        assert!(call["id"].as_str().unwrap().starts_with("call_"));
+        assert!(
+            !client.to_string().contains("<<call"),
+            "compact format leaked"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_undecodable_reply_is_retried_natively_and_both_attempts_are_billed() {
+        let mut server = mockito::Server::new_async().await;
+        let compact = server
+            .mock("POST", "/chat/completions")
+            .match_body(mockito::Matcher::Regex("Call tools with".into()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(completion(json!({ "role": "assistant",
+                "content": "<<call get_forecast {\"city\":\"Paris\"}>>" })))
+            .expect(1)
+            .create_async()
+            .await;
+        let native = server
+            .mock("POST", "/chat/completions")
+            .match_body(mockito::Matcher::Regex(r#""tools":\["#.into()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(completion(json!({ "role": "assistant", "content": null,
+                "tool_calls": [{ "id": "call_native", "type": "function",
+                    "function": { "name": "get_weather", "arguments": "{\"city\":\"Paris\"}" } }] })))
+            .expect(1)
+            .create_async()
+            .await;
+        let mut ctx = ctx_with(server.url());
+        ctx.cfg = Arc::new(GatewayConfig {
+            compact_tools_enabled: true,
+            ..(*ctx.cfg).clone()
+        });
+        let store = Store {
+            config: None,
+            is_coding_agent: false,
+            compress_enabled: true,
+        };
+
+        let resp = chat_core(
+            &ctx,
+            &store,
+            &auth_headers(&token()),
+            weather_request(),
+            InboundFormat::OpenAi,
+            None,
+        )
+        .await
+        .unwrap();
+
+        compact.assert_async().await;
+        native.assert_async().await;
+        let client: Value = serde_json::from_str(&body_string(resp).await).unwrap();
+        assert_eq!(
+            client["choices"][0]["message"]["tool_calls"][0]["id"], "call_native",
+            "the client gets the native answer, never a guessed call"
+        );
+        assert_eq!(client["usage"]["prompt_tokens"], 80, "both attempts billed");
+    }
+
+    #[tokio::test]
+    async fn anthropic_inbound_gets_tool_use_back_through_compaction() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/chat/completions")
+            .match_body(mockito::Matcher::Regex("get_weather: Weather.".into()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(completion(json!({ "role": "assistant",
+                "content": "<<call get_weather {\"city\":\"Rome\"}>>" })))
+            .create_async()
+            .await;
+        let mut ctx = ctx_with(server.url());
+        ctx.cfg = Arc::new(GatewayConfig {
+            compact_tools_enabled: true,
+            ..(*ctx.cfg).clone()
+        });
+        let store = Store {
+            config: Some(openai_config()),
+            is_coding_agent: false,
+            compress_enabled: true,
+        };
+        let body = json!({
+            "model": "claude-3-5-sonnet-20241022",
+            "max_tokens": 256,
+            "messages": [{ "role": "user", "content": "Weather in Rome?" }],
+            "tools": [{ "name": "get_weather", "description": "Weather.",
+                "input_schema": { "type": "object",
+                    "properties": { "city": { "type": "string" } }, "required": ["city"] } }]
+        });
+
+        let resp = chat_core(
+            &ctx,
+            &store,
+            &auth_headers(&token()),
+            body,
+            InboundFormat::Anthropic,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let v: Value = serde_json::from_str(&body_string(resp).await).unwrap();
+        let block = v["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["type"] == "tool_use")
+            .unwrap_or_else(|| panic!("no tool_use block: {v}"));
+        assert_eq!(block["name"], "get_weather");
+        assert_eq!(block["input"], json!({ "city": "Rome" }));
+        assert_eq!(v["stop_reason"], "tool_use");
     }
 
     #[tokio::test]
