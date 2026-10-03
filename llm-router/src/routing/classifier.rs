@@ -160,6 +160,51 @@ const TIER_ARMS: [TierArm; 3] = [
 //    (order matters: on a tie the earlier category wins; patterns in `super::patterns`)
 // --------------------------------------------------------------------------
 
+#[derive(Debug, thiserror::Error)]
+pub enum ClassifyError {
+    #[error("classifier timeout")]
+    Timeout,
+    #[error("classifier internal error: {0}")]
+    Internal(String),
+}
+
+pub struct ClassifyInput<'a> {
+    pub query: &'a str,
+    pub context: Option<&'a str>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Classification {
+    pub request_type: RequestType,
+    pub complexity: u8, // 1-5
+    pub confidence: f32, // 0.0 - 1.0
+}
+
+#[async_trait::async_trait]
+pub trait RequestClassifier: Send + Sync {
+    fn name(&self) -> &str;
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError>;
+}
+
+/// The legacy regex-based implementation.
+/// Documents its fixed complexity (1) and confidence (1.0).
+pub struct RegexClassifier;
+
+#[async_trait::async_trait]
+impl RequestClassifier for RegexClassifier {
+    fn name(&self) -> &str {
+        "regex"
+    }
+
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+        Ok(Classification {
+            request_type: classify_request_type(input.query),
+            complexity: 1,
+            confidence: 1.0,
+        })
+    }
+}
+
 /// Bucket a query into a [`RequestType`] by vote count — the category matching the most
 /// patterns wins, ties broken by declaration order, defaulting to `General`. Port of
 /// `categories.rs::classify`.
