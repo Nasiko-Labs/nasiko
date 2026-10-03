@@ -1,0 +1,13 @@
+[package]
+name = "nasiko-tool-compact"
+edition.workspace = true
+version.workspace = true
+description = "Compact tool-schema encoding and a strict, streaming decoder for compact tool calls"
+
+[dependencies]
+# Schemas and call arguments are JSON; validation needs a real parser, never a prefix guess.
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = "1"

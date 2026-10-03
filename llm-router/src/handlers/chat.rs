@@ -288,6 +288,28 @@ async fn chat_core(
         "brevity: directive decision"
     );
 
+    // ── compact tool schemas (opt-in) ─────────────────────────────────────────────────────
+    // Last request transform, so the native copy kept for fallback carries every earlier seam's
+    // changes and a fallback differs from the compact attempt only in how tools are sent. With
+    // the flag off nothing here runs: no clone, no mutation, no decode.
+    let tool_compaction = if ctx.cfg.tool_compact_enabled {
+        let native = req.clone();
+        match crate::tool_compact::apply(&mut req) {
+            Ok(compacted) => Some((compacted, native)),
+            Err(skipped) => {
+                tracing::debug!(
+                    target: "nasiko::llm_router::tool_compact",
+                    %agent_id,
+                    skipped = skipped.as_label(),
+                    "tool_compact: bypassed"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // ── savings ledger inputs ─────────────────────────────────────────────────────────────
     // Measured here, after both seams, because this is the payload the provider will actually
     // bill for — which is what makes `sent_bytes / reported_input_tokens` a calibration rather
@@ -371,9 +393,30 @@ async fn chat_core(
     }
 
     // Non-streaming: run with ordered fallbacks; usage records the effective provider/model.
-    let (resp, (provider, model)) = fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
-        .instrument(llm_span.clone())
-        .await?;
+    let (mut resp, (mut provider, mut model)) =
+        fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
+            .instrument(llm_span.clone())
+            .await?;
+    if let Some((compacted, native)) = &tool_compaction
+        && let Err(e) = crate::tool_compact::decode_response(&mut resp, compacted)
+    {
+        // Fail closed: never repair a bad compact reply. Ask again with native tools, and bill
+        // both attempts.
+        tracing::warn!(
+            target: "nasiko::llm_router::tool_compact",
+            %agent_id,
+            error = %e,
+            code = e.code(),
+            "tool_compact: reply did not decode; retrying with native tools"
+        );
+        let first_usage = resp.usage.take();
+        let (retry, (p, m)) = fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, native)
+            .instrument(llm_span.clone())
+            .await?;
+        resp = retry;
+        resp.usage = crate::tool_compact::sum_usage(first_usage, resp.usage.take());
+        (provider, model) = (p, m);
+    }
     let latency_ms = started.elapsed().as_millis() as i64;
 
     // Record effective model and token usage on the server-side gen_ai span.
@@ -1133,6 +1176,177 @@ mod tests {
             sent.contains("why did the deploy fail?"),
             "the user's own question was altered"
         );
+    }
+
+    // ── compact tool schemas: the opt-in seam, seen from the wire ─────────────────────────
+    //
+    // `tool_compact::tests` covers the transform. These prove what the provider receives and
+    // what the client gets back, with the flag off and on, including the native fallback.
+
+    fn tool_request() -> serde_json::Value {
+        json!({
+            "model": "gpt-4o",
+            "messages": [{ "role": "user", "content": "Email sam@example.com that the build is green" }],
+            "tools": [{ "type": "function", "function": {
+                "name": "send_email",
+                "description": "Send an email.",
+                "parameters": { "type": "object", "properties": {
+                    "to": { "type": "array", "items": { "type": "string" } },
+                    "body": { "type": "string" }
+                }, "required": ["to", "body"] }
+            }}]
+        })
+    }
+
+    fn completion(message: serde_json::Value) -> Vec<u8> {
+        json!({
+            "id": "chatcmpl-x", "object": "chat.completion", "model": "gpt-4o",
+            "choices": [{ "index": 0, "message": message, "finish_reason": "stop" }],
+            "usage": { "prompt_tokens": 50, "completion_tokens": 10, "total_tokens": 60 }
+        })
+        .to_string()
+        .into_bytes()
+    }
+
+    fn native_call_message() -> serde_json::Value {
+        json!({ "role": "assistant", "content": null, "tool_calls": [{
+            "id": "call_native", "type": "function",
+            "function": { "name": "send_email", "arguments": "{\"to\":[\"sam@example.com\"],\"body\":\"green\"}" }
+        }]})
+    }
+
+    /// Runs one request with the flag set; the provider answers with `replies` in order. Returns
+    /// every body the provider received and the client's response body.
+    async fn compact_run(
+        enabled: bool,
+        replies: Vec<serde_json::Value>,
+    ) -> (Vec<serde_json::Value>, serde_json::Value) {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let capture = Arc::clone(&seen);
+        let replies = Arc::new(Mutex::new(replies.into_iter()));
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body_from_request(move |request| {
+                let body = request.body().map(Vec::as_slice).unwrap_or_default();
+                capture
+                    .lock()
+                    .unwrap()
+                    .push(serde_json::from_slice::<serde_json::Value>(body).unwrap());
+                completion(
+                    replies
+                        .lock()
+                        .unwrap()
+                        .next()
+                        .expect("unexpected extra provider call"),
+                )
+            })
+            .expect_at_least(1)
+            .create_async()
+            .await;
+
+        let mut ctx = ctx_with(server.url());
+        let mut cfg = (*ctx.cfg).clone();
+        cfg.tool_compact_enabled = enabled;
+        ctx.cfg = Arc::new(cfg);
+        let store = Store {
+            config: None,
+            is_coding_agent: false,
+            compress_enabled: false,
+        };
+        let resp = chat_core(
+            &ctx,
+            &store,
+            &auth_headers(&token()),
+            tool_request(),
+            InboundFormat::OpenAi,
+            None,
+        )
+        .await
+        .unwrap();
+        let body: serde_json::Value = serde_json::from_str(&body_string(resp).await).unwrap();
+        let bodies = seen.lock().unwrap().clone();
+        (bodies, body)
+    }
+
+    #[tokio::test]
+    async fn tool_compact_off_is_byte_identical_on_the_wire_and_back() {
+        let (bodies, client) = compact_run(false, vec![native_call_message()]).await;
+        assert_eq!(bodies.len(), 1);
+        let sent = &bodies[0];
+        let req = tool_request();
+        // The provider sees exactly the client's tools and messages: nothing injected.
+        assert_eq!(sent["tools"], req["tools"]);
+        assert_eq!(sent["messages"], req["messages"]);
+        assert!(!sent.to_string().contains("<<call"));
+        // The flag is off by default, so the default config behaves the same.
+        assert!(!GatewayConfig::default().tool_compact_enabled);
+        // The provider's own tool call comes back verbatim.
+        // (The IR already omits `content: null` on the way out; that is existing behaviour.)
+        assert_eq!(
+            client["choices"][0]["message"]["tool_calls"],
+            native_call_message()["tool_calls"]
+        );
+    }
+
+    #[tokio::test]
+    async fn tool_compact_on_sends_compact_tools_and_returns_standard_tool_calls() {
+        let reply = json!({ "role": "assistant", "content":
+            "<<call send_email {\"to\":[\"sam@example.com\"],\"body\":\"The build is green.\"}>>" });
+        let (bodies, client) = compact_run(true, vec![reply]).await;
+        assert_eq!(bodies.len(), 1);
+        let sent = &bodies[0];
+        assert!(
+            sent.get("tools").is_none(),
+            "native tools still sent: {sent}"
+        );
+        let system = sent["messages"][0]["content"].as_str().unwrap();
+        assert!(
+            system.contains("send_email(to:[str], body:str) - Send an email."),
+            "{system}"
+        );
+
+        let message = &client["choices"][0]["message"];
+        assert!(
+            !client.to_string().contains("<<call"),
+            "compact format leaked: {client}"
+        );
+        assert_eq!(message["tool_calls"][0]["type"], "function");
+        assert_eq!(message["tool_calls"][0]["function"]["name"], "send_email");
+        let args: serde_json::Value = serde_json::from_str(
+            message["tool_calls"][0]["function"]["arguments"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            args,
+            json!({ "to": ["sam@example.com"], "body": "The build is green." })
+        );
+        assert_eq!(client["choices"][0]["finish_reason"], "tool_calls");
+    }
+
+    #[tokio::test]
+    async fn tool_compact_bad_reply_falls_back_to_native_tools() {
+        let bad = json!({ "role": "assistant", "content": "<<call delete_everything {}>>" });
+        let (bodies, client) = compact_run(true, vec![bad, native_call_message()]).await;
+        assert_eq!(
+            bodies.len(),
+            2,
+            "expected the compact attempt plus one native retry"
+        );
+        assert!(bodies[0].get("tools").is_none());
+        assert_eq!(bodies[1]["tools"], tool_request()["tools"]);
+        assert_eq!(bodies[1]["messages"], tool_request()["messages"]);
+        // (The IR already omits `content: null` on the way out; that is existing behaviour.)
+        assert_eq!(
+            client["choices"][0]["message"]["tool_calls"],
+            native_call_message()["tool_calls"]
+        );
+        // Both attempts are billed.
+        assert_eq!(client["usage"]["prompt_tokens"], 100);
     }
 
     #[tokio::test]

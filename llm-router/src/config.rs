@@ -154,6 +154,11 @@ pub struct GatewayConfig {
     pub compress_recovery_min_bytes: usize,
     /// How long an original stays recoverable. Sized to outlive the flow that produced it.
     pub compress_recovery_ttl_secs: u64,
+
+    /// Replace native `tools` with compact definitions and decode `<<call …>>` replies back into
+    /// `tool_calls` (non-streaming chat only; see `tool_compact`). **Defaults off**: experimental,
+    /// and with it off the request and response are never touched.
+    pub tool_compact_enabled: bool,
 }
 
 impl Default for GatewayConfig {
@@ -196,6 +201,7 @@ impl Default for GatewayConfig {
             compress_recovery_enabled: true,
             compress_recovery_min_bytes: 8192,
             compress_recovery_ttl_secs: 86_400,
+            tool_compact_enabled: false,
         }
     }
 }
@@ -308,6 +314,7 @@ impl GatewayConfig {
                 "TOKEN_COMPRESS_RECOVERY_TTL_SECS",
                 d.compress_recovery_ttl_secs as usize,
             ) as u64,
+            tool_compact_enabled: env_flag("TOKEN_TOOL_COMPACT", d.tool_compact_enabled),
         }
     }
 
