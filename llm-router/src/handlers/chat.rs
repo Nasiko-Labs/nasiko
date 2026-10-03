@@ -288,6 +288,19 @@ async fn chat_core(
         "brevity: directive decision"
     );
 
+    // ── compact tools seam (opt-in, `TOKEN_COMPACT_TOOLS`) ───────────────────────────────
+    // Last request-side transform, so the ledger below measures the bytes actually sent. A pure
+    // no-op unless the flag is on; `Some` means the reply must be decoded.
+    let compact_plan = crate::compact_tools::apply(&mut req, &ctx.cfg);
+    tracing::debug!(
+        target: "nasiko::llm_router::compact_tools",
+        %agent_id,
+        applied = compact_plan.is_ok(),
+        skipped = ?compact_plan.as_ref().err(),
+        "compact tools: decision"
+    );
+    let compact_plan = compact_plan.ok();
+
     // ── savings ledger inputs ─────────────────────────────────────────────────────────────
     // Measured here, after both seams, because this is the payload the provider will actually
     // bill for — which is what makes `sent_bytes / reported_input_tokens` a calibration rather
@@ -349,6 +362,10 @@ async fn chat_core(
                 .instrument(llm_span.clone())
                 .await?;
         llm_span.record("gen_ai.response.model", model.as_str());
+        let stream = match compact_plan {
+            Some(plan) => crate::compact_tools::decode_stream(stream, plan),
+            None => stream,
+        };
         let renderer = inbound.chat_stream_renderer();
         return stream_chat(StreamChatArgs {
             ctx,
@@ -371,9 +388,10 @@ async fn chat_core(
     }
 
     // Non-streaming: run with ordered fallbacks; usage records the effective provider/model.
-    let (resp, (provider, model)) = fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
-        .instrument(llm_span.clone())
-        .await?;
+    let (mut resp, (provider, model)) =
+        fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
+            .instrument(llm_span.clone())
+            .await?;
     let latency_ms = started.elapsed().as_millis() as i64;
 
     // Record effective model and token usage on the server-side gen_ai span.
@@ -404,6 +422,11 @@ async fn chat_core(
             request_bytes: Some(sent_bytes),
         },
     );
+
+    if let Some(plan) = &compact_plan {
+        // Fail closed: an invalid compact call is an upstream error, never a repaired call.
+        crate::compact_tools::decode_response(&mut resp, plan).map_err(GatewayError::Upstream)?;
+    }
 
     Ok(Json(inbound.render_chat_response(resp)).into_response())
 }
@@ -1533,5 +1556,305 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, GatewayError::BadRequest(_)));
+    }
+
+    // ── compact tools (CompTrust): the wiring the opt-in flag depends on ────────────────────
+    //
+    // `compact_tools::tests` covers the transform, the response decoder and the stream wrapper.
+    // These run the real `chat_core` against a mocked provider and look at the body the provider
+    // actually received, which is the only proof the flag reaches the wire.
+
+    fn compact_ctx(base: String, enabled: bool) -> LlmRouterCtx {
+        let mut ctx = ctx_with(base);
+        let mut cfg = (*ctx.cfg).clone();
+        cfg.compact_tools_enabled = enabled;
+        ctx.cfg = Arc::new(cfg);
+        ctx
+    }
+
+    fn calendar_tool() -> Value {
+        json!({"type": "function", "function": {
+            "name": "create_calendar_event",
+            "description": "Create an event in the user's calendar.",
+            "parameters": {"type": "object", "properties": {
+                "title": {"type": "string"},
+                "start": {"type": "string", "format": "date-time"},
+                "duration_min": {"type": "integer"},
+                "visibility": {"type": "string", "enum": ["public", "private"]}},
+                "required": ["title", "start"]}}})
+    }
+
+    fn tools_request(stream: bool) -> Value {
+        json!({
+            "model": "gpt-4o", "stream": stream, "tools": [calendar_tool()],
+            "messages": [{ "role": "user", "content": "book a design review" }]
+        })
+    }
+
+    const GOOD_CALL: &str = r#"<<call create_calendar_event {"title":"Design review","start":"2026-10-05T15:00:00+05:30","visibility":"public"}>>"#;
+
+    /// Runs one request through `chat_core` against a provider that answers with `reply`
+    /// (as one JSON completion, or as a 3-piece SSE stream). Returns the body the provider
+    /// received and the outcome.
+    async fn compact_run(
+        enabled: bool,
+        reply: &str,
+        stream: bool,
+    ) -> (String, Result<Response, GatewayError>) {
+        let seen = Arc::new(Mutex::new(String::new()));
+        let capture = Arc::clone(&seen);
+        let reply = reply.to_string();
+
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header(
+                "content-type",
+                if stream {
+                    "text/event-stream"
+                } else {
+                    "application/json"
+                },
+            )
+            .with_body_from_request(move |request| {
+                let body = request.body().map(Vec::as_slice).unwrap_or_default();
+                *capture.lock().unwrap_or_else(|e| e.into_inner()) =
+                    String::from_utf8_lossy(body).into_owned();
+                if stream {
+                    let chars: Vec<char> = reply.chars().collect();
+                    let third = chars.len().div_ceil(3).max(1);
+                    let mut sse = String::new();
+                    for piece in chars.chunks(third) {
+                        let piece: String = piece.iter().collect();
+                        sse.push_str(&format!(
+                            "data: {}\n\n",
+                            json!({
+                                "id": "x", "object": "chat.completion.chunk", "model": "gpt-4o",
+                                "choices": [{ "index": 0, "delta": { "content": piece } }]
+                            })
+                        ));
+                    }
+                    sse.push_str(&format!(
+                        "data: {}\n\n",
+                        json!({
+                            "id": "x", "object": "chat.completion.chunk", "model": "gpt-4o",
+                            "choices": [{ "index": 0, "delta": {}, "finish_reason": "stop" }]
+                        })
+                    ));
+                    sse.push_str("data: [DONE]\n\n");
+                    sse.into_bytes()
+                } else {
+                    json!({
+                        "id": "chatcmpl-x", "object": "chat.completion", "model": "gpt-4o",
+                        "choices": [{ "index": 0, "finish_reason": "stop",
+                            "message": { "role": "assistant", "content": reply } }],
+                        "usage": { "prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7 }
+                    })
+                    .to_string()
+                    .into_bytes()
+                }
+            })
+            .create_async()
+            .await;
+
+        let ctx = compact_ctx(server.url(), enabled);
+        let store = Store {
+            config: None,
+            is_coding_agent: false,
+            compress_enabled: false,
+        };
+        let out = chat_core(
+            &ctx,
+            &store,
+            &auth_headers(&token()),
+            tools_request(stream),
+            InboundFormat::OpenAi,
+            None,
+        )
+        .await;
+        mock.assert_async().await;
+        let sent = seen.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        assert!(!sent.is_empty(), "provider was never called");
+        (sent, out)
+    }
+
+    #[tokio::test]
+    async fn compact_tools_are_off_by_default_in_the_shipped_config() {
+        assert!(!GatewayConfig::default().compact_tools_enabled);
+    }
+
+    #[tokio::test]
+    async fn flag_off_sends_native_tools_and_never_decodes() {
+        let (sent, out) = compact_run(false, GOOD_CALL, false).await;
+        let sent: Value = serde_json::from_str(&sent).unwrap();
+        assert_eq!(
+            sent["tools"],
+            json!([calendar_tool()]),
+            "tools must reach the provider unchanged"
+        );
+        assert_eq!(
+            sent["messages"].as_array().unwrap().len(),
+            1,
+            "no system message may be added"
+        );
+        let v: Value = serde_json::from_str(&body_string(out.unwrap()).await).unwrap();
+        assert_eq!(
+            v["choices"][0]["message"]["content"], GOOD_CALL,
+            "reply must be forwarded verbatim"
+        );
+        assert!(v["choices"][0]["message"].get("tool_calls").is_none());
+    }
+
+    #[tokio::test]
+    async fn flag_on_compacts_the_wire_and_decodes_the_reply_into_a_tool_call() {
+        let (sent, out) = compact_run(true, &format!("Booking it.\n{GOOD_CALL}"), false).await;
+        let sent: Value = serde_json::from_str(&sent).unwrap();
+        assert!(
+            sent.get("tools").is_none(),
+            "the JSON schema must not be sent: {sent}"
+        );
+        let msgs = sent["messages"].as_array().unwrap();
+        assert_eq!(
+            msgs[0]["content"], "book a design review",
+            "the user's text is untouched"
+        );
+        let prompt = msgs.last().unwrap()["content"].as_str().unwrap();
+        assert_eq!(msgs.last().unwrap()["role"], "system");
+        assert!(
+            prompt.contains("create_calendar_event(title:str"),
+            "{prompt}"
+        );
+        assert!(prompt.contains("<<call name {json args}>>"));
+
+        let v: Value = serde_json::from_str(&body_string(out.unwrap()).await).unwrap();
+        let msg = &v["choices"][0]["message"];
+        assert_eq!(msg["content"], "Booking it.");
+        let call = &msg["tool_calls"][0];
+        assert_eq!(call["type"], "function");
+        assert!(call["id"].as_str().unwrap().starts_with("call_"));
+        assert_eq!(call["function"]["name"], "create_calendar_event");
+        let args: Value =
+            serde_json::from_str(call["function"]["arguments"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            args,
+            json!({"title": "Design review", "start": "2026-10-05T15:00:00+05:30", "visibility": "public"})
+        );
+        assert_eq!(v["choices"][0]["finish_reason"], "tool_calls");
+    }
+
+    #[tokio::test]
+    async fn flag_on_plain_answer_is_returned_as_is() {
+        let (_, out) = compact_run(true, "It is sunny.", false).await;
+        let v: Value = serde_json::from_str(&body_string(out.unwrap()).await).unwrap();
+        assert_eq!(v["choices"][0]["message"]["content"], "It is sunny.");
+        assert!(v["choices"][0]["message"].get("tool_calls").is_none());
+        assert_eq!(v["choices"][0]["finish_reason"], "stop");
+    }
+
+    #[tokio::test]
+    async fn flag_on_rejects_invalid_compact_calls_instead_of_repairing_them() {
+        let cases = [
+            (r#"<<call delete_everything {}>>"#, "unknown_tool"),
+            (
+                r#"<<call create_calendar_event {"start":"2026-10-05T15:00:00Z"}>>"#,
+                "invalid_arguments",
+            ),
+            (
+                r#"<<call create_calendar_event {"title":"t","start":"2026-10-05T15:00:00Z","duration_min":"30"}>>"#,
+                "invalid_arguments",
+            ),
+            (
+                r#"<<call create_calendar_event {"title":"t","start":"2026-10-05T15:00:00Z","visibility":"secret"}>>"#,
+                "invalid_arguments",
+            ),
+        ];
+        for (reply, code) in cases {
+            let (_, out) = compact_run(true, reply, false).await;
+            match out {
+                Err(GatewayError::Upstream(m)) => assert!(m.contains(code), "{reply}: {m}"),
+                Err(e) => panic!("{reply}: wrong error {e:?}"),
+                Ok(_) => panic!("an invalid compact call was forwarded: {reply}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn flag_on_streams_a_split_compact_call_as_a_tool_call() {
+        let (sent, out) = compact_run(true, &format!("Booking it. {GOOD_CALL}"), true).await;
+        assert!(
+            !sent.contains("\"parameters\""),
+            "schema must not be sent: {sent}"
+        );
+        let body = body_string(out.unwrap()).await;
+        assert!(
+            !body.contains("<<call"),
+            "marker text leaked to the client: {body}"
+        );
+        assert!(body.contains("Booking it."));
+        assert!(body.contains("\"tool_calls\""), "{body}");
+        assert!(body.contains("create_calendar_event"));
+        assert!(body.contains("\"finish_reason\":\"tool_calls\""), "{body}");
+        assert!(body.trim_end().ends_with("data: [DONE]"));
+    }
+
+    #[tokio::test]
+    async fn flag_on_stream_with_an_invalid_call_emits_no_tool_call() {
+        let (_, out) = compact_run(true, r#"<<call delete_everything {}>>"#, true).await;
+        let body = body_string(out.unwrap()).await;
+        assert!(
+            !body.contains("tool_calls"),
+            "an invalid call must not become a tool call: {body}"
+        );
+        assert!(
+            !body.contains("<<call"),
+            "marker text must not reach the client: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn flag_on_leaves_requests_that_force_a_tool_call_alone() {
+        let seen = Arc::new(Mutex::new(String::new()));
+        let capture = Arc::clone(&seen);
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body_from_request(move |request| {
+                *capture.lock().unwrap_or_else(|e| e.into_inner()) = String::from_utf8_lossy(
+                    request.body().map(Vec::as_slice).unwrap_or_default(),
+                )
+                .into_owned();
+                json!({"id": "x", "object": "chat.completion", "model": "gpt-4o",
+                    "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": "ok"}}]})
+                .to_string()
+                .into_bytes()
+            })
+            .create_async()
+            .await;
+        let ctx = compact_ctx(server.url(), true);
+        let store = Store {
+            config: None,
+            is_coding_agent: false,
+            compress_enabled: false,
+        };
+        let mut body = tools_request(false);
+        body["tool_choice"] = json!("required");
+        chat_core(
+            &ctx,
+            &store,
+            &auth_headers(&token()),
+            body,
+            InboundFormat::OpenAi,
+            None,
+        )
+        .await
+        .unwrap();
+        let sent: Value =
+            serde_json::from_str(&seen.lock().unwrap_or_else(|e| e.into_inner())).unwrap();
+        assert_eq!(sent["tools"], json!([calendar_tool()]));
+        assert_eq!(sent["tool_choice"], "required");
+        assert_eq!(sent["messages"].as_array().unwrap().len(), 1);
     }
 }

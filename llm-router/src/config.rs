@@ -154,6 +154,14 @@ pub struct GatewayConfig {
     pub compress_recovery_min_bytes: usize,
     /// How long an original stays recoverable. Sized to outlive the flow that produced it.
     pub compress_recovery_ttl_secs: u64,
+
+    /// Send compact tool signatures instead of JSON tool schemas and decode the model's compact
+    /// calls back into `tool_calls` (`nasiko-tool-compact`; see `compact_tools.rs`).
+    ///
+    /// **Defaults off** and is a fleet-wide switch: unlike the compression layers it has no
+    /// per-agent column, so nothing changes for any agent until an operator sets it. With it
+    /// off the request is not touched at all.
+    pub compact_tools_enabled: bool,
 }
 
 impl Default for GatewayConfig {
@@ -196,6 +204,7 @@ impl Default for GatewayConfig {
             compress_recovery_enabled: true,
             compress_recovery_min_bytes: 8192,
             compress_recovery_ttl_secs: 86_400,
+            compact_tools_enabled: false,
         }
     }
 }
@@ -308,6 +317,7 @@ impl GatewayConfig {
                 "TOKEN_COMPRESS_RECOVERY_TTL_SECS",
                 d.compress_recovery_ttl_secs as usize,
             ) as u64,
+            compact_tools_enabled: env_flag("TOKEN_COMPACT_TOOLS", d.compact_tools_enabled),
         }
     }
 
