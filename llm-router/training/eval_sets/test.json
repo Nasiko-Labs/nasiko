@@ -1,0 +1,452 @@
+{
+  "schema_version": "h4-public-eval-v1",
+  "purpose": "Contributor-authored test split for the H4 request classifier.",
+  "source": "Synthetic examples authored for the hackathon; no private user data.",
+  "labels": {
+    "request_type": "One of code_generation, code_understanding, technical_design, analytical_reasoning, writing, factual_lookup, general.",
+    "complexity": "1 trivial .. 5 intricate cross-component reasoning."
+  },
+  "examples": [
+    {
+      "id": "co-cg-bash-0",
+      "query": "Generate a bash script that rotates logs older than 7 days.",
+      "context": "Logs live in /var/log/app.",
+      "request_type": "code_generation",
+      "complexity": 2
+    },
+    {
+      "id": "co-cg-bash-1",
+      "query": "Write a shell script to delete app logs older than a week.",
+      "context": "",
+      "request_type": "code_generation",
+      "complexity": 2
+    },
+    {
+      "id": "co-cg-offbyone-0",
+      "query": "Fix the off-by-one in this loop so it prints 1 through 10.",
+      "context": "for (i = 0; i < 10; i++) print(i);",
+      "request_type": "code_generation",
+      "complexity": 1
+    },
+    {
+      "id": "co-cg-offbyone-1",
+      "query": "This loop prints 0..9 but I need 1..10. Fix it.",
+      "context": "for i in range(10): print(i)",
+      "request_type": "code_generation",
+      "complexity": 1
+    },
+    {
+      "id": "co-cg-sql-0",
+      "query": "Create a SQL query that returns the top 10 customers by revenue last quarter.",
+      "context": "orders(id, customer_id, total, created_at); customers(id, name).",
+      "request_type": "code_generation",
+      "complexity": 2
+    },
+    {
+      "id": "co-cg-sql-1",
+      "query": "Write SQL for the ten highest-spending customers this quarter.",
+      "context": "Same schema; revenue = sum(orders.total).",
+      "request_type": "code_generation",
+      "complexity": 2
+    },
+    {
+      "id": "co-cg-tests-0",
+      "query": "Write unit tests for the parse_duration function, including the zero case.",
+      "context": "Rust; function returns Result<Duration, ParseError>.",
+      "request_type": "code_generation",
+      "complexity": 3
+    },
+    {
+      "id": "co-cg-tests-1",
+      "query": "Add tests covering parse_duration's happy path, zero, and malformed input.",
+      "context": "No test module exists yet.",
+      "request_type": "code_generation",
+      "complexity": 3
+    },
+    {
+      "id": "co-cu-copy-0",
+      "query": "Does this code copy or move the value? Explain.",
+      "context": "```rust\nlet b = a;\nprintln!(\"{a:?}\");\n```",
+      "request_type": "code_understanding",
+      "complexity": 2
+    },
+    {
+      "id": "co-cu-copy-1",
+      "query": "Explain whether this assignment copies or moves.",
+      "context": "String assignment in Rust.",
+      "request_type": "code_understanding",
+      "complexity": 2
+    },
+    {
+      "id": "co-cu-state-0",
+      "query": "Why does this component re-render on every keystroke?",
+      "context": "```jsx\nuseEffect(() => setX(x + 1));\n```",
+      "request_type": "code_understanding",
+      "complexity": 3
+    },
+    {
+      "id": "co-cu-state-1",
+      "query": "Explain what causes the infinite re-render here.",
+      "context": "useEffect with no dependency array that sets state.",
+      "request_type": "code_understanding",
+      "complexity": 3
+    },
+    {
+      "id": "co-cu-unsafe-0",
+      "query": "What does the `unsafe` block here actually guarantee?",
+      "context": "```rust\nunsafe { *ptr.add(i) }\n```",
+      "request_type": "code_understanding",
+      "complexity": 3
+    },
+    {
+      "id": "co-cu-unsafe-1",
+      "query": "Explain what this unsafe pointer read assumes about the caller.",
+      "context": "Raw pointer arithmetic without bounds checks.",
+      "request_type": "code_understanding",
+      "complexity": 3
+    },
+    {
+      "id": "te-td-audit-schema-0",
+      "query": "Design a schema for multi-tenant audit logs with retention and partitioning.",
+      "context": "Postgres; ~50M rows/day; tenants must not see each other's rows.",
+      "request_type": "technical_design",
+      "complexity": 4
+    },
+    {
+      "id": "te-td-audit-schema-1",
+      "query": "Propose an audit-log table design with per-tenant retention.",
+      "context": "Needs partition pruning and cheap deletes.",
+      "request_type": "technical_design",
+      "complexity": 4
+    },
+    {
+      "id": "te-td-cache-0",
+      "query": "Design a caching strategy for a read-heavy product catalog.",
+      "context": "Inventory changes need to be visible within a minute.",
+      "request_type": "technical_design",
+      "complexity": 3
+    },
+    {
+      "id": "te-td-cache-1",
+      "query": "How should we cache the catalog without serving stale prices?",
+      "context": "Reads outnumber writes 1000:1.",
+      "request_type": "technical_design",
+      "complexity": 3
+    },
+    {
+      "id": "te-td-rate-limit-0",
+      "query": "How would you architect rate limiting across three regions?",
+      "context": "Global limit plus per-region fairness.",
+      "request_type": "technical_design",
+      "complexity": 4
+    },
+    {
+      "id": "te-td-rate-limit-1",
+      "query": "Design distributed rate limiting for multi-region traffic.",
+      "context": "Clock skew is possible.",
+      "request_type": "technical_design",
+      "complexity": 4
+    },
+    {
+      "id": "an-ar-abtest-0",
+      "query": "Analyze this A/B test result and say whether it's significant.",
+      "context": "Control 4.1% conversion on 20k, variant 4.5% on 20k.",
+      "request_type": "analytical_reasoning",
+      "complexity": 4
+    },
+    {
+      "id": "an-ar-abtest-1",
+      "query": "Is this A/B result meaningfully different from control? Show the reasoning.",
+      "context": "Small lift, moderate sample.",
+      "request_type": "analytical_reasoning",
+      "complexity": 4
+    },
+    {
+      "id": "an-ar-cost-0",
+      "query": "Estimate the storage cost of 10M events per day kept for a year.",
+      "context": "Each event is ~500 bytes before compression.",
+      "request_type": "analytical_reasoning",
+      "complexity": 3
+    },
+    {
+      "id": "an-ar-cost-1",
+      "query": "Work out the monthly storage bill for 10M daily events at 500 bytes.",
+      "context": "",
+      "request_type": "analytical_reasoning",
+      "complexity": 3
+    },
+    {
+      "id": "an-ar-proof-0",
+      "query": "Prove that n^2 + n is even for all integers n.",
+      "context": "",
+      "request_type": "analytical_reasoning",
+      "complexity": 3
+    },
+    {
+      "id": "an-ar-proof-1",
+      "query": "Show that the product of two consecutive integers is always even.",
+      "context": "",
+      "request_type": "analytical_reasoning",
+      "complexity": 3
+    },
+    {
+      "id": "wr-wr-announcement-0",
+      "query": "Write a product announcement for the beta launch.",
+      "context": "Audience: existing users; keep it short and concrete.",
+      "request_type": "writing",
+      "complexity": 3
+    },
+    {
+      "id": "wr-wr-announcement-1",
+      "query": "Draft a launch post for the new beta feature.",
+      "context": "",
+      "request_type": "writing",
+      "complexity": 3
+    },
+    {
+      "id": "wr-wr-draft-0",
+      "query": "Draft a response to this customer complaint.",
+      "context": "",
+      "request_type": "writing",
+      "complexity": 2
+    },
+    {
+      "id": "wr-wr-draft-1",
+      "query": "Draft a README intro for this project.",
+      "context": "",
+      "request_type": "writing",
+      "complexity": 2
+    },
+    {
+      "id": "wr-wr-draft-2",
+      "query": "Draft an FAQ for the new feature.",
+      "context": "",
+      "request_type": "writing",
+      "complexity": 2
+    },
+    {
+      "id": "wr-wr-draft-3",
+      "query": "Draft a status update for stakeholders.",
+      "context": "",
+      "request_type": "writing",
+      "complexity": 2
+    },
+    {
+      "id": "wr-wr-draft-4",
+      "query": "Draft a tweet announcing the release.",
+      "context": "",
+      "request_type": "writing",
+      "complexity": 2
+    },
+    {
+      "id": "wr-wr-draft-5",
+      "query": "Draft a short bio for the team page.",
+      "context": "",
+      "request_type": "writing",
+      "complexity": 2
+    },
+    {
+      "id": "wr-wr-paragraph-0",
+      "query": "Turn these bullet points into a coherent paragraph.",
+      "context": "- faster exports\n- fewer timeouts\n- same links",
+      "request_type": "writing",
+      "complexity": 2
+    },
+    {
+      "id": "wr-wr-paragraph-1",
+      "query": "Join these bullets into flowing prose.",
+      "context": "Three short product bullets.",
+      "request_type": "writing",
+      "complexity": 2
+    },
+    {
+      "id": "fa-fact-acronym-more-0",
+      "query": "What does API stand for?",
+      "context": "",
+      "request_type": "factual_lookup",
+      "complexity": 1
+    },
+    {
+      "id": "fa-fact-acronym-more-1",
+      "query": "What does SDK stand for?",
+      "context": "",
+      "request_type": "factual_lookup",
+      "complexity": 1
+    },
+    {
+      "id": "fa-fact-acronym-more-2",
+      "query": "What does DNS stand for?",
+      "context": "",
+      "request_type": "factual_lookup",
+      "complexity": 1
+    },
+    {
+      "id": "fa-fact-acronym-more-3",
+      "query": "What does SQL stand for?",
+      "context": "",
+      "request_type": "factual_lookup",
+      "complexity": 1
+    },
+    {
+      "id": "fa-fact-acronym-more-4",
+      "query": "What does JWT stand for?",
+      "context": "",
+      "request_type": "factual_lookup",
+      "complexity": 1
+    },
+    {
+      "id": "fa-fact-acronym-more-5",
+      "query": "What does UUID stand for?",
+      "context": "",
+      "request_type": "factual_lookup",
+      "complexity": 1
+    },
+    {
+      "id": "fa-fact-acronym-more-6",
+      "query": "What does CRUD stand for?",
+      "context": "",
+      "request_type": "factual_lookup",
+      "complexity": 1
+    },
+    {
+      "id": "fa-fact-acronyms-0",
+      "query": "What does TLS stand for?",
+      "context": "",
+      "request_type": "factual_lookup",
+      "complexity": 1
+    },
+    {
+      "id": "fa-fact-acronyms-1",
+      "query": "What does the acronym ORM mean?",
+      "context": "",
+      "request_type": "factual_lookup",
+      "complexity": 1
+    },
+    {
+      "id": "fa-fact-acronyms-2",
+      "query": "What does CDN stand for?",
+      "context": "",
+      "request_type": "factual_lookup",
+      "complexity": 1
+    },
+    {
+      "id": "fa-fact-define-more-0",
+      "query": "Define cache invalidation.",
+      "context": "",
+      "request_type": "factual_lookup",
+      "complexity": 1
+    },
+    {
+      "id": "fa-fact-define-more-1",
+      "query": "Define a mutex.",
+      "context": "",
+      "request_type": "factual_lookup",
+      "complexity": 1
+    },
+    {
+      "id": "fa-fact-define-more-2",
+      "query": "Define sharding.",
+      "context": "",
+      "request_type": "factual_lookup",
+      "complexity": 1
+    },
+    {
+      "id": "fa-fact-define-more-3",
+      "query": "Define a REST API.",
+      "context": "",
+      "request_type": "factual_lookup",
+      "complexity": 1
+    },
+    {
+      "id": "fa-fact-define-more-4",
+      "query": "Define latency.",
+      "context": "",
+      "request_type": "factual_lookup",
+      "complexity": 1
+    },
+    {
+      "id": "fa-fact-define-more-5",
+      "query": "Define throughput.",
+      "context": "",
+      "request_type": "factual_lookup",
+      "complexity": 1
+    },
+    {
+      "id": "fa-fact-define-more-6",
+      "query": "Define backpressure.",
+      "context": "",
+      "request_type": "factual_lookup",
+      "complexity": 1
+    },
+    {
+      "id": "fa-fact-rust10-0",
+      "query": "When was Rust 1.0 released?",
+      "context": "",
+      "request_type": "factual_lookup",
+      "complexity": 1
+    },
+    {
+      "id": "fa-fact-rust10-1",
+      "query": "What year did Rust reach 1.0?",
+      "context": "",
+      "request_type": "factual_lookup",
+      "complexity": 1
+    },
+    {
+      "id": "ge-gen-capabilities-0",
+      "query": "What can you do?",
+      "context": "",
+      "request_type": "general",
+      "complexity": 1
+    },
+    {
+      "id": "ge-gen-capabilities-1",
+      "query": "How can you help me?",
+      "context": "",
+      "request_type": "general",
+      "complexity": 1
+    },
+    {
+      "id": "ge-gen-outofscope-more-0",
+      "query": "Set a reminder for 5pm.",
+      "context": "",
+      "request_type": "general",
+      "complexity": 1
+    },
+    {
+      "id": "ge-gen-outofscope-more-1",
+      "query": "Play some music.",
+      "context": "",
+      "request_type": "general",
+      "complexity": 1
+    },
+    {
+      "id": "ge-gen-outofscope-more-2",
+      "query": "Send this to my manager.",
+      "context": "",
+      "request_type": "general",
+      "complexity": 1
+    },
+    {
+      "id": "ge-gen-outofscope-more-3",
+      "query": "Call me a cab.",
+      "context": "",
+      "request_type": "general",
+      "complexity": 1
+    },
+    {
+      "id": "ge-gen-recap-0",
+      "query": "Summarize our conversation so far.",
+      "context": "",
+      "request_type": "general",
+      "complexity": 2
+    },
+    {
+      "id": "ge-gen-recap-1",
+      "query": "Recap what we decided.",
+      "context": "",
+      "request_type": "general",
+      "complexity": 2
+    }
+  ]
+}

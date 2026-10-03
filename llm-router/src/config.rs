@@ -4,6 +4,46 @@
 //! can be promoted to a standalone binary later without dragging in the platform's
 //! full `Config`. Env-var *names* match the platform for deployment consistency.
 
+/// Which implementation of the pluggable [`RequestClassifier`](crate::routing::RequestClassifier)
+/// the router uses at Level 3.
+///
+/// `Regex` is the out-of-the-box default and keeps behaviour byte-for-byte as it was before
+/// the trait existed. `Local` and `Hosted` opt into a trained model; both fall back to the
+/// regex verdict on load failure, inference error, timeout, or low confidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClassifierBackend {
+    /// The existing keyword/regex classifier — no model, no network, no extra latency.
+    Regex,
+    /// The embedded local linear model (`CLASSIFIER_MODEL_PATH` overrides the asset).
+    Local,
+    /// An OpenAI-compatible chat-completions endpoint (`CLASSIFIER_ENDPOINT` + `CLASSIFIER_MODEL`).
+    Hosted,
+}
+
+impl ClassifierBackend {
+    /// Parse the `CLASSIFIER_BACKEND` env value. Unknown values are an error (the caller
+    /// warns and keeps the default) rather than a silent fallback.
+    pub fn parse(s: &str) -> Result<Self, String> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "regex" => Ok(Self::Regex),
+            "local" => Ok(Self::Local),
+            "hosted" => Ok(Self::Hosted),
+            other => Err(format!(
+                "unknown classifier backend {other:?} (expected regex|local|hosted)"
+            )),
+        }
+    }
+
+    /// Stable label for logs.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Regex => "regex",
+            Self::Local => "local",
+            Self::Hosted => "hosted",
+        }
+    }
+}
+
 /// Configuration for the LLM router, read from the environment.
 ///
 /// See `RUST_PLAN_V1.md` §5. All fields have sane defaults so `from_env` never fails;
@@ -101,6 +141,26 @@ pub struct GatewayConfig {
     /// retuned. Default 0.80.
     pub salience_high_threshold: f64,
 
+    /// Level 3 request classifier backend. Default [`ClassifierBackend::Regex`] — the
+    /// existing keyword classifier, so nothing changes unless an operator opts in.
+    pub classifier_backend: ClassifierBackend,
+    /// Override path for the local model's weights JSON. Empty (the default) ⇒ use the
+    /// model embedded in the binary.
+    pub classifier_model_path: String,
+    /// Hosted backend: the full OpenAI-compatible chat-completions URL.
+    pub classifier_endpoint: String,
+    /// Hosted backend: bearer token. Never logged; the platform proxy usually supplies it.
+    pub classifier_api_key: String,
+    /// Hosted backend: the model id to send.
+    pub classifier_model: String,
+    /// Timeout (ms) for a single classifier decision before falling back to regex. Default
+    /// 500 — a boundary classification should not add meaningful latency to the request.
+    pub classifier_timeout_ms: u64,
+    /// Below this top-label probability the model's verdict is discarded and the regex
+    /// fallback (counted) is used. Default 0.35 — low enough to keep confident predictions,
+    /// high enough to abstain on near-uniform ones.
+    pub classifier_min_confidence: f64,
+
     /// Fleet-wide kill switch for payload compression. Compression is opted into **per agent**
     /// (`agents.compress_enabled`); this only lets an operator stop all of it at once without
     /// editing every agent's row. Default on, so a UI toggle takes effect without a deploy.
@@ -185,6 +245,13 @@ impl Default for GatewayConfig {
             salience_weights_path: String::new(),
             salience_low_threshold: 0.20,
             salience_high_threshold: 0.80,
+            classifier_backend: ClassifierBackend::Regex,
+            classifier_model_path: String::new(),
+            classifier_endpoint: String::new(),
+            classifier_api_key: String::new(),
+            classifier_model: String::new(),
+            classifier_timeout_ms: 500,
+            classifier_min_confidence: 0.35,
             compress_kill_switch: true,
             compress_min_bytes: 2048,
             compress_types: nasiko_compress::TypeMask::DEFAULT,
@@ -274,6 +341,25 @@ impl GatewayConfig {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(d.salience_high_threshold),
+            classifier_backend: parse_or_warn(
+                "CLASSIFIER_BACKEND",
+                ClassifierBackend::parse,
+                ClassifierBackend::Regex,
+            ),
+            classifier_model_path: env_or("CLASSIFIER_MODEL_PATH", &d.classifier_model_path),
+            classifier_endpoint: env_or("CLASSIFIER_ENDPOINT", &d.classifier_endpoint),
+            // Deliberately not falling back to a platform provider key: an arbitrary
+            // operator-supplied endpoint must never be handed the platform's OpenAI key.
+            classifier_api_key: env_or("CLASSIFIER_API_KEY", &d.classifier_api_key),
+            classifier_model: env_or("CLASSIFIER_MODEL", &d.classifier_model),
+            classifier_timeout_ms: env_usize(
+                "CLASSIFIER_TIMEOUT_MS",
+                d.classifier_timeout_ms as usize,
+            ) as u64,
+            classifier_min_confidence: std::env::var("CLASSIFIER_MIN_CONFIDENCE")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(d.classifier_min_confidence),
             compress_kill_switch: env_flag("TOKEN_COMPRESS_ENABLED", true),
             compress_min_bytes: env_usize("TOKEN_COMPRESS_MIN_BYTES", 2048),
             // A bad label must not silently widen or narrow what gets rewritten, so an
@@ -434,5 +520,33 @@ mod tests {
         assert_eq!(cfg.platform_key_for("my-gateway"), "");
         assert_eq!(cfg.platform_key_for("deepseek"), "");
         assert_eq!(cfg.platform_key_for(""), "");
+    }
+
+    #[test]
+    fn classifier_backend_parses_known_values_and_rejects_the_rest() {
+        assert_eq!(
+            ClassifierBackend::parse("regex"),
+            Ok(ClassifierBackend::Regex)
+        );
+        assert_eq!(
+            ClassifierBackend::parse(" LOCAL "),
+            Ok(ClassifierBackend::Local)
+        );
+        assert_eq!(
+            ClassifierBackend::parse("hosted"),
+            Ok(ClassifierBackend::Hosted)
+        );
+        assert!(ClassifierBackend::parse("gpt").is_err());
+    }
+
+    #[test]
+    fn classifier_defaults_are_off_and_fail_safe() {
+        // Out of the box: regex backend, half-second timeout, conservative confidence floor.
+        let d = GatewayConfig::default();
+        assert_eq!(d.classifier_backend, ClassifierBackend::Regex);
+        assert_eq!(d.classifier_timeout_ms, 500);
+        assert_eq!(d.classifier_min_confidence, 0.35);
+        assert!(d.classifier_model_path.is_empty());
+        assert!(d.classifier_endpoint.is_empty());
     }
 }

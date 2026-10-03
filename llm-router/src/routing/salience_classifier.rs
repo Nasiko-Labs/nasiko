@@ -24,9 +24,13 @@
 //! `SalienceGate::is_substantive(&self, query: &str)` — no conversation-history parameter,
 //! per the decision to keep this pass query-only.
 
+use super::features::{self, sigmoid, word_tokens};
+
 /// Number of hashed feature buckets (the hashing-trick dimensionality). Must match the
 /// `num_buckets` declared by the weights file, which [`load_model_from_json_str`] enforces.
-pub const NUM_BUCKETS: usize = 1 << 16;
+/// Aliased from the shared [feature engine](super::features) so this model and the request
+/// classifier cannot disagree about the hashing space.
+pub const NUM_BUCKETS: usize = features::DEFAULT_NUM_BUCKETS;
 
 /// Dense (non-hashed) hand-picked features, in the fixed order `dense_features` produces
 /// them. Kept as named indices so `Weights::dense` stays self-documenting.
@@ -112,98 +116,13 @@ impl Weights {
     }
 }
 
-/// FNV-1a over raw bytes — simple, dependency-free, and deterministic across runs/platforms
-/// (unlike `std::collections::hash_map::DefaultHasher`, which is explicitly *not*
-/// guaranteed stable across Rust versions). A trained weight vector is only meaningful if
-/// hashing is stable, so this must never change without retraining.
-fn fnv1a(bytes: &[u8]) -> u64 {
-    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-    const PRIME: u64 = 0x0000_0100_0000_01b3;
-    let mut hash = OFFSET_BASIS;
-    for &b in bytes {
-        hash ^= b as u64;
-        hash = hash.wrapping_mul(PRIME);
-    }
-    hash
-}
-
-/// Hash an n-gram string into `(bucket, sign)` using the standard hashing-trick
-/// construction: one hash picks the bucket, a second (differently-salted) hash picks the
-/// sign, so hash collisions partially cancel instead of only ever adding.
-fn hash_to_bucket(gram: &str) -> (usize, f64) {
-    let bucket = (fnv1a(gram.as_bytes()) as usize) % NUM_BUCKETS;
-    let sign_bit = fnv1a(format!("sign:{gram}").as_bytes()) & 1;
-    let sign = if sign_bit == 0 { 1.0 } else { -1.0 };
-    (bucket, sign)
-}
-
-/// Lowercase word tokens, splitting on anything that isn't alphanumeric. Empty tokens are
-/// dropped, so runs of punctuation/whitespace just act as separators.
-fn word_tokens(text: &str) -> Vec<String> {
-    text.to_lowercase()
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .collect()
-}
-
-/// Word n-grams (`n` consecutive tokens joined by a single space) for `n` in `1..=max_n`.
-fn word_ngrams(tokens: &[String], max_n: usize) -> Vec<String> {
-    let mut grams = Vec::new();
-    for n in 1..=max_n {
-        if n > tokens.len() {
-            break;
-        }
-        for window in tokens.windows(n) {
-            grams.push(window.join(" "));
-        }
-    }
-    grams
-}
-
-/// Character n-grams over the lowercased query, for `n` in `min_n..=max_n`. Whitespace is
-/// lowercased but NOT stripped or collapsed — it stays part of the char stream and can
-/// appear inside a gram. Operates on `char`s (not bytes) so multi-byte UTF-8 isn't split
-/// mid-codepoint — this is what carries the code-switching case (e.g. `"Hola, ..."`)
-/// without a network call.
-fn char_ngrams(text: &str, min_n: usize, max_n: usize) -> Vec<String> {
-    let chars: Vec<char> = text.to_lowercase().chars().collect();
-    let mut grams = Vec::new();
-    for n in min_n..=max_n {
-        if n > chars.len() {
-            break;
-        }
-        for window in chars.windows(n) {
-            grams.push(window.iter().collect());
-        }
-    }
-    grams
-}
-
 /// Extract every hashed n-gram feature (word 1-2grams + char 3-5grams) from `query` into a
-/// per-bucket signed sum: each gram contributes its own `sign` (not a sign borrowed from
-/// whichever gram happened to hash into that bucket first), so colliding grams with
-/// opposite signs partially cancel as the hashing trick intends, rather than being merged
-/// under one arbitrary sign. The sum is then divided by `sqrt(total gram count)`, which
-/// dampens (does not eliminate) how much sheer message length can inflate the logit,
-/// tempering the length-as-signal risk the "rambling, no task" case
-/// Phase 4's CI table calls out. A single term repeated many times still grows its own
-/// bucket faster than the global normalizer shrinks it (see
-/// `hashed_features_normalization_dampens_repetition_growth`), so length-invariance is not
-/// guaranteed by this alone — the dense length features plus training are still expected to
-/// carry the rest of that burden.
+/// per-bucket signed sum. The signed-sum construction and the `sqrt(gram count)` normalizer
+/// live in the shared [feature engine](super::features); this wrapper pins this model's
+/// (frozen) n-gram ranges and bucket count so [`raw_logit`] stays consistent with the
+/// embedded weights. Changing either constant invalidates the weights and needs a retrain.
 fn hashed_features(query: &str) -> std::collections::HashMap<usize, f64> {
-    let tokens = word_tokens(query);
-    let mut grams = word_ngrams(&tokens, 2);
-    grams.extend(char_ngrams(query, 3, 5));
-    let norm = (grams.len() as f64).sqrt().max(1.0);
-
-    let mut by_bucket: std::collections::HashMap<usize, f64> = std::collections::HashMap::new();
-    for gram in &grams {
-        let (bucket, sign) = hash_to_bucket(gram);
-        *by_bucket.entry(bucket).or_insert(0.0) += sign / norm;
-    }
-    by_bucket
+    features::hashed_feature_sum(query, NUM_BUCKETS, 2, 3, 5)
 }
 
 /// Whether every non-whitespace char in `text` is outside the Unicode letter/number range —
@@ -411,11 +330,6 @@ impl Band {
     }
 }
 
-/// Standard logistic sigmoid, `1 / (1 + e^-x)`.
-fn sigmoid(x: f64) -> f64 {
-    1.0 / (1.0 + (-x).exp())
-}
-
 /// The raw (pre-calibration) logistic-regression logit for `query` under `weights`: bias
 /// plus the hashed-feature dot product plus the dense-feature dot product.
 fn raw_logit(query: &str, weights: &Weights) -> f64 {
@@ -442,6 +356,9 @@ pub fn score(query: &str, weights: &Weights) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Primitives the engine owns, exercised here directly (the module's non-test code goes
+    // through `hashed_features`, which wraps them).
+    use super::features::{char_ngrams, fnv1a, hash_to_bucket, word_ngrams};
 
     /// End-to-end check against the actual shipped artifact — not a synthetic fixture.
     /// Loads `assets/salience_weights.json` through the real [`load_model_from_file`] path
@@ -590,7 +507,7 @@ mod tests {
     #[test]
     fn hash_to_bucket_stays_in_range() {
         for gram in ["hi", "refactor this", "a", "🎉🎉🎉", ""] {
-            let (bucket, sign) = hash_to_bucket(gram);
+            let (bucket, sign) = hash_to_bucket(gram, NUM_BUCKETS);
             assert!(bucket < NUM_BUCKETS);
             assert!(sign == 1.0 || sign == -1.0);
         }
