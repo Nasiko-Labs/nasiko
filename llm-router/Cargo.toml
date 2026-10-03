@@ -67,3 +67,8 @@ base64 = { workspace = true }
 mockito = { workspace = true }
 tower = { workspace = true }
 zstd.workspace = true
+nasiko-tool-compact = { workspace = true }
+tiktoken-rs = "0.6"
+reqwest = { workspace = true, features = ["blocking"] }
+
+
