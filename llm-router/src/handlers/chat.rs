@@ -288,6 +288,14 @@ async fn chat_core(
         "brevity: directive decision"
     );
 
+    // Opt-in. The flag defaults off, and the branch is not taken unless it is set, so a
+    // disabled router never rewrites tools. Unsupported schemas also leave `req` untouched.
+    let compact_tools = if ctx.cfg.compact_tools {
+        crate::compact_tools::prepare(&mut req)
+    } else {
+        None
+    };
+
     // ── savings ledger inputs ─────────────────────────────────────────────────────────────
     // Measured here, after both seams, because this is the payload the provider will actually
     // bill for — which is what makes `sent_bytes / reported_input_tokens` a calibration rather
@@ -367,13 +375,18 @@ async fn chat_core(
             compress_bytes,
             request_bytes: Some(sent_bytes),
             span: llm_span.clone(),
+            compact_tools,
         });
     }
 
     // Non-streaming: run with ordered fallbacks; usage records the effective provider/model.
-    let (resp, (provider, model)) = fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
-        .instrument(llm_span.clone())
-        .await?;
+    let (mut resp, (provider, model)) =
+        fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
+            .instrument(llm_span.clone())
+            .await?;
+    if let Some(tools) = compact_tools.as_ref() {
+        crate::compact_tools::rewrite_response(&mut resp, tools);
+    }
     let latency_ms = started.elapsed().as_millis() as i64;
 
     // Record effective model and token usage on the server-side gen_ai span.
@@ -576,6 +589,8 @@ struct StreamChatArgs<'a> {
     /// `compress_metadata` is: on this path the `UsageRecord` is only built once the stream ends.
     compress_bytes: Option<(usize, usize)>,
     request_bytes: Option<usize>,
+    /// Present only when this request's tools were rewritten into a compact prompt.
+    compact_tools: Option<Vec<nasiko_tool_compact::ToolDef>>,
 }
 
 /// Stream provider chunks back as OpenAI SSE: `data: <chunk>\n\n` … `data: [DONE]\n\n`.
@@ -600,6 +615,7 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
         brevity_metadata,
         compress_bytes,
         request_bytes,
+        compact_tools,
     } = args;
     let state = Arc::new(Mutex::new(StreamState::default()));
     let guard = UsageGuard {
@@ -628,6 +644,8 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
         // `event:` sequences for Anthropic) and its terminal events.
         let _guard = guard;
         let mut renderer = renderer;
+        let mut compact_decoder = compact_tools.map(|tools| nasiko_tool_compact::StreamDecoder::new(&tools));
+        let mut compact_template: Option<ChatChunk> = None;
         futures::pin_mut!(provider_stream);
         while let Some(item) = provider_stream.next().await {
             match item {
@@ -642,14 +660,40 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
                             st.finish_reason = Some(fr);
                         }
                     }
-                    for frame in renderer.render(chunk) {
-                        yield Ok::<String, std::io::Error>(frame);
+                    if let Some(decoder) = compact_decoder.as_mut() {
+                        compact_template = Some(chunk.clone());
+                        match crate::compact_tools::translate_chunk(decoder, chunk) {
+                            crate::compact_tools::Translate::Chunks(chunks) => {
+                                for chunk in chunks {
+                                    for frame in renderer.render(chunk) {
+                                        yield Ok::<String, std::io::Error>(frame);
+                                    }
+                                }
+                            }
+                            crate::compact_tools::Translate::Failed(original) => {
+                                compact_decoder = None;
+                                for frame in renderer.render(*original) {
+                                    yield Ok::<String, std::io::Error>(frame);
+                                }
+                            }
+                        }
+                    } else {
+                        for frame in renderer.render(chunk) {
+                            yield Ok::<String, std::io::Error>(frame);
+                        }
                     }
                 }
                 Err(e) => {
                     // Mid-stream provider failure: log and end the stream cleanly.
                     tracing::error!(error = %e, "provider stream error");
                     break;
+                }
+            }
+        }
+        if let (Some(decoder), Some(template)) = (compact_decoder.as_mut(), compact_template.as_ref()) {
+            for chunk in crate::compact_tools::finish_stream(decoder, template) {
+                for frame in renderer.render(chunk) {
+                    yield Ok(frame);
                 }
             }
         }
