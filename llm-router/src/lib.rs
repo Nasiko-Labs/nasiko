@@ -59,6 +59,8 @@ pub use routing::{
 /// router state.
 #[derive(Clone)]
 pub struct LlmRouterCtx {
+    /// Injected classifier. The default preserves the existing regex routing backend.
+    pub request_classifier: Arc<dyn routing::classifier::RequestClassifier>,
     /// Postgres pool — reads `agents.llm_config` / `user_secrets`, writes `token_usage`.
     pub db: PgPool,
     /// Pooled outbound HTTP client for provider calls.
@@ -129,6 +131,7 @@ impl LlmRouterCtx {
         let salience_gate = build_salience_gate(&cfg);
         let pricing = Arc::new(PricingEngine::new(db.clone()));
         Self {
+            request_classifier: Arc::new(routing::classifier::RegexClassifier),
             db,
             http,
             cfg,

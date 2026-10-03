@@ -24,11 +24,17 @@
 //! the user's next-turn reaction ([`signal`]), persisted per provider by the
 //! [cell store](super::cells). With no learning yet the priors + cost blend decide; as
 //! feedback accumulates the posterior tightens and selection converges. Thompson's
-//! stochasticity is the exploration that makes that learning possible, so production feeds
-//! it an entropy RNG; tests inject a seeded one.
+//! stochasticity enables exploration across queries. The routing entry point uses a stable
+//! query/provider seed for repeatability; tests can inject their own seeded RNG.
 
 use std::collections::HashMap;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
+use std::time::Duration;
 
+pub use super::local_classifier::LocalClassifier;
 use rand::Rng;
 use rand_distr::{Beta, Distribution};
 
@@ -88,6 +94,237 @@ impl RequestType {
             "general" => RequestType::General,
             _ => return None,
         })
+    }
+}
+
+pub struct ClassifyInput<'a> {
+    pub query: &'a str,
+    pub context: Option<&'a str>,
+}
+
+pub struct Classification {
+    pub request_type: RequestType,
+    pub complexity: u8,
+    pub confidence: f32,
+}
+
+#[async_trait::async_trait]
+pub trait RequestClassifier: Send + Sync {
+    fn name(&self) -> &str;
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, String>;
+}
+
+pub struct RegexClassifier;
+
+pub fn regex_classification(input: &ClassifyInput<'_>) -> Classification {
+    Classification {
+        request_type: classify_request_type(input.query),
+        complexity: 1,
+        confidence: 0.4,
+    }
+}
+
+#[async_trait::async_trait]
+impl RequestClassifier for RegexClassifier {
+    fn name(&self) -> &str {
+        "regex"
+    }
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, String> {
+        Ok(regex_classification(input))
+    }
+}
+
+#[derive(Default)]
+pub struct ClassifierStats {
+    pub decisions: AtomicU64,
+    pub fallbacks: AtomicU64,
+}
+
+impl ClassifierStats {
+    pub fn reset(&self) {
+        self.decisions.store(0, Ordering::Relaxed);
+        self.fallbacks.store(0, Ordering::Relaxed);
+    }
+}
+
+/// Uniform fail-safe for local loading/inference and hosted failures. No environment reads.
+pub struct FallbackClassifier {
+    backend: Option<Arc<dyn RequestClassifier>>,
+    name: String,
+    timeout: Duration,
+    pub stats: Arc<ClassifierStats>,
+}
+
+impl FallbackClassifier {
+    pub fn new(
+        name: String,
+        backend: Result<Arc<dyn RequestClassifier>, String>,
+        timeout: Duration,
+    ) -> Self {
+        let backend = match backend {
+            Ok(backend) => Some(backend),
+            Err(error) => {
+                tracing::warn!(%error, "classifier load failed; using regex fallback");
+                None
+            }
+        };
+        Self {
+            backend,
+            name,
+            timeout,
+            stats: Arc::new(ClassifierStats::default()),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl RequestClassifier for FallbackClassifier {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, String> {
+        self.stats.decisions.fetch_add(1, Ordering::Relaxed);
+        if let Some(backend) = &self.backend {
+            let result = tokio::time::timeout(self.timeout, backend.classify(input)).await;
+            if let Ok(Ok(result)) = result {
+                if (1..=5).contains(&result.complexity)
+                    && result.confidence.is_finite()
+                    && (0.0..=1.0).contains(&result.confidence)
+                {
+                    return Ok(result);
+                }
+            }
+        }
+        self.stats.fallbacks.fetch_add(1, Ordering::Relaxed);
+        Ok(regex_classification(input))
+    }
+}
+
+/// Fixed experimental mapping: 1 -> cheap, 2/3 -> intermediate, 4/5 -> strongest.
+pub fn deterministic_tier(complexity: u8) -> Tier {
+    match complexity {
+        1 => Tier::Tier3,
+        2 | 3 => Tier::Tier2,
+        _ => Tier::Tier1,
+    }
+}
+
+/// Reproducible baseline tier for the same query, provider and learned cell snapshot.
+/// Keep the legacy Thompson posterior/cost calculation, replacing entropy with a stable seed.
+pub fn deterministic_baseline_tier(query: &str, provider: &str, cells: &CellMap) -> Tier {
+    use rand::SeedableRng;
+    let mut seed = 14695981039346656037u64;
+    for byte in provider.bytes().chain([0]).chain(query.bytes()) {
+        seed = (seed ^ byte as u64).wrapping_mul(1099511628211);
+    }
+    pick_model_thompson(
+        cells,
+        classify_request_type(query),
+        DEFAULT_W_QUALITY,
+        DEFAULT_W_COST,
+        &mut rand::rngs::StdRng::seed_from_u64(seed),
+    )
+}
+
+/// Hosted classification with a bounded HTTP request and a local regex fallback.
+pub struct HostedClassifier {
+    client: reqwest::Client,
+    endpoint: String,
+    timeout: Duration,
+    pub stats: Arc<ClassifierStats>,
+}
+
+impl HostedClassifier {
+    pub fn new() -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            stats: Arc::new(ClassifierStats::default()),
+            endpoint: "http://127.0.0.1:8000/classify".into(),
+            timeout: Duration::from_millis(200),
+        }
+    }
+
+    pub fn with_options(endpoint: String, timeout: Duration) -> Result<Self, String> {
+        let url = reqwest::Url::parse(&endpoint).map_err(|e| e.to_string())?;
+        if !matches!(url.scheme(), "http" | "https")
+            || timeout.is_zero()
+            || timeout > Duration::from_millis(200)
+        {
+            return Err("classifier needs an HTTP(S) endpoint and a timeout in 1..=200 ms".into());
+        }
+        let client = reqwest::Client::builder()
+            .timeout(timeout)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|e| e.to_string())?;
+        Ok(Self {
+            client,
+            endpoint,
+            timeout,
+            stats: Arc::new(ClassifierStats::default()),
+        })
+    }
+
+    async fn classify_hosted(&self, input: &ClassifyInput<'_>) -> Result<Classification, String> {
+        #[derive(serde::Deserialize)]
+        struct Response {
+            request_type: String,
+            complexity: u8,
+            confidence: f32,
+        }
+
+        let response = self
+            .client
+            .post(&self.endpoint)
+            .timeout(self.timeout)
+            .json(&serde_json::json!({ "query": input.query, "context": input.context }))
+            .send()
+            .await
+            .map_err(|error| error.to_string())?;
+        // Treat all non-success statuses, including redirects without a destination,
+        // as failures rather than trusting their bodies as classifications.
+        if !response.status().is_success() {
+            return Err(format!("classifier returned HTTP {}", response.status()));
+        }
+        let response: Response = response.json().await.map_err(|error| error.to_string())?;
+        let request_type = RequestType::from_wire(&response.request_type)
+            .ok_or_else(|| "classifier returned an unknown request type".to_string())?;
+        if !(1..=5).contains(&response.complexity)
+            || !response.confidence.is_finite()
+            || !(0.0..=1.0).contains(&response.confidence)
+        {
+            return Err("classifier returned invalid complexity or confidence".into());
+        }
+        Ok(Classification {
+            request_type,
+            complexity: response.complexity,
+            confidence: response.confidence,
+        })
+    }
+}
+
+impl Default for HostedClassifier {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait::async_trait]
+impl RequestClassifier for HostedClassifier {
+    fn name(&self) -> &str {
+        "hosted"
+    }
+
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, String> {
+        self.stats.decisions.fetch_add(1, Ordering::Relaxed);
+        match self.classify_hosted(input).await {
+            Ok(classification) => Ok(classification),
+            Err(error) => {
+                tracing::warn!(%error, "hosted classifier failed; using regex fallback");
+                self.stats.fallbacks.fetch_add(1, Ordering::Relaxed);
+                Ok(regex_classification(input))
+            }
+        }
     }
 }
 
@@ -329,6 +566,169 @@ mod tests {
     use super::*;
     use rand::SeedableRng;
     use rand::rngs::StdRng;
+
+    #[tokio::test]
+    async fn hosted_classifier_posts_input_and_parses_response() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/classify")
+            .match_body(mockito::Matcher::Json(serde_json::json!({
+                "query": "explain this code",
+                "context": "fn main() {}",
+            })))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"request_type":"code_understanding","complexity":3,"confidence":0.9}"#)
+            .create_async()
+            .await;
+        let classifier = HostedClassifier {
+            client: reqwest::Client::new(),
+            stats: Arc::new(ClassifierStats::default()),
+            endpoint: format!("{}/classify", server.url()),
+            timeout: Duration::from_millis(200),
+        };
+        // Exercise the object-safe interface required by the track.
+        let classifier: &dyn RequestClassifier = &classifier;
+        let result = classifier
+            .classify(&ClassifyInput {
+                query: "explain this code",
+                context: Some("fn main() {}"),
+            })
+            .await
+            .unwrap();
+        assert_eq!(result.request_type, RequestType::CodeUnderstanding);
+        assert_eq!(result.complexity, 3);
+        assert_eq!(result.confidence, 0.9);
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn hosted_classifier_falls_back_on_http_and_invalid_response_errors() {
+        let input = ClassifyInput {
+            query: "write me a Python sort function",
+            context: None,
+        };
+        for (status, body) in [
+            (500, r#"{"error":"unavailable"}"#),
+            (200, "not JSON"),
+            (200, r#"{"error":"model failed"}"#),
+            (
+                200,
+                r#"{"request_type":"unknown","complexity":1,"confidence":0.9}"#,
+            ),
+            (
+                200,
+                r#"{"request_type":"general","complexity":6,"confidence":0.9}"#,
+            ),
+            (
+                200,
+                r#"{"request_type":"general","complexity":1,"confidence":1.2}"#,
+            ),
+        ] {
+            let mut server = mockito::Server::new_async().await;
+            let mock = server
+                .mock("POST", "/classify")
+                .with_status(status)
+                .with_body(body)
+                .create_async()
+                .await;
+            let classifier = HostedClassifier {
+                client: reqwest::Client::new(),
+                stats: Arc::new(ClassifierStats::default()),
+                endpoint: format!("{}/classify", server.url()),
+                timeout: Duration::from_millis(200),
+            };
+            let classifier = FallbackClassifier::new(
+                "hosted".into(),
+                Ok(Arc::new(classifier)),
+                Duration::from_millis(200),
+            );
+            let result = classifier.classify(&input).await.unwrap();
+            assert_eq!(result.request_type, classify_request_type(input.query));
+            assert_eq!(result.complexity, 1);
+            assert_eq!(result.confidence, 0.4);
+            mock.assert_async().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn hosted_classifier_bounds_body_reads_and_handles_connection_failure() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buffer = [0; 4096];
+            stream.read(&mut buffer).await.unwrap();
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n")
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        });
+        let classifier = HostedClassifier {
+            client: reqwest::Client::new(),
+            stats: Arc::new(ClassifierStats::default()),
+            endpoint: format!("http://{address}/classify"),
+            timeout: Duration::from_millis(200),
+        };
+        let input = ClassifyInput {
+            query: "hello there",
+            context: None,
+        };
+        let classifier = FallbackClassifier::new(
+            "hosted".into(),
+            Ok(Arc::new(classifier)),
+            Duration::from_millis(200),
+        );
+        let result = tokio::time::timeout(Duration::from_secs(1), classifier.classify(&input))
+            .await
+            .expect("body read must obey the 200 ms request timeout")
+            .unwrap();
+        assert_eq!(result.request_type, classify_request_type(input.query));
+        assert_eq!(result.complexity, 1);
+        assert_eq!(result.confidence, 0.4);
+        server.abort();
+        let _ = server.await;
+
+        // The listener has been dropped, so a second call exercises transport failure.
+        let result = classifier.classify(&input).await.unwrap();
+        assert_eq!(result.request_type, classify_request_type(input.query));
+        assert_eq!(result.complexity, 1);
+        assert_eq!(result.confidence, 0.4);
+    }
+
+    #[tokio::test]
+    async fn failed_model_load_and_inference_timeout_count_fallbacks() {
+        struct Slow;
+        #[async_trait::async_trait]
+        impl RequestClassifier for Slow {
+            fn name(&self) -> &str {
+                "slow"
+            }
+            async fn classify(&self, _: &ClassifyInput<'_>) -> Result<Classification, String> {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                Err("inference failed".into())
+            }
+        }
+        let input = ClassifyInput {
+            query: "write a Python function",
+            context: None,
+        };
+        for backend in [
+            Err("missing model".into()),
+            Ok(Arc::new(Slow) as Arc<dyn RequestClassifier>),
+        ] {
+            let classifier =
+                FallbackClassifier::new("local".into(), backend, Duration::from_millis(5));
+            let result = classifier.classify(&input).await.unwrap();
+            assert_eq!(result.request_type, classify_request_type(input.query));
+            assert_eq!(result.complexity, 1);
+            assert_eq!(result.confidence, 0.4);
+            assert_eq!(classifier.stats.fallbacks.load(Ordering::Relaxed), 1);
+        }
+    }
 
     // --- request-type classifier (ports of the reference self-test) ---
 

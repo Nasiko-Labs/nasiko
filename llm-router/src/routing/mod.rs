@@ -21,6 +21,7 @@ pub mod cache;
 pub mod catalog;
 pub mod cells;
 pub mod classifier;
+mod local_classifier;
 // The salience classifier itself — feature engine, weight loading, scoring, banding.
 // Private to `routing`: only `salience.rs` (a sibling module) uses it directly, via
 // `ClassifierSalienceGate`.
@@ -120,6 +121,26 @@ pub struct RouteDecision {
 /// its first-turn tier (Level 2), while the reward it generates updates the shared
 /// provider-scoped cells that shape *future* conversations' cold-start picks.
 pub async fn route_model(
+    cache: &dyn DecisionCache,
+    registry: &dyn TierRegistry,
+    cell_store: &dyn CellStore,
+    gate: &dyn SalienceGate,
+    inputs: &RouteInputs<'_>,
+) -> RouteDecision {
+    route_model_with_classifier(
+        &classifier::RegexClassifier,
+        cache,
+        registry,
+        cell_store,
+        gate,
+        inputs,
+    )
+    .await
+}
+
+/// Injectable classifier path. Boundary/cache precedence is shared with legacy routing.
+pub async fn route_model_with_classifier(
+    backend: &dyn classifier::RequestClassifier,
     cache: &dyn DecisionCache,
     registry: &dyn TierRegistry,
     cell_store: &dyn CellStore,
@@ -245,14 +266,27 @@ pub async fn route_model(
                 agent_id = %inputs.agent_id, %conv_id, provider = %inputs.provider,
                 "route_model: LEVEL 3 (Classified) — at fireable boundary with a query; invoking classifier"
             );
-            // Load the provider's learned quality, then Thompson-sample a tier. Production
-            // uses an entropy RNG (exploration drives learning); tests seed it. The RNG
-            // (`ThreadRng`) is `!Send`, so it is scoped to drop before the next `.await` — the
-            // handler future must stay `Send`.
-            let learned = cell_store.load(inputs.provider).await;
-            let (tier, request_type) = {
-                let mut rng = rand::rng();
-                classify(query, inputs.provider, &learned, &mut rng)
+            // Baseline categories are unchanged; seed legacy tier scoring for reproducibility.
+            // Experimental backends map their predicted complexity directly to a fixed tier.
+            let input = classifier::ClassifyInput {
+                query,
+                context: None,
+            };
+            let result = backend
+                .classify(&input)
+                .await
+                .unwrap_or_else(|_| classifier::regex_classification(&input));
+            let (tier, request_type) = if backend.name() == "regex" {
+                let learned = cell_store.load(inputs.provider).await;
+                (
+                    classifier::deterministic_baseline_tier(query, inputs.provider, &learned),
+                    result.request_type,
+                )
+            } else {
+                (
+                    classifier::deterministic_tier(result.complexity),
+                    result.request_type,
+                )
             };
             // Per-config tier override takes priority over the global registry.
             let config_override = match tier {
@@ -533,6 +567,120 @@ mod tests {
             signals,
             query: Some("hello"),
         }
+    }
+
+    struct CountingClassifier(std::sync::atomic::AtomicUsize);
+    #[async_trait]
+    impl classifier::RequestClassifier for CountingClassifier {
+        fn name(&self) -> &str {
+            "test"
+        }
+        async fn classify(
+            &self,
+            _input: &classifier::ClassifyInput<'_>,
+        ) -> Result<classifier::Classification, String> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(classifier::Classification {
+                request_type: RequestType::TechnicalDesign,
+                complexity: 5,
+                confidence: 0.7,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn injected_classifier_only_runs_at_boundaries_and_selects_deterministically() {
+        let backend = CountingClassifier(std::sync::atomic::AtomicUsize::new(0));
+        let cells = InMemoryCellStore::new();
+        for phase in [Phase::ColdStart, Phase::Switch] {
+            let signals = signals(Some("c1"), phase, Mode::FreeFlowing);
+            let i = inputs("openai", &signals, None);
+            let a = route_model_with_classifier(
+                &backend,
+                &FakeCache::empty(),
+                &test_support::StubRegistry,
+                &cells,
+                &AllowAllGate,
+                &i,
+            )
+            .await;
+            let b = route_model_with_classifier(
+                &backend,
+                &FakeCache::empty(),
+                &test_support::StubRegistry,
+                &cells,
+                &AllowAllGate,
+                &i,
+            )
+            .await;
+            assert_eq!(a.tier, Some(Tier::Tier1));
+            assert_eq!(a.tier, b.tier);
+            assert_eq!(a.model, b.model);
+        }
+        assert_eq!(backend.0.load(std::sync::atomic::Ordering::Relaxed), 4);
+        let signals = signals(Some("c1"), Phase::Continue, Mode::FreeFlowing);
+        let i = inputs("openai", &signals, None);
+        let cached = route_model_with_classifier(
+            &backend,
+            &FakeCache::with_hit("sticky"),
+            &test_support::StubRegistry,
+            &cells,
+            &AllowAllGate,
+            &i,
+        )
+        .await;
+        assert_eq!(cached.model, "sticky");
+        route_model_with_classifier(
+            &backend,
+            &FakeCache::empty(),
+            &test_support::StubRegistry,
+            &cells,
+            &AllowAllGate,
+            &i,
+        )
+        .await;
+        assert_eq!(backend.0.load(std::sync::atomic::Ordering::Relaxed), 4);
+    }
+
+    #[tokio::test]
+    async fn experimental_cache_preserves_tier_across_continue_without_redis() {
+        let backend = CountingClassifier(std::sync::atomic::AtomicUsize::new(0));
+        let cache = cache::StickyCache::new(
+            std::sync::Arc::new(NoopCache),
+            std::time::Duration::from_secs(60),
+        );
+        let cells = InMemoryCellStore::new();
+        let boundary = signals(
+            Some("same-conversation"),
+            Phase::ColdStart,
+            Mode::FreeFlowing,
+        );
+        let a = route_model_with_classifier(
+            &backend,
+            &cache,
+            &test_support::StubRegistry,
+            &cells,
+            &AllowAllGate,
+            &inputs("openai", &boundary, None),
+        )
+        .await;
+        let continuation = signals(
+            Some("same-conversation"),
+            Phase::Continue,
+            Mode::FreeFlowing,
+        );
+        let b = route_model_with_classifier(
+            &backend,
+            &cache,
+            &test_support::StubRegistry,
+            &cells,
+            &AllowAllGate,
+            &inputs("openai", &continuation, None),
+        )
+        .await;
+        assert_eq!(a.model, b.model);
+        assert_eq!(a.tier, b.tier);
+        assert_eq!(backend.0.load(std::sync::atomic::Ordering::Relaxed), 1);
     }
 
     #[tokio::test]

@@ -1,0 +1,200 @@
+{
+  "examples": [
+    {
+      "id": "validation-001",
+      "query": "Add a Swift function that converts Celsius readings to Fahrenheit and checks for NaN.",
+      "context": "Return an optional Double.",
+      "request_type": "code_generation",
+      "complexity": 2
+    },
+    {
+      "id": "validation-002",
+      "query": "Supply a reusable Ruby enumerator that reads a log file backwards in bounded memory.",
+      "context": "Some lines exceed a buffer.",
+      "request_type": "code_generation",
+      "complexity": 3
+    },
+    {
+      "id": "validation-003",
+      "query": "Output the single SQL statement that drops a temporary view named scratch.",
+      "context": "PostgreSQL; do not use CASCADE.",
+      "request_type": "code_generation",
+      "complexity": 1
+    },
+    {
+      "id": "validation-004",
+      "query": "Implement a resumable multipart uploader that persists progress and retries individual parts.",
+      "context": "Sessions expire; object completion must be idempotent.",
+      "request_type": "code_generation",
+      "complexity": 4
+    },
+    {
+      "id": "validation-005",
+      "query": "Walk me through why the last item disappears from this iterator.",
+      "context": "It advances once in the condition and once in the body.",
+      "request_type": "code_understanding",
+      "complexity": 2
+    },
+    {
+      "id": "validation-006",
+      "query": "Explain this deadlock involving the database connection pool.",
+      "context": "A task holds the last connection while awaiting a child task that needs another.",
+      "request_type": "code_understanding",
+      "complexity": 3
+    },
+    {
+      "id": "validation-007",
+      "query": "Explain what this Boolean expression means.",
+      "context": "Python: x is None",
+      "request_type": "code_understanding",
+      "complexity": 1
+    },
+    {
+      "id": "validation-008",
+      "query": "Trace how this shutdown sequence can free a buffer while a native callback still uses it.",
+      "context": "Managed code calls a C library on another thread.",
+      "request_type": "code_understanding",
+      "complexity": 4
+    },
+    {
+      "id": "validation-009",
+      "query": "Specify a simple configuration interface for a utility that supports flags and a TOML file.",
+      "context": "Flags take precedence; include missing-file and invalid-value behavior.",
+      "request_type": "technical_design",
+      "complexity": 2
+    },
+    {
+      "id": "validation-010",
+      "query": "Propose a design for expiring invitations with revocation and auditability.",
+      "context": "A team administrator can withdraw access before acceptance.",
+      "request_type": "technical_design",
+      "complexity": 3
+    },
+    {
+      "id": "validation-011",
+      "query": "Architect an image-processing service with isolated workers and bounded queues.",
+      "context": "Large files arrive in bursts.",
+      "request_type": "technical_design",
+      "complexity": 4
+    },
+    {
+      "id": "validation-012",
+      "query": "Design a cross-region identity platform that survives partitions without violating credential revocation guarantees.",
+      "context": "Clients can cache credentials; some remain offline.",
+      "request_type": "technical_design",
+      "complexity": 5
+    },
+    {
+      "id": "validation-013",
+      "query": "Calculate the page faults for this access sequence with an LRU cache.",
+      "context": "Two page slots; initially empty; access sequence A B A C B.",
+      "request_type": "analytical_reasoning",
+      "complexity": 2
+    },
+    {
+      "id": "validation-014",
+      "query": "Assess whether this launch increased purchases after adjusting for changing customer mix.",
+      "context": "Returning customers convert more often and their share rose.",
+      "request_type": "analytical_reasoning",
+      "complexity": 3
+    },
+    {
+      "id": "validation-015",
+      "query": "Reason about why adding worker threads decreased throughput despite idle CPU.",
+      "context": "Database lock wait increased.",
+      "request_type": "analytical_reasoning",
+      "complexity": 4
+    },
+    {
+      "id": "validation-016",
+      "query": "Evaluate whether this replicated commit protocol preserves its invariants after every single-node failure.",
+      "context": "The leader may crash between recording a decision and notifying followers.",
+      "request_type": "analytical_reasoning",
+      "complexity": 5
+    },
+    {
+      "id": "validation-017",
+      "query": "Make this status message grammatically correct.",
+      "context": "Sync complete successful.",
+      "request_type": "writing",
+      "complexity": 1
+    },
+    {
+      "id": "validation-018",
+      "query": "Draft a kind but firm review comment requesting smaller pull requests.",
+      "context": "Avoid criticizing the author.",
+      "request_type": "writing",
+      "complexity": 2
+    },
+    {
+      "id": "validation-019",
+      "query": "Write an operational runbook from these recovery notes.",
+      "context": "Include prerequisites, verification and escalation criteria.",
+      "request_type": "writing",
+      "complexity": 3
+    },
+    {
+      "id": "validation-020",
+      "query": "Produce an RFC explaining our retention policy, deletion semantics and disputed alternatives.",
+      "context": "The audience includes developers, privacy reviewers and operators.",
+      "request_type": "writing",
+      "complexity": 4
+    },
+    {
+      "id": "validation-021",
+      "query": "What does a shebang at the start of a Unix script specify?",
+      "context": "Answer in one sentence.",
+      "request_type": "factual_lookup",
+      "complexity": 1
+    },
+    {
+      "id": "validation-022",
+      "query": "Does the Go language specification define map iteration order?",
+      "context": "State what is guaranteed.",
+      "request_type": "factual_lookup",
+      "complexity": 2
+    },
+    {
+      "id": "validation-023",
+      "query": "Which official Git command reveals the root of the current worktree?",
+      "context": "No code changes.",
+      "request_type": "factual_lookup",
+      "complexity": 2
+    },
+    {
+      "id": "validation-024",
+      "query": "Look up the standards-defined constraints on WebSocket close status codes.",
+      "context": "Cite the original protocol specification.",
+      "request_type": "factual_lookup",
+      "complexity": 3
+    },
+    {
+      "id": "validation-025",
+      "query": "Can we take a quick break?",
+      "context": "",
+      "request_type": "general",
+      "complexity": 1
+    },
+    {
+      "id": "validation-026",
+      "query": "Give me a few friendly names for our lunchtime coding group.",
+      "context": "No product or code involved.",
+      "request_type": "general",
+      "complexity": 2
+    },
+    {
+      "id": "validation-027",
+      "query": "Help me decide how to bring up burnout with my team lead.",
+      "context": "I want to describe what I need without blaming anyone.",
+      "request_type": "general",
+      "complexity": 2
+    },
+    {
+      "id": "validation-028",
+      "query": "Help me weigh a promotion with less coding against staying on my current team.",
+      "context": "My priorities are autonomy, mentoring and time for family.",
+      "request_type": "general",
+      "complexity": 3
+    }
+  ]
+}

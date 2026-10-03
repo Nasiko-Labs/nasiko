@@ -1,0 +1,141 @@
+{
+  "schema_version": "h4-public-eval-v1",
+  "purpose": "Public development examples for H4 request classification; not held-out leaderboard data.",
+  "source": "Synthetic examples authored for the hackathon; no private user data.",
+  "labels": {
+    "request_type": "One of code_generation, code_understanding, technical_design, analytical_reasoning, writing, factual_lookup, general (llm-router RequestType).",
+    "complexity": "1 = trivial single operation; 2 = straightforward; 3 = multi-step with limited constraints; 4 = substantial reasoning or design; 5 = intricate cross-component reasoning and validation.",
+    "tier_hypothesis": "Illustrative routing target only: tier_1 strongest, tier_2 intermediate, tier_3 cheapest. Not ground truth until actual model outputs are quality-judged."
+  },
+  "examples": [
+    {
+      "id": "pub-01",
+      "query": "Fix typo in this Python comment: `# retrun the cached value`.",
+      "context": "No other files or changes needed.",
+      "request_type": "code_generation",
+      "complexity": 1,
+      "tier_hypothesis": "tier_3",
+      "tests": [
+        "short_request",
+        "short_context",
+        "code_keyword_low_effort"
+      ]
+    },
+    {
+      "id": "pub-02",
+      "query": "What does `Option::take()` do in Rust? Answer in one sentence.",
+      "context": "No codebase context.",
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "tier_hypothesis": "tier_3",
+      "tests": [
+        "short_request",
+        "no_context",
+        "factual"
+      ]
+    },
+    {
+      "id": "pub-03",
+      "query": "Explain why this function returns the old value, not the incremented value.",
+      "context": "```rust\nfn next(n: &mut u64) -> u64 { let old = *n; *n += 1; old }\n```",
+      "request_type": "code_understanding",
+      "complexity": 2,
+      "tier_hypothesis": "tier_2",
+      "tests": [
+        "short_context",
+        "code_explanation"
+      ]
+    },
+    {
+      "id": "pub-04",
+      "query": "Rewrite this notification to be warmer, but keep the date and time unchanged: 'Your interview is Friday at 10:00. Be on time.'",
+      "context": "Message goes to one candidate.",
+      "request_type": "writing",
+      "complexity": 2,
+      "tier_hypothesis": "tier_3",
+      "tests": [
+        "writing",
+        "constraint_preservation",
+        "short_context"
+      ]
+    },
+    {
+      "id": "pub-05",
+      "query": "Design migration from synchronous payment-status callbacks to queued processing without changing public API semantics. Give architecture, state transitions, idempotency boundary, rollout phases, observability, failure recovery, and rollback. Explain what response API returns before processing finishes and how clients distinguish accepted from committed payments. Address contradictions in requirements rather than assuming them away.",
+      "context": "Today POST /confirm returns 200 only after provider charge; legacy clients ship on 200 and cannot update for six months. Provider may charge despite timeout. New queue is at-least-once; DB and queue share no transaction. Ledger is append-only. Rollback cannot lose pending work.",
+      "request_type": "technical_design",
+      "complexity": 4,
+      "tier_hypothesis": "tier_1",
+      "tests": [
+        "multi_constraint",
+        "architecture",
+        "moderate_context"
+      ]
+    },
+    {
+      "id": "pub-06",
+      "query": "Diagnose intermittent 401s and occasional permanent session loss after refresh. Reconstruct at least two distinct failure interleavings from logs, identify which evidence supports each and what remains uncertain, then propose a concurrency-safe fix across two app instances. Specify ordering, atomicity, retry policy for non-idempotent requests, and deterministic tests; explain why simply lowering cache TTL is insufficient.",
+      "context": "Provider invalidates R1 immediately when exchanging it for A2/R2. Two app instances read R1; X refreshes successfully, Y gets invalid_grant. X stores A2/R2 in DB but Redis still serves A1 for 15m. Another run overwrites a newer session row with an older snapshot. Locks are process-local; host clocks differ by 20ms. A 401 on POST /charge may follow a lost response.",
+      "request_type": "analytical_reasoning",
+      "complexity": 5,
+      "tier_hypothesis": "tier_1",
+      "tests": [
+        "short_context",
+        "temporal_reasoning",
+        "misleading_cache_keyword"
+      ]
+    },
+    {
+      "id": "pub-07",
+      "query": "Implement a parser that accepts comma-separated integers, rejects empty fields, and reports the index of the first invalid field. Provide unit tests.",
+      "context": "Rust 2021; input may contain whitespace around numbers; negative integers are valid; do not use external crates.",
+      "request_type": "code_generation",
+      "complexity": 3,
+      "tier_hypothesis": "tier_2",
+      "tests": [
+        "code_generation",
+        "multiple_constraints",
+        "moderate_context"
+      ]
+    },
+    {
+      "id": "pub-08",
+      "query": "I wrote 'redesign authentication' as a TODO comment. Do not redesign anything: just change `TODO` to `NOTE` in the line below.",
+      "context": "`// TODO: redesign authentication after migration`",
+      "request_type": "code_generation",
+      "complexity": 1,
+      "tier_hypothesis": "tier_3",
+      "tests": [
+        "misleading_keywords",
+        "negation",
+        "minimal_edit"
+      ]
+    },
+    {
+      "id": "pub-09",
+      "query": "Summarize the following release notes in three bullets for a nontechnical customer. Do not mention internal ticket IDs or promise zero downtime.",
+      "context": "Release notes: Added paginated export for reports over 10,000 rows. Fixed intermittent timeout when filtering by date. Internal ticket OPS-4821 covers the database index change. During deployment, exports may pause for up to 30 seconds. Older report links remain valid. Support can resume interrupted exports.",
+      "request_type": "writing",
+      "complexity": 3,
+      "tier_hypothesis": "tier_2",
+      "tests": [
+        "context_grounding",
+        "audience",
+        "negative_constraints"
+      ]
+    },
+    {
+      "id": "pub-10",
+      "query": "Investigate why daily reconciliations show both duplicate charges and missing refunds. Work through orders O17 and O18 event by event, state what can and cannot be inferred, identify unsafe retry and ordering assumptions, and propose a repair plan for already affected customers plus a durable processing design. Include invariants and adversarial tests; do not call a timeout proof of failure.",
+      "context": "Provider deduplicates per idempotency key for 24h; status lookup lags up to 90s. O17: charge K1 times out, retry K2 succeeds, then both success webhooks arrive. O18: charge K3 succeeds but DB write fails; customer cancels; refund job skips local failed status; success webhook arrives later. Webhooks are unordered; ledger is append-only; refund API returns 202 and can time out.",
+      "request_type": "analytical_reasoning",
+      "complexity": 4,
+      "tier_hypothesis": "tier_1",
+      "tests": [
+        "reasoning",
+        "risk",
+        "short_context"
+      ]
+    }
+  ]
+}

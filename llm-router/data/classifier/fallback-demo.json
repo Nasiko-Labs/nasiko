@@ -1,0 +1,9 @@
+{
+  "examples": [
+    {
+      "id": "demo-unsupported",
+      "query": "\u4f60\u597d",
+      "context": null
+    }
+  ]
+}

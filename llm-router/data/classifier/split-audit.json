@@ -1,0 +1,11 @@
+{
+  "threshold": 0.65,
+  "max_query_token_jaccard": 0.3333333333333333,
+  "closest_pair": [
+    "train-061",
+    "validation-007"
+  ],
+  "train_examples": 120,
+  "validation_examples": 28,
+  "method": "Case-insensitive exact query check and query token-set Jaccard; manually authored validation uses different tasks. This heuristic cannot prove semantic independence."
+}

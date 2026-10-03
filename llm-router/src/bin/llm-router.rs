@@ -14,6 +14,8 @@ use std::time::Duration;
 
 use nasiko_llm_router::{LlmRouterCtx, router};
 use tracing_subscriber::EnvFilter;
+#[path = "classifier/config.rs"]
+mod classifier_config;
 
 #[tokio::main]
 async fn main() {
@@ -35,7 +37,18 @@ async fn main() {
         .expect("failed to build http client");
 
     // Same context + routes as the in-server mount; gateway config from env.
-    let ctx = LlmRouterCtx::from_shared(db, http);
+    let mut ctx = LlmRouterCtx::from_shared(db, http);
+    let classifier_config =
+        classifier_config::ClassifierConfig::from_env().expect("invalid classifier configuration");
+    let (classifier, _) = classifier_config.build();
+    if classifier.name() != "regex" {
+        ctx.router_cache =
+            std::sync::Arc::new(nasiko_llm_router::routing::cache::StickyCache::new(
+                ctx.router_cache.clone(),
+                Duration::from_secs(ctx.cfg.router_decision_ttl_secs),
+            ));
+    }
+    ctx.request_classifier = classifier;
     let app = router(ctx).route("/health", axum::routing::get(|| async { "ok" }));
 
     let listener = tokio::net::TcpListener::bind(&bind)
