@@ -194,9 +194,9 @@ def export_weights(
     type_coef = coef_for(type_clf, 7, 7)    # (7, NUM_BUCKETS + 17)
     type_bias_list = type_clf.intercept_.tolist()
 
-    # Hashed weights (sparse: skip near-zeros)
+    # Hashed weights (sparse: skip near-zeros and prune noise to reduce compute & memory)
     type_hashed = {}
-    threshold_sparse = 1e-7
+    threshold_sparse = 5e-4
     for cls_idx in range(7):
         for bucket in range(NUM_BUCKETS):
             w = float(type_coef[cls_idx, bucket])
