@@ -1,5 +1,6 @@
 use nasiko_tool_compact::{
-    CompactTools, Error, StreamDecoder, ToolCall, ToolDef, decode_calls, decode_tools, encode_tools,
+    CompactTools, Error, StreamDecoder, ToolCall, ToolDef, decode_calls, decode_reply,
+    decode_tools, encode_tools,
 };
 use serde_json::{Value, json};
 
@@ -415,4 +416,31 @@ fn any_chunking_gives_the_same_result() {
         let singles: Vec<&str> = singles.iter().map(String::as_str).collect();
         assert_eq!(stream(&singles), whole, "char-by-char {text}");
     }
+}
+
+// ─── decode_reply: text without the call markers ───────────────────────────────────────────
+
+#[test]
+fn reply_separates_text_from_calls() {
+    let text = format!("Sure.\n{CAL_CALL}\nAll booked!");
+    let reply = decode_reply(&text, &tools()).unwrap();
+    assert_eq!(reply.calls.len(), 1);
+    assert_eq!(reply.text, "Sure.\n\nAll booked!");
+}
+
+#[test]
+fn reply_without_calls_is_just_the_text() {
+    let reply = decode_reply("  It's sunny. 1 << 3 <<ca ", &tools()).unwrap();
+    assert!(reply.calls.is_empty());
+    assert_eq!(reply.text, "It's sunny. 1 << 3 <<ca");
+}
+
+#[test]
+fn reply_with_only_a_call_has_no_text() {
+    assert_eq!(decode_reply(CAL_CALL, &tools()).unwrap().text, "");
+}
+
+#[test]
+fn reply_fails_closed_like_decode_calls() {
+    assert!(decode_reply(r#"ok <<call nope {}>>"#, &tools()).is_err());
 }

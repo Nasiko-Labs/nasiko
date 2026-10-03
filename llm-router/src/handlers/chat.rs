@@ -288,6 +288,17 @@ async fn chat_core(
         "brevity: directive decision"
     );
 
+    // ── compact-tools seam (opt-in, off by default) ───────────────────────────────────────
+    // Last request mutation, so the byte count below is what the provider is actually sent.
+    // An ineligible request (streaming, tool history, forced tool_choice, …) is left untouched.
+    let compaction = crate::compact_tools::apply(&mut req, ctx.cfg.compact_tools_enabled);
+    if let Err(skip) = &compaction {
+        tracing::debug!(
+            target: "nasiko::llm_router::compact_tools",
+            %agent_id, ?skip, "compact_tools: sent with native tools"
+        );
+    }
+
     // ── savings ledger inputs ─────────────────────────────────────────────────────────────
     // Measured here, after both seams, because this is the payload the provider will actually
     // bill for — which is what makes `sent_bytes / reported_input_tokens` a calibration rather
@@ -371,9 +382,13 @@ async fn chat_core(
     }
 
     // Non-streaming: run with ordered fallbacks; usage records the effective provider/model.
-    let (resp, (provider, model)) = fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
-        .instrument(llm_span.clone())
-        .await?;
+    let (mut resp, (provider, model)) =
+        fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
+            .instrument(llm_span.clone())
+            .await?;
+    if let Ok(compaction) = &compaction {
+        crate::compact_tools::restore(&mut resp, compaction)?;
+    }
     let latency_ms = started.elapsed().as_millis() as i64;
 
     // Record effective model and token usage on the server-side gen_ai span.
@@ -940,7 +955,12 @@ mod tests {
     /// ctx whose DB never connects — fire-and-forget usage writes fail silently,
     /// also exercising "usage-logging failure does not break the request".
     fn ctx_with(base: String) -> LlmRouterCtx {
+        ctx_with_compact(base, false)
+    }
+
+    fn ctx_with_compact(base: String, compact_tools_enabled: bool) -> LlmRouterCtx {
         let cfg = GatewayConfig {
+            compact_tools_enabled,
             agent_jwt_secret: SECRET.into(),
             openai_api_base: base,
             platform_openai_api_key: "sk-platform".into(),
@@ -1533,5 +1553,144 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, GatewayError::BadRequest(_)));
+    }
+
+    // ── compact tools: proves the flag reaches the wire and the agent still gets a standard call ──
+
+    fn calendar_request() -> serde_json::Value {
+        json!({
+            "model": "gpt-4o",
+            "messages": [{ "role": "user", "content": "Book a design review Monday 3pm IST" }],
+            "tools": [{ "type": "function", "function": {
+                "name": "create_calendar_event",
+                "description": "Create an event in the user's calendar.",
+                "parameters": { "type": "object", "properties": {
+                    "title": { "type": "string", "description": "Event title" },
+                    "start": { "type": "string", "format": "date-time", "description": "Start time, ISO 8601" }
+                }, "required": ["title", "start"] }
+            }}]
+        })
+    }
+
+    /// One request through `chat_core` against a mock provider that answers `reply`. Returns the
+    /// body the provider actually received and what the agent got back.
+    async fn compact_exchange(
+        enabled: bool,
+        reply: &str,
+    ) -> (serde_json::Value, Result<serde_json::Value, GatewayError>) {
+        let seen = Arc::new(Mutex::new(String::new()));
+        let capture = Arc::clone(&seen);
+        let reply = reply.to_string();
+
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body_from_request(move |request| {
+                let body = request.body().map(Vec::as_slice).unwrap_or_default();
+                *capture.lock().unwrap_or_else(|e| e.into_inner()) =
+                    String::from_utf8_lossy(body).into_owned();
+                json!({
+                    "id": "chatcmpl-x", "object": "chat.completion", "model": "gpt-4o",
+                    "choices": [{ "index": 0, "message": { "role": "assistant", "content": reply }, "finish_reason": "stop" }],
+                    "usage": { "prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7 }
+                })
+                .to_string()
+                .into_bytes()
+            })
+            .create_async()
+            .await;
+
+        let ctx = ctx_with_compact(server.url(), enabled);
+        let store = Store {
+            config: None,
+            is_coding_agent: false,
+            compress_enabled: false,
+        };
+        let out = chat_core(
+            &ctx,
+            &store,
+            &auth_headers(&token()),
+            calendar_request(),
+            InboundFormat::OpenAi,
+            None,
+        )
+        .await;
+        let sent = seen.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let sent: serde_json::Value =
+            serde_json::from_str(&sent).expect("provider was never called");
+        let got = match out {
+            Ok(resp) => Ok(serde_json::from_str(&body_string(resp).await).unwrap()),
+            Err(e) => Err(e),
+        };
+        (sent, got)
+    }
+
+    #[tokio::test]
+    async fn compact_tools_off_sends_the_native_request_unchanged() {
+        let (sent, got) = compact_exchange(false, "It looks sunny.").await;
+        let original = calendar_request();
+        assert_eq!(
+            sent["tools"], original["tools"],
+            "native tools must reach the provider"
+        );
+        assert_eq!(
+            sent["messages"], original["messages"],
+            "no system block when off"
+        );
+        assert!(!sent.to_string().contains("<<call"));
+        assert_eq!(
+            got.unwrap()["choices"][0]["message"]["content"],
+            "It looks sunny."
+        );
+    }
+
+    #[tokio::test]
+    async fn compact_tools_on_sends_a_compact_prompt_and_returns_a_standard_tool_call() {
+        let reply = "On it.\n<<call create_calendar_event {\"title\":\"Design review\",\"start\":\"2026-10-05T15:00:00+05:30\"}>>";
+        let (sent, got) = compact_exchange(true, reply).await;
+
+        assert!(
+            sent.get("tools").is_none(),
+            "native tools must not be sent: {sent}"
+        );
+        assert_eq!(sent["messages"][0]["role"], "system");
+        assert!(
+            sent["messages"][0]["content"]
+                .as_str()
+                .unwrap()
+                .contains("create_calendar_event(title:str, start:datetime)")
+        );
+
+        let got = got.unwrap();
+        let message = &got["choices"][0]["message"];
+        assert_eq!(message["content"], "On it.");
+        assert_eq!(
+            message["tool_calls"][0]["function"]["name"],
+            "create_calendar_event"
+        );
+        let args: serde_json::Value = serde_json::from_str(
+            message["tool_calls"][0]["function"]["arguments"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            args,
+            json!({"title": "Design review", "start": "2026-10-05T15:00:00+05:30"})
+        );
+        assert_eq!(got["choices"][0]["finish_reason"], "tool_calls");
+        assert!(
+            !got.to_string().contains("<<call"),
+            "the agent must never see the compact format"
+        );
+    }
+
+    #[tokio::test]
+    async fn compact_tools_on_never_forwards_an_invalid_call() {
+        let (_, got) =
+            compact_exchange(true, "<<call create_calendar_event {\"start\":\"x\"}>>").await;
+        assert!(matches!(got, Err(GatewayError::Upstream(_))), "{got:?}");
     }
 }

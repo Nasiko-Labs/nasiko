@@ -25,12 +25,33 @@ pub fn decode_calls(text: &str, tools: &[ToolDef]) -> Result<Vec<ToolCall>> {
     Ok(calls)
 }
 
+/// A decoded reply: the model's plain text (calls removed) and its calls.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Reply {
+    pub text: String,
+    pub calls: Vec<ToolCall>,
+}
+
+/// Like [`decode_calls`], but also returns the text around the calls (trimmed), so a caller can
+/// show the user what the model said without the call markers.
+pub fn decode_reply(text: &str, tools: &[ToolDef]) -> Result<Reply> {
+    let mut decoder = StreamDecoder::new(tools)?;
+    let mut calls = decoder.push(text)?;
+    calls.extend(decoder.finish_in_place()?);
+    Ok(Reply {
+        text: decoder.text.trim().to_string(),
+        calls,
+    })
+}
+
 /// Incremental decoder. Feed chunks with [`push`](Self::push); each call is returned once, as
 /// soon as its closing `>>` arrives and it validates. Call [`finish`](Self::finish) at end of
 /// stream: an unterminated call is an error. After any error the decoder stays failed.
 pub struct StreamDecoder {
     tools: HashMap<String, Option<Value>>,
     buf: String,
+    /// Plain text seen so far (everything outside calls).
+    text: String,
     failed: Option<Error>,
 }
 
@@ -45,6 +66,7 @@ impl StreamDecoder {
         Ok(Self {
             tools,
             buf: String::new(),
+            text: String::new(),
             failed: None,
         })
     }
@@ -58,6 +80,10 @@ impl StreamDecoder {
     }
 
     pub fn finish(mut self) -> Result<Vec<ToolCall>> {
+        self.finish_in_place()
+    }
+
+    fn finish_in_place(&mut self) -> Result<Vec<ToolCall>> {
         if let Some(e) = self.failed.take() {
             return Err(e);
         }
@@ -82,9 +108,12 @@ impl StreamDecoder {
                 } else {
                     partial_marker_len(&self.buf)
                 };
-                self.buf.drain(..self.buf.len() - keep);
+                let cut = self.buf.len() - keep;
+                self.text.push_str(&self.buf[..cut]);
+                self.buf.drain(..cut);
                 return Ok(out);
             };
+            self.text.push_str(&self.buf[..start]);
             self.buf.drain(..start);
             match self.parse_call(last)? {
                 Some((call, consumed)) => {

@@ -13,7 +13,7 @@ mod encode;
 mod error;
 mod validate;
 
-pub use decode::{StreamDecoder, decode_calls};
+pub use decode::{Reply, StreamDecoder, decode_calls, decode_reply};
 pub use encode::{CompactTools, decode_tools, encode_tools};
 pub use error::{Error, Result};
 
