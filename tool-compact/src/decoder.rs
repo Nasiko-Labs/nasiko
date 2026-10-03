@@ -171,13 +171,12 @@ impl StreamDecoder {
                         '"' => in_string = true,
                         '{' => closing_delimiters.push('}'),
                         '[' => closing_delimiters.push(']'),
-                        '}' | ']' => {
-                            if closing_delimiters.pop() != Some(character) {
+                        '}' | ']'
+                            if closing_delimiters.pop() != Some(character) => {
                                 return Err(CompactError::MalformedSyntax(
                                     "mismatched JSON delimiter".to_string(),
                                 ));
                             }
-                        }
                         _ => {}
                     }
                 }
