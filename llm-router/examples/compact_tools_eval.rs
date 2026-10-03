@@ -159,8 +159,12 @@ pub async fn run_evaluation(
     out_path: &Path,
     live_config: Option<&LiveConfig>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let file = File::open(eval_set_path)
-        .map_err(|e| format!("failed to open EVAL_SET at {}: {e}", eval_set_path.display()))?;
+    let file = File::open(eval_set_path).map_err(|e| {
+        format!(
+            "failed to open EVAL_SET at {}: {e}",
+            eval_set_path.display()
+        )
+    })?;
     let reader = BufReader::new(file);
     let eval_set: EvalSet = serde_json::from_reader(reader)
         .map_err(|e| format!("failed to parse EVAL_SET JSON: {e}"))?;
@@ -182,9 +186,39 @@ pub async fn run_evaluation(
         None
     };
 
+    // Initialize o200k_base tokenizer for local token reduction measurement (hackathon line 150)
+    let bpe = tiktoken_rs::o200k_base().ok();
+    let mut total_baseline_tokens = 0usize;
+    let mut total_compact_tokens = 0usize;
+
     // 1. Process regular cases
     for case in &eval_set.cases {
         let output = process_case(case, &eval_set.tools, live_config, http_client.as_ref()).await;
+
+        if let Some(ref tokenizer) = bpe {
+            let tool_names: HashSet<&str> = case.tools.iter().map(String::as_str).collect();
+            let case_tools: Vec<ToolDef> = eval_set
+                .tools
+                .iter()
+                .filter(|t| tool_names.contains(t.function.name.as_str()))
+                .cloned()
+                .collect();
+            let baseline_request = json!({
+                "messages": case.messages,
+                "tools": case_tools,
+            });
+
+            if let (Ok(base_str), Ok(comp_str)) = (
+                serde_json::to_string(&baseline_request),
+                serde_json::to_string(&output.compact_request),
+            ) {
+                let base_tokens = tokenizer.encode_with_special_tokens(&base_str).len();
+                let comp_tokens = tokenizer.encode_with_special_tokens(&comp_str).len();
+                total_baseline_tokens += base_tokens;
+                total_compact_tokens += comp_tokens;
+            }
+        }
+
         let line = serde_json::to_string(&output)?;
         writeln!(writer, "{line}")?;
     }
@@ -197,6 +231,19 @@ pub async fn run_evaluation(
     }
 
     writer.flush()?;
+
+    if total_baseline_tokens > 0 {
+        let reduction_pct =
+            (1.0 - (total_compact_tokens as f64 / total_baseline_tokens as f64)) * 100.0;
+        eprintln!(
+            "\n--- Local Token Measurement (o200k_base) ---\n\
+             Baseline prompt tokens: {total_baseline_tokens}\n\
+             Compact prompt tokens:  {total_compact_tokens}\n\
+             Token reduction:        {reduction_pct:.2}%\n\
+             --------------------------------------------"
+        );
+    }
+
     Ok(())
 }
 
@@ -268,8 +315,8 @@ pub async fn process_case(
             Ok(calls) => calls
                 .into_iter()
                 .map(|c| {
-                    let parsed_args = serde_json::from_str(&c.function.arguments)
-                        .unwrap_or(Value::Null);
+                    let parsed_args =
+                        serde_json::from_str(&c.function.arguments).unwrap_or(Value::Null);
                     ExpectedCall {
                         name: c.function.name,
                         arguments: parsed_args,
@@ -352,8 +399,8 @@ pub async fn execute_live_call(
             let call_outputs: Vec<ExpectedCall> = calls
                 .into_iter()
                 .map(|c| {
-                    let parsed_args = serde_json::from_str(&c.function.arguments)
-                        .unwrap_or(Value::Null);
+                    let parsed_args =
+                        serde_json::from_str(&c.function.arguments).unwrap_or(Value::Null);
                     ExpectedCall {
                         name: c.function.name,
                         arguments: parsed_args,
@@ -382,8 +429,8 @@ pub fn process_decoder_case(dec_case: &DecoderCase, all_tools: &[ToolDef]) -> De
             let call_outputs: Vec<ExpectedCall> = calls
                 .into_iter()
                 .map(|c| {
-                    let parsed_args = serde_json::from_str(&c.function.arguments)
-                        .unwrap_or(Value::Null);
+                    let parsed_args =
+                        serde_json::from_str(&c.function.arguments).unwrap_or(Value::Null);
                     ExpectedCall {
                         name: c.function.name,
                         arguments: parsed_args,
@@ -439,7 +486,9 @@ async fn main() {
     let out_path = std::env::var("OUT").unwrap_or_default();
 
     if eval_set_path.is_empty() || out_path.is_empty() {
-        eprintln!("usage: EVAL_SET=<input_path> OUT=<output_path> [PROVIDER_BASE_URL=<url> MODEL=<model>] cargo run --release -p nasiko-llm-router --example compact_tools_eval");
+        eprintln!(
+            "usage: EVAL_SET=<input_path> OUT=<output_path> [PROVIDER_BASE_URL=<url> MODEL=<model>] cargo run --release -p nasiko-llm-router --example compact_tools_eval"
+        );
         std::process::exit(1);
     }
 
@@ -451,7 +500,13 @@ async fn main() {
         }
     };
 
-    if let Err(e) = run_evaluation(Path::new(&eval_set_path), Path::new(&out_path), live_config.as_ref()).await {
+    if let Err(e) = run_evaluation(
+        Path::new(&eval_set_path),
+        Path::new(&out_path),
+        live_config.as_ref(),
+    )
+    .await
+    {
         eprintln!("evaluation failed: {e}");
         std::process::exit(1);
     }
@@ -607,7 +662,11 @@ mod tests {
     fn test_detect_live_config_variations() {
         // Both missing -> Ok(None)
         assert!(detect_live_config_from(None, None).unwrap().is_none());
-        assert!(detect_live_config_from(Some(""), Some("")).unwrap().is_none());
+        assert!(
+            detect_live_config_from(Some(""), Some(""))
+                .unwrap()
+                .is_none()
+        );
 
         // Both present -> Ok(Some)
         let cfg = detect_live_config_from(Some("http://proxy.internal"), Some("gpt-4o"))
@@ -686,11 +745,17 @@ mod tests {
         mock.assert_async().await;
         assert_eq!(out.id, "ct-live-01");
         assert!(out.raw_output.is_some());
-        assert!(out.raw_output.unwrap().contains("<<call create_calendar_event"));
+        assert!(
+            out.raw_output
+                .unwrap()
+                .contains("<<call create_calendar_event")
+        );
 
         assert!(out.live_calls.is_some());
         let live_calls = out.live_calls.unwrap();
-        let calls = live_calls["calls"].as_array().expect("expected calls array");
+        let calls = live_calls["calls"]
+            .as_array()
+            .expect("expected calls array");
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0]["name"], "create_calendar_event");
         assert_eq!(calls[0]["arguments"]["title"], "Live Review");
@@ -814,5 +879,40 @@ mod tests {
 
         assert_eq!(out.id, "ct-live-err");
         assert_eq!(out.live_calls, Some(json!({ "error": "api_error" })));
+    }
+
+    #[test]
+    fn test_token_measurement_o200k_base() {
+        let bpe = tiktoken_rs::o200k_base().expect("failed to load o200k_base tokenizer");
+
+        let tools = test_tools();
+        let baseline_req = json!({
+            "messages": [{"role": "user", "content": "Book review Monday"}],
+            "tools": tools,
+        });
+
+        let compact = encode_tools(&tools).expect("failed to encode tools");
+        let compact_req = json!({
+            "messages": [
+                {"role": "system", "content": format!("{SYSTEM_REFERENCE_TIME}\n\n{}", compact.prompt_text)},
+                {"role": "user", "content": "Book review Monday"}
+            ]
+        });
+
+        let base_str = serde_json::to_string(&baseline_req).unwrap();
+        let comp_str = serde_json::to_string(&compact_req).unwrap();
+
+        let base_tokens = bpe.encode_with_special_tokens(&base_str).len();
+        let comp_tokens = bpe.encode_with_special_tokens(&comp_str).len();
+
+        assert!(base_tokens > 0);
+        assert!(comp_tokens > 0);
+        assert!(comp_tokens < base_tokens);
+        let reduction = 1.0 - (comp_tokens as f64 / base_tokens as f64);
+        assert!(
+            reduction >= 0.30,
+            "expected >= 30% token reduction, got {:.2}%",
+            reduction * 100.0
+        );
     }
 }

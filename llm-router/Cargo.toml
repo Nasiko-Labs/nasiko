@@ -69,3 +69,4 @@ base64 = { workspace = true }
 mockito = { workspace = true }
 tower = { workspace = true }
 zstd.workspace = true
+tiktoken-rs = "=0.12.1"
