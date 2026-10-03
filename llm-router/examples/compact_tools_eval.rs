@@ -14,6 +14,12 @@
 //!
 //! No network, no clock, no randomness: two runs give identical `OUT`. Token counts
 //! (o200k_base) go to stderr for information only.
+//!
+//! Live mode (format adherence): set `PROVIDER_BASE_URL` (OpenAI-compatible, e.g.
+//! `https://api.openai.com/v1`) and `MODEL`; `PROVIDER_API_KEY` is sent as a bearer token
+//! if set (never commit it). Each `compact_request` is sent at temperature 0 and the line
+//! gains `raw_output` (the model's text) and `live_calls` (decoded calls or error; for a
+//! bypassed case, the native `tool_calls` validated the same way).
 use std::io::Write;
 
 use nasiko_tool_compact::{
@@ -70,6 +76,78 @@ fn stream_decode(chunks: &[Value], tools: &[ToolDef]) -> Value {
     outcome(Ok(calls))
 }
 
+/// Live-mode settings, present only when `PROVIDER_BASE_URL` and `MODEL` are set.
+struct Live {
+    url: String,
+    model: String,
+    key: Option<String>,
+    client: reqwest::Client,
+    rt: tokio::runtime::Runtime,
+}
+
+impl Live {
+    fn from_env() -> Option<Self> {
+        let base = std::env::var("PROVIDER_BASE_URL").ok()?;
+        let model = std::env::var("MODEL").ok()?;
+        Some(Self {
+            url: format!("{}/chat/completions", base.trim_end_matches('/')),
+            model,
+            key: std::env::var("PROVIDER_API_KEY").ok(),
+            client: reqwest::Client::new(),
+            rt: tokio::runtime::Runtime::new().expect("tokio runtime"),
+        })
+    }
+
+    /// Send one request; returns (`raw_output`, `live_calls`).
+    fn run(&self, request: &Value, tools: &[ToolDef]) -> (Value, Value) {
+        let mut body = request.clone();
+        body["model"] = json!(self.model);
+        body["temperature"] = json!(0);
+        let mut req = self.client.post(&self.url).json(&body);
+        if let Some(key) = &self.key {
+            req = req.bearer_auth(key);
+        }
+        let resp: Result<Value, String> = self.rt.block_on(async {
+            let r = req.send().await.map_err(|e| e.to_string())?;
+            let status = r.status();
+            let v: Value = r.json().await.map_err(|e| e.to_string())?;
+            if status.is_success() {
+                Ok(v)
+            } else {
+                Err(format!("HTTP {status}: {v}"))
+            }
+        });
+        let msg = match resp {
+            Ok(v) => v["choices"][0]["message"].clone(),
+            Err(e) => return (Value::Null, json!({"error": "provider", "detail": e})),
+        };
+        let text = msg["content"].as_str().unwrap_or_default().to_string();
+        let native = msg["tool_calls"].as_array().cloned().unwrap_or_default();
+        let calls = if native.is_empty() {
+            decode_calls(&text, tools)
+        } else {
+            native_calls(&native, tools)
+        };
+        (json!(text), outcome(calls))
+    }
+}
+
+/// Validate native `tool_calls` (bypassed cases) with the same rules as compact calls.
+fn native_calls(
+    native: &[Value],
+    tools: &[ToolDef],
+) -> Result<Vec<ToolCall>, nasiko_tool_compact::Error> {
+    let text: String = native
+        .iter()
+        .map(|c| {
+            let f = &c["function"];
+            let args = f["arguments"].as_str().unwrap_or("null");
+            format!("<<call {} {args}>>", f["name"].as_str().unwrap_or_default())
+        })
+        .collect();
+    decode_calls(&text, tools)
+}
+
 fn main() {
     let path = std::env::var("EVAL_SET").expect("set EVAL_SET to the eval JSON path");
     let out_path = std::env::var("OUT").unwrap_or_else(|_| "compact-tools-out.jsonl".into());
@@ -97,6 +175,7 @@ fn main() {
     let bpe = tiktoken_rs::o200k_base().expect("o200k_base");
     let tokens = |v: &Value| bpe.encode_with_special_tokens(&v.to_string()).len();
     let (mut base_total, mut compact_total) = (0usize, 0usize);
+    let live = Live::from_env();
 
     let mut out = std::io::BufWriter::new(std::fs::File::create(&out_path).expect("create OUT"));
     for case in data["cases"].as_array().expect("cases array") {
@@ -146,13 +225,18 @@ fn main() {
         base_total += b;
         compact_total += c;
         eprintln!("{id}: baseline {b} compact {c} compacted {compacted}");
-        let line = json!({
+        let mut line = json!({
             "id": id,
             "compact_request": request,
             "compacted": compacted,
             "rendered_calls": rendered,
             "roundtrip_calls": roundtrip,
         });
+        if let Some(live) = &live {
+            let (raw_output, live_calls) = live.run(&line["compact_request"], &tools);
+            line["raw_output"] = raw_output;
+            line["live_calls"] = live_calls;
+        }
         writeln!(out, "{line}").expect("write OUT");
     }
     for case in data["decoder_cases"]
