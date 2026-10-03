@@ -27,17 +27,17 @@ pub fn decode_calls(text: &str, tools: &[ToolDef]) -> Result<Vec<ToolCall>, Deco
                 return Err(DecodeError::MalformedSyntax("incomplete tool call".to_string()));
             }
 
-            // Tool name ends at first whitespace, colon, parenthesis, or '{'
+            // Tool name ends at first whitespace, colon, parenthesis, '{', or '>'
             let mut name_end = name_start;
             while name_end < len {
                 let b = bytes[name_end];
-                if b.is_ascii_whitespace() || b == b'{' || b == b':' || b == b'(' {
+                if b.is_ascii_whitespace() || b == b'{' || b == b':' || b == b'(' || b == b'>' {
                     break;
                 }
                 name_end += 1;
             }
 
-            let mut tool_name = text[name_start..name_end].trim().trim_end_matches(':');
+            let mut tool_name = text[name_start..name_end].trim().trim_end_matches(':').trim_end_matches('>');
             if tool_name.is_empty() {
                 return Err(DecodeError::MalformedSyntax("missing tool name in call".to_string()));
             }

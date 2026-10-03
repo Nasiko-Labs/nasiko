@@ -196,11 +196,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
             let mut req_builder = client.post(&url).json(&out_line["compact_request"]);
 
-            if let Ok(key) = env::var("OPENAI_API_KEY")
-                .or_else(|_| env::var("OPENROUTER_API_KEY"))
+            if let Ok(key) = env::var("API_KEY")
                 .or_else(|_| env::var("PROVIDER_API_KEY"))
+                .or_else(|_| env::var("BEDROCK_API_KEY"))
+                .or_else(|_| env::var("OPENAI_API_KEY"))
+                .or_else(|_| env::var("OPENROUTER_API_KEY"))
                 .or_else(|_| env::var("GROQ_API_KEY"))
-                .or_else(|_| env::var("API_KEY"))
             {
                 req_builder = req_builder.header("Authorization", format!("Bearer {}", key));
             }
