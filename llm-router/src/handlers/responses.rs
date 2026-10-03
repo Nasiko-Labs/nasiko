@@ -110,6 +110,8 @@ async fn responses_core(
         turn_ordinal: user_turn_ordinal(body.get("input")),
         is_tool_continuation: is_tool_continuation(body.get("input")),
         query,
+        // Responses-API `input` isn't IR messages; model-backed classifiers read the query.
+        classifier_state: None,
     };
     let routed = resolve_routed_request(
         ctx,
@@ -1058,6 +1060,7 @@ mod tests {
             tier_registry: Arc::new(NoTiers),
             cell_store: Arc::new(crate::routing::InMemoryCellStore::new()),
             salience_gate: Arc::new(crate::routing::salience::AllowAllGate),
+            request_classifier: Arc::new(crate::routing::RegexClassifier),
             pricing: Arc::new(nasiko_pricing::PricingEngine::new(
                 PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
             )),

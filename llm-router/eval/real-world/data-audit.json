@@ -1,0 +1,53 @@
+{
+  "within_sample_near_duplicates": [
+    {
+      "a": "wc-026",
+      "b": "wc-025",
+      "jaccard": 0.954
+    },
+    {
+      "a": "wc-060",
+      "b": "wc-046",
+      "jaccard": 0.719
+    },
+    {
+      "a": "wc-072",
+      "b": "wc-070",
+      "jaccard": 0.932
+    },
+    {
+      "a": "wc-079",
+      "b": "wc-063",
+      "jaccard": 0.821
+    }
+  ],
+  "training_near_duplicates": [],
+  "closest_training_pairs": [
+    {
+      "id": "wc-071",
+      "training_id": "trc-0136",
+      "jaccard": 0.197
+    },
+    {
+      "id": "wc-018",
+      "training_id": "tre-0201",
+      "jaccard": 0.174
+    },
+    {
+      "id": "wc-038",
+      "training_id": "trd-0050",
+      "jaccard": 0.16
+    },
+    {
+      "id": "wc-028",
+      "training_id": "tre-0175",
+      "jaccard": 0.157
+    },
+    {
+      "id": "wc-086",
+      "training_id": "tre-0154",
+      "jaccard": 0.155
+    }
+  ],
+  "note": "Only audits this repository training data. Cannot establish absence from public model pretraining."
+}

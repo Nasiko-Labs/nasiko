@@ -1,0 +1,20 @@
+{
+  "python": "3.12.13 (main, Mar 10 2026, 18:18:07) [Clang 21.1.4 ]",
+  "platform": "macOS-26.5-arm64-arm-64bit",
+  "packages": {
+    "mlx": "0.32.3",
+    "mlx-lm": "0.32.0",
+    "torch": "2.14.1",
+    "strands-decider": "0.0.1.dev1+g890947e7c",
+    "huggingface-hub": "1.33.0",
+    "transformers": "5.18.0"
+  },
+  "upstream_source_revision": "890947e7ccd44c3de4115e26a7f46cc5c3147b44",
+  "upstream_tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "server_threads": {
+    "OMP_NUM_THREADS": 2,
+    "OPENBLAS_NUM_THREADS": 2,
+    "torch": 2
+  },
+  "hardware": "Apple M3, 8 GiB RAM; shared development host"
+}

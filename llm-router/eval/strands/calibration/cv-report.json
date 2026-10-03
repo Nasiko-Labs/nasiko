@@ -1,0 +1,51 @@
+{
+  "raw_probability": {
+    "n": 280,
+    "accuracy": 0.9035714285714286,
+    "nll": 0.4136546835391022,
+    "ece": 0.14630396563185213,
+    "top_label_brier": 0.09674603410027456,
+    "multiclass_brier": 0.18509579109833793,
+    "low_confidence": 0.08571428571428572,
+    "trusted_accuracy": 0.93359375,
+    "confident_wrong": 17
+  },
+  "grouped_cv_calibrated": {
+    "n": 280,
+    "accuracy": 0.9035714285714286,
+    "nll": 0.31755313841911853,
+    "ece": 0.02069883987483066,
+    "top_label_brier": 0.07268280978007119,
+    "multiclass_brier": 0.1536890210081233,
+    "low_confidence": 0.02857142857142857,
+    "trusted_accuracy": 0.9154411764705882,
+    "confident_wrong": 23
+  },
+  "folds": [
+    {
+      "n": 56,
+      "temperature": 0.5799999999999998
+    },
+    {
+      "n": 56,
+      "temperature": 0.5799999999999998
+    },
+    {
+      "n": 56,
+      "temperature": 0.5799999999999998
+    },
+    {
+      "n": 56,
+      "temperature": 0.5799999999999998
+    },
+    {
+      "n": 56,
+      "temperature": 0.5399999999999998
+    }
+  ],
+  "selected_temperature": 1.0,
+  "accepted_calibration": false,
+  "admission_min_type_probability": 0.48571428571428577,
+  "acceptance_policy": "held-out training-group NLL improves AND confident_wrong at preserved Strands probability-equivalent admission minimum does not increase",
+  "notes": "Probabilities, not native normalized concentration. CV grades held-out training families only. Argmax unchanged. No final evaluation set read."
+}

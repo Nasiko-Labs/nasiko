@@ -1,0 +1,78 @@
+{
+  "labels_sha256": "c23ddedb82c675ba125c828c0fb2fa7efe5388866d05f6e1cd1d0eba97f661a7",
+  "binary_sha256": "2fdf058ccc0a85c55fe172ddd643870b51ab1a81c401a1bd63f4a071a560e57e",
+  "source_root": "/Users/gouravnss/personal/nasiko-laya-private",
+  "commit": "5668d18e7ee732472e7a36978915da0cf97cde01",
+  "tracked_diff_sha256": "b9c9b7a8386424a0b045765d8ecbe5806dc6d7ca96b9a4156f4ec998f8e4b5e9",
+  "hardware": "macOS-26.5-arm64-arm-64bit-Mach-O",
+  "timeouts_ms": {
+    "laya": 1500,
+    "strands": 1500
+  },
+  "health": {
+    "laya": {
+      "status": "ok",
+      "loaded": [
+        "multilingual"
+      ],
+      "revisions": {
+        "multilingual": "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851"
+      },
+      "device": "cpu",
+      "device_is_preference": false,
+      "checkpoint_devices": {
+        "multilingual": "cpu"
+      },
+      "cpu_fallbacks": {
+        "multilingual": {
+          "count": 0,
+          "last_reason": null
+        }
+      }
+    },
+    "strands": {
+      "status": "ok",
+      "model": "strands-decider-2B-hobson-v19-q4",
+      "checkpoint": "StrandsAgents/strands-decider-2B-hobson-v19",
+      "device": "mlx",
+      "prefix_cache": false,
+      "max_batch": 1,
+      "serial": true,
+      "quantization_bits": 4,
+      "cache_limit_bytes": 67108864,
+      "max_length": 4096
+    }
+  },
+  "runs": [
+    {
+      "backend": "regex",
+      "repeat": 1,
+      "elapsed_s": 0.686393208001391
+    },
+    {
+      "backend": "laya",
+      "repeat": 1,
+      "elapsed_s": 18.424111582999103
+    },
+    {
+      "backend": "strands",
+      "repeat": 1,
+      "elapsed_s": 4.522712416999639
+    },
+    {
+      "backend": "regex",
+      "repeat": 2,
+      "elapsed_s": 0.012148082998464815
+    },
+    {
+      "backend": "laya",
+      "repeat": 2,
+      "elapsed_s": 15.717781999999715
+    },
+    {
+      "backend": "strands",
+      "repeat": 2,
+      "elapsed_s": 61.367143958999804
+    }
+  ]
+}

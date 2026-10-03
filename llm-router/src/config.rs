@@ -101,6 +101,27 @@ pub struct GatewayConfig {
     /// retuned. Default 0.80.
     pub salience_high_threshold: f64,
 
+    /// Level 3 classifier: regex (default), local, laya, strands, or hybrid.
+    /// Hybrid uses local complexity and selectively refines type with Strands.
+    /// Unknown values warn and use regex.
+    pub request_classifier: String,
+    /// Base URL of the `laya-serve` sidecar (`REQUEST_CLASSIFIER=laya` only).
+    pub laya_url: String,
+    /// Per-request budget for a Laya call; past it the turn is classified by regex. Default
+    /// 1500 ms covers the measured CPU p95 of a two-question call (~1.1–1.8 s on a laptop),
+    /// so a CPU sidecar actually answers; it is paid once per conversation boundary, and the
+    /// circuit breaker caps what a down sidecar costs. Lower it on GPU-backed sidecars.
+    pub laya_timeout_ms: u64,
+    /// Bearer token for `laya-serve` when it runs with `LAYA_API_KEY`; empty sends none.
+    pub laya_api_key: String,
+    pub strands_url: String,
+    pub strands_api_key: String,
+    pub strands_timeout_ms: u64,
+    /// Optional `ROUTING_SEED` for reproducible Thompson tier selection. The same
+    /// classification and learned cells with the same seed produce the same tier.
+    /// Unset keeps the existing exploration RNG; cached tool-loop decisions remain sticky.
+    pub routing_seed: Option<u64>,
+
     /// Fleet-wide kill switch for payload compression. Compression is opted into **per agent**
     /// (`agents.compress_enabled`); this only lets an operator stop all of it at once without
     /// editing every agent's row. Default on, so a UI toggle takes effect without a deploy.
@@ -185,6 +206,14 @@ impl Default for GatewayConfig {
             salience_weights_path: String::new(),
             salience_low_threshold: 0.20,
             salience_high_threshold: 0.80,
+            request_classifier: "regex".into(),
+            laya_url: "http://laya:8000".into(),
+            laya_timeout_ms: 1500,
+            laya_api_key: String::new(),
+            strands_url: "http://127.0.0.1:18099".into(),
+            strands_api_key: String::new(),
+            strands_timeout_ms: 1500,
+            routing_seed: None,
             compress_kill_switch: true,
             compress_min_bytes: 2048,
             compress_types: nasiko_compress::TypeMask::DEFAULT,
@@ -274,6 +303,19 @@ impl GatewayConfig {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(d.salience_high_threshold),
+            request_classifier: env_or("REQUEST_CLASSIFIER", &d.request_classifier),
+            laya_url: env_or("LAYA_URL", &d.laya_url),
+            laya_timeout_ms: std::env::var("LAYA_TIMEOUT_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(d.laya_timeout_ms),
+            laya_api_key: env_or("LAYA_API_KEY", &d.laya_api_key),
+            strands_url: env_or("STRANDS_URL", &d.strands_url),
+            strands_api_key: env_or("STRANDS_API_KEY", &d.strands_api_key),
+            strands_timeout_ms: env_usize("STRANDS_TIMEOUT_MS", 1500) as u64,
+            routing_seed: std::env::var("ROUTING_SEED")
+                .ok()
+                .and_then(|raw| parse_routing_seed(&raw)),
             compress_kill_switch: env_flag("TOKEN_COMPRESS_ENABLED", true),
             compress_min_bytes: env_usize("TOKEN_COMPRESS_MIN_BYTES", 2048),
             // A bad label must not silently widen or narrow what gets rewritten, so an
@@ -392,6 +434,24 @@ fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
 }
 
+fn parse_routing_seed(raw: &str) -> Option<u64> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    match raw.parse() {
+        Ok(seed) => Some(seed),
+        Err(error) => {
+            tracing::warn!(
+                target: "nasiko::llm_router::startup",
+                env = "ROUTING_SEED", value = raw, %error,
+                "llm-router: invalid routing seed; using the existing exploration RNG"
+            );
+            None
+        }
+    }
+}
+
 /// First non-empty env var among `keys`, else `default`. Lets a `PLATFORM_*` key take
 /// precedence over the generic provider key env var while treating an empty value as unset.
 fn env_first(keys: &[&str], default: &str) -> String {
@@ -408,6 +468,17 @@ fn env_first(keys: &[&str], default: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn routing_seed_is_opt_in_and_accepts_only_unsigned_integer_values() {
+        assert_eq!(GatewayConfig::default().routing_seed, None);
+        assert_eq!(parse_routing_seed("0"), Some(0));
+        assert_eq!(parse_routing_seed(" 42 "), Some(42));
+        assert_eq!(parse_routing_seed("18446744073709551615"), Some(u64::MAX));
+        for raw in ["", " ", "-1", "1.5", "random", "18446744073709551616"] {
+            assert_eq!(parse_routing_seed(raw), None, "{raw:?}");
+        }
+    }
 
     #[test]
     fn platform_key_for_built_ins() {

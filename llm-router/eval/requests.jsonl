@@ -1,0 +1,100 @@
+{"id":"cg-01","split":"dev","query":"Write a Python function that reverses a string.","context":[],"type":"code_generation","complexity":2}
+{"id":"cg-02","split":"dev","query":"Add type hints to this function: def add(a, b): return a + b","context":[],"type":"code_generation","complexity":2}
+{"id":"cg-03","split":"dev","query":"Implement an LRU cache in Rust with O(1) get and put, generic over key and value types.","context":[],"type":"code_generation","complexity":4}
+{"id":"cg-04","split":"dev","query":"now add pagination and rate limiting to it","context":[{"role":"user","text":"here's my Flask app with a /users endpoint that returns every user"},{"role":"assistant","text":"Looks good. What would you like to add next?"}],"type":"code_generation","complexity":3}
+{"id":"cg-05","split":"test","query":"Design a sharded, lock-free hash map in C++ with linearizable resize.","context":[],"type":"code_generation","complexity":5}
+{"id":"cg-06","split":"test","query":"Refactor this nested loop into a list comprehension:\nresult = []\nfor x in xs:\n    if x > 0:\n        result.append(x * 2)","context":[],"type":"code_generation","complexity":2}
+{"id":"cg-07","split":"test","query":"Write a bash one-liner to count the lines in all .py files under the current directory.","context":[],"type":"code_generation","complexity":2}
+{"id":"cg-08","split":"test","query":"Fix the off-by-one bug: for i in range(len(a) + 1): print(a[i])","context":[],"type":"code_generation","complexity":2}
+{"id":"cg-09","split":"test","query":"Implement a Raft consensus module in Go with leader election, log replication and snapshotting.","context":[],"type":"code_generation","complexity":5}
+{"id":"cg-10","split":"test","query":"mujhe ek Python script likh ke do jo CSV file padhe aur har column ka average nikale","context":[],"type":"code_generation","complexity":2}
+{"id":"cg-11","split":"test","query":"Escribe una función en JavaScript que valide direcciones de correo electrónico.","context":[],"type":"code_generation","complexity":2}
+{"id":"cg-12","split":"test","query":"Create a React component for a paginated table with sortable columns and server-side filtering.","context":[],"type":"code_generation","complexity":3}
+{"id":"cg-13","split":"test","query":"Write a SQL query that returns the top 3 customers by total order value in each region.","context":[],"type":"code_generation","complexity":3}
+{"id":"cg-14","split":"test","query":"make it handle unicode escapes and keep zero-copy slices","context":[{"role":"user","text":"I'm writing a JSON tokenizer in Rust"},{"role":"assistant","text":"Great - which part are you stuck on?"}],"type":"code_generation","complexity":4}
+{"id":"cu-01","split":"dev","query":"Explain what this regex does: ^(?=.*\\d)(?=.*[a-z]).{8,}$","context":[],"type":"code_understanding","complexity":2}
+{"id":"cu-02","split":"dev","query":"Why does Rust say 'borrowed value does not live long enough' when I return a reference to a local String?","context":[],"type":"code_understanding","complexity":3}
+{"id":"cu-03","split":"dev","query":"What exactly does git rebase --onto do to my branch history?","context":[],"type":"code_understanding","complexity":2}
+{"id":"cu-04","split":"dev","query":"My Kubernetes pod keeps restarting with exit code 137, what is going on?","context":[],"type":"code_understanding","complexity":3}
+{"id":"cu-05","split":"test","query":"Explain what this function does: def f(n): return n if n < 2 else f(n - 1) + f(n - 2)","context":[],"type":"code_understanding","complexity":2}
+{"id":"cu-06","split":"test","query":"Why is this Python code so slow? for x in big_list:\n    if x in other_list:\n        hits += 1","context":[],"type":"code_understanding","complexity":2}
+{"id":"cu-07","split":"test","query":"I get 'TypeError: Cannot read properties of undefined (reading map)' in my React component, why?","context":[],"type":"code_understanding","complexity":2}
+{"id":"cu-08","split":"test","query":"Walk me through how the Linux kernel's CFS scheduler picks the next task to run.","context":[],"type":"code_understanding","complexity":4}
+{"id":"cu-09","split":"test","query":"Why does my async Rust code deadlock when I hold a std::sync::Mutex guard across an .await?","context":[],"type":"code_understanding","complexity":4}
+{"id":"cu-10","split":"test","query":"yeh error kya bata raha hai: NullPointerException at line 42 in OrderService","context":[],"type":"code_understanding","complexity":2}
+{"id":"cu-11","split":"test","query":"Explain why these two Go snippets behave differently: one uses a buffered channel and one an unbuffered channel.","context":[],"type":"code_understanding","complexity":3}
+{"id":"cu-12","split":"test","query":"but why does it only happen on the last iteration?","context":[{"role":"user","text":"here's the panic: thread 'main' panicked at 'index out of bounds: the len is 3 but the index is 3'"},{"role":"assistant","text":"That panic means the loop indexes one element past the end of the vector."}],"type":"code_understanding","complexity":2}
+{"id":"cu-13","split":"test","query":"How does this Makefile decide which targets need to be rebuilt?","context":[],"type":"code_understanding","complexity":2}
+{"id":"cu-14","split":"test","query":"Why does my Postgres query do a sequential scan even though the column has an index?","context":[],"type":"code_understanding","complexity":3}
+{"id":"td-01","split":"dev","query":"How should I design the API for a multi-tenant SaaS billing service?","context":[],"type":"technical_design","complexity":4}
+{"id":"td-02","split":"dev","query":"Should I use Kafka or RabbitMQ for an order-processing pipeline at 5k messages per second?","context":[],"type":"technical_design","complexity":3}
+{"id":"td-03","split":"dev","query":"Monolith or microservices for a 4-person startup?","context":[],"type":"technical_design","complexity":3}
+{"id":"td-04","split":"dev","query":"Design the data model for a library that tracks books, members and loans.","context":[],"type":"technical_design","complexity":2}
+{"id":"td-05","split":"test","query":"Design a globally distributed rate limiter that keeps working through a full region outage.","context":[],"type":"technical_design","complexity":5}
+{"id":"td-06","split":"test","query":"What's a good folder structure for a medium-sized React app?","context":[],"type":"technical_design","complexity":2}
+{"id":"td-07","split":"test","query":"Compare event sourcing with plain CRUD for an audit-heavy banking ledger.","context":[],"type":"technical_design","complexity":4}
+{"id":"td-08","split":"test","query":"How would you architect a real-time collaborative text editor like Google Docs?","context":[],"type":"technical_design","complexity":5}
+{"id":"td-09","split":"test","query":"REST or GraphQL for a mobile app used on flaky connections?","context":[],"type":"technical_design","complexity":3}
+{"id":"td-10","split":"test","query":"Design a caching strategy for a product catalog with 10M items and frequent price updates.","context":[],"type":"technical_design","complexity":4}
+{"id":"td-11","split":"test","query":"मुझे एक chat app का backend architecture design करना है, कौन सा database use करूँ?","context":[],"type":"technical_design","complexity":3}
+{"id":"td-12","split":"test","query":"Pick a storage schema for time-series sensor data from 50k devices.","context":[],"type":"technical_design","complexity":3}
+{"id":"td-13","split":"test","query":"strong - so how do I handle idempotency and retries across the services?","context":[{"role":"user","text":"we're building a payment system out of several services"},{"role":"assistant","text":"What consistency guarantees do you need between them?"}],"type":"technical_design","complexity":4}
+{"id":"td-14","split":"test","query":"Should this setting be an environment variable or a row in the database?","context":[],"type":"technical_design","complexity":2}
+{"id":"ar-01","split":"dev","query":"Calculate the probability of getting at least one six in four rolls of a die.","context":[],"type":"analytical_reasoning","complexity":2}
+{"id":"ar-02","split":"dev","query":"Prove that the square root of 2 is irrational.","context":[],"type":"analytical_reasoning","complexity":3}
+{"id":"ar-03","split":"dev","query":"A train leaves at 3pm at 60 mph and another leaves the same station at 4pm at 80 mph. When does the second catch up?","context":[],"type":"analytical_reasoning","complexity":2}
+{"id":"ar-04","split":"dev","query":"Is a 3% monthly churn rate sustainable for a SaaS with a $50 CAC and $20 ARPU?","context":[],"type":"analytical_reasoning","complexity":3}
+{"id":"ar-05","split":"test","query":"What is 17 * 24?","context":[],"type":"analytical_reasoning","complexity":1}
+{"id":"ar-06","split":"test","query":"Prove that every planar graph is 5-colorable.","context":[],"type":"analytical_reasoning","complexity":5}
+{"id":"ar-07","split":"test","query":"Estimate how many piano tuners work in Chicago.","context":[],"type":"analytical_reasoning","complexity":3}
+{"id":"ar-08","split":"test","query":"Is this argument valid: all cats are mammals, some mammals swim, so some cats swim?","context":[],"type":"analytical_reasoning","complexity":2}
+{"id":"ar-09","split":"test","query":"Derive a closed form for the sum of the first n squares and prove it by induction.","context":[],"type":"analytical_reasoning","complexity":4}
+{"id":"ar-10","split":"test","query":"A/B test results: A had 120 conversions out of 2400, B had 150 out of 2500. Is B significantly better?","context":[],"type":"analytical_reasoning","complexity":3}
+{"id":"ar-11","split":"test","query":"Solve for x: 2x + 7 = 19","context":[],"type":"analytical_reasoning","complexity":1}
+{"id":"ar-12","split":"test","query":"Prove that the halting problem is undecidable.","context":[],"type":"analytical_reasoning","complexity":4}
+{"id":"ar-13","split":"test","query":"agar 5 machines 5 minute me 5 widgets banati hain, toh 100 machines ko 100 widgets banane me kitna time lagega?","context":[],"type":"analytical_reasoning","complexity":2}
+{"id":"ar-14","split":"test","query":"What is the expected number of coin flips until you get two heads in a row?","context":[],"type":"analytical_reasoning","complexity":3}
+{"id":"wr-01","split":"dev","query":"Draft an email to my team about the outage last night.","context":[],"type":"writing","complexity":2}
+{"id":"wr-02","split":"dev","query":"Refactor my resume summary so it sounds less generic.","context":[],"type":"writing","complexity":2}
+{"id":"wr-03","split":"dev","query":"Write a 1500-word essay on the ethics of AI in hiring, including the strongest counterarguments.","context":[],"type":"writing","complexity":4}
+{"id":"wr-04","split":"dev","query":"Fix the grammar: 'me and him goes to the store yesterday'","context":[],"type":"writing","complexity":1}
+{"id":"wr-05","split":"test","query":"Write a short poem about autumn rain.","context":[],"type":"writing","complexity":2}
+{"id":"wr-06","split":"test","query":"Rewrite this paragraph to be more concise for an executive audience.","context":[],"type":"writing","complexity":2}
+{"id":"wr-07","split":"test","query":"Draft a cover letter for a senior backend engineer role at a fintech company.","context":[],"type":"writing","complexity":3}
+{"id":"wr-08","split":"test","query":"Write a launch announcement blog post for our new public API.","context":[],"type":"writing","complexity":3}
+{"id":"wr-09","split":"test","query":"Turn these meeting notes into a polished summary for stakeholders.","context":[],"type":"writing","complexity":2}
+{"id":"wr-10","split":"test","query":"Don't write any code - just write a friendly intro paragraph for my project's README.","context":[],"type":"writing","complexity":2}
+{"id":"wr-11","split":"test","query":"Escribe un correo formal para pedir una extensión del plazo de entrega.","context":[],"type":"writing","complexity":2}
+{"id":"wr-12","split":"test","query":"Write the broader-impacts section of a grant proposal for our climate-sensing research.","context":[],"type":"writing","complexity":4}
+{"id":"wr-13","split":"test","query":"make it funnier and shorter","context":[{"role":"user","text":"can you draft a toast for my sister's wedding"},{"role":"assistant","text":"Of course! Here's a draft: Friends and family, tonight we celebrate..."}],"type":"writing","complexity":2}
+{"id":"wr-14","split":"test","query":"Edit this personal statement for flow and argument structure; it's for a law school application.","context":[],"type":"writing","complexity":3}
+{"id":"fl-01","split":"dev","query":"What is the capital of France?","context":[],"type":"factual_lookup","complexity":1}
+{"id":"fl-02","split":"dev","query":"When was the Rust programming language first released?","context":[],"type":"factual_lookup","complexity":1}
+{"id":"fl-03","split":"dev","query":"What is photosynthesis?","context":[],"type":"factual_lookup","complexity":1}
+{"id":"fl-04","split":"dev","query":"Who wrote One Hundred Years of Solitude?","context":[],"type":"factual_lookup","complexity":1}
+{"id":"fl-05","split":"test","query":"What's the default port for PostgreSQL?","context":[],"type":"factual_lookup","complexity":1}
+{"id":"fl-06","split":"test","query":"What does HTTP status code 418 mean?","context":[],"type":"factual_lookup","complexity":1}
+{"id":"fl-07","split":"test","query":"How many moons does Jupiter have?","context":[],"type":"factual_lookup","complexity":1}
+{"id":"fl-08","split":"test","query":"What is the boiling point of water at sea level in Fahrenheit?","context":[],"type":"factual_lookup","complexity":1}
+{"id":"fl-09","split":"test","query":"What does ACID stand for in databases?","context":[],"type":"factual_lookup","complexity":1}
+{"id":"fl-10","split":"test","query":"भारत की राजधानी क्या है?","context":[],"type":"factual_lookup","complexity":1}
+{"id":"fl-11","split":"test","query":"Who won the Nobel Prize in Physics in 1921?","context":[],"type":"factual_lookup","complexity":1}
+{"id":"fl-12","split":"test","query":"What is the time complexity of binary search?","context":[],"type":"factual_lookup","complexity":1}
+{"id":"fl-13","split":"test","query":"What's the chemical symbol for gold?","context":[],"type":"factual_lookup","complexity":1}
+{"id":"fl-14","split":"test","query":"What year did the Berlin Wall fall?","context":[],"type":"factual_lookup","complexity":1}
+{"id":"ge-01","split":"dev","query":"hello there","context":[],"type":"general","complexity":1}
+{"id":"ge-02","split":"dev","query":"thanks, that was really helpful!","context":[],"type":"general","complexity":1}
+{"id":"ge-03","split":"dev","query":"kya haal hai bhai","context":[],"type":"general","complexity":1}
+{"id":"ge-04","split":"dev","query":"what can you do?","context":[],"type":"general","complexity":1}
+{"id":"ge-05","split":"dev","query":"tell me a joke","context":[],"type":"general","complexity":1}
+{"id":"ge-06","split":"dev","query":"I'm feeling a bit stressed about work today.","context":[],"type":"general","complexity":2}
+{"id":"ge-07","split":"test","query":"good morning!","context":[],"type":"general","complexity":1}
+{"id":"ge-08","split":"test","query":"lol ok","context":[],"type":"general","complexity":1}
+{"id":"ge-09","split":"test","query":"who are you?","context":[],"type":"general","complexity":1}
+{"id":"ge-10","split":"test","query":"recommend me a good sci-fi movie for tonight","context":[],"type":"general","complexity":1}
+{"id":"ge-11","split":"test","query":"hmm, let me think about it","context":[],"type":"general","complexity":1}
+{"id":"ge-12","split":"test","query":"¿cómo estás?","context":[],"type":"general","complexity":1}
+{"id":"ge-13","split":"test","query":"what should I have for dinner?","context":[],"type":"general","complexity":1}
+{"id":"ge-14","split":"test","query":"I'm bored","context":[],"type":"general","complexity":1}
+{"id":"ge-15","split":"test","query":"can you help me plan my weekend?","context":[],"type":"general","complexity":2}
+{"id":"ge-16","split":"test","query":"bye!","context":[],"type":"general","complexity":1}

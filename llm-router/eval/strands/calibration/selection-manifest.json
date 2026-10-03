@@ -1,0 +1,29 @@
+{
+  "training_files": {
+    "train-a.jsonl": "2810643a262ee32bca10b76ce66fb722d0b8720604347fe2a321c6f15f13ab63",
+    "train-b.jsonl": "eca713d80e500a71a973036adb04d008c0007684f5b2d81c0aa67c9fc4e2c758",
+    "train-c.jsonl": "3b50505161190cb1a9d0efd3c299cab07d4b20ca53e852603c22cf8ec48064f2",
+    "train-d.jsonl": "07c20c2a71acbc5c1fe04d795991d6a08c92329b498e285bdb93991da08d5c79",
+    "train-e.jsonl": "f69446f879c0726cae7460c980a367d24563e2dfa52911bdde511f995cec4bad"
+  },
+  "selected_sha256": "a51e86668bc0141a930b1efc221fc531db01dc472c419be0e70a0df5eca4cc66",
+  "n": 280,
+  "groups": 277,
+  "types": {
+    "code_generation": 40,
+    "code_understanding": 40,
+    "technical_design": 40,
+    "analytical_reasoning": 40,
+    "writing": 40,
+    "factual_lookup": 40,
+    "general": 40
+  },
+  "source_files": {
+    "train-d.jsonl": 47,
+    "train-c.jsonl": 68,
+    "train-e.jsonl": 64,
+    "train-a.jsonl": 42,
+    "train-b.jsonl": 59
+  },
+  "policy": "40/type; at most one declared family; SHA256(seed:id) ordering; char5Jaccard>=0.7 grouped across selected requests; no final test labels read"
+}

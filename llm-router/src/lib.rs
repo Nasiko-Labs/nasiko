@@ -82,6 +82,10 @@ pub struct LlmRouterCtx {
     /// classify + pin. [`ClassifierSalienceGate`] when `SALIENCE_GATE_ENABLED`; else [`AllowAllGate`]
     /// (classify at every boundary, i.e. behaviour before the gate existed).
     pub salience_gate: Arc<dyn SalienceGate>,
+    /// Level 3 request classifier — request type + complexity for tier selection.
+    /// [`RegexClassifier`](routing::RegexClassifier) by default; the Laya sidecar when
+    /// `REQUEST_CLASSIFIER=laya` (see [`build_request_classifier`]).
+    pub request_classifier: Arc<dyn routing::RequestClassifier>,
     /// The platform's single cost engine. Every `token_usage` row is priced
     /// through this — the DB trigger that used to do it returned NULL for any
     /// model missing from `model_pricing`, which booked 92.8% of calls at $0.
@@ -125,6 +129,7 @@ impl LlmRouterCtx {
             "llm-router: cell store = PgCellStore (DB router_quality_cells table; learns per-provider tier quality from feedback)"
         );
         let router_cache = build_router_cache(&cfg);
+        let request_classifier = build_request_classifier(&cfg, &http);
         let cfg = Arc::new(cfg);
         let salience_gate = build_salience_gate(&cfg);
         let pricing = Arc::new(PricingEngine::new(db.clone()));
@@ -137,7 +142,118 @@ impl LlmRouterCtx {
             tier_registry,
             cell_store,
             salience_gate,
+            request_classifier,
             pricing,
+        }
+    }
+}
+
+/// Build the Level 3 request classifier from config. `laya` also fires a one-shot health
+/// probe for the startup log; it never blocks or fails startup — per-request fallback to
+/// regex is what keeps routing safe while the sidecar is down or still loading its model.
+pub fn build_request_classifier(
+    cfg: &GatewayConfig,
+    http: &reqwest::Client,
+) -> Arc<dyn routing::RequestClassifier> {
+    use routing::request_classifier::ClassifierKind;
+    match ClassifierKind::from_label(&cfg.request_classifier) {
+        ClassifierKind::Regex => {
+            tracing::info!(
+                target: "nasiko::llm_router::startup",
+                "llm-router: request classifier = regex"
+            );
+            Arc::new(routing::RegexClassifier)
+        }
+        ClassifierKind::Local => match routing::local_classifier::LocalClassifier::embedded() {
+            Ok(local) => {
+                tracing::info!(
+                    target: "nasiko::llm_router::startup",
+                    "llm-router: request classifier = local (in-process hashed n-gram model)"
+                );
+                Arc::new(local)
+            }
+            Err(error) => {
+                tracing::warn!(
+                    target: "nasiko::llm_router::startup",
+                    %error,
+                    "llm-router: embedded local classifier failed to load; using regex"
+                );
+                Arc::new(routing::RegexClassifier)
+            }
+        },
+        ClassifierKind::StrandsRaw => Arc::new(
+            routing::laya::LayaClassifier::for_strands(
+                http.clone(),
+                &cfg.strands_url,
+                Duration::from_millis(cfg.strands_timeout_ms),
+            )
+            .with_api_key(&cfg.strands_api_key),
+        ),
+        ClassifierKind::Strands | ClassifierKind::Hybrid => {
+            let remote = routing::laya::LayaClassifier::for_strands_type_only(
+                http.clone(),
+                &cfg.strands_url,
+                Duration::from_millis(cfg.strands_timeout_ms),
+            )
+            .with_api_key(&cfg.strands_api_key);
+            let optimized =
+                routing::local_classifier::LocalClassifier::embedded().and_then(|local| {
+                    routing::strands::StrandsClassifier::new(
+                        remote,
+                        local,
+                        routing::strands::StrandsClassifier::embedded_temperature()?,
+                    )
+                });
+            match optimized {
+                Ok(optimized)
+                    if ClassifierKind::from_label(&cfg.request_classifier)
+                        == ClassifierKind::Hybrid =>
+                {
+                    match routing::local_classifier::LocalClassifier::embedded() {
+                        Ok(local) => {
+                            Arc::new(routing::hybrid::HybridClassifier::new(local, optimized))
+                        }
+                        Err(_) => Arc::new(routing::RegexClassifier),
+                    }
+                }
+                Ok(optimized) => Arc::new(optimized),
+                Err(error) => {
+                    tracing::warn!(target: "nasiko::llm_router::startup", %error,
+                        "classifier: Strands adapter failed to load; using regex");
+                    Arc::new(routing::RegexClassifier)
+                }
+            }
+        }
+        ClassifierKind::Laya => {
+            tracing::info!(
+                target: "nasiko::llm_router::startup",
+                laya_url = %cfg.laya_url,
+                laya_timeout_ms = cfg.laya_timeout_ms,
+                "llm-router: request classifier = laya (falls back to regex per request)"
+            );
+            if let Ok(rt) = tokio::runtime::Handle::try_current() {
+                let (http, url) = (http.clone(), cfg.laya_url.clone());
+                rt.spawn(async move {
+                    match routing::laya::probe_health(&http, &url).await {
+                        Ok(health) => tracing::info!(
+                            target: "nasiko::llm_router::startup",
+                            %health,
+                            "laya: health ok"
+                        ),
+                        Err(error) => tracing::warn!(
+                            target: "nasiko::llm_router::startup",
+                            %error,
+                            "laya: health probe failed; requests fall back to regex until it answers"
+                        ),
+                    }
+                });
+            }
+            Arc::new(routing::laya::LayaClassifier::new(
+                http.clone(),
+                &cfg.laya_url,
+                &cfg.laya_api_key,
+                Duration::from_millis(cfg.laya_timeout_ms),
+            ))
         }
     }
 }
