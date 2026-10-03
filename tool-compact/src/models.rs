@@ -75,6 +75,6 @@ impl CompactTools {
 
     /// Call instructions used by every compact request.
     pub const fn instructions() -> &'static str {
-        "Call <<call NAME {JSON}>>; repeat/omit; names exact."
+        "Call <<call NAME {JSON}>>; repeat/omit."
     }
 }
