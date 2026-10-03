@@ -33,7 +33,11 @@ mod salience_classifier;
 pub use boundary::{BoundarySignals, Mode, Phase};
 pub use cache::{CachedDecision, DecisionCache, NoopCache, RedisCache};
 pub use cells::{CellStore, InMemoryCellStore, PgCellStore};
-pub use classifier::{RequestType, Tier, classify, classify_request_type, signal};
+pub use classifier::{
+    Classification, ClassificationResult, ClassifyError, ClassifyInput, DEFAULT_W_COST,
+    DEFAULT_W_QUALITY, RegexRequestClassifier, RequestClassifier, RequestType, Tier, classify,
+    classify_request_type, pick_model_thompson, signal,
+};
 pub use registry::{PgTierRegistry, TierRegistry};
 pub use salience::{AllowAllGate, ClassifierSalienceGate, SalienceGate};
 
@@ -124,6 +128,7 @@ pub async fn route_model(
     registry: &dyn TierRegistry,
     cell_store: &dyn CellStore,
     gate: &dyn SalienceGate,
+    request_classifier: &dyn RequestClassifier,
     inputs: &RouteInputs<'_>,
 ) -> RouteDecision {
     tracing::info!(
@@ -250,9 +255,39 @@ pub async fn route_model(
             // (`ThreadRng`) is `!Send`, so it is scoped to drop before the next `.await` — the
             // handler future must stay `Send`.
             let learned = cell_store.load(inputs.provider).await;
-            let (tier, request_type) = {
+
+            let classification = request_classifier
+                .classify(&ClassifyInput {
+                    query,
+                context: None,
+                })
+              .await
+              .unwrap_or_else(|error| {
+                  tracing::warn!(
+                      target: "nasiko::llm_router::routing",
+                      agent_id = %inputs.agent_id,
+                      provider = %inputs.provider,
+                      classifier = request_classifier.name(),
+                      error = %error,
+                      "route_model: request classifier failed; falling back to deterministic regex classifier"
+        );
+
+        // The default regex backend is deterministic and cannot currently
+        // return a classification error.
+            RegexRequestClassifier::default()
+    .classify(query, None)
+    .into()
+});
+            let request_type = classification.request_type;
+            let tier = {
                 let mut rng = rand::rng();
-                classify(query, inputs.provider, &learned, &mut rng)
+                pick_model_thompson(
+                    &learned,
+                    request_type,
+                    DEFAULT_W_QUALITY,
+                    DEFAULT_W_COST,
+                    &mut rng,
+                )
             };
             // Per-config tier override takes priority over the global registry.
             let config_override = match tier {
@@ -452,7 +487,6 @@ pub fn user_turn_ordinal(messages: &[crate::ir::Message]) -> usize {
 pub fn is_tool_continuation(messages: &[crate::ir::Message]) -> bool {
     messages.last().is_some_and(|m| m.role == "tool")
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -546,6 +580,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &RegexRequestClassifier::default(),
             &inputs("anthropic", &s, Some("pinned-model")),
         )
         .await;
@@ -563,6 +598,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &RegexRequestClassifier::default(),
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -582,6 +618,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &RegexRequestClassifier::default(),
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -612,6 +649,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &DenyGate,
+            &RegexRequestClassifier::default(),
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -638,6 +676,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &DenyGate,
+            &RegexRequestClassifier::default(),
             &i,
         )
         .await;
@@ -658,6 +697,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &DenyGate,
+            &RegexRequestClassifier::default(),
             &i,
         )
         .await;
@@ -677,6 +717,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &DenyGate,
+            &RegexRequestClassifier::default(),
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -699,6 +740,7 @@ mod tests {
             &test_support::StubRegistry,
             &cells,
             &AllowAllGate,
+            &RegexRequestClassifier::default(),
             &i,
         )
         .await;
@@ -726,6 +768,7 @@ mod tests {
             &test_support::StubRegistry,
             &cells,
             &AllowAllGate,
+            &RegexRequestClassifier::default(),
             &i,
         )
         .await;
@@ -743,6 +786,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &RegexRequestClassifier::default(),
             &inputs("gemini", &s, None),
         )
         .await;
@@ -761,6 +805,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &RegexRequestClassifier::default(),
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -777,6 +822,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &RegexRequestClassifier::default(),
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -795,6 +841,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &RegexRequestClassifier::default(),
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -814,6 +861,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &RegexRequestClassifier::default(),
             &i,
         )
         .await;

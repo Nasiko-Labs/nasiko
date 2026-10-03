@@ -1041,6 +1041,9 @@ mod tests {
     fn ctx(base: String) -> LlmRouterCtx {
         let provider_base = base.clone();
         LlmRouterCtx {
+            request_classifier: std::sync::Arc::new(
+                crate::routing::RegexRequestClassifier::default(),
+            ),
             db: PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
             http: reqwest::Client::new(),
             cfg: Arc::new(GatewayConfig {

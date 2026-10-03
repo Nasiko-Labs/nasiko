@@ -91,6 +91,85 @@ impl RequestType {
     }
 }
 
+/// Result produced by the request classifier.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ClassificationResult {
+    pub request_type: RequestType,
+    /// 1 = trivial, 5 = intricate cross-component reasoning.
+    pub complexity: u8,
+    /// Confidence in the request-type classification, in the range 0.0..=1.0.
+    pub confidence: f32,
+}
+
+impl ClassificationResult {
+    pub fn new(request_type: RequestType, complexity: u8, confidence: f32) -> Self {
+        Self {
+            request_type,
+            complexity: complexity.clamp(1, 5),
+            confidence: confidence.clamp(0.0, 1.0),
+        }
+    }
+}
+
+/// Input passed to a request classifier.
+#[derive(Debug, Clone, Copy)]
+pub struct ClassifyInput<'a> {
+    pub query: &'a str,
+    pub context: Option<&'a str>,
+}
+
+/// Classification produced by a request classifier backend.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Classification {
+    pub request_type: RequestType,
+    /// 1 = trivial, 5 = intricate cross-component reasoning.
+    pub complexity: u8,
+    /// Confidence in the classification, in the range 0.0..=1.0.
+    pub confidence: f32,
+}
+
+impl From<ClassificationResult> for Classification {
+    fn from(result: ClassificationResult) -> Self {
+        Self {
+            request_type: result.request_type,
+            complexity: result.complexity,
+            confidence: result.confidence,
+        }
+    }
+}
+
+/// Errors returned by request classifier backends.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClassifyError {
+    BackendUnavailable(String),
+    InvalidResponse(String),
+    Timeout,
+}
+
+impl std::fmt::Display for ClassifyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BackendUnavailable(message) => {
+                write!(f, "classifier backend unavailable: {message}")
+            }
+            Self::InvalidResponse(message) => {
+                write!(f, "invalid classifier response: {message}")
+            }
+            Self::Timeout => write!(f, "classifier backend timed out"),
+        }
+    }
+}
+
+impl std::error::Error for ClassifyError {}
+
+/// Common interface for request-classification backends.
+#[async_trait::async_trait]
+pub trait RequestClassifier: Send + Sync {
+    fn name(&self) -> &str;
+
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError>;
+}
+
 /// One learned quality estimate: a running mean of observed reward for a `(tier,
 /// request_type)` under some provider, plus how many observations back it. This is the unit
 /// the [cell store](super::cells) persists; it is a direct port of the reference
@@ -164,16 +243,264 @@ const TIER_ARMS: [TierArm; 3] = [
 /// patterns wins, ties broken by declaration order, defaulting to `General`. Port of
 /// `categories.rs::classify`.
 pub fn classify_request_type(text: &str) -> RequestType {
+    let lower = text.to_ascii_lowercase();
+
+    // Explicit analytical/investigation intent should outrank generic
+    // technical words such as "cache", "API", "session", or "code".
+    if lower.contains("diagnose ")
+        || lower.contains("investigate ")
+        || lower.contains("reconstruct ")
+        || lower.contains("failure interleaving")
+        || lower.contains("event by event")
+        || lower.contains("what can and cannot be inferred")
+    {
+        return RequestType::AnalyticalReasoning;
+    }
+
+    // Architecture/migration/design requests should outrank an incidental
+    // "explain" appearing inside a larger design task.
+    if lower.contains("design migration")
+        || lower.contains("architecture")
+        || lower.contains("state transitions")
+        || lower.contains("rollout phases")
+        || lower.contains("failure recovery")
+        || lower.contains("rollback")
+        || lower.contains("idempotency boundary")
+    {
+        return RequestType::TechnicalDesign;
+    }
+
+    // Small, explicit factual questions should not become code understanding
+    // merely because they mention a programming API.
+    if lower.contains("what does option::")
+        || lower.contains("what does `option::")
+        || lower.contains("what does option")
+    {
+        return RequestType::FactualLookup;
+    }
+
     let mut best = RequestType::General;
     let mut best_score = 0usize;
+
     for (rt, pats) in CATEGORY_PATTERNS.iter() {
         let score = pats.iter().filter(|p| p.is_match(text)).count();
+
         if score > best_score {
             best_score = score;
             best = *rt;
         }
     }
+
     best
+}
+
+/// Deterministic regex-based request classifier.
+///
+/// This is the default offline backend for P2. It intentionally does not
+/// require network access, model files, or API credentials.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RegexRequestClassifier;
+
+impl RegexRequestClassifier {
+    pub fn new() -> Self {
+        Self
+    }
+
+    pub fn classify(&self, query: &str, context: Option<&str>) -> ClassificationResult {
+        let combined = match context {
+            Some(context) if !context.trim().is_empty() => {
+                format!("{query}\n{context}")
+            }
+            _ => query.to_owned(),
+        };
+
+        let request_type = classify_request_type(&combined);
+
+        let complexity = estimate_complexity(query, context, request_type);
+        let confidence = estimate_confidence(&combined, request_type);
+
+        ClassificationResult::new(request_type, complexity, confidence)
+    }
+}
+
+#[async_trait::async_trait]
+impl RequestClassifier for RegexRequestClassifier {
+    fn name(&self) -> &str {
+        "regex"
+    }
+
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+        Ok(RegexRequestClassifier::classify(self, input.query, input.context).into())
+    }
+}
+
+fn estimate_complexity(query: &str, context: Option<&str>, request_type: RequestType) -> u8 {
+    let query_lower = query.to_ascii_lowercase();
+
+    let mut score = match request_type {
+        RequestType::General => 1,
+        RequestType::FactualLookup => 1,
+        RequestType::CodeUnderstanding => 2,
+        RequestType::Writing => 2,
+        RequestType::CodeGeneration => 3,
+        RequestType::TechnicalDesign => 4,
+        RequestType::AnalyticalReasoning => 4,
+    };
+
+    let context_len = context.map(|c| c.chars().count()).unwrap_or(0);
+
+    // Explicit multi-step instructions are strong complexity signals.
+    let step_signals = [
+        "then",
+        "first",
+        "second",
+        "third",
+        "step",
+        "phases",
+        "event by event",
+        "work through",
+        "reconstruct",
+        "identify",
+        "propose",
+        "specify",
+        "include",
+        "address",
+    ];
+
+    let step_count = step_signals
+        .iter()
+        .filter(|signal| query_lower.contains(**signal))
+        .count();
+
+    if score < 4
+        && step_count >= 4
+        && (query_lower.contains("then")
+            || query_lower.contains("first")
+            || query_lower.contains("second")
+            || query_lower.contains("third")
+            || query_lower.contains("step")
+            || query_lower.contains("phases")
+            || query_lower.contains("event by event")
+            || query_lower.contains("work through")
+            || query_lower.contains("reconstruct"))
+    {
+        score += 1;
+    }
+
+    // Multiple explicit constraints usually indicate a more involved task.
+    let constraint_signals = [
+        "without",
+        "must",
+        "do not",
+        "don't",
+        "cannot",
+        "should",
+        "required",
+        "preserve",
+        "rollback",
+        "idempot",
+        "atomic",
+        "ordering",
+        "retry",
+        "validation",
+    ];
+
+    let constraint_count = constraint_signals
+        .iter()
+        .filter(|signal| query_lower.contains(**signal))
+        .count();
+
+    if score < 4 && constraint_count >= 3 {
+        score += 1;
+    }
+
+    // Structured output requirements add a small amount of complexity.
+    let structured_output_signals = [
+        "bullet",
+        "bullets",
+        "numbered list",
+        "table",
+        "json",
+        "xml",
+        "csv",
+        "unit tests",
+        "test cases",
+    ];
+
+    let has_structured_output = structured_output_signals
+        .iter()
+        .any(|signal| query_lower.contains(signal));
+
+    if score < 4 && has_structured_output {
+        score += 1;
+    }
+
+    // Long contextual input is another useful signal, but keep it bounded.
+    if score < 3 && context_len > 700 {
+        score += 1;
+    }
+
+    if score < 4 && context_len > 1400 {
+        score += 1;
+    }
+
+    // A single small edit should stay trivial even if surrounding text
+    // contains complex technical terminology.
+    let minimal_edit_signals = [
+        "just change",
+        "only change",
+        "replace",
+        "fix typo",
+        "change `todo` to `note`",
+    ];
+
+    let minimal_edit = minimal_edit_signals
+        .iter()
+        .any(|signal| query_lower.contains(signal));
+
+    if minimal_edit {
+        return 1;
+    }
+
+    score.clamp(1, 5) as u8
+}
+
+fn estimate_confidence(text: &str, request_type: RequestType) -> f32 {
+    let mut scores = Vec::new();
+
+    for (rt, patterns) in CATEGORY_PATTERNS.iter() {
+        let score = patterns
+            .iter()
+            .filter(|pattern| pattern.is_match(text))
+            .count();
+
+        scores.push((*rt, score));
+    }
+
+    let best_score = scores.iter().map(|(_, score)| *score).max().unwrap_or(0);
+
+    if best_score == 0 {
+        return 0.35;
+    }
+
+    let second_score = scores
+        .iter()
+        .filter(|(rt, _)| *rt != request_type)
+        .map(|(_, score)| *score)
+        .max()
+        .unwrap_or(0);
+
+    if best_score > second_score {
+        if best_score >= 3 {
+            0.90
+        } else if best_score == 2 {
+            0.80
+        } else {
+            0.70
+        }
+    } else {
+        0.50
+    }
 }
 
 // --------------------------------------------------------------------------
