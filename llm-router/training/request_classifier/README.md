@@ -63,10 +63,32 @@ Measured on an Apple M4 (10 cores), with a release build.
 | local v2 | train out-of-fold (CV) | 0.778 | — | 0.039 | — | — |
 | regex / local v2 | public 10 (smoke test, not evidence) | 0.3 / 1.0 | — | — | 0.2 / 0.5 exact | — |
 
+Second machine (Intel i3-1215U, Linux, release build): the regex and local v2 test rows reproduce exactly except for latency. Local p50 57–60 µs / p95 132–141 µs and load 15–25 ms over four runs.
+
+Hosted and cascade, final code, via OpenRouter (`mistralai/ministral-8b-2512`, i.e. Ministral 3 8B), default timeouts. Latency includes the network.
+
+| System | Split | Type acc | Macro-F1 | ECE (10) | Cx exact / ±1 / MAE | p50 / p95 |
+|---|---|---|---|---|---|---|
+| hosted (2/219 timed out → regex) | test (219) | 0.886 | 0.879 | 0.193 | 0.607 / 0.982 / 0.411 | 428 ms / 1.007 s |
+| hosted, second identical run | test (219) | 0.890 | 0.884 | 0.190 | 0.621 / 0.977 / 0.402 | 493 ms / 1.024 s |
+| cascade local → hosted, escalate below 0.6 | test (219) | 0.822 | 0.828 | 0.067 | 0.676 / 0.982 / 0.342 | 385 µs / 507 ms |
+
+- **Cascade accounting:**
+  - 46 escalations (21.0%); all 46 answered by hosted.
+  - 0 failed escalations, 0 regex fallbacks, 0 unclassified.
+  - See `reports/test_report_cascade.md`.
+- **Hosted-only beats the cascade on accuracy (0.886 vs 0.822).** The cascade sends 21% of requests to the hosted model and answers the rest locally in microseconds.
+- **Measured hosted cost:** $3.02e-5 per escalation on average (45/46 hit the prompt cache) and $6.35e-6 per cascade request. Both come from OpenRouter's per-response `usage.cost`, recorded by a measurement proxy.
+- **Hosted reproducibility:** two identical runs agreed on type for 216/217 items answered in both, and on type and complexity for 211/217.
+- **Earlier Bedrock run (pre-audit code, `mistral.ministral-3-8b-instruct`):**
+  - hosted 0.840, with 20 timeouts;
+  - cascade 0.822, where 5 of 46 escalations hit the 1.2 s budget and kept the local answer.
+- **Hosted confidence is uncalibrated.** The model returns no logprobs on either route, so every hosted answer carries the fixed default 0.7. That explains the hosted ECE, and it is mixed into the cascade ECE.
+
 Notes:
 - **v1 vs v2.** v1 fitted its temperature on val, which had already informed one error-analysis round. On test it was overconfident (135 items averaged 0.978 confidence at 0.881 accuracy). v2 picks C and T by cross-validation on train only. We report both because v2 was evaluated on test after we had seen v1's test result.
 - **Slices where local is weak on test:** boundary 0.43 (regex 0.57, the one slice where regex wins), negation 0.33, non_english 0.43, trap 0.50, misleading_keyword 0.57. Details are in `reports/test_report.md`.
 - **Recommended `CLASSIFIER_MIN_CONFIDENCE` is 0.6**, chosen on train out-of-fold predictions: 0.871 accuracy at 74% coverage. On test, τ = 0.6 gives 0.827 at 79% coverage. The router default stays 0.0 (off).
 - **Artifact and cost:**
-  - The artifact is 1.40 MB embedded (12,643 buckets), loads in about 27 ms including the warm-up, and costs $0 per decision on CPU.
+  - The artifact is 1.40 MB embedded (12,643 buckets), loads in about 27 ms including the warm-up, and makes no provider call (no per-decision API charge; compute cost was not measured in dollars).
   - The 1.9 MB cap forced pruning at |w| < 0.29. That cost about one val item (0.5 points) against the unpruned model.
