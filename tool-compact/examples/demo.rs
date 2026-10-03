@@ -1,4 +1,4 @@
-use nasiko_tool_compact::{decode_tools, encode_tools, ToolDef};
+use nasiko_tool_compact::{ToolDef, decode_tools, encode_tools};
 use serde_json::json;
 
 fn main() {
@@ -88,10 +88,17 @@ fn main() {
 
     println!(">>> 3. TESTING ROUND-TRIP WITH decode_tools():");
     let decoded = decode_tools(&compact).expect("Decoding failed");
-    println!("Successfully decoded {} tools back into JSON Schema!", decoded.len());
+    println!(
+        "Successfully decoded {} tools back into JSON Schema!",
+        decoded.len()
+    );
     for (i, (dec, orig)) in decoded.iter().zip(tools.iter()).enumerate() {
         assert_eq!(dec.name, orig.name);
-        println!("  ✓ Tool [{}] '{}' names and schemas match 100%!", i + 1, dec.name);
+        println!(
+            "  ✓ Tool [{}] '{}' names and schemas match 100%!",
+            i + 1,
+            dec.name
+        );
     }
 
     println!("\n=======================================================");
