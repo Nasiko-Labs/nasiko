@@ -309,7 +309,7 @@ pub fn classify<R: Rng + ?Sized>(
     rng: &mut R,
 ) -> (Tier, RequestType) {
     let request_type = classify_request_type(query);
-    let tier = pick_model_thompson(cells, request_type, DEFAULT_W_QUALITY, DEFAULT_W_COST, rng);
+    let tier = pick_tier(cells, request_type, rng);
     let preview: String = query.chars().take(120).collect();
     tracing::info!(
         target: "nasiko::llm_router::classifier",
@@ -322,6 +322,11 @@ pub fn classify<R: Rng + ?Sized>(
         "classifier: classified query into request type and Thompson-sampled a model tier"
     );
     (tier, request_type)
+}
+
+/// Thompson-sample a tier for an already-classified request type.
+pub fn pick_tier<R: Rng + ?Sized>(cells: &CellMap, request_type: RequestType, rng: &mut R) -> Tier {
+    pick_model_thompson(cells, request_type, DEFAULT_W_QUALITY, DEFAULT_W_COST, rng)
 }
 
 #[cfg(test)]

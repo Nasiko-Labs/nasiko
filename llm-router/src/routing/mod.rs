@@ -27,6 +27,7 @@ pub mod classifier;
 mod patterns;
 pub mod pricing_sync;
 pub mod registry;
+pub mod request_classifier;
 pub mod salience;
 mod salience_classifier;
 
@@ -35,6 +36,11 @@ pub use cache::{CachedDecision, DecisionCache, NoopCache, RedisCache};
 pub use cells::{CellStore, InMemoryCellStore, PgCellStore};
 pub use classifier::{RequestType, Tier, classify, classify_request_type, signal};
 pub use registry::{PgTierRegistry, TierRegistry};
+pub use request_classifier::{
+    Classification, ClassificationInput, ClassifierError, DEFAULT_CLASSIFIER_TIMEOUT_MS,
+    ModelAgnosticClassifier, ModelClassificationRequest, ModelClassifierBackend, RegexClassifier,
+    RequestClassifier, classifier_timeout_from_env,
+};
 pub use salience::{AllowAllGate, ClassifierSalienceGate, SalienceGate};
 
 /// Which precedence level produced a routing decision — emitted as a structured tag so we
@@ -83,6 +89,8 @@ pub struct RouteInputs<'a> {
     pub signals: &'a BoundarySignals,
     /// The query to classify (latest user message text). `None` disables classification.
     pub query: Option<&'a str>,
+    /// Optional conversation/context text supplied to model-backed classifiers.
+    pub context: Option<&'a str>,
 }
 
 /// The outcome of routing: the model to call and how it was chosen.
@@ -124,6 +132,19 @@ pub async fn route_model(
     registry: &dyn TierRegistry,
     cell_store: &dyn CellStore,
     gate: &dyn SalienceGate,
+    inputs: &RouteInputs<'_>,
+) -> RouteDecision {
+    route_model_with_classifier(cache, registry, cell_store, gate, &RegexClassifier, inputs).await
+}
+
+/// Like [`route_model`], but uses an injectable request classifier at safe boundaries.
+/// Errors and invalid results fail closed to [`RegexClassifier`].
+pub async fn route_model_with_classifier(
+    cache: &dyn DecisionCache,
+    registry: &dyn TierRegistry,
+    cell_store: &dyn CellStore,
+    gate: &dyn SalienceGate,
+    classifier: &dyn RequestClassifier,
     inputs: &RouteInputs<'_>,
 ) -> RouteDecision {
     tracing::info!(
@@ -250,9 +271,57 @@ pub async fn route_model(
             // (`ThreadRng`) is `!Send`, so it is scoped to drop before the next `.await` — the
             // handler future must stay `Send`.
             let learned = cell_store.load(inputs.provider).await;
+            let classification_input = ClassificationInput {
+                query,
+                context: inputs.context,
+            };
+            let classifier_timeout = match classifier.timeout() {
+                Some(timeout) => Some(timeout),
+                None => match classifier_timeout_from_env() {
+                    Ok(timeout) => Some(timeout),
+                    Err(error) => {
+                        tracing::warn!(
+                            target: "nasiko::llm_router::classifier",
+                            %error,
+                            "invalid classifier timeout configuration; using regex fallback"
+                        );
+                        None
+                    }
+                },
+            };
+            let result = match classifier_timeout {
+                Some(timeout) => {
+                    tokio::time::timeout(timeout, classifier.classify(classification_input))
+                        .await
+                        .unwrap_or(Err(ClassifierError::Timeout))
+                }
+                None => Err(ClassifierError::Backend(
+                    "invalid classifier timeout configuration".to_owned(),
+                )),
+            };
+            let classification = match result {
+                Ok(classification) if classification.is_valid() => classification,
+                result => {
+                    tracing::warn!(
+                        target: "nasiko::llm_router::classifier",
+                        error = ?result.err(),
+                        "request classifier failed or returned an invalid result; using regex fallback"
+                    );
+                    RegexClassifier::classify_fallback(classification_input)
+                }
+            };
+            tracing::info!(
+                target: "nasiko::llm_router::classifier",
+                provider = %inputs.provider,
+                request_type = %classification.request_type.as_str(),
+                complexity = classification.complexity,
+                confidence = classification.confidence,
+                "request classifier: completed classification"
+            );
             let (tier, request_type) = {
                 let mut rng = rand::rng();
-                classify(query, inputs.provider, &learned, &mut rng)
+                let tier = classifier::pick_tier(&learned, classification.request_type, &mut rng);
+                (tier, classification.request_type)
             };
             // Per-config tier override takes priority over the global registry.
             let config_override = match tier {
@@ -462,6 +531,17 @@ mod tests {
     use serde_json::{Map, Value};
     use std::sync::Mutex;
 
+    struct NeverClassify;
+    #[async_trait]
+    impl RequestClassifier for NeverClassify {
+        async fn classify(
+            &self,
+            _input: ClassificationInput<'_>,
+        ) -> Result<Classification, ClassifierError> {
+            panic!("classifier must not run during a continue turn");
+        }
+    }
+
     /// A cache seeded with one hit and recording every `put`, to prove read/write levels.
     struct FakeCache {
         hit: Option<CachedDecision>,
@@ -532,6 +612,7 @@ mod tests {
             tier3_model: None,
             signals,
             query: Some("hello"),
+            context: None,
         }
     }
 
@@ -558,11 +639,12 @@ mod tests {
     async fn level2_cache_hit_short_circuits_before_classify() {
         let cache = FakeCache::with_hit("cached-model");
         let s = signals(Some("c1"), Phase::Switch, Mode::FreeFlowing);
-        let d = route_model(
+        let d = route_model_with_classifier(
             &cache,
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &NeverClassify,
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -756,11 +838,12 @@ mod tests {
         // A tool-loop turn (phase=continue) with a cache miss falls to config, never classifies.
         let cache = FakeCache::empty();
         let s = signals(Some("c1"), Phase::Continue, Mode::FreeFlowing);
-        let d = route_model(
+        let d = route_model_with_classifier(
             &cache,
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &NeverClassify,
             &inputs("anthropic", &s, None),
         )
         .await;
