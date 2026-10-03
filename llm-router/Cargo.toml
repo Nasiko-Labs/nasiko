@@ -67,3 +67,6 @@ base64 = { workspace = true }
 mockito = { workspace = true }
 tower = { workspace = true }
 zstd.workspace = true
+# Compact-tools eval example only (never a dependency of the library).
+nasiko-tool-compact.workspace = true
+tiktoken-rs = "=0.12.1"
