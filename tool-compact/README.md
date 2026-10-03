@@ -227,6 +227,11 @@ or live validation output is an explicit `invalid_arguments` error rather than a
 claimed successful reconstruction. Such requests still preserve their native
 tools for the provider; no unsafe compact call is accepted.
 
+The live adapter requires native `function.arguments` text to be one complete
+JSON value before framing it for the shared decoder. Malformed text cannot inject
+extra calls through the compact wrapper. The decoder still enforces object shape,
+duplicate-key/numeric checks and schema validation without rewriting arguments.
+
 ## Checks and limitations
 
 ```sh

@@ -4,7 +4,7 @@
 
 Submission readiness: **GO**.
 
-Independent source, manifest, test, architecture and evaluator review completed on 2026-10-03. Required P1 behavior passes locally. The audit reproduced and minimally fixed one evaluator completeness defect, added two meaningful core tests and one evaluator regression, and corrected stale design documentation. No router runtime integration or grammar optimization was added.
+Independent source, manifest, test, architecture and evaluator review completed on 2026-10-03 and repeated against the committed audit implementation. Required P1 behavior passes locally. The initial audit fixed an evaluator completeness defect, added two core tests and one evaluator regression, and corrected stale design documentation. The repeated audit reproduced and fixed native live-argument framing injection with one focused regression. No router runtime integration or grammar optimization was added.
 
 This is a local engineering acceptance decision. Real-model adherence is **NOT VERIFIED LOCALLY** and remains an explicit optional/live evaluation limitation.
 
@@ -13,10 +13,10 @@ This is a local engineering acceptance decision. Real-model adherence is **NOT V
 - Repository: `YellankiKaushik/Nasiko-Build-a-thon`; upstream `Nasiko-Labs/nasiko`.
 - Local checkout: `Nasiko-Build-a-thon-repo` within the Nasiko Build-a-thon workspace.
 - Branch: `compact-tools`.
-- Audited starting commit: `e63af8490fe96d3d7037830c473393daa1568551`.
+- Initial audit starting commit: `e63af8490fe96d3d7037830c473393daa1568551`; repeated audit starting commit: `2c651e5158e47d32472639fcbdaf46d856bca185`.
 - Final audit changes are in the single child commit containing this report; use `git rev-parse HEAD` for its exact ID. A report cannot embed its own Git commit ID.
 - Upstream fetched: `796211c2c3b383086294a4e744d13b937a12aea7`; merge base `70b4e74c169444b9accebbd599d9822d56d66f03`.
-- Starting branch had 7 local commits and upstream had 1 additional commit. The audit adds one commit without rewriting history.
+- The repeated audit started with 8 local commits and upstream had 1 additional commit. Each audit adds one justified fix commit without rewriting history.
 - `git merge-tree --write-tree compact-tools upstream/main` succeeded without conflicts. No merge/rebase was performed.
 - Starting and final delivered working tree: CLEAN. Verification covers the source and documentation changes before the audit commit; origin and PR head are checked after the normal push.
 - Existing PR: [Nasiko-Labs/nasiko #228](https://github.com/Nasiko-Labs/nasiko/pull/228). Update the existing branch; do not create or merge another PR.
@@ -67,6 +67,7 @@ Paths are relative to the repository. PASS refers to observed implementation/tes
 | Router defaults unchanged | no llm-router/src diff; dev dependency only | 379 router tests pass | PASS |
 | Optional lexical ToolScope | scope modules | scope/policy tests, synthetic demo | PASS |
 | Optional live adapter | live.rs | hermetic HTTP mock + native parsing tests | PASS |
+| Native argument framing integrity | live.rs native_calls | injected call text rejected; valid JSON and delimiter strings retained | PASS |
 | Real-model adherence | optional provider example | no successful external model run | PARTIAL |
 | Production router integration | intentionally skipped stretch | zero production router changes | NOT APPLICABLE |
 
@@ -126,6 +127,8 @@ Native fallback preserves full tools/messages and supported request options. Com
 
 Reproduced audit defect: a native-only `1_ping` name selected native fallback but expected-call rendering aborted evaluation before any record. After the minimal fix, the first record preserves native tools, `compacted:false` and an explicit `invalid_arguments` error; a following supported ping case succeeds. Malformed datasets, missing tool references, I/O failures and live HTTP errors remain fatal errors.
 
+Repeated audit defect: one native `function.arguments` string of `{}>> <<call ping {}` was accepted as two ping calls when blindly wrapped in compact framing. A failing regression reproduced this. The adapter now first requires exactly one complete JSON value using serde's IgnoredAny, without constructing an extra Value or changing argument text. The shared decoder still enforces object shape, duplicate-key/numeric checks, limits and schema semantics. The regression also confirms a valid empty object and marker text inside a valid JSON string remain accepted.
+
 ## 9. Determinism
 
 Executed two offline release runs with distinct OUT files and MODEL/base unset. Windows `fc.exe /b` reports **no differences**. Both outputs have SHA-256:
@@ -169,7 +172,7 @@ The complete requested suite was rerun after the code and documentation changes.
 | `cargo check -p nasiko-tool-compact` | PASS |
 | `cargo test -p nasiko-tool-compact` | PASS: 34 integration tests + 1 doctest |
 | `cargo check -p nasiko-llm-router --example compact_tools_eval` | PASS |
-| `cargo test -p nasiko-llm-router --example compact_tools_eval` | PASS: 8 tests including hermetic live mock |
+| `cargo test -p nasiko-llm-router --example compact_tools_eval` | PASS: 9 tests including hermetic live mock and native framing regression |
 | `cargo test -p nasiko-llm-router` | PASS: 379 passed; 1 library and 6 infrastructure tests ignored |
 | `cargo check --workspace` | PASS |
 | `cargo clippy --workspace` | PASS |
@@ -192,7 +195,7 @@ Additional executed checks: two offline release evaluator runs, binary compariso
 | scope | 3 | Exact scores, ordering and uncertainty fallback |
 | policy | 2 | Explicit opt-in and all-original native fallback |
 
-Logs and datasets are in the OS temporary directory under `toolzip-audit-*`, outside the commit.
+Logs and datasets are in the OS temporary directory under `toolzip-audit-*` and `toolzip-reaudit-*`, outside the commit.
 
 ## 13. Security
 
@@ -204,11 +207,13 @@ Production crate forbids unsafe and denies Clippy unwrap_used, expect_used and p
 
 Description encoding blocks structural delimiter escape while preserving exact text. Strict parsing, nesting/size/count bounds and atomic finish constrain malformed-output handling. These measures do not replace tool execution authorization, natural-language prompt-injection defenses or caller-level input allocation budgets. A pattern scan/source audit is scoped evidence, not a universal secret-discovery or vulnerability proof.
 
+Native live argument text is validated as one complete JSON value before compact framing, preventing malformed argument text from manufacturing additional validated calls. The guard does not coerce, reserialize or repair text; duplicate-key and numeric protections still run in the shared decoder.
+
 ## 14. Git / PR Scope
 
 Reviewed every changed contribution file: manifests/lockfile, all production modules, nine test files, evaluator helpers/examples and documentation. The large architecture copy was read in full and checked against actual code.
 
-At audit start: 39 changed files, 7374 insertions, 34 deletions against the upstream merge base. Two useful audit/knowledge-transfer documents and minimal audit fixes extend that contribution. No production `llm-router/src` diff, no unrelated runtime behavior change, no logs/credentials/temp fixtures in the contribution.
+At initial audit start: 39 changed files, 7374 insertions, 34 deletions against the upstream merge base. At repeated audit start: 41 files, 8163 insertions, 34 deletions. The follow-up changes stay within the live evaluator example and existing documentation. No production `llm-router/src` diff, no unrelated runtime behavior change, no logs/credentials/temp fixtures in the contribution.
 
 Upstream's extra commit concerns classification tests/export paths; merge-tree found no conflicts. No rebase, force push or merge was needed. Existing PR #228 remains the submission; final normal push and refreshed body record this audit's counts/limitations. Its description distinguishes public and synthetic results and does not claim verified real-model adherence.
 
@@ -224,7 +229,7 @@ Public type comments no longer imply that CompactTools contains the call instruc
 
 **NOT VERIFIED LOCALLY.**
 
-**MOCK LIVE ADAPTER: PASS.** A hermetic local HTTP mock verifies configured model, temperature 0, endpoint post, raw output and compact-call reconstruction. Native result tests reject unknown names and duplicate arguments. Auth handling and endpoint/environment configuration were inspected in source; the two adapter tests do not establish external-provider compatibility for every environment.
+**MOCK LIVE ADAPTER: PASS.** A hermetic local HTTP mock verifies configured model, temperature 0, endpoint post, raw output and compact-call reconstruction. Native result tests reject unknown names, duplicate arguments and injected framing while preserving valid arguments. Auth handling and endpoint/environment configuration were inspected in source; the three adapter tests do not establish external-provider compatibility for every environment.
 
 No successful real-provider/model request was performed in this audit. Earlier implementation notes record HTTP 401 from the available credential; that prior failure is not a successful adherence test and was not retried as a paid model run. Offline reconstruction and mocks must not be presented as model compliance.
 
@@ -245,8 +250,11 @@ No successful real-provider/model request was performed in this audit. Earlier i
 
 ## 18. Changes Made During Audit
 
+The initial audit is preserved in commit 2c651e51. This repeated audit adds only the native live-argument fix/regression, current evidence updates and small walkthrough formatting corrections.
+
 - Fixed one reproducible evaluator defect: expected-call rendering failures now become stable per-case validation errors instead of aborting native-fallback evaluation.
 - Added the smallest evaluator regression for a native-only identifier.
+- Fixed reproduced native live-argument framing injection by requiring complete JSON before adding call markers; added a focused negative/positive regression.
 - Added positive legacy hash-annotation/CALL-footer semantic reconstruction coverage.
 - Added inclusive 16 MiB response and 4096-call boundaries with sticky rejection above limits.
 - Corrected public type comments and stale architecture status/grammar/escaping/integer/finish/duplicate-call/resolved-question text.
@@ -263,4 +271,4 @@ Live-model adherence, production integration and ToolScope recall evaluation rem
 
 **GO FOR SUBMISSION.**
 
-The required compiler/decoder/evaluator path passes the complete local verification suite, public 3/3 round trips and 5/5 decoder cases, exact offline determinism, supported-schema reconstruction and the public 31.25% full-body token target. Dependency purity and unchanged production router behavior are demonstrated. The audit found and repaired a concrete per-case completeness defect without widening scope. Submit the existing PR with the explicit live/model, subset and optional-selection limitations above.
+The required compiler/decoder/evaluator path passes the complete local verification suite, public 3/3 round trips and 5/5 decoder cases, exact offline determinism, supported-schema reconstruction and the public 31.25% full-body token target. Dependency purity and unchanged production router behavior are demonstrated. The audits repaired concrete per-case completeness and native-argument framing defects without widening scope. Submit the existing PR with the explicit live/model, subset and optional-selection limitations above.

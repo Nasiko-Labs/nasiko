@@ -114,8 +114,8 @@ Properties are alphabetically ordered through `BTreeMap`; supplied tool order an
 | Homogeneous array | `[str]`, nested `[[int]]` |
 | Nested object | `{city:str,unit?:str}` |
 | Closed object | `{city:str}!` or function signature ending `)!` |
-| Scalar enum | `str=public|private`, `int=1|2`, `bool=true|false` |
-| String enum with a delimiter in its value | JSON-quoted `str="a|b"` |
+| Scalar enum | `str=public\|private`, `int=1\|2`, `bool=true\|false` |
+| String enum with a delimiter in its value | JSON-quoted `str="a\|b"` |
 | String format | `datetime` for `date-time`; otherwise `str<"email">` |
 | Schema description | `str(Text to echo)` or `str("Text with (parentheses)")` |
 | Function description | ` - Echo text` or ` - "Text with (parentheses)"` |
@@ -172,6 +172,8 @@ An unsupported `oneOf` schema means native fallback for the whole original reque
 A native fallback is an actual request with the native `tools` array and original options. The pure library returns an error or native policy outcome; caller/example code constructs and sends the native body. Native-only unsupported schemas cannot be validated with this subset validator. The evaluator reports an explicit validation error for such round trips; native fallback alone is not a claim of supported-schema reconstruction.
 
 The audit fixed a related evaluator defect: a native-only name such as `1_ping` previously caused `render_calls` to abort the entire dataset. It now writes a case record with `compacted:false`, the intact native request, empty `rendered_calls` and `roundtrip_calls:{"error":"invalid_arguments"}`, then continues subsequent cases.
+
+The repeated audit also fixed native live-call framing injection. Native `function.arguments` must contain one complete JSON value before its original text is wrapped for the shared decoder. Otherwise malformed text such as `{}>> <<call ping {}` could manufacture another call. The guard uses IgnoredAny to check JSON syntax without another Value allocation; the decoder still checks object shape, duplicate keys, lossless numerics and schemas. Delimiters inside valid JSON strings remain ordinary data.
 
 ## 12. Supported JSON Schema subset
 
@@ -286,7 +288,7 @@ The fixture labels itself synthetic and not organizer scores. This favorable lex
 | `TOOLZIP_PROJECT_WALKTHROUGH.md` | This contributor guide |
 | `TOOLZIP_FINAL_AUDIT.md` | Requirement matrix and independently rerun acceptance evidence |
 
-The nine integration-test files are mapped in `20. Internal parser/renderer modules remain private; the canonical AST is intentionally public for semantic equality and request legend inspection. No public API refactor was needed.
+The nine integration-test files are mapped in section 20. Internal parser/renderer modules remain private; the canonical AST is intentionally public for semantic equality and request legend inspection. No public API refactor was needed.
 
 ## 19. Important Rust APIs
 
@@ -349,10 +351,10 @@ fn example() -> Result<(), Box<dyn std::error::Error>> {
 | `scope.rs` | 3 | Determinism/order, fallback, weights and safety tail |
 | `policy.rs` | 2 | Explicit opt-in, forced choices, selected-schema whole-original fallback |
 | README doctest | 1 | Executable public API example |
-| Evaluator example | 8 | Request equivalence/fallback, chunks and labels, AST legend, native-only name recording, live/native adapter mocks |
+| Evaluator example | 9 | Request equivalence/fallback, chunks and labels, AST legend, native-only name recording, live/native adapters and native framing rejection |
 | Existing router suite | 379 passing | Existing router tests remain green; 7 infrastructure-dependent tests ignored |
 
-Totals: 34 core integration tests plus one doctest; eight evaluator tests. Hermetic HTTP mocks prove request/response adapter behavior, not real-model language adherence. Tests cover required and adversarial behavior but are not a formal proof or exhaustive fuzzer campaign.
+Totals: 34 core integration tests plus one doctest; nine evaluator tests. Hermetic HTTP mocks prove request/response adapter behavior, not real-model language adherence. Tests cover required and adversarial behavior but are not a formal proof or exhaustive fuzzer campaign.
 
 ## 21. Current limitations
 
@@ -382,7 +384,7 @@ The response protocol is a call marker around a function name and JSON object. A
 
 The official example resolves tools generically, preserves messages and options, writes one record per normal or decoder case, and uses a fixed date. It operates offline by default. Full serialized request token counts use pinned o200k_base: 656 to 451, or 31.25%, with three call cases and five decoder cases matching expected output. The separate lexical selector is opt-in and falls back to all tools under uncertainty. Mocks exercise the live adapter, while real-model adherence and production integration remain explicit limits. This submission demonstrates a safe compiler and decoder, not a claim that every model or arbitrary schema has already been validated.
 
-+### Exact Windows demo commands
+### Exact Windows demo commands
 
 These commands use this machine's installed Rust and Visual Studio 2022 Build Tools. Run them in PowerShell in order. Clearing MODEL/base keeps the demo offline without altering saved credentials.
 
@@ -440,4 +442,4 @@ Expected: eight JSONL records, no binary differences, public totals 656/451/0.31
 | Are 30 and 30.0 both integers? | Both are mathematically integral and accepted; fractions and string numerals are rejected. |
 | Are there hidden native schemas in CompactTools? | No. Only rendered text is stored; reconstruction reads that text. |
 | Does native fallback validate arbitrary schemas? | No. It preserves the request; unsupported-subset validation returns an explicit error. |
-| What did the final audit actually fix? | Native-only expected-call names no longer abort JSONL evaluation; the audit also added limit/legacy tests and corrected stale documentation. |
+| What did the final audits actually fix? | Native-only expected-call names no longer abort JSONL evaluation, and native argument text cannot inject additional framed calls. The audits also added limit/legacy tests and corrected documentation. |
