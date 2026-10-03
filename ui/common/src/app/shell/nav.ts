@@ -13,6 +13,7 @@ import {
   ListTree,
   MessageSquare,
   Plug,
+  Shrink,
   SquareTerminal,
   Waypoints,
   Workflow,
@@ -39,6 +40,7 @@ export interface NavItem {
     | '/agents'
     | '/router'
     | '/mcp'
+    | '/compact-tools'
     | '/workflows'
     | '/sessions'
     | '/tokenops'
@@ -68,6 +70,13 @@ export const NAV_ITEMS: readonly NavItem[] = [
   // What agents can call: models (plans/feat-llm-router.md §4), then tools (plans/feat-mcp.md §1).
   { to: '/router', label: copy.nav.router, icon: Waypoints, group: 'connect', shared: false },
   { to: '/mcp', label: copy.nav.mcp, icon: Plug, group: 'connect', shared: false },
+  {
+    to: '/compact-tools',
+    label: copy.nav.compactTools,
+    icon: Shrink,
+    group: 'connect',
+    shared: false,
+  },
   { to: '/sessions', label: copy.nav.sessions, icon: ListTree, group: 'observe', shared: true },
   { to: '/tokenops', label: copy.nav.tokenops, icon: DollarSign, group: 'observe', shared: true },
   {

@@ -24,6 +24,7 @@ export const copy = {
     agents: 'Agents',
     router: 'LLM router',
     mcp: 'MCP servers',
+    compactTools: 'Compact Tools',
     workflows: 'Workflows',
     sessions: 'Sessions',
     tokenops: 'TokenOps',

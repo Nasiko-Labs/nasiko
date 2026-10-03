@@ -1120,6 +1120,28 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
         if (m.model === 'gemini-2.0-flash') rows.push(row('boot seed (static list)', 12))
         byProvider.set(m.provider, [...(byProvider.get(m.provider) ?? []), ...rows])
       }
+      for (const c of getRouter().custom.filter((p) => !p.deleted)) {
+        const modelNames = c.models.length
+          ? c.models
+          : c.default_model
+            ? [c.default_model]
+            : []
+        const rows: S['ModelEntry'][] = modelNames.map((model) => ({
+          model,
+          input_price_per_1m: null,
+          output_price_per_1m: null,
+          cache_creation_price_per_1m: null,
+          cache_read_price_per_1m: null,
+          currency: null,
+          notes: null,
+          effective_from: null,
+          effective_until: null,
+          pricing_available: false,
+        }))
+        const existing = byProvider.get(c.label) ?? []
+        const existingModels = new Set(existing.map((e) => e.model))
+        byProvider.set(c.label, [...existing, ...rows.filter((r) => !existingModels.has(r.model))])
+      }
       const custom = new Map(listCustom(getRouter()).map((c) => [c.label, c]))
       return HttpResponse.json({
         data: [...byProvider.entries()].map(([provider, models]) => {
@@ -1537,7 +1559,16 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
           throw new MockHttpError(400, 'base_url and api_key are required')
         if (hasVariant('router-custom-down'))
           return envelope({ chat_ok: false, chat_error: 'connection refused', models: [] })
-        return envelope({ chat_ok: !!body.model, models: ['custom-local', 'custom-large'] })
+        const models = body.base_url?.includes('bedrock')
+          ? [
+              'openai.gpt-5.6-luna',
+              'openai.gpt-5.4',
+              'openai.gpt-6-luna',
+              'mistral.devstral-2-123b',
+              'qwen.qwen3-coder-30b-a3b-instruct',
+            ]
+          : ['custom-local', 'custom-large']
+        return envelope({ chat_ok: true, models })
       }, true)
     }),
     http.patch('/api/custom-providers/:id', async ({ params: prm, request }) => {
