@@ -1,0 +1,16 @@
+[package]
+name = "nasiko-tool-compact"
+version = "0.1.0"
+edition = "2024"
+authors = ["Nasiko Labs"]
+description = "Lossless compact tool schemas with fail-closed decoder"
+license = "Apache-2.0"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+thiserror = "2"
+regex = "1"
+
+[dev-dependencies]
+proptest = "1"
