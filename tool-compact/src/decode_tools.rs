@@ -189,41 +189,60 @@ fn parse_properties_list(params_str: &str) -> Result<(Map<String, Value>, Vec<St
 
 fn extract_trailing_description(s: &str) -> (&str, Option<String>) {
     let trimmed = s.trim();
-    if !trimmed.ends_with('"') {
-        return (trimmed, None);
-    }
 
-    // Scan backwards from end-1 to find matching unescaped opening quote
-    let bytes = trimmed.as_bytes();
-    let mut quote_start = None;
-
-    let mut i = bytes.len() - 1;
-    while i > 0 {
-        i -= 1;
-        if bytes[i] == b'"' {
-            // Count preceding backslashes
-            let mut backslashes = 0;
-            let mut j = i;
-            while j > 0 && bytes[j - 1] == b'\\' {
-                backslashes += 1;
-                j -= 1;
-            }
-            if backslashes % 2 == 0 {
-                // This is the unescaped opening quote
-                quote_start = Some(i);
-                break;
+    // 1. Check for parentheses description: `type (description)`
+    if trimmed.ends_with(')') {
+        let mut depth = 0;
+        for (idx, c) in trimmed.char_indices().rev() {
+            match c {
+                ')' => depth += 1,
+                '(' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        let type_part = trimmed[..idx].trim();
+                        if !type_part.is_empty() {
+                            let desc_raw = trimmed[idx + 1..trimmed.len() - 1].trim();
+                            return (type_part, Some(desc_raw.to_string()));
+                        }
+                        break;
+                    }
+                }
+                _ => {}
             }
         }
     }
 
-    if let Some(start_idx) = quote_start {
-        let type_part = trimmed[..start_idx].trim();
-        let desc_raw = &trimmed[start_idx + 1..trimmed.len() - 1];
-        let unescaped = desc_raw.replace("\\\"", "\"").replace("\\\\", "\\");
-        (type_part, Some(unescaped))
-    } else {
-        (trimmed, None)
+    // 2. Check for quoted description: `type "description"`
+    if trimmed.ends_with('"') {
+        let bytes = trimmed.as_bytes();
+        let mut quote_start = None;
+
+        let mut i = bytes.len() - 1;
+        while i > 0 {
+            i -= 1;
+            if bytes[i] == b'"' {
+                let mut backslashes = 0;
+                let mut j = i;
+                while j > 0 && bytes[j - 1] == b'\\' {
+                    backslashes += 1;
+                    j -= 1;
+                }
+                if backslashes % 2 == 0 {
+                    quote_start = Some(i);
+                    break;
+                }
+            }
+        }
+
+        if let Some(start_idx) = quote_start {
+            let type_part = trimmed[..start_idx].trim();
+            let desc_raw = &trimmed[start_idx + 1..trimmed.len() - 1];
+            let unescaped = desc_raw.replace("\\\"", "\"").replace("\\\\", "\\");
+            return (type_part, Some(unescaped));
+        }
     }
+
+    (trimmed, None)
 }
 
 fn parse_type_schema(type_str: &str) -> Result<Value> {

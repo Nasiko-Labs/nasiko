@@ -81,8 +81,7 @@ fn encode_object_properties(schema: &Value) -> Result<String> {
 
         let desc_str = if let Some(desc) = prop_schema.get("description").and_then(|d| d.as_str()) {
             let collapsed = collapse_whitespace(desc);
-            let escaped = collapsed.replace('\\', "\\\\").replace('"', "\\\"");
-            format!(" \"{escaped}\"")
+            format!(" ({collapsed})")
         } else {
             String::new()
         };
@@ -180,21 +179,21 @@ mod tests {
 
         let compact = encode_tools(&[tool]).unwrap();
         assert!(compact.definitions.contains("create_calendar_event("));
-        assert!(compact.definitions.contains("title:str \"Event title\""));
+        assert!(compact.definitions.contains("title:str (Event title)"));
         assert!(
             compact
                 .definitions
-                .contains("start:datetime \"Start time, ISO 8601\"")
+                .contains("start:datetime (Start time, ISO 8601)")
         );
         assert!(
             compact
                 .definitions
-                .contains("duration_min?:int \"Duration in minutes\"")
+                .contains("duration_min?:int (Duration in minutes)")
         );
         assert!(
             compact
                 .definitions
-                .contains("attendees?:[str] \"Attendee emails\"")
+                .contains("attendees?:[str] (Attendee emails)")
         );
         assert!(compact.definitions.contains("visibility?:public|private"));
         assert!(
