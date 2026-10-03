@@ -4070,6 +4070,1014 @@
     "ambiguous"
    ],
    "group": "writing-415"
+  },
+  {
+   "id": "va-00353",
+   "query": "so before anyone writes the code — will a bloom filter with 10M entries and 1% FPR even fit in the 16MB lambda memory budget we have left?",
+   "context": "",
+   "request_type": "analytical_reasoning",
+   "complexity": 2,
+   "tests": [
+    "ambiguous"
+   ],
+   "group": "v2-analytical_reasoning-003"
+  },
+  {
+   "id": "va-00354",
+   "query": "trying to decide b/w sharding by user_id vs region. not looking for a design doc — just estimate the hot-shard risk with our distribution",
+   "context": "Users: 62% NA, 21% EU, 11% APAC, 6% other. Top 0.1% of users generate 30% of writes. 16 shards planned.",
+   "request_type": "analytical_reasoning",
+   "complexity": 4,
+   "tests": [
+    "ambiguous",
+    "negation",
+    "with_context"
+   ],
+   "group": "v2-analytical_reasoning-013"
+  },
+  {
+   "id": "va-00355",
+   "query": "why does this regex blow up on long inputs? don't rewrite it, I want to understand the backtracking count",
+   "context": "pattern: ^(a+)+$\ninput: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaab'",
+   "request_type": "analytical_reasoning",
+   "complexity": 3,
+   "tests": [
+    "ambiguous",
+    "negation",
+    "with_context",
+    "regex_near_miss"
+   ],
+   "group": "v2-analytical_reasoning-016"
+  },
+  {
+   "id": "va-00356",
+   "query": "Before we pick a design: can two-phase commit across these 3 services give us the guarantee the PM is asking for, or is it impossible?",
+   "context": "PM requirement: 'order is never charged without inventory reserved, and we never block if any one service is down'.",
+   "request_type": "analytical_reasoning",
+   "complexity": 5,
+   "tests": [
+    "ambiguous",
+    "with_context"
+   ],
+   "group": "v2-analytical_reasoning-018"
+  },
+  {
+   "id": "va-00357",
+   "query": "which load balancing algo, round robin or least-connections, gives lower p99 here? reason it out with the numbers",
+   "context": "4 backends, one is a slower c5.large (2x latency) the rest c5.xlarge. Requests are bimodal: 90% at 5ms, 10% at 400ms.",
+   "request_type": "analytical_reasoning",
+   "complexity": 4,
+   "tests": [
+    "ambiguous",
+    "with_context"
+   ],
+   "group": "v2-analytical_reasoning-022"
+  },
+  {
+   "id": "va-00358",
+   "query": "Can our current rate limiter (token bucket, 100 cap, refill 10/s) survive a client that bursts 300 req then sends 15/s steady? how long until it starts getting 429s and what % get rejected",
+   "context": "",
+   "request_type": "analytical_reasoning",
+   "complexity": 3,
+   "tests": [
+    "ambiguous"
+   ],
+   "group": "v2-analytical_reasoning-024"
+  },
+  {
+   "id": "va-00359",
+   "query": "rough estimate pls: how much RAM to keep 50M sessions in memory if each session is ~300 bytes of payload plus hashmap overhead",
+   "context": "",
+   "request_type": "analytical_reasoning",
+   "complexity": 2,
+   "tests": [
+    "ambiguous",
+    "noisy"
+   ],
+   "group": "v2-analytical_reasoning-030"
+  },
+  {
+   "id": "va-00360",
+   "query": "estimate how many support tickets we'll get when we sunset API v1, and draft a timeline. the number matters more",
+   "context": "v1 still called by 1,140 API keys last 30 days; 80% of calls from 60 keys. Historical: last deprecation emailed 900 keys, 14% opened tickets, most in final 2 weeks.",
+   "request_type": "analytical_reasoning",
+   "complexity": 3,
+   "tests": [
+    "multi_intent",
+    "with_context"
+   ],
+   "group": "v2-analytical_reasoning-063"
+  },
+  {
+   "id": "va-00361",
+   "query": "diagnose the memory growth and tell me if upgrading the lib would fix it, also is it safe to keep running till monday",
+   "context": "heap dump: 2.1M instances of HttpClientResponse retained by ArrayList in RetryInterceptor.history; lib v3.2.0 changelog for 3.2.4: 'fix: retry history unbounded'. Growth ~150MB/day, heap 4GB, current 2.9GB, today Friday.",
+   "request_type": "analytical_reasoning",
+   "complexity": 4,
+   "tests": [
+    "multi_intent",
+    "with_context"
+   ],
+   "group": "v2-analytical_reasoning-070"
+  },
+  {
+   "id": "va-00362",
+   "query": "roughly how many tweets per second is 500 million a day",
+   "context": "",
+   "request_type": "analytical_reasoning",
+   "complexity": 1,
+   "tests": [
+    "clean"
+   ],
+   "group": "v2-analytical_reasoning-092"
+  },
+  {
+   "id": "va-00363",
+   "query": "whats the avg of 12, 19, 7, 33 and 29",
+   "context": "",
+   "request_type": "analytical_reasoning",
+   "complexity": 1,
+   "tests": [
+    "noisy"
+   ],
+   "group": "v2-analytical_reasoning-094"
+  },
+  {
+   "id": "va-00364",
+   "query": "napkin math: 300 engineers, each runs CI ~6x/day at 14 min a run on 4 vCPU. how many vCPU-hours a month (22 work days)",
+   "context": "",
+   "request_type": "analytical_reasoning",
+   "complexity": 2,
+   "tests": [
+    "clean"
+   ],
+   "group": "v2-analytical_reasoning-095"
+  },
+  {
+   "id": "va-00365",
+   "query": "this but async",
+   "context": "def fetch_all(urls):\n    out = []\n    for u in urls:\n        out.append(requests.get(u).json())\n    return out",
+   "request_type": "code_generation",
+   "complexity": 3,
+   "tests": [
+    "with_context",
+    "noisy"
+   ],
+   "group": "v2-code_generation-006"
+  },
+  {
+   "id": "va-00366",
+   "query": "deadlock. fix pls, keep the two-lock design",
+   "context": "func transfer(a, b *Account, amt int) {\n    a.mu.Lock()\n    b.mu.Lock()\n    a.bal -= amt\n    b.bal += amt\n    b.mu.Unlock()\n    a.mu.Unlock()\n}\n// two goroutines transferring a->b and b->a hang forever",
+   "request_type": "code_generation",
+   "complexity": 4,
+   "tests": [
+    "with_context",
+    "noisy"
+   ],
+   "group": "v2-code_generation-020"
+  },
+  {
+   "id": "va-00367",
+   "query": "the race thing from standup, here's the code. needs to be correct across both workers and the cache",
+   "context": "# worker A and worker B both run this on job completion\nstate = redis.get(f'job:{jid}')\nif state == 'running':\n    redis.set(f'job:{jid}', 'done')\n    db.execute('UPDATE jobs SET status=%s WHERE id=%s', ('done', jid))\n    publish('job_done', jid)\n# sometimes job_done is published twice and db/redis disagree",
+   "request_type": "code_generation",
+   "complexity": 5,
+   "tests": [
+    "with_context",
+    "noisy"
+   ],
+   "group": "v2-code_generation-026"
+  },
+  {
+   "id": "va-00368",
+   "query": "could u make this one handle the weird rows too",
+   "context": "import csv\nwith open('in.csv') as f:\n    for row in csv.reader(f):\n        name, age, city = row\n        print(name, int(age), city)\n# some rows have missing age or extra trailing commas",
+   "request_type": "code_generation",
+   "complexity": 2,
+   "tests": [
+    "with_context",
+    "noisy"
+   ],
+   "group": "v2-code_generation-028"
+  },
+  {
+   "id": "va-00369",
+   "query": "explain AND fix, mostly fix",
+   "context": "SELECT * FROM a LEFT JOIN b ON a.id = b.a_id WHERE b.status = 'active';\n-- rows from a with no b are missing",
+   "request_type": "code_generation",
+   "complexity": 2,
+   "tests": [
+    "multi_intent",
+    "with_context",
+    "noisy"
+   ],
+   "group": "v2-code_generation-050"
+  },
+  {
+   "id": "va-00370",
+   "query": "I don't really want a tutorial on websockets, I want a minimal FastAPI websocket chat server with rooms that I can paste in and run",
+   "context": "",
+   "request_type": "code_generation",
+   "complexity": 3,
+   "tests": [
+    "negation",
+    "regex_near_miss"
+   ],
+   "group": "v2-code_generation-052"
+  },
+  {
+   "id": "va-00371",
+   "query": "sanity check my approach and then write it: binary search over answer space for min capacity to ship packages in D days",
+   "context": "",
+   "request_type": "code_generation",
+   "complexity": 3,
+   "tests": [
+    "multi_intent",
+    "ambiguous"
+   ],
+   "group": "v2-code_generation-058"
+  },
+  {
+   "id": "va-00372",
+   "query": "translate this to idiomatic kotlin",
+   "context": "public List<String> names(List<User> users) {\n  List<String> out = new ArrayList<>();\n  for (User u : users) if (u.isActive()) out.add(u.getName());\n  return out;\n}",
+   "request_type": "code_generation",
+   "complexity": 2,
+   "tests": [
+    "regex_near_miss",
+    "with_context"
+   ],
+   "group": "v2-code_generation-063"
+  },
+  {
+   "id": "va-00373",
+   "query": "define a custom exception hierarchy for our payments module: base PaymentError, CardDeclined, InsufficientFunds, GatewayTimeout(retryable=True)",
+   "context": "",
+   "request_type": "code_generation",
+   "complexity": 2,
+   "tests": [
+    "regex_near_miss",
+    "clean"
+   ],
+   "group": "v2-code_generation-076"
+  },
+  {
+   "id": "va-00374",
+   "query": "yaar ye function kaam nahi kar raha, isko theek kar do na",
+   "context": "def is_prime(n):\n    for i in range(2, n):\n        if n % i == 0:\n            return False\n    return True\n# is_prime(1) returns True",
+   "request_type": "code_generation",
+   "complexity": 1,
+   "tests": [
+    "ood",
+    "with_context",
+    "noisy"
+   ],
+   "group": "v2-code_generation-080"
+  },
+  {
+   "id": "va-00375",
+   "query": "Pourriez-vous écrire une fonction JavaScript qui formate un nombre en euros avec le séparateur français ?",
+   "context": "",
+   "request_type": "code_generation",
+   "complexity": 1,
+   "tests": [
+    "ood",
+    "clean"
+   ],
+   "group": "v2-code_generation-083"
+  },
+  {
+   "id": "va-00376",
+   "query": "Google Sheets Apps Script: every time a row gets added in 'Leads', email the address in column C a welcome msg",
+   "context": "",
+   "request_type": "code_generation",
+   "complexity": 2,
+   "tests": [
+    "ood"
+   ],
+   "group": "v2-code_generation-093"
+  },
+  {
+   "id": "va-00377",
+   "query": "is this right?",
+   "context": "for (int i = 0; i <= arr.length; i++) {\n  sum += arr[i];\n}",
+   "request_type": "code_understanding",
+   "complexity": 2,
+   "tests": [
+    "with_context"
+   ],
+   "group": "v2-code_understanding-003"
+  },
+  {
+   "id": "va-00378",
+   "query": "why is this slow",
+   "context": "SELECT * FROM orders o\nWHERE YEAR(o.created_at) = 2024\n  AND o.customer_id IN (SELECT id FROM customers WHERE LOWER(email) LIKE '%@gmail.com');",
+   "request_type": "code_understanding",
+   "complexity": 3,
+   "tests": [
+    "with_context"
+   ],
+   "group": "v2-code_understanding-005"
+  },
+  {
+   "id": "va-00379",
+   "query": "why does this hang",
+   "context": "ch := make(chan int)\nch <- 1\nfmt.Println(<-ch)",
+   "request_type": "code_understanding",
+   "complexity": 2,
+   "tests": [
+    "with_context",
+    "clean"
+   ],
+   "group": "v2-code_understanding-014"
+  },
+  {
+   "id": "va-00380",
+   "query": "what's the output and why",
+   "context": "#include <stdio.h>\nint main(){ int i = 5; printf(\"%d %d\\n\", i++, i++); }",
+   "request_type": "code_understanding",
+   "complexity": 3,
+   "tests": [
+    "with_context"
+   ],
+   "group": "v2-code_understanding-017"
+  },
+  {
+   "id": "va-00381",
+   "query": "what am i looking at",
+   "context": "awk -F, 'NR>1 {s[$2]+=$4} END {for (k in s) printf \"%s\\t%.2f\\n\", k, s[k]}' sales.csv | sort -k2 -nr",
+   "request_type": "code_understanding",
+   "complexity": 2,
+   "tests": [
+    "with_context"
+   ],
+   "group": "v2-code_understanding-027"
+  },
+  {
+   "id": "va-00382",
+   "query": "whats the diff between these two, behavior-wise",
+   "context": "a = a + [1]\n# vs\na += [1]",
+   "request_type": "code_understanding",
+   "complexity": 2,
+   "tests": [
+    "with_context",
+    "noisy"
+   ],
+   "group": "v2-code_understanding-041"
+  },
+  {
+   "id": "va-00383",
+   "query": "idk what this kubernetes thing is asking for",
+   "context": "resources:\n  requests:\n    cpu: 250m\n    memory: 64Mi\n  limits:\n    cpu: \"1\"\n    memory: 128Mi",
+   "request_type": "code_understanding",
+   "complexity": 2,
+   "tests": [
+    "with_context",
+    "noisy"
+   ],
+   "group": "v2-code_understanding-043"
+  },
+  {
+   "id": "va-00384",
+   "query": "hey quick q in #backend — does this leak connections or is the context manager handling it? also is there a reason it's not using the pool? just trying to understand before I touch it",
+   "context": "def query(sql):\n    with psycopg2.connect(DSN) as conn:\n        with conn.cursor() as cur:\n            cur.execute(sql)\n            return cur.fetchall()",
+   "request_type": "code_understanding",
+   "complexity": 3,
+   "tests": [
+    "multi_intent",
+    "with_context",
+    "padded"
+   ],
+   "group": "v2-code_understanding-055"
+  },
+  {
+   "id": "va-00385",
+   "query": "PR #482 review thread:\n\nreviewer: why are we catching BaseException here?\nauthor: so ctrl-c doesn't kill the worker mid-job\nreviewer: hmm\n\ncan someone neutral weigh in — what does this actually do on SIGINT and SystemExit?",
+   "context": "while True:\n    job = q.get()\n    try:\n        run(job)\n    except BaseException as e:\n        log.error(e)\n    finally:\n        q.task_done()",
+   "request_type": "code_understanding",
+   "complexity": 3,
+   "tests": [
+    "ambiguous",
+    "with_context",
+    "padded"
+   ],
+   "group": "v2-code_understanding-059"
+  },
+  {
+   "id": "va-00386",
+   "query": "could you go over this migration and tell me what it'll do to existing rows? not asking for a new one",
+   "context": "ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'active';\nUPDATE users SET status = 'inactive' WHERE last_login < now() - interval '1 year';",
+   "request_type": "code_understanding",
+   "complexity": 2,
+   "tests": [
+    "negation",
+    "ambiguous",
+    "with_context"
+   ],
+   "group": "v2-code_understanding-061"
+  },
+  {
+   "id": "va-00387",
+   "query": "is this react hook correct, and when exactly does the cleanup run relative to the next effect",
+   "context": "useEffect(() => {\n  const ws = new WebSocket(url);\n  ws.onmessage = e => setMsgs(m => [...m, e.data]);\n  return () => ws.close();\n}, [url]);",
+   "request_type": "code_understanding",
+   "complexity": 3,
+   "tests": [
+    "multi_intent",
+    "with_context"
+   ],
+   "group": "v2-code_understanding-069"
+  },
+  {
+   "id": "va-00388",
+   "query": "verilog — what does this block do on each clock edge, and is it blocking or not",
+   "context": "always @(posedge clk) begin\n  if (rst) q <= 0;\n  else q <= {q[2:0], d};\nend",
+   "request_type": "code_understanding",
+   "complexity": 3,
+   "tests": [
+    "ood",
+    "with_context"
+   ],
+   "group": "v2-code_understanding-100"
+  },
+  {
+   "id": "va-00389",
+   "query": "kubectl: what does `rollout undo` do",
+   "context": "",
+   "request_type": "factual_lookup",
+   "complexity": 1,
+   "tests": [
+    "regex_near_miss"
+   ],
+   "group": "v2-factual_lookup-012"
+  },
+  {
+   "id": "va-00390",
+   "query": "what is `__slots__` for in python classes",
+   "context": "",
+   "request_type": "factual_lookup",
+   "complexity": 1,
+   "tests": [
+    "regex_near_miss"
+   ],
+   "group": "factual_lookup-029"
+  },
+  {
+   "id": "va-00391",
+   "query": "TCP vs UDP which one is connectionless",
+   "context": "",
+   "request_type": "factual_lookup",
+   "complexity": 1,
+   "tests": [
+    "clean"
+   ],
+   "group": "v2-factual_lookup-016"
+  },
+  {
+   "id": "va-00392",
+   "query": "what does CORS stand for",
+   "context": "",
+   "request_type": "factual_lookup",
+   "complexity": 1,
+   "tests": [
+    "clean"
+   ],
+   "group": "v2-factual_lookup-018"
+  },
+  {
+   "id": "va-00393",
+   "query": "what does `npm ci` do differently from `npm install`",
+   "context": "",
+   "request_type": "factual_lookup",
+   "complexity": 2,
+   "tests": [
+    "regex_near_miss"
+   ],
+   "group": "factual_lookup-035"
+  },
+  {
+   "id": "va-00394",
+   "query": "explain what `git rebase` is, just the idea",
+   "context": "",
+   "request_type": "factual_lookup",
+   "complexity": 1,
+   "tests": [
+    "ambiguous"
+   ],
+   "group": "v2-factual_lookup-051"
+  },
+  {
+   "id": "va-00395",
+   "query": "what does `pip install -e .` do",
+   "context": "",
+   "request_type": "factual_lookup",
+   "complexity": 1,
+   "tests": [
+    "ambiguous",
+    "regex_near_miss"
+   ],
+   "group": "v2-factual_lookup-058"
+  },
+  {
+   "id": "va-00396",
+   "query": "what's the boiling point of water at sea level in fahrenheit",
+   "context": "",
+   "request_type": "factual_lookup",
+   "complexity": 1,
+   "tests": [
+    "ambiguous"
+   ],
+   "group": "factual_lookup-149"
+  },
+  {
+   "id": "va-00397",
+   "query": "Hey team — quick one before standup. what's the default branch name github uses for new repos now? master or main? cheers",
+   "context": "",
+   "request_type": "factual_lookup",
+   "complexity": 1,
+   "tests": [
+    "padded"
+   ],
+   "group": "v2-factual_lookup-062"
+  },
+  {
+   "id": "va-00398",
+   "query": "wat does ssh-keygen do... my laptop died, new one, have to set everything up again ugh",
+   "context": "",
+   "request_type": "factual_lookup",
+   "complexity": 1,
+   "tests": [
+    "noisy",
+    "padded"
+   ],
+   "group": "v2-factual_lookup-065"
+  },
+  {
+   "id": "va-00399",
+   "query": "so i was reading this blog post about databases and they kept saying ACID and I sort of know it but can you remind me what the four letters stand for, also the blog was really long and kind of boring honestly",
+   "context": "",
+   "request_type": "factual_lookup",
+   "complexity": 1,
+   "tests": [
+    "padded"
+   ],
+   "group": "v2-factual_lookup-070"
+  },
+  {
+   "id": "va-00400",
+   "query": "whats yaml stand for",
+   "context": "",
+   "request_type": "factual_lookup",
+   "complexity": 1,
+   "tests": [
+    "noisy"
+   ],
+   "group": "v2-factual_lookup-080"
+  },
+  {
+   "id": "va-00401",
+   "query": "what's the normal resting heart rate for adults",
+   "context": "",
+   "request_type": "factual_lookup",
+   "complexity": 1,
+   "tests": [
+    "ood"
+   ],
+   "group": "v2-factual_lookup-091"
+  },
+  {
+   "id": "va-00402",
+   "query": "in chess what is 'en passant'",
+   "context": "",
+   "request_type": "factual_lookup",
+   "complexity": 1,
+   "tests": [
+    "ood"
+   ],
+   "group": "v2-factual_lookup-095"
+  },
+  {
+   "id": "va-00403",
+   "query": "tbh i kinda hate javascript is that weird for a frontend dev",
+   "context": "",
+   "request_type": "general",
+   "complexity": 1,
+   "tests": [
+    "regex_near_miss"
+   ],
+   "group": "v2-general-005"
+  },
+  {
+   "id": "va-00404",
+   "query": "feeling burnt out after 3 sprints of oncall, how do people cope with this",
+   "context": "",
+   "request_type": "general",
+   "complexity": 2,
+   "tests": [
+    "regex_near_miss"
+   ],
+   "group": "v2-general-008"
+  },
+  {
+   "id": "va-00405",
+   "query": "is it dumb to do leetcode every day if i already have a job",
+   "context": "",
+   "request_type": "general",
+   "complexity": 2,
+   "tests": [
+    "regex_near_miss"
+   ],
+   "group": "v2-general-010"
+  },
+  {
+   "id": "va-00406",
+   "query": "not asking for code or anything, just wanna know — do you enjoy debugging?",
+   "context": "",
+   "request_type": "general",
+   "complexity": 1,
+   "tests": [
+    "regex_near_miss",
+    "negation"
+   ],
+   "group": "v2-general-020"
+  },
+  {
+   "id": "va-00407",
+   "query": "ngl monorepos kinda slap. or am i wrong",
+   "context": "",
+   "request_type": "general",
+   "complexity": 1,
+   "tests": [
+    "regex_near_miss"
+   ],
+   "group": "v2-general-023"
+  },
+  {
+   "id": "va-00408",
+   "query": "thinking of quitting my devops job to open a bakery. talk me out of it? or into it idk",
+   "context": "",
+   "request_type": "general",
+   "complexity": 2,
+   "tests": [
+    "regex_near_miss"
+   ],
+   "group": "v2-general-024"
+  },
+  {
+   "id": "va-00409",
+   "query": "what should i name my new raspberry pi, it's going to sit on my desk and judge me",
+   "context": "",
+   "request_type": "general",
+   "complexity": 1,
+   "tests": [
+    "regex_near_miss",
+    "ambiguous"
+   ],
+   "group": "v2-general-032"
+  },
+  {
+   "id": "va-00410",
+   "query": "yesss finally green ✅ thank youuu",
+   "context": "===== 142 passed, 0 failed in 8.31s =====",
+   "request_type": "general",
+   "complexity": 1,
+   "tests": [
+    "with_context",
+    "noisy"
+   ],
+   "group": "v2-general-045"
+  },
+  {
+   "id": "va-00411",
+   "query": "bhai kal interview hai, bahut nervous hu, kya karu",
+   "context": "",
+   "request_type": "general",
+   "complexity": 2,
+   "tests": [
+    "ood"
+   ],
+   "group": "v2-general-077"
+  },
+  {
+   "id": "va-00412",
+   "query": "do you remember what we talked about yesterday?",
+   "context": "",
+   "request_type": "general",
+   "complexity": 1,
+   "tests": [
+    "clean"
+   ],
+   "group": "v2-general-092"
+  },
+  {
+   "id": "va-00413",
+   "query": "do you ever get tired of people asking you to fix their python",
+   "context": "",
+   "request_type": "general",
+   "complexity": 1,
+   "tests": [
+    "clean",
+    "regex_near_miss"
+   ],
+   "group": "v2-general-094"
+  },
+  {
+   "id": "va-00414",
+   "query": "every time we deploy, websocket clients get disconnected and hammer the server reconnecting. how should deploys + reconnection be planned so it's graceful",
+   "context": "",
+   "request_type": "technical_design",
+   "complexity": 4,
+   "tests": [
+    "ambiguous"
+   ],
+   "group": "v2-technical_design-011"
+  },
+  {
+   "id": "va-00415",
+   "query": "timezones are a mess in our scheduling app (bookings shift an hour at DST). how should we store and handle times going forward?",
+   "context": "",
+   "request_type": "technical_design",
+   "complexity": 3,
+   "tests": [
+    "ambiguous",
+    "regex_near_miss"
+   ],
+   "group": "v2-technical_design-027"
+  },
+  {
+   "id": "va-00416",
+   "query": "our pdf generation blocks the request thread and times out. how should it be restructured — queue, workers, polling vs webhooks for the client?",
+   "context": "",
+   "request_type": "technical_design",
+   "complexity": 3,
+   "tests": [
+    "ambiguous"
+   ],
+   "group": "v2-technical_design-030"
+  },
+  {
+   "id": "va-00417",
+   "query": "CSV imports from customers range from 10 rows to 2M rows and the current endpoint just dies. plan out a proper import pipeline please",
+   "context": "",
+   "request_type": "technical_design",
+   "complexity": 4,
+   "tests": [
+    "ambiguous",
+    "noisy"
+   ],
+   "group": "v2-technical_design-032"
+  },
+  {
+   "id": "va-00418",
+   "query": "Explain what blue-green is, then give us a rollout plan for switching our payments processor from Stripe to Adyen without downtime",
+   "context": "",
+   "request_type": "technical_design",
+   "complexity": 5,
+   "tests": [
+    "multi_intent"
+   ],
+   "group": "v2-technical_design-049"
+  },
+  {
+   "id": "va-00419",
+   "query": "propose the topic layout + consumer groups",
+   "context": "We have: orders, payments, shipments, refunds. Analytics wants everything; fraud wants payments+refunds in order per user; email service wants order+shipment status changes.",
+   "request_type": "technical_design",
+   "complexity": 4,
+   "tests": [
+    "with_context"
+   ],
+   "group": "v2-technical_design-055"
+  },
+  {
+   "id": "va-00420",
+   "query": "Need the queue setup",
+   "context": "Jobs: video transcoding 2-30 min each, priority for paid users, must retry on spot instance loss, ~5k jobs/day.",
+   "request_type": "technical_design",
+   "complexity": 4,
+   "tests": [
+    "with_context"
+   ],
+   "group": "v2-technical_design-065"
+  },
+  {
+   "id": "va-00421",
+   "query": "pick the db",
+   "context": "Workload: time-series metrics from 100k sensors, writes 1M points/s, queries are last-24h dashboards and monthly rollups. Team knows Postgres well.",
+   "request_type": "technical_design",
+   "complexity": 4,
+   "tests": [
+    "with_context"
+   ],
+   "group": "v2-technical_design-066"
+  },
+  {
+   "id": "va-00422",
+   "query": "Thinking out loud: we've got a Firebase app that's outgrown Firestore pricing and queries. Where should we land and how do we get there without a big-bang rewrite?",
+   "context": "",
+   "request_type": "technical_design",
+   "complexity": 4,
+   "tests": [
+    "clean"
+   ],
+   "group": "v2-technical_design-085"
+  },
+  {
+   "id": "va-00423",
+   "query": "uuid or bigint for primary keys in a new postgres app?",
+   "context": "",
+   "request_type": "technical_design",
+   "complexity": 2,
+   "tests": [
+    "clean"
+   ],
+   "group": "v2-technical_design-088"
+  },
+  {
+   "id": "va-00424",
+   "query": "one s3 bucket per environment or prefixes in one bucket?",
+   "context": "",
+   "request_type": "technical_design",
+   "complexity": 2,
+   "tests": [
+    "clean"
+   ],
+   "group": "v2-technical_design-090"
+  },
+  {
+   "id": "va-00425",
+   "query": "where should a tiny side project's background jobs run, cron on the box or a queue?",
+   "context": "",
+   "request_type": "technical_design",
+   "complexity": 2,
+   "tests": [
+    "noisy"
+   ],
+   "group": "v2-technical_design-093"
+  },
+  {
+   "id": "va-00426",
+   "query": "the 'Contributing' section for our open source repo. we use feature branches, require tests, and squash merge",
+   "context": "",
+   "request_type": "writing",
+   "complexity": 2,
+   "tests": [
+    "clean",
+    "regex_near_miss"
+   ],
+   "group": "v2-writing-007"
+  },
+  {
+   "id": "va-00427",
+   "query": "apology message to customers for the outage. we lost data for about 2% of users from 3-5pm. dont be defensive. include what we are doing so it doesnt happen again",
+   "context": "",
+   "request_type": "writing",
+   "complexity": 4,
+   "tests": [
+    "regex_near_miss",
+    "ambiguous"
+   ],
+   "group": "v2-writing-013"
+  },
+  {
+   "id": "va-00428",
+   "query": "make a one page explainer on what Kubernetes is for the board. they're lawyers",
+   "context": "",
+   "request_type": "writing",
+   "complexity": 3,
+   "tests": [
+    "regex_near_miss",
+    "clean"
+   ],
+   "group": "v2-writing-015"
+  },
+  {
+   "id": "va-00429",
+   "query": "poem abt a segfault. haiku is fine",
+   "context": "",
+   "request_type": "writing",
+   "complexity": 1,
+   "tests": [
+    "regex_near_miss",
+    "noisy"
+   ],
+   "group": "v2-writing-026"
+  },
+  {
+   "id": "va-00430",
+   "query": "name my python package. it parses messy csv files and tries to guess types",
+   "context": "",
+   "request_type": "writing",
+   "complexity": 2,
+   "tests": [
+    "regex_near_miss",
+    "clean"
+   ],
+   "group": "v2-writing-032"
+  },
+  {
+   "id": "va-00431",
+   "query": "fix grammar",
+   "context": "Me and him goes to the store yesterday and buyed three apple's.",
+   "request_type": "writing",
+   "complexity": 1,
+   "tests": [
+    "with_context"
+   ],
+   "group": "v2-writing-038"
+  },
+  {
+   "id": "va-00432",
+   "query": "pls proofread, english not my first language",
+   "context": "Dear Sir, I am writing for ask about the position of accountant. I have 5 year experience and I am very hardworking. Waiting your reply.",
+   "request_type": "writing",
+   "complexity": 2,
+   "tests": [
+    "with_context",
+    "noisy"
+   ],
+   "group": "v2-writing-050"
+  },
+  {
+   "id": "va-00433",
+   "query": "turn into slack message",
+   "context": "Subject: Server maintenance window\n\nDear all,\n\nPlease be advised that scheduled maintenance will take place on Saturday between 02:00 and 04:00 UTC. Services may be intermittently unavailable. We apologise for any inconvenience.\n\nKind regards,\nIT",
+   "request_type": "writing",
+   "complexity": 1,
+   "tests": [
+    "with_context"
+   ],
+   "group": "v2-writing-051"
+  },
+  {
+   "id": "va-00434",
+   "query": "Could you help me with an eulogy for my grandfather. He was a fisherman in Newfoundland, loved his tea, told terrible jokes. I'm not sure where to start",
+   "context": "",
+   "request_type": "writing",
+   "complexity": 3,
+   "tests": [
+    "padded"
+   ],
+   "group": "v2-writing-068"
+  },
+  {
+   "id": "va-00435",
+   "query": "Give me a short apology note for being late to the client meeting, casual but sincere",
+   "context": "",
+   "request_type": "writing",
+   "complexity": 1,
+   "tests": [
+    "paraphrase"
+   ],
+   "group": "v2-writing-097"
+  },
+  {
+   "id": "va-00436",
+   "query": "sorry im late to the client meeting - need a quick note, casual but genuine",
+   "context": "",
+   "request_type": "writing",
+   "complexity": 1,
+   "tests": [
+    "paraphrase",
+    "noisy"
+   ],
+   "group": "v2-writing-097"
+  },
+  {
+   "id": "va-00437",
+   "query": "kaise likhu apne boss ko ki mujhe kal chutti chahiye? english me email bana do",
+   "context": "",
+   "request_type": "writing",
+   "complexity": 1,
+   "tests": [
+    "ood",
+    "noisy"
+   ],
+   "group": "v2-writing-101"
+  },
+  {
+   "id": "va-00438",
+   "query": "a limerick about a cat who learns to use Kubernetes",
+   "context": "",
+   "request_type": "writing",
+   "complexity": 2,
+   "tests": [
+    "ood",
+    "regex_near_miss"
+   ],
+   "group": "v2-writing-103"
+  },
+  {
+   "id": "va-00439",
+   "query": "rap verse about paying taxes",
+   "context": "",
+   "request_type": "writing",
+   "complexity": 2,
+   "tests": [
+    "ood"
+   ],
+   "group": "v2-writing-104"
   }
  ]
 }

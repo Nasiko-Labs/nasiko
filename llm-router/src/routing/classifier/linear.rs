@@ -62,6 +62,10 @@ pub fn features(input: &ClassifyInput<'_>) -> Features {
     let mut hashed = BTreeMap::new();
     add_text_block(&mut hashed, "q", input.query);
     add_text_block(&mut hashed, "c", &context);
+    // The same query means different things next to code, next to prose, or alone ("why does
+    // this return the old value?"), and a linear model cannot learn that interaction from the
+    // two blocks above, so the query's words are also hashed together with the context kind.
+    add_query_words_by_context(&mut hashed, context_kind(&context), input.query);
     Features {
         hashed,
         dense: dense_features(input.query, &context),
@@ -78,6 +82,50 @@ fn add_text_block(hashed: &mut BTreeMap<usize, f64>, tag: &str, text: &str) {
         .into_iter()
         .map(|g| format!("{tag}c {g}"));
     let grams: Vec<String> = words.chain(chars).collect();
+    let norm = (grams.len() as f64).sqrt().max(1.0);
+    for gram in &grams {
+        let (bucket, sign) = hash_gram(gram);
+        *hashed.entry(bucket).or_insert(0.0) += sign / norm;
+    }
+}
+
+/// What the context holds, coarsely: nothing, code-like text, or prose.
+#[derive(Debug, Clone, Copy)]
+enum ContextKind {
+    None,
+    Code,
+    Text,
+}
+
+impl ContextKind {
+    fn tag(self) -> &'static str {
+        match self {
+            ContextKind::None => "xn",
+            ContextKind::Code => "xc",
+            ContextKind::Text => "xt",
+        }
+    }
+}
+
+/// A context is code-like when this fraction of its characters are code symbols.
+const CODE_CONTEXT_SYMBOL_RATIO: f64 = 0.03;
+
+fn context_kind(context: &str) -> ContextKind {
+    if context.trim().is_empty() {
+        ContextKind::None
+    } else if char_ratio(context, |c| CODE_SYMBOLS.contains(&c)) >= CODE_CONTEXT_SYMBOL_RATIO {
+        ContextKind::Code
+    } else {
+        ContextKind::Text
+    }
+}
+
+/// Hash the query's word 1–2-grams under the context `kind`, normalised like the other blocks.
+fn add_query_words_by_context(hashed: &mut BTreeMap<usize, f64>, kind: ContextKind, query: &str) {
+    let grams: Vec<String> = word_ngrams(&word_tokens(query), 2)
+        .into_iter()
+        .map(|g| format!("{}w {g}", kind.tag()))
+        .collect();
     let norm = (grams.len() as f64).sqrt().max(1.0);
     for gram in &grams {
         let (bucket, sign) = hash_gram(gram);
@@ -397,6 +445,47 @@ mod tests {
         assert!(with.hashed.len() > without.hashed.len());
         assert_eq!(without.dense[2], 0.0);
         assert_eq!(with.dense[2], 1.0);
+    }
+
+    #[test]
+    fn context_kind_separates_nothing_code_and_prose() {
+        assert!(matches!(context_kind(""), ContextKind::None));
+        assert!(matches!(
+            context_kind(
+                "   
+"
+            ),
+            ContextKind::None
+        ));
+        assert!(matches!(
+            context_kind("fn next(n: &mut u64) -> u64 { let old = *n; *n += 1; old }"),
+            ContextKind::Code
+        ));
+        assert!(matches!(
+            context_kind("The museum opened in 1987 and has many artifacts"),
+            ContextKind::Text
+        ));
+    }
+
+    #[test]
+    fn the_same_query_hashes_differently_beside_code_than_alone() {
+        // The interaction block is what lets "why does this return the old value?" mean
+        // different things with code, with prose, or with nothing beside it.
+        let query = "why does this return the old value?";
+        let bucket_set = |context| {
+            let f = features(&ClassifyInput { query, context });
+            f.hashed
+                .keys()
+                .copied()
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        let alone = bucket_set(None);
+        let with_code = bucket_set(Some("let old = *n; *n += 1; old"));
+        let with_prose = bucket_set(Some("The museum opened in 1987 and has many artifacts"));
+        // Each context kind contributes its own query-word buckets beyond the shared blocks.
+        let only_code: Vec<_> = with_code.difference(&alone).collect();
+        assert!(only_code.len() > 10, "code context added too few features");
+        assert_ne!(with_code, with_prose);
     }
 
     #[test]

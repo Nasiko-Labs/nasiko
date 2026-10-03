@@ -101,4 +101,5 @@ Every split covers these slices, because the private scoring set does:
 - Near-duplicates across groups are merged before splitting: character 3–5-gram TF-IDF
   cosine similarity ≥ 0.85 joins two groups (see `scripts/build_splits.py`).
 - Validation is about 12% of groups, stratified by label.
-- No example is copied or paraphrased from the published eval sample.
+- No example is copied or paraphrased from the published eval sample; the build drops anything within
+  cosine 0.45 of a public case and fails if one survives.

@@ -33,7 +33,7 @@ LABELS = [
 ]
 KEYS = {"query", "context", "request_type", "complexity", "tests", "group"}
 NEAR_DUPLICATE = 0.85  # cosine at or above this joins two groups
-PUBLIC_OVERLAP = 0.60  # cosine at or above this to a public eval case drops the example
+PUBLIC_OVERLAP = 0.45  # cosine at or above this to a public eval case drops the example
 VAL_FRACTION = 0.12
 SEED = 13
 CONTEXT_CHARS_FOR_SIMILARITY = 300
@@ -154,16 +154,30 @@ def merge_near_duplicate_groups(rows, vectorizer):
     return merges, sims
 
 
-def split_groups(rows):
+def fixed_assignments(rows):
+    """Split of every merged group that contains an already-assigned (--extend) example."""
+    fixed = {}
+    for r in rows:
+        if "split" in r:
+            previous = fixed.setdefault(r["split_group"], r["split"])
+            assert previous == r["split"], f"group {r['split_group']} already spans train and val"
+    return fixed
+
+
+def split_groups(rows, fixed=None):
+    """Stratified group split; groups in ``fixed`` keep their assigned split."""
+    fixed = fixed or {}
     by_group = defaultdict(list)
     for r in rows:
         by_group[r["split_group"]].append(r)
     by_label = defaultdict(list)
     for g, members in by_group.items():
+        if g in fixed:
+            continue
         majority = Counter(m["request_type"] for m in members).most_common(1)[0][0]
         by_label[majority].append(g)
     rng = random.Random(SEED)
-    val_groups = set()
+    val_groups = {g for g, split in fixed.items() if split == "val"}
     for label in LABELS:
         groups = sorted(by_label[label])
         rng.shuffle(groups)
@@ -183,11 +197,16 @@ def assert_no_leakage(rows, sims, train, val):
 
 
 def write_split(path, rows, prefix):
+    """Write a split; examples that already have an id (--extend) keep it, new ones continue the numbering."""
     examples = []
-    for n, r in enumerate(rows, 1):
+    next_n = 1 + max((int(r["id"].split("-")[1]) for r in rows if "id" in r), default=0)
+    for r in rows:
+        if "id" not in r:
+            r["id"] = f"{prefix}-{next_n:05d}"
+            next_n += 1
         examples.append(
             {
-                "id": f"{prefix}-{n:05d}",
+                "id": r["id"],
                 "query": r["query"],
                 "context": r["context"],
                 "request_type": r["request_type"],
@@ -205,6 +224,14 @@ def write_split(path, rows, prefix):
     path.write_text(json.dumps(doc, ensure_ascii=False, indent=1) + "\n", encoding="utf-8", newline="\n")
 
 
+def load_existing(data_dir):
+    rows = []
+    for split in ("train", "val"):
+        for e in json.loads((data_dir / f"{split}.json").read_text(encoding="utf-8"))["examples"]:
+            rows.append({**e, "split": split})
+    return rows
+
+
 def report(name, rows):
     labels = Counter(r["request_type"] for r in rows)
     complexity = Counter(r["complexity"] for r in rows)
@@ -220,10 +247,15 @@ def main():
     ap.add_argument("--raw", required=True)
     ap.add_argument("--public", required=True)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--extend", help="existing data dir: keep its train/val assignment and ids, add the --raw examples")
     args = ap.parse_args()
 
     rows, rejected = load_raw(args.raw)
     print(f"loaded {len(rows)} valid rows; rejected {dict(rejected)}")
+    if args.extend:
+        existing = load_existing(pathlib.Path(args.extend))
+        print(f"extending {len(existing)} existing examples (their split and ids are kept)")
+        rows = existing + rows  # existing first, so exact duplicates keep the existing copy
     rows = drop_exact_duplicates(rows)
     vectorizer = TfidfVectorizer(analyzer="char_wb", ngram_range=(3, 5), sublinear_tf=True)
     vectorizer.fit([similarity_text(r) for r in rows])
@@ -232,7 +264,7 @@ def main():
     print(f"after exact-dup and public-overlap removal: {len(rows)} (public overlap dropped {dropped})")
     merges, sims = merge_near_duplicate_groups(rows, vectorizer)
     print(f"near-duplicate group merges: {merges}")
-    train, val = split_groups(rows)
+    train, val = split_groups(rows, fixed_assignments(rows))
     worst = assert_no_leakage(rows, sims, train, val)
     print(f"max train/val cosine: {worst:.3f} (< {NEAR_DUPLICATE})")
     assert_public_excluded([train, val], public, vectorizer)
