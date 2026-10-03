@@ -1,0 +1,334 @@
+{
+  "schema_version": "classifier-local-v1",
+  "purpose": "Own synthetic validation split; not official scoring data.",
+  "source": "Authored synthetic examples, no private prompts or customer data. Labels are provisional single-author annotations requiring human review.",
+  "labels": {
+    "request_type": [
+      "code_generation",
+      "code_understanding",
+      "technical_design",
+      "analytical_reasoning",
+      "writing",
+      "factual_lookup",
+      "general"
+    ],
+    "complexity": "1 trivial; 2 straightforward; 3 bounded multi-step; 4 substantial reasoning/design; 5 intricate cross-component reasoning/validation."
+  },
+  "examples": [
+    {
+      "id": "validation-001",
+      "family": "validation-scenario-001",
+      "query": "Replace `false` with `true` in the feature toggle assignment.",
+      "context": "`const ENABLE_EXPORT = false;` Nothing else should change.",
+      "request_type": "code_generation",
+      "complexity": 1,
+      "rationale": "Single mechanical code edit."
+    },
+    {
+      "id": "validation-002",
+      "family": "validation-scenario-002",
+      "query": "Generate a SQL query selecting the three most recent invoices.",
+      "context": "Table invoices has id, created_at, amount.",
+      "request_type": "code_generation",
+      "complexity": 2,
+      "rationale": "Simple executable query."
+    },
+    {
+      "id": "validation-003",
+      "family": "validation-scenario-003",
+      "query": "Write a CSV reader that reports malformed row numbers and test it.",
+      "context": "Quoted commas and escaped quotes are valid; rows must have exactly four fields.",
+      "request_type": "code_generation",
+      "complexity": 3,
+      "rationale": "Bounded implementation with parsing constraints."
+    },
+    {
+      "id": "validation-004",
+      "family": "validation-scenario-004",
+      "query": "Implement resumable document uploads with retry-safe finalization.",
+      "context": "Parts arrive out of order, a process may crash after object creation, and finalization can be called concurrently. Include tests.",
+      "request_type": "code_generation",
+      "complexity": 4,
+      "rationale": "Code deliverable with interacting failure modes."
+    },
+    {
+      "id": "validation-005",
+      "family": "validation-scenario-005",
+      "query": "Write the consistency fix and a deterministic test harness for stale tenant permissions.",
+      "context": "Revocation races with cache refresh on five nodes; messages may reorder or be lost; protected writes must fail after revocation is committed.",
+      "request_type": "code_generation",
+      "complexity": 5,
+      "rationale": "Complex security-state implementation across nodes."
+    },
+    {
+      "id": "validation-006",
+      "family": "validation-scenario-006",
+      "query": "What does this exact function return for 6?",
+      "context": "`def square(n): return n * n`",
+      "request_type": "code_understanding",
+      "complexity": 1,
+      "rationale": "Single supplied-code interpretation."
+    },
+    {
+      "id": "validation-007",
+      "family": "validation-scenario-007",
+      "query": "Explain why the printed list changed after the assignment.",
+      "context": "`a = [1]; b = a; b.append(2); print(a)` Do not rewrite the code.",
+      "request_type": "code_understanding",
+      "complexity": 2,
+      "rationale": "Simple aliasing explanation."
+    },
+    {
+      "id": "validation-008",
+      "family": "validation-scenario-008",
+      "query": "Walk through the exception handling and identify which cleanup blocks run.",
+      "context": "Inner try raises ValueError; inner finally closes a file; outer except catches TypeError; outer finally releases a lock.",
+      "request_type": "code_understanding",
+      "complexity": 3,
+      "rationale": "Multi-step supplied-code control flow."
+    },
+    {
+      "id": "validation-009",
+      "family": "validation-scenario-009",
+      "query": "Review why this query plan scans so many rows without proposing a migration.",
+      "context": "A composite index is on (customer_id, created_at), while the WHERE clause filters only created_at; an OR includes a nullable status branch. Explain index use and predicate effects.",
+      "request_type": "code_understanding",
+      "complexity": 4,
+      "rationale": "Contextual existing-query interpretation."
+    },
+    {
+      "id": "validation-010",
+      "family": "validation-scenario-010",
+      "query": "Explain whether this unsafe ring buffer has a sound publication protocol.",
+      "context": "Producer writes a slot then updates length with relaxed ordering; consumer reads length before loading a slot; slots are reused while readers retain references. Analyze initialization, aliasing and reclamation. No patch.",
+      "request_type": "code_understanding",
+      "complexity": 5,
+      "rationale": "Deep code soundness interpretation."
+    },
+    {
+      "id": "validation-011",
+      "family": "validation-scenario-011",
+      "query": "Name the URL path for a new health-check endpoint.",
+      "context": "Use the existing convention /service/RESOURCE. No implementation.",
+      "request_type": "technical_design",
+      "complexity": 1,
+      "rationale": "Single API naming decision."
+    },
+    {
+      "id": "validation-012",
+      "family": "validation-scenario-012",
+      "query": "Outline components for a one-room library lending app.",
+      "context": "Fewer than 200 books; one librarian; no cloud or multi-site support.",
+      "request_type": "technical_design",
+      "complexity": 2,
+      "rationale": "Straightforward small-system design."
+    },
+    {
+      "id": "validation-013",
+      "family": "validation-scenario-013",
+      "query": "Design versioned settings for a desktop editor.",
+      "context": "Users can undo the last save and compare two versions. Specify entities and API operations.",
+      "request_type": "technical_design",
+      "complexity": 3,
+      "rationale": "Bounded schema and interface planning."
+    },
+    {
+      "id": "validation-014",
+      "family": "validation-scenario-014",
+      "query": "Plan moving a hospital scheduling database to a new schema.",
+      "context": "Bookings must remain available; old clients persist for three months; identifiers must not change. Include phased rollout and rollback.",
+      "request_type": "technical_design",
+      "complexity": 4,
+      "rationale": "Migration design with compatibility constraints."
+    },
+    {
+      "id": "validation-015",
+      "family": "validation-scenario-015",
+      "query": "Design safe multi-region disaster recovery for an air-ticket reservation service.",
+      "context": "Inventory is scarce; no seat can be confirmed twice; regions can partition and rejoin; charges can succeed while confirmation times out. Specify invariants, recovery and verification.",
+      "request_type": "technical_design",
+      "complexity": 5,
+      "rationale": "Intricate cross-component design."
+    },
+    {
+      "id": "validation-016",
+      "family": "validation-scenario-016",
+      "query": "How many seats remain after selling 9 from a row of 24?",
+      "context": "Only give the count.",
+      "request_type": "analytical_reasoning",
+      "complexity": 1,
+      "rationale": "One arithmetic step."
+    },
+    {
+      "id": "validation-017",
+      "family": "validation-scenario-017",
+      "query": "Compare the unit price of 750g for 120 rupees with 1kg for 150 rupees.",
+      "context": "Which offer is cheaper per kilogram?",
+      "request_type": "analytical_reasoning",
+      "complexity": 2,
+      "rationale": "Simple quantitative comparison."
+    },
+    {
+      "id": "validation-018",
+      "family": "validation-scenario-018",
+      "query": "Identify whether the experiment supports a conversion improvement.",
+      "context": "Variant A: 20 purchases from 100 visits. Variant B: 27 from 150. Compare rates and explain what sample size limits us from claiming.",
+      "request_type": "analytical_reasoning",
+      "complexity": 3,
+      "rationale": "Bounded quantitative inference with uncertainty."
+    },
+    {
+      "id": "validation-019",
+      "family": "validation-scenario-019",
+      "query": "Diagnose why dashboards disagree about shipment delivery rates.",
+      "context": "One counts event time in UTC, another ingestion time in IST; retries duplicate events; late deliveries appear next day. Separate hypotheses and suggest checks, not code.",
+      "request_type": "analytical_reasoning",
+      "complexity": 4,
+      "rationale": "Evidence-based interacting data causes."
+    },
+    {
+      "id": "validation-020",
+      "family": "validation-scenario-020",
+      "query": "Reconstruct competing explanations for a double insurance payout.",
+      "context": "Two reviewers approve the same claim using snapshots; a payment succeeds but acknowledgement is lost; a retry uses another key; audit events arrive reordered. Identify provable and uncertain causal chains and adversarial validation.",
+      "request_type": "analytical_reasoning",
+      "complexity": 5,
+      "rationale": "Cross-component temporal reasoning."
+    },
+    {
+      "id": "validation-021",
+      "family": "validation-scenario-021",
+      "query": "Remove the duplicate word in: We we appreciate your patience.",
+      "context": "Keep all other words.",
+      "request_type": "writing",
+      "complexity": 1,
+      "rationale": "Mechanical prose edit."
+    },
+    {
+      "id": "validation-022",
+      "family": "validation-scenario-022",
+      "query": "Translate this note into polite English: kal subah meeting hai.",
+      "context": "Keep the meaning and add no time that was not given.",
+      "request_type": "writing",
+      "complexity": 2,
+      "rationale": "Small translation with preservation constraint."
+    },
+    {
+      "id": "validation-023",
+      "family": "validation-scenario-023",
+      "query": "Summarize the product bulletin for shop owners in four bullets.",
+      "context": "Tax exports now use a new column order; historical reports are unchanged; maintenance pauses exports for 45 seconds; internal project name is GraphNest. Omit the project name.",
+      "request_type": "writing",
+      "complexity": 3,
+      "rationale": "Audience-grounded synthesis with exclusions."
+    },
+    {
+      "id": "validation-024",
+      "family": "validation-scenario-024",
+      "query": "Write onboarding guidance that reconciles contractor and employee access rules.",
+      "context": "Employees get access after identity check; contractors additionally need a sponsor; urgent exceptions expire after 48 hours; finance folders never permit exceptions. Include examples without contradicting the rules.",
+      "request_type": "writing",
+      "complexity": 4,
+      "rationale": "Multi-rule constrained prose."
+    },
+    {
+      "id": "validation-025",
+      "family": "validation-scenario-025",
+      "query": "Draft an accurate multi-audience response to conflicting research results.",
+      "context": "A preliminary study suggests benefit, a larger replication finds no effect, and an earlier press release claimed certainty. Explain uncertainty to participants, funders and journalists without inventing statistical details or changing consent commitments.",
+      "request_type": "writing",
+      "complexity": 5,
+      "rationale": "Complex communication across sources and audiences."
+    },
+    {
+      "id": "validation-026",
+      "family": "validation-scenario-026",
+      "query": "What does DNS stand for?",
+      "context": "Just expand the acronym.",
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "rationale": "Direct factual expansion."
+    },
+    {
+      "id": "validation-027",
+      "family": "validation-scenario-027",
+      "query": "Define the Rust `Send` marker trait.",
+      "context": "One sentence; no supplied code to analyze.",
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "rationale": "Direct API definition."
+    },
+    {
+      "id": "validation-028",
+      "family": "validation-scenario-028",
+      "query": "Give the names and meanings of the three common Git working states.",
+      "context": "Definitions only; do not teach a workflow.",
+      "request_type": "factual_lookup",
+      "complexity": 2,
+      "rationale": "Related factual definitions."
+    },
+    {
+      "id": "validation-029",
+      "family": "validation-scenario-029",
+      "query": "What is the distinction between authentication and authorization?",
+      "context": "A short definition of each.",
+      "request_type": "factual_lookup",
+      "complexity": 2,
+      "rationale": "Two factual concepts."
+    },
+    {
+      "id": "validation-030",
+      "family": "validation-scenario-030",
+      "query": "Extract all documented retention periods and exceptions from this notice.",
+      "context": "Logs: 7 days; billing: 5 years; backups: 30 days; litigation hold overrides deletion. List the stated facts without advice.",
+      "request_type": "factual_lookup",
+      "complexity": 3,
+      "rationale": "Multi-fact reference extraction."
+    },
+    {
+      "id": "validation-031",
+      "family": "validation-scenario-031",
+      "query": "Good morning, hope you are well.",
+      "context": "No question.",
+      "request_type": "general",
+      "complexity": 1,
+      "rationale": "Greeting."
+    },
+    {
+      "id": "validation-032",
+      "family": "validation-scenario-032",
+      "query": "Okay, understood.",
+      "context": "Acknowledgement of the previous response.",
+      "request_type": "general",
+      "complexity": 1,
+      "rationale": "Social acknowledgement."
+    },
+    {
+      "id": "validation-033",
+      "family": "validation-scenario-033",
+      "query": "Recommend a quiet way to celebrate finishing my exams.",
+      "context": "I prefer staying at home.",
+      "request_type": "general",
+      "complexity": 2,
+      "rationale": "Personal preference suggestion."
+    },
+    {
+      "id": "validation-034",
+      "family": "validation-scenario-034",
+      "query": "I feel nervous about attending a networking meetup. Help me get comfortable.",
+      "context": "I do not know anyone there.",
+      "request_type": "general",
+      "complexity": 2,
+      "rationale": "Everyday emotional support."
+    },
+    {
+      "id": "validation-035",
+      "family": "validation-scenario-035",
+      "query": "Help organize a picnic around three friends' availability.",
+      "context": "One can attend until 2pm, another arrives at noon, rain is possible and the park closes at 5pm.",
+      "request_type": "general",
+      "complexity": 3,
+      "rationale": "General planning with constraints."
+    }
+  ]
+}

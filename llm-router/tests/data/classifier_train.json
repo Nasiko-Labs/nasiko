@@ -1,0 +1,307 @@
+{
+  "schema_version": "classifier-local-v1",
+  "purpose": "Own synthetic development split; greeting, acknowledgement and leisure-recommendation families removed to avoid semantic overlap with validation.",
+  "source": "Authored synthetic examples, no private prompts or customer data. Labels are provisional single-author annotations requiring human review.",
+  "labels": {
+    "request_type": [
+      "code_generation",
+      "code_understanding",
+      "technical_design",
+      "analytical_reasoning",
+      "writing",
+      "factual_lookup",
+      "general"
+    ],
+    "complexity": "1 trivial; 2 straightforward; 3 bounded multi-step; 4 substantial reasoning/design; 5 intricate cross-component reasoning/validation."
+  },
+  "examples": [
+    {
+      "id": "train-001",
+      "family": "train-scenario-001",
+      "query": "Change the variable name `recieve` to `receive` in this declaration.",
+      "context": "Only edit `let recieve = 4;`.",
+      "request_type": "code_generation",
+      "complexity": 1,
+      "rationale": "Mechanical source edit."
+    },
+    {
+      "id": "train-002",
+      "family": "train-scenario-002",
+      "query": "Write a shell command to count regular files in this directory.",
+      "context": "Do not recurse into subdirectories.",
+      "request_type": "code_generation",
+      "complexity": 2,
+      "rationale": "Small executable deliverable."
+    },
+    {
+      "id": "train-003",
+      "family": "train-scenario-003",
+      "query": "Implement a bounded LRU cache and tests for replacement order.",
+      "context": "Python, capacity fixed at construction; updating a key makes it newest.",
+      "request_type": "code_generation",
+      "complexity": 3,
+      "rationale": "Bounded implementation with invariants."
+    },
+    {
+      "id": "train-004",
+      "family": "train-scenario-004",
+      "query": "Patch our webhook consumer so duplicate deliveries cannot double-apply inventory updates.",
+      "context": "There are three workers, a SQL database, and retries after crashes. Supply integration tests.",
+      "request_type": "code_generation",
+      "complexity": 4,
+      "rationale": "Code patch is primary, interacting failure constraints."
+    },
+    {
+      "id": "train-005",
+      "family": "train-scenario-005",
+      "query": "Implement and validate fencing-token protection for a distributed job runner.",
+      "context": "Workers can pause after lease expiry; database writes must reject stale owners even during failover.",
+      "request_type": "code_generation",
+      "complexity": 5,
+      "rationale": "Cross-component implementation and adversarial timing validation."
+    },
+    {
+      "id": "train-006",
+      "family": "train-scenario-006",
+      "query": "Read this expression and say what value it produces.",
+      "context": "`3 * 4 + 1`",
+      "request_type": "code_understanding",
+      "complexity": 1,
+      "rationale": "Direct evaluation of supplied code."
+    },
+    {
+      "id": "train-007",
+      "family": "train-scenario-007",
+      "query": "Explain the difference between the two branches of this function.",
+      "context": "`def clamp(x):\n return 0 if x < 0 else x`",
+      "request_type": "code_understanding",
+      "complexity": 2,
+      "rationale": "Simple contextual code interpretation."
+    },
+    {
+      "id": "train-008",
+      "family": "train-scenario-008",
+      "query": "Review this retry loop for off-by-one behavior without changing it.",
+      "context": "The counter starts at 0, the loop condition is attempts <= 3, and it increments after sending. Describe calls on success and failure.",
+      "request_type": "code_understanding",
+      "complexity": 3,
+      "rationale": "Several paths through existing code."
+    },
+    {
+      "id": "train-009",
+      "family": "train-scenario-009",
+      "query": "Explain how cancellation propagates through this asynchronous call chain.",
+      "context": "A parent task spawns two children, awaits one, and drops the other handle; a finally block releases a semaphore. Compare cancellation at each await.",
+      "request_type": "code_understanding",
+      "complexity": 4,
+      "rationale": "Existing-code analysis across interacting lifetimes."
+    },
+    {
+      "id": "train-010",
+      "family": "train-scenario-010",
+      "query": "Audit the memory-ordering argument for this lock-free stack implementation.",
+      "context": "The head is updated with relaxed CAS, reclamation uses epochs, and readers load head before registering. Trace possible use-after-free paths; explain only, no patch.",
+      "request_type": "code_understanding",
+      "complexity": 5,
+      "rationale": "Deep code interpretation across ordering and reclamation."
+    },
+    {
+      "id": "train-011",
+      "family": "train-scenario-011",
+      "query": "Choose a field name for the expiry timestamp in our new API.",
+      "context": "Existing timestamp fields end in `_at`. Give only the schema name.",
+      "request_type": "technical_design",
+      "complexity": 1,
+      "rationale": "Trivial interface design choice."
+    },
+    {
+      "id": "train-012",
+      "family": "train-scenario-012",
+      "query": "Sketch a simple folder layout for a personal notes service.",
+      "context": "One developer, local storage, no deployment architecture needed.",
+      "request_type": "technical_design",
+      "complexity": 2,
+      "rationale": "Small familiar design."
+    },
+    {
+      "id": "train-013",
+      "family": "train-scenario-013",
+      "query": "Propose pagination for a growing activity feed.",
+      "context": "Events have stable IDs and creation timestamps. Compare cursor and offset and specify the response shape.",
+      "request_type": "technical_design",
+      "complexity": 3,
+      "rationale": "Bounded interface design with tradeoffs."
+    },
+    {
+      "id": "train-014",
+      "family": "train-scenario-014",
+      "query": "Plan the migration of an image service from one region to two.",
+      "context": "Preserve signed URLs, limit stale reads to a minute, stage rollout and rollback.",
+      "request_type": "technical_design",
+      "complexity": 4,
+      "rationale": "Architecture and migration constraints."
+    },
+    {
+      "id": "train-015",
+      "family": "train-scenario-015",
+      "query": "Design recovery for a replicated settlement ledger after a regional partition.",
+      "context": "No money may disappear or settle twice; clocks are untrusted; operators may replay jobs. Specify invariants, reconciliation and adversarial tests.",
+      "request_type": "technical_design",
+      "complexity": 5,
+      "rationale": "Cross-component design with correctness and recovery."
+    },
+    {
+      "id": "train-016",
+      "family": "train-scenario-016",
+      "query": "Calculate the total after adding 7 to 18.",
+      "context": "No explanation needed.",
+      "request_type": "analytical_reasoning",
+      "complexity": 1,
+      "rationale": "Single arithmetic operation."
+    },
+    {
+      "id": "train-017",
+      "family": "train-scenario-017",
+      "query": "Which of these two discounts is larger on a 200 rupee purchase: 10% or 25 rupees?",
+      "context": "Compare the amounts.",
+      "request_type": "analytical_reasoning",
+      "complexity": 2,
+      "rationale": "Straightforward comparison."
+    },
+    {
+      "id": "train-018",
+      "family": "train-scenario-018",
+      "query": "Find why the support backlog grew despite faster handling time.",
+      "context": "Arrivals changed from 90/day to 140/day, staffing stayed at 4, each agent clears 30/day. Separate capacity from efficiency.",
+      "request_type": "analytical_reasoning",
+      "complexity": 3,
+      "rationale": "Bounded evidence-based quantitative analysis."
+    },
+    {
+      "id": "train-019",
+      "family": "train-scenario-019",
+      "query": "Investigate why deployed assets sometimes use the previous release.",
+      "context": "HTML has a 10-minute CDN cache; asset names are fixed; deployments overwrite files before HTML changes. Distinguish browser and edge cache causes.",
+      "request_type": "analytical_reasoning",
+      "complexity": 4,
+      "rationale": "Several causes and temporal constraints."
+    },
+    {
+      "id": "train-020",
+      "family": "train-scenario-020",
+      "query": "Reconstruct how two lock holders both committed after a pause and leader failover.",
+      "context": "A lease expires at T10; worker A resumes at T12; worker B began at T11; database accepts writes from both. Logs use unsynchronized clocks. Provide competing timelines and evidence needed.",
+      "request_type": "analytical_reasoning",
+      "complexity": 5,
+      "rationale": "Intricate interleaving analysis with uncertainty."
+    },
+    {
+      "id": "train-021",
+      "family": "train-scenario-021",
+      "query": "Correct the spelling in this sentence: The pakage arrived.",
+      "context": "Return the sentence only.",
+      "request_type": "writing",
+      "complexity": 1,
+      "rationale": "Mechanical prose edit."
+    },
+    {
+      "id": "train-022",
+      "family": "train-scenario-022",
+      "query": "Write a friendly invitation to a team lunch.",
+      "context": "Thursday, 1pm; keep it under 50 words.",
+      "request_type": "writing",
+      "complexity": 2,
+      "rationale": "Simple constrained prose."
+    },
+    {
+      "id": "train-023",
+      "family": "train-scenario-023",
+      "query": "Turn these outage notes into a customer update.",
+      "context": "Read-only mode lasted 18 minutes. No data was lost. Recovery is ongoing for two accounts. Avoid technical jargon and avoid claiming full resolution.",
+      "request_type": "writing",
+      "complexity": 3,
+      "rationale": "Audience synthesis with multiple constraints."
+    },
+    {
+      "id": "train-024",
+      "family": "train-scenario-024",
+      "query": "Draft a policy explaining three overlapping leave rules and their exceptions.",
+      "context": "Annual leave requires 5 days notice; medical leave is immediate; statutory leave overrides notice. Include manager and employee versions without contradictions.",
+      "request_type": "writing",
+      "complexity": 4,
+      "rationale": "Complex prose reconciliation."
+    },
+    {
+      "id": "train-025",
+      "family": "train-scenario-025",
+      "query": "Produce a consistent public statement from conflicting incident accounts.",
+      "context": "Legal prohibits naming suppliers; engineering has unconfirmed evidence of data exposure; support already said no impact. Preserve uncertainty, correct earlier claims, and provide stakeholder-specific versions.",
+      "request_type": "writing",
+      "complexity": 5,
+      "rationale": "Cross-source constrained communication with unresolved evidence."
+    },
+    {
+      "id": "train-026",
+      "family": "train-scenario-026",
+      "query": "What is the capital of Nepal?",
+      "context": "Answer briefly.",
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "rationale": "Direct fact."
+    },
+    {
+      "id": "train-027",
+      "family": "train-scenario-027",
+      "query": "Define an HTTP 404 status.",
+      "context": "One sentence.",
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "rationale": "Direct technical definition."
+    },
+    {
+      "id": "train-028",
+      "family": "train-scenario-028",
+      "query": "List the standard HTTP methods and a short definition of each.",
+      "context": "No application design or examples.",
+      "request_type": "factual_lookup",
+      "complexity": 2,
+      "rationale": "Familiar factual list."
+    },
+    {
+      "id": "train-029",
+      "family": "train-scenario-029",
+      "query": "What does the term idempotent mean, and how does it differ from deterministic?",
+      "context": "Definitions only.",
+      "request_type": "factual_lookup",
+      "complexity": 2,
+      "rationale": "Two related definitions."
+    },
+    {
+      "id": "train-030",
+      "family": "train-scenario-030",
+      "query": "List the prerequisites, documented flags and output fields of the supplied command reference.",
+      "context": "Reference: command pack requires a manifest; flags are --dry-run and --output PATH; output has files, bytes and checksum. Do not recommend settings.",
+      "request_type": "factual_lookup",
+      "complexity": 3,
+      "rationale": "Several facts grounded in provided reference."
+    },
+    {
+      "id": "train-034",
+      "family": "train-scenario-034",
+      "query": "Help me choose between tea and hot chocolate.",
+      "context": "I want something warm and not too sweet.",
+      "request_type": "general",
+      "complexity": 2,
+      "rationale": "Everyday preference outside other labels."
+    },
+    {
+      "id": "train-035",
+      "family": "train-scenario-035",
+      "query": "Plan a balanced weekend with time for errands, rest and seeing friends.",
+      "context": "I have six free hours on Saturday and four on Sunday, and no car.",
+      "request_type": "general",
+      "complexity": 3,
+      "rationale": "General planning with bounded constraints."
+    }
+  ]
+}
