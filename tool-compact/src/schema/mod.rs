@@ -1,11 +1,13 @@
 mod analyze;
 mod ast;
+mod parse;
 mod render;
 mod validate;
 
 pub use analyze::analyze_tools;
 pub(crate) use analyze::safe_identifier;
 pub use ast::{CanonicalTool, Property, SchemaKind, SchemaNode};
+pub(crate) use parse::parse_tools;
 pub(crate) use render::render;
 pub(crate) use validate::validate;
 

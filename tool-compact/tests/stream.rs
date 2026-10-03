@@ -44,6 +44,11 @@ fn calls_are_emitted_only_after_closing_marker() {
 
 #[test]
 fn no_calls_and_text_around_calls() {
+    assert!(
+        decode_calls("<<c<call foo {\"x\":\"yes\"}>>", &tools())
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(decode_calls("The answer is 42.", &tools()).unwrap(), vec![]);
     assert_eq!(
         decode_calls("text <<call \n foo \t {\"x\":\"yes\"} >> text", &tools())

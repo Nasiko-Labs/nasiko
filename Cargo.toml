@@ -61,6 +61,7 @@ nasiko-bench-support = { path = "bench-support" }
 
 # ─── Testing ────────────────────────────────────────────────────────────────
 serial_test = "3"
+tiktoken-rs = "=0.12.1"
 
 # ─── Async runtime & web ────────────────────────────────────────────────────
 tokio = { version = "1", features = ["full"] }

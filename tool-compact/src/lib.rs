@@ -43,6 +43,11 @@ pub fn encode_tools(tools: &[ToolDef]) -> Result<CompactTools> {
     })
 }
 
+/// Reconstruct schemas from model-visible grammar, without original-schema storage.
+pub fn decode_tools(compact: &CompactTools) -> Result<Vec<ToolDef>> {
+    schema::parse_tools(&compact.rendered)
+}
+
 /// Validate a call without changing its name, arguments, or unknown keys.
 pub fn validate_call(call: &ToolCall, tools: &[ToolDef]) -> Result<()> {
     let canonical = analyze_tools(tools)?;

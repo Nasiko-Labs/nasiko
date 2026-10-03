@@ -153,7 +153,11 @@ impl StreamDecoder {
         } else {
             // The only proper self-overlap of the marker is its initial '<'.
             self.marker_progress = if character == '<' {
-                if self.marker_progress >= 2 { 2 } else { 1 }
+                if (1..=2).contains(&self.marker_progress) {
+                    2
+                } else {
+                    1
+                }
             } else {
                 0
             };
