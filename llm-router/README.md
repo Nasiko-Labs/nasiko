@@ -63,16 +63,17 @@ examples/mint_token.rs   dev/test JWT minter
 `AGENT_JWT_SECRET` (required; fail-closed if empty), `AGENT_JWT_ALGORITHM` (HS256),
 `DEFAULT_PROVIDER` (openai), `DEFAULT_MODEL` (gpt-4o-mini), `PLATFORM_OPENAI_API_KEY`,
 `LLM_CONFIG_CACHE_TTL` (30s), `{OPENAI,ANTHROPIC,GEMINI}_API_BASE` (test overrides).
-
-`TOKEN_COMPACT_TOOLS` (default **off**): replace a request's native `tools` with compact
-definitions and decode `<<call …>>` replies back into standard `tool_calls`
-([`nasiko-tool-compact`](../tool-compact/README.md), `src/compact_tools.rs`). It also needs the
-agent's own token-optimization switch. Covered: non-streaming chat on the OpenAI, Anthropic and
-Gemini inbound surfaces. Streaming, `/v1/responses`, forced `tool_choice`,
-`parallel_tool_calls: false`, `response_format`, tool history and unsupported schemas go out
-unchanged. A reply that does not decode is retried once with the native request.
 Reuses the platform's `SECRETS_ENCRYPTION_KEY` (per-user HKDF AES-256-GCM) and
 `DATABASE_URL`.
+
+`TOKEN_COMPACT_TOOLS` (default **off**): replaces a request's native `tools` with short text
+definitions and turns the model's `<<call …>>` replies back into standard `tool_calls`. The
+agent's own token-optimization switch has to allow it too. It covers non-streaming chat on the
+OpenAI, Anthropic and Gemini inbound surfaces. Streaming, `/v1/responses`, a forced
+`tool_choice`, `parallel_tool_calls: false`, `response_format`, earlier tool calls in the
+history and schemas the format can't carry exactly all go out unchanged. If a reply doesn't
+decode, the original native request is sent once instead. Code: `src/compact_tools.rs`; format,
+diagrams and limits: [`tool-compact/README.md`](../tool-compact/README.md).
 
 Storage: `agents.llm_config` (JSONB; NULL → defaults), `user_secrets` (decrypt via
 `SecretsCrypto::try_for_user`), `token_usage` (written), `model_pricing` (cost trigger).
