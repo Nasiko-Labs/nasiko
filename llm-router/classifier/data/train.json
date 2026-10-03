@@ -1,0 +1,639 @@
+{
+  "schema_version": "nasiko-classifier-dev-v1",
+  "purpose": "Authored synthetic development data; not evidence of private-set performance.",
+  "source_sha256": "9a8de7f039916e03e101564a2c527d2159d83f4e92837d65ff9c41a754fba9c1",
+  "examples": [
+    {
+      "family": "csv-parser",
+      "request_type": "code_generation",
+      "complexity": 2,
+      "query": "Write a Python function that reads a CSV and returns the rows.",
+      "context": "Use the standard library; no filtering or validation is needed.",
+      "id": "train-csv-parser"
+    },
+    {
+      "family": "sql-migration",
+      "request_type": "code_generation",
+      "complexity": 3,
+      "query": "Create a reversible migration to add a nullable account status and backfill active customers.",
+      "context": "PostgreSQL; existing customers are marked active in a separate subscriptions table.",
+      "id": "train-sql-migration"
+    },
+    {
+      "family": "comment-edit",
+      "request_type": "code_generation",
+      "complexity": 1,
+      "query": "Correct the spelling in this code comment.",
+      "context": "The comment is '# retrun the cached item'.",
+      "id": "train-comment-edit"
+    },
+    {
+      "family": "cache-bug",
+      "request_type": "code_generation",
+      "complexity": 4,
+      "query": "Fix the stale reads in our concurrent cache implementation.",
+      "context": "Readers overlap invalidation and rebuilding; preserve thread safety and add regression coverage.",
+      "id": "train-cache-bug"
+    },
+    {
+      "family": "json-config",
+      "request_type": "code_generation",
+      "complexity": 1,
+      "query": "Change the timeout from 30 to 45 in this JSON config.",
+      "context": "Only the timeout property should change.",
+      "id": "train-json-config"
+    },
+    {
+      "family": "trace-function",
+      "request_type": "code_understanding",
+      "complexity": 2,
+      "query": "Explain what this function does.",
+      "context": "def double(x): return x * 2",
+      "id": "train-trace-function"
+    },
+    {
+      "family": "ownership-review",
+      "request_type": "code_understanding",
+      "complexity": 3,
+      "query": "Review this Rust ownership error and explain why the borrow outlives the object.",
+      "context": "Do not rewrite the code; explain the lifetime relationship and diagnostics.",
+      "id": "train-ownership-review"
+    },
+    {
+      "family": "read-stack",
+      "request_type": "code_understanding",
+      "complexity": 3,
+      "query": "Diagnose the likely source of this stack trace without making edits.",
+      "context": "The request handler calls an async helper that returns an unawaited coroutine.",
+      "id": "train-read-stack"
+    },
+    {
+      "family": "inspect-query",
+      "request_type": "code_understanding",
+      "complexity": 2,
+      "query": "Walk me through this SQL query.",
+      "context": "SELECT customer_id, count(*) FROM orders GROUP BY customer_id",
+      "id": "train-inspect-query"
+    },
+    {
+      "family": "comment-meaning",
+      "request_type": "code_understanding",
+      "complexity": 1,
+      "query": "What does the comment '# cache hit' mean here?",
+      "context": "The function returns a value from an in-memory dictionary.",
+      "id": "train-comment-meaning"
+    },
+    {
+      "family": "queue-design",
+      "request_type": "technical_design",
+      "complexity": 4,
+      "query": "Design a durable task queue with retries and worker failures.",
+      "context": "Consider idempotency, visibility timeouts, ordering, and horizontal scaling.",
+      "id": "train-queue-design"
+    },
+    {
+      "family": "schema-choice",
+      "request_type": "technical_design",
+      "complexity": 3,
+      "query": "Should orders and payments share a table or use separate tables?",
+      "context": "We need partial refunds and multiple payment attempts per order.",
+      "id": "train-schema-choice"
+    },
+    {
+      "family": "api-shape",
+      "request_type": "technical_design",
+      "complexity": 2,
+      "query": "Propose a simple REST API for a read-only book catalog.",
+      "context": "Two endpoints: list books and fetch one book.",
+      "id": "train-api-shape"
+    },
+    {
+      "family": "partition-design",
+      "request_type": "technical_design",
+      "complexity": 5,
+      "query": "Design a geo-distributed inventory service that prevents overselling during partitions.",
+      "context": "Address consistency, regional failover, reservations, and recovery validation.",
+      "id": "train-partition-design"
+    },
+    {
+      "family": "storage-tradeoff",
+      "request_type": "technical_design",
+      "complexity": 3,
+      "query": "Compare relational and document storage for this application.",
+      "context": "Customers have nested profiles but billing requires transactions across accounts.",
+      "id": "train-storage-tradeoff"
+    },
+    {
+      "family": "coin-probability",
+      "request_type": "analytical_reasoning",
+      "complexity": 2,
+      "query": "Calculate the probability of two heads from two independent fair coin tosses.",
+      "context": "Show a short derivation.",
+      "id": "train-coin-probability"
+    },
+    {
+      "family": "arithmetic",
+      "request_type": "analytical_reasoning",
+      "complexity": 1,
+      "query": "What is 17 plus 8?",
+      "context": "",
+      "id": "train-arithmetic"
+    },
+    {
+      "family": "proof-synthesis",
+      "request_type": "analytical_reasoning",
+      "complexity": 5,
+      "query": "Prove the proposed randomized algorithm terminates and bound its expected running time.",
+      "context": "Retries depend on prior state; justify the probability assumptions and account for adversarial inputs.",
+      "id": "train-proof-synthesis"
+    },
+    {
+      "family": "trend-analysis",
+      "request_type": "analytical_reasoning",
+      "complexity": 3,
+      "query": "Analyze whether sales growth is driven by price or volume.",
+      "context": "Revenue rose 20%, units rose 5%; calculate the implied price contribution.",
+      "id": "train-trend-analysis"
+    },
+    {
+      "family": "causal-analysis",
+      "request_type": "analytical_reasoning",
+      "complexity": 4,
+      "query": "Evaluate whether the feature launch caused the observed retention increase.",
+      "context": "There was a simultaneous marketing campaign, unequal treatment groups, and incomplete follow-up.",
+      "id": "train-causal-analysis"
+    },
+    {
+      "family": "outage-email",
+      "request_type": "writing",
+      "complexity": 2,
+      "query": "Draft an email to customers about today's outage.",
+      "context": "Keep it under 100 words; acknowledge impact and say recovery is complete.",
+      "id": "train-outage-email"
+    },
+    {
+      "family": "prose-summary",
+      "request_type": "writing",
+      "complexity": 2,
+      "query": "Summarize this architecture document for our sales team.",
+      "context": "Focus on customer benefits rather than implementation details.",
+      "id": "train-prose-summary"
+    },
+    {
+      "family": "translate-prose",
+      "request_type": "writing",
+      "complexity": 1,
+      "query": "Translate 'Good morning' into Spanish.",
+      "context": "",
+      "id": "train-translate-prose"
+    },
+    {
+      "family": "policy-rewrite",
+      "request_type": "writing",
+      "complexity": 3,
+      "query": "Rewrite this policy so employees can understand it while preserving its exceptions.",
+      "context": "The original has five overlapping eligibility rules and two exclusions.",
+      "id": "train-policy-rewrite"
+    },
+    {
+      "family": "python-poem",
+      "request_type": "writing",
+      "complexity": 2,
+      "query": "Write a short poem about a Python snake.",
+      "context": "It lives in a garden; this is about the animal.",
+      "id": "train-python-poem"
+    },
+    {
+      "family": "capital-fact",
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "query": "What is the capital of Kenya?",
+      "context": "",
+      "id": "train-capital-fact"
+    },
+    {
+      "family": "term-definition",
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "query": "Define idempotency in one sentence.",
+      "context": "",
+      "id": "train-term-definition"
+    },
+    {
+      "family": "inventor-fact",
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "query": "Who invented the World Wide Web?",
+      "context": "",
+      "id": "train-inventor-fact"
+    },
+    {
+      "family": "api-fact",
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "query": "Which HTTP status code means Not Found?",
+      "context": "",
+      "id": "train-api-fact"
+    },
+    {
+      "family": "language-fact",
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "query": "What does HTML stand for?",
+      "context": "",
+      "id": "train-language-fact"
+    },
+    {
+      "family": "greeting",
+      "request_type": "general",
+      "complexity": 1,
+      "query": "Hello there!",
+      "context": "",
+      "id": "train-greeting"
+    },
+    {
+      "family": "thanks",
+      "request_type": "general",
+      "complexity": 1,
+      "query": "Thank you, have a nice evening.",
+      "context": "",
+      "id": "train-thanks"
+    },
+    {
+      "family": "casual-chat",
+      "request_type": "general",
+      "complexity": 1,
+      "query": "How's it going?",
+      "context": "No concrete task is requested.",
+      "id": "train-casual-chat"
+    },
+    {
+      "family": "farewell",
+      "request_type": "general",
+      "complexity": 1,
+      "query": "Goodbye for now.",
+      "context": "",
+      "id": "train-farewell"
+    },
+    {
+      "family": "unclear",
+      "request_type": "general",
+      "complexity": 1,
+      "query": "Hmm, maybe later.",
+      "context": "There is no earlier task or referent.",
+      "id": "train-unclear"
+    },
+    {
+      "family": "yaml-port-edit",
+      "request_type": "code_generation",
+      "complexity": 1,
+      "query": "Change port 3000 to 3001 in this YAML file.",
+      "context": "Only update the numeric value; no explanation is needed.",
+      "id": "train-yaml-port-edit"
+    },
+    {
+      "family": "env-flag-edit",
+      "request_type": "code_generation",
+      "complexity": 1,
+      "query": "Set FEATURE_LOGIN to true in this env file.",
+      "context": "Keep every other key unchanged.",
+      "id": "train-env-flag-edit"
+    },
+    {
+      "family": "toml-timeout-edit",
+      "request_type": "code_generation",
+      "complexity": 1,
+      "query": "Update the timeout_ms value from 500 to 750 in this TOML config.",
+      "context": "This is a configuration edit, not a factual question.",
+      "id": "train-toml-timeout-edit"
+    },
+    {
+      "family": "followup-apply-patch",
+      "request_type": "code_generation",
+      "complexity": 2,
+      "query": "Yes, apply that patch.",
+      "context": "The assistant proposed adding validation to the displayed TypeScript function.",
+      "id": "train-followup-apply-patch"
+    },
+    {
+      "family": "followup-implement-option",
+      "request_type": "code_generation",
+      "complexity": 2,
+      "query": "Let's implement the second option.",
+      "context": "The second option was adding a retry wrapper around the API client.",
+      "id": "train-followup-implement-option"
+    },
+    {
+      "family": "test-fix-approval",
+      "request_type": "code_generation",
+      "complexity": 3,
+      "query": "Go ahead and fix the failing unit test.",
+      "context": "The failure is in the supplied repository code; update code and tests.",
+      "id": "train-test-fix-approval"
+    },
+    {
+      "family": "ledger-retry-fix",
+      "request_type": "code_generation",
+      "complexity": 5,
+      "query": "Fix duplicate invoice events during regional failover and make retries idempotent.",
+      "context": "Workers can replay messages, partially commit database rows and restart mid-flight.",
+      "id": "train-ledger-retry-fix"
+    },
+    {
+      "family": "concurrent-index-fix",
+      "request_type": "code_generation",
+      "complexity": 4,
+      "query": "Repair the race in this shared search index refresh path.",
+      "context": "Readers must never see a partially rebuilt index; include regression coverage.",
+      "id": "train-concurrent-index-fix"
+    },
+    {
+      "family": "config-question-fact",
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "query": "What is TOML used for?",
+      "context": "A short factual definition is enough; do not edit a file.",
+      "id": "train-config-question-fact"
+    },
+    {
+      "family": "port-definition-fact",
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "query": "In networking, what is a port?",
+      "context": "Answer as a definition, not as a config change.",
+      "id": "train-port-definition-fact"
+    },
+    {
+      "family": "leap-year-days",
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "query": "How many days are in a leap year?",
+      "context": "Only the number is needed.",
+      "id": "train-leap-year-days"
+    },
+    {
+      "family": "calendar-common-year",
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "query": "How many days are in a common year?",
+      "context": "Answer directly.",
+      "id": "train-calendar-common-year"
+    },
+    {
+      "family": "proof-finite-group",
+      "request_type": "analytical_reasoning",
+      "complexity": 4,
+      "query": "Prove that every subgroup of a cyclic group is cyclic.",
+      "context": "Give a complete mathematical argument.",
+      "id": "train-proof-finite-group"
+    },
+    {
+      "family": "proof-modular-inverse",
+      "request_type": "analytical_reasoning",
+      "complexity": 3,
+      "query": "Show why a has a multiplicative inverse modulo p when p is prime and a is not divisible by p.",
+      "context": "Use number theory reasoning, not a lookup.",
+      "id": "train-proof-modular-inverse"
+    },
+    {
+      "family": "deduce-constraint-order",
+      "request_type": "analytical_reasoning",
+      "complexity": 3,
+      "query": "Find the only valid deployment order from these constraints.",
+      "context": "A must happen before C, B cannot be first, and D must follow C.",
+      "id": "train-deduce-constraint-order"
+    },
+    {
+      "family": "experiment-confounder",
+      "request_type": "analytical_reasoning",
+      "complexity": 4,
+      "query": "Decide whether the retention lift is likely caused by the pricing change.",
+      "context": "The cohort also changed onboarding and marketing spend during the same week.",
+      "id": "train-experiment-confounder"
+    },
+    {
+      "family": "cache-architecture-plan",
+      "request_type": "technical_design",
+      "complexity": 3,
+      "query": "Design a cache strategy for a product catalog with frequent reads and occasional updates.",
+      "context": "Discuss invalidation, freshness and failure behavior; no code is requested.",
+      "id": "train-cache-architecture-plan"
+    },
+    {
+      "family": "replicated-ledger-design",
+      "request_type": "technical_design",
+      "complexity": 5,
+      "query": "Design a replicated ledger service that stays correct under partitions.",
+      "context": "Explain quorum choices, fencing, recovery and verification.",
+      "id": "train-replicated-ledger-design"
+    },
+    {
+      "family": "notes-app-architecture",
+      "request_type": "technical_design",
+      "complexity": 2,
+      "query": "Sketch the architecture for a local-only notes application.",
+      "context": "One user, no sync, no accounts and no collaboration.",
+      "id": "train-notes-app-architecture"
+    },
+    {
+      "family": "webhook-tradeoff",
+      "request_type": "technical_design",
+      "complexity": 3,
+      "query": "Compare polling and webhooks for inventory updates.",
+      "context": "Recommend an approach and explain the tradeoffs.",
+      "id": "train-webhook-tradeoff"
+    },
+    {
+      "family": "code-explain-followup",
+      "request_type": "code_understanding",
+      "complexity": 2,
+      "query": "Explain that loop again.",
+      "context": "The prior answer walked through the supplied Python function.",
+      "id": "train-code-explain-followup"
+    },
+    {
+      "family": "zero-branch-reading",
+      "request_type": "code_understanding",
+      "complexity": 1,
+      "query": "What happens when count is zero in this branch?",
+      "context": "The code is: if count == 0: return [] else: return items[:count].",
+      "id": "train-zero-branch-reading"
+    },
+    {
+      "family": "big-o-existing-code",
+      "request_type": "code_understanding",
+      "complexity": 3,
+      "query": "Analyze the runtime complexity of this existing implementation.",
+      "context": "It has a loop over n rows and a hash-map lookup inside the loop.",
+      "id": "train-big-o-existing-code"
+    },
+    {
+      "family": "atomic-order-review",
+      "request_type": "code_understanding",
+      "complexity": 4,
+      "query": "Explain whether these acquire and release operations are enough.",
+      "context": "The existing code publishes a pointer from one thread and reads it from another.",
+      "id": "train-atomic-order-review"
+    },
+    {
+      "family": "friendly-followup-writing",
+      "request_type": "writing",
+      "complexity": 1,
+      "query": "Make it warmer.",
+      "context": "The previous draft is a short invitation email.",
+      "id": "train-friendly-followup-writing"
+    },
+    {
+      "family": "tone-followup-writing",
+      "request_type": "writing",
+      "complexity": 1,
+      "query": "Make that sound more professional.",
+      "context": "The previous message is a two-sentence Slack announcement.",
+      "id": "train-tone-followup-writing"
+    },
+    {
+      "family": "customer-release-notes",
+      "request_type": "writing",
+      "complexity": 3,
+      "query": "Turn these engineering notes into customer-facing release notes.",
+      "context": "Group related changes and remove internal implementation details.",
+      "id": "train-customer-release-notes"
+    },
+    {
+      "family": "grant-narrative-rewrite",
+      "request_type": "writing",
+      "complexity": 4,
+      "query": "Rewrite this proposal so the goals, methods and budget tell one coherent story.",
+      "context": "Preserve evidence and address two reviewer objections.",
+      "id": "train-grant-narrative-rewrite"
+    },
+    {
+      "family": "greeting-after-task",
+      "request_type": "general",
+      "complexity": 1,
+      "query": "Great, thanks.",
+      "context": "No new task is requested after the completed answer.",
+      "id": "train-greeting-after-task"
+    },
+    {
+      "family": "cancel-action",
+      "request_type": "general",
+      "complexity": 1,
+      "query": "Never mind, do not change it.",
+      "context": "The user cancels the pending edit and asks for nothing else.",
+      "id": "train-cancel-action"
+    },
+    {
+      "family": "casual-checkin",
+      "request_type": "general",
+      "complexity": 1,
+      "query": "How are you doing today?",
+      "context": "No technical or writing task is requested.",
+      "id": "train-casual-checkin"
+    },
+    {
+      "family": "empty-reference",
+      "request_type": "general",
+      "complexity": 1,
+      "query": "Do the thing we talked about.",
+      "context": "There is no usable prior context for what thing means.",
+      "id": "train-empty-reference"
+    },
+    {
+      "family": "api-symbol-fact",
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "query": "What does Vec::pop return in Rust?",
+      "context": "Answer in one sentence; no codebase context is provided.",
+      "id": "train-api-symbol-fact"
+    },
+    {
+      "family": "stdlib-method-fact",
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "query": "What does dict.get do in Python?",
+      "context": "Give a short factual explanation.",
+      "id": "train-stdlib-method-fact"
+    },
+    {
+      "family": "function-name-definition",
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "query": "What does Promise.allSettled mean in JavaScript?",
+      "context": "Answer as an API definition, not as code review.",
+      "id": "train-function-name-definition"
+    },
+    {
+      "family": "warm-notification-rewrite",
+      "request_type": "writing",
+      "complexity": 2,
+      "query": "Rewrite this appointment reminder to sound warmer while keeping the date unchanged.",
+      "context": "The message is for one customer and must preserve Friday at 3pm.",
+      "id": "train-warm-notification-rewrite"
+    },
+    {
+      "family": "candidate-email-rewrite",
+      "request_type": "writing",
+      "complexity": 2,
+      "query": "Make this interview email friendlier without changing the time or location.",
+      "context": "Original: Your interview is Monday at 9am in Room 4.",
+      "id": "train-candidate-email-rewrite"
+    },
+    {
+      "family": "release-bullets-customer",
+      "request_type": "writing",
+      "complexity": 3,
+      "query": "Summarize these release notes in three bullets for a nontechnical customer.",
+      "context": "Do not mention ticket IDs; mention that exports may pause briefly.",
+      "id": "train-release-bullets-customer"
+    },
+    {
+      "family": "parser-implementation",
+      "request_type": "code_generation",
+      "complexity": 3,
+      "query": "Implement a parser for semicolon-separated integers and report the first invalid field index.",
+      "context": "Rust 2021, whitespace is allowed, empty fields are invalid and tests are required.",
+      "id": "train-parser-implementation"
+    },
+    {
+      "family": "validation-parser-code",
+      "request_type": "code_generation",
+      "complexity": 3,
+      "query": "Write a parser that accepts newline-separated IDs and rejects blanks with line numbers.",
+      "context": "Use the standard library and include unit tests.",
+      "id": "train-validation-parser-code"
+    },
+    {
+      "family": "comment-keyword-edit",
+      "request_type": "code_generation",
+      "complexity": 1,
+      "query": "Do not redesign the feature; only change FIXME to NOTE in this comment.",
+      "context": "The line is '// FIXME: redesign billing after launch'.",
+      "id": "train-comment-keyword-edit"
+    },
+    {
+      "family": "auth-log-reasoning",
+      "request_type": "analytical_reasoning",
+      "complexity": 5,
+      "query": "Diagnose why users sometimes lose sessions after token refresh and reconstruct two possible interleavings.",
+      "context": "Use the logs to reason about uncertainty, ordering and cache behavior; do not implement the fix.",
+      "id": "train-auth-log-reasoning"
+    },
+    {
+      "family": "reconciliation-reasoning",
+      "request_type": "analytical_reasoning",
+      "complexity": 4,
+      "query": "Investigate duplicate charges and missing refunds by walking through the event timeline.",
+      "context": "State what can be inferred, identify unsafe retry assumptions and propose repair principles.",
+      "id": "train-reconciliation-reasoning"
+    },
+    {
+      "family": "timeout-causality",
+      "request_type": "analytical_reasoning",
+      "complexity": 4,
+      "query": "Analyze whether the timeout proves the operation failed.",
+      "context": "There are delayed webhooks, retry keys and inconsistent local status rows.",
+      "id": "train-timeout-causality"
+    }
+  ]
+}

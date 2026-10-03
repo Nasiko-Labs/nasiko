@@ -1,0 +1,2 @@
+# A trailing delimiter represents an empty context field in the fixed-column TSV.
+*.tsv whitespace=-blank-at-eol

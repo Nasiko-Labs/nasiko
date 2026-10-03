@@ -34,6 +34,79 @@ use rand_distr::{Beta, Distribution};
 
 use super::patterns::{CATEGORY_PATTERNS, NEGATIVE_SIGNALS, POSITIVE_SIGNALS};
 
+/// Latest requested action and supporting context, never evaluation labels.
+pub struct ClassifyInput<'a> {
+    pub query: &'a str,
+    pub context: Option<&'a str>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Classification {
+    pub request_type: RequestType,
+    /// Rubric-defined effort, not a model tier. 1 = trivial, 5 = very demanding.
+    pub complexity: u8,
+    /// Estimated probability that the selected request type is correct.
+    pub confidence: f32,
+}
+
+impl Classification {
+    pub fn validate(self) -> Result<Self, ClassifyError> {
+        if !(1..=5).contains(&self.complexity)
+            || !self.confidence.is_finite()
+            || !(0.0..=1.0).contains(&self.confidence)
+        {
+            return Err(ClassifyError::InvalidOutput);
+        }
+        Ok(self)
+    }
+}
+
+/// Errors contain no query, context, endpoint credentials, or response bodies.
+#[derive(Debug, thiserror::Error)]
+pub enum ClassifyError {
+    #[error("classifier unavailable")]
+    Unavailable,
+    #[error("classifier timed out")]
+    Timeout,
+    #[error("invalid classifier output")]
+    InvalidOutput,
+}
+
+#[async_trait::async_trait]
+pub trait RequestClassifier: Send + Sync {
+    fn name(&self) -> &str;
+    /// One-time startup, excluded from per-decision evaluation latency.
+    async fn prepare(&self) -> Result<(), ClassifyError> {
+        Ok(())
+    }
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError>;
+}
+
+/// Exact legacy category matching. Complexity 3 is an unknown-effort placeholder;
+/// confidence 0 is an explicit absence of calibrated confidence, not a probability
+/// learned from data. These constants never change default tier selection.
+pub struct RegexClassifier;
+
+#[async_trait::async_trait]
+impl RequestClassifier for RegexClassifier {
+    fn name(&self) -> &str {
+        "regex"
+    }
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+        Ok(Self::predict(input.query))
+    }
+}
+
+impl RegexClassifier {
+    pub fn predict(query: &str) -> Classification {
+        Classification {
+            request_type: classify_request_type(query),
+            complexity: 3,
+            confidence: 0.0,
+        }
+    }
+}
+
 /// Coarse model strength tier. Tier 1 = most capable (complex queries), Tier 3 = smallest
 /// (very simple queries), Tier 2 = in between.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -117,6 +190,7 @@ const PRIOR_PSEUDO_COUNT: f64 = 4.0;
 /// cost trims. Tunable — learning corrects any cold-start bias over time.
 pub const DEFAULT_W_QUALITY: f64 = 0.7;
 pub const DEFAULT_W_COST: f64 = 0.3;
+const COMPLEXITY_BIAS_WEIGHT: f64 = 0.12;
 
 /// A tier as a bandit arm: its nominal quality tier (for the cold-start prior), a relative
 /// cost, and the request types it is expected to be good at (a prior bonus). Costs are a
@@ -251,6 +325,40 @@ pub fn pick_model_thompson<R: Rng + ?Sized>(
     w_cost: f64,
     rng: &mut R,
 ) -> Tier {
+    pick_model_thompson_impl(cells, request_type, None, w_quality, w_cost, rng)
+}
+
+/// Thompson tier selection with the classifier's effort estimate as a soft prior.
+///
+/// The learned `(tier, request_type)` cells still influence the quality score.
+/// Complexity adds a fixed, bounded score adjustment: low effort favors cheaper
+/// tiers, high effort favors stronger tiers, and level 3 favors the middle tier.
+pub fn pick_model_thompson_with_complexity<R: Rng + ?Sized>(
+    cells: &CellMap,
+    request_type: RequestType,
+    complexity: u8,
+    w_quality: f64,
+    w_cost: f64,
+    rng: &mut R,
+) -> Tier {
+    pick_model_thompson_impl(
+        cells,
+        request_type,
+        Some(complexity),
+        w_quality,
+        w_cost,
+        rng,
+    )
+}
+
+fn pick_model_thompson_impl<R: Rng + ?Sized>(
+    cells: &CellMap,
+    request_type: RequestType,
+    complexity: Option<u8>,
+    w_quality: f64,
+    w_cost: f64,
+    rng: &mut R,
+) -> Tier {
     let lo = TIER_ARMS
         .iter()
         .map(|a| a.cost)
@@ -280,13 +388,27 @@ pub fn pick_model_thompson<R: Rng + ?Sized>(
         } else {
             0.0
         };
-        let score = w_quality * q + w_cost * (1.0 - norm_cost);
+        let effort_bias = complexity
+            .map(|level| complexity_tier_bias(arm.tier, level) * COMPLEXITY_BIAS_WEIGHT)
+            .unwrap_or(0.0);
+        let score = w_quality * q + w_cost * (1.0 - norm_cost) + effort_bias;
         if score > best_score {
             best_score = score;
             best = arm.tier;
         }
     }
     best
+}
+
+fn complexity_tier_bias(tier: Tier, complexity: u8) -> f64 {
+    let level = complexity.clamp(1, 5) as f64;
+    let target = (level - 3.0) / 2.0;
+    let tier_position = match tier {
+        Tier::Tier1 => 1.0,
+        Tier::Tier2 => 0.0,
+        Tier::Tier3 => -1.0,
+    };
+    1.0 - (tier_position - target).abs()
 }
 
 // --------------------------------------------------------------------------
@@ -516,6 +638,45 @@ mod tests {
             let tier = pick_model_thompson(&cells, RequestType::General, 0.0, 1.0, &mut rng);
             assert_eq!(tier, Tier::Tier3);
         }
+    }
+
+    #[test]
+    fn complexity_bias_prefers_expected_effort_band_when_other_weights_are_zero() {
+        let cells = CellMap::new();
+        let mut rng = StdRng::seed_from_u64(7);
+        assert_eq!(
+            pick_model_thompson_with_complexity(
+                &cells,
+                RequestType::General,
+                1,
+                0.0,
+                0.0,
+                &mut rng
+            ),
+            Tier::Tier3
+        );
+        assert_eq!(
+            pick_model_thompson_with_complexity(
+                &cells,
+                RequestType::General,
+                3,
+                0.0,
+                0.0,
+                &mut rng
+            ),
+            Tier::Tier2
+        );
+        assert_eq!(
+            pick_model_thompson_with_complexity(
+                &cells,
+                RequestType::General,
+                5,
+                0.0,
+                0.0,
+                &mut rng
+            ),
+            Tier::Tier1
+        );
     }
 
     #[test]

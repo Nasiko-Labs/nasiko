@@ -107,6 +107,18 @@ async fn responses_core(
         )
     };
     let signals = RequestSignals {
+        context: if ctx.request_classifier.experimental {
+            let messages: Vec<crate::ir::Message> = body
+                .get("input")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|v| serde_json::from_value(v.clone()).ok())
+                .collect();
+            crate::routing::decision::conversation_context(&messages)
+        } else {
+            None
+        },
         turn_ordinal: user_turn_ordinal(body.get("input")),
         is_tool_continuation: is_tool_continuation(body.get("input")),
         query,
@@ -1058,6 +1070,7 @@ mod tests {
             tier_registry: Arc::new(NoTiers),
             cell_store: Arc::new(crate::routing::InMemoryCellStore::new()),
             salience_gate: Arc::new(crate::routing::salience::AllowAllGate),
+            request_classifier: Arc::new(crate::routing::decision::ClassifierRuntime::default()),
             pricing: Arc::new(nasiko_pricing::PricingEngine::new(
                 PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
             )),

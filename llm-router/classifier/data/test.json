@@ -1,0 +1,231 @@
+{
+  "schema_version": "nasiko-classifier-dev-v1",
+  "purpose": "Authored synthetic development data; not evidence of private-set performance.",
+  "source_sha256": "9a8de7f039916e03e101564a2c527d2159d83f4e92837d65ff9c41a754fba9c1",
+  "examples": [
+    {
+      "family": "toml-edit",
+      "request_type": "code_generation",
+      "complexity": 1,
+      "query": "Replace port 8080 with 8081 in this TOML file.",
+      "context": "No other changes are needed.",
+      "id": "test-toml-edit"
+    },
+    {
+      "family": "followup-code",
+      "request_type": "code_generation",
+      "complexity": 2,
+      "query": "Yes, do that.",
+      "context": "Assistant proposed adding a null check to the supplied JavaScript function. User now approves the edit.",
+      "id": "test-followup-code"
+    },
+    {
+      "family": "cli-implementation",
+      "request_type": "code_generation",
+      "complexity": 3,
+      "query": "Build a CLI that merges logs by timestamp and reports malformed entries.",
+      "context": "Support two input formats, bounded memory and deterministic tests.",
+      "id": "test-cli-implementation"
+    },
+    {
+      "family": "distributed-debug",
+      "request_type": "code_generation",
+      "complexity": 5,
+      "query": "Fix duplicate financial postings during failover and prove retries are safe.",
+      "context": "Several services share a ledger; there are partial writes, replays and overlapping recovery workers.",
+      "id": "test-distributed-debug"
+    },
+    {
+      "family": "followup-explain",
+      "request_type": "code_understanding",
+      "complexity": 2,
+      "query": "Explain that part again.",
+      "context": "The prior answer described the recursion in the supplied tree traversal function.",
+      "id": "test-followup-explain"
+    },
+    {
+      "family": "branch-explanation",
+      "request_type": "code_understanding",
+      "complexity": 1,
+      "query": "What happens when x is zero here?",
+      "context": "The code is: if x == 0: return 'empty'; else: return 'filled'.",
+      "id": "test-branch-explanation"
+    },
+    {
+      "family": "complexity-code-review",
+      "request_type": "code_understanding",
+      "complexity": 3,
+      "query": "Analyze the time complexity of this implementation.",
+      "context": "There is an outer loop over n elements and an inner binary search over a sorted list of n elements; no rewrite requested.",
+      "id": "test-complexity-code-review"
+    },
+    {
+      "family": "memory-model",
+      "request_type": "code_understanding",
+      "complexity": 4,
+      "query": "Explain whether this memory ordering is sufficient.",
+      "context": "Two threads publish and consume a pointer with relaxed atomics; the pointed-to object is initialized before publishing.",
+      "id": "test-memory-model"
+    },
+    {
+      "family": "followup-design",
+      "request_type": "technical_design",
+      "complexity": 3,
+      "query": "What would you recommend instead?",
+      "context": "We are choosing between polling and event-driven updates for an inventory API; discuss the design trade-offs.",
+      "id": "test-followup-design"
+    },
+    {
+      "family": "cache-architecture",
+      "request_type": "technical_design",
+      "complexity": 3,
+      "query": "Suggest a caching strategy for a frequently read product catalog.",
+      "context": "Discuss invalidation and freshness; implementation is not requested.",
+      "id": "test-cache-architecture"
+    },
+    {
+      "family": "local-tool-design",
+      "request_type": "technical_design",
+      "complexity": 2,
+      "query": "Outline a simple architecture for a single-user notes app.",
+      "context": "It runs locally with no accounts, synchronization or collaboration.",
+      "id": "test-local-tool-design"
+    },
+    {
+      "family": "consensus-design",
+      "request_type": "technical_design",
+      "complexity": 5,
+      "query": "Design a replicated scheduler that keeps correct ownership under network partitions.",
+      "context": "Explain fencing, election, clock assumptions, crash recovery and a validation plan.",
+      "id": "test-consensus-design"
+    },
+    {
+      "family": "plain-proof",
+      "request_type": "analytical_reasoning",
+      "complexity": 4,
+      "query": "Prove that every finite integral domain is a field.",
+      "context": "Give a complete mathematical argument.",
+      "id": "test-plain-proof"
+    },
+    {
+      "family": "mental-math",
+      "request_type": "analytical_reasoning",
+      "complexity": 1,
+      "query": "Compute 6 times 7.",
+      "context": "",
+      "id": "test-mental-math"
+    },
+    {
+      "family": "word-problem",
+      "request_type": "analytical_reasoning",
+      "complexity": 2,
+      "query": "A train travels 90 kilometers in 90 minutes. What is its average speed in km/h?",
+      "context": "",
+      "id": "test-word-problem"
+    },
+    {
+      "family": "multi-source-reasoning",
+      "request_type": "analytical_reasoning",
+      "complexity": 4,
+      "query": "Which of these explanations best accounts for the discrepancy?",
+      "context": "Two experiments disagree; measurements have different denominators, missing records and selection effects. Evaluate competing hypotheses.",
+      "id": "test-multi-source-reasoning"
+    },
+    {
+      "family": "technical-poetry",
+      "request_type": "writing",
+      "complexity": 2,
+      "query": "Compose a playful poem about databases falling in love.",
+      "context": "This is creative writing; no database implementation is requested.",
+      "id": "test-technical-poetry"
+    },
+    {
+      "family": "followup-writing",
+      "request_type": "writing",
+      "complexity": 1,
+      "query": "Make it friendlier.",
+      "context": "The previous message is a two-sentence invitation email.",
+      "id": "test-followup-writing"
+    },
+    {
+      "family": "code-to-prose",
+      "request_type": "writing",
+      "complexity": 3,
+      "query": "Turn these developer notes into release notes for customers.",
+      "context": "Summarize six changes, group related items and remove internal jargon while retaining limitations.",
+      "id": "test-code-to-prose"
+    },
+    {
+      "family": "complex-editing",
+      "request_type": "writing",
+      "complexity": 4,
+      "query": "Rewrite the grant application to align its narrative across all sections.",
+      "context": "The methods, budget and goals conflict; preserve cited evidence and address the reviewer's objections.",
+      "id": "test-complex-editing"
+    },
+    {
+      "family": "python-fact",
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "query": "Who created the Python programming language?",
+      "context": "Only the person's name is needed.",
+      "id": "test-python-fact"
+    },
+    {
+      "family": "calendar-fact",
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "query": "How many days are there in a leap year?",
+      "context": "",
+      "id": "test-calendar-fact"
+    },
+    {
+      "family": "terminology-fact",
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "query": "What does RAM stand for?",
+      "context": "",
+      "id": "test-terminology-fact"
+    },
+    {
+      "family": "fixed-fact",
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "query": "Name the largest ocean on Earth.",
+      "context": "",
+      "id": "test-fixed-fact"
+    },
+    {
+      "family": "simple-wave",
+      "request_type": "general",
+      "complexity": 1,
+      "query": "Hey!",
+      "context": "",
+      "id": "test-simple-wave"
+    },
+    {
+      "family": "satisfied-chat",
+      "request_type": "general",
+      "complexity": 1,
+      "query": "That's all, thanks.",
+      "context": "The task is complete.",
+      "id": "test-satisfied-chat"
+    },
+    {
+      "family": "casual-status",
+      "request_type": "general",
+      "complexity": 1,
+      "query": "Nice to see you again.",
+      "context": "",
+      "id": "test-casual-status"
+    },
+    {
+      "family": "nonaction",
+      "request_type": "general",
+      "complexity": 1,
+      "query": "Never mind, let's leave it.",
+      "context": "The user cancels the prior action; no new task is requested.",
+      "id": "test-nonaction"
+    }
+  ]
+}

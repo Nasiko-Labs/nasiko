@@ -1,0 +1,287 @@
+{
+  "release-raw-test": {
+    "cases": 28,
+    "request_type_accuracy": 0.9642857142857143,
+    "complexity_mae": 0.17857142857142858,
+    "ece_10_bins": 0.07059485997472491,
+    "p50_ms": 2.371,
+    "p95_ms": 3.075,
+    "errors": [
+      {
+        "id": "test-word-problem",
+        "expected": "analytical_reasoning",
+        "predicted": "factual_lookup",
+        "confidence": 0.6170330047607422
+      }
+    ]
+  },
+  "release-default-test": {
+    "cases": 28,
+    "request_type_accuracy": 0.9642857142857143,
+    "complexity_mae": 0.17857142857142858,
+    "ece_10_bins": 0.07059485997472491,
+    "p50_ms": 2.273,
+    "p95_ms": 2.955,
+    "errors": [
+      {
+        "id": "test-word-problem",
+        "expected": "analytical_reasoning",
+        "predicted": "factual_lookup",
+        "confidence": 0.6170330047607422
+      }
+    ]
+  },
+  "release-regex-test": {
+    "cases": 28,
+    "request_type_accuracy": 0.2857142857142857,
+    "complexity_mae": 1.3214285714285714,
+    "ece_10_bins": 0.2857142857142857,
+    "p50_ms": 0.004,
+    "p95_ms": 0.061,
+    "errors": [
+      {
+        "id": "test-toml-edit",
+        "expected": "code_generation",
+        "predicted": "general",
+        "confidence": 0.0
+      },
+      {
+        "id": "test-followup-code",
+        "expected": "code_generation",
+        "predicted": "general",
+        "confidence": 0.0
+      },
+      {
+        "id": "test-cli-implementation",
+        "expected": "code_generation",
+        "predicted": "general",
+        "confidence": 0.0
+      },
+      {
+        "id": "test-distributed-debug",
+        "expected": "code_generation",
+        "predicted": "analytical_reasoning",
+        "confidence": 0.0
+      },
+      {
+        "id": "test-followup-explain",
+        "expected": "code_understanding",
+        "predicted": "general",
+        "confidence": 0.0
+      },
+      {
+        "id": "test-branch-explanation",
+        "expected": "code_understanding",
+        "predicted": "general",
+        "confidence": 0.0
+      },
+      {
+        "id": "test-complexity-code-review",
+        "expected": "code_understanding",
+        "predicted": "general",
+        "confidence": 0.0
+      },
+      {
+        "id": "test-memory-model",
+        "expected": "code_understanding",
+        "predicted": "general",
+        "confidence": 0.0
+      },
+      {
+        "id": "test-followup-design",
+        "expected": "technical_design",
+        "predicted": "general",
+        "confidence": 0.0
+      },
+      {
+        "id": "test-cache-architecture",
+        "expected": "technical_design",
+        "predicted": "general",
+        "confidence": 0.0
+      },
+      {
+        "id": "test-consensus-design",
+        "expected": "technical_design",
+        "predicted": "general",
+        "confidence": 0.0
+      },
+      {
+        "id": "test-mental-math",
+        "expected": "analytical_reasoning",
+        "predicted": "general",
+        "confidence": 0.0
+      },
+      {
+        "id": "test-word-problem",
+        "expected": "analytical_reasoning",
+        "predicted": "general",
+        "confidence": 0.0
+      },
+      {
+        "id": "test-multi-source-reasoning",
+        "expected": "analytical_reasoning",
+        "predicted": "general",
+        "confidence": 0.0
+      },
+      {
+        "id": "test-followup-writing",
+        "expected": "writing",
+        "predicted": "general",
+        "confidence": 0.0
+      },
+      {
+        "id": "test-code-to-prose",
+        "expected": "writing",
+        "predicted": "general",
+        "confidence": 0.0
+      },
+      {
+        "id": "test-python-fact",
+        "expected": "factual_lookup",
+        "predicted": "general",
+        "confidence": 0.0
+      },
+      {
+        "id": "test-calendar-fact",
+        "expected": "factual_lookup",
+        "predicted": "analytical_reasoning",
+        "confidence": 0.0
+      },
+      {
+        "id": "test-terminology-fact",
+        "expected": "factual_lookup",
+        "predicted": "general",
+        "confidence": 0.0
+      },
+      {
+        "id": "test-fixed-fact",
+        "expected": "factual_lookup",
+        "predicted": "general",
+        "confidence": 0.0
+      }
+    ]
+  },
+  "release-raw-public": {
+    "cases": 10,
+    "request_type_accuracy": 0.9,
+    "complexity_mae": 0.4,
+    "ece_10_bins": 0.10856887698173524,
+    "p50_ms": 3.924,
+    "p95_ms": 11.14,
+    "errors": [
+      {
+        "id": "pub-06",
+        "expected": "analytical_reasoning",
+        "predicted": "code_generation",
+        "confidence": 0.5420951247215271
+      }
+    ]
+  },
+  "release-regex-public": {
+    "cases": 10,
+    "request_type_accuracy": 0.3,
+    "complexity_mae": 1.2,
+    "ece_10_bins": 0.3,
+    "p50_ms": 0.008,
+    "p95_ms": 8.299,
+    "errors": [
+      {
+        "id": "pub-01",
+        "expected": "code_generation",
+        "predicted": "general",
+        "confidence": 0.0
+      },
+      {
+        "id": "pub-02",
+        "expected": "factual_lookup",
+        "predicted": "general",
+        "confidence": 0.0
+      },
+      {
+        "id": "pub-05",
+        "expected": "technical_design",
+        "predicted": "code_understanding",
+        "confidence": 0.0
+      },
+      {
+        "id": "pub-06",
+        "expected": "analytical_reasoning",
+        "predicted": "code_understanding",
+        "confidence": 0.0
+      },
+      {
+        "id": "pub-07",
+        "expected": "code_generation",
+        "predicted": "general",
+        "confidence": 0.0
+      },
+      {
+        "id": "pub-08",
+        "expected": "code_generation",
+        "predicted": "general",
+        "confidence": 0.0
+      },
+      {
+        "id": "pub-09",
+        "expected": "writing",
+        "predicted": "general",
+        "confidence": 0.0
+      }
+    ]
+  },
+  "model_manifest": {
+    "schema_version": 1,
+    "kind": "minilm_multitask",
+    "labels": [
+      "code_generation",
+      "code_understanding",
+      "technical_design",
+      "analytical_reasoning",
+      "writing",
+      "factual_lookup",
+      "general"
+    ],
+    "max_tokens": 256,
+    "type_temperature": 0.5,
+    "effort_temperature": 0.5874487774697648,
+    "seed": 42,
+    "selected_epoch": 5,
+    "validation_accuracy_fp32": 0.9555555582046509,
+    "complexity_mae_fp32": 0.42222222685813904,
+    "training_seconds": 22.171852600062266,
+    "train_sha256": "a5c1967127d1dd4813aca6e84e688ae8e19358831311b1bdf953a31bc45e1b8a",
+    "validation_sha256": "bdef9451da2f166fb9ed9fbc221c0ab90273f15c9b3f23abcd427f56787d7a0e",
+    "base": {
+      "repo": "sentence-transformers/all-MiniLM-L6-v2",
+      "revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+      "files": {
+        "config.json": "953f9c0d463486b10a6871cc2fd59f223b2c70184f49815e7efbcab5d8908b41",
+        "model.safetensors": "53aa51172d142c89d9012cce15ae4d6cc0ca6895895114379cacb4fab128d9db",
+        "special_tokens_map.json": "303df45a03609e4ead04bc3dc1536d0ab19b5358db685b6f3da123d05ec200e3",
+        "tokenizer.json": "be50c3628f2bf5bb5e3a7f17b1f74611b2561a3a27eeab05e5aa30f411572037",
+        "tokenizer_config.json": "acb92769e8195aabd29b7b2137a9e6d6e25c476a4f15aa4355c233426c61576b",
+        "vocab.txt": "07eced375cec144d27c900241f3e339478dec958f92fddbc551f295c992038a3"
+      }
+    },
+    "onnx_sha256": "ff3354b085e2f5a1b8be4501f801da9a17539ebef5620f2762c7848cc38d5630"
+  },
+  "environment": {
+    "cpu": "Intel Core i7-13650HX",
+    "os": "Windows",
+    "ort_threads": 2,
+    "onnx_bytes": 58617569,
+    "runtime": "onnxruntime 1.30.0 CPU",
+    "cold_start_ms": [
+      561,
+      503,
+      515,
+      632
+    ],
+    "quantization": "dynamic INT8 MatMul, embeddings remain FP32",
+    "threshold": 0.35,
+    "raw_threshold": 0,
+    "seed": 42
+  },
+  "repeat_predictions_identical": true,
+  "evaluation_note": "Development error analysis informed added training/validation families. Test examples unchanged; neither set is a fresh blind evaluation."
+}
