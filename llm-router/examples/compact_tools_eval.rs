@@ -3,7 +3,7 @@
 //! Usage: EVAL_SET=/tmp/compact-tools-eval.json OUT=/tmp/out.jsonl cargo run --release -p nasiko-llm-router --example compact_tools_eval
 
 use nasiko_tool_compact::{
-    decode_calls, encode_tools, StreamDecoder, ToolCompactError, ToolDef,
+    decode_calls, encode_tools, StreamDecoder, ToolCompactError, ToolDef, FunctionDef,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
