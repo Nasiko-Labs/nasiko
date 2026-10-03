@@ -619,6 +619,49 @@ pub fn latest_user_query(messages: &[crate::ir::Message]) -> Option<String> {
     Some(text)
 }
 
+/// The routing-only view of where a transcript stands, for boundary and `conv_id` derivation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnAnchor {
+    /// Count of genuine prompts (user messages not immediately preceded by a tool result).
+    pub ordinal: usize,
+    /// Text of the latest genuine prompt (A2A history prefix stripped).
+    pub anchor_text: Option<String>,
+    /// The transcript is mid tool-loop: it ends with a tool result, or with a user message
+    /// that merely accompanies one.
+    pub mid_tool_loop: bool,
+}
+
+/// Locate the current prompt for boundary purposes.
+///
+/// Anthropic clients send a tool result and any accompanying text in one user turn (e.g. a
+/// coding CLI's `<system-reminder>` block next to its `tool_result`), which the inbound
+/// parser normalizes to `[…, tool, user]`. Counted naively, that trailing `user` message
+/// looks like a new prompt: the turn ordinal increments, the coding-agent `conv_id` changes
+/// and the tool loop reclassifies mid-flight. Here a `user` message **immediately preceded
+/// by a `tool` message** is treated as part of the tool loop, not a new prompt. For
+/// transcripts without such interjections this agrees exactly with [`user_turn_ordinal`],
+/// [`latest_user_query`] and [`is_tool_continuation`] — which stay unchanged, because brevity
+/// and compression rely on their literal meaning.
+pub fn turn_anchor(messages: &[crate::ir::Message]) -> TurnAnchor {
+    let is_interjection =
+        |i: usize| messages[i].role == "user" && i > 0 && messages[i - 1].role == "tool";
+    let genuine: Vec<usize> = (0..messages.len())
+        .filter(|&i| messages[i].role == "user" && !is_interjection(i))
+        .collect();
+    let anchor_text = genuine
+        .last()
+        .and_then(|&i| latest_user_query(&messages[..=i]));
+    let mid_tool_loop = match messages.len() {
+        0 => false,
+        n => messages[n - 1].role == "tool" || is_interjection(n - 1),
+    };
+    TurnAnchor {
+        ordinal: genuine.len(),
+        anchor_text,
+        mid_tool_loop,
+    }
+}
+
 /// Number of top-level user turns so far (count of `role == "user"` messages). Tool results
 /// normalize to `role == "tool"` (see `inbound::anthropic`'s doc comment on `tool_result` →
 /// `{role:"tool"}`), so this counts only genuine new prompts, not tool-loop continuations.
@@ -1372,6 +1415,55 @@ mod tests {
             tiers.insert(d.tier);
         }
         assert!(tiers.len() > 1, "different conversations should still explore");
+    }
+
+    #[tokio::test]
+    async fn in_flow_tool_loop_turn_never_invokes_classifier() {
+        let classifier = CountingClassifier::returning(writing_verdict(0.9));
+        let s = BoundarySignals::in_flow_turn("ses-1".into(), Mode::FreeFlowing, true);
+        let d = route_model(
+            &FakeCache::empty(),
+            &test_support::StubRegistry,
+            &InMemoryCellStore::new(),
+            &AllowAllGate,
+            &classifier,
+            &inputs("anthropic", &s, None),
+        )
+        .await;
+        assert_eq!(d.source, RouteSource::Config);
+        assert_eq!(classifier.calls(), 0);
+    }
+
+    #[test]
+    fn turn_anchor_treats_text_after_tool_result_as_part_of_the_loop() {
+        let msg = |role: &str, content: &str| Message {
+            role: role.into(),
+            content: Some(Value::String(content.into())),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+            extra: Map::new(),
+        };
+        let plain = vec![msg("user", "a"), msg("assistant", "b"), msg("user", "c")];
+        assert_eq!(
+            turn_anchor(&plain),
+            TurnAnchor {
+                ordinal: user_turn_ordinal(&plain),
+                anchor_text: latest_user_query(&plain),
+                mid_tool_loop: is_tool_continuation(&plain),
+            }
+        );
+        let looped = vec![
+            msg("user", "refactor"),
+            msg("assistant", "calling tool"),
+            msg("tool", "result"),
+            msg("user", "<system-reminder>x</system-reminder>"),
+        ];
+        let a = turn_anchor(&looped);
+        assert_eq!(a.ordinal, 1);
+        assert_eq!(a.anchor_text.as_deref(), Some("refactor"));
+        assert!(a.mid_tool_loop);
+        assert!(!turn_anchor(&[]).mid_tool_loop);
     }
 
     #[test]

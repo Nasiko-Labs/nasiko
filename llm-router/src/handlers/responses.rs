@@ -109,6 +109,7 @@ async fn responses_core(
     let signals = RequestSignals {
         turn_ordinal: user_turn_ordinal(body.get("input")),
         is_tool_continuation: is_tool_continuation(body.get("input")),
+        anchor_text: query.clone(),
         query,
         // The Responses surface does not extract classification context yet (documented
         // limit): the classifier sees the query alone here.
