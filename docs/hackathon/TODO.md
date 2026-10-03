@@ -14,7 +14,7 @@ Status is `Not started`, `In progress`, or `Done`. Update this file when a task 
 | T08 | Reject unknown tools and invalid arguments | [lld/08-fail-closed.md](lld/08-fail-closed.md) | Done |
 | T09 | Decode prose, several calls, and a reply with no call | [lld/09-prose-and-several-calls.md](lld/09-prose-and-several-calls.md) | Done |
 | T10 | Decode a call split across stream chunks | [lld/10-stream-decoder.md](lld/10-stream-decoder.md) | Done |
-| T11 | Prove a successful decode always matches the schema | [lld/11-no-invalid-success.md](lld/11-no-invalid-success.md) | Not started |
+| T11 | Prove a successful decode always matches the schema | [lld/11-no-invalid-success.md](lld/11-no-invalid-success.md) | Done |
 | T12 | Write the offline eval example | [lld/12-offline-eval.md](lld/12-offline-eval.md) | Not started |
 | T13 | Round-trip the public sample | [lld/13-public-sample.md](lld/13-public-sample.md) | Not started |
 | T14 | Show two eval runs write the same output | [lld/14-deterministic-eval.md](lld/14-deterministic-eval.md) | Not started |

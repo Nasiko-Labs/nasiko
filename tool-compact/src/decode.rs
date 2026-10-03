@@ -197,6 +197,9 @@ pub(crate) fn calls_from_text(text: &str, tools: &[ToolDef]) -> Result<Vec<ToolC
         calls.push(accept_call(raw, tools)?);
         rest = after_marker.chars().skip(consumed).collect();
     }
+    if rest.contains("<<call") {
+        return Err(grammar::malformed(""));
+    }
     Ok(calls)
 }
 
@@ -298,6 +301,33 @@ mod tests {
     fn plain_answer_has_no_calls_and_is_not_an_error() {
         let calls = crate::decode_calls("What's the weather?", &[calendar()]).unwrap();
         assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn schema_valid_calls_only() {
+        let bad = [
+            r#"<<call weather {"city":"Pune"}>>"#,
+            r#"<<call create_calendar_event {"start":"2026-10-05T15:00:00+05:30"}>>"#,
+            r#"<<call create_calendar_event {"title":"Retro","start":"2026-10-05T15:00:00+05:30","visibility":"secret"}>>"#,
+            r#"<<call create_calendar_event {"title":"Retro"}"#,
+            "not a call <<call",
+        ];
+        for text in bad {
+            assert!(crate::decode_calls(text, &[calendar()]).is_err(), "{text}");
+            let tools = [calendar()];
+            let mut dec = crate::StreamDecoder::new(&tools);
+            let pushed = dec.push(text);
+            let rejected = match pushed {
+                Err(_) => true,
+                Ok(calls) if calls.is_empty() => dec.finish().map(|left| left.is_empty()).unwrap_or(true),
+                Ok(_) => false,
+            };
+            assert!(rejected, "{text}");
+        }
+        let ok = crate::decode_calls(crate::fixtures::design_review(), &[calendar()]).unwrap();
+        let shape = crate::schema::classify(&calendar()).unwrap();
+        let args: Value = serde_json::from_str(&ok[0].arguments).unwrap();
+        assert!(crate::schema::check(&shape, &args).is_ok());
     }
 
     #[test]
