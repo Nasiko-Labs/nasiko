@@ -160,16 +160,29 @@ Offline and deterministic by default: writes one JSONL line per case to `OUT` an
 
 ### Live model results
 
-Tested via an OpenAI-compatible endpoint (`PROVIDER_BASE_URL` + `MODEL`; no network by default). Three models across repeated runs:
+Six models from six providers on the hackathon's OpenAI-compatible Bedrock route, the 3 public cases each, temperature 0. The compact arm is this example in live mode. The native arm sends the same messages and reference-time line with the original `tools`.
 
-- **GPT-OSS-120B** and **Mistral-Large-3** — valid, correctly-decoded compact calls on every case.
-- **Qwen3-32B** — produced a malformed closing marker (`}}>` instead of `>>`) on roughly 5 of 8 call attempts across 4 runs; the decoder correctly rejected every one rather than guessing.
-- **Claude models** — not tested; not served on the provided route.
+| Model | Compact: valid calls | Compact: matches expected | Native: valid calls | Native: matches expected |
+|---|---|---|---|---|
+| `openai.gpt-oss-120b` | 3/3 | 1/3 | 3/3 | 1/3 |
+| `mistral.mistral-large-3-675b-instruct` | 3/3 | 1/3 | 3/3 | 2/3 |
+| `qwen.qwen3-32b` | 2/3 | 1/3 | 3/3 | 1/3 |
+| `deepseek.v3.2` | 3/3 | 2/3 | 3/3 | 2/3 |
+| `moonshotai.kimi-k2.5` | 3/3 | 2/3 | 3/3 | 2/3 |
+| `zai.glm-4.7` | 3/3 | 1/3 | 3/3 | 2/3 |
+| **Total** | **17/18** | **8/18** | **18/18** | **10/18** |
 
-Note: models sometimes get relative-date arithmetic wrong (a model reasoning issue, not a decoder issue). The public sample also disagrees with its own reference date in one place: with today = 2026-10-02, ct-002's "tomorrow" is 2026-10-03, but its expected `start` is 2026-10-04. Nothing here special-cases it.
+"Valid calls" means the model wrote a call the decoder accepted (or correctly answered in text when no tool fit). "Matches expected" uses the brief's rule: same tool and arguments, with `free_text_fields` checked for presence only.
+
+- **The one compact format failure** is Qwen3-32B closing a call with `}}>` instead of `>>`. The decoder rejected it rather than guessing. Earlier runs showed the same pattern; a reworded instruction moved Qwen's error to a single `>` without fixing it, so it was not kept.
+- **Most mismatches are the same in both arms and are not format errors:**
+  - ct-002: every model resolves "tomorrow" from 2026-10-02 to 2026-10-03, but the sample expects 2026-10-04 (an off-by-one in the sample; nothing here special-cases it).
+  - ct-001: several models add an unrequested `duration_min: 60`.
+- **Not testable on this route:** Claude and Gemma models are not served on `/chat/completions` there.
+- **Small sample:** 3 cases × 6 models, one run each.
 
 ## Known Limits
 
 - **Not wired into the router.** This crate is a standalone library plus the eval example (`llm-router/examples/compact_tools_eval.rs`); `nasiko-llm-router` depends on it but nothing in `llm-router/src/` calls it yet. Encoding/decoding tool calls on real requests is a bonus item, not done.
-- **Small live sample size.** Format-adherence results come from a handful of runs per model on the three eval call cases; the Qwen result in particular is a small sample.
+- **Small live sample size.** Live results cover the three public cases on six models, one run each.
 - **Schema coverage is deliberately partial.** `pattern`, `oneOf`, `$ref`, and the other unsupported features are refused rather than approximated — by design.
