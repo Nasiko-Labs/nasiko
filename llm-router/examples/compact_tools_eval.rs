@@ -63,8 +63,8 @@
 use std::collections::HashMap;
 use std::io::Write;
 
-use nasiko_tool_compact::{decode_calls, encode_tools, StreamDecoder, ToolDef};
-use serde_json::{json, Value};
+use nasiko_tool_compact::{StreamDecoder, ToolDef, decode_calls, encode_tools};
+use serde_json::{Value, json};
 use tiktoken_rs::o200k_base;
 
 // ── Reference time ────────────────────────────────────────────────────────────
@@ -261,7 +261,8 @@ async fn main() {
 
     for case in cases {
         let id = case["id"].as_str().unwrap_or("?");
-        let user_message = case.get("messages")
+        let user_message = case
+            .get("messages")
             .and_then(|m| m.as_array())
             .and_then(|arr| arr.iter().find(|msg| msg["role"] == "user"))
             .and_then(|msg| msg["content"].as_str())
@@ -343,8 +344,7 @@ async fn main() {
         });
 
         // Live mode.
-        if let Some((raw_output, live_calls)) =
-            maybe_live_call(&compact_request, &case_tools).await
+        if let Some((raw_output, live_calls)) = maybe_live_call(&compact_request, &case_tools).await
         {
             line["raw_output"] = json!(raw_output);
             line["live_calls"] = json!(live_calls);

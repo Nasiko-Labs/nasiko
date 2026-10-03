@@ -73,14 +73,14 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
-mod encode;
 mod decode;
+mod encode;
 mod scan;
 mod validate;
 
-pub use encode::{encode_tools, decode_tools, CompactTools, NativeTool};
-pub use decode::{decode_calls, StreamDecoder};
-pub use types::{ToolDef, FunctionDef, ToolCall, FunctionCall};
+pub use decode::{StreamDecoder, decode_calls};
+pub use encode::{CompactTools, NativeTool, decode_tools, encode_tools};
+pub use types::{FunctionCall, FunctionDef, ToolCall, ToolDef};
 
 mod types;
 

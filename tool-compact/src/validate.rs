@@ -78,7 +78,10 @@ fn validate_value(tool_name: &str, value: &Value, schema: &Value) -> Result<()> 
     match declared_type {
         Some("string") => {
             let s = value.as_str().ok_or_else(|| {
-                invalid(tool_name, &format!("expected string, got {}", type_name(value)))
+                invalid(
+                    tool_name,
+                    &format!("expected string, got {}", type_name(value)),
+                )
             })?;
             // format validation.
             if let Some(fmt) = obj.get("format").and_then(Value::as_str) {
@@ -134,7 +137,10 @@ fn validate_value(tool_name: &str, value: &Value, schema: &Value) -> Result<()> 
         }
         Some("array") => {
             let arr = value.as_array().ok_or_else(|| {
-                invalid(tool_name, &format!("expected array, got {}", type_name(value)))
+                invalid(
+                    tool_name,
+                    &format!("expected array, got {}", type_name(value)),
+                )
             })?;
             if let Some(items_schema) = obj.get("items") {
                 for (i, item) in arr.iter().enumerate() {
@@ -146,7 +152,10 @@ fn validate_value(tool_name: &str, value: &Value, schema: &Value) -> Result<()> 
         }
         Some("object") => {
             let map = value.as_object().ok_or_else(|| {
-                invalid(tool_name, &format!("expected object, got {}", type_name(value)))
+                invalid(
+                    tool_name,
+                    &format!("expected object, got {}", type_name(value)),
+                )
             })?;
 
             let properties = obj.get("properties").and_then(Value::as_object);
@@ -216,10 +225,7 @@ fn validate_value(tool_name: &str, value: &Value, schema: &Value) -> Result<()> 
 fn primary_type(obj: &serde_json::Map<String, Value>) -> Option<&str> {
     match obj.get("type")? {
         Value::String(s) => Some(s.as_str()),
-        Value::Array(arr) => arr
-            .iter()
-            .filter_map(Value::as_str)
-            .find(|t| *t != "null"),
+        Value::Array(arr) => arr.iter().filter_map(Value::as_str).find(|t| *t != "null"),
         _ => None,
     }
 }
@@ -301,10 +307,7 @@ fn validate_date_portion(tool_name: &str, s: &str) -> Result<()> {
         return Err(invalid(tool_name, "date too short"));
     }
     if bytes[4] != b'-' || bytes[7] != b'-' {
-        return Err(invalid(
-            tool_name,
-            &format!("date {:?} missing dashes", s),
-        ));
+        return Err(invalid(tool_name, &format!("date {:?} missing dashes", s)));
     }
     if !bytes[..4].iter().all(|b| b.is_ascii_digit())
         || !bytes[5..7].iter().all(|b| b.is_ascii_digit())
@@ -346,10 +349,7 @@ fn validate_time_portion(tool_name: &str, s: &str) -> Result<()> {
     let rest = &s[8..];
     let rest = if let Some(stripped) = rest.strip_prefix('.') {
         // Skip fractional seconds.
-        let end = stripped
-            .bytes()
-            .take_while(|b| b.is_ascii_digit())
-            .count();
+        let end = stripped.bytes().take_while(|b| b.is_ascii_digit()).count();
         &stripped[end..]
     } else {
         rest
@@ -459,29 +459,17 @@ mod tests {
 
     #[test]
     fn enum_valid() {
-        ok(
-            "f",
-            json!("active"),
-            json!({"enum":["active","inactive"]}),
-        );
+        ok("f", json!("active"), json!({"enum":["active","inactive"]}));
     }
 
     #[test]
     fn enum_out_of_range() {
-        err(
-            "f",
-            json!("deleted"),
-            json!({"enum":["active","inactive"]}),
-        );
+        err("f", json!("deleted"), json!({"enum":["active","inactive"]}));
     }
 
     #[test]
     fn null_allowed_in_nullable_schema() {
-        ok(
-            "f",
-            json!(null),
-            json!({"type":["string","null"]}),
-        );
+        ok("f", json!(null), json!({"type":["string","null"]}));
     }
 
     #[test]
@@ -491,26 +479,58 @@ mod tests {
 
     #[test]
     fn valid_datetime() {
-        ok("f", json!("2026-10-03T10:00:00+05:30"), json!({"type":"string","format":"date-time"}));
-        ok("f", json!("2026-10-03T00:00:00Z"), json!({"type":"string","format":"date-time"}));
-        ok("f", json!("2026-10-03T10:00:00.123Z"), json!({"type":"string","format":"date-time"}));
+        ok(
+            "f",
+            json!("2026-10-03T10:00:00+05:30"),
+            json!({"type":"string","format":"date-time"}),
+        );
+        ok(
+            "f",
+            json!("2026-10-03T00:00:00Z"),
+            json!({"type":"string","format":"date-time"}),
+        );
+        ok(
+            "f",
+            json!("2026-10-03T10:00:00.123Z"),
+            json!({"type":"string","format":"date-time"}),
+        );
     }
 
     #[test]
     fn invalid_datetime() {
-        err("f", json!("not-a-date"), json!({"type":"string","format":"date-time"}));
-        err("f", json!("2026-10-03"), json!({"type":"string","format":"date-time"}));
+        err(
+            "f",
+            json!("not-a-date"),
+            json!({"type":"string","format":"date-time"}),
+        );
+        err(
+            "f",
+            json!("2026-10-03"),
+            json!({"type":"string","format":"date-time"}),
+        );
     }
 
     #[test]
     fn valid_date() {
-        ok("f", json!("2026-10-03"), json!({"type":"string","format":"date"}));
+        ok(
+            "f",
+            json!("2026-10-03"),
+            json!({"type":"string","format":"date"}),
+        );
     }
 
     #[test]
     fn invalid_date() {
-        err("f", json!("2026/10/03"), json!({"type":"string","format":"date"}));
-        err("f", json!("not-a-date"), json!({"type":"string","format":"date"}));
+        err(
+            "f",
+            json!("2026/10/03"),
+            json!({"type":"string","format":"date"}),
+        );
+        err(
+            "f",
+            json!("not-a-date"),
+            json!({"type":"string","format":"date"}),
+        );
     }
 
     #[test]

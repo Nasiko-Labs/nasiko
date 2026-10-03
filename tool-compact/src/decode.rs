@@ -5,9 +5,7 @@
 
 use serde_json::Map;
 
-use crate::scan::{
-    PrefixScanner, DEFAULT_MAX_BODY_BYTES, DEFAULT_MAX_DEPTH,
-};
+use crate::scan::{DEFAULT_MAX_BODY_BYTES, DEFAULT_MAX_DEPTH, PrefixScanner};
 use crate::types::{FunctionCall, ToolCall, ToolDef};
 use crate::validate;
 use crate::{Error, Result};
@@ -173,9 +171,8 @@ fn build_call(tools: &[ToolDef], name: &str, body: &str) -> Result<ToolCall> {
     }
 
     // Re-serialize arguments as a compact JSON string (preserves key order).
-    let arguments = serde_json::to_string(&args).map_err(|e| {
-        Error::InvalidCall(format!("failed to re-serialize arguments: {}", e))
-    })?;
+    let arguments = serde_json::to_string(&args)
+        .map_err(|e| Error::InvalidCall(format!("failed to re-serialize arguments: {}", e)))?;
 
     Ok(ToolCall {
         id: PLACEHOLDER_ID.to_string(),
@@ -275,8 +272,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(calls.len(), 1);
-        let args: serde_json::Value =
-            serde_json::from_str(&calls[0].function.arguments).unwrap();
+        let args: serde_json::Value = serde_json::from_str(&calls[0].function.arguments).unwrap();
         assert_eq!(args["to"], "alice@example.com");
     }
 
@@ -293,7 +289,8 @@ mod tests {
     #[test]
     fn multiple_calls() {
         let tools = vec![ping_tool(), email_tool()];
-        let text = r#"<<call ping {}>> and then <<call send_email {"to":"b@b.com","subject":"x"}>>"#;
+        let text =
+            r#"<<call ping {}>> and then <<call send_email {"to":"b@b.com","subject":"x"}>>"#;
         let calls = decode_calls(text, &tools).unwrap();
         assert_eq!(calls.len(), 2);
         assert_eq!(calls[0].function.name, "ping");
@@ -322,8 +319,7 @@ mod tests {
         };
         let calls = decode_calls(r#"<<call f {"body":"a >> b"}>>"#, &[tool]).unwrap();
         assert_eq!(calls.len(), 1);
-        let args: serde_json::Value =
-            serde_json::from_str(&calls[0].function.arguments).unwrap();
+        let args: serde_json::Value = serde_json::from_str(&calls[0].function.arguments).unwrap();
         assert_eq!(args["body"], "a >> b");
     }
 
@@ -385,8 +381,7 @@ mod tests {
             );
             if !calls.is_empty() {
                 assert_eq!(
-                    calls[0].function.arguments,
-                    expected[0].function.arguments,
+                    calls[0].function.arguments, expected[0].function.arguments,
                     "split at {split}: arguments differ"
                 );
             }
@@ -410,8 +405,7 @@ mod tests {
         let text = "<<call f {\"msg\":\"Hello 🎉\"}>>".to_string();
         let calls = decode_calls(&text, &[tool]).unwrap();
         assert_eq!(calls.len(), 1);
-        let args: serde_json::Value =
-            serde_json::from_str(&calls[0].function.arguments).unwrap();
+        let args: serde_json::Value = serde_json::from_str(&calls[0].function.arguments).unwrap();
         assert_eq!(args["msg"], "Hello 🎉");
     }
 
@@ -457,8 +451,7 @@ mod tests {
     fn all_invalid_means_whole_decode_errors() {
         let tools = vec![ping_tool(), email_tool()];
         // Second call is invalid (missing required "to").
-        let text =
-            r#"<<call ping {}>> <<call send_email {"subject":"oops"}>>"#;
+        let text = r#"<<call ping {}>> <<call send_email {"subject":"oops"}>>"#;
         let result = decode_calls(text, &tools);
         assert!(
             result.is_err(),

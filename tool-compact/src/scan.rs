@@ -90,7 +90,11 @@ impl PrefixScanner {
     pub(crate) fn in_progress(&self) -> bool {
         matches!(
             self.state,
-            State::InName | State::WaitBrace | State::InBody { .. } | State::WaitGt1 | State::WaitGt2
+            State::InName
+                | State::WaitBrace
+                | State::InBody { .. }
+                | State::WaitGt1
+                | State::WaitGt2
         )
     }
 
@@ -173,7 +177,9 @@ impl PrefixScanner {
                         self.state = State::Scanning;
                         self.name_buf.clear();
                         self.body_buf.clear();
-                        return Err(Error::BodyTooLarge { limit: max_body_bytes });
+                        return Err(Error::BodyTooLarge {
+                            limit: max_body_bytes,
+                        });
                     }
 
                     // Clone the fields so we can mutate them.
@@ -366,7 +372,9 @@ mod tests {
 
     #[test]
     fn text_before_and_after_call() {
-        let call = scan_string(r#"hello <<call ping {}>> world"#).unwrap().unwrap();
+        let call = scan_string(r#"hello <<call ping {}>> world"#)
+            .unwrap()
+            .unwrap();
         assert_eq!(call.name, "ping");
     }
 
@@ -409,9 +417,7 @@ mod tests {
         // Feed `{` to enter body.
         let _ = scanner.push_byte(b'{', 10, DEFAULT_MAX_DEPTH);
         // Feed enough bytes to exceed limit of 10.
-        let result = (0..20).try_fold(None, |_, _| {
-            scanner.push_byte(b'x', 10, DEFAULT_MAX_DEPTH)
-        });
+        let result = (0..20).try_fold(None, |_, _| scanner.push_byte(b'x', 10, DEFAULT_MAX_DEPTH));
         assert!(matches!(result, Err(Error::BodyTooLarge { .. })));
     }
 

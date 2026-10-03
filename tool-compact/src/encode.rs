@@ -180,7 +180,9 @@ fn encode_params(tool_name: &str, parameters: Option<&Value>) -> Result<String> 
     })?;
 
     // Check for top-level unsupported keywords first.
-    for key in ["$ref", "oneOf", "anyOf", "allOf", "not", "if", "then", "else"] {
+    for key in [
+        "$ref", "oneOf", "anyOf", "allOf", "not", "if", "then", "else",
+    ] {
         if obj.contains_key(key) {
             return Err(Error::UnsupportedSchema(
                 tool_name.to_string(),
@@ -197,11 +199,7 @@ fn encode_params(tool_name: &str, parameters: Option<&Value>) -> Result<String> 
     let required: Vec<&str> = obj
         .get("required")
         .and_then(Value::as_array)
-        .map(|a| {
-            a.iter()
-                .filter_map(Value::as_str)
-                .collect()
-        })
+        .map(|a| a.iter().filter_map(Value::as_str).collect())
         .unwrap_or_default();
 
     let mut parts = Vec::new();
@@ -238,10 +236,24 @@ fn encode_type(tool_name: &str, schema: &Value, depth: usize) -> Result<String> 
 
     // Unsupported keywords at any level.
     for key in [
-        "$ref", "oneOf", "anyOf", "allOf", "not", "if", "then", "else",
-        "patternProperties", "default",
-        "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf",
-        "minLength", "maxLength", "pattern",
+        "$ref",
+        "oneOf",
+        "anyOf",
+        "allOf",
+        "not",
+        "if",
+        "then",
+        "else",
+        "patternProperties",
+        "default",
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "multipleOf",
+        "minLength",
+        "maxLength",
+        "pattern",
     ] {
         if obj.contains_key(key) {
             return Err(Error::UnsupportedSchema(
@@ -320,14 +332,14 @@ fn encode_type(tool_name: &str, schema: &Value, depth: usize) -> Result<String> 
                 }
             }
             let inner = format!("{{{}}}", parts.join(", "));
-            return Ok(if nullable {
-                format!("{inner}?")
-            } else {
-                inner
-            });
+            return Ok(if nullable { format!("{inner}?") } else { inner });
         }
         // No properties → generic object.
-        return Ok(if nullable { "object?".into() } else { "object".into() });
+        return Ok(if nullable {
+            "object?".into()
+        } else {
+            "object".into()
+        });
     }
 
     let type_str = match type_val.and_then(Value::as_str) {
@@ -381,16 +393,15 @@ fn is_nullable(obj: &serde_json::Map<String, Value>) -> bool {
 /// Format: `name(params) - description` or `name(params)`
 fn parse_compact_line(line: &str) -> Result<ToolDef> {
     // Find the first `(`.
-    let paren_open = line.find('(').ok_or_else(|| {
-        Error::InvalidCall(format!("compact line missing '(': {line:?}"))
-    })?;
+    let paren_open = line
+        .find('(')
+        .ok_or_else(|| Error::InvalidCall(format!("compact line missing '(': {line:?}")))?;
     let name = &line[..paren_open];
 
     // Find matching `)`.
     let after_name = &line[paren_open..];
-    let paren_close = find_matching_paren(after_name).ok_or_else(|| {
-        Error::InvalidCall(format!("compact line missing ')': {line:?}"))
-    })?;
+    let paren_close = find_matching_paren(after_name)
+        .ok_or_else(|| Error::InvalidCall(format!("compact line missing ')': {line:?}")))?;
 
     let params_str = &after_name[1..paren_close]; // between ( and )
     let rest = &after_name[paren_close + 1..];
@@ -470,10 +481,7 @@ fn parse_compact_params(params: &str) -> Result<serde_json::Value> {
         } else {
             // No colon — treat as a required string param.
             required.push(part.to_string());
-            properties.insert(
-                part.to_string(),
-                serde_json::json!({"type": "string"}),
-            );
+            properties.insert(part.to_string(), serde_json::json!({"type": "string"}));
             continue;
         };
 
@@ -491,7 +499,10 @@ fn parse_compact_params(params: &str) -> Result<serde_json::Value> {
         obj.insert(
             "required".to_string(),
             serde_json::Value::Array(
-                required.into_iter().map(serde_json::Value::String).collect(),
+                required
+                    .into_iter()
+                    .map(serde_json::Value::String)
+                    .collect(),
             ),
         );
     }
@@ -590,15 +601,24 @@ mod tests {
         // across compiler versions).
         let mut props = serde_json::Map::new();
         props.insert("title".into(), json!({"type": "string"}));
-        props.insert("start_time".into(), json!({"type": "string", "format": "date-time"}));
+        props.insert(
+            "start_time".into(),
+            json!({"type": "string", "format": "date-time"}),
+        );
         props.insert("duration_min".into(), json!({"type": "integer"}));
-        props.insert("attendees".into(), json!({"type": "array", "items": {"type": "string"}}));
+        props.insert(
+            "attendees".into(),
+            json!({"type": "array", "items": {"type": "string"}}),
+        );
         props.insert("location".into(), json!({"type": "string"}));
         props.insert("all_day".into(), json!({"type": "boolean"}));
         let mut schema = serde_json::Map::new();
         schema.insert("type".into(), json!("object"));
         schema.insert("properties".into(), serde_json::Value::Object(props));
-        schema.insert("required".into(), json!(["title", "start_time", "duration_min"]));
+        schema.insert(
+            "required".into(),
+            json!(["title", "start_time", "duration_min"]),
+        );
         ToolDef {
             kind: "function".into(),
             function: FunctionDef {
@@ -705,7 +725,11 @@ mod tests {
             extra: Default::default(),
         };
         let compact = encode_tools(&[tool]).unwrap();
-        assert!(compact.tool_block.contains("note:str?"), "{}", compact.tool_block);
+        assert!(
+            compact.tool_block.contains("note:str?"),
+            "{}",
+            compact.tool_block
+        );
     }
 
     #[test]
@@ -759,7 +783,11 @@ mod tests {
             // Parameters must be structurally equivalent (same required keys).
             let orig_req = required_keys(orig.function.parameters.as_ref());
             let dec_req = required_keys(dec.function.parameters.as_ref());
-            assert_eq!(orig_req, dec_req, "required keys diverged for {}", orig.function.name);
+            assert_eq!(
+                orig_req, dec_req,
+                "required keys diverged for {}",
+                orig.function.name
+            );
         }
     }
 
@@ -828,7 +856,11 @@ mod tests {
             extra: Default::default(),
         };
         let compact = encode_tools(&[tool]).unwrap();
-        assert!(compact.tool_block.contains("{city:str"), "{}", compact.tool_block);
+        assert!(
+            compact.tool_block.contains("{city:str"),
+            "{}",
+            compact.tool_block
+        );
     }
 
     #[test]
