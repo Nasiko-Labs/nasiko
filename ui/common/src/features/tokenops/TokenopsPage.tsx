@@ -13,7 +13,7 @@
  */
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useRouter } from '@tanstack/react-router'
-import { AlertTriangle, DollarSign, Info, X } from 'lucide-react'
+import { AlertTriangle, DollarSign, Info, Sparkles, X } from 'lucide-react'
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import {
@@ -70,6 +70,8 @@ import { KpiStrip } from './components/KpiStrip'
 import { MonthHero } from './components/MonthHero'
 import { OptimisationPanel } from './components/OptimisationPanel'
 import { SavingsHighlight } from './components/SavingsHighlight'
+import { ToolCompactSavingsCard } from './components/ToolCompactSavingsCard'
+import { ToolCompactPlayground } from './components/ToolCompactPlayground'
 import { summarizeOptimisation } from './optimisation'
 import { PageHeader } from '@/components/shared/page-header'
 import { PanelError } from '@/components/shared/panel'
@@ -201,6 +203,7 @@ export function TokenopsPage({
     calThis.isPending ||
     calLast.isPending
   const [painted, setPainted] = useState(false)
+  const [pageTab, setPageTab] = useState<'analytics' | 'playground'>('analytics')
   if (!painted && !coldPending) setPainted(true)
   const showLoader = !painted && coldPending
 
@@ -439,22 +442,55 @@ export function TokenopsPage({
         <PageHeader
           title="TokenOps"
           actions={
-            <TimeControl
-              preset={search.preset}
-              invalid={search.preset === 'custom' && win.preset !== 'custom'}
-              from={search.from}
-              to={search.to}
-              today={today}
-              onChange={(n) =>
-                setSearch(
-                  { preset: n.preset, from: n.from, to: n.to },
-                  { replace: search.preset === 'custom' && n.preset === 'custom' },
-                )
-              }
-            />
+            pageTab === 'analytics' ? (
+              <TimeControl
+                preset={search.preset}
+                invalid={search.preset === 'custom' && win.preset !== 'custom'}
+                from={search.from}
+                to={search.to}
+                today={today}
+                onChange={(n) =>
+                  setSearch(
+                    { preset: n.preset, from: n.from, to: n.to },
+                    { replace: search.preset === 'custom' && n.preset === 'custom' },
+                  )
+                }
+              />
+            ) : null
           }
         />
+        {/* View Mode Switcher: TokenOps Analytics vs Tool Schema Playground */}
+        <div className="flex items-center gap-1.5 border-b border-border/40 pb-2">
+          <button
+            type="button"
+            onClick={() => setPageTab('analytics')}
+            className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition-colors ${
+              pageTab === 'analytics'
+                ? 'bg-secondary text-secondary-foreground font-semibold shadow-2xs'
+                : 'text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            <DollarSign className="size-3.5" />
+            TokenOps Analytics
+          </button>
+          <button
+            type="button"
+            onClick={() => setPageTab('playground')}
+            className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition-colors ${
+              pageTab === 'playground'
+                ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 font-semibold shadow-2xs'
+                : 'text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            <Sparkles className="size-3.5 text-emerald-600 dark:text-emerald-400" />
+            Schema Compact Playground
+            <span className="rounded-full bg-emerald-500/20 px-1.5 py-0.2 text-[10px] font-semibold text-emerald-600 dark:text-emerald-400">
+              -30.3%
+            </span>
+          </button>
+        </div>
         {/* Chips scroll horizontally on narrow screens instead of growing the sticky bar (A1b). */}
+        {pageTab === 'analytics' && (
         <div className="-mx-4 flex flex-nowrap items-center gap-2 overflow-x-auto px-4 md:mx-0 md:flex-wrap md:overflow-visible md:px-0 [&>*]:shrink-0">
           <FilterSelect
             label="Agent"
@@ -489,10 +525,14 @@ export function TokenopsPage({
             {dash.dataUpdatedAt ? `Data as of ${fmtLocalTime(dash.dataUpdatedAt, true)}` : null}
           </span>
         </div>
+        )}
       </div>
 
-      {showLoader ? <PageLoader label="Loading TokenOps" /> : null}
-      {showLoader ? null : unknownAgent ? (
+      {pageTab === 'playground' ? (
+        <ToolCompactPlayground />
+      ) : showLoader ? (
+        <PageLoader label="Loading TokenOps" />
+      ) : unknownAgent ? (
         <Notice tone="warning">
           {unknownAgent}.{' '}
           <Button
@@ -549,6 +589,8 @@ export function TokenopsPage({
               scrollToOptimise()
             }}
           />
+
+          <ToolCompactSavingsCard onOpenPlayground={() => setPageTab('playground')} />
 
           <div className="flex flex-col">
             <Disclosure

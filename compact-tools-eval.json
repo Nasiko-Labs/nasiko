@@ -1,0 +1,272 @@
+﻿{
+  "schema_version": "compact-tools-eval-v1",
+  "purpose": "Public development examples for compact tool schemas; not held-out leaderboard data.",
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "create_calendar_event",
+        "description": "Create an event in the user's calendar.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "title": {
+              "type": "string",
+              "description": "Event title"
+            },
+            "start": {
+              "type": "string",
+              "format": "date-time",
+              "description": "Start time, ISO 8601"
+            },
+            "duration_min": {
+              "type": "integer",
+              "description": "Duration in minutes"
+            },
+            "attendees": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Attendee emails"
+            },
+            "visibility": {
+              "type": "string",
+              "enum": [
+                "public",
+                "private"
+              ]
+            }
+          },
+          "required": [
+            "title",
+            "start"
+          ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "send_email",
+        "description": "Send an email from the user's account.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "to": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Recipient emails"
+            },
+            "subject": {
+              "type": "string",
+              "description": "Subject line"
+            },
+            "body": {
+              "type": "string",
+              "description": "Plain-text body"
+            },
+            "cc": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "CC emails"
+            }
+          },
+          "required": [
+            "to",
+            "subject",
+            "body"
+          ]
+        }
+      }
+    }
+  ],
+  "cases": [
+    {
+      "id": "ct-001",
+      "tools": [
+        "create_calendar_event",
+        "send_email"
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "content": "Book a design review Monday 3pm IST with riya@example.com"
+        }
+      ],
+      "expected": [
+        {
+          "name": "create_calendar_event",
+          "arguments": {
+            "title": "Design review",
+            "start": "2026-10-05T15:00:00+05:30",
+            "attendees": [
+              "riya@example.com"
+            ]
+          }
+        }
+      ],
+      "match": {
+        "free_text_fields": [
+          "title"
+        ]
+      }
+    },
+    {
+      "id": "ct-002",
+      "tools": [
+        "create_calendar_event",
+        "send_email"
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "content": "Email sam@example.com that the build is green, and add a private 30 min retro tomorrow 10am IST"
+        }
+      ],
+      "expected": [
+        {
+          "name": "send_email",
+          "arguments": {
+            "to": [
+              "sam@example.com"
+            ],
+            "subject": "Build status",
+            "body": "The build is green."
+          }
+        },
+        {
+          "name": "create_calendar_event",
+          "arguments": {
+            "title": "Retro",
+            "start": "2026-10-04T10:00:00+05:30",
+            "duration_min": 30,
+            "visibility": "private"
+          }
+        }
+      ],
+      "match": {
+        "free_text_fields": [
+          "subject",
+          "body",
+          "title"
+        ]
+      }
+    },
+    {
+      "id": "ct-003",
+      "tools": [
+        "create_calendar_event"
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "content": "What's the weather?"
+        }
+      ],
+      "expected": []
+    }
+  ],
+  "decoder_cases": [
+    {
+      "id": "dc-001",
+      "note": "valid single call",
+      "tools": [
+        "create_calendar_event"
+      ],
+      "chunks": [
+        "<<call create_calendar_event {\"title\":\"Design review\",\"start\":\"2026-10-05T15:00:00+05:30\"}>>"
+      ],
+      "expected": {
+        "calls": [
+          {
+            "name": "create_calendar_event",
+            "arguments": {
+              "title": "Design review",
+              "start": "2026-10-05T15:00:00+05:30"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "dc-002",
+      "note": "marker split across stream chunks",
+      "tools": [
+        "create_calendar_event"
+      ],
+      "chunks": [
+        "<<ca",
+        "ll create_calendar_event {\"title\":\"Ret",
+        "ro\",\"start\":\"2026-10-04T10:00:00+05:30\"}>",
+        ">"
+      ],
+      "expected": {
+        "calls": [
+          {
+            "name": "create_calendar_event",
+            "arguments": {
+              "title": "Retro",
+              "start": "2026-10-04T10:00:00+05:30"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "dc-003",
+      "note": "'>>' inside a string argument",
+      "tools": [
+        "send_email"
+      ],
+      "chunks": [
+        "<<call send_email {\"to\":[\"sam@example.com\"],\"subject\":\"a >> b\",\"body\":\"x\"}>>"
+      ],
+      "expected": {
+        "calls": [
+          {
+            "name": "send_email",
+            "arguments": {
+              "to": [
+                "sam@example.com"
+              ],
+              "subject": "a >> b",
+              "body": "x"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "dc-004",
+      "note": "unknown tool",
+      "tools": [
+        "create_calendar_event"
+      ],
+      "chunks": [
+        "<<call delete_everything {}>>"
+      ],
+      "expected": {
+        "error": "unknown_tool"
+      }
+    },
+    {
+      "id": "dc-005",
+      "note": "missing required field + bad enum",
+      "tools": [
+        "create_calendar_event"
+      ],
+      "chunks": [
+        "<<call create_calendar_event {\"start\":\"2026-10-05T15:00:00+05:30\",\"visibility\":\"secret\"}>>"
+      ],
+      "expected": {
+        "error": "invalid_arguments"
+      }
+    }
+  ]
+}
+
