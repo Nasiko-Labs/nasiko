@@ -1,0 +1,14 @@
+[package]
+name = "nasiko-tool-compact"
+edition.workspace = true
+version.workspace = true
+
+# Pure library: no IO, no env reads, no provider code. The router depends on this crate,
+# never the other way round, so it carries its own `ToolDef` / `ToolCall`.
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = "1.11"
