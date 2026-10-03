@@ -8,7 +8,6 @@ members = [
     "secrets",
     "observability",
     "pricing",
-    "savings",
     "runtime",
     "react-agent",
     "orchestrator",
@@ -26,6 +25,7 @@ members = [
     "github",
     "bench",
     "bench-support",
+    "tool-compact",
 ]
 
 [workspace.package]
@@ -38,7 +38,6 @@ nasiko-auth = { path = "auth" }
 nasiko-compress = { path = "compress" }
 nasiko-config = { path = "config" }
 nasiko-pricing = { path = "pricing" }
-nasiko-savings = { path = "savings" }
 nasiko-flow = { path = "flow" }
 nasiko-hitl = { path = "hitl" }
 nasiko-agent-proxy = { path = "agent-proxy" }
@@ -56,6 +55,7 @@ nasiko-coding-policy = { path = "coding-policy" }
 nasiko-oci = { path = "oci" }
 nasiko-llm-router = { path = "llm-router" }
 nasiko-bench-support = { path = "bench-support" }
+nasiko-tool-compact = { path = "tool-compact" }
 
 # ─── Testing ────────────────────────────────────────────────────────────────
 serial_test = "3"
@@ -165,12 +165,12 @@ dotenvy = "0.15"
 # ─── Embedding / registry ──────────────────────────────────────────────────
 rust-embed = { version = "8", features = ["mime-guess", "include-exclude", "interpolate-folder-path"] }
 mime_guess = "2"
-percent-encoding = "2"
 
 mockito = "1"
 
 # ─── Benchmarking ───────────────────────────────────────────────────────────
 criterion = { version = "0.5", features = ["async_tokio"] }
+tiktoken-rs = "0.7"
 
 [profile.release]
 strip = true

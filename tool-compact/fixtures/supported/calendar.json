@@ -1,0 +1,17 @@
+{
+  "type": "function",
+  "function": {
+    "name": "create_calendar_event",
+    "description": "Create an event in the user's calendar.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "description": "Event title" },
+        "start": { "type": "string", "format": "date-time", "description": "Start time, ISO 8601" },
+        "attendees": { "type": "array", "items": { "type": "string" }, "description": "Attendee emails" },
+        "visibility": { "type": "string", "enum": ["public", "private"] }
+      },
+      "required": ["title", "start"]
+    }
+  }
+}

@@ -1,0 +1,102 @@
+{
+  "version": "1.0.0",
+  "reference_time": "2026-10-02T00:00:00+05:30",
+  "tools": {
+    "create_calendar_event": {
+      "type": "function",
+      "function": {
+        "name": "create_calendar_event",
+        "description": "Create an event in the user's calendar.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "title": { "type": "string", "description": "Event title" },
+            "start": { "type": "string", "format": "date-time", "description": "Start time, ISO 8601" },
+            "attendees": { "type": "array", "items": { "type": "string" }, "description": "Attendee emails" },
+            "visibility": { "type": "string", "enum": ["public", "private"] }
+          },
+          "required": ["title", "start"]
+        }
+      }
+    },
+    "unsupported_one_of": {
+      "type": "function",
+      "function": {
+        "name": "unsupported_one_of",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "val": { "oneOf": [{ "type": "string" }, { "type": "integer" }] }
+          }
+        }
+      }
+    }
+  },
+  "cases": [
+    {
+      "id": "ct-001",
+      "tools": ["create_calendar_event"],
+      "messages": [
+        { "role": "user", "content": "Schedule design review on Oct 5 at 3pm IST" }
+      ],
+      "expected_calls": [
+        {
+          "name": "create_calendar_event",
+          "arguments": {
+            "title": "Design review",
+            "start": "2026-10-05T15:00:00+05:30"
+          }
+        }
+      ]
+    },
+    {
+      "id": "ct-002",
+      "tools": ["create_calendar_event"],
+      "messages": [
+        { "role": "user", "content": "Book 1on1 tomorrow with Alice at 10am" }
+      ],
+      "expected_calls": [
+        {
+          "name": "create_calendar_event",
+          "arguments": {
+            "title": "1on1 with Alice",
+            "start": "2026-10-04T10:00:00+05:30",
+            "attendees": ["alice@example.com"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "ct-bypass-001",
+      "tools": ["unsupported_one_of"],
+      "messages": [
+        { "role": "user", "content": "Run with unsupported tool" }
+      ]
+    }
+  ],
+  "decoder_cases": [
+    {
+      "id": "dc-001",
+      "tools": ["create_calendar_event"],
+      "input": "<<call create_calendar_event {\"title\":\"Standup\",\"start\":\"2026-10-05T09:00:00+05:30\"}>>"
+    },
+    {
+      "id": "dc-002",
+      "tools": ["create_calendar_event"],
+      "input": "<<call create_calendar_event {\"title\":\"A\",\"title\":\"B\",\"start\":\"2026-10-05T09:00:00+05:30\"}>>",
+      "expected_error": "model_parse_failed"
+    },
+    {
+      "id": "dc-003",
+      "tools": ["create_calendar_event"],
+      "input": "<<call create_calendar_event {\"start\":\"2026-10-05T09:00:00+05:30\"}>>",
+      "expected_error": "schema_violation"
+    },
+    {
+      "id": "dc-004",
+      "tools": ["create_calendar_event"],
+      "input": "<<call nonexistent_tool {\"foo\":\"bar\"}>>",
+      "expected_error": "unknown_tool"
+    }
+  ]
+}

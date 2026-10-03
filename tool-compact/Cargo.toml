@@ -1,0 +1,15 @@
+[package]
+name = "nasiko-tool-compact"
+version.workspace = true
+edition.workspace = true
+description = "Deterministic compact tool definition codec and streaming parser for LLM tool calling"
+license = "Apache-2.0"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+proptest = "1"

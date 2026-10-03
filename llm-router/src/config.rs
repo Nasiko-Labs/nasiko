@@ -46,13 +46,7 @@ pub struct GatewayConfig {
     /// Max age of a `status='running'` flow for traceparent attribution — bounds
     /// orphaned flows (a direct-chat flow whose completion marking never ran stays
     /// 'running' but ages out of attribution, so its trace id stops authorizing
-    /// LLM calls).
-    ///
-    /// Must never be shorter than the platform's flow timeout, or an agent turn
-    /// still inside its budget loses the right to make LLM calls part-way
-    /// through and takes a 403 mid-answer. It therefore defaults to
-    /// `NASIKO_FLOW_TIMEOUT_SECS` and only falls back to a literal when that is
-    /// unset too; `LLM_ATTRIBUTION_WINDOW_SECS` still overrides both.
+    /// LLM calls). Default 300 (5 min).
     pub attribution_window_secs: u64,
 
     /// Interval between provider model-catalog syncs (`GET /models` →
@@ -137,13 +131,6 @@ pub struct GatewayConfig {
     /// Raise it only if real traffic turns out to be dominated by very short replies (under
     /// ~250 output tokens), where the fixed cost stops being repaid.
     pub brevity_min_bytes: usize,
-    /// Percent of otherwise-eligible calls the directive is withheld from, to keep a control arm.
-    ///
-    /// This is a real, accepted cost: that slice forgoes the optimization. It buys the only
-    /// unbiased measurement of a layer whose saving cannot be subtracted, and it is bounded by
-    /// exactly the figure it exists to establish. `0` disables the holdout and leaves `apply`
-    /// byte-identical to a build without it.
-    pub brevity_holdout_pct: u8,
 
     /// Persist pre-compression originals so an agent can recover what was elided (IP-5).
     /// Defaults **on**; only ever writes a row when compression actually elided something, which
@@ -154,6 +141,9 @@ pub struct GatewayConfig {
     pub compress_recovery_min_bytes: usize,
     /// How long an original stays recoverable. Sized to outlive the flow that produced it.
     pub compress_recovery_ttl_secs: u64,
+
+    /// P1 Compact Tool Protocol enablement (COMPACT_TOOLS_ENABLED). Default false.
+    pub compact_tools_enabled: bool,
 }
 
 impl Default for GatewayConfig {
@@ -171,7 +161,7 @@ impl Default for GatewayConfig {
             llm_config_cache_ttl_secs: 30,
             redis_url: String::new(),
             router_decision_ttl_secs: 3600,
-            attribution_window_secs: 600,
+            attribution_window_secs: 300,
             model_catalog_sync_interval_secs: 86_400,
             pricing_sync_interval_secs: 86_400,
             openai_api_base: "https://api.openai.com/v1".into(),
@@ -192,10 +182,10 @@ impl Default for GatewayConfig {
             compress_dry_run: false,
             brevity_enabled: true,
             brevity_min_bytes: 0,
-            brevity_holdout_pct: 5,
             compress_recovery_enabled: true,
             compress_recovery_min_bytes: 8192,
             compress_recovery_ttl_secs: 86_400,
+            compact_tools_enabled: false,
         }
     }
 }
@@ -239,7 +229,6 @@ impl GatewayConfig {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(d.router_decision_ttl_secs),
             attribution_window_secs: std::env::var("LLM_ATTRIBUTION_WINDOW_SECS")
-                .or_else(|_| std::env::var("NASIKO_FLOW_TIMEOUT_SECS"))
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(d.attribution_window_secs),
@@ -291,11 +280,6 @@ impl GatewayConfig {
             compress_dry_run: env_flag("TOKEN_COMPRESS_DRY_RUN", false),
             brevity_enabled: env_flag("TOKEN_BREVITY", d.brevity_enabled),
             brevity_min_bytes: env_usize("TOKEN_BREVITY_MIN_BYTES", d.brevity_min_bytes),
-            brevity_holdout_pct: env_usize(
-                "TOKEN_BREVITY_HOLDOUT_PCT",
-                d.brevity_holdout_pct as usize,
-            )
-            .min(100) as u8,
             compress_recovery_enabled: env_flag(
                 "TOKEN_COMPRESS_RECOVERY",
                 d.compress_recovery_enabled,
@@ -308,6 +292,7 @@ impl GatewayConfig {
                 "TOKEN_COMPRESS_RECOVERY_TTL_SECS",
                 d.compress_recovery_ttl_secs as usize,
             ) as u64,
+            compact_tools_enabled: env_flag("COMPACT_TOOLS_ENABLED", d.compact_tools_enabled),
         }
     }
 

@@ -20,10 +20,10 @@ use crate::resolver::ResolvedConfig;
 /// The provider/model actually used for a call.
 type Effective = (String, String);
 
-/// Cap on how many distinct parameters we'll adjust-and-retry against one model before
+/// Cap on how many distinct parameters we'll drop-and-retry against one model before
 /// giving up on it. A backstop against a provider that keeps rejecting params; real
-/// mismatches resolve in one or two fixes.
-const MAX_PARAM_FIXES: usize = 4;
+/// mismatches resolve in one or two drops.
+const MAX_PARAM_DROPS: usize = 4;
 
 /// Run a non-streaming chat with ordered fallbacks. Returns the response and the
 /// effective `(provider, model)`.
@@ -45,10 +45,10 @@ pub async fn execute_chat(
                 continue;
             }
         };
-        // Working copies so a parameter-fix retry can mutate the request + config.
+        // Working copies so a parameter-drop retry can mutate the request + config.
         let mut work_req = req.clone();
         let mut work_cfg = attempt.clone();
-        let mut applied: Vec<String> = Vec::new();
+        let mut dropped: Vec<String> = Vec::new();
         loop {
             match provider.chat(&work_req, &work_cfg).await {
                 Ok(resp) => {
@@ -56,8 +56,8 @@ pub async fn execute_chat(
                     return Ok((resp, (attempt.provider.clone(), attempt.model.clone())));
                 }
                 Err(e) => {
-                    if try_fix_param(&*provider, &e, &mut work_req, &mut work_cfg, &mut applied) {
-                        log_param_fix(attempt, applied.last().unwrap(), &e);
+                    if try_drop_param(&*provider, &e, &mut work_req, &mut work_cfg, &mut dropped) {
+                        log_param_drop(attempt, dropped.last().unwrap(), &e);
                         continue;
                     }
                     warn_attempt(attempt, &e, i, total);
@@ -98,10 +98,10 @@ pub async fn execute_chat_stream(
             }
         };
         // The initial connect (status check) happens before any chunk flows, so a
-        // parameter-rejection surfaces here and is safe to fix-and-retry — same as `chat`.
+        // parameter-rejection surfaces here and is safe to drop-and-retry — same as `chat`.
         let mut work_req = req.clone();
         let mut work_cfg = attempt.clone();
-        let mut applied: Vec<String> = Vec::new();
+        let mut dropped: Vec<String> = Vec::new();
         loop {
             match provider.chat_stream(&work_req, &work_cfg).await {
                 Ok(stream) => {
@@ -114,8 +114,8 @@ pub async fn execute_chat_stream(
                     return Ok((stream, (attempt.provider.clone(), attempt.model.clone())));
                 }
                 Err(e) => {
-                    if try_fix_param(&*provider, &e, &mut work_req, &mut work_cfg, &mut applied) {
-                        log_param_fix(attempt, applied.last().unwrap(), &e);
+                    if try_drop_param(&*provider, &e, &mut work_req, &mut work_cfg, &mut dropped) {
+                        log_param_drop(attempt, dropped.last().unwrap(), &e);
                         continue;
                     }
                     warn_attempt(attempt, &e, i, total);
@@ -196,38 +196,29 @@ fn warn_attempt(attempt: &ResolvedConfig, err: &ProviderError, i: usize, total: 
     );
 }
 
-/// Try to recover from `err` by adjusting a rejected parameter and retrying the *same*
-/// model. Two repairs, in order: drop a param the provider says it doesn't accept, or
-/// set one it says it needs at a specific value. Either way the param is recorded in
-/// `applied`, which caps the total and guards the loop. Returns `true` when the caller
-/// should retry.
-pub(crate) fn try_fix_param(
+/// Try to recover from `err` by dropping a rejected parameter and retrying the *same*
+/// model. Asks the provider whether `err` names a droppable param; if so and it isn't
+/// one we've already dropped (and we're under the cap), strips it from the working
+/// request + config and records it. Returns `true` when the caller should retry.
+pub(crate) fn try_drop_param(
     provider: &dyn ProviderClient,
     err: &ProviderError,
     req: &mut ChatRequest,
     cfg: &mut ResolvedConfig,
-    applied: &mut Vec<String>,
+    dropped: &mut Vec<String>,
 ) -> bool {
-    if applied.len() >= MAX_PARAM_FIXES {
+    if dropped.len() >= MAX_PARAM_DROPS {
         return false;
     }
-    // Guard against a provider that re-reports the same param: if we already adjusted it
-    // (or the adjustment is a no-op), retrying would just fail identically — give up.
-    if let Some(param) = provider.droppable_param(err) {
-        if applied.iter().any(|a| a == &param) || !strip_param(req, cfg, &param) {
-            return false;
-        }
-        applied.push(param);
-        return true;
-    }
-    let Some((param, value)) = provider.repairable_param(err) else {
+    let Some(param) = provider.droppable_param(err) else {
         return false;
     };
-    if applied.iter().any(|a| a == &param) || req.extra.get(&param) == Some(&value) {
+    // Guard against a provider that re-reports the same param: if we already dropped it
+    // (or stripping removes nothing), retrying would just fail identically — give up.
+    if dropped.iter().any(|d| d == &param) || !strip_param(req, cfg, &param) {
         return false;
     }
-    req.extra.insert(param.clone(), value);
-    applied.push(param);
+    dropped.push(param);
     true
 }
 
@@ -253,11 +244,11 @@ fn strip_param(req: &mut ChatRequest, cfg: &mut ResolvedConfig, param: &str) -> 
     }
 }
 
-fn log_param_fix(attempt: &ResolvedConfig, param: &str, err: &ProviderError) {
+fn log_param_drop(attempt: &ResolvedConfig, param: &str, err: &ProviderError) {
     tracing::warn!(
         target: "nasiko::llm_router::provider",
         provider = %attempt.provider, model = %attempt.model, param, error = %err,
-        "upstream rejected parameter; adjusting it and retrying the same model"
+        "upstream rejected parameter; dropping it and retrying the same model"
     );
 }
 
@@ -362,143 +353,6 @@ mod tests {
             is_coding_agent: false,
             compress_enabled: false,
         }
-    }
-
-    /// A minimal tool-carrying request, the shape Claude Code sends every turn.
-    fn chat_req() -> ChatRequest {
-        serde_json::from_value(json!({
-            "messages": [{ "role": "user", "content": "hi" }],
-            "tools": [{
-                "type": "function",
-                "function": { "name": "Read", "parameters": { "type": "object" } }
-            }]
-        }))
-        .expect("valid chat request")
-    }
-
-    /// The gpt-5.x rejection of function tools; `OpenAiProvider` classifies it purely
-    /// from the error body, so no network is involved.
-    fn reasoning_effort_rejection() -> ProviderError {
-        ProviderError::Status {
-            status: 400,
-            message: json!({
-                "error": {
-                    "message": "Function tools with reasoning_effort are not supported for gpt-5.6 in /v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to 'none'.",
-                    "type": "invalid_request_error",
-                    "param": "reasoning_effort",
-                    "code": serde_json::Value::Null
-                }
-            })
-            .to_string(),
-            retryable: false,
-        }
-    }
-
-    #[test]
-    fn a_repairable_rejection_sets_the_param_and_retries_once() {
-        let provider =
-            crate::providers::OpenAiProvider::new(reqwest::Client::new(), "http://x".into());
-        let err = reasoning_effort_rejection();
-        let mut req = chat_req();
-        let mut cfg = primary("openai", vec![]);
-        let mut applied: Vec<String> = Vec::new();
-
-        assert!(try_fix_param(
-            &provider,
-            &err,
-            &mut req,
-            &mut cfg,
-            &mut applied
-        ));
-        assert_eq!(req.extra.get("reasoning_effort"), Some(&json!("none")));
-        assert_eq!(applied, vec!["reasoning_effort".to_string()]);
-        // The tools the caller sent are untouched — the repair is additive.
-        assert!(req.tools.is_some());
-
-        // Re-reported by the provider ⇒ the retry would fail identically. Give up
-        // rather than loop.
-        assert!(!try_fix_param(
-            &provider,
-            &err,
-            &mut req,
-            &mut cfg,
-            &mut applied
-        ));
-        assert_eq!(applied.len(), 1);
-    }
-
-    #[test]
-    fn a_droppable_rejection_still_strips_the_param() {
-        let provider =
-            crate::providers::OpenAiProvider::new(reqwest::Client::new(), "http://x".into());
-        let err = ProviderError::Status {
-            status: 400,
-            message: json!({
-                "error": {
-                    "message": "Unsupported value: 'temperature' does not support 0.3 with this model.",
-                    "param": "temperature",
-                    "code": "unsupported_value"
-                }
-            })
-            .to_string(),
-            retryable: false,
-        };
-        let mut req = chat_req();
-        let mut cfg = primary("openai", vec![]); // temperature: Some(0.3)
-        let mut applied: Vec<String> = Vec::new();
-
-        assert!(try_fix_param(
-            &provider,
-            &err,
-            &mut req,
-            &mut cfg,
-            &mut applied
-        ));
-        assert_eq!(cfg.temperature, None);
-        assert_eq!(applied, vec!["temperature".to_string()]);
-        assert!(!req.extra.contains_key("reasoning_effort"));
-    }
-
-    #[test]
-    fn an_unrecognized_error_is_never_fixed() {
-        let provider =
-            crate::providers::OpenAiProvider::new(reqwest::Client::new(), "http://x".into());
-        let mut req = chat_req();
-        let mut cfg = primary("openai", vec![]);
-        let mut applied: Vec<String> = Vec::new();
-
-        assert!(!try_fix_param(
-            &provider,
-            &ProviderError::Status {
-                status: 401,
-                message: json!({ "error": { "code": "invalid_api_key" } }).to_string(),
-                retryable: false,
-            },
-            &mut req,
-            &mut cfg,
-            &mut applied
-        ));
-        assert!(applied.is_empty());
-        assert!(req.extra.is_empty());
-        assert_eq!(cfg.temperature, Some(0.3));
-    }
-
-    #[test]
-    fn param_fixes_are_capped() {
-        let provider =
-            crate::providers::OpenAiProvider::new(reqwest::Client::new(), "http://x".into());
-        let mut req = chat_req();
-        let mut cfg = primary("openai", vec![]);
-        let mut applied: Vec<String> = (0..MAX_PARAM_FIXES).map(|i| format!("param-{i}")).collect();
-
-        assert!(!try_fix_param(
-            &provider,
-            &reasoning_effort_rejection(),
-            &mut req,
-            &mut cfg,
-            &mut applied
-        ));
-        assert!(!req.extra.contains_key("reasoning_effort"));
     }
 
     #[test]

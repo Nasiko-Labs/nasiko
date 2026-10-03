@@ -29,6 +29,7 @@ use tower_http::decompression::RequestDecompressionLayer;
 pub mod auth;
 mod brevity;
 mod compress;
+pub mod compact_tools;
 pub mod config;
 pub mod error;
 pub mod handlers;
@@ -39,7 +40,6 @@ pub mod providers;
 pub mod recovery;
 pub mod resolver;
 pub mod routing;
-mod savings;
 pub mod usage;
 
 pub use config::GatewayConfig;
