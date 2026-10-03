@@ -15,33 +15,29 @@
 
 mod decode;
 mod encode;
+#[cfg(test)]
+mod fixtures;
 mod grammar;
 mod schema;
 mod stream;
 mod types;
 
 pub use stream::StreamDecoder;
-pub use types::CompactError;
+pub use types::{ArgumentFault, CompactError, CompactTools, ToolCall, ToolDef};
 
 use types::not_built;
 
-/// Compact form of a tool list. The body is filled in when encoding lands.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CompactTools {
-    _private: (),
-}
-
 /// Encode `tools` into the compact signature block.
-pub fn encode_tools(_tools: &[()]) -> Result<CompactTools, CompactError> {
+pub fn encode_tools(_tools: &[ToolDef]) -> Result<CompactTools, CompactError> {
     Err(not_built())
 }
 
 /// Decode compact call text into tool calls.
-pub fn decode_calls(_text: &str, _tools: &[()]) -> Result<Vec<()>, CompactError> {
+pub fn decode_calls(_text: &str, _tools: &[ToolDef]) -> Result<Vec<ToolCall>, CompactError> {
     Err(not_built())
 }
 
 /// Rebuild tool schemas from a compact block.
-pub fn decode_tools(_compact: &CompactTools) -> Result<Vec<()>, CompactError> {
+pub fn decode_tools(_compact: &CompactTools) -> Result<Vec<ToolDef>, CompactError> {
     Err(not_built())
 }

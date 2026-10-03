@@ -1,4 +1,4 @@
-use crate::types::not_built;
+use crate::types::{ToolCall, not_built};
 
 /// Incremental call decoder. Chunk handling lands in a later task.
 #[derive(Debug, Default)]
@@ -11,7 +11,7 @@ impl StreamDecoder {
         Self { _private: () }
     }
 
-    pub fn push(&mut self, _chunk: &str) -> Result<Vec<()>, crate::types::CompactError> {
+    pub fn push(&mut self, _chunk: &str) -> Result<Vec<ToolCall>, crate::types::CompactError> {
         let _ = not_built;
         Ok(vec![])
     }
