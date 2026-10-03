@@ -5,8 +5,9 @@
 //!   cargo run --release -p nasiko-llm-router --example compact_tools_eval
 //! ```
 //!
-//! Offline and deterministic by default: writes one JSONL line per case to `OUT` and prints a
-//! local token count to stderr. Outputs only — the scorer computes every metric.
+//! Offline and deterministic by default: writes one JSONL line per case to `OUT`, then prints a
+//! summary to stdout (local token counts, one definition before and after, decoder results). The
+//! summary is for a human reader; `OUT` holds outputs only and the scorer computes every metric.
 //!
 //! Live mode: set `PROVIDER_BASE_URL` and `MODEL` (and `PROVIDER_API_KEY` if the endpoint needs
 //! one). Each `compact_request` is sent to `{PROVIDER_BASE_URL}/chat/completions` with `model`
@@ -61,7 +62,7 @@ async fn main() {
 
     let native_tools = set["tools"].as_array().cloned().unwrap_or_default();
     let mut lines = Vec::new();
-    let mut tokens = Tokens::default();
+    let mut summary = Summary::new();
 
     for case in set["cases"].as_array().into_iter().flatten() {
         let native = select(&native_tools, &case["tools"]);
@@ -85,7 +86,7 @@ async fn main() {
                 json!({"messages": all, "tools": native})
             }
         };
-        tokens.add(
+        summary.case(
             case["id"].as_str().unwrap_or_default(),
             &messages,
             &native,
@@ -139,8 +140,9 @@ async fn main() {
             .filter_map(to_compact_def)
             .collect();
         let chunks = case["chunks"].as_array().into_iter().flatten();
-        let decoded = decode_chunks(chunks.filter_map(Value::as_str), &tools);
-        lines.push(json!({"id": case["id"], "decoded": outcome_object(decoded)}));
+        let decoded = outcome_object(decode_chunks(chunks.filter_map(Value::as_str), &tools));
+        summary.decoder_case(case, &decoded);
+        lines.push(json!({"id": case["id"], "decoded": decoded}));
     }
 
     let written = std::fs::File::create(&out)
@@ -149,7 +151,7 @@ async fn main() {
         eprintln!("cannot write {out}: {e}");
         std::process::exit(2);
     }
-    tokens.report(lines.len(), &out);
+    summary.print(lines.len(), &out);
 }
 
 /// The file's tool definitions named by a case, in the case's order.
@@ -249,18 +251,46 @@ impl Live {
     }
 }
 
-/// Local measurement only (`o200k_base` over the serialized request body).
-#[derive(Default)]
-struct Tokens {
-    /// `{messages, tools}` exactly as the case gives them.
-    baseline: usize,
-    /// The same, plus the reference-time system message the compact request also carries.
-    baseline_with_time: usize,
-    compact: usize,
+/// The human-readable report printed after `OUT` is written. Nothing here reaches `OUT`.
+struct Summary {
+    /// `None` if the tokenizer data cannot be loaded; token counts are then left out.
+    bpe: Option<tiktoken_rs::CoreBPE>,
+    cases: Vec<CaseTokens>,
+    /// One tool as the client sent it, and the line that replaced it.
+    example: Option<(String, String)>,
+    decoder: Vec<DecoderRow>,
 }
 
-impl Tokens {
-    fn add(
+struct CaseTokens {
+    id: String,
+    /// `{messages, tools}` exactly as the case gives them.
+    native: usize,
+    /// The same, plus the reference-time system message the compact request also carries.
+    native_timed: usize,
+    compact: usize,
+    /// Call-format text, tool lines, everything else. `None` for a bypassed case.
+    parts: Option<(usize, usize, usize)>,
+}
+
+struct DecoderRow {
+    id: String,
+    pass: bool,
+    expected: String,
+    got: String,
+    note: String,
+}
+
+impl Summary {
+    fn new() -> Self {
+        Self {
+            bpe: tiktoken_rs::o200k_base().ok(),
+            cases: Vec::new(),
+            example: None,
+            decoder: Vec::new(),
+        }
+    }
+
+    fn case(
         &mut self,
         id: &str,
         messages: &[Value],
@@ -268,43 +298,144 @@ impl Tokens {
         compact_request: &Value,
         compact: Option<&CompactTools>,
     ) {
-        let Ok(bpe) = tiktoken_rs::o200k_base() else {
+        if self.example.is_none()
+            && let (Some(tool), Some(compact)) = (native.first(), compact)
+        {
+            let line = compact.definitions.lines().next().unwrap_or_default();
+            self.example = Some((tool.to_string(), line.to_string()));
+        }
+        let Some(bpe) = &self.bpe else {
             return;
         };
         let text = |s: &str| bpe.encode_ordinary(s).len();
         let count = |body: &Value| text(&body.to_string());
         let mut timed = vec![json!({"role": "system", "content": REFERENCE_TIME})];
         timed.extend(messages.iter().cloned());
-        self.baseline += count(&json!({"messages": messages, "tools": native}));
-        self.baseline_with_time += count(&json!({"messages": timed, "tools": native}));
         let total = count(compact_request);
-        self.compact += total;
-
-        // Where a compacted case's tokens go. Parts are counted on their own, so they are
-        // approximate; `rest` is the reference time, the messages and the JSON around them.
-        if let Some(compact) = compact {
+        // Parts are counted on their own, so they are approximate; the remainder is the
+        // reference time, the messages and the JSON around them.
+        let parts = compact.map(|compact| {
             let lines = text(&compact.definitions);
             let fixed = text(&compact.prompt()).saturating_sub(lines);
-            let rest = total.saturating_sub(lines + fixed);
-            eprintln!(
-                "{id}: {total} tokens = instruction text {fixed} + tool lines {lines} + rest {rest}"
-            );
-        }
+            (fixed, lines, total.saturating_sub(fixed + lines))
+        });
+        self.cases.push(CaseTokens {
+            id: id.to_string(),
+            native: count(&json!({"messages": messages, "tools": native})),
+            native_timed: count(&json!({"messages": timed, "tools": native})),
+            compact: total,
+            parts,
+        });
     }
 
-    fn report(&self, lines: usize, out: &str) {
-        let reduction = |baseline: usize| 100.0 * (1.0 - self.compact as f64 / baseline as f64);
-        eprintln!("wrote {lines} lines to {out}");
-        eprintln!(
-            "tokens (o200k_base, local): compact {} vs native {} = {:.1}% reduction",
-            self.compact,
-            self.baseline,
-            reduction(self.baseline)
+    fn decoder_case(&mut self, case: &Value, decoded: &Value) {
+        let expected = &case["expected"];
+        // An error case passes on the same label; a call case on the same names and arguments
+        // (objects compare without regard to key order).
+        let pass = match expected["error"].as_str() {
+            Some(label) => decoded["error"] == label,
+            None => decoded["calls"].is_array() && decoded["calls"] == expected["calls"],
+        };
+        let describe = |value: &Value| match (value["error"].as_str(), value["calls"].as_array()) {
+            (Some(label), _) => format!("error: {label}"),
+            (None, Some(calls)) => format!("{} call(s)", calls.len()),
+            (None, None) => "nothing".to_string(),
+        };
+        self.decoder.push(DecoderRow {
+            id: case["id"].as_str().unwrap_or_default().to_string(),
+            pass,
+            expected: describe(expected),
+            got: describe(decoded),
+            note: case["note"].as_str().unwrap_or_default().to_string(),
+        });
+    }
+
+    fn print(&self, lines: usize, out: &str) {
+        println!("wrote {lines} lines to {out}");
+        self.print_tokens();
+        self.print_example();
+        self.print_decoder();
+    }
+
+    fn print_tokens(&self) {
+        if self.cases.is_empty() {
+            return;
+        }
+        let saved = |compact: usize, native: usize| {
+            format!(
+                "{:.1}%",
+                100.0 * (1.0 - compact as f64 / native.max(1) as f64)
+            )
+        };
+        println!("\nTokens per case (o200k_base, counted locally over the full request body)");
+        println!("  native       {{messages, tools}} exactly as the case gives them");
+        println!("  native+time  the same, plus the reference-time system message that the");
+        println!("               compact request also carries (like for like)");
+        println!(
+            "\n  {:<10} {:>7} {:>12} {:>8} {:>10} {:>15}   compact = call text + tool lines + rest",
+            "case", "native", "native+time", "compact", "vs native", "vs native+time"
         );
-        eprintln!(
-            "  with the reference-time message in the native baseline too: {} = {:.1}% reduction",
-            self.baseline_with_time,
-            reduction(self.baseline_with_time)
+        let row = |id: &str, native: usize, timed: usize, compact: usize, detail: String| {
+            println!(
+                "  {id:<10} {native:>7} {timed:>12} {compact:>8} {:>10} {:>15}   {detail}",
+                saved(compact, native),
+                saved(compact, timed)
+            );
+        };
+        for case in &self.cases {
+            let detail = match case.parts {
+                Some((fixed, lines, rest)) => format!("{fixed} + {lines} + {rest}"),
+                None => "bypassed (compacted: false)".to_string(),
+            };
+            row(
+                &case.id,
+                case.native,
+                case.native_timed,
+                case.compact,
+                detail,
+            );
+        }
+        let sum = |pick: fn(&CaseTokens) -> usize| self.cases.iter().map(pick).sum::<usize>();
+        let bypassed = self.cases.iter().filter(|c| c.parts.is_none()).count();
+        row(
+            "total",
+            sum(|c| c.native),
+            sum(|c| c.native_timed),
+            sum(|c| c.compact),
+            format!("{bypassed} of {} cases bypassed", self.cases.len()),
         );
+    }
+
+    fn print_example(&self) {
+        let Some((native, compact)) = &self.example else {
+            return;
+        };
+        let tokens = |s: &str| match &self.bpe {
+            Some(bpe) => format!(" ({} tokens)", bpe.encode_ordinary(s).len()),
+            None => String::new(),
+        };
+        println!("\nOne tool, before and after");
+        println!("  native{}:\n    {native}", tokens(native));
+        println!("  compact{}:\n    {compact}", tokens(compact));
+    }
+
+    fn print_decoder(&self) {
+        if self.decoder.is_empty() {
+            return;
+        }
+        println!("\nDecoder cases (chunks fed to StreamDecoder one at a time)");
+        println!(
+            "  {:<8} {:<6} {:<26} {:<26} note",
+            "case", "result", "expected", "got"
+        );
+        for row in &self.decoder {
+            let result = if row.pass { "pass" } else { "FAIL" };
+            println!(
+                "  {:<8} {result:<6} {:<26} {:<26} {}",
+                row.id, row.expected, row.got, row.note
+            );
+        }
+        let passed = self.decoder.iter().filter(|row| row.pass).count();
+        println!("  {passed} of {} passed", self.decoder.len());
     }
 }
