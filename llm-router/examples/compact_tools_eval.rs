@@ -45,10 +45,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     &mut out,
                     &json!({
                         "id": case_id(case)?,
-                        "compact_request": native_request(case, &selected),
+                        "compact_request": native_request(case, &selected, live.is_some()),
                         "compacted": false,
-                        "rendered_calls": "",
-                        "roundtrip_calls": [],
+                        "rendered_calls": Value::Null,
+                        "roundtrip_calls": expected_calls(case)?,
                     }),
                 )?;
                 continue;
@@ -58,12 +58,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let expected = expected_calls(case)?;
         let rendered_calls = render_calls(&expected)?;
         let roundtrip_calls = decode_calls(&rendered_calls, &selected)?;
-        let request = compact_request(case, &compact);
+        let request = compact_request(case, &compact, live.is_some());
         if let Some(tokenizer) = &tokenizer {
             token_totals.add(
                 tokenizer
                     .encode_with_special_tokens(&serde_json::to_string(&native_request(
-                        case, &selected,
+                        case,
+                        &selected,
+                        live.is_some(),
                     ))?)
                     .len(),
                 tokenizer
@@ -185,11 +187,13 @@ fn expected_calls(case: &Value) -> Result<Vec<ToolCall>, Box<dyn std::error::Err
         .collect()
 }
 
-fn compact_request(case: &Value, compact: &CompactTools) -> Value {
-    let mut messages = vec![json!({
-        "role": "system",
-        "content": format!("{REFERENCE_TIME}\n{}", compact.prompt),
-    })];
+fn compact_request(case: &Value, compact: &CompactTools, include_reference_time: bool) -> Value {
+    let compact_prompt = if include_reference_time {
+        format!("{REFERENCE_TIME}\n{}", compact.prompt)
+    } else {
+        compact.prompt.clone()
+    };
+    let mut messages = vec![json!({"role": "system", "content": compact_prompt})];
     messages.extend(
         case.get("messages")
             .and_then(Value::as_array)
@@ -199,9 +203,17 @@ fn compact_request(case: &Value, compact: &CompactTools) -> Value {
     json!({"messages": messages})
 }
 
-fn native_request(case: &Value, tools: &[ToolDef]) -> Value {
+fn native_request(case: &Value, tools: &[ToolDef], include_reference_time: bool) -> Value {
+    let mut messages = case
+        .get("messages")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if include_reference_time {
+        messages.insert(0, json!({"role": "system", "content": REFERENCE_TIME}));
+    }
     json!({
-        "messages": case.get("messages").cloned().unwrap_or_else(|| json!([])),
+        "messages": messages,
         "tools": tools,
     })
 }

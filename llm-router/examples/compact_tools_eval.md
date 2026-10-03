@@ -2,6 +2,8 @@
 
 The evaluator is deterministic and offline by default. It reads a compact-tools data set
 from `EVAL_SET` and writes one JSON object per normal and decoder case to `OUT`.
+The fixed reference-time system message is included only in live requests, so offline token
+comparison measures compacted and native request bodies on the same basis.
 
 ```powershell
 curl.exe -fsSL https://registry.nasiko.dev/r/nasiko/compact-tools-eval -o $env:TEMP\compact-tools-eval.json
