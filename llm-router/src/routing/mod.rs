@@ -36,7 +36,7 @@ pub use cells::{CellStore, InMemoryCellStore, PgCellStore};
 pub use classifier::{
     ClassifyError, ClassifyInput, Classification, HeuristicClassifier, RegexClassifier,
     RequestClassifier, RequestType, Tier, classify, classify_request_type,
-    classifier_from_backend, signal,
+    classifier_from_backend, classifier_from_config, signal,
 };
 pub use registry::{PgTierRegistry, TierRegistry};
 pub use salience::{AllowAllGate, ClassifierSalienceGate, SalienceGate};
