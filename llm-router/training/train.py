@@ -284,13 +284,20 @@ def main():
     type_clf.fit(X_tr, y_type_tr)
     print(f"  type_clf trained in {time.perf_counter()-t2:.1f}s")
 
-    print("Training complexity_clf (5-class LogisticRegression, lbfgs)…")
+    print("Training complexity_clf (5-class LogisticRegression, lbfgs)...")
     t3 = time.perf_counter()
+    from collections import Counter as Cnt
+    comp_counts = Cnt(y_comp_tr.tolist())
+    n_comp_total = len(y_comp_tr)
+    # Balanced weights baseline
+    comp_cw = {i: n_comp_total / (5.0 * comp_counts[i]) for i in range(5)}
+    # Boost Level 3 (class index 2) by 2.5x to counter L2 prior and improve exact accuracy
+    comp_cw[2] *= 2.5
     complexity_clf = LogisticRegression(
-        C=1.0,
+        C=2.0,
         solver="lbfgs",
         max_iter=1000,
-        class_weight="balanced",
+        class_weight=comp_cw,
         random_state=42,
         tol=1e-4,
     )
@@ -310,8 +317,8 @@ def main():
     threshold = choose_threshold(type_probs_va, y_type_va)
     print(f"  Chosen threshold = {threshold:.2f}")
 
-    # ── Compute metrics ───────────────────────────────────────────────────
-    print("\n── Validation metrics ──────────────────────────────────────")
+    # -- Compute metrics ---------------------------------------------------
+    print("\n-- Validation metrics --------------------------------------")
 
     # Type accuracy
     type_preds_va   = type_probs_va.argmax(axis=1)
@@ -347,8 +354,8 @@ def main():
     print(f"  Complexity accuracy:    {comp_acc:.4f}")
     print(f"  ECE:                    {ece_val:.4f}")
     print(f"  Fallback rate:          {fallback_rate:.4f}")
-    print(f"  Regex wrong → ML correct: {regex_wrong_ml_correct}")
-    print(f"  Regex correct → ML wrong: {regex_correct_ml_wrong}")
+    print(f"  Regex wrong -> ML correct: {regex_wrong_ml_correct}")
+    print(f"  Regex correct -> ML wrong: {regex_correct_ml_wrong}")
 
     # Training metrics
     type_acc_tr = accuracy_score(y_type_tr, type_clf.predict(X_tr))
@@ -367,8 +374,8 @@ def main():
             cls_acc  = (type_preds_va[mask] == i).mean()
             print(f"    {cls:<25}: {cls_acc:.3f} (N={n})")
 
-    # ── Export weights ────────────────────────────────────────────────────
-    print("\nExporting weights…")
+    # -- Export weights ----------------------------------------------------
+    print("\nExporting weights...")
     metadata = {
         "trained_at": datetime.now(timezone.utc).isoformat(),
         "type_accuracy_val": round(type_acc, 4),
@@ -409,8 +416,8 @@ def main():
     print(f"  Temperature:           {temperature:.4f}")
     print(f"  Threshold:             {threshold:.2f}")
 
-    # ── Final verdict ─────────────────────────────────────────────────────
-    print("\n── Final decision ───────────────────────────────────────────")
+    # -- Final verdict -----------------------------------------------------
+    print("\n-- Final decision -------------------------------------------")
     if type_acc > regex_acc and ece_val < 0.15 and fallback_rate < 0.35:
         verdict = "KEEP ML"
     elif type_acc > regex_acc:

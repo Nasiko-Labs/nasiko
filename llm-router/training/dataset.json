@@ -1777,7 +1777,7 @@
       "context": null,
       "request_type": "writing",
       "complexity": 2,
-      "split": "calibration",
+      "split": "validation",
       "is_derived": false
     },
     {
@@ -1787,7 +1787,7 @@
       "context": null,
       "request_type": "writing",
       "complexity": 2,
-      "split": "calibration",
+      "split": "validation",
       "is_derived": true
     },
     {
@@ -1827,7 +1827,7 @@
       "context": null,
       "request_type": "writing",
       "complexity": 3,
-      "split": "train",
+      "split": "calibration",
       "is_derived": false
     },
     {
@@ -1837,7 +1837,7 @@
       "context": null,
       "request_type": "writing",
       "complexity": 3,
-      "split": "train",
+      "split": "calibration",
       "is_derived": true
     },
     {
@@ -1847,7 +1847,7 @@
       "context": null,
       "request_type": "writing",
       "complexity": 3,
-      "split": "train",
+      "split": "calibration",
       "is_derived": true
     },
     {
@@ -2177,7 +2177,7 @@
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 1,
-      "split": "validation",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -2187,7 +2187,7 @@
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 1,
-      "split": "validation",
+      "split": "train",
       "is_derived": true
     },
     {
@@ -2197,7 +2197,7 @@
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 1,
-      "split": "validation",
+      "split": "train",
       "is_derived": true
     },
     {
@@ -2207,7 +2207,7 @@
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 2,
-      "split": "train",
+      "split": "calibration",
       "is_derived": false
     },
     {
@@ -2217,7 +2217,7 @@
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 2,
-      "split": "train",
+      "split": "calibration",
       "is_derived": true
     },
     {
@@ -2227,7 +2227,7 @@
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 2,
-      "split": "train",
+      "split": "calibration",
       "is_derived": true
     },
     {
@@ -2293,7 +2293,7 @@
     {
       "id": "ex_0230",
       "source_group": "fl_08",
-      "query": "Provide a comprehensive chronological timeline of the Byzantine-Sasanian War of 602\u2013628, including key battles and commanders.",
+      "query": "Provide a comprehensive chronological timeline of the Byzantine-Sasanian War of 602\u00e2\u20ac\u201c628, including key battles and commanders.",
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 4,
@@ -2303,7 +2303,7 @@
     {
       "id": "ex_0231",
       "source_group": "fl_08",
-      "query": "Hello, I have a quick question. Provide a comprehensive chronological timeline of the Byzantine-Sasanian War of 602\u2013628, including key battles and commanders. Looking forward to your response, thanks!",
+      "query": "Hello, I have a quick question. Provide a comprehensive chronological timeline of the Byzantine-Sasanian War of 602\u00e2\u20ac\u201c628, including key battles and commanders. Looking forward to your response, thanks!",
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 4,
@@ -2313,7 +2313,7 @@
     {
       "id": "ex_0232",
       "source_group": "fl_08",
-      "query": "Can you provide a comprehensive chronological timeline of the Byzantine-Sasanian War of 602\u2013628, including key battles and commanders.",
+      "query": "Can you provide a comprehensive chronological timeline of the Byzantine-Sasanian War of 602\u00e2\u20ac\u201c628, including key battles and commanders.",
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 4,
@@ -2417,7 +2417,7 @@
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 4,
-      "split": "train",
+      "split": "calibration",
       "is_derived": false
     },
     {
@@ -2427,7 +2427,7 @@
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 4,
-      "split": "train",
+      "split": "calibration",
       "is_derived": true
     },
     {
@@ -2437,7 +2437,7 @@
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 4,
-      "split": "train",
+      "split": "calibration",
       "is_derived": true
     },
     {
@@ -3527,7 +3527,7 @@
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 1,
-      "split": "calibration",
+      "split": "validation",
       "is_derived": false
     },
     {
@@ -3557,7 +3557,7 @@
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 1,
-      "split": "calibration",
+      "split": "validation",
       "is_derived": false
     },
     {
@@ -3577,7 +3577,7 @@
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 1,
-      "split": "train",
+      "split": "calibration",
       "is_derived": false
     },
     {
@@ -3657,7 +3657,7 @@
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 1,
-      "split": "validation",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -4477,7 +4477,7 @@
       "context": null,
       "request_type": "analytical_reasoning",
       "complexity": 2,
-      "split": "calibration",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -4527,7 +4527,7 @@
       "context": null,
       "request_type": "analytical_reasoning",
       "complexity": 4,
-      "split": "train",
+      "split": "calibration",
       "is_derived": false
     },
     {
@@ -4567,7 +4567,7 @@
       "context": null,
       "request_type": "analytical_reasoning",
       "complexity": 3,
-      "split": "calibration",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -4587,7 +4587,7 @@
       "context": null,
       "request_type": "analytical_reasoning",
       "complexity": 2,
-      "split": "validation",
+      "split": "train",
       "is_derived": false
     },
     {
@@ -4617,12 +4617,112 @@
       "context": null,
       "request_type": "analytical_reasoning",
       "complexity": 4,
-      "split": "validation",
+      "split": "train",
       "is_derived": false
     },
     {
       "id": "ex_0463",
-      "source_group": "auto_writing_81",
+      "source_group": "auto_analytical_reasoning_81",
+      "query": "Derive the closed-form Black-Scholes formula using risk-neutral pricing.",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 5,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0464",
+      "source_group": "auto_analytical_reasoning_82",
+      "query": "Derive the optimal policy for a Markov Decision Process with state transition probabilities.",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 5,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0465",
+      "source_group": "auto_analytical_reasoning_83",
+      "query": "Calculate the Fourier transform of a Gaussian function f(x) = exp(-a*x^2).",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 4,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0466",
+      "source_group": "auto_analytical_reasoning_84",
+      "query": "Prove that every subgroup of an abelian group is normal.",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0467",
+      "source_group": "auto_analytical_reasoning_85",
+      "query": "Solve this linear recurrence: a_n = 5*a_{n-1} - 6*a_{n-2} with a_0=1, a_1=4.",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 3,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0468",
+      "source_group": "auto_analytical_reasoning_86",
+      "query": "Calculate the expected value and variance of a Poisson distributed variable.",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 2,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0469",
+      "source_group": "auto_analytical_reasoning_87",
+      "query": "Derive the backpropagation gradient equations for a 2-layer neural network.",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 4,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0470",
+      "source_group": "auto_analytical_reasoning_88",
+      "query": "Prove by mathematical induction that the sum of first n squares is n(n+1)(2n+1)/6.",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0471",
+      "source_group": "auto_analytical_reasoning_89",
+      "query": "Calculate the eigenvalues and eigenvectors of a symmetric 3x3 covariance matrix.",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 3,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0472",
+      "source_group": "auto_analytical_reasoning_90",
+      "query": "Solve the traveling salesperson problem for a 5-node graph using dynamic programming.",
+      "context": null,
+      "request_type": "analytical_reasoning",
+      "complexity": 4,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0473",
+      "source_group": "auto_writing_91",
       "query": "Write an email requesting feedback from your team after completing a major project milestone.",
       "context": null,
       "request_type": "writing",
@@ -4631,109 +4731,9 @@
       "is_derived": false
     },
     {
-      "id": "ex_0464",
-      "source_group": "auto_writing_82",
-      "query": "Draft a customer service response resolving a shipping delay complaint gracefully.",
-      "context": null,
-      "request_type": "writing",
-      "complexity": 2,
-      "split": "validation",
-      "is_derived": false
-    },
-    {
-      "id": "ex_0465",
-      "source_group": "auto_writing_83",
-      "query": "Compose an introductory paragraph for an article about the future of renewable energy.",
-      "context": null,
-      "request_type": "writing",
-      "complexity": 2,
-      "split": "train",
-      "is_derived": false
-    },
-    {
-      "id": "ex_0466",
-      "source_group": "auto_writing_84",
-      "query": "Write a script for a podcast episode introducing quantum computing concepts.",
-      "context": null,
-      "request_type": "writing",
-      "complexity": 3,
-      "split": "train",
-      "is_derived": false
-    },
-    {
-      "id": "ex_0467",
-      "source_group": "auto_writing_85",
-      "query": "Draft an internal memo announcing a scheduled server maintenance window.",
-      "context": null,
-      "request_type": "writing",
-      "complexity": 1,
-      "split": "train",
-      "is_derived": false
-    },
-    {
-      "id": "ex_0468",
-      "source_group": "auto_writing_86",
-      "query": "Compose a heartfelt retirement speech honoring a colleague with 30 years of service.",
-      "context": null,
-      "request_type": "writing",
-      "complexity": 3,
-      "split": "train",
-      "is_derived": false
-    },
-    {
-      "id": "ex_0469",
-      "source_group": "auto_writing_87",
-      "query": "Write a product announcement newsletter showcasing our new mobile app.",
-      "context": null,
-      "request_type": "writing",
-      "complexity": 2,
-      "split": "validation",
-      "is_derived": false
-    },
-    {
-      "id": "ex_0470",
-      "source_group": "auto_writing_88",
-      "query": "Draft guidelines for contributing to an open source project.",
-      "context": null,
-      "request_type": "writing",
-      "complexity": 2,
-      "split": "train",
-      "is_derived": false
-    },
-    {
-      "id": "ex_0471",
-      "source_group": "auto_writing_89",
-      "query": "Rewrite this email to make it more empathetic and understanding.",
-      "context": null,
-      "request_type": "writing",
-      "complexity": 1,
-      "split": "calibration",
-      "is_derived": false
-    },
-    {
-      "id": "ex_0472",
-      "source_group": "auto_writing_90",
-      "query": "Compose a fantasy story opening describing an ancient ruined citadel at dusk.",
-      "context": null,
-      "request_type": "writing",
-      "complexity": 3,
-      "split": "calibration",
-      "is_derived": false
-    },
-    {
-      "id": "ex_0473",
-      "source_group": "auto_writing_91",
-      "query": "Write a recommendation letter for an engineering intern applying to graduate school.",
-      "context": null,
-      "request_type": "writing",
-      "complexity": 3,
-      "split": "calibration",
-      "is_derived": false
-    },
-    {
       "id": "ex_0474",
       "source_group": "auto_writing_92",
-      "query": "Draft an apology letter to customers affected by an unexpected billing glitch.",
+      "query": "Draft a customer service response resolving a shipping delay complaint gracefully.",
       "context": null,
       "request_type": "writing",
       "complexity": 2,
@@ -4743,7 +4743,7 @@
     {
       "id": "ex_0475",
       "source_group": "auto_writing_93",
-      "query": "Compose a punchy elevator pitch for a B2B AI analytics startup.",
+      "query": "Compose an introductory paragraph for an article about the future of renewable energy.",
       "context": null,
       "request_type": "writing",
       "complexity": 2,
@@ -4753,6 +4753,106 @@
     {
       "id": "ex_0476",
       "source_group": "auto_writing_94",
+      "query": "Write a script for a podcast episode introducing quantum computing concepts.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0477",
+      "source_group": "auto_writing_95",
+      "query": "Draft an internal memo announcing a scheduled server maintenance window.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0478",
+      "source_group": "auto_writing_96",
+      "query": "Compose a heartfelt retirement speech honoring a colleague with 30 years of service.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 3,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0479",
+      "source_group": "auto_writing_97",
+      "query": "Write a product announcement newsletter showcasing our new mobile app.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0480",
+      "source_group": "auto_writing_98",
+      "query": "Draft guidelines for contributing to an open source project.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0481",
+      "source_group": "auto_writing_99",
+      "query": "Rewrite this email to make it more empathetic and understanding.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 1,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0482",
+      "source_group": "auto_writing_100",
+      "query": "Compose a fantasy story opening describing an ancient ruined citadel at dusk.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 3,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0483",
+      "source_group": "auto_writing_101",
+      "query": "Write a recommendation letter for an engineering intern applying to graduate school.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 3,
+      "split": "validation",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0484",
+      "source_group": "auto_writing_102",
+      "query": "Draft an apology letter to customers affected by an unexpected billing glitch.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 2,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0485",
+      "source_group": "auto_writing_103",
+      "query": "Compose a punchy elevator pitch for a B2B AI analytics startup.",
+      "context": null,
+      "request_type": "writing",
+      "complexity": 2,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0486",
+      "source_group": "auto_writing_104",
       "query": "Write a short blog post on five practical habits for writing cleaner code.",
       "context": null,
       "request_type": "writing",
@@ -4761,18 +4861,18 @@
       "is_derived": false
     },
     {
-      "id": "ex_0477",
-      "source_group": "auto_writing_95",
+      "id": "ex_0487",
+      "source_group": "auto_writing_105",
       "query": "Draft an executive summary for a board presentation on cybersecurity risks.",
       "context": null,
       "request_type": "writing",
       "complexity": 4,
-      "split": "calibration",
+      "split": "train",
       "is_derived": false
     },
     {
-      "id": "ex_0478",
-      "source_group": "auto_writing_96",
+      "id": "ex_0488",
+      "source_group": "auto_writing_106",
       "query": "Compose a poem celebrating the beauty of mathematics.",
       "context": null,
       "request_type": "writing",
@@ -4781,28 +4881,28 @@
       "is_derived": false
     },
     {
-      "id": "ex_0479",
-      "source_group": "auto_writing_97",
+      "id": "ex_0489",
+      "source_group": "auto_writing_107",
       "query": "Write a press release announcing a partnership between two healthcare companies.",
       "context": null,
       "request_type": "writing",
       "complexity": 3,
-      "split": "train",
+      "split": "calibration",
       "is_derived": false
     },
     {
-      "id": "ex_0480",
-      "source_group": "auto_writing_98",
+      "id": "ex_0490",
+      "source_group": "auto_writing_108",
       "query": "Draft a polite follow-up email after a job interview.",
       "context": null,
       "request_type": "writing",
       "complexity": 1,
-      "split": "train",
+      "split": "calibration",
       "is_derived": false
     },
     {
-      "id": "ex_0481",
-      "source_group": "auto_writing_99",
+      "id": "ex_0491",
+      "source_group": "auto_writing_109",
       "query": "Rewrite this paragraph to eliminate jargon and improve readability.",
       "context": null,
       "request_type": "writing",
@@ -4811,18 +4911,18 @@
       "is_derived": false
     },
     {
-      "id": "ex_0482",
-      "source_group": "auto_writing_100",
+      "id": "ex_0492",
+      "source_group": "auto_writing_110",
       "query": "Compose a comprehensive policy proposal on remote work sustainability.",
       "context": null,
       "request_type": "writing",
       "complexity": 4,
-      "split": "validation",
+      "split": "train",
       "is_derived": false
     },
     {
-      "id": "ex_0483",
-      "source_group": "auto_factual_lookup_101",
+      "id": "ex_0493",
+      "source_group": "auto_factual_lookup_111",
       "query": "What is the capital of Canada?",
       "context": null,
       "request_type": "factual_lookup",
@@ -4831,129 +4931,29 @@
       "is_derived": false
     },
     {
-      "id": "ex_0484",
-      "source_group": "auto_factual_lookup_102",
+      "id": "ex_0494",
+      "source_group": "auto_factual_lookup_112",
       "query": "Who was the 16th President of the United States?",
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 1,
-      "split": "calibration",
-      "is_derived": false
-    },
-    {
-      "id": "ex_0485",
-      "source_group": "auto_factual_lookup_103",
-      "query": "What is the chemical formula for photosynthesis?",
-      "context": null,
-      "request_type": "factual_lookup",
-      "complexity": 1,
-      "split": "train",
-      "is_derived": false
-    },
-    {
-      "id": "ex_0486",
-      "source_group": "auto_factual_lookup_104",
-      "query": "Define the term 'heuristic' in computer science.",
-      "context": null,
-      "request_type": "factual_lookup",
-      "complexity": 1,
-      "split": "train",
-      "is_derived": false
-    },
-    {
-      "id": "ex_0487",
-      "source_group": "auto_factual_lookup_105",
-      "query": "When was the United Nations founded?",
-      "context": null,
-      "request_type": "factual_lookup",
-      "complexity": 1,
-      "split": "train",
-      "is_derived": false
-    },
-    {
-      "id": "ex_0488",
-      "source_group": "auto_factual_lookup_106",
-      "query": "What is the deepest trench in the world's oceans?",
-      "context": null,
-      "request_type": "factual_lookup",
-      "complexity": 1,
-      "split": "train",
-      "is_derived": false
-    },
-    {
-      "id": "ex_0489",
-      "source_group": "auto_factual_lookup_107",
-      "query": "Who discovered the structure of DNA in 1953?",
-      "context": null,
-      "request_type": "factual_lookup",
-      "complexity": 1,
-      "split": "train",
-      "is_derived": false
-    },
-    {
-      "id": "ex_0490",
-      "source_group": "auto_factual_lookup_108",
-      "query": "What are the primary colors in additive color mixing (RGB)?",
-      "context": null,
-      "request_type": "factual_lookup",
-      "complexity": 1,
-      "split": "calibration",
-      "is_derived": false
-    },
-    {
-      "id": "ex_0491",
-      "source_group": "auto_factual_lookup_109",
-      "query": "What is the currency of Japan?",
-      "context": null,
-      "request_type": "factual_lookup",
-      "complexity": 1,
-      "split": "train",
-      "is_derived": false
-    },
-    {
-      "id": "ex_0492",
-      "source_group": "auto_factual_lookup_110",
-      "query": "Which planet in our solar system has the most moons?",
-      "context": null,
-      "request_type": "factual_lookup",
-      "complexity": 1,
-      "split": "train",
-      "is_derived": false
-    },
-    {
-      "id": "ex_0493",
-      "source_group": "auto_factual_lookup_111",
-      "query": "Define the term 'quantum entanglement'.",
-      "context": null,
-      "request_type": "factual_lookup",
-      "complexity": 2,
-      "split": "calibration",
-      "is_derived": false
-    },
-    {
-      "id": "ex_0494",
-      "source_group": "auto_factual_lookup_112",
-      "query": "When did the Apollo 11 mission land on the Moon?",
-      "context": null,
-      "request_type": "factual_lookup",
-      "complexity": 1,
-      "split": "train",
+      "split": "validation",
       "is_derived": false
     },
     {
       "id": "ex_0495",
       "source_group": "auto_factual_lookup_113",
-      "query": "What is the boiling point of ethanol in Celsius?",
+      "query": "What is the chemical formula for photosynthesis?",
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 1,
-      "split": "train",
+      "split": "calibration",
       "is_derived": false
     },
     {
       "id": "ex_0496",
       "source_group": "auto_factual_lookup_114",
-      "query": "Who wrote the novel 'Crime and Punishment'?",
+      "query": "Define the term 'heuristic' in computer science.",
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 1,
@@ -4963,7 +4963,37 @@
     {
       "id": "ex_0497",
       "source_group": "auto_factual_lookup_115",
-      "query": "What is the main function of the kidneys in the human body?",
+      "query": "When was the United Nations founded?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0498",
+      "source_group": "auto_factual_lookup_116",
+      "query": "What is the deepest trench in the world's oceans?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0499",
+      "source_group": "auto_factual_lookup_117",
+      "query": "Who discovered the structure of DNA in 1953?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0500",
+      "source_group": "auto_factual_lookup_118",
+      "query": "What are the primary colors in additive color mixing (RGB)?",
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 1,
@@ -4971,9 +5001,29 @@
       "is_derived": false
     },
     {
-      "id": "ex_0498",
-      "source_group": "auto_factual_lookup_116",
-      "query": "List the seven continents in order of land area.",
+      "id": "ex_0501",
+      "source_group": "auto_factual_lookup_119",
+      "query": "What is the currency of Japan?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0502",
+      "source_group": "auto_factual_lookup_120",
+      "query": "Which planet in our solar system has the most moons?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0503",
+      "source_group": "auto_factual_lookup_121",
+      "query": "Define the term 'quantum entanglement'.",
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 2,
@@ -4981,9 +5031,49 @@
       "is_derived": false
     },
     {
-      "id": "ex_0499",
-      "source_group": "auto_factual_lookup_117",
-      "query": "What is Avogadro's constant and what does it represent?",
+      "id": "ex_0504",
+      "source_group": "auto_factual_lookup_122",
+      "query": "When did the Apollo 11 mission land on the Moon?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0505",
+      "source_group": "auto_factual_lookup_123",
+      "query": "What is the boiling point of ethanol in Celsius?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0506",
+      "source_group": "auto_factual_lookup_124",
+      "query": "Who wrote the novel 'Crime and Punishment'?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0507",
+      "source_group": "auto_factual_lookup_125",
+      "query": "What is the main function of the kidneys in the human body?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "split": "train",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0508",
+      "source_group": "auto_factual_lookup_126",
+      "query": "List the seven continents in order of land area.",
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 2,
@@ -4991,8 +5081,18 @@
       "is_derived": false
     },
     {
-      "id": "ex_0500",
-      "source_group": "auto_factual_lookup_118",
+      "id": "ex_0509",
+      "source_group": "auto_factual_lookup_127",
+      "query": "What is Avogadro's constant and what does it represent?",
+      "context": null,
+      "request_type": "factual_lookup",
+      "complexity": 2,
+      "split": "calibration",
+      "is_derived": false
+    },
+    {
+      "id": "ex_0510",
+      "source_group": "auto_factual_lookup_128",
       "query": "When was the fall of the Berlin Wall?",
       "context": null,
       "request_type": "factual_lookup",
@@ -5001,18 +5101,18 @@
       "is_derived": false
     },
     {
-      "id": "ex_0501",
-      "source_group": "auto_factual_lookup_119",
+      "id": "ex_0511",
+      "source_group": "auto_factual_lookup_129",
       "query": "What is the SI unit of electrical resistance?",
       "context": null,
       "request_type": "factual_lookup",
       "complexity": 1,
-      "split": "validation",
+      "split": "train",
       "is_derived": false
     },
     {
-      "id": "ex_0502",
-      "source_group": "auto_factual_lookup_120",
+      "id": "ex_0512",
+      "source_group": "auto_factual_lookup_130",
       "query": "Define the economic concept of 'opportunity cost'.",
       "context": null,
       "request_type": "factual_lookup",
@@ -5021,8 +5121,8 @@
       "is_derived": false
     },
     {
-      "id": "ex_0503",
-      "source_group": "auto_general_121",
+      "id": "ex_0513",
+      "source_group": "auto_general_131",
       "query": "Can you recommend three great science fiction books to read?",
       "context": null,
       "request_type": "general",
@@ -5031,8 +5131,8 @@
       "is_derived": false
     },
     {
-      "id": "ex_0504",
-      "source_group": "auto_general_122",
+      "id": "ex_0514",
+      "source_group": "auto_general_132",
       "query": "How can I organize my desk to be more productive?",
       "context": null,
       "request_type": "general",
@@ -5041,8 +5141,8 @@
       "is_derived": false
     },
     {
-      "id": "ex_0505",
-      "source_group": "auto_general_123",
+      "id": "ex_0515",
+      "source_group": "auto_general_133",
       "query": "What are some easy hobbies to pick up on weekends?",
       "context": null,
       "request_type": "general",
@@ -5051,8 +5151,8 @@
       "is_derived": false
     },
     {
-      "id": "ex_0506",
-      "source_group": "auto_general_124",
+      "id": "ex_0516",
+      "source_group": "auto_general_134",
       "query": "How do I care for a sourdough bread starter?",
       "context": null,
       "request_type": "general",
@@ -5061,8 +5161,8 @@
       "is_derived": false
     },
     {
-      "id": "ex_0507",
-      "source_group": "auto_general_125",
+      "id": "ex_0517",
+      "source_group": "auto_general_135",
       "query": "What are some conversational icebreakers for a networking event?",
       "context": null,
       "request_type": "general",
@@ -5071,8 +5171,8 @@
       "is_derived": false
     },
     {
-      "id": "ex_0508",
-      "source_group": "auto_general_126",
+      "id": "ex_0518",
+      "source_group": "auto_general_136",
       "query": "Can you help me plan a surprise birthday party for my friend?",
       "context": null,
       "request_type": "general",
@@ -5081,8 +5181,8 @@
       "is_derived": false
     },
     {
-      "id": "ex_0509",
-      "source_group": "auto_general_127",
+      "id": "ex_0519",
+      "source_group": "auto_general_137",
       "query": "What are the health benefits of drinking green tea?",
       "context": null,
       "request_type": "general",
@@ -5091,8 +5191,8 @@
       "is_derived": false
     },
     {
-      "id": "ex_0510",
-      "source_group": "auto_general_128",
+      "id": "ex_0520",
+      "source_group": "auto_general_138",
       "query": "How can I prepare my car for winter weather driving?",
       "context": null,
       "request_type": "general",
@@ -5101,8 +5201,8 @@
       "is_derived": false
     },
     {
-      "id": "ex_0511",
-      "source_group": "auto_general_129",
+      "id": "ex_0521",
+      "source_group": "auto_general_139",
       "query": "Can you suggest some budget-friendly weekend road trip destinations in New England?",
       "context": null,
       "request_type": "general",
@@ -5111,8 +5211,8 @@
       "is_derived": false
     },
     {
-      "id": "ex_0512",
-      "source_group": "auto_general_130",
+      "id": "ex_0522",
+      "source_group": "auto_general_140",
       "query": "What is the etiquette for tipping in restaurants in European countries?",
       "context": null,
       "request_type": "general",
@@ -5121,8 +5221,8 @@
       "is_derived": false
     },
     {
-      "id": "ex_0513",
-      "source_group": "auto_general_131",
+      "id": "ex_0523",
+      "source_group": "auto_general_141",
       "query": "Can you help me brainstorm a title for my podcast about personal finance?",
       "context": null,
       "request_type": "general",
@@ -5131,8 +5231,8 @@
       "is_derived": false
     },
     {
-      "id": "ex_0514",
-      "source_group": "auto_general_132",
+      "id": "ex_0524",
+      "source_group": "auto_general_142",
       "query": "What are some tips for staying calm before public speaking?",
       "context": null,
       "request_type": "general",
@@ -5141,8 +5241,8 @@
       "is_derived": false
     },
     {
-      "id": "ex_0515",
-      "source_group": "auto_general_133",
+      "id": "ex_0525",
+      "source_group": "auto_general_143",
       "query": "How do air fryers work compared to conventional convection ovens?",
       "context": null,
       "request_type": "general",
@@ -5151,8 +5251,8 @@
       "is_derived": false
     },
     {
-      "id": "ex_0516",
-      "source_group": "auto_general_134",
+      "id": "ex_0526",
+      "source_group": "auto_general_144",
       "query": "Can you suggest some relaxing music playlists for studying?",
       "context": null,
       "request_type": "general",
@@ -5161,8 +5261,8 @@
       "is_derived": false
     },
     {
-      "id": "ex_0517",
-      "source_group": "auto_general_135",
+      "id": "ex_0527",
+      "source_group": "auto_general_145",
       "query": "What are some fun games to play with family during holidays?",
       "context": null,
       "request_type": "general",
@@ -5171,8 +5271,8 @@
       "is_derived": false
     },
     {
-      "id": "ex_0518",
-      "source_group": "auto_general_136",
+      "id": "ex_0528",
+      "source_group": "auto_general_146",
       "query": "Could you give me some tips for starting a backyard vegetable garden?",
       "context": null,
       "request_type": "general",
@@ -5181,8 +5281,8 @@
       "is_derived": false
     },
     {
-      "id": "ex_0519",
-      "source_group": "auto_general_137",
+      "id": "ex_0529",
+      "source_group": "auto_general_147",
       "query": "How do I choose the right running shoes for my foot shape?",
       "context": null,
       "request_type": "general",
@@ -5191,8 +5291,8 @@
       "is_derived": false
     },
     {
-      "id": "ex_0520",
-      "source_group": "auto_general_138",
+      "id": "ex_0530",
+      "source_group": "auto_general_148",
       "query": "Can you summarize the difference between espresso and drip coffee?",
       "context": null,
       "request_type": "general",
@@ -5201,8 +5301,8 @@
       "is_derived": false
     },
     {
-      "id": "ex_0521",
-      "source_group": "auto_general_139",
+      "id": "ex_0531",
+      "source_group": "auto_general_149",
       "query": "What are some good podcasts to listen to on long commutes?",
       "context": null,
       "request_type": "general",
@@ -5211,8 +5311,8 @@
       "is_derived": false
     },
     {
-      "id": "ex_0522",
-      "source_group": "auto_general_140",
+      "id": "ex_0532",
+      "source_group": "auto_general_150",
       "query": "Hello assistant, can you tell me what you can help me with today?",
       "context": null,
       "request_type": "general",

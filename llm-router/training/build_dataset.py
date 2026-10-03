@@ -1,4 +1,4 @@
-﻿"""
+"""
 Dataset generator for P2 Request Classifier and Complexity Classifier.
 
 Generates ~300 base examples + ~130 derived/perturbed examples (~430 total).
@@ -1017,6 +1017,16 @@ def generate_additional_diverse_groups():
             ("Calculate the Shannon entropy of a source with symbol probabilities [0.5, 0.25, 0.125, 0.125].", 2),
             ("Analyze the game of Nim with pile sizes (3, 4, 5) and determine the winning first move.", 3),
             ("Derive the Euler-Lagrange equation for a simple harmonic pendulum.", 4),
+            ("Derive the closed-form Black-Scholes formula using risk-neutral pricing.", 5),
+            ("Derive the optimal policy for a Markov Decision Process with state transition probabilities.", 5),
+            ("Calculate the Fourier transform of a Gaussian function f(x) = exp(-a*x^2).", 4),
+            ("Prove that every subgroup of an abelian group is normal.", 3),
+            ("Solve this linear recurrence: a_n = 5*a_{n-1} - 6*a_{n-2} with a_0=1, a_1=4.", 3),
+            ("Calculate the expected value and variance of a Poisson distributed variable.", 2),
+            ("Derive the backpropagation gradient equations for a 2-layer neural network.", 4),
+            ("Prove by mathematical induction that the sum of first n squares is n(n+1)(2n+1)/6.", 3),
+            ("Calculate the eigenvalues and eigenvectors of a symmetric 3x3 covariance matrix.", 3),
+            ("Solve the traveling salesperson problem for a 5-node graph using dynamic programming.", 4),
         ]),
         ("writing", [
             ("Write an email requesting feedback from your team after completing a major project milestone.", 2),

@@ -274,6 +274,20 @@
       "ground_truth_complexity": 5
     },
     {
+      "id": "ex_0178",
+      "query": "Draft an email to stakeholders explaining that the production database outage has been resolved.",
+      "context": null,
+      "ground_truth_type": "writing",
+      "ground_truth_complexity": 2
+    },
+    {
+      "id": "ex_0179",
+      "query": "write an email update to executives regarding the database outage resolution",
+      "context": null,
+      "ground_truth_type": "writing",
+      "ground_truth_complexity": 2
+    },
+    {
       "id": "ex_0186",
       "query": "Draft a detailed post-mortem report for a multi-hour cloud regional outage including timeline, root cause analysis, impact, and preventive action items.",
       "context": null,
@@ -313,27 +327,6 @@
       "query": "Can you draft a polite slack message declining an invitation to a meeting due to a deadline conflict.",
       "context": null,
       "ground_truth_type": "writing",
-      "ground_truth_complexity": 1
-    },
-    {
-      "id": "ex_0218",
-      "query": "How many states are there in the United States?",
-      "context": null,
-      "ground_truth_type": "factual_lookup",
-      "ground_truth_complexity": 1
-    },
-    {
-      "id": "ex_0219",
-      "query": "Hello, I have a quick question. How many states are there in the United States? Looking forward to your response, thanks!",
-      "context": null,
-      "ground_truth_type": "factual_lookup",
-      "ground_truth_complexity": 1
-    },
-    {
-      "id": "ex_0220",
-      "query": "Can you how many states are there in the United States?",
-      "context": null,
-      "ground_truth_type": "factual_lookup",
       "ground_truth_complexity": 1
     },
     {
@@ -442,18 +435,25 @@
       "ground_truth_complexity": 2
     },
     {
+      "id": "ex_0353",
+      "query": "What is the tallest mountain in North America?",
+      "context": null,
+      "ground_truth_type": "factual_lookup",
+      "ground_truth_complexity": 1
+    },
+    {
+      "id": "ex_0356",
+      "query": "What is the boiling point of liquid nitrogen at 1 atm?",
+      "context": null,
+      "ground_truth_type": "factual_lookup",
+      "ground_truth_complexity": 1
+    },
+    {
       "id": "ex_0362",
       "query": "What are the three laws of robotics formulated by Isaac Asimov?",
       "context": null,
       "ground_truth_type": "factual_lookup",
       "ground_truth_complexity": 2
-    },
-    {
-      "id": "ex_0366",
-      "query": "What is Moore's Law and who originated it?",
-      "context": null,
-      "ground_truth_type": "factual_lookup",
-      "ground_truth_complexity": 1
     },
     {
       "id": "ex_0370",
@@ -568,13 +568,6 @@
       "ground_truth_complexity": 2
     },
     {
-      "id": "ex_0459",
-      "query": "Prove that the square of any odd integer is of the form 8k + 1.",
-      "context": null,
-      "ground_truth_type": "analytical_reasoning",
-      "ground_truth_complexity": 2
-    },
-    {
       "id": "ex_0461",
       "query": "Analyze the game of Nim with pile sizes (3, 4, 5) and determine the winning first move.",
       "context": null,
@@ -582,77 +575,91 @@
       "ground_truth_complexity": 3
     },
     {
-      "id": "ex_0462",
-      "query": "Derive the Euler-Lagrange equation for a simple harmonic pendulum.",
+      "id": "ex_0463",
+      "query": "Derive the closed-form Black-Scholes formula using risk-neutral pricing.",
+      "context": null,
+      "ground_truth_type": "analytical_reasoning",
+      "ground_truth_complexity": 5
+    },
+    {
+      "id": "ex_0468",
+      "query": "Calculate the expected value and variance of a Poisson distributed variable.",
+      "context": null,
+      "ground_truth_type": "analytical_reasoning",
+      "ground_truth_complexity": 2
+    },
+    {
+      "id": "ex_0471",
+      "query": "Calculate the eigenvalues and eigenvectors of a symmetric 3x3 covariance matrix.",
+      "context": null,
+      "ground_truth_type": "analytical_reasoning",
+      "ground_truth_complexity": 3
+    },
+    {
+      "id": "ex_0472",
+      "query": "Solve the traveling salesperson problem for a 5-node graph using dynamic programming.",
       "context": null,
       "ground_truth_type": "analytical_reasoning",
       "ground_truth_complexity": 4
     },
     {
-      "id": "ex_0464",
-      "query": "Draft a customer service response resolving a shipping delay complaint gracefully.",
+      "id": "ex_0481",
+      "query": "Rewrite this email to make it more empathetic and understanding.",
       "context": null,
       "ground_truth_type": "writing",
-      "ground_truth_complexity": 2
+      "ground_truth_complexity": 1
     },
     {
-      "id": "ex_0469",
-      "query": "Write a product announcement newsletter showcasing our new mobile app.",
+      "id": "ex_0483",
+      "query": "Write a recommendation letter for an engineering intern applying to graduate school.",
       "context": null,
       "ground_truth_type": "writing",
-      "ground_truth_complexity": 2
+      "ground_truth_complexity": 3
     },
     {
-      "id": "ex_0482",
-      "query": "Compose a comprehensive policy proposal on remote work sustainability.",
-      "context": null,
-      "ground_truth_type": "writing",
-      "ground_truth_complexity": 4
-    },
-    {
-      "id": "ex_0497",
-      "query": "What is the main function of the kidneys in the human body?",
+      "id": "ex_0494",
+      "query": "Who was the 16th President of the United States?",
       "context": null,
       "ground_truth_type": "factual_lookup",
       "ground_truth_complexity": 1
     },
     {
-      "id": "ex_0499",
-      "query": "What is Avogadro's constant and what does it represent?",
-      "context": null,
-      "ground_truth_type": "factual_lookup",
-      "ground_truth_complexity": 2
-    },
-    {
-      "id": "ex_0501",
-      "query": "What is the SI unit of electrical resistance?",
+      "id": "ex_0500",
+      "query": "What are the primary colors in additive color mixing (RGB)?",
       "context": null,
       "ground_truth_type": "factual_lookup",
       "ground_truth_complexity": 1
     },
     {
-      "id": "ex_0502",
+      "id": "ex_0508",
+      "query": "List the seven continents in order of land area.",
+      "context": null,
+      "ground_truth_type": "factual_lookup",
+      "ground_truth_complexity": 2
+    },
+    {
+      "id": "ex_0512",
       "query": "Define the economic concept of 'opportunity cost'.",
       "context": null,
       "ground_truth_type": "factual_lookup",
       "ground_truth_complexity": 1
     },
     {
-      "id": "ex_0512",
+      "id": "ex_0522",
       "query": "What is the etiquette for tipping in restaurants in European countries?",
       "context": null,
       "ground_truth_type": "general",
       "ground_truth_complexity": 1
     },
     {
-      "id": "ex_0515",
+      "id": "ex_0525",
       "query": "How do air fryers work compared to conventional convection ovens?",
       "context": null,
       "ground_truth_type": "general",
       "ground_truth_complexity": 2
     },
     {
-      "id": "ex_0518",
+      "id": "ex_0528",
       "query": "Could you give me some tips for starting a backyard vegetable garden?",
       "context": null,
       "ground_truth_type": "general",
