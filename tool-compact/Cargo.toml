@@ -1,0 +1,14 @@
+[package]
+name = "nasiko-tool-compact"
+edition.workspace = true
+version.workspace = true
+description = "Pure compact tool schema encoder, decoder, and streaming parser"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+regex = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
