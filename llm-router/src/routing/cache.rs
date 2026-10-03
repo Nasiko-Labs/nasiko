@@ -28,6 +28,11 @@ pub struct CachedDecision {
     /// be credited to the right learned cell. `None` for decisions not produced by
     /// classification.
     pub request_type: Option<RequestType>,
+    /// The classifier's complexity (1–5) for the classified turn. Telemetry and future use
+    /// only — learning stays keyed on `(tier, request_type)`.
+    pub complexity: Option<u8>,
+    /// The classifier's confidence for the classified turn (telemetry only).
+    pub confidence: Option<f32>,
 }
 
 /// Process-wide store for routing decisions, keyed on `(conv_id, agent_id)`.
@@ -66,6 +71,12 @@ struct WireDecision {
     /// Persisted as the request-type string; absent on older cached entries.
     #[serde(default)]
     request_type: Option<String>,
+    /// Classifier complexity; absent on entries cached before the classifier was pluggable.
+    #[serde(default)]
+    complexity: Option<u8>,
+    /// Classifier confidence; absent on older entries.
+    #[serde(default)]
+    confidence: Option<f32>,
 }
 
 /// Redis-backed decision cache, keyed on `(conv_id, agent_id)`, with a TTL per entry.
@@ -127,6 +138,8 @@ impl DecisionCache for RedisCache {
                             .request_type
                             .as_deref()
                             .and_then(RequestType::from_wire),
+                        complexity: wire.complexity,
+                        confidence: wire.confidence,
                     })
                 }
                 Err(e) => {
@@ -154,6 +167,8 @@ impl DecisionCache for RedisCache {
             model: decision.model.clone(),
             tier: decision.tier.map(Tier::as_level),
             request_type: decision.request_type.map(|rt| rt.as_str().to_string()),
+            complexity: decision.complexity,
+            confidence: decision.confidence,
         };
         let Ok(payload) = serde_json::to_string(&wire) else {
             return;
@@ -175,9 +190,144 @@ impl DecisionCache for RedisCache {
     }
 }
 
+/// In-process sticky decision cache (`ROUTER_DECISION_L1_CAPACITY > 0`): gives a single
+/// router instance conversation stickiness without Redis, and spares a Redis round trip when
+/// both are configured. Entries expire after the decision TTL; when full, expired entries are
+/// evicted first and, if that is not enough, the whole map is cleared (bounded memory with
+/// the simplest correct policy — a miss only means the next turn re-derives its model).
+pub struct InMemoryDecisionCache {
+    map: dashmap::DashMap<(String, String), (CachedDecision, std::time::Instant)>,
+    ttl: std::time::Duration,
+    capacity: usize,
+}
+
+impl InMemoryDecisionCache {
+    pub fn new(capacity: usize, ttl: std::time::Duration) -> Self {
+        Self {
+            map: dashmap::DashMap::new(),
+            ttl,
+            capacity: capacity.max(1),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+}
+
+#[async_trait]
+impl DecisionCache for InMemoryDecisionCache {
+    async fn get(&self, conv_id: &str, agent_id: &str) -> Option<CachedDecision> {
+        let key = (conv_id.to_string(), agent_id.to_string());
+        let fresh = self
+            .map
+            .get(&key)
+            .map(|e| (e.0.clone(), e.1.elapsed() < self.ttl));
+        match fresh {
+            Some((decision, true)) => Some(decision),
+            Some((_, false)) => {
+                self.map.remove(&key);
+                None
+            }
+            None => None,
+        }
+    }
+
+    async fn put(&self, conv_id: &str, agent_id: &str, decision: &CachedDecision) {
+        if self.map.len() >= self.capacity {
+            let ttl = self.ttl;
+            self.map.retain(|_, (_, at)| at.elapsed() < ttl);
+            if self.map.len() >= self.capacity {
+                self.map.clear();
+            }
+        }
+        self.map.insert(
+            (conv_id.to_string(), agent_id.to_string()),
+            (decision.clone(), std::time::Instant::now()),
+        );
+    }
+}
+
+/// An L1 cache in front of an L2 cache: reads try L1 then L2 (an L2 hit back-fills L1);
+/// writes go to both.
+pub struct TieredDecisionCache {
+    l1: std::sync::Arc<dyn DecisionCache>,
+    l2: std::sync::Arc<dyn DecisionCache>,
+}
+
+impl TieredDecisionCache {
+    pub fn new(l1: std::sync::Arc<dyn DecisionCache>, l2: std::sync::Arc<dyn DecisionCache>) -> Self {
+        Self { l1, l2 }
+    }
+}
+
+#[async_trait]
+impl DecisionCache for TieredDecisionCache {
+    async fn get(&self, conv_id: &str, agent_id: &str) -> Option<CachedDecision> {
+        if let Some(hit) = self.l1.get(conv_id, agent_id).await {
+            return Some(hit);
+        }
+        let hit = self.l2.get(conv_id, agent_id).await?;
+        self.l1.put(conv_id, agent_id, &hit).await;
+        Some(hit)
+    }
+
+    async fn put(&self, conv_id: &str, agent_id: &str, decision: &CachedDecision) {
+        self.l1.put(conv_id, agent_id, decision).await;
+        self.l2.put(conv_id, agent_id, decision).await;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn decision(model: &str) -> CachedDecision {
+        CachedDecision {
+            model: model.into(),
+            tier: Some(Tier::Tier2),
+            request_type: Some(RequestType::CodeGeneration),
+            complexity: Some(3),
+            confidence: Some(0.9),
+        }
+    }
+
+    #[test]
+    fn wire_decision_without_complexity_still_deserializes_and_round_trips() {
+        let old: WireDecision =
+            serde_json::from_str(r#"{"model":"m","tier":1,"request_type":"writing"}"#).unwrap();
+        assert_eq!((old.complexity, old.confidence), (None, None));
+        let wire = WireDecision {
+            model: "m".into(),
+            tier: Some(2),
+            request_type: Some("writing".into()),
+            complexity: Some(4),
+            confidence: Some(0.75),
+        };
+        let back: WireDecision = serde_json::from_str(&serde_json::to_string(&wire).unwrap()).unwrap();
+        assert_eq!((back.complexity, back.confidence), (Some(4), Some(0.75)));
+    }
+
+    #[tokio::test]
+    async fn l1_cache_serves_sticky_decision_without_redis() {
+        let l1 = std::sync::Arc::new(InMemoryDecisionCache::new(2, std::time::Duration::from_secs(60)));
+        let tiered = TieredDecisionCache::new(l1.clone(), std::sync::Arc::new(NoopCache));
+        tiered.put("c1", "a", &decision("m1")).await;
+        assert_eq!(tiered.get("c1", "a").await.map(|d| d.model), Some("m1".into()));
+        assert!(tiered.get("c2", "a").await.is_none());
+        // Bounded: a third distinct key never grows the map past capacity.
+        tiered.put("c2", "a", &decision("m2")).await;
+        tiered.put("c3", "a", &decision("m3")).await;
+        assert!(l1.len() <= 2);
+        // Expiry: a zero TTL makes every entry stale.
+        let expiring = InMemoryDecisionCache::new(8, std::time::Duration::ZERO);
+        expiring.put("c", "a", &decision("m")).await;
+        assert!(expiring.get("c", "a").await.is_none());
+    }
 
     #[tokio::test]
     async fn noop_always_misses() {
@@ -189,6 +339,8 @@ mod tests {
                 model: "m".into(),
                 tier: Some(Tier::Tier1),
                 request_type: Some(RequestType::General),
+                complexity: None,
+                confidence: None,
             },
         )
         .await;
@@ -209,6 +361,8 @@ mod tests {
             model: "m".into(),
             tier: Some(3),
             request_type: Some("factual_lookup".into()),
+            complexity: None,
+            confidence: None,
         };
         let json = serde_json::to_string(&wire).unwrap();
         let back: WireDecision = serde_json::from_str(&json).unwrap();
@@ -243,6 +397,8 @@ mod tests {
                 model: "m".into(),
                 tier: Some(Tier::Tier2),
                 request_type: Some(RequestType::Writing),
+                complexity: Some(2),
+                confidence: Some(0.8),
             },
         )
         .await;

@@ -29,7 +29,7 @@ use crate::ir::{ChatChunk, Usage};
 use crate::providers::{ProviderError, fallback};
 use crate::resolver::{PgRegistry, RegistryStore, RequestHint, resolve};
 use crate::routing::boundary::{TRACEPARENT_HEADER, parse_flow_id};
-use crate::routing::{self, BoundarySignals, RouteInputs};
+use crate::routing::{self, BoundarySignals, ComplexityRouting, RouteInputs};
 use crate::usage::{self, UsageRecord};
 
 #[derive(Clone)]
@@ -40,6 +40,9 @@ pub(crate) struct RoutedRequest {
     pub flow_id: Option<String>,
     pub attribution_source: Option<routing::attribution::AttributionSource>,
 }
+
+/// Cap on the classification context the chat surface hands the Level 3 classifier.
+const CLASSIFICATION_CONTEXT_CHARS: usize = 2000;
 
 /// Prompt-derived signals `resolve_routed_request` needs beyond the resolved config,
 /// gathered once per format-specific handler since each wire format shapes its transcript
@@ -57,6 +60,9 @@ pub(crate) struct RequestSignals {
     /// in-flight tool loop sticky. Only used when the resolved agent is a coding-agent
     /// integration.
     pub is_tool_continuation: bool,
+    /// Bounded classification context for the Level 3 classifier
+    /// (`routing::classification_context`). `None` where a surface does not extract it yet.
+    pub context: Option<String>,
 }
 
 /// Record a call's four token classes on its `gen_ai` span.
@@ -196,6 +202,7 @@ async fn chat_core(
         query: routing::latest_user_query(&req.messages),
         turn_ordinal: routing::user_turn_ordinal(&req.messages),
         is_tool_continuation: routing::is_tool_continuation(&req.messages),
+        context: routing::classification_context(&req.messages, CLASSIFICATION_CONTEXT_CHARS),
     };
     let routed =
         resolve_routed_request(ctx, store, headers, agent_id, owner_id, hint, signals).await?;
@@ -472,6 +479,7 @@ pub(crate) async fn resolve_routed_request(
         ctx.tier_registry.as_ref(),
         ctx.cell_store.as_ref(),
         ctx.salience_gate.as_ref(),
+        ctx.request_classifier.as_ref(),
         &RouteInputs {
             agent_id: &agent_id,
             provider: &resolved.provider,
@@ -483,6 +491,13 @@ pub(crate) async fn resolve_routed_request(
             tier3_model: resolved.tier3_model.as_deref(),
             signals: &boundary,
             query: signals.query.as_deref(),
+            context: signals.context.as_deref(),
+            min_confidence: ctx.cfg.classifier.min_confidence,
+            tier_seed: ctx.cfg.router_tier_seed,
+            complexity_routing: ComplexityRouting {
+                enabled: ctx.cfg.classifier.complexity_routing,
+                guard_confidence: ctx.cfg.classifier.complexity_guard_confidence,
+            },
         },
     )
     .await;
@@ -490,6 +505,9 @@ pub(crate) async fn resolve_routed_request(
         target: "nasiko::llm_router::chat",
         %agent_id,
         source = ?decision.source, tier = ?decision.tier,
+        request_type = decision.classification.map(|c| c.request_type.as_str()),
+        complexity = decision.classification.map(|c| c.complexity),
+        confidence = decision.classification.map(|c| c.confidence),
         provider = %resolved.provider,
         resolved_model = %resolved.model,
         decision_model = %decision.model,
@@ -1444,6 +1462,7 @@ mod tests {
                 query: Some("write a function that reverses a string".into()),
                 turn_ordinal: 1,
                 is_tool_continuation: false,
+                context: None,
             },
         )
         .await
@@ -1490,6 +1509,7 @@ mod tests {
                 query: Some("write a function that reverses a string".into()),
                 turn_ordinal: 1,
                 is_tool_continuation: false,
+                context: None,
             },
         )
         .await;
