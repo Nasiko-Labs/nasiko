@@ -1,28 +1,8 @@
+use std::collections::{BTreeSet, HashSet};
+
 use serde_json::{Map, Value};
 
 use crate::CompactError;
-
-const STRUCTURAL_MAP_KEYS: &[&str] = &[
-    "properties",
-    "patternProperties",
-    "dependentSchemas",
-    "$defs",
-    "definitions",
-];
-const STRUCTURAL_SINGLE_KEYS: &[&str] = &[
-    "items",
-    "additionalProperties",
-    "unevaluatedProperties",
-    "unevaluatedItems",
-    "contains",
-    "not",
-    "if",
-    "then",
-    "else",
-    "propertyNames",
-    "contentSchema",
-];
-const STRUCTURAL_ARRAY_KEYS: &[&str] = &["allOf", "anyOf", "oneOf", "prefixItems"];
 
 pub(crate) fn validate_supported(schema: &Value) -> Result<(), CompactError> {
     reject_references(schema, "$")?;
@@ -37,133 +17,266 @@ pub(crate) fn validate_supported(schema: &Value) -> Result<(), CompactError> {
         })
 }
 
-pub(crate) fn compact_schema(schema: &Value) -> Value {
+pub(crate) fn render_parameters(schema: &Value) -> Result<String, CompactError> {
     match schema {
-        Value::Object(object) => {
-            let mut compact = Map::new();
-            for (key, value) in object {
-                let compact_key = alias(key).map_or_else(|| format!("~{key}"), str::to_string);
-                let compact_value = compact_keyword_value(key, value);
-                compact.insert(compact_key, compact_value);
-            }
-            Value::Object(compact)
+        Value::Object(object) if object.get("type").and_then(Value::as_str) == Some("object") => {
+            render_object(object, true)
         }
-        other => other.clone(),
+        _ => Ok(format!("({})", render_schema(schema)?)),
     }
 }
 
-pub(crate) fn expand_schema(schema: &Value) -> Result<Value, CompactError> {
+fn render_schema(schema: &Value) -> Result<String, CompactError> {
     match schema {
-        Value::Object(object) => {
-            let mut expanded = Map::new();
-            for (key, value) in object {
-                let original_key = unalias(key)?;
-                let expanded_value = expand_keyword_value(&original_key, value)?;
-                if expanded.insert(original_key.clone(), expanded_value).is_some() {
-                    return Err(CompactError::InvalidCompactEncoding(format!(
-                        "schema key '{original_key}' occurs more than once"
-                    )));
+        Value::Bool(true) => Ok("any".to_string()),
+        Value::Bool(false) => Ok("never".to_string()),
+        Value::Object(object) => render_schema_object(object),
+        other => compact_json(other),
+    }
+}
+
+fn render_schema_object(object: &Map<String, Value>) -> Result<String, CompactError> {
+    let description = object.get("description");
+    let mut consumed = HashSet::from(["description"]);
+    let mut rendered = match object.get("type") {
+        Some(Value::String(kind)) => {
+            consumed.insert("type");
+            match kind.as_str() {
+                "object" => return render_object(object, false),
+                "array" => {
+                    consumed.insert("items");
+                    let items = object
+                        .get("items")
+                        .map(render_schema)
+                        .transpose()?
+                        .unwrap_or_else(|| "any".to_string());
+                    format!("[{items}]")
                 }
+                "string" => {
+                    if let Some(format) = object.get("format").and_then(Value::as_str)
+                        && let Some(familiar) = familiar_format(format)
+                    {
+                        consumed.insert("format");
+                        familiar.to_string()
+                    } else {
+                        "str".to_string()
+                    }
+                }
+                "integer" => "int".to_string(),
+                "number" => "num".to_string(),
+                "boolean" => "bool".to_string(),
+                "null" => "null".to_string(),
+                _ => compact_json(&Value::Object(object.clone()))?,
             }
-            Ok(Value::Object(expanded))
         }
-        other => Ok(other.clone()),
-    }
-}
+        Some(Value::Array(kinds)) => {
+            consumed.insert("type");
+            kinds
+                .iter()
+                .map(|kind| {
+                    kind.as_str().map_or_else(
+                        || compact_json(kind),
+                        |kind| Ok(familiar_type(kind).to_string()),
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?
+                .join("|")
+        }
+        Some(_) => return compact_json(&Value::Object(object.clone())),
+        None => {
+            if let Some(values) = object.get("enum") {
+                consumed.insert("enum");
+                format!("enum{}", compact_json(values)?)
+            } else if let Some(value) = object.get("const") {
+                consumed.insert("const");
+                format!("const({})", compact_json(value)?)
+            } else {
+                let mut visible = object.clone();
+                visible.remove("description");
+                let mut rendered = compact_json(&Value::Object(visible))?;
+                append_description(&mut rendered, description)?;
+                return Ok(rendered);
+            }
+        }
+    };
 
-fn compact_keyword_value(key: &str, value: &Value) -> Value {
-    if key == "type" {
-        return compact_type(value);
-    }
-    if STRUCTURAL_MAP_KEYS.contains(&key) {
-        return map_schema_values(value, compact_schema);
-    }
-    if STRUCTURAL_SINGLE_KEYS.contains(&key) {
-        return match value {
-            Value::Object(_) | Value::Bool(_) => compact_schema(value),
-            _ => value.clone(),
+    if let Some(values) = object.get("enum")
+        && !consumed.contains("enum")
+    {
+        consumed.insert("enum");
+        let literals = if let Some(values) = values.as_array() {
+            values
+                .iter()
+                .map(compact_json)
+                .collect::<Result<Vec<_>, _>>()?
+                .join("|")
+        } else {
+            format!("enum{}", compact_json(values)?)
         };
+        if enum_implies_type(values, object.get("type")) {
+            rendered = literals;
+        } else {
+            rendered.push_str(" enum[");
+            rendered.push_str(&literals);
+            rendered.push(']');
+        }
     }
-    if STRUCTURAL_ARRAY_KEYS.contains(&key) {
-        return array_schema_values(value, compact_schema);
+    if let Some(format) = object.get("format")
+        && !consumed.contains("format")
+    {
+        consumed.insert("format");
+        rendered.push_str(" format=");
+        rendered.push_str(&compact_json(format)?);
     }
-    value.clone()
+    append_remaining_constraints(&mut rendered, object, &consumed)?;
+    append_description(&mut rendered, description)?;
+    Ok(rendered)
 }
 
-fn expand_keyword_value(key: &str, value: &Value) -> Result<Value, CompactError> {
-    if key == "type" {
-        return Ok(expand_type(value));
+fn render_object(object: &Map<String, Value>, root: bool) -> Result<String, CompactError> {
+    let properties = object
+        .get("properties")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let required = required_names(object.get("required"));
+    let mut fields = Vec::with_capacity(properties.len());
+    for (name, schema) in properties {
+        let optional = if required.contains(&name) { "" } else { "?" };
+        fields.push(format!(
+            "{}{optional}:{}",
+            render_name(&name)?,
+            render_schema(&schema)?
+        ));
     }
-    if STRUCTURAL_MAP_KEYS.contains(&key) {
-        return try_map_schema_values(value);
-    }
-    if STRUCTURAL_SINGLE_KEYS.contains(&key) {
-        return match value {
-            Value::Object(_) | Value::Bool(_) => expand_schema(value),
-            _ => Ok(value.clone()),
-        };
-    }
-    if STRUCTURAL_ARRAY_KEYS.contains(&key) {
-        return try_array_schema_values(value);
-    }
-    Ok(value.clone())
-}
 
-fn map_schema_values(value: &Value, transform: fn(&Value) -> Value) -> Value {
-    let Value::Object(object) = value else {
-        return value.clone();
+    let mut rendered = if root {
+        format!("({})", fields.join(","))
+    } else {
+        format!("{{{}}}", fields.join(","))
     };
-    Value::Object(
-        object
-            .iter()
-            .map(|(key, schema)| (key.clone(), transform(schema)))
-            .collect(),
-    )
-}
+    if let Some(additional) = object.get("additionalProperties") {
+        match additional {
+            Value::Bool(true) => {}
+            Value::Bool(false) => rendered.push_str(" extra=false"),
+            schema => {
+                rendered.push_str(" extra:");
+                rendered.push_str(&render_schema(schema)?);
+            }
+        }
+    }
 
-fn array_schema_values(value: &Value, transform: fn(&Value) -> Value) -> Value {
-    let Value::Array(items) = value else {
-        return value.clone();
-    };
-    Value::Array(items.iter().map(transform).collect())
-}
-
-fn try_map_schema_values(value: &Value) -> Result<Value, CompactError> {
-    let Value::Object(object) = value else {
-        return Ok(value.clone());
-    };
-    let expanded = object
+    let property_names = object
+        .get("properties")
+        .and_then(Value::as_object)
+        .map(|properties| properties.keys().collect::<BTreeSet<_>>())
+        .unwrap_or_default();
+    let unknown_required = required
         .iter()
-        .map(|(key, schema)| Ok((key.clone(), expand_schema(schema)?)))
-        .collect::<Result<Map<_, _>, CompactError>>()?;
-    Ok(Value::Object(expanded))
+        .filter(|name| !property_names.contains(name))
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut consumed = HashSet::from(["type", "properties", "description", "additionalProperties"]);
+    if unknown_required.is_empty() {
+        consumed.insert("required");
+    }
+    append_remaining_constraints(&mut rendered, object, &consumed)?;
+    append_description(&mut rendered, object.get("description"))?;
+    Ok(rendered)
 }
 
-fn try_array_schema_values(value: &Value) -> Result<Value, CompactError> {
-    let Value::Array(items) = value else {
-        return Ok(value.clone());
-    };
-    items
+fn append_remaining_constraints(
+    rendered: &mut String,
+    object: &Map<String, Value>,
+    consumed: &HashSet<&str>,
+) -> Result<(), CompactError> {
+    let remaining = object
         .iter()
-        .map(expand_schema)
-        .collect::<Result<Vec<_>, _>>()
-        .map(Value::Array)
+        .filter(|(key, _)| !consumed.contains(key.as_str()))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect::<Map<_, _>>();
+    if !remaining.is_empty() {
+        rendered.push_str(" where ");
+        rendered.push_str(&compact_json(&Value::Object(remaining))?);
+    }
+    Ok(())
 }
 
-fn compact_type(value: &Value) -> Value {
-    match value {
-        Value::String(kind) => Value::String(type_alias(kind).to_string()),
-        Value::Array(kinds) => Value::Array(kinds.iter().map(compact_type).collect()),
-        _ => value.clone(),
+fn append_description(
+    rendered: &mut String,
+    description: Option<&Value>,
+) -> Result<(), CompactError> {
+    if let Some(description) = description {
+        rendered.push_str(&compact_json(description)?);
+    }
+    Ok(())
+}
+
+fn required_names(required: Option<&Value>) -> BTreeSet<String> {
+    required
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect()
+}
+
+fn render_name(name: &str) -> Result<String, CompactError> {
+    if !name.is_empty()
+        && name
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
+    {
+        Ok(name.to_string())
+    } else {
+        compact_json(&Value::String(name.to_string()))
     }
 }
 
-fn expand_type(value: &Value) -> Value {
-    match value {
-        Value::String(kind) => Value::String(type_unalias(kind).to_string()),
-        Value::Array(kinds) => Value::Array(kinds.iter().map(expand_type).collect()),
-        _ => value.clone(),
+fn compact_json(value: &Value) -> Result<String, CompactError> {
+    serde_json::to_string(value)
+        .map_err(|error| CompactError::InvalidCompactEncoding(error.to_string()))
+}
+
+fn familiar_type(kind: &str) -> &str {
+    match kind {
+        "string" => "str",
+        "integer" => "int",
+        "number" => "num",
+        "boolean" => "bool",
+        other => other,
     }
+}
+
+fn familiar_format(format: &str) -> Option<&'static str> {
+    match format {
+        "date-time" => Some("datetime"),
+        "date" => Some("date"),
+        "time" => Some("time"),
+        "email" => Some("email"),
+        "uri" => Some("uri"),
+        "uuid" => Some("uuid"),
+        _ => None,
+    }
+}
+
+fn enum_implies_type(values: &Value, schema_type: Option<&Value>) -> bool {
+    let (Some(values), Some(schema_type)) =
+        (values.as_array(), schema_type.and_then(Value::as_str))
+    else {
+        return false;
+    };
+    values.iter().all(|value| match schema_type {
+        "string" => value.is_string(),
+        "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
+        "number" => value.is_number(),
+        "boolean" => value.is_boolean(),
+        "null" => value.is_null(),
+        "array" => value.is_array(),
+        "object" => value.is_object(),
+        _ => false,
+    })
 }
 
 fn reject_references(value: &Value, path: &str) -> Result<(), CompactError> {
@@ -189,150 +302,3 @@ fn reject_references(value: &Value, path: &str) -> Result<(), CompactError> {
     }
     Ok(())
 }
-
-fn alias(key: &str) -> Option<&'static str> {
-    Some(match key {
-        "type" => "t",
-        "properties" => "p",
-        "required" => "r",
-        "items" => "i",
-        "enum" => "e",
-        "description" => "d",
-        "format" => "f",
-        "additionalProperties" => "a",
-        "$schema" => "$",
-        "title" => "l",
-        "default" => "v",
-        "examples" => "x",
-        "const" => "c",
-        "minimum" => "mn",
-        "maximum" => "mx",
-        "exclusiveMinimum" => "en",
-        "exclusiveMaximum" => "ex",
-        "multipleOf" => "mu",
-        "minLength" => "nl",
-        "maxLength" => "xl",
-        "pattern" => "pt",
-        "minItems" => "ni",
-        "maxItems" => "xi",
-        "uniqueItems" => "u",
-        "minProperties" => "np",
-        "maxProperties" => "xp",
-        "allOf" => "&",
-        "anyOf" => "|",
-        "oneOf" => "1",
-        "not" => "!",
-        "if" => "?",
-        "then" => "+",
-        "else" => "-",
-        "prefixItems" => "pi",
-        "contains" => "co",
-        "minContains" => "nc",
-        "maxContains" => "xc",
-        "patternProperties" => "pp",
-        "propertyNames" => "pn",
-        "dependentRequired" => "dr",
-        "dependentSchemas" => "ds",
-        "unevaluatedProperties" => "up",
-        "unevaluatedItems" => "ui",
-        "$defs" => "df",
-        "definitions" => "de",
-        "readOnly" => "ro",
-        "writeOnly" => "wo",
-        "deprecated" => "dp",
-        "contentEncoding" => "ce",
-        "contentMediaType" => "cm",
-        "contentSchema" => "cs",
-        _ => return None,
-    })
-}
-
-fn unalias(key: &str) -> Result<String, CompactError> {
-    let original = match key {
-        "t" => "type",
-        "p" => "properties",
-        "r" => "required",
-        "i" => "items",
-        "e" => "enum",
-        "d" => "description",
-        "f" => "format",
-        "a" => "additionalProperties",
-        "$" => "$schema",
-        "l" => "title",
-        "v" => "default",
-        "x" => "examples",
-        "c" => "const",
-        "mn" => "minimum",
-        "mx" => "maximum",
-        "en" => "exclusiveMinimum",
-        "ex" => "exclusiveMaximum",
-        "mu" => "multipleOf",
-        "nl" => "minLength",
-        "xl" => "maxLength",
-        "pt" => "pattern",
-        "ni" => "minItems",
-        "xi" => "maxItems",
-        "u" => "uniqueItems",
-        "np" => "minProperties",
-        "xp" => "maxProperties",
-        "&" => "allOf",
-        "|" => "anyOf",
-        "1" => "oneOf",
-        "!" => "not",
-        "?" => "if",
-        "+" => "then",
-        "-" => "else",
-        "pi" => "prefixItems",
-        "co" => "contains",
-        "nc" => "minContains",
-        "xc" => "maxContains",
-        "pp" => "patternProperties",
-        "pn" => "propertyNames",
-        "dr" => "dependentRequired",
-        "ds" => "dependentSchemas",
-        "up" => "unevaluatedProperties",
-        "ui" => "unevaluatedItems",
-        "df" => "$defs",
-        "de" => "definitions",
-        "ro" => "readOnly",
-        "wo" => "writeOnly",
-        "dp" => "deprecated",
-        "ce" => "contentEncoding",
-        "cm" => "contentMediaType",
-        "cs" => "contentSchema",
-        unknown if unknown.starts_with('~') => return Ok(unknown[1..].to_string()),
-        unknown => {
-            return Err(CompactError::InvalidCompactEncoding(format!(
-                "unknown schema key alias '{unknown}'"
-            )));
-        }
-    };
-    Ok(original.to_string())
-}
-
-fn type_alias(kind: &str) -> &str {
-    match kind {
-        "object" => "o",
-        "array" => "a",
-        "string" => "s",
-        "integer" => "i",
-        "number" => "n",
-        "boolean" => "b",
-        "null" => "0",
-        other => other,
-    }
-}
-
-fn type_unalias(kind: &str) -> &str {
-    match kind {
-        "o" => "object",
-        "a" => "array",
-        "s" => "string",
-        "i" => "integer",
-        "n" => "number",
-        "b" => "boolean",
-        "0" => "null",
-        other => other,
-    }
-}
-

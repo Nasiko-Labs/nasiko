@@ -38,33 +38,43 @@ pub struct ToolCall {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompactTools {
     definitions: String,
+    reconstruction: String,
 }
 
 impl CompactTools {
-    pub(crate) fn new(definitions: String) -> Self {
-        Self { definitions }
+    pub(crate) fn new(definitions: String, reconstruction: String) -> Self {
+        Self {
+            definitions,
+            reconstruction,
+        }
     }
 
-    /// The minified compact JSON tool array.
+    /// The model-visible signature definitions.
     pub fn definitions(&self) -> &str {
         &self.definitions
     }
 
-    /// Definitions plus the shared schema legend and exact call grammar.
+    pub(crate) fn reconstruction(&self) -> &str {
+        &self.reconstruction
+    }
+
+    /// Definitions plus the small signature legend and exact call grammar.
     pub fn prompt(&self) -> String {
         format!(
-            "Tools (each is [name,description|null,schema|null]):\n{}\n{}",
-            self.definitions, Self::instructions()
+            "Tools ({}):\n{}\n{}",
+            Self::legend(),
+            self.definitions,
+            Self::instructions(),
         )
     }
 
-    /// Shared legend and call instructions used by every compact request.
+    /// The only notation in signatures that is not self-explanatory.
+    pub const fn legend() -> &'static str {
+        "? optional; \"...\" desc"
+    }
+
+    /// Call instructions used by every compact request.
     pub const fn instructions() -> &'static str {
-        "Schema legend: t=type,p=properties,r=required,i=items,e=enum,d=description,\
-f=format,a=additionalProperties; type values o=object,a=array,s=string,i=integer,\
-n=number,b=boolean,0=null. Other schema keys are written as ~KEY. To call a tool, \
-emit exactly <<call TOOL_NAME {JSON_OBJECT}>>. Emit one block per call and never alter \
-tool or argument names. If no tool is needed, answer normally without a call block."
+        "Call <<call NAME {JSON}>>; repeat/omit; names exact."
     }
 }
-

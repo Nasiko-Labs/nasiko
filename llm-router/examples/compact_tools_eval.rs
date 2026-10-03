@@ -123,24 +123,37 @@ async fn main() -> Result<()> {
         let tools = resolve_tools(&tool_index, &case.tools)?;
         let native_request = native_request(&case.messages, &tools, live.as_ref());
         let encoded = encode_tools(&tools);
-        let (compacted, compact_request, rendered_calls, roundtrip_calls) = match encoded {
-            Ok(compact) => {
-                let request = compact_request(&case.messages, &compact.prompt(), live.as_ref());
-                let rendered = render_calls(&case.expected)?;
-                let roundtrip = decode_calls(&rendered, &tools)?;
-                (true, request, Value::String(rendered), roundtrip)
-            }
-            Err(error) if is_bypass_error(&error) => (
-                false,
-                native_request.clone(),
-                Value::Null,
-                case.expected.clone(),
-            ),
-            Err(error) => return Err(error).context("encoding tools"),
-        };
+        let (compacted, compact_request_body, rendered_calls, roundtrip_calls, prompt_parts) =
+            match encoded {
+                Ok(compact) => {
+                    let request = compact_request(&case.messages, &compact.prompt(), live.as_ref());
+                    let rendered = render_calls(&case.expected)?;
+                    let roundtrip = decode_calls(&rendered, &tools)?;
+                    let header =
+                        format!("Tools ({}):\n", nasiko_tool_compact::CompactTools::legend());
+                    let definitions = compact.definitions().to_string();
+                    let instructions =
+                        format!("\n{}", nasiko_tool_compact::CompactTools::instructions());
+                    (
+                        true,
+                        request,
+                        Value::String(rendered),
+                        roundtrip,
+                        Some((header, definitions, instructions)),
+                    )
+                }
+                Err(error) if is_bypass_error(&error) => (
+                    false,
+                    native_request.clone(),
+                    Value::Null,
+                    case.expected.clone(),
+                    None,
+                ),
+                Err(error) => return Err(error).context("encoding tools"),
+            };
 
         let native_json = serde_json::to_string(&native_request)?;
-        let compact_json = serde_json::to_string(&compact_request)?;
+        let compact_json = serde_json::to_string(&compact_request_body)?;
         let native_tokens = tokenizer.encode_with_special_tokens(&native_json).len();
         let compact_tokens = if compacted {
             tokenizer.encode_with_special_tokens(&compact_json).len()
@@ -154,16 +167,57 @@ async fn main() -> Result<()> {
         } else {
             totals.bypassed_cases += 1;
         }
+        if let Some((header, definitions, instructions)) = prompt_parts {
+            let common_tokens = request_tokens(
+                &tokenizer,
+                &compact_request(&case.messages, "", live.as_ref()),
+            )?;
+            let with_legend_tokens = request_tokens(
+                &tokenizer,
+                &compact_request(&case.messages, &header, live.as_ref()),
+            )?;
+            let with_definitions_tokens = request_tokens(
+                &tokenizer,
+                &compact_request(
+                    &case.messages,
+                    &format!("{header}{definitions}"),
+                    live.as_ref(),
+                ),
+            )?;
+            eprintln!(
+                "case={} native={} compact={} reduction={:.2}% common={} legend={} definitions={} instructions={}",
+                case.id,
+                native_tokens,
+                compact_tokens,
+                (1.0 - compact_tokens as f64 / native_tokens as f64) * 100.0,
+                common_tokens,
+                with_legend_tokens.saturating_sub(common_tokens),
+                with_definitions_tokens.saturating_sub(with_legend_tokens),
+                compact_tokens.saturating_sub(with_definitions_tokens),
+            );
+            debug_assert_eq!(
+                format!("{header}{definitions}{instructions}"),
+                encode_tools(&tools)?.prompt()
+            );
+        } else {
+            eprintln!(
+                "case={} native={} compact={} reduction=0.00% bypassed=true",
+                case.id, native_tokens, compact_tokens
+            );
+        }
 
         let mut record = Map::new();
         record.insert("id".to_string(), Value::String(case.id.clone()));
-        record.insert("compact_request".to_string(), compact_request.clone());
+        record.insert("compact_request".to_string(), compact_request_body.clone());
         record.insert("compacted".to_string(), Value::Bool(compacted));
         record.insert("rendered_calls".to_string(), rendered_calls);
-        record.insert("roundtrip_calls".to_string(), serde_json::to_value(roundtrip_calls)?);
+        record.insert(
+            "roundtrip_calls".to_string(),
+            serde_json::to_value(roundtrip_calls)?,
+        );
 
         if let (Some(config), Some(http)) = (&live, &client) {
-            let response = send_live(http, config, compact_request).await?;
+            let response = send_live(http, config, compact_request_body).await?;
             add_live_result(&mut record, &response, compacted, &tools)?;
         }
         write_record(&mut output, Value::Object(record))?;
@@ -343,8 +397,7 @@ async fn send_live(client: &Client, config: &LiveConfig, request: Value) -> Resu
                 last_error = Some(error);
             }
             Err(error) => {
-                if (!error.is_connect() && !error.is_timeout())
-                    || attempt + 1 == MAX_LIVE_ATTEMPTS
+                if (!error.is_connect() && !error.is_timeout()) || attempt + 1 == MAX_LIVE_ATTEMPTS
                 {
                     return Err(error).context("calling live provider");
                 }
@@ -433,6 +486,11 @@ fn write_record(output: &mut BufWriter<File>, record: Value) -> Result<()> {
     Ok(())
 }
 
+fn request_tokens(tokenizer: &tiktoken_rs::CoreBPE, request: &Value) -> Result<usize> {
+    let serialized = serde_json::to_string(request)?;
+    Ok(tokenizer.encode_with_special_tokens(&serialized).len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -451,29 +509,28 @@ mod tests {
 
     #[test]
     fn native_decoder_validates_raw_argument_json() {
-        let tools = vec![serde_json::from_value(json!({
-            "type": "function",
-            "function": {
-                "name": "echo",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"text": {"type": "string"}},
-                    "required": ["text"]
+        let tools = vec![
+            serde_json::from_value(json!({
+                "type": "function",
+                "function": {
+                    "name": "echo",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"text": {"type": "string"}},
+                        "required": ["text"]
+                    }
                 }
-            }
-        }))
-        .expect("test tool is valid")];
+            }))
+            .expect("test tool is valid"),
+        ];
         let message = json!({
             "tool_calls": [{
                 "function": {"name": "echo", "arguments": "{\"text\":\"ok\"}"}
             }]
         });
         assert_eq!(
-            decode_native_calls(&message, &tools)
-                .expect("native call is valid")[0]
-                .arguments["text"],
+            decode_native_calls(&message, &tools).expect("native call is valid")[0].arguments["text"],
             "ok"
         );
     }
 }
-

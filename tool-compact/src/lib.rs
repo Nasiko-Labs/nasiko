@@ -15,4 +15,3 @@ pub use codec::{decode_tools, encode_tools};
 pub use decoder::{StreamDecoder, decode_calls, render_call};
 pub use error::{CompactError, ErrorCode};
 pub use models::{CompactTools, FunctionDef, ToolCall, ToolDef};
-

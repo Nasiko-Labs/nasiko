@@ -26,6 +26,11 @@ fn calendar_tool() -> ToolDef {
                 "start": {"type": "string", "format": "date-time"},
                 "visibility": {"type": "string", "enum": ["public", "private"]},
                 "attendees": {"type": "array", "items": {"type": "string"}},
+                "duration_min": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Duration in minutes"
+                },
                 "location": {
                     "type": "object",
                     "properties": {"room": {"type": "string"}},
@@ -47,14 +52,42 @@ fn supported_schema_round_trip_preserves_every_field() {
     let mut empty_description = calendar_tool();
     empty_description.function.name = "empty_description".to_string();
     empty_description.function.description = Some(String::new());
-    let tools = vec![calendar_tool(), without_description, empty_description];
+    let contradictory_enum = tool(
+        "contradictory_enum",
+        json!({
+            "type": "object",
+            "properties": {"code": {"type": "string", "enum": [7]}}
+        }),
+    );
+    let tools = vec![
+        calendar_tool(),
+        without_description,
+        empty_description,
+        contradictory_enum,
+    ];
 
     let compact = encode_tools(&tools).expect("schema is supported");
     let decoded = decode_tools(&compact).expect("compact form decodes");
 
     assert_eq!(decoded, tools);
-    assert!(!compact.definitions().contains("additionalProperties"));
-    assert!(compact.definitions().contains("\"a\":false"));
+    assert!(compact.definitions().contains("extra=false"));
+    assert!(compact.definitions().contains("start:datetime"));
+    assert!(
+        compact
+            .definitions()
+            .contains("visibility?:\"public\"|\"private\"")
+    );
+    assert!(
+        compact
+            .definitions()
+            .contains("location?:{room:str} extra=false")
+    );
+    assert!(
+        compact
+            .definitions()
+            .contains("duration_min?:int where {\"minimum\":1}")
+    );
+    assert!(compact.definitions().contains("code?:str enum[7]"));
 }
 
 #[test]
@@ -135,13 +168,10 @@ fn references_are_recursively_unsupported() {
 fn malformed_truncated_and_duplicate_key_calls_fail_closed() {
     let tools = [calendar_tool()];
     assert_eq!(
-        decode_calls(
-            r#"<<call create_calendar_event {"title":"Retro"}"#,
-            &tools
-        )
-        .expect_err("closing marker is missing")
-        .code()
-        .as_str(),
+        decode_calls(r#"<<call create_calendar_event {"title":"Retro"}"#, &tools)
+            .expect_err("closing marker is missing")
+            .code()
+            .as_str(),
         "truncated_call"
     );
     assert_eq!(
@@ -175,7 +205,10 @@ fn quotes_escapes_unicode_and_closing_markers_inside_strings_are_safe() {
     )];
     let text = r#"before <<call echo {"text":"नमस्ते: a >> b, quote \" and slash \\"}>> after"#;
     let calls = decode_calls(text, &tools).expect("string content cannot close the call");
-    assert_eq!(calls[0].arguments["text"], "नमस्ते: a >> b, quote \" and slash \\");
+    assert_eq!(
+        calls[0].arguments["text"],
+        "नमस्ते: a >> b, quote \" and slash \\"
+    );
 }
 
 #[test]
@@ -191,9 +224,11 @@ fn multiple_calls_text_and_plain_answers_are_supported_atomically() {
     let output = "first <<call echo {\"text\":\"a\"}>> middle <<call echo {\"text\":\"b\"}>> end";
     let calls = decode_calls(output, &tools).expect("both calls are valid");
     assert_eq!(calls.len(), 2);
-    assert!(decode_calls("A normal answer with < punctuation.", &tools)
-        .expect("plain answer is valid")
-        .is_empty());
+    assert!(
+        decode_calls("A normal answer with < punctuation.", &tools)
+            .expect("plain answer is valid")
+            .is_empty()
+    );
 
     let mixed = "<<call echo {\"text\":\"ok\"}>> <<call echo {}>>";
     assert!(decode_calls(mixed, &tools).is_err());
@@ -211,7 +246,9 @@ fn every_character_boundary_matches_non_streaming_decode() {
     {
         let mut decoder = StreamDecoder::new(&tools).expect("tools are valid");
         decoder.feed(&fixture[..split]).expect("first chunk parses");
-        decoder.feed(&fixture[split..]).expect("second chunk parses");
+        decoder
+            .feed(&fixture[split..])
+            .expect("second chunk parses");
         assert_eq!(decoder.finish().expect("stream is complete"), expected);
     }
 }
@@ -283,4 +320,3 @@ fn decoded_shape_is_simple_and_router_ids_remain_external() {
         }]
     );
 }
-

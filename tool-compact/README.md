@@ -5,29 +5,29 @@ crate performs no I/O, reads no environment variables, and never invents router 
 
 ## Definition grammar
 
-The top level is minified JSON. Each tool is a three-slot array:
+Model-visible definitions use familiar function signatures:
 
 ```text
-tools       = [tool, ...]
-tool        = [name, description-or-null, schema-or-null]
+tool        = name "(" argument *("," argument) ")" [description]
+argument    = name ["?"] ":" schema [description]
+description = json-string
+schema      = primitive | "[" schema "]" | "{" arguments "}" | constraints
 ```
 
-Strings use normal JSON escaping. Tool and argument names are never aliased. Within schema
-objects, common JSON Schema keys and primitive type names use one shared legend:
+`?` marks optional arguments. Required arguments have no marker. A JSON string immediately after
+a schema or signature describes that preceding item. Familiar primitive names (`str`,
+`int`, `num`, `bool`, and `null`), nested object braces, and array brackets are written directly.
+Enums, formats, `additionalProperties`, and other constraints stay inline:
 
 ```text
-t type                 p properties          r required
-i items                e enum                d description
-f format               a additionalProperties
-
-o object   a array   s string   i integer   n number   b boolean   0 null
+create_event(title:str,start:datetime,visibility?:"public"|"private")
 ```
 
-Other schema keys are encoded as `~` followed by their original name. Structural schema keywords
-(`properties`, `items`, compositions, conditional schemas, and related object/array applicators)
-are transformed recursively. Property names, enum values, defaults, examples, and other instance
-values remain ordinary JSON. `decode_tools(encode_tools(tools))` reconstructs every supported
-definition exactly, apart from JSON object key order, which is not semantically significant.
+Strings and less common constraint objects use normal JSON serialization. Every behavioral
+constraint is model-visible. A private, deterministic reconstruction copy is retained in
+`CompactTools`; it is never included in the prompt. `decode_tools(encode_tools(tools))`
+reconstructs every supported definition exactly, including absent versus empty descriptions and
+explicit schema fields.
 
 ## Call grammar
 
@@ -58,4 +58,3 @@ syntax, and truncated calls are errors. Values are never coerced or repaired.
 
 Callers should treat any encoding error as a request-level bypass and send the original native
 tools unchanged.
-

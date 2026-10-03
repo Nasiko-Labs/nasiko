@@ -389,4 +389,3 @@ impl<'de> Visitor<'de> for UniqueValueVisitor {
         Ok(UniqueValue(Value::Object(values)))
     }
 }
-
