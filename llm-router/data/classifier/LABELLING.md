@@ -1,6 +1,6 @@
 # Request classifier dataset
 
-Hand-written, synthetic queries used to train (`train.jsonl`, 245 rows) and evaluate
+Hand-written, synthetic queries used to train (`train.jsonl`, 654 rows) and evaluate
 (`val.jsonl`, 70 rows) the `nb` request classifier
 (`src/routing/naive_bayes.rs`). No user data and no rows from the public
 `classifier-eval` sample are included.
@@ -27,12 +27,18 @@ Tie-breakers:
 1. **Multi-intent**: label the part that carries the most work, which is usually the
    final deliverable. "Explain what's wrong, then rewrite it" is `code_generation`;
    "Compare Kafka and Pulsar, then propose our topic layout" is `technical_design`.
-2. **Negation**: label what is asked, not what is ruled out ("don't rewrite it, just point
+2. **Any requested change to code is `code_generation`**, however small: a misspelling,
+   a rename, a constant, a log level, a doc/comment edit, a one-line change. This holds
+   even when a lot of code is pasted around the change. `code_understanding` is only for
+   explaining, tracing or reviewing code **without** changing it. ("Why does this crash?
+   Give me a corrected version" is `code_generation`; "Which line leaks? Don't change it"
+   is `code_understanding`.)
+3. **Negation**: label what is asked, not what is ruled out ("don't rewrite it, just point
    things out" is `code_understanding`).
-3. **Diagnosis**: reading given code is `code_understanding`. Reasoning over evidence
+4. **Diagnosis**: reading given code is `code_understanding`. Reasoning over evidence
    (metrics, logs, timelines, numbers) is `analytical_reasoning`. Proposing the fix
    architecture as the main ask is `technical_design`.
-4. **Padding and noise** (greetings, apologies, typos, urgency) never change the label.
+5. **Padding and noise** (greetings, apologies, typos, urgency) never change the label.
 
 ## Complexity 1–5
 
@@ -47,9 +53,18 @@ minus minimal-edit words), and these labels only measure that rubric.
 
 ## Coverage and hygiene
 
-- Each split covers all 7 types (train 35 per type, val 10 per type) and all complexity
+- Each split covers all 7 types (train 85–87 per type, plus 52 extra `code_generation` rows for tiny edits; val 10 per type) and all complexity
   levels, including ambiguous, multi-intent, paraphrased, padded/noisy, and near-miss
-  rows where a regex keyword points at the wrong type.
+  rows where a regex keyword points at the wrong type. The second batch of training rows
+  (ids past the original 35 per type) deliberately targets the confusable pairs:
+  writing vs analytical_reasoning (writing that carries numbers; analysis phrased as
+  "write up / explain"), code_generation vs code_understanding (explain-then-fix, "don't
+  fix, just explain"), technical_design vs analytical_reasoning (designing vs diagnosing),
+  factual_lookup vs general (everyday facts vs advice), and adds non-software domains
+  (finance, health, law, cooking, sport, travel) and noisy/Hinglish-adjacent phrasing.
+  A third batch (52 `code_generation` rows) applies tie-breaker 2: small edits (rename,
+  constant, log level, flag, docstring, one-line fix) to pasted code in many languages,
+  often with much more code pasted than the edit touches.
 - **Near-duplicates are excluded**: no two rows in or across splits have a query-token
   Jaccard similarity of 0.6 or more. The unit test
   `no_near_duplicates_within_or_across_splits` enforces this.

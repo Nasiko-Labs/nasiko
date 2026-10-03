@@ -2,8 +2,8 @@
 //!
 //! Pure Rust, no network, no model file: it **trains at construction** from the labelled
 //! JSONL embedded in the binary (`data/classifier/train.jsonl`; labelling criteria in
-//! `data/classifier/LABELLING.md`). Training ~250 rows takes well under a millisecond-scale
-//! budget per row, so "load time" is the training time.
+//! `data/classifier/LABELLING.md`). Training on ~650 rows takes a few milliseconds at
+//! startup; that is the backend's whole "load time".
 //!
 //! ## Model
 //!
@@ -53,7 +53,7 @@ pub const TRAIN_JSONL: &str = include_str!("../../data/classifier/train.jsonl");
 /// Laplace smoothing pseudo-count.
 const ALPHA: f64 = 1.0;
 /// Softmax temperature applied to log posteriors (see module docs).
-pub const TEMPERATURE: f64 = 2.0;
+pub const TEMPERATURE: f64 = 1.5;
 
 /// Class order: index `i` of every per-class array is `CLASSES[i]`. On an exact score tie
 /// the earlier class wins.
@@ -592,7 +592,7 @@ mod tests {
     #[ignore]
     fn tune_temperature() {
         let rows = parse_jsonl(TRAIN_JSONL).unwrap();
-        for t in [1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0, 16.0] {
+        for t in [1.0, 1.25, 1.5, 1.75, 2.0, 3.0, 4.0, 8.0] {
             let (mut loss, mut ok) = (0.0, 0usize);
             for fold in 0..5 {
                 let train: Vec<_> = rows
