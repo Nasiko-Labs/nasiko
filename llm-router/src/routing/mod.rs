@@ -124,6 +124,7 @@ pub async fn route_model(
     registry: &dyn TierRegistry,
     cell_store: &dyn CellStore,
     gate: &dyn SalienceGate,
+    classifier: &dyn crate::routing::classifier::RequestClassifier,
     inputs: &RouteInputs<'_>,
 ) -> RouteDecision {
     tracing::info!(
@@ -253,7 +254,7 @@ pub async fn route_model(
             
             let classify_input = crate::routing::classifier::ClassifyInput { query, context: None };
             let classification = match crate::routing::classifier::RequestClassifier::classify(
-                &*ctx.request_classifier,
+                classifier,
                 &classify_input
             ).await {
                 Ok(c) => c,
@@ -581,6 +582,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &crate::routing::classifier::RegexClassifier,
             &inputs("anthropic", &s, Some("pinned-model")),
         )
         .await;
@@ -598,6 +600,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &crate::routing::classifier::RegexClassifier,
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -617,6 +620,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &crate::routing::classifier::RegexClassifier,
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -647,6 +651,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &DenyGate,
+            &crate::routing::classifier::RegexClassifier,
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -673,6 +678,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &DenyGate,
+            &crate::routing::classifier::RegexClassifier,
             &i,
         )
         .await;
@@ -693,6 +699,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &DenyGate,
+            &crate::routing::classifier::RegexClassifier,
             &i,
         )
         .await;
@@ -712,6 +719,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &DenyGate,
+            &crate::routing::classifier::RegexClassifier,
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -734,6 +742,7 @@ mod tests {
             &test_support::StubRegistry,
             &cells,
             &AllowAllGate,
+            &crate::routing::classifier::RegexClassifier,
             &i,
         )
         .await;
@@ -761,6 +770,7 @@ mod tests {
             &test_support::StubRegistry,
             &cells,
             &AllowAllGate,
+            &crate::routing::classifier::RegexClassifier,
             &i,
         )
         .await;
@@ -778,6 +788,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &crate::routing::classifier::RegexClassifier,
             &inputs("gemini", &s, None),
         )
         .await;
@@ -796,6 +807,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &crate::routing::classifier::RegexClassifier,
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -812,6 +824,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &crate::routing::classifier::RegexClassifier,
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -830,6 +843,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &crate::routing::classifier::RegexClassifier,
             &inputs("anthropic", &s, None),
         )
         .await;
@@ -849,6 +863,7 @@ mod tests {
             &test_support::StubRegistry,
             &InMemoryCellStore::new(),
             &AllowAllGate,
+            &crate::routing::classifier::RegexClassifier,
             &i,
         )
         .await;
