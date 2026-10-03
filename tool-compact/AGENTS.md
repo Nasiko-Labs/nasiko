@@ -138,7 +138,7 @@ Cover at least what the features already state:
 - A schema feature on the unsupported list returns `UnsupportedSchema` and does not emit a compact form that drops that feature.
 - Property: every bad string in `schema_valid_calls_only` is `Err` from `decode_calls`, and the stream emits no guessed call. The design-review call still decodes.
 
-Add `-p nasiko-tool-compact` to the `test-unit` recipe in the root `justfile`, next to `nasiko-compress`, when that recipe is updated. The public sample used by the features is `tool-compact/tests/fixtures/compact-tools-eval.json`. The organizers still download their own copy for the eval example. Do not commit `OUT` files.
+`just test-unit` runs this crate beside `nasiko-compress`. It does not need Postgres. The public sample used by the features is `tool-compact/tests/fixtures/compact-tools-eval.json`. The organizers still download their own copy for the eval example. Do not commit `OUT` files.
 
 Router tests live in `llm-router`, not here:
 
