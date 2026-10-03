@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 9b9d7b1e5f4055523a0027ac9050faaeabe83158d0956d7a4272ca8379c53721 # shrinks to params = Object {"properties": Object {"_": Object {"items": Object {"enum": Array [String("a")], "type": String("string")}, "type": String("array")}}, "type": String("object")}, desc = None
+cc 559312f13201c9f78c7a76d2c80f80b195ffbc972cfe9d5fd2e805868bc6ebc9 # shrinks to params = Object {"properties": Object {"a": Object {"items": Object {"enum": Array [Null, Null]}, "type": String("array")}}, "type": String("object")}, desc = None
