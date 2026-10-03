@@ -1,0 +1,1602 @@
+{
+  "schema_version": "h4-public-eval-v1",
+  "purpose": "Held-out validation set for request classification (independently authored; not used for training or tuning).",
+  "source": "Synthetic examples authored for this evaluation; no private user data.",
+  "labels": {
+    "request_type": "One of code_generation, code_understanding, technical_design, analytical_reasoning, writing, factual_lookup, general (llm-router RequestType).",
+    "complexity": "1 = trivial single operation; 2 = straightforward; 3 = multi-step with limited constraints; 4 = substantial reasoning or design; 5 = intricate cross-component reasoning and validation.",
+    "tests": "Scenario tags; see README."
+  },
+  "examples": [
+    {
+      "id": "val-001",
+      "query": "Fix the typo 'recieve' in the comment above this function.",
+      "context": "```python\n# recieve the payload from the queue\ndef handle(msg):\n    return msg['body']\n```\nNo other files or changes needed.",
+      "request_type": "code_generation",
+      "complexity": 1,
+      "tests": [
+        "plain",
+        "short_simple"
+      ]
+    },
+    {
+      "id": "val-002",
+      "query": "rename var tmp to retry_count pls",
+      "context": "```js\nlet tmp = 0;\nwhile (tmp < 3) { await send(); tmp++; }\n```\nNo other files or changes needed.",
+      "request_type": "code_generation",
+      "complexity": 1,
+      "tests": [
+        "typo_informal",
+        "short_simple"
+      ]
+    },
+    {
+      "id": "val-003",
+      "query": "I wrote 'redesign auth' in a TODO; do not redesign anything, just change TODO to NOTE.",
+      "context": "```go\n// TODO: redesign auth\nfunc Login() {}\n```\nNo other files or changes needed.",
+      "request_type": "code_generation",
+      "complexity": 1,
+      "tests": [
+        "keyword_trap",
+        "short_simple"
+      ]
+    },
+    {
+      "id": "val-004",
+      "query": "Write a bash script that deletes log files older than 14 days from /var/log/myapp.",
+      "context": "No codebase context.",
+      "request_type": "code_generation",
+      "complexity": 2,
+      "tests": [
+        "plain"
+      ]
+    },
+    {
+      "id": "val-005",
+      "query": "Add a pytest unit test for parse_price that checks '$1,200.50' returns 1200.5.",
+      "context": "```python\ndef parse_price(s: str) -> float:\n    return float(s.replace('$', '').replace(',', ''))\n```",
+      "request_type": "code_generation",
+      "complexity": 2,
+      "tests": [
+        "plain"
+      ]
+    },
+    {
+      "id": "val-006",
+      "query": "Write a TypeScript function that debounces an async function so only the promise of the last call resolves and earlier callers get the same result.",
+      "context": "No codebase context.",
+      "request_type": "code_generation",
+      "complexity": 3,
+      "tests": [
+        "plain"
+      ]
+    },
+    {
+      "id": "val-007",
+      "query": "Ek Python function likho jo list of dicts ko 'age' key ke basis pe descending order mein sort kare.",
+      "context": "No codebase context.",
+      "request_type": "code_generation",
+      "complexity": 2,
+      "tests": [
+        "multilingual"
+      ]
+    },
+    {
+      "id": "val-008",
+      "query": "Escribe una consulta SQL que devuelva los 5 clientes con más pedidos en 2025.",
+      "context": "Tablas: customers(id, name), orders(id, customer_id, created_at). PostgreSQL.",
+      "request_type": "code_generation",
+      "complexity": 2,
+      "tests": [
+        "multilingual"
+      ]
+    },
+    {
+      "id": "val-009",
+      "query": "Make it also reject negative quantities with a 400.",
+      "context": "```python\n@app.post('/cart/items')\ndef add_item():\n    data = request.get_json()\n    cart.add(data['sku'], data['qty'])\n    return {'ok': True}\n```",
+      "request_type": "code_generation",
+      "complexity": 2,
+      "tests": [
+        "context_dependent"
+      ]
+    },
+    {
+      "id": "val-010",
+      "query": "Write a Go CLI called `txsum` that reads a CSV of bank transactions (date, description, amount, currency) from stdin or a file path argument, groups totals by month and currency, skips malformed rows but reports their line numbers on stderr, supports a --since YYYY-MM flag, prints a fixed-width table, and exits non-zero if any row was skipped. Use only the standard library and include a table-driven test for the grouping logic.",
+      "context": "No codebase context.",
+      "request_type": "code_generation",
+      "complexity": 4,
+      "tests": [
+        "long_spec"
+      ]
+    },
+    {
+      "id": "val-011",
+      "query": "Implement an Express middleware for sliding-window rate limiting backed by Redis. Limits come from a config map keyed by API key tier, fall back to a default tier, and must be atomic across multiple app instances (use a Lua script). Return 429 with Retry-After and X-RateLimit-Remaining headers, fail open with a logged warning if Redis is unreachable, never count requests rejected for auth failures, and add Jest tests using a fake clock plus an integration test against a real Redis container.",
+      "context": "Express 4, ioredis 5, TypeScript, Node 20. Auth middleware runs before this one and sets req.apiKey.",
+      "request_type": "code_generation",
+      "complexity": 5,
+      "tests": [
+        "long_spec"
+      ]
+    },
+    {
+      "id": "val-012",
+      "query": "Write a Jinja2 template and a small Python script that fills in the company name and role in my cover letter so I can generate twenty versions from a CSV.",
+      "context": "letter.txt has placeholders in prose; jobs.csv columns: company,role,hiring_manager.",
+      "request_type": "code_generation",
+      "complexity": 3,
+      "tests": [
+        "keyword_trap"
+      ]
+    },
+    {
+      "id": "val-013",
+      "query": "Turn this nested loop into something that runs in linear time.",
+      "context": "```python\ndef has_dupes(items):\n    for i in range(len(items)):\n        for j in range(i + 1, len(items)):\n            if items[i] == items[j]:\n                return True\n    return False\n```",
+      "request_type": "code_generation",
+      "complexity": 3,
+      "tests": [
+        "no_keyword",
+        "context_dependent"
+      ]
+    },
+    {
+      "id": "val-014",
+      "query": "need a regex that grabs all the hashtags from a tweet, js",
+      "context": "No codebase context.",
+      "request_type": "code_generation",
+      "complexity": 2,
+      "tests": [
+        "typo_informal"
+      ]
+    },
+    {
+      "id": "val-015",
+      "query": "Convert this class component to a function component with hooks, keeping the 30 second polling and cleanup on unmount.",
+      "context": "```jsx\nclass Status extends React.Component {\n  state = { up: null };\n  componentDidMount() { this.t = setInterval(this.check, 30000); this.check(); }\n  componentWillUnmount() { clearInterval(this.t); }\n  check = async () => { const r = await fetch('/health'); this.setState({ up: r.ok }); };\n  render() { return <b>{this.state.up ? 'UP' : 'DOWN'}</b>; }\n}\n```",
+      "request_type": "code_generation",
+      "complexity": 3,
+      "tests": [
+        "plain"
+      ]
+    },
+    {
+      "id": "val-016",
+      "query": "Écris un Dockerfile multi-étapes pour une application Node 20 qui n'installe que les dépendances de production dans l'image finale et tourne sans root.",
+      "context": "Projet avec package.json, package-lock.json, dossier src/, build via `npm run build` vers dist/.",
+      "request_type": "code_generation",
+      "complexity": 3,
+      "tests": [
+        "multilingual"
+      ]
+    },
+    {
+      "id": "val-017",
+      "query": "Write a Terraform module that creates an S3 bucket with versioning enabled, default SSE-KMS encryption using a key passed in as a variable, a lifecycle rule moving objects to Glacier after 90 days and expiring noncurrent versions after 365, public access fully blocked, and a bucket policy that denies any request not using TLS. Expose the bucket ARN and name as outputs, and add variable validation so the bucket name must be lowercase.",
+      "context": "Terraform 1.7, AWS provider 5.x.",
+      "request_type": "code_generation",
+      "complexity": 4,
+      "tests": [
+        "long_spec"
+      ]
+    },
+    {
+      "id": "val-018",
+      "query": "Fix the race so two concurrent withdrawals can't overdraw the account.",
+      "context": "```python\ndef withdraw(conn, account_id, amount):\n    bal = conn.execute('SELECT balance FROM accounts WHERE id=%s', (account_id,)).fetchone()[0]\n    if bal < amount:\n        raise InsufficientFunds()\n    conn.execute('UPDATE accounts SET balance=%s WHERE id=%s', (bal - amount, account_id))\n    conn.commit()\n```\nPostgreSQL, default isolation level.",
+      "request_type": "code_generation",
+      "complexity": 4,
+      "tests": [
+        "context_dependent"
+      ]
+    },
+    {
+      "id": "val-019",
+      "query": "Add a semicolon at the end of line 3.",
+      "context": "```js\nconst a = 1;\nconst b = 2;\nconst c = a + b\nconsole.log(c);\n```",
+      "request_type": "code_generation",
+      "complexity": 1,
+      "tests": [
+        "short_simple",
+        "context_dependent"
+      ]
+    },
+    {
+      "id": "val-020",
+      "query": "Give me a one-liner to list the ten largest files under the current folder on Linux.",
+      "context": "No codebase context.",
+      "request_type": "code_generation",
+      "complexity": 2,
+      "tests": [
+        "no_keyword",
+        "short_simple"
+      ]
+    },
+    {
+      "id": "val-021",
+      "query": "Write a Python script that migrates rows from the legacy MySQL table users_old into Postgres table users in batches of 5000. It must be idempotent and resumable via a checkpoint file storing the last migrated id, map the legacy status codes (0=pending, 1=active, 2=banned) to enum strings, rehash passwords with argon2 only when they are not already argon2 hashes, write rejected rows with a reason column to rejects.csv, support a --dry-run flag that touches nothing, and ship pytest tests that run against a fake in-memory source.",
+      "context": "SQLAlchemy 2, argon2-cffi, Python 3.12. users has a unique index on email.",
+      "request_type": "code_generation",
+      "complexity": 5,
+      "tests": [
+        "long_spec"
+      ]
+    },
+    {
+      "id": "val-022",
+      "query": "yo can u make this fn async and add a 5s timeout, using asyncio",
+      "context": "```python\nimport requests\n\ndef fetch(url):\n    return requests.get(url).json()\n```",
+      "request_type": "code_generation",
+      "complexity": 3,
+      "tests": [
+        "typo_informal",
+        "context_dependent"
+      ]
+    },
+    {
+      "id": "val-023",
+      "query": "What does this regex do?",
+      "context": "```\n^(?=.*\\d)(?=.*[a-z])(?=.*[A-Z]).{8,}$\n```",
+      "request_type": "code_understanding",
+      "complexity": 2,
+      "tests": [
+        "plain"
+      ]
+    },
+    {
+      "id": "val-024",
+      "query": "Why does this print [1, 2, 3, 4] for both lists?",
+      "context": "```python\ndef add(x, acc=[]):\n    acc.append(x)\n    return acc\n\na = add(1); a = add(2)\nb = add(3); b = add(4)\nprint(a, b)\n```",
+      "request_type": "code_understanding",
+      "complexity": 3,
+      "tests": [
+        "plain"
+      ]
+    },
+    {
+      "id": "val-025",
+      "query": "Can you explain this stack trace? It crashes only when the user has no profile picture.",
+      "context": "```\nException in thread \"http-nio-8080-exec-4\" java.lang.NullPointerException\n  at com.shop.profile.AvatarService.resize(AvatarService.java:58)\n  at com.shop.profile.ProfileController.show(ProfileController.java:31)\n```\nLine 58: `return img.getBytes().length > MAX ? shrink(img) : img;`",
+      "request_type": "code_understanding",
+      "complexity": 3,
+      "tests": [
+        "plain"
+      ]
+    },
+    {
+      "id": "val-026",
+      "query": "Why does our nightly aggregation job get slower every week even though the row count in the source table is flat?",
+      "context": "Postgres. The job does `INSERT ... SELECT` from `events` into `daily_stats`, then `DELETE FROM events WHERE processed = true`, with no VACUUM tuning. Table has 40M live rows; `pg_stat_user_tables` shows n_dead_tup at 90M.",
+      "request_type": "code_understanding",
+      "complexity": 4,
+      "tests": [
+        "plain"
+      ]
+    },
+    {
+      "id": "val-027",
+      "query": "so whats `a?.b ?? c` doing in this line",
+      "context": "```js\nconst label = user?.profile?.name ?? 'Guest';\n```",
+      "request_type": "code_understanding",
+      "complexity": 1,
+      "tests": [
+        "typo_informal",
+        "short_simple",
+        "context_dependent"
+      ]
+    },
+    {
+      "id": "val-028",
+      "query": "I was told singletons are bad design, so why is my singleton returning a different instance in each worker?",
+      "context": "```python\n# config.py\n_instance = None\ndef get_config():\n    global _instance\n    if _instance is None:\n        _instance = load()\n    return _instance\n```\nRun with `gunicorn -w 4 app:app`.",
+      "request_type": "code_understanding",
+      "complexity": 3,
+      "tests": [
+        "keyword_trap"
+      ]
+    },
+    {
+      "id": "val-029",
+      "query": "यह कोड इनफिनिट लूप में क्यों फंस जाता है?",
+      "context": "```js\nlet i = 0;\nwhile (i < 10) {\n  if (i % 2 === 0) continue;\n  i++;\n}\n```",
+      "request_type": "code_understanding",
+      "complexity": 3,
+      "tests": [
+        "multilingual"
+      ]
+    },
+    {
+      "id": "val-030",
+      "query": "Por que esse useEffect roda duas vezes quando estou desenvolvendo?",
+      "context": "```jsx\nuseEffect(() => {\n  console.log('montou');\n  trackPageView();\n}, []);\n```\nReact 18, projeto criado com Vite, dentro de <React.StrictMode>.",
+      "request_type": "code_understanding",
+      "complexity": 3,
+      "tests": [
+        "multilingual"
+      ]
+    },
+    {
+      "id": "val-031",
+      "query": "wy does my docker container exit immediatly after start",
+      "context": "```dockerfile\nFROM python:3.12-slim\nCOPY app.py .\nCMD [\"python\", \"app.py\"]\n```\napp.py contains only `print('ready')`.",
+      "request_type": "code_understanding",
+      "complexity": 2,
+      "tests": [
+        "typo_informal"
+      ]
+    },
+    {
+      "id": "val-032",
+      "query": "Our checkout service sometimes charges customers twice during peak traffic, but the logs only show one order. Here is the flow: the client posts /checkout, the handler calls the payment provider, writes the order row, and returns; the client retries on timeouts after 10 seconds; a load balancer also retries idempotent-looking POSTs once on a 502. Which parts of this code allow duplicate charges, in what exact interleavings, and why would the order table still show one row?",
+      "context": "```python\n@app.post('/checkout')\ndef checkout():\n    cart = load_cart(session['id'])\n    charge = provider.charge(cart.total, token=request.json['token'])   # ~3-12s\n    order = Order(cart_id=cart.id, charge_id=charge.id)\n    db.add(order)\n    db.commit()   # unique constraint on cart_id\n    return {'order': order.id}\n```",
+      "request_type": "code_understanding",
+      "complexity": 5,
+      "tests": [
+        "long_spec"
+      ]
+    },
+    {
+      "id": "val-033",
+      "query": "Is this safe to run in production while traffic is flowing?",
+      "context": "```sql\nALTER TABLE orders ADD COLUMN currency text NOT NULL DEFAULT 'USD';\nCREATE INDEX idx_orders_currency ON orders (currency);\n```\nPostgres 12, orders has 300M rows and takes ~2k writes/sec.",
+      "request_type": "code_understanding",
+      "complexity": 3,
+      "tests": [
+        "context_dependent",
+        "no_keyword"
+      ]
+    },
+    {
+      "id": "val-034",
+      "query": "Why would this query ignore my index on email?",
+      "context": "```sql\nSELECT id FROM users WHERE LOWER(email) = 'a@b.com';\n-- index: CREATE INDEX idx_users_email ON users (email);\n```",
+      "request_type": "code_understanding",
+      "complexity": 3,
+      "tests": [
+        "no_keyword"
+      ]
+    },
+    {
+      "id": "val-035",
+      "query": "Explain how this middleware chain decides which handler runs and where the error handler gets triggered.",
+      "context": "```js\napp.use(logger);\napp.use('/api', auth, apiRouter);\napp.use((req, res) => res.status(404).send('nope'));\napp.use((err, req, res, next) => res.status(500).send(err.message));\n```\napiRouter has `router.get('/items/:id', async (req, res) => { const x = await db.find(req.params.id); res.json(x); })`.",
+      "request_type": "code_understanding",
+      "complexity": 3,
+      "tests": [
+        "plain"
+      ]
+    },
+    {
+      "id": "val-036",
+      "query": "Summarize what this function does in one sentence.",
+      "context": "```python\ndef dedupe(xs):\n    seen = set()\n    return [x for x in xs if not (x in seen or seen.add(x))]\n```",
+      "request_type": "code_understanding",
+      "complexity": 1,
+      "tests": [
+        "keyword_trap",
+        "short_simple"
+      ]
+    },
+    {
+      "id": "val-037",
+      "query": "Why does this fail with 'Event loop is closed' only on the second test?",
+      "context": "```\nRuntimeError: Event loop is closed\n  File \"tests/test_api.py\", line 22, in test_second\n    r = await client.get('/ping')\n```\nA module-level `client = httpx.AsyncClient()` is shared by both tests; pytest-asyncio default function-scoped loops.",
+      "request_type": "code_understanding",
+      "complexity": 3,
+      "tests": [
+        "plain"
+      ]
+    },
+    {
+      "id": "val-038",
+      "query": "Trace how the cache invalidation here can still serve stale data right after a successful update, including the interleavings that cause it.",
+      "context": "```python\ndef get_user(uid):\n    v = cache.get(uid)\n    if v is None:\n        v = db.fetch(uid)\n        cache.set(uid, v, ttl=300)\n    return v\n\ndef update_user(uid, fields):\n    cache.delete(uid)\n    db.update(uid, fields)\n```\nreads are served by a replica with ~1s lag.",
+      "request_type": "code_understanding",
+      "complexity": 5,
+      "tests": [
+        "context_dependent"
+      ]
+    },
+    {
+      "id": "val-039",
+      "query": "whats this error mean: TypeError: 'NoneType' object is not subscriptable",
+      "context": "No codebase context.",
+      "request_type": "code_understanding",
+      "complexity": 2,
+      "tests": [
+        "typo_informal",
+        "short_simple"
+      ]
+    },
+    {
+      "id": "val-040",
+      "query": "Warum gibt dieser Go-Code manchmal 0 statt 10 aus?",
+      "context": "```go\nvar n int\nfor i := 0; i < 10; i++ {\n    go func() { n++ }()\n}\ntime.Sleep(10 * time.Millisecond)\nfmt.Println(n)\n```",
+      "request_type": "code_understanding",
+      "complexity": 3,
+      "tests": [
+        "multilingual"
+      ]
+    },
+    {
+      "id": "val-041",
+      "query": "Why does this test pass on my laptop but fail in CI?",
+      "context": "```python\ndef test_report_date():\n    r = build_report(datetime(2026, 3, 1, 23, 30))\n    assert r.label == '2026-03-01'\n```\nbuild_report calls `.astimezone()` with no argument. My laptop is US/Pacific; CI containers run UTC.",
+      "request_type": "code_understanding",
+      "complexity": 3,
+      "tests": [
+        "context_dependent"
+      ]
+    },
+    {
+      "id": "val-042",
+      "query": "I inherited this Airflow DAG and nobody understands it. Explain what each task does, which tasks can safely run in parallel, where a retry could duplicate data downstream, and what state things are left in if task three fails halfway through its write.",
+      "context": "```python\nextract = PythonOperator(task_id='extract', python_callable=pull_api_to_s3, retries=3)\nstage = PythonOperator(task_id='stage', python_callable=copy_s3_to_staging)\nmerge = PythonOperator(task_id='merge', python_callable=run_merge_sql, retries=2)\nnotify = PythonOperator(task_id='notify', python_callable=send_slack, trigger_rule='all_done')\nextract >> stage >> merge >> notify\n```\npull_api_to_s3 writes to s3://raw/{{ ts }}/part-*.json; copy_s3_to_staging does TRUNCATE then COPY; run_merge_sql does INSERT ... SELECT from staging into fact_sales with no key check.",
+      "request_type": "code_understanding",
+      "complexity": 4,
+      "tests": [
+        "long_spec"
+      ]
+    },
+    {
+      "id": "val-043",
+      "query": "Explain what this Kubernetes manifest will actually do when applied, especially the probes.",
+      "context": "```yaml\nreadinessProbe:\n  httpGet: {path: /ready, port: 8080}\n  periodSeconds: 5\nlivenessProbe:\n  httpGet: {path: /ready, port: 8080}\n  initialDelaySeconds: 2\n  periodSeconds: 3\n  failureThreshold: 1\n```\nThe app takes ~25 seconds to warm up and /ready returns 503 until it is warm.",
+      "request_type": "code_understanding",
+      "complexity": 3,
+      "tests": [
+        "plain"
+      ]
+    },
+    {
+      "id": "val-044",
+      "query": "The nodejs worker on our box keeps growing by about 200MB an hour until the OOM killer takes it out, restarts clean, and then does it all over again. It handles image resize jobs from a queue and nothing else is running. I pasted the relevant bits. What in here would make the memory climb like that, and how would you confirm which part it is?",
+      "context": "```js\nconst seen = new Map();\nqueue.process(async (job) => {\n  const buf = await fetchImage(job.data.url);\n  seen.set(job.id, { url: job.data.url, buf });\n  const out = await sharp(buf).resize(800).toBuffer();\n  await upload(job.data.key, out);\n});\n```",
+      "request_type": "code_understanding",
+      "complexity": 4,
+      "tests": [
+        "long_spec",
+        "no_keyword"
+      ]
+    },
+    {
+      "id": "val-045",
+      "query": "Should we use Postgres or MongoDB for a product catalog where each category has different attributes?",
+      "context": "No codebase context.",
+      "request_type": "technical_design",
+      "complexity": 3,
+      "tests": [
+        "plain"
+      ]
+    },
+    {
+      "id": "val-046",
+      "query": "Design a notification service that sends email, SMS and push notifications with per-user channel preferences, quiet hours, retries with backoff, and deduplication of repeated events.",
+      "context": "No codebase context.",
+      "request_type": "technical_design",
+      "complexity": 4,
+      "tests": [
+        "plain"
+      ]
+    },
+    {
+      "id": "val-047",
+      "query": "We are designing an active-active deployment across three regions for a booking platform. Requirements: users must be able to book from the nearest region with p99 under 300 ms, no double-booking of the same room even during a region partition, bookings must survive the loss of any one region with zero data loss, and the inventory service is currently a single Postgres primary. Propose the data architecture, the conflict-handling strategy, the failure modes you would test, and what we should give up to keep this feasible.",
+      "context": "Currently one region (us-east), Postgres 15 primary with two replicas, Kafka for events, ~800 bookings/min at peak.",
+      "request_type": "technical_design",
+      "complexity": 5,
+      "tests": [
+        "long_spec"
+      ]
+    },
+    {
+      "id": "val-048",
+      "query": "We have a Rails monolith with 600k lines and want to move toward services. Lay out a migration plan: what to extract first, how to keep the monolith releasable, how to handle the shared database, and how we'd know each step worked.",
+      "context": "8 teams, weekly deploys, MySQL, one large `orders`/`users`/`invoices` schema with cross-table joins.",
+      "request_type": "technical_design",
+      "complexity": 4,
+      "tests": [
+        "plain"
+      ]
+    },
+    {
+      "id": "val-049",
+      "query": "How should I structure the REST endpoints for a small library app? Not asking for code, just the resource layout and which status codes to return.",
+      "context": "Entities: books, members, loans. Members can borrow up to 5 books.",
+      "request_type": "technical_design",
+      "complexity": 2,
+      "tests": [
+        "keyword_trap"
+      ]
+    },
+    {
+      "id": "val-050",
+      "query": "REST or GraphQL for a small internal dashboard?",
+      "context": "No codebase context.",
+      "request_type": "technical_design",
+      "complexity": 2,
+      "tests": [
+        "short_simple",
+        "plain"
+      ]
+    },
+    {
+      "id": "val-051",
+      "query": "¿Cómo diseñarías el esquema de base de datos para un sistema de reservas de salas con reservas recurrentes y excepciones a una sola ocurrencia?",
+      "context": "No codebase context.",
+      "request_type": "technical_design",
+      "complexity": 3,
+      "tests": [
+        "multilingual"
+      ]
+    },
+    {
+      "id": "val-052",
+      "query": "Hamare paas 2 million users hain. Chat app ke liye WebSocket vs long polling kya better rahega, aur connections ko multiple servers pe scale kaise karein?",
+      "context": "No codebase context.",
+      "request_type": "technical_design",
+      "complexity": 4,
+      "tests": [
+        "multilingual"
+      ]
+    },
+    {
+      "id": "val-053",
+      "query": "Is this the right split of responsibilities?",
+      "context": "Proposed: `orders` service owns the orders table. `payments` service reads and updates `orders.status` directly in the same database to mark orders as paid. `shipping` calls `payments` over HTTP to ask whether an order is paid. All three deploy independently.",
+      "request_type": "technical_design",
+      "complexity": 4,
+      "tests": [
+        "context_dependent"
+      ]
+    },
+    {
+      "id": "val-054",
+      "query": "We have 40 cron jobs on one VM and nobody knows when they break. What should replace this setup?",
+      "context": "Mix of Python and shell jobs, some run every minute, some nightly with 4-hour runtimes. Team of 5, AWS, no Kubernetes.",
+      "request_type": "technical_design",
+      "complexity": 3,
+      "tests": [
+        "no_keyword"
+      ]
+    },
+    {
+      "id": "val-055",
+      "query": "Plan a zero-downtime move of our 4 TB MySQL 5.7 database to Aurora PostgreSQL. We need dual writes or change data capture, a data validation strategy that proves parity before cutover, a rollback plan that works for at least a week after cutover, handling for differences like zero dates and case-insensitive collations, and a schedule that keeps the app teams unblocked. Write it as a phased plan with the risks of each phase.",
+      "context": "40 services read the database directly, 6 of them via raw SQL with MySQL-specific syntax. Peak 5k writes/sec. Maintenance window allowed: none.",
+      "request_type": "technical_design",
+      "complexity": 5,
+      "tests": [
+        "long_spec"
+      ]
+    },
+    {
+      "id": "val-056",
+      "query": "kafka or rabbitmq for background jobs? we r a team of 3",
+      "context": "No codebase context.",
+      "request_type": "technical_design",
+      "complexity": 2,
+      "tests": [
+        "typo_informal",
+        "short_simple"
+      ]
+    },
+    {
+      "id": "val-057",
+      "query": "Write a one-page ADR deciding between SQS and Kafka for our order events.",
+      "context": "Context: 300 events/sec, 3 consumer teams, one needs replay of the last 7 days, we are all-in on AWS.",
+      "request_type": "technical_design",
+      "complexity": 3,
+      "tests": [
+        "keyword_trap"
+      ]
+    },
+    {
+      "id": "val-058",
+      "query": "How should we version a public REST API that thousands of third parties already depend on?",
+      "context": "No codebase context.",
+      "request_type": "technical_design",
+      "complexity": 3,
+      "tests": [
+        "plain"
+      ]
+    },
+    {
+      "id": "val-059",
+      "query": "Design the caching layer for a read-heavy product page, including how entries get invalidated and how to avoid stampedes when a hot item expires.",
+      "context": "10k RPS peak, prices change several times a day, inventory changes constantly, CDN available.",
+      "request_type": "technical_design",
+      "complexity": 4,
+      "tests": [
+        "plain"
+      ]
+    },
+    {
+      "id": "val-060",
+      "query": "Quelle architecture recommandes-tu pour collecter les journaux de 200 microservices et les rendre consultables pendant 30 jours ?",
+      "context": "No codebase context.",
+      "request_type": "technical_design",
+      "complexity": 4,
+      "tests": [
+        "multilingual"
+      ]
+    },
+    {
+      "id": "val-061",
+      "query": "Which option fits our constraints?",
+      "context": "Constraints: 2 developers, about 50 users, budget $50/month, no one with ops experience. Options: (A) Kubernetes on a managed cluster, (B) a PaaS like Render or Fly, (C) one VM with docker compose.",
+      "request_type": "technical_design",
+      "complexity": 3,
+      "tests": [
+        "context_dependent"
+      ]
+    },
+    {
+      "id": "val-062",
+      "query": "Design a multi-tenant billing system supporting usage-based pricing with tiered rates, mid-cycle plan changes with proration, invoice generation, credits and refunds, and a complete audit trail that finance can reconcile against the payment processor.",
+      "context": "No codebase context.",
+      "request_type": "technical_design",
+      "complexity": 5,
+      "tests": [
+        "plain"
+      ]
+    },
+    {
+      "id": "val-063",
+      "query": "Our checkout takes 8 seconds at peak and management wants to just buy bigger servers. What would you change structurally instead?",
+      "context": "Monolith calls inventory, tax, fraud and payment APIs sequentially inside one request. Database CPU is at 30%, app server threads are all busy waiting.",
+      "request_type": "technical_design",
+      "complexity": 4,
+      "tests": [
+        "no_keyword",
+        "context_dependent"
+      ]
+    },
+    {
+      "id": "val-064",
+      "query": "how shud i store user uploaded images, s3 direct or thru my backend?",
+      "context": "No codebase context.",
+      "request_type": "technical_design",
+      "complexity": 3,
+      "tests": [
+        "typo_informal"
+      ]
+    },
+    {
+      "id": "val-065",
+      "query": "We need a feature flag platform used by 30 services. Requirements: flags evaluated locally with under 1 ms overhead, changes visible within 10 seconds, percentage rollouts that stay sticky per user, targeting by attribute rules, an audit log of who changed what, safe behavior if the control plane is down, and a way to clean up stale flags. Propose the architecture and the main trade-offs.",
+      "context": "No codebase context.",
+      "request_type": "technical_design",
+      "complexity": 4,
+      "tests": [
+        "long_spec"
+      ]
+    },
+    {
+      "id": "val-066",
+      "query": "Monorepo or polyrepo for 5 small services?",
+      "context": "No codebase context.",
+      "request_type": "technical_design",
+      "complexity": 2,
+      "tests": [
+        "short_simple"
+      ]
+    },
+    {
+      "id": "val-067",
+      "query": "A diagnostic test has 95% sensitivity and 90% specificity. If 2% of the people tested actually have the condition, what is the probability that someone with a positive result truly has it?",
+      "context": "No codebase context.",
+      "request_type": "analytical_reasoning",
+      "complexity": 3,
+      "tests": [
+        "plain"
+      ]
+    },
+    {
+      "id": "val-068",
+      "query": "What's 15% of 240?",
+      "context": "No codebase context.",
+      "request_type": "analytical_reasoning",
+      "complexity": 1,
+      "tests": [
+        "short_simple"
+      ]
+    },
+    {
+      "id": "val-069",
+      "query": "Prove that the sum of two odd integers is even.",
+      "context": "No codebase context.",
+      "request_type": "analytical_reasoning",
+      "complexity": 2,
+      "tests": [
+        "plain"
+      ]
+    },
+    {
+      "id": "val-070",
+      "query": "Estimate how many EV charging stations a city of 800,000 people needs by 2030.",
+      "context": "No codebase context.",
+      "request_type": "analytical_reasoning",
+      "complexity": 3,
+      "tests": [
+        "plain",
+        "no_keyword"
+      ]
+    },
+    {
+      "id": "val-071",
+      "query": "Based on these events, what most likely happened to order 4412?",
+      "context": "```\n10:02:11 order=4412 state=PAID\n10:02:12 order=4412 warehouse.reserve OK\n10:02:15 order=4412 warehouse.reserve OK\n10:02:16 order=4412 shipping.label CREATED id=L-77\n10:07:40 order=4412 shipping.label CREATED id=L-91\n10:07:41 order=4412 state=SHIPPED\n```",
+      "request_type": "analytical_reasoning",
+      "complexity": 3,
+      "tests": [
+        "context_dependent"
+      ]
+    },
+    {
+      "id": "val-072",
+      "query": "Our A/B test shows variant B lifting signup conversion from 4.10% to 4.55% (n=12,400 per arm). We looked at 6 metrics and 4 segments after the fact, and B was only significant for mobile users on one browser. Work out whether the headline lift is credible, how to adjust for the multiple comparisons, whether the segment finding should be trusted, and what you would need to run next to decide, with the actual numbers where they can be computed.",
+      "context": "No codebase context.",
+      "request_type": "analytical_reasoning",
+      "complexity": 5,
+      "tests": [
+        "long_spec"
+      ]
+    },
+    {
+      "id": "val-073",
+      "query": "एक सिक्का 10 बार उछाला जाता है। ठीक 3 बार चित आने की प्रायिकता क्या है?",
+      "context": "No codebase context.",
+      "request_type": "analytical_reasoning",
+      "complexity": 2,
+      "tests": [
+        "multilingual"
+      ]
+    },
+    {
+      "id": "val-074",
+      "query": "Si una empresa crece un 8% anual, ¿en cuántos años duplica sus ingresos? Explica el cálculo.",
+      "context": "No codebase context.",
+      "request_type": "analytical_reasoning",
+      "complexity": 2,
+      "tests": [
+        "multilingual"
+      ]
+    },
+    {
+      "id": "val-075",
+      "query": "I don't need the code reviewed, I need the exact expected payout of the game it simulates.",
+      "context": "```python\ndef play():\n    total = 0\n    while True:\n        r = random.randint(1, 6)\n        if r == 6:\n            return total\n        total += r\n```\nThe player is paid `total` when the first 6 is rolled.",
+      "request_type": "analytical_reasoning",
+      "complexity": 3,
+      "tests": [
+        "keyword_trap",
+        "context_dependent"
+      ]
+    },
+    {
+      "id": "val-076",
+      "query": "Our signup conversion went from 4.1% to 4.6% after a page change, with 3,000 visitors in each group. Is that a real improvement?",
+      "context": "No codebase context.",
+      "request_type": "analytical_reasoning",
+      "complexity": 3,
+      "tests": [
+        "no_keyword"
+      ]
+    },
+    {
+      "id": "val-077",
+      "query": "Prove by induction that 1^3 + 2^3 + ... + n^3 = (n(n+1)/2)^2.",
+      "context": "No codebase context.",
+      "request_type": "analytical_reasoning",
+      "complexity": 3,
+      "tests": [
+        "plain"
+      ]
+    },
+    {
+      "id": "val-078",
+      "query": "if i save 300 a month at 7% apy how much do i have after 10 yrs roughly",
+      "context": "No codebase context.",
+      "request_type": "analytical_reasoning",
+      "complexity": 2,
+      "tests": [
+        "typo_informal"
+      ]
+    },
+    {
+      "id": "val-079",
+      "query": "Three independent servers each fail with probability 0.05 during a given hour. What is the probability the service is up if one working server is enough, and what if a majority must be up?",
+      "context": "No codebase context.",
+      "request_type": "analytical_reasoning",
+      "complexity": 3,
+      "tests": [
+        "plain"
+      ]
+    },
+    {
+      "id": "val-080",
+      "query": "Using the timeline below, work out the most likely root cause of the latency spike.",
+      "context": "```\n14:00 deploy api v2.31 (all pods)\n14:03 p99 latency 120ms -> 140ms\n14:09 db connections 80 -> 195 (max 200)\n14:11 p99 latency 140ms -> 2300ms, 5xx begins\n14:12 autoscaler adds 6 pods\n14:14 db connections 200 (saturated), 5xx 38%\n14:20 rollback to v2.30; connections 70, latency 115ms\n```\nv2.31 changelog: 'prefetch user preferences on every request'.",
+      "request_type": "analytical_reasoning",
+      "complexity": 4,
+      "tests": [
+        "context_dependent"
+      ]
+    },
+    {
+      "id": "val-081",
+      "query": "Ein Zug fährt um 9:15 mit 80 km/h ab, ein zweiter um 9:45 mit 110 km/h auf derselben Strecke. Wann holt der zweite den ersten ein?",
+      "context": "No codebase context.",
+      "request_type": "analytical_reasoning",
+      "complexity": 2,
+      "tests": [
+        "multilingual"
+      ]
+    },
+    {
+      "id": "val-082",
+      "query": "We run 12 batch jobs nightly in a 6-hour window. Job durations (hours) are 1.5, 2, 0.5, 3, 1, 2.5, 1, 0.5, 2, 1.5, 3, 1. Jobs 4 and 11 depend on job 1; job 7 depends on 4 and 6; we have 3 workers and each job uses one worker. Find whether a schedule fits in the window, give one, and say how much slack the best schedule has. Show the reasoning.",
+      "context": "No codebase context.",
+      "request_type": "analytical_reasoning",
+      "complexity": 4,
+      "tests": [
+        "long_spec"
+      ]
+    },
+    {
+      "id": "val-083",
+      "query": "How many samples do I need per arm to detect a 2 percentage point lift on a 10% baseline rate at 80% power and 5% significance? I'm designing the experiment, not asking for code.",
+      "context": "No codebase context.",
+      "request_type": "analytical_reasoning",
+      "complexity": 3,
+      "tests": [
+        "keyword_trap"
+      ]
+    },
+    {
+      "id": "val-084",
+      "query": "Alice says Bob lies. Bob says Carol lies. Carol says both Alice and Bob lie. Everyone either always lies or always tells the truth. Who is truthful?",
+      "context": "No codebase context.",
+      "request_type": "analytical_reasoning",
+      "complexity": 3,
+      "tests": [
+        "plain"
+      ]
+    },
+    {
+      "id": "val-085",
+      "query": "Why might our average response time look healthy while customers keep complaining that the site is slow?",
+      "context": "No codebase context.",
+      "request_type": "analytical_reasoning",
+      "complexity": 3,
+      "tests": [
+        "no_keyword"
+      ]
+    },
+    {
+      "id": "val-086",
+      "query": "Here are the acceptance counts. Does the department-level data support the claim that the policy disadvantages women?",
+      "context": "```\n            Men applied/admitted   Women applied/admitted\nDept X      800 / 480              100 / 70\nDept Y      200 / 20               900 / 120\nOverall     1000 / 500             1000 / 190\n```",
+      "request_type": "analytical_reasoning",
+      "complexity": 4,
+      "tests": [
+        "context_dependent"
+      ]
+    },
+    {
+      "id": "val-087",
+      "query": "median of 3 9 4 12 7",
+      "context": "No codebase context.",
+      "request_type": "analytical_reasoning",
+      "complexity": 1,
+      "tests": [
+        "short_simple",
+        "typo_informal"
+      ]
+    },
+    {
+      "id": "val-088",
+      "query": "my sprint velocity was 21 25 18 30 26 whats a sane forecast range for next sprint, and how wrong could i be",
+      "context": "No codebase context.",
+      "request_type": "analytical_reasoning",
+      "complexity": 3,
+      "tests": [
+        "typo_informal"
+      ]
+    },
+    {
+      "id": "val-089",
+      "query": "Write a short email to my landlord asking him to fix the leaking kitchen tap.",
+      "context": "Tap has been dripping for two weeks. I am in unit 4B, tenant since 2024. Friendly tone.",
+      "request_type": "writing",
+      "complexity": 2,
+      "tests": [
+        "plain"
+      ]
+    },
+    {
+      "id": "val-090",
+      "query": "Rewrite this paragraph so it sounds more formal.",
+      "context": "\"Hey team, so the thing is, we kinda missed the deadline cuz the vendor was super late. We'll try to fix it asap and get back to you guys.\"",
+      "request_type": "writing",
+      "complexity": 2,
+      "tests": [
+        "plain"
+      ]
+    },
+    {
+      "id": "val-091",
+      "query": "Summarize this incident report for customers in three sentences, without jargon.",
+      "context": "Report: Between 02:10 and 03:45 UTC the primary database failed over after disk latency exceeded thresholds. Replica promotion took 14 minutes because a stale lock blocked the standby. 3% of checkout requests returned 5xx. No data was lost. Action items: tune failover timeouts, add lock monitoring.",
+      "request_type": "writing",
+      "complexity": 3,
+      "tests": [
+        "plain"
+      ]
+    },
+    {
+      "id": "val-092",
+      "query": "Draft a launch announcement for our new offline mode that works for both the blog and an email to existing users.",
+      "context": "App: field-inspection tool. Offline mode lets inspectors fill forms without signal and syncs when back online. Available on iOS and Android from Monday. Tone: warm, practical.",
+      "request_type": "writing",
+      "complexity": 3,
+      "tests": [
+        "plain"
+      ]
+    },
+    {
+      "id": "val-093",
+      "query": "Make this sentence shorter: 'Due to the fact that it was raining, we made the decision to postpone the event.'",
+      "context": "No codebase context.",
+      "request_type": "writing",
+      "complexity": 1,
+      "tests": [
+        "short_simple"
+      ]
+    },
+    {
+      "id": "val-094",
+      "query": "Refactor my cover letter so the first paragraph leads with the Kubernetes migration I led instead of my degree.",
+      "context": "\"Dear Hiring Manager, I recently graduated with a B.S. in Computer Science from State University. During my time at Acme Corp I also led the migration of 30 services to Kubernetes, cutting deploy time by 70%. I am excited to apply...\"",
+      "request_type": "writing",
+      "complexity": 3,
+      "tests": [
+        "keyword_trap"
+      ]
+    },
+    {
+      "id": "val-095",
+      "query": "Explain to customers why the API was down yesterday and write the status page update.",
+      "context": "Facts: certificate expired at 08:00 UTC, we renewed at 09:20, API calls failed during that period, no data lost, we're adding expiry alerts.",
+      "request_type": "writing",
+      "complexity": 3,
+      "tests": [
+        "keyword_trap"
+      ]
+    },
+    {
+      "id": "val-096",
+      "query": "मेरे मैनेजर को एक छोटा ईमेल लिखो कि मुझे शुक्रवार को छुट्टी चाहिए क्योंकि घर में शादी है।",
+      "context": "No codebase context.",
+      "request_type": "writing",
+      "complexity": 2,
+      "tests": [
+        "multilingual"
+      ]
+    },
+    {
+      "id": "val-097",
+      "query": "Escreva uma mensagem curta de agradecimento para um cliente que acabou de renovar o contrato por mais dois anos.",
+      "context": "No codebase context.",
+      "request_type": "writing",
+      "complexity": 2,
+      "tests": [
+        "multilingual"
+      ]
+    },
+    {
+      "id": "val-098",
+      "query": "என் ஆசிரியருக்கு அவர் செய்த உதவிக்காக ஒரு சிறிய நன்றிக் கடிதம் எழுதுங்கள்.",
+      "context": "No codebase context.",
+      "request_type": "writing",
+      "complexity": 2,
+      "tests": [
+        "multilingual"
+      ]
+    },
+    {
+      "id": "val-099",
+      "query": "Write a press release announcing that Northwind Logistics has opened a second warehouse in Reno. It must be under 350 words, open with the news and not the company history, include a quote from the COO about reducing delivery times, mention 120 new jobs and a ribbon-cutting on 14 November, avoid the words 'leading' and 'innovative', end with a standard boilerplate paragraph, and use a neutral journalistic voice.",
+      "context": "COO: Maria Delgado. Warehouse is 210,000 sq ft. Delivery to the Western US goes from 3 days to 1 day.",
+      "request_type": "writing",
+      "complexity": 4,
+      "tests": [
+        "long_spec"
+      ]
+    },
+    {
+      "id": "val-100",
+      "query": "Rewrite our postmortem into three versions: a one-paragraph executive summary, a customer-facing apology that admits fault without legal exposure, and a blameless engineering narrative. All three must tell the same timeline, never contradict each other on cause or duration, and the customer version must offer a credit without promising a specific dollar amount.",
+      "context": "Postmortem: 11 Oct, deploy at 16:02 introduced a config typo that disabled retries; queue backed up; customers saw delayed emails for 3h20m; detected at 16:40 by a customer ticket, not alerting; fixed at 19:22 by rollback; 18% of emails delayed more than an hour; root causes: no config validation in CI and alert threshold set too high.",
+      "request_type": "writing",
+      "complexity": 5,
+      "tests": [
+        "long_spec"
+      ]
+    },
+    {
+      "id": "val-101",
+      "query": "pls fix grammer in this: 'me and him was going to the meeting but we is late'",
+      "context": "No codebase context.",
+      "request_type": "writing",
+      "complexity": 1,
+      "tests": [
+        "typo_informal",
+        "short_simple"
+      ]
+    },
+    {
+      "id": "val-102",
+      "query": "Make it friendlier but keep the deadline.",
+      "context": "Hi Dan, Invoice 2291 is overdue. Payment is required by Friday 5 March or a late fee applies. Regards, Accounts.",
+      "request_type": "writing",
+      "complexity": 2,
+      "tests": [
+        "context_dependent"
+      ]
+    },
+    {
+      "id": "val-103",
+      "query": "I need to tell my team that the project got cancelled without making everyone panic about layoffs.",
+      "context": "About 12 people, project ran 8 months, company is reassigning everyone to other teams, no layoffs planned.",
+      "request_type": "writing",
+      "complexity": 3,
+      "tests": [
+        "no_keyword"
+      ]
+    },
+    {
+      "id": "val-104",
+      "query": "write a quick bday msg for my coworker priya shes leaving for a new job tmrw",
+      "context": "No codebase context.",
+      "request_type": "writing",
+      "complexity": 2,
+      "tests": [
+        "typo_informal"
+      ]
+    },
+    {
+      "id": "val-105",
+      "query": "Edit this blog intro: tighten it, remove clichés, keep my voice.",
+      "context": "\"In today's fast-paced world of software, it goes without saying that testing is crucial. At the end of the day, nobody likes bugs. Let's dive in and unpack why I stopped writing tests first, and why I'm back.\"",
+      "request_type": "writing",
+      "complexity": 3,
+      "tests": [
+        "plain",
+        "keyword_trap"
+      ]
+    },
+    {
+      "id": "val-106",
+      "query": "My landlord kept my deposit for 'normal wear'. Put together a firm but polite letter asking for it back, with a deadline.",
+      "context": "Deposit $1,800, moved out 31 July, he deducted $600 for carpet. Lease was 3 years. State has a 30-day return rule.",
+      "request_type": "writing",
+      "complexity": 3,
+      "tests": [
+        "no_keyword"
+      ]
+    },
+    {
+      "id": "val-107",
+      "query": "Turn these notes into the meeting summary I can send to everyone.",
+      "context": "- launch moved from 5 Nov to 19 Nov (QA found payment bug)\n- Raj owns bug fix by 10 Nov\n- marketing needs new date for newsletter, Ana to update\n- budget: no change\n- next sync Thursday 10am",
+      "request_type": "writing",
+      "complexity": 3,
+      "tests": [
+        "context_dependent"
+      ]
+    },
+    {
+      "id": "val-108",
+      "query": "Write a short poem about a segmentation fault at 3am.",
+      "context": "No codebase context.",
+      "request_type": "writing",
+      "complexity": 2,
+      "tests": [
+        "keyword_trap"
+      ]
+    },
+    {
+      "id": "val-109",
+      "query": "Redacta un correo para informar a los clientes de que cambiaremos el horario de atención a partir de marzo: lunes a viernes de 9 a 17 h, sin servicio los sábados.",
+      "context": "No codebase context.",
+      "request_type": "writing",
+      "complexity": 2,
+      "tests": [
+        "multilingual"
+      ]
+    },
+    {
+      "id": "val-110",
+      "query": "Rewrite our refund policy clause so it is clear to consumers but still protects us. Requirements: refunds within 30 days for unused services, pro-rated for annual plans after day 30, no refunds for digital goods already downloaded, mention a 5 business day processing window, keep it under 150 words, and avoid legalese like 'hereinafter' and 'notwithstanding'.",
+      "context": "Current clause: \"Notwithstanding anything herein, refunds may be granted at Company's sole discretion subject to Section 9.4 hereinafter described.\"",
+      "request_type": "writing",
+      "complexity": 4,
+      "tests": [
+        "long_spec"
+      ]
+    },
+    {
+      "id": "val-111",
+      "query": "What does HTTP status 429 mean?",
+      "context": "No codebase context.",
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "tests": [
+        "plain",
+        "short_simple"
+      ]
+    },
+    {
+      "id": "val-112",
+      "query": "What port does PostgreSQL listen on by default?",
+      "context": "No codebase context.",
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "tests": [
+        "plain",
+        "short_simple"
+      ]
+    },
+    {
+      "id": "val-113",
+      "query": "Who wrote the novel Things Fall Apart?",
+      "context": "No codebase context.",
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "tests": [
+        "plain",
+        "short_simple"
+      ]
+    },
+    {
+      "id": "val-114",
+      "query": "What is the difference between TCP and UDP?",
+      "context": "No codebase context.",
+      "request_type": "factual_lookup",
+      "complexity": 2,
+      "tests": [
+        "plain"
+      ]
+    },
+    {
+      "id": "val-115",
+      "query": "wat year did the berlin wall come down",
+      "context": "No codebase context.",
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "tests": [
+        "typo_informal",
+        "short_simple"
+      ]
+    },
+    {
+      "id": "val-116",
+      "query": "Which flag makes `ls` show hidden files?",
+      "context": "No codebase context.",
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "tests": [
+        "plain",
+        "short_simple"
+      ]
+    },
+    {
+      "id": "val-117",
+      "query": "भारत की सबसे लंबी नदी कौन सी है?",
+      "context": "No codebase context.",
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "tests": [
+        "multilingual",
+        "short_simple"
+      ]
+    },
+    {
+      "id": "val-118",
+      "query": "¿Cuál es el río más largo de Sudamérica?",
+      "context": "No codebase context.",
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "tests": [
+        "multilingual",
+        "short_simple"
+      ]
+    },
+    {
+      "id": "val-119",
+      "query": "Quelle est la complexité moyenne d'une recherche dans une table de hachage ?",
+      "context": "No codebase context.",
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "tests": [
+        "multilingual"
+      ]
+    },
+    {
+      "id": "val-120",
+      "query": "Was bedeutet die Abkürzung CORS?",
+      "context": "No codebase context.",
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "tests": [
+        "multilingual"
+      ]
+    },
+    {
+      "id": "val-121",
+      "query": "What does VSZ stand for in this output?",
+      "context": "```\nUSER   PID %CPU %MEM    VSZ   RSS TTY  STAT START TIME COMMAND\nroot     1  0.0  0.1 168940 11792 ?    Ss   Sep02 0:04 /sbin/init\n```",
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "tests": [
+        "context_dependent",
+        "short_simple"
+      ]
+    },
+    {
+      "id": "val-122",
+      "query": "What is a 'race statute' in property law?",
+      "context": "No codebase context.",
+      "request_type": "factual_lookup",
+      "complexity": 2,
+      "tests": [
+        "keyword_trap"
+      ]
+    },
+    {
+      "id": "val-123",
+      "query": "How long can a ball python get?",
+      "context": "No codebase context.",
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "tests": [
+        "keyword_trap",
+        "short_simple"
+      ]
+    },
+    {
+      "id": "val-124",
+      "query": "How many bits are in a byte?",
+      "context": "No codebase context.",
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "tests": [
+        "no_keyword",
+        "short_simple"
+      ]
+    },
+    {
+      "id": "val-125",
+      "query": "What are the four ACID properties in database transactions, and what does each mean?",
+      "context": "No codebase context.",
+      "request_type": "factual_lookup",
+      "complexity": 2,
+      "tests": [
+        "plain"
+      ]
+    },
+    {
+      "id": "val-126",
+      "query": "What is the maximum size of a single item in DynamoDB?",
+      "context": "No codebase context.",
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "tests": [
+        "plain",
+        "short_simple"
+      ]
+    },
+    {
+      "id": "val-127",
+      "query": "Which HTTP methods does the RFC define as idempotent?",
+      "context": "No codebase context.",
+      "request_type": "factual_lookup",
+      "complexity": 2,
+      "tests": [
+        "plain"
+      ]
+    },
+    {
+      "id": "val-128",
+      "query": "whats the capital of australia",
+      "context": "No codebase context.",
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "tests": [
+        "typo_informal",
+        "short_simple"
+      ]
+    },
+    {
+      "id": "val-129",
+      "query": "తాజ్ మహల్ ఎక్కడ ఉంది?",
+      "context": "No codebase context.",
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "tests": [
+        "multilingual",
+        "short_simple"
+      ]
+    },
+    {
+      "id": "val-130",
+      "query": "Roughly what is the boiling point of water at the top of Mount Everest?",
+      "context": "No codebase context.",
+      "request_type": "factual_lookup",
+      "complexity": 2,
+      "tests": [
+        "no_keyword"
+      ]
+    },
+    {
+      "id": "val-131",
+      "query": "When was the first iPhone released?",
+      "context": "No codebase context.",
+      "request_type": "factual_lookup",
+      "complexity": 1,
+      "tests": [
+        "plain",
+        "short_simple"
+      ]
+    },
+    {
+      "id": "val-132",
+      "query": "For each HTTP status class (1xx to 5xx) give its meaning, then tell me which of 301, 302, 307 and 308 preserve the request method and which are permanent. Keep each entry to one line so I can paste it into a cheat sheet.",
+      "context": "No codebase context.",
+      "request_type": "factual_lookup",
+      "complexity": 3,
+      "tests": [
+        "long_spec"
+      ]
+    },
+    {
+      "id": "val-133",
+      "query": "thanks, that fixed it!",
+      "context": "Previous assistant message suggested adding `await` before the fetch call.",
+      "request_type": "general",
+      "complexity": 1,
+      "tests": [
+        "plain",
+        "short_simple",
+        "context_dependent"
+      ]
+    },
+    {
+      "id": "val-134",
+      "query": "Hi there",
+      "context": "No codebase context.",
+      "request_type": "general",
+      "complexity": 1,
+      "tests": [
+        "plain",
+        "short_simple"
+      ]
+    },
+    {
+      "id": "val-135",
+      "query": "What can you help me with?",
+      "context": "No codebase context.",
+      "request_type": "general",
+      "complexity": 1,
+      "tests": [
+        "plain",
+        "short_simple"
+      ]
+    },
+    {
+      "id": "val-136",
+      "query": "Are you able to remember our earlier chats?",
+      "context": "No codebase context.",
+      "request_type": "general",
+      "complexity": 1,
+      "tests": [
+        "plain",
+        "short_simple"
+      ]
+    },
+    {
+      "id": "val-137",
+      "query": "Which do you prefer, tabs or spaces?",
+      "context": "No codebase context.",
+      "request_type": "general",
+      "complexity": 1,
+      "tests": [
+        "keyword_trap",
+        "short_simple"
+      ]
+    },
+    {
+      "id": "val-138",
+      "query": "My code has been compiling for three hours and honestly so has my patience. Any advice on handling burnout?",
+      "context": "No codebase context.",
+      "request_type": "general",
+      "complexity": 2,
+      "tests": [
+        "keyword_trap"
+      ]
+    },
+    {
+      "id": "val-139",
+      "query": "debugging my sleep schedule, any tips? I keep waking up at 3am",
+      "context": "No codebase context.",
+      "request_type": "general",
+      "complexity": 2,
+      "tests": [
+        "keyword_trap"
+      ]
+    },
+    {
+      "id": "val-140",
+      "query": "Is it worth learning Rust in 2026 or is it hype? I'm a Java dev tired of boilerplate.",
+      "context": "No codebase context.",
+      "request_type": "general",
+      "complexity": 2,
+      "tests": [
+        "keyword_trap"
+      ]
+    },
+    {
+      "id": "val-141",
+      "query": "आज मन बहुत उदास है, कुछ अच्छा बोलो।",
+      "context": "No codebase context.",
+      "request_type": "general",
+      "complexity": 1,
+      "tests": [
+        "multilingual",
+        "short_simple"
+      ]
+    },
+    {
+      "id": "val-142",
+      "query": "Yaar interview se pehle bohot nervous hun, kuch tips do na.",
+      "context": "No codebase context.",
+      "request_type": "general",
+      "complexity": 2,
+      "tests": [
+        "multilingual",
+        "typo_informal"
+      ]
+    },
+    {
+      "id": "val-143",
+      "query": "Peux-tu me recommander un livre de science-fiction pour les vacances ?",
+      "context": "No codebase context.",
+      "request_type": "general",
+      "complexity": 1,
+      "tests": [
+        "multilingual"
+      ]
+    },
+    {
+      "id": "val-144",
+      "query": "Gracias por tu ayuda, eres genial.",
+      "context": "No codebase context.",
+      "request_type": "general",
+      "complexity": 1,
+      "tests": [
+        "multilingual",
+        "short_simple"
+      ]
+    },
+    {
+      "id": "val-145",
+      "query": "Que tipo de música é boa para estudar?",
+      "context": "No codebase context.",
+      "request_type": "general",
+      "complexity": 1,
+      "tests": [
+        "multilingual"
+      ]
+    },
+    {
+      "id": "val-146",
+      "query": "Wie geht's dir heute?",
+      "context": "No codebase context.",
+      "request_type": "general",
+      "complexity": 1,
+      "tests": [
+        "multilingual",
+        "short_simple"
+      ]
+    },
+    {
+      "id": "val-147",
+      "query": "ok but which laptop shud i buy for college, under 800 bucks",
+      "context": "No codebase context.",
+      "request_type": "general",
+      "complexity": 2,
+      "tests": [
+        "typo_informal"
+      ]
+    },
+    {
+      "id": "val-148",
+      "query": "I have two job offers. One is a 40% raise at a bank with a long commute and rigid hours; the other is a smaller startup with equity, remote work and a 10% raise. I'm 29, have a mortgage, and a toddler. My partner works steady hours. I tend to get bored in structured places but I also hate uncertainty. How would you think about choosing, and what would you ask yourself before deciding?",
+      "context": "No codebase context.",
+      "request_type": "general",
+      "complexity": 3,
+      "tests": [
+        "long_spec",
+        "no_keyword"
+      ]
+    },
+    {
+      "id": "val-149",
+      "query": "Is it rude to leave a group chat without saying anything?",
+      "context": "No codebase context.",
+      "request_type": "general",
+      "complexity": 1,
+      "tests": [
+        "no_keyword",
+        "short_simple"
+      ]
+    },
+    {
+      "id": "val-150",
+      "query": "Which of the two would you pick?",
+      "context": "Option A: stay in my current town near family, lower pay. Option B: move to a bigger city for a better job, but I'd know nobody.",
+      "request_type": "general",
+      "complexity": 2,
+      "tests": [
+        "context_dependent",
+        "no_keyword"
+      ]
+    },
+    {
+      "id": "val-151",
+      "query": "lol nice",
+      "context": "Previous assistant message was a joke about off-by-one errors.",
+      "request_type": "general",
+      "complexity": 1,
+      "tests": [
+        "short_simple",
+        "context_dependent",
+        "typo_informal"
+      ]
+    },
+    {
+      "id": "val-152",
+      "query": "Do you ever get tired of questions like these?",
+      "context": "No codebase context.",
+      "request_type": "general",
+      "complexity": 2,
+      "tests": [
+        "no_keyword"
+      ]
+    },
+    {
+      "id": "val-153",
+      "query": "How should I split rent fairly with a roommate who has the bigger room?",
+      "context": "No codebase context.",
+      "request_type": "general",
+      "complexity": 2,
+      "tests": [
+        "no_keyword"
+      ]
+    },
+    {
+      "id": "val-154",
+      "query": "I have a week to prepare a 20-minute presentation to senior leadership about a project that slipped. I'm nervous because the CFO tends to interrupt. I'm decent at the content but freeze when challenged. I have a few evenings free but also a full workload. What's your advice on how to approach the week and handle the pressure in the room?",
+      "context": "No codebase context.",
+      "request_type": "general",
+      "complexity": 3,
+      "tests": [
+        "long_spec"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,42 @@
+{
+  "health": {
+    "status": "ok",
+    "ready": true,
+    "checkpoint": "/Users/gouravnss/.cache/huggingface/hub/models--StrandsAgents--strands-decider-2B-hobson-v19/snapshots/bb282d786bc251fd4e3068de3ada9ddbb38127cd",
+    "checkpoint_revision": "bb282d786bc251fd4e3068de3ada9ddbb38127cd",
+    "base_model": "Qwen/Qwen3.5-2B-Base",
+    "base_model_path": "/Users/gouravnss/.cache/huggingface/hub/models--Qwen--Qwen3.5-2B-Base/snapshots/b1485b2fa6dfa1287294f269f5fb618e03d52d7c",
+    "base_model_revision": "b1485b2fa6dfa1287294f269f5fb618e03d52d7c",
+    "head_sha256": "daad0727152b6185447cee36f78230c144312feb7b19f02749b19645238b5287",
+    "model": "strands-decider-2B-hobson-v19-q4",
+    "device": "mlx",
+    "prefix_cache": false,
+    "max_batch": 1,
+    "serial": true,
+    "quantization_bits": 4,
+    "cache_limit_bytes": 134217728,
+    "max_length": 4096,
+    "load_ms": 27420.147374999942,
+    "warmup_ms": 2288.407084000937,
+    "ready_ms": 29708.603374998347,
+    "warmup": [
+      {
+        "profile": "configured_short",
+        "latency_ms": 1768.9288749970729,
+        "questions": 1,
+        "input_tokens": 177
+      },
+      {
+        "profile": "configured_long",
+        "latency_ms": 512.3409580010048,
+        "questions": 1,
+        "input_tokens": 443
+      }
+    ],
+    "warmup_rubric": "client",
+    "deadline_header": "X-Request-Deadline-Unix-Ms"
+  },
+  "requests_sha256": "6f4c5947747f41669d1baf19703f1bb3cd339bce516d400fcf12c98a007f3a6a",
+  "selection_sha256": "a51e86668bc0141a930b1efc221fc531db01dc472c419be0e70a0df5eca4cc66",
+  "url": "http://127.0.0.1:18899"
+}

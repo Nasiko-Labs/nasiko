@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "type_temperature": 1.0,
+  "provenance": {
+    "trainer": "eval/strands/calibrate.py",
+    "accepted_calibration": false,
+    "acceptance_policy": "held-out training-group NLL improves AND confident_wrong at preserved Strands probability-equivalent admission minimum does not increase",
+    "training_rows": 280,
+    "cv": "5-fold StratifiedGroupKFold, declared and near-duplicate family groups",
+    "responses_sha256": "ca0cd2dc7449a3867f023672d8d72d74519bfcc21ce1bbf915bea8fa76a25be5",
+    "requests_sha256": "6f4c5947747f41669d1baf19703f1bb3cd339bce516d400fcf12c98a007f3a6a",
+    "training_files": {
+      "train-a.jsonl": "2810643a262ee32bca10b76ce66fb722d0b8720604347fe2a321c6f15f13ab63",
+      "train-b.jsonl": "eca713d80e500a71a973036adb04d008c0007684f5b2d81c0aa67c9fc4e2c758",
+      "train-c.jsonl": "3b50505161190cb1a9d0efd3c299cab07d4b20ca53e852603c22cf8ec48064f2",
+      "train-d.jsonl": "07c20c2a71acbc5c1fe04d795991d6a08c92329b498e285bdb93991da08d5c79",
+      "train-e.jsonl": "f69446f879c0726cae7460c980a367d24563e2dfa52911bdde511f995cec4bad"
+    },
+    "checkpoint": {
+      "status": "ok",
+      "ready": true,
+      "checkpoint": "/Users/gouravnss/.cache/huggingface/hub/models--StrandsAgents--strands-decider-2B-hobson-v19/snapshots/bb282d786bc251fd4e3068de3ada9ddbb38127cd",
+      "checkpoint_revision": "bb282d786bc251fd4e3068de3ada9ddbb38127cd",
+      "base_model": "Qwen/Qwen3.5-2B-Base",
+      "base_model_path": "/Users/gouravnss/.cache/huggingface/hub/models--Qwen--Qwen3.5-2B-Base/snapshots/b1485b2fa6dfa1287294f269f5fb618e03d52d7c",
+      "base_model_revision": "b1485b2fa6dfa1287294f269f5fb618e03d52d7c",
+      "head_sha256": "daad0727152b6185447cee36f78230c144312feb7b19f02749b19645238b5287",
+      "model": "strands-decider-2B-hobson-v19-q4",
+      "device": "mlx",
+      "prefix_cache": false,
+      "max_batch": 1,
+      "serial": true,
+      "quantization_bits": 4,
+      "cache_limit_bytes": 134217728,
+      "max_length": 4096,
+      "load_ms": 27420.147374999942,
+      "warmup_ms": 2288.407084000937,
+      "ready_ms": 29708.603374998347,
+      "warmup": [
+        {
+          "profile": "configured_short",
+          "latency_ms": 1768.9288749970729,
+          "questions": 1,
+          "input_tokens": 177
+        },
+        {
+          "profile": "configured_long",
+          "latency_ms": 512.3409580010048,
+          "questions": 1,
+          "input_tokens": 443
+        }
+      ],
+      "warmup_rubric": "client",
+      "deadline_header": "X-Request-Deadline-Unix-Ms"
+    },
+    "raw_cv_nll": 0.413655,
+    "calibrated_cv_nll": 0.317553
+  }
+}

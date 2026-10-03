@@ -1,0 +1,43 @@
+{
+  "dataset": "allenai/WildChat-1M",
+  "dataset_revision": "7d6490e462285cf85d91eabea0f9a954fbddcd1f",
+  "license": "ODC-BY",
+  "dataset_url": "https://huggingface.co/datasets/allenai/WildChat-1M",
+  "sample_seed": 20261003,
+  "pages": [
+    {
+      "offset": 10000,
+      "url": "https://datasets-server.huggingface.co/rows?dataset=allenai%2FWildChat-1M&config=default&split=train&offset=10000&length=100",
+      "response_sha256": "20fc4c01a22d6154b339d5bd8242cb0948946a993aedd74ba68eea6b2dde8c3d"
+    },
+    {
+      "offset": 100000,
+      "url": "https://datasets-server.huggingface.co/rows?dataset=allenai%2FWildChat-1M&config=default&split=train&offset=100000&length=100",
+      "response_sha256": "deb36ab47dd79c669e4cc17cdeb4904706a9f8500deb9282e31debc16a3093d4"
+    },
+    {
+      "offset": 200000,
+      "url": "https://datasets-server.huggingface.co/rows?dataset=allenai%2FWildChat-1M&config=default&split=train&offset=200000&length=100",
+      "response_sha256": "071464a5048aeecd897001c56cfb2c1214a35cda5514e9e64ec9e3a098e4eceb"
+    },
+    {
+      "offset": 300000,
+      "url": "https://datasets-server.huggingface.co/rows?dataset=allenai%2FWildChat-1M&config=default&split=train&offset=300000&length=100",
+      "response_sha256": "00c683bc2c803f3e1fc8aff7d88c9e7e83e93a07c91d2cb814c7ca9906701b6d"
+    },
+    {
+      "offset": 400000,
+      "url": "https://datasets-server.huggingface.co/rows?dataset=allenai%2FWildChat-1M&config=default&split=train&offset=400000&length=100",
+      "response_sha256": "3a541217f08c9e0c36fe777193b54b61ca6d7e5d2bb60d2b07c385be9318ea91"
+    }
+  ],
+  "counts": {
+    "10000": 20,
+    "100000": 20,
+    "200000": 20,
+    "300000": 20,
+    "400000": 20
+  },
+  "selection": "20 English non-toxic non-redacted conversations per 100-row block; unique normalized query; selected user text 5..1000 chars; one turn per conversation; hash parity selects later turn when available",
+  "followups": 37
+}

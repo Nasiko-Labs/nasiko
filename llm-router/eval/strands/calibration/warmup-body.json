@@ -1,0 +1,19 @@
+{
+  "model": "strands-decider-latest",
+  "questions": {
+    "request_type": {
+      "criteria": {
+        "analytical_reasoning": "math, logic, proofs, quantitative or structured analysis",
+        "code_generation": "write, change, fix or refactor source code",
+        "code_understanding": "explain or debug existing code, errors or system behaviour",
+        "factual_lookup": "a fact or definition with a short, known answer",
+        "general": "small talk or anything that fits none of the above",
+        "technical_design": "architecture, system/API/data design, technical trade-offs",
+        "writing": "draft, edit or rewrite prose: emails, essays, documents"
+      },
+      "instructions": "What kind of help is the latest request asking for?",
+      "type": "choice"
+    }
+  },
+  "state": "Latest request:\nTraining loss goes to NaN around step 8k only when we use multiple GPUs with gradient accumulation and bf16, never on a single GPU. Here is the training config and the loop; what interacts to cause it and how would you prove which component is responsible?\n\nContext:\n```python\nscaler = None  # bf16, no loss scaling\nfor step, batch in enumerate(loader):\n    with torch.autocast(\"cuda\", dtype=torch.bfloat16):\n        loss = model(**batch).loss / accum\n    loss.backward()\n    if (step + 1) % accum == 0:\n        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)\n        opt.step(); opt.zero_grad()\n```\nDDP without no_sync() during accumulation; lr 3e-4 with 2k warmup; occasional batches contain all-padding sequences; attention uses -inf mask in softmax."
+}

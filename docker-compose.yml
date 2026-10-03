@@ -120,6 +120,23 @@ services:
     networks:
       - nasiko
 
+  # Opt-in Laya request classifier for the LLM router (Level 3). Enable with
+  #   REQUEST_CLASSIFIER=laya in .env, then: docker compose --profile laya up -d
+  # The router reaches it at LAYA_URL (default http://laya:8000) and falls back to the
+  # regex classifier per request while it is down or still downloading its checkpoint.
+  laya:
+    profiles: ["laya"]
+    image: python:3.12-slim
+    command: sh -c "pip install --no-cache-dir 'laya[serve]==0.3.24' && laya-serve"
+    environment:
+      LAYA_DEFAULT_MODEL: multilingual
+      # Preload only the checkpoint the router pins (the default loads all three).
+      LAYA_MODELS: multilingual
+    volumes:
+      - laya-models:/root/.cache/huggingface
+    networks:
+      - nasiko
+
 networks:
   nasiko:
     name: nasiko
@@ -127,3 +144,4 @@ networks:
 volumes:
   postgres-data:
   rustfs-data:
+  laya-models:

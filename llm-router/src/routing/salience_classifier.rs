@@ -116,7 +116,7 @@ impl Weights {
 /// (unlike `std::collections::hash_map::DefaultHasher`, which is explicitly *not*
 /// guaranteed stable across Rust versions). A trained weight vector is only meaningful if
 /// hashing is stable, so this must never change without retraining.
-fn fnv1a(bytes: &[u8]) -> u64 {
+pub(super) fn fnv1a(bytes: &[u8]) -> u64 {
     const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME: u64 = 0x0000_0100_0000_01b3;
     let mut hash = OFFSET_BASIS;

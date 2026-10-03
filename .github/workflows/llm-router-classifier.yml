@@ -1,0 +1,28 @@
+name: llm-router classifier
+
+on:
+  pull_request:
+    paths:
+      - "llm-router/**"
+      - ".github/workflows/llm-router-classifier.yml"
+  push:
+    branches: [main]
+    paths:
+      - "llm-router/**"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Unit tests
+        run: cargo test -p nasiko-llm-router --lib
+      - name: Classifier benchmark and quality gates
+        env:
+          BENCH_REPORT: ${{ github.workspace }}/classifier-benchmark.md
+        run: cargo test --release -p nasiko-llm-router --test classifier_benchmark -- --nocapture
+      - name: Publish the benchmark to the job summary
+        if: always()
+        run: cat classifier-benchmark.md >> "$GITHUB_STEP_SUMMARY" || true
