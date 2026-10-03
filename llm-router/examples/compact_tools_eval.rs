@@ -360,6 +360,8 @@ impl Live {
 #[derive(Default)]
 struct Adherence {
     cases: usize,
+    /// Replies that decoded cleanly (valid calls or a plain answer), right or wrong.
+    compact_valid: usize,
     compact_ok: usize,
     native_ok: usize,
     native_ran: usize,
@@ -368,6 +370,9 @@ struct Adherence {
 impl Adherence {
     fn record(&mut self, got: &Value, expected: &[tc::ToolCall], case: &Value) {
         self.cases += 1;
+        if got.get("calls").is_some() {
+            self.compact_valid += 1;
+        }
         if matches_expected(got, expected, case) {
             self.compact_ok += 1;
         }
@@ -381,6 +386,10 @@ impl Adherence {
     }
 
     fn report(&self) {
+        eprintln!(
+            "live: compact replies decoded cleanly in {}/{} cases",
+            self.compact_valid, self.cases
+        );
         eprintln!(
             "live: compact calls matched expected in {}/{} cases",
             self.compact_ok, self.cases
