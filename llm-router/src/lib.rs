@@ -28,6 +28,7 @@ use tower_http::decompression::RequestDecompressionLayer;
 
 pub mod auth;
 mod brevity;
+pub mod compact;
 mod compress;
 pub mod config;
 pub mod error;
@@ -109,6 +110,7 @@ impl LlmRouterCtx {
             anthropic_api_base = %cfg.anthropic_api_base,
             gemini_api_base = %cfg.gemini_api_base,
             llm_gateway_base_url = %cfg.llm_gateway_base_url,
+            compact_tools_enabled = cfg.compact_tools_enabled,
             "llm-router: initializing with effective GatewayConfig"
         );
         let cache = Arc::new(ConfigCache::new(Duration::from_secs(

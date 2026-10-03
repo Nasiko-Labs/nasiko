@@ -80,6 +80,11 @@ pub struct GatewayConfig {
     /// the injector skips LLM wiring (fail closed — no broken base URL without a key).
     pub llm_gateway_base_url: String,
 
+    /// Experimental: whether Track P1 compact tool schema encoding/decoding is globally
+    /// enabled. Request must also explicitly opt in (e.g. `x-nasiko-compact-tools: true`).
+    /// Default `false`.
+    pub compact_tools_enabled: bool,
+
     /// Level 2.5 salience gate: an in-process classifier decides whether a boundary turn
     /// is substantive enough to classify + pin, or is small talk to be served cheaply
     /// without pinning. Enabled by default. When `false`, the router classifies at every
@@ -181,6 +186,7 @@ impl Default for GatewayConfig {
             openrouter_http_referer: String::new(),
             openrouter_x_title: String::new(),
             llm_gateway_base_url: String::new(),
+            compact_tools_enabled: false,
             salience_gate_enabled: true,
             salience_weights_path: String::new(),
             salience_low_threshold: 0.20,
@@ -254,13 +260,20 @@ impl GatewayConfig {
                 ],
                 d.pricing_sync_interval_secs,
             ),
-            openai_api_base: env_or("OPENAI_API_BASE", &d.openai_api_base),
-            anthropic_api_base: env_or("ANTHROPIC_API_BASE", &d.anthropic_api_base),
-            gemini_api_base: env_or("GEMINI_API_BASE", &d.gemini_api_base),
-            openrouter_api_base: env_or("OPENROUTER_API_BASE", &d.openrouter_api_base),
+            openai_api_base: env_first(&["OPENAI_BASE_URL", "OPENAI_API_BASE"], &d.openai_api_base),
+            anthropic_api_base: env_first(
+                &["ANTHROPIC_BASE_URL", "ANTHROPIC_API_BASE"],
+                &d.anthropic_api_base,
+            ),
+            gemini_api_base: env_first(&["GEMINI_BASE_URL", "GEMINI_API_BASE"], &d.gemini_api_base),
+            openrouter_api_base: env_first(
+                &["OPENROUTER_BASE_URL", "OPENROUTER_API_BASE"],
+                &d.openrouter_api_base,
+            ),
             openrouter_http_referer: env_or("OPENROUTER_HTTP_REFERER", &d.openrouter_http_referer),
             openrouter_x_title: env_or("OPENROUTER_X_TITLE", &d.openrouter_x_title),
             llm_gateway_base_url: env_or("LLM_GATEWAY_BASE_URL", &d.llm_gateway_base_url),
+            compact_tools_enabled: env_flag("COMPACT_TOOLS_ENABLED", d.compact_tools_enabled),
             salience_gate_enabled: std::env::var("SALIENCE_GATE_ENABLED")
                 .ok()
                 .and_then(|v| v.parse().ok())

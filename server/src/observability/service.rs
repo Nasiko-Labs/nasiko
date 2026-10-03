@@ -1639,6 +1639,8 @@ impl ObservabilityService {
             })
             .collect();
 
+        let prompt_tokens = details.input_tokens;
+        let completion_tokens = details.output_tokens;
         let total_tokens = details.input_tokens
             + details.output_tokens
             + details.cache_read_tokens
@@ -1663,11 +1665,11 @@ impl ObservabilityService {
                         },
                         prompt: CostWithTokens {
                             cost: details.cost.prompt_usd,
-                            tokens: details.input_tokens,
+                            tokens: prompt_tokens,
                         },
                         completion: CostWithTokens {
                             cost: details.cost.completion_usd,
-                            tokens: details.output_tokens,
+                            tokens: completion_tokens,
                         },
                         cache_read: CostWithTokens {
                             cost: details.cost.cache_read_usd,

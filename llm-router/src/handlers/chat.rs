@@ -343,17 +343,30 @@ async fn chat_core(
     let started = Instant::now();
     let platform_paid = resolved.platform_paid;
 
+    // Track P1: compact tools opt-in check and request preparation.
+    let compact_active = crate::compact::is_compact_opt_in(headers, &req, &ctx.cfg);
+    let compact_tools = if compact_active {
+        crate::compact::prepare_compact_request(&mut req)
+    } else {
+        None
+    };
+
     if req.is_streaming() {
         let (stream, (provider, model)) =
             fallback::execute_chat_stream(&ctx.http, &ctx.cfg, &resolved, &req)
                 .instrument(llm_span.clone())
                 .await?;
         llm_span.record("gen_ai.response.model", model.as_str());
+        let provider_stream = if let Some(ref tool_defs) = compact_tools {
+            crate::compact::compact_stream_adapter(stream, tool_defs.clone(), model.clone())
+        } else {
+            stream
+        };
         let renderer = inbound.chat_stream_renderer();
         return stream_chat(StreamChatArgs {
             ctx,
             renderer,
-            provider_stream: stream,
+            provider_stream,
             provider,
             model,
             agent_id,
@@ -371,9 +384,13 @@ async fn chat_core(
     }
 
     // Non-streaming: run with ordered fallbacks; usage records the effective provider/model.
-    let (resp, (provider, model)) = fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
-        .instrument(llm_span.clone())
-        .await?;
+    let (mut resp, (provider, model)) =
+        fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
+            .instrument(llm_span.clone())
+            .await?;
+    if let Some(ref tool_defs) = compact_tools {
+        crate::compact::process_compact_response(&mut resp, tool_defs);
+    }
     let latency_ms = started.elapsed().as_millis() as i64;
 
     // Record effective model and token usage on the server-side gen_ai span.
@@ -542,7 +559,7 @@ fn boundary_signals_for(a: &routing::attribution::FlowAttribution) -> BoundarySi
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| a.flow_id.clone());
     let signals = BoundarySignals::in_flow(conv_id.clone(), a.mode);
-    tracing::info!(
+    tracing::debug!(
         target: "nasiko::llm_router::boundary",
         flow_id = %a.flow_id, %conv_id, mode = ?a.mode,
         source = a.source.as_label(), phase = ?signals.phase,
@@ -1533,5 +1550,260 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, GatewayError::BadRequest(_)));
+    }
+
+    fn ctx_with_compact(base: String, enabled: bool) -> LlmRouterCtx {
+        let cfg = GatewayConfig {
+            agent_jwt_secret: SECRET.into(),
+            openai_api_base: base,
+            platform_openai_api_key: "sk-platform".into(),
+            default_provider: "openai".into(),
+            default_model: "gpt-4o-mini".into(),
+            compact_tools_enabled: enabled,
+            ..Default::default()
+        };
+        LlmRouterCtx {
+            db: PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
+            http: reqwest::Client::new(),
+            cfg: Arc::new(cfg),
+            cache: Arc::new(ConfigCache::new(Duration::from_secs(30))),
+            router_cache: Arc::new(crate::routing::NoopCache),
+            tier_registry: Arc::new(NoTiers),
+            cell_store: Arc::new(crate::routing::InMemoryCellStore::new()),
+            salience_gate: Arc::new(crate::routing::AllowAllGate),
+            pricing: Arc::new(nasiko_pricing::PricingEngine::new(
+                PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
+            )),
+        }
+    }
+
+    #[tokio::test]
+    async fn end_to_end_default_compact_off_preserves_native_tools_to_provider() {
+        let mut server = mockito::Server::new_async().await;
+        // When compact is OFF, the native provider request MUST include the tools array.
+        server
+            .mock("POST", "/chat/completions")
+            .match_body(mockito::Matcher::PartialJson(json!({
+                "tools": [{
+                    "type": "function",
+                    "function": { "name": "get_weather" }
+                }]
+            })))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "id": "chatcmpl-nat", "object": "chat.completion", "model": "gpt-4o-mini",
+                    "choices": [{
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": null,
+                            "tool_calls": [{
+                                "id": "call_native_1",
+                                "type": "function",
+                                "function": { "name": "get_weather", "arguments": "{\"location\":\"Berlin\"}" }
+                            }]
+                        },
+                        "finish_reason": "tool_calls"
+                    }],
+                    "usage": { "prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15 }
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+
+        let ctx = ctx_with_compact(server.url(), false);
+        let store = Store {
+            config: None,
+            is_coding_agent: false,
+            compress_enabled: false,
+        };
+        let body = json!({
+            "model": "gpt-4o-mini",
+            "messages": [{ "role": "user", "content": "What is the weather?" }],
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get weather",
+                    "parameters": {
+                        "type": "object",
+                        "properties": { "location": { "type": "string" } },
+                        "required": ["location"]
+                    }
+                }
+            }]
+        });
+
+        let mut headers = auth_headers(&token());
+        // Even if the header is sent, global gate is false => native tools preserved!
+        headers.insert(
+            crate::compact::COMPACT_TOOLS_HEADER,
+            "true".parse().unwrap(),
+        );
+
+        let resp = chat_core(&ctx, &store, &headers, body, InboundFormat::OpenAi, None)
+            .await
+            .unwrap();
+
+        let v: Value = serde_json::from_str(&body_string(resp).await).unwrap();
+        assert_eq!(v["choices"][0]["finish_reason"], "tool_calls");
+        assert_eq!(
+            v["choices"][0]["message"]["tool_calls"][0]["id"],
+            "call_native_1"
+        );
+    }
+
+    #[tokio::test]
+    async fn end_to_end_compact_opt_in_strips_tools_and_decodes_model_calls() {
+        let mut server = mockito::Server::new_async().await;
+        // Provider receives NO tools array and receives the injected compact prompt in messages!
+        server
+            .mock("POST", "/chat/completions")
+            .match_body(mockito::Matcher::AllOf(vec![
+                mockito::Matcher::Regex("tool get_weather\\(".into()),
+                mockito::Matcher::Regex("<<call tool_name".into()),
+            ]))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "id": "chatcmpl-comp", "object": "chat.completion", "model": "gpt-4o-mini",
+                    "choices": [{
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": "Checking right now.\n<<call get_weather {\"location\":\"Paris\"}>>"
+                        },
+                        "finish_reason": "stop"
+                    }],
+                    "usage": { "prompt_tokens": 8, "completion_tokens": 6, "total_tokens": 14 }
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+
+        let ctx = ctx_with_compact(server.url(), true);
+        let store = Store {
+            config: None,
+            is_coding_agent: false,
+            compress_enabled: false,
+        };
+        let body = json!({
+            "model": "gpt-4o-mini",
+            "messages": [{ "role": "user", "content": "Weather in Paris?" }],
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get weather",
+                    "parameters": {
+                        "type": "object",
+                        "properties": { "location": { "type": "string" } },
+                        "required": ["location"]
+                    }
+                }
+            }]
+        });
+
+        let mut headers = auth_headers(&token());
+        headers.insert(
+            crate::compact::COMPACT_TOOLS_HEADER,
+            "true".parse().unwrap(),
+        );
+
+        let resp = chat_core(&ctx, &store, &headers, body, InboundFormat::OpenAi, None)
+            .await
+            .unwrap();
+
+        let v: Value = serde_json::from_str(&body_string(resp).await).unwrap();
+        assert_eq!(v["choices"][0]["finish_reason"], "tool_calls");
+        assert_eq!(
+            v["choices"][0]["message"]["content"],
+            "Checking right now.\n"
+        );
+        let tool_call = &v["choices"][0]["message"]["tool_calls"][0];
+        assert_eq!(tool_call["id"], "call_get_weather_0");
+        assert_eq!(tool_call["function"]["name"], "get_weather");
+        assert_eq!(
+            tool_call["function"]["arguments"],
+            "{\"location\":\"Paris\"}"
+        );
+    }
+
+    #[tokio::test]
+    async fn end_to_end_compact_streaming_opt_in_decodes_sse_tool_deltas() {
+        let mut server = mockito::Server::new_async().await;
+        let sse = format!(
+            "data: {}\n\ndata: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+            json!({
+                "id": "s1", "object": "chat.completion.chunk", "model": "gpt-4o-mini",
+                "choices": [{ "index": 0, "delta": { "content": "<<call get_" } }]
+            }),
+            json!({
+                "id": "s1", "object": "chat.completion.chunk", "model": "gpt-4o-mini",
+                "choices": [{ "index": 0, "delta": { "content": "weather {\"location\":\"London\"}>>" } }]
+            }),
+            json!({
+                "id": "s1", "object": "chat.completion.chunk", "model": "gpt-4o-mini",
+                "choices": [{ "index": 0, "delta": {}, "finish_reason": "stop" }],
+                "usage": { "prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10 }
+            })
+        );
+        server
+            .mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse)
+            .create_async()
+            .await;
+
+        let ctx = ctx_with_compact(server.url(), true);
+        let store = Store {
+            config: None,
+            is_coding_agent: false,
+            compress_enabled: false,
+        };
+        let body = json!({
+            "model": "gpt-4o-mini",
+            "stream": true,
+            "messages": [{ "role": "user", "content": "Weather in London?" }],
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get weather",
+                    "parameters": {
+                        "type": "object",
+                        "properties": { "location": { "type": "string" } },
+                        "required": ["location"]
+                    }
+                }
+            }]
+        });
+
+        let mut headers = auth_headers(&token());
+        headers.insert(
+            crate::compact::COMPACT_TOOLS_HEADER,
+            "true".parse().unwrap(),
+        );
+
+        let resp = chat_core(&ctx, &store, &headers, body, InboundFormat::OpenAi, None)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            resp.headers().get(CONTENT_TYPE).unwrap(),
+            "text/event-stream"
+        );
+        let body_str = body_string(resp).await;
+        assert!(body_str.contains("call_get_weather_0"));
+        assert!(body_str.contains("\"name\":\"get_weather\""));
+        assert!(body_str.contains("\"arguments\":"));
+        assert!(body_str.contains("\"finish_reason\":\"tool_calls\""));
+        assert!(body_str.trim_end().ends_with("data: [DONE]"));
     }
 }
