@@ -1,0 +1,18 @@
+{
+  "type": "function",
+  "function": {
+    "name": "unsupported_one_of",
+    "description": "Tool using unsupported oneOf schema construct.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "val": {
+          "oneOf": [
+            { "type": "string" },
+            { "type": "number" }
+          ]
+        }
+      }
+    }
+  }
+}

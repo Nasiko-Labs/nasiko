@@ -9,7 +9,7 @@
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 
-use serde_json::{Map, Value};
+use serde_json::Map;
 
 use crate::config::GatewayConfig;
 use crate::error::GatewayError;
@@ -212,18 +212,6 @@ pub trait ProviderClient: Send + Sync {
     /// the offending field from its own error body. Default: never droppable — providers
     /// that can recognize their param-rejection shape override this.
     fn droppable_param(&self, _err: &ProviderError) -> Option<String> {
-        None
-    }
-
-    /// If `err` is a "this model needs parameter X set to value V" rejection, return the
-    /// IR parameter and the value so the executor can retry the *same* model with it set.
-    ///
-    /// The mirror of [`droppable_param`](ProviderClient::droppable_param), for the
-    /// rejections a drop cannot fix: the offending value is the model's own *default*,
-    /// not something we sent, so there is nothing to strip — the request has to name the
-    /// param explicitly. Same seam rule: the provider recognizes its own error shape
-    /// rather than us keeping a per-model capability table. Default: never repairable.
-    fn repairable_param(&self, _err: &ProviderError) -> Option<(String, Value)> {
         None
     }
 }

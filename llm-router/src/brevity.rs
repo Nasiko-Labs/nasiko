@@ -49,15 +49,6 @@ pub(crate) enum Skipped {
     /// The agent has token optimization switched off. The per-agent switch governs the whole
     /// stack, not just payload compression, so one control starts and stops every layer.
     AgentOptedOut,
-    /// Deliberately withheld, to keep a control arm.
-    ///
-    /// This layer's saving cannot be measured by subtraction — nobody knows what the model would
-    /// have written without the directive — so the dashboard reports it from a factor. Withholding
-    /// the directive from a small, deterministically-chosen slice of otherwise-eligible calls
-    /// gives that factor a real control group inside the same traffic: same workloads, same
-    /// models, same agents, concurrent. It is the one production comparison that attributes, and
-    /// the only thing that turns a seeded assumption into a measurement.
-    Holdout,
 }
 
 /// What IP-2 decided for one request, for `token_usage.metadata.brevity`.
@@ -87,7 +78,6 @@ impl Skipped {
             Self::CodingAgent => "coding_agent",
             Self::RequestTooSmall => "request_too_small",
             Self::AgentOptedOut => "agent_opted_out",
-            Self::Holdout => "holdout",
         }
     }
 }
@@ -97,7 +87,6 @@ pub(crate) fn apply(
     req: &mut ChatRequest,
     cfg: &GatewayConfig,
     resolved: &ResolvedConfig,
-    flow_id: Option<&str>,
 ) -> Result<(), Skipped> {
     if !cfg.brevity_enabled {
         return Err(Skipped::Disabled);
@@ -116,12 +105,6 @@ pub(crate) fn apply(
     if estimated_bytes(req) < cfg.brevity_min_bytes {
         return Err(Skipped::RequestTooSmall);
     }
-    // Last, so the control arm is drawn only from calls that would otherwise have been treated.
-    // Checking it earlier would put requests below the size floor into the holdout, where the
-    // directive would never have run anyway, and dilute the comparison with non-events.
-    if in_holdout(flow_id, cfg.brevity_holdout_pct) {
-        return Err(Skipped::Holdout);
-    }
 
     req.messages.push(crate::ir::chat::Message {
         role: "system".into(),
@@ -134,37 +117,9 @@ pub(crate) fn apply(
     Ok(())
 }
 
-/// Whether this flow falls in the withheld slice.
-///
-/// Keyed on the flow id and hashed, so assignment is stable: a flow does not change arms between
-/// its turns, which would mix treated and untreated turns inside one comparison. A call with no
-/// flow id is never withheld — it cannot be attributed to a flow later either, so withholding it
-/// would spend the cost of a control sample without buying one.
-fn in_holdout(flow_id: Option<&str>, holdout_pct: u8) -> bool {
-    if holdout_pct == 0 {
-        return false;
-    }
-    let Some(flow_id) = flow_id else {
-        return false;
-    };
-    // FNV-1a: stable across processes and releases, unlike `DefaultHasher`, whose output is not
-    // guaranteed between Rust versions. An arm assignment that moves under a compiler upgrade
-    // would silently re-randomise the experiment mid-flight.
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in flow_id.as_bytes() {
-        hash ^= *byte as u64;
-        hash = hash.wrapping_mul(0x1000_0000_01b3);
-    }
-    (hash % 100) < holdout_pct.min(100) as u64
-}
-
 /// Size of the transcript in bytes. A proxy for tokens, and deliberately a cheap one: this
 /// decides whether to spend ~100 tokens, so it does not warrant a tokenizer.
-///
-/// Also the numerator the savings ledger calibrates chars-per-token with (`savings.rs`), called
-/// once more after this seam has run. Shared rather than reimplemented so the two cannot disagree
-/// about what counts as request text — a divergence there would bias every saved-token figure.
-pub(crate) fn estimated_bytes(req: &ChatRequest) -> usize {
+fn estimated_bytes(req: &ChatRequest) -> usize {
     req.messages
         .iter()
         .filter_map(|m| m.text())
@@ -264,7 +219,7 @@ mod tests {
         let before = serde_json::to_string(&r).unwrap();
 
         assert_eq!(
-            apply(&mut r, &cfg(false), &resolved(false), None),
+            apply(&mut r, &cfg(false), &resolved(false)),
             Err(Skipped::Disabled)
         );
 
@@ -276,7 +231,7 @@ mod tests {
         let mut r = plain();
         let original: Vec<Message> = r.messages.clone();
 
-        apply(&mut r, &cfg(true), &resolved(false), None).unwrap();
+        apply(&mut r, &cfg(true), &resolved(false)).unwrap();
 
         assert_eq!(r.messages.len(), original.len() + 1);
         for (i, before) in original.iter().enumerate() {
@@ -331,7 +286,7 @@ mod tests {
         };
 
         assert_eq!(
-            apply(&mut r, &cfg(true), &opted_out, None),
+            apply(&mut r, &cfg(true), &opted_out),
             Err(Skipped::AgentOptedOut)
         );
         assert_eq!(r.messages.len(), 2, "the request must go out untouched");
@@ -341,7 +296,7 @@ mod tests {
     fn skips_a_coding_agent() {
         let mut r = plain();
         assert_eq!(
-            apply(&mut r, &cfg(true), &resolved(true), None),
+            apply(&mut r, &cfg(true), &resolved(true)),
             Err(Skipped::CodingAgent)
         );
         assert_eq!(r.messages.len(), 2);
@@ -357,7 +312,7 @@ mod tests {
         });
 
         assert_eq!(
-            apply(&mut r, &cfg(true), &resolved(false), None),
+            apply(&mut r, &cfg(true), &resolved(false)),
             Err(Skipped::ToolContinuation)
         );
         assert!(r.messages.last().unwrap().role == "tool");
@@ -369,7 +324,7 @@ mod tests {
         let mut r = plain();
         r.tools = Some(vec![a_tool()]);
 
-        apply(&mut r, &cfg(true), &resolved(false), None).unwrap();
+        apply(&mut r, &cfg(true), &resolved(false)).unwrap();
 
         assert_eq!(r.messages.last().unwrap().role, "system");
     }
@@ -390,7 +345,7 @@ mod tests {
         }]);
         r.messages.push(m);
 
-        apply(&mut r, &cfg(true), &resolved(false), None).unwrap();
+        apply(&mut r, &cfg(true), &resolved(false)).unwrap();
 
         assert_eq!(r.messages.last().unwrap().role, "system");
     }
@@ -404,7 +359,7 @@ mod tests {
         };
 
         assert_eq!(
-            apply(&mut r, &c, &resolved(false), None),
+            apply(&mut r, &c, &resolved(false)),
             Err(Skipped::RequestTooSmall)
         );
         assert_eq!(r.messages.len(), 2);
@@ -424,92 +379,5 @@ mod tests {
                 "directive dropped: {required}"
             );
         }
-    }
-    // ── holdout ──────────────────────────────────────────────────────────────
-
-    /// A flow that lands in the withheld slice at a 100% rate, for the ordering tests below.
-    fn holdout_cfg(pct: u8) -> GatewayConfig {
-        GatewayConfig {
-            brevity_holdout_pct: pct,
-            ..cfg(true)
-        }
-    }
-
-    #[test]
-    fn a_withheld_call_goes_out_untouched_and_says_why() {
-        let mut r = plain();
-
-        assert_eq!(
-            apply(&mut r, &holdout_cfg(100), &resolved(false), Some("flow-1")),
-            Err(Skipped::Holdout)
-        );
-
-        assert_eq!(
-            r.messages.len(),
-            2,
-            "the control arm must be a real control"
-        );
-        assert_eq!(Skipped::Holdout.as_label(), "holdout");
-    }
-
-    #[test]
-    fn arm_assignment_is_stable_for_a_given_flow() {
-        // A flow that changed arms between turns would mix treated and untreated turns inside one
-        // comparison, which is worse than having no control at all.
-        for flow in ["flow-a", "flow-b", "0af7651916cd43dd8448eb211c80319c"] {
-            let first = in_holdout(Some(flow), 50);
-            for _ in 0..100 {
-                assert_eq!(in_holdout(Some(flow), 50), first, "{flow} changed arms");
-            }
-        }
-    }
-
-    #[test]
-    fn a_zero_percent_holdout_withholds_nothing() {
-        // The off switch has to be exact: with it off, this layer must behave as though the
-        // holdout had never been written.
-        let mut r = plain();
-        apply(&mut r, &holdout_cfg(0), &resolved(false), Some("flow-1")).unwrap();
-        assert_eq!(r.messages.last().unwrap().role, "system");
-    }
-
-    #[test]
-    fn a_call_without_a_flow_id_is_never_withheld() {
-        // It could not be attributed to an arm afterwards either, so withholding it would spend
-        // the cost of a control sample without buying one.
-        let mut r = plain();
-        apply(&mut r, &holdout_cfg(100), &resolved(false), None).unwrap();
-        assert_eq!(r.messages.last().unwrap().role, "system");
-    }
-
-    #[test]
-    fn the_holdout_is_drawn_only_from_calls_that_would_have_been_treated() {
-        // Order matters: a request below the size floor would never have had the directive, so
-        // counting it as a control sample would dilute the comparison with non-events.
-        let mut r = plain();
-        let c = GatewayConfig {
-            brevity_min_bytes: 1_000_000,
-            brevity_holdout_pct: 100,
-            ..cfg(true)
-        };
-
-        assert_eq!(
-            apply(&mut r, &c, &resolved(false), Some("flow-1")),
-            Err(Skipped::RequestTooSmall),
-            "the size floor must be decided before the holdout"
-        );
-    }
-
-    #[test]
-    fn the_withheld_share_is_near_the_configured_rate() {
-        let withheld = (0..10_000)
-            .filter(|i| in_holdout(Some(&format!("flow-{i}")), 5))
-            .count();
-        // Hashing is not a perfect splitter; the band is wide enough not to flake and tight enough
-        // to catch a bucket that is systematically wrong.
-        assert!(
-            (300..=700).contains(&withheld),
-            "expected ~500 of 10000 withheld at 5%, got {withheld}"
-        );
     }
 }

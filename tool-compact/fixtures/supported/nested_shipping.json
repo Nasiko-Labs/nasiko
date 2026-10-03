@@ -1,0 +1,26 @@
+{
+  "type": "function",
+  "function": {
+    "name": "ship_items",
+    "description": "Ship specified items to an address.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "address": {
+          "type": "object",
+          "properties": {
+            "street": { "type": "string" },
+            "city": { "type": "string" },
+            "zip": { "type": "string" }
+          },
+          "required": ["street", "city"]
+        },
+        "items": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "required": ["address", "items"]
+    }
+  }
+}
