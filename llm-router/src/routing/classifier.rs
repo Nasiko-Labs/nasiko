@@ -324,6 +324,457 @@ pub fn classify<R: Rng + ?Sized>(
     (tier, request_type)
 }
 
+// --------------------------------------------------------------------------
+// 5. Model-agnostic decision interface (hackathon classifier track).
+//
+// The Thompson tier machinery above stays the single place that maps
+// (query, provider) → Tier. This section adds the *decision interface* the
+// router and the evaluator share: `classify(query, context)` producing
+// `{request_type, complexity, confidence}` behind one trait, with the regex
+// as the default backend and an optional hosted (OpenAI-compatible) backend
+// that fails back to the regex. The hot routing path (`route_model`) is
+// untouched: existing behavior is unchanged until an operator opts in.
+// --------------------------------------------------------------------------
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
+
+/// Input to a [`RequestClassifier`]: the latest user query plus optional
+/// retrieved context (code snippet, prior summary, tool output).
+#[derive(Debug, Clone, Copy)]
+pub struct ClassifyInput<'a> {
+    pub query: &'a str,
+    pub context: Option<&'a str>,
+}
+
+/// The classifier's decision for one request.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Classification {
+    /// Coarse kind of work the request represents.
+    pub request_type: RequestType,
+    /// 1 = trivial single operation … 5 = intricate cross-component
+    /// reasoning. Mirrors the public eval rubric.
+    pub complexity: u8,
+    /// 0.0–1.0 self-reported certainty. Below
+    /// [`LOW_CONFIDENCE_THRESHOLD`] the caller should use the safe default
+    /// tier instead of trusting the label.
+    pub confidence: f32,
+}
+
+/// Below this confidence the label must NOT drive tier selection: route to
+/// the safe default (the agent's configured model) and count a fallback.
+pub const LOW_CONFIDENCE_THRESHOLD: f32 = 0.6;
+
+/// Fixed complexity the regex backend reports. The vote-count regex carries
+/// no complexity signal, so it reports the neutral middle rather than
+/// pretending to know.
+pub const REGEX_COMPLEXITY: u8 = 3;
+
+/// Fixed confidence the regex backend reports. Deliberately below
+/// [`LOW_CONFIDENCE_THRESHOLD`]: keyword votes are evidence, not certainty.
+pub const REGEX_CONFIDENCE: f32 = 0.5;
+
+impl Classification {
+    /// Build a decision, rejecting out-of-range complexity/confidence
+    /// fail-closed instead of clamping silently.
+    pub fn new(
+        request_type: RequestType,
+        complexity: u8,
+        confidence: f32,
+    ) -> Result<Self, ClassifyError> {
+        if !(1..=5).contains(&complexity) {
+            return Err(ClassifyError::InvalidOutput(format!(
+                "complexity {complexity} outside 1-5"
+            )));
+        }
+        if !(0.0..=1.0).contains(&confidence) {
+            return Err(ClassifyError::InvalidOutput(format!(
+                "confidence {confidence} outside 0-1"
+            )));
+        }
+        Ok(Self {
+            request_type,
+            complexity,
+            confidence,
+        })
+    }
+
+    /// Whether this decision is too uncertain to drive tier selection.
+    pub fn is_low_confidence(&self) -> bool {
+        self.confidence < LOW_CONFIDENCE_THRESHOLD
+    }
+}
+
+/// Every way classification can fail. Any variant routes the caller to the
+/// regex fallback — a failed classifier must never break routing.
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+pub enum ClassifyError {
+    /// HTTP/network failure talking to the hosted backend.
+    #[error("classifier transport error: {0}")]
+    Transport(String),
+    /// The request exceeded its deadline.
+    #[error("classifier timed out")]
+    Timeout,
+    /// The backend answered, but the payload was not a valid decision
+    /// (non-JSON, unknown request type, out-of-range numbers, …).
+    #[error("invalid classifier output: {0}")]
+    InvalidOutput(String),
+    /// The backend is not configured well enough to run (missing endpoint
+    /// or model for a hosted backend).
+    #[error("classifier misconfigured: {0}")]
+    Misconfigured(String),
+}
+
+/// Model-agnostic classifier: `classify(query, context)` → decision.
+///
+/// Implementations must be deterministic for identical input (temperature 0,
+/// no sampling; a hosted model is as deterministic as the provider makes
+/// it at temperature 0). `Send + Sync` so the router can hold one behind an
+/// `Arc` across handler tasks.
+#[async_trait::async_trait]
+pub trait RequestClassifier: Send + Sync {
+    /// Stable backend name for logs and the eval report (`"regex"`, …).
+    fn name(&self) -> &str;
+
+    /// Classify one request. Returns `Err` on any failure; the caller falls
+    /// back to the regex result and counts it.
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError>;
+}
+
+/// The existing regex classifier as a [`RequestClassifier`].
+///
+/// Wraps [`classify_request_type`] on the **query only**: the vote-count
+/// regex has no context model, so `context` is accepted by the interface
+/// but ignored here (model backends use it). Reports the fixed
+/// [`REGEX_COMPLEXITY`] / [`REGEX_CONFIDENCE`] documented above. Infallible
+/// in practice — this is what every other backend falls back to.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct RegexClassifier;
+
+#[async_trait::async_trait]
+impl RequestClassifier for RegexClassifier {
+    fn name(&self) -> &str {
+        "regex"
+    }
+
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+        let request_type = classify_request_type(input.query);
+        Classification::new(request_type, REGEX_COMPLEXITY, REGEX_CONFIDENCE)
+            .map_err(|e| ClassifyError::InvalidOutput(e.to_string()))
+    }
+}
+
+/// System prompt for the hosted backend. Asks for exactly one JSON object
+/// with the three decision fields and pins the 1–5 rubric to the public
+/// eval's wording, so scores mean the same thing in both harnesses.
+const HOSTED_SYSTEM_PROMPT: &str = "Classify the user request for model routing. Reply with exactly one JSON object, no other text: {\"request_type\": one of code_generation|code_understanding|technical_design|analytical_reasoning|writing|factual_lookup|general, \"complexity\": integer 1-5 where 1 = trivial single operation, 2 = straightforward, 3 = multi-step with limited constraints, 4 = substantial reasoning or design, 5 = intricate cross-component reasoning and validation, \"confidence\": number 0-1}.";
+
+/// A hosted LLM used as the classifier over any OpenAI-compatible
+/// `/chat/completions` endpoint (the Bedrock mantle endpoint speaks this
+/// shape). Temperature 0, strict output validation, any failure surfaces as
+/// `Err` for the fallback wrapper — never a guessed decision.
+#[derive(Debug, Clone)]
+pub struct HostedClassifier {
+    endpoint: String,
+    model: String,
+    api_key: Option<String>,
+    timeout: Duration,
+    http: reqwest::Client,
+}
+
+impl HostedClassifier {
+    /// Build against `{endpoint}/chat/completions`. Empty endpoint or model
+    /// is a [`ClassifyError::Misconfigured`] at *use* time (fail-closed);
+    /// prefer [`ClassifierService::from_config`], which selects the regex
+    /// instead when configuration is incomplete.
+    pub fn new(
+        endpoint: String,
+        model: String,
+        api_key: Option<String>,
+        timeout: Duration,
+        http: reqwest::Client,
+    ) -> Self {
+        Self {
+            endpoint: endpoint.trim_end_matches('/').to_string(),
+            model,
+            api_key,
+            timeout,
+            http,
+        }
+    }
+
+    fn request_body(&self, input: &ClassifyInput<'_>) -> serde_json::Value {
+        let user = match input.context {
+            Some(ctx) if !ctx.trim().is_empty() => {
+                format!("Request:\n{}\n\nContext:\n{}", input.query, ctx)
+            }
+            _ => format!("Request:\n{}", input.query),
+        };
+        serde_json::json!({
+            "model": self.model,
+            "temperature": 0,
+            "messages": [
+                {"role": "system", "content": HOSTED_SYSTEM_PROMPT},
+                {"role": "user", "content": user},
+            ],
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl RequestClassifier for HostedClassifier {
+    fn name(&self) -> &str {
+        "hosted"
+    }
+
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+        if self.endpoint.is_empty() || self.model.is_empty() {
+            return Err(ClassifyError::Misconfigured(
+                "hosted backend needs endpoint and model".to_string(),
+            ));
+        }
+        let url = format!("{}/chat/completions", self.endpoint);
+        let mut req = self
+            .http
+            .post(&url)
+            .timeout(self.timeout)
+            .json(&self.request_body(input));
+        if let Some(key) = self.api_key.as_deref() {
+            req = req.bearer_auth(key);
+        }
+        let resp = req.send().await.map_err(|e| {
+            if e.is_timeout() {
+                ClassifyError::Timeout
+            } else {
+                ClassifyError::Transport(e.to_string())
+            }
+        })?;
+        if !resp.status().is_success() {
+            return Err(ClassifyError::Transport(format!(
+                "status {}",
+                resp.status()
+            )));
+        }
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| ClassifyError::InvalidOutput(format!("bad body: {e}")))?;
+        let text = body
+            .get("choices")
+            .and_then(|c| c.get(0))
+            .and_then(|c| c.get("message"))
+            .and_then(|m| m.get("content"))
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| ClassifyError::InvalidOutput("missing message content".to_string()))?;
+        parse_hosted_decision(text)
+    }
+}
+
+/// Parse the first JSON object in model text into a validated decision.
+/// Leading/trailing prose is tolerated; anything else is `InvalidOutput`.
+fn parse_hosted_decision(text: &str) -> Result<Classification, ClassifyError> {
+    let invalid = |why: &str| ClassifyError::InvalidOutput(why.to_string());
+    let start = text.find('{').ok_or_else(|| invalid("no JSON object"))?;
+    let mut stream =
+        serde_json::Deserializer::from_str(&text[start..]).into_iter::<serde_json::Value>();
+    let value: serde_json::Value = stream
+        .next()
+        .ok_or_else(|| invalid("empty JSON"))?
+        .map_err(|e| invalid(&format!("bad JSON: {e}")))?;
+    let obj = value.as_object().ok_or_else(|| invalid("not an object"))?;
+    let request_type = obj
+        .get("request_type")
+        .and_then(serde_json::Value::as_str)
+        .and_then(RequestType::from_wire)
+        .ok_or_else(|| invalid("bad request_type"))?;
+    let complexity = obj
+        .get("complexity")
+        .and_then(serde_json::Value::as_u64)
+        .filter(|c| (1..=5).contains(c))
+        .ok_or_else(|| invalid("bad complexity"))? as u8;
+    let confidence = obj
+        .get("confidence")
+        .and_then(serde_json::Value::as_f64)
+        .filter(|c| c.is_finite() && (0.0..=1.0).contains(c))
+        .ok_or_else(|| invalid("bad confidence"))? as f32;
+    Classification::new(request_type, complexity, confidence).map_err(|e| invalid(&e.to_string()))
+}
+
+/// Transparent regex fallback around any backend. On inner `Err` the regex
+/// result is returned and the fallback counter increments — the router stays
+/// usable if the optional classifier disappears. [`classify_detailed`]
+/// reports whether the fallback fired, so evals can measure fallback rate.
+pub struct FallbackClassifier<C: RequestClassifier> {
+    inner: C,
+    fallback: RegexClassifier,
+    fallbacks: AtomicU64,
+}
+
+impl<C: RequestClassifier> FallbackClassifier<C> {
+    pub fn new(inner: C) -> Self {
+        Self {
+            inner,
+            fallback: RegexClassifier,
+            fallbacks: AtomicU64::new(0),
+        }
+    }
+
+    /// Classify, falling back to the regex on any inner failure.
+    /// Returns the decision and whether the fallback fired.
+    pub async fn classify_detailed(&self, input: &ClassifyInput<'_>) -> (Classification, bool) {
+        match self.inner.classify(input).await {
+            Ok(c) => (c, false),
+            Err(e) => {
+                tracing::warn!(
+                    target: "nasiko::llm_router::classifier",
+                    backend = self.inner.name(),
+                    error = %e,
+                    "classifier backend failed; falling back to regex"
+                );
+                self.fallbacks.fetch_add(1, Ordering::Relaxed);
+                // The regex backend is infallible; a failure here would be
+                // a bug, so surface it rather than inventing a decision.
+                let c = self
+                    .fallback
+                    .classify(input)
+                    .await
+                    .expect("regex fallback is infallible");
+                (c, true)
+            }
+        }
+    }
+
+    /// How many fallbacks have fired since construction.
+    pub fn fallbacks(&self) -> u64 {
+        self.fallbacks.load(Ordering::Relaxed)
+    }
+}
+
+#[async_trait::async_trait]
+impl<C: RequestClassifier> RequestClassifier for FallbackClassifier<C> {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+        Ok(self.classify_detailed(input).await.0)
+    }
+}
+
+/// The configured classifier the router and the evaluator share.
+///
+/// Holds the selected backend behind an `Arc<dyn RequestClassifier>` (what
+/// the router would store) plus the fallback counter. Built by
+/// [`ClassifierService::from_config`]; selection is explicit strings, never
+/// environment reads — the binary's `config.rs` owns env parsing.
+pub struct ClassifierService {
+    inner: Arc<dyn RequestClassifier>,
+    detailed: Arc<FallbackClassifier<HostedOrRegex>>,
+    backend_name: String,
+}
+
+/// The two backends the service can hold. `HostedOrRegex::Regex` covers the
+/// default path and every degraded configuration.
+enum HostedOrRegex {
+    Hosted(HostedClassifier),
+    Regex(RegexClassifier),
+}
+
+#[async_trait::async_trait]
+impl RequestClassifier for HostedOrRegex {
+    fn name(&self) -> &str {
+        match self {
+            HostedOrRegex::Hosted(h) => h.name(),
+            HostedOrRegex::Regex(r) => r.name(),
+        }
+    }
+
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+        match self {
+            HostedOrRegex::Hosted(h) => h.classify(input).await,
+            HostedOrRegex::Regex(r) => r.classify(input).await,
+        }
+    }
+}
+
+impl ClassifierService {
+    /// Select the backend from explicit configuration (see
+    /// `GatewayConfig::classifier_*`; env names live in `config.rs`).
+    /// `"regex"` (or empty) is the default; `"hosted"` needs a non-empty
+    /// endpoint and model, otherwise — like `"local"` (no local model is
+    /// vendored) and unknown values — it degrades to the regex with a
+    /// warning. Degrading, never failing, is what keeps routing usable.
+    pub fn from_config(
+        backend: &str,
+        endpoint: &str,
+        model: &str,
+        api_key: Option<&str>,
+        timeout: Duration,
+        http: reqwest::Client,
+    ) -> Self {
+        let backend_name = match backend.trim().to_ascii_lowercase().as_str() {
+            "hosted" | "remote" | "http" if !endpoint.is_empty() && !model.is_empty() => {
+                "hosted".to_string()
+            }
+            other => {
+                if !other.is_empty() && other != "regex" {
+                    tracing::warn!(
+                        target: "nasiko::llm_router::classifier",
+                        backend = other,
+                        "unknown or unprovisioned classifier backend; using regex"
+                    );
+                }
+                "regex".to_string()
+            }
+        };
+        let inner = if backend_name == "hosted" {
+            HostedOrRegex::Hosted(HostedClassifier::new(
+                endpoint.to_string(),
+                model.to_string(),
+                api_key.map(str::to_string),
+                timeout,
+                http,
+            ))
+        } else {
+            HostedOrRegex::Regex(RegexClassifier)
+        };
+        let detailed = Arc::new(FallbackClassifier::new(inner));
+        Self {
+            inner: detailed.clone(),
+            detailed,
+            backend_name,
+        }
+    }
+
+    /// Backend selected at construction (`"regex"` or `"hosted"`).
+    pub fn backend_name(&self) -> &str {
+        &self.backend_name
+    }
+
+    /// Classify with fallback visibility: the decision plus whether the
+    /// regex fallback fired for this call.
+    pub async fn classify_detailed(&self, input: &ClassifyInput<'_>) -> (Classification, bool) {
+        self.detailed.classify_detailed(input).await
+    }
+
+    /// Total fallbacks since construction.
+    pub fn fallbacks(&self) -> u64 {
+        self.detailed.fallbacks()
+    }
+}
+
+#[async_trait::async_trait]
+impl RequestClassifier for ClassifierService {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    async fn classify(&self, input: &ClassifyInput<'_>) -> Result<Classification, ClassifyError> {
+        self.inner.classify(input).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -530,5 +981,360 @@ mod tests {
         );
         assert_eq!(rt, RequestType::CodeGeneration);
         assert!(matches!(tier, Tier::Tier1 | Tier::Tier2 | Tier::Tier3));
+    }
+
+    // --- decision interface: construction bounds ---
+
+    #[test]
+    fn classification_rejects_out_of_range_values() {
+        assert!(Classification::new(RequestType::General, 0, 0.5).is_err());
+        assert!(Classification::new(RequestType::General, 6, 0.5).is_err());
+        assert!(Classification::new(RequestType::General, 3, -0.1).is_err());
+        assert!(Classification::new(RequestType::General, 3, 1.1).is_err());
+        assert!(Classification::new(RequestType::General, 3, f32::NAN).is_err());
+        let ok = Classification::new(RequestType::Writing, 1, 0.0).unwrap();
+        assert!(ok.is_low_confidence());
+        assert!(
+            !Classification::new(RequestType::Writing, 5, 1.0)
+                .unwrap()
+                .is_low_confidence()
+        );
+    }
+
+    // --- decision interface: regex backend ---
+
+    #[tokio::test]
+    async fn regex_classifier_matches_the_wrapped_function_on_every_type() {
+        let cases = [
+            (
+                "build me a python script that parses CSV",
+                RequestType::CodeGeneration,
+            ),
+            (
+                "explain what this function does",
+                RequestType::CodeUnderstanding,
+            ),
+            (
+                "how should I design this API?",
+                RequestType::TechnicalDesign,
+            ),
+            (
+                "calculate the probability that it rains tomorrow",
+                RequestType::AnalyticalReasoning,
+            ),
+            (
+                "draft an email to my team about the outage",
+                RequestType::Writing,
+            ),
+            ("what is the capital of France?", RequestType::FactualLookup),
+            ("hello there", RequestType::General),
+        ];
+        let backend = RegexClassifier;
+        assert_eq!(backend.name(), "regex");
+        for (query, expected) in cases {
+            // With and without context: the regex has no context model, so
+            // both must equal the query-only function result.
+            for context in [None, Some("some surrounding code")] {
+                let input = ClassifyInput { query, context };
+                let c = backend.classify(&input).await.unwrap();
+                assert_eq!(c.request_type, expected, "query: {query}");
+                assert_eq!(c.request_type, classify_request_type(query));
+                assert_eq!(c.complexity, REGEX_COMPLEXITY);
+                assert_eq!(c.confidence, REGEX_CONFIDENCE);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn regex_reports_documented_fixed_values() {
+        // The regex carries no complexity/confidence signal: fixed neutral
+        // values, with confidence below the low-confidence threshold.
+        let c = RegexClassifier
+            .classify(&ClassifyInput {
+                query: "anything",
+                context: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(c.complexity, REGEX_COMPLEXITY);
+        assert_eq!(c.confidence, REGEX_CONFIDENCE);
+        assert!(c.is_low_confidence());
+    }
+
+    #[tokio::test]
+    async fn regex_is_deterministic() {
+        let backend = RegexClassifier;
+        let input = ClassifyInput {
+            query: "write a python function that sorts a list",
+            context: Some("ctx"),
+        };
+        let a = backend.classify(&input).await.unwrap();
+        let b = backend.classify(&input).await.unwrap();
+        assert_eq!(a, b);
+    }
+
+    // --- decision interface: hosted backend response parsing ---
+
+    #[test]
+    fn hosted_parses_a_valid_decision_with_surrounding_prose() {
+        let c = parse_hosted_decision(
+            "Sure. {\"request_type\":\"writing\",\"complexity\":2,\"confidence\":0.81} done.",
+        )
+        .unwrap();
+        assert_eq!(c.request_type, RequestType::Writing);
+        assert_eq!(c.complexity, 2);
+        assert!((c.confidence - 0.81).abs() < 1e-6);
+    }
+
+    #[test]
+    fn hosted_rejects_every_malformed_payload() {
+        for bad in [
+            "no json here",
+            "{}",
+            "{\"request_type\":\"coding\",\"complexity\":2,\"confidence\":0.5}",
+            "{\"request_type\":\"writing\",\"complexity\":0,\"confidence\":0.5}",
+            "{\"request_type\":\"writing\",\"complexity\":6,\"confidence\":0.5}",
+            "{\"request_type\":\"writing\",\"complexity\":2.5,\"confidence\":0.5}",
+            "{\"request_type\":\"writing\",\"complexity\":2,\"confidence\":1.5}",
+            "{\"request_type\":\"writing\",\"complexity\":2,\"confidence\":\"high\"}",
+            "{\"request_type\":\"writing\",\"complexity\":2}",
+            "[1,2]",
+        ] {
+            assert!(parse_hosted_decision(bad).is_err(), "should reject: {bad}");
+        }
+    }
+
+    // --- decision interface: hosted backend over HTTP (mockito) ---
+
+    fn mock_ok_body() -> serde_json::Value {
+        serde_json::json!({
+            "choices": [{"message": {"content":
+                "{\"request_type\":\"code_generation\",\"complexity\":4,\"confidence\":0.77}"
+            }}]
+        })
+    }
+
+    async fn mock_server(body: serde_json::Value, status: usize) -> mockito::ServerGuard {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(status)
+            .with_header("content-type", "application/json")
+            .with_body(body.to_string())
+            .create();
+        server
+    }
+
+    fn test_client() -> reqwest::Client {
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn hosted_success_returns_the_model_decision() {
+        let server = mock_server(mock_ok_body(), 200).await;
+        let backend = HostedClassifier::new(
+            format!("{}/v1", server.url()),
+            "test-model".into(),
+            None,
+            Duration::from_secs(10),
+            test_client(),
+        );
+        let (c, fallback) = FallbackClassifier::new(backend)
+            .classify_detailed(&ClassifyInput {
+                query: "q",
+                context: None,
+            })
+            .await;
+        assert!(!fallback);
+        assert_eq!(c.request_type, RequestType::CodeGeneration);
+        assert_eq!(c.complexity, 4);
+    }
+
+    #[tokio::test]
+    async fn hosted_http_error_falls_back_and_counts() {
+        let server = mock_server(serde_json::json!({"error": "boom"}), 500).await;
+        let inner = HostedClassifier::new(
+            format!("{}/v1", server.url()),
+            "m".into(),
+            None,
+            Duration::from_secs(10),
+            test_client(),
+        );
+        let service = FallbackClassifier::new(inner);
+        let (c, fallback) = service
+            .classify_detailed(&ClassifyInput {
+                query: "write a python function",
+                context: None,
+            })
+            .await;
+        assert!(fallback);
+        assert_eq!(service.fallbacks(), 1);
+        // Fallback is the regex decision for the query.
+        assert_eq!(c.request_type, RequestType::CodeGeneration);
+        assert_eq!(c.complexity, REGEX_COMPLEXITY);
+    }
+
+    #[tokio::test]
+    async fn hosted_garbage_body_falls_back() {
+        let server = mock_server(serde_json::json!({"choices": []}), 200).await;
+        let inner = HostedClassifier::new(
+            format!("{}/v1", server.url()),
+            "m".into(),
+            None,
+            Duration::from_secs(10),
+            test_client(),
+        );
+        let service = FallbackClassifier::new(inner);
+        let (_, fallback) = service
+            .classify_detailed(&ClassifyInput {
+                query: "hello",
+                context: None,
+            })
+            .await;
+        assert!(fallback);
+        assert_eq!(service.fallbacks(), 1);
+    }
+
+    #[tokio::test]
+    async fn hosted_out_of_range_values_fall_back() {
+        let server = mock_server(
+            serde_json::json!({"choices": [{"message": {"content":
+                "{\"request_type\":\"writing\",\"complexity\":9,\"confidence\":0.5}"
+            }}]}),
+            200,
+        )
+        .await;
+        let inner = HostedClassifier::new(
+            format!("{}/v1", server.url()),
+            "m".into(),
+            None,
+            Duration::from_secs(10),
+            test_client(),
+        );
+        let (c, fallback) = FallbackClassifier::new(inner)
+            .classify_detailed(&ClassifyInput {
+                query: "draft an email",
+                context: None,
+            })
+            .await;
+        assert!(fallback);
+        assert_eq!(c.request_type, RequestType::Writing);
+    }
+
+    #[tokio::test]
+    async fn unreachable_host_falls_back_without_hanging() {
+        // 127.0.0.1:9 is the discard port: connection refused immediately,
+        // so this exercises the transport-failure fallback deterministically.
+        let inner = HostedClassifier::new(
+            "http://127.0.0.1:9".into(),
+            "m".into(),
+            None,
+            Duration::from_secs(5),
+            test_client(),
+        );
+        let (c, fallback) = FallbackClassifier::new(inner)
+            .classify_detailed(&ClassifyInput {
+                query: "hello there",
+                context: None,
+            })
+            .await;
+        assert!(fallback);
+        assert_eq!(c.request_type, RequestType::General);
+    }
+
+    #[tokio::test]
+    async fn misconfigured_hosted_errors_instead_of_guessing() {
+        let backend = HostedClassifier::new(
+            String::new(),
+            String::new(),
+            None,
+            Duration::from_secs(5),
+            test_client(),
+        );
+        assert!(matches!(
+            backend
+                .classify(&ClassifyInput {
+                    query: "hi",
+                    context: None
+                })
+                .await,
+            Err(ClassifyError::Misconfigured(_))
+        ));
+    }
+
+    // --- decision interface: service selection ---
+
+    #[test]
+    fn service_selects_backends_explicitly() {
+        let http = test_client();
+        let regex = ClassifierService::from_config(
+            "regex",
+            "",
+            "",
+            None,
+            Duration::from_secs(1),
+            http.clone(),
+        );
+        assert_eq!(regex.backend_name(), "regex");
+        assert_eq!(regex.fallbacks(), 0);
+
+        // Unknown and local backends degrade to regex (documented).
+        for backend in ["local", "bogus", ""] {
+            let svc = ClassifierService::from_config(
+                backend,
+                "",
+                "",
+                None,
+                Duration::from_secs(1),
+                http.clone(),
+            );
+            assert_eq!(svc.backend_name(), "regex", "backend: {backend}");
+        }
+
+        // "hosted" without endpoint/model degrades instead of misfiring.
+        let degraded = ClassifierService::from_config(
+            "hosted",
+            "",
+            "",
+            None,
+            Duration::from_secs(1),
+            http.clone(),
+        );
+        assert_eq!(degraded.backend_name(), "regex");
+
+        let hosted = ClassifierService::from_config(
+            "hosted",
+            "https://example.test/v1",
+            "m",
+            None,
+            Duration::from_secs(1),
+            http,
+        );
+        assert_eq!(hosted.backend_name(), "hosted");
+    }
+
+    #[tokio::test]
+    async fn service_regex_path_is_deterministic() {
+        let svc = ClassifierService::from_config(
+            "regex",
+            "",
+            "",
+            None,
+            Duration::from_secs(1),
+            test_client(),
+        );
+        let input = ClassifyInput {
+            query: "what is the capital of France?",
+            context: Some("geo"),
+        };
+        let (a, fa) = svc.classify_detailed(&input).await;
+        let (b, fb) = svc.classify_detailed(&input).await;
+        assert_eq!(a, b);
+        assert!(!fa && !fb);
+        assert_eq!(a.request_type, RequestType::FactualLookup);
+        assert_eq!(svc.fallbacks(), 0);
     }
 }

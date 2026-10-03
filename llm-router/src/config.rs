@@ -154,6 +154,22 @@ pub struct GatewayConfig {
     pub compress_recovery_min_bytes: usize,
     /// How long an original stays recoverable. Sized to outlive the flow that produced it.
     pub compress_recovery_ttl_secs: u64,
+
+    /// Request-classifier backend for the decision interface in
+    /// [`crate::routing`] (`"regex"` or `"hosted"`). Defaults to `"regex"`:
+    /// the existing keyword classifier, unchanged. `"hosted"` calls an
+    /// OpenAI-compatible chat endpoint; any failure falls back to the regex
+    /// and is counted. `"local"` and unknown values degrade to `"regex"`
+    /// with a warning (no local model is vendored).
+    pub classifier_backend: String,
+    /// Base URL (`…/v1`) of the hosted classifier endpoint. Empty ⇒ the
+    /// hosted backend cannot run and the regex is used instead.
+    pub classifier_endpoint: String,
+    /// Model id sent to the hosted classifier endpoint.
+    pub classifier_model: String,
+    /// Per-decision deadline for the hosted backend, in milliseconds.
+    /// A timeout falls back to the regex. Default 2000.
+    pub classifier_timeout_ms: u64,
 }
 
 impl Default for GatewayConfig {
@@ -196,6 +212,10 @@ impl Default for GatewayConfig {
             compress_recovery_enabled: true,
             compress_recovery_min_bytes: 8192,
             compress_recovery_ttl_secs: 86_400,
+            classifier_backend: "regex".into(),
+            classifier_endpoint: String::new(),
+            classifier_model: String::new(),
+            classifier_timeout_ms: 2000,
         }
     }
 }
@@ -307,6 +327,13 @@ impl GatewayConfig {
             compress_recovery_ttl_secs: env_usize(
                 "TOKEN_COMPRESS_RECOVERY_TTL_SECS",
                 d.compress_recovery_ttl_secs as usize,
+            ) as u64,
+            classifier_backend: env_or("CLASSIFIER_BACKEND", &d.classifier_backend),
+            classifier_endpoint: env_or("CLASSIFIER_ENDPOINT", &d.classifier_endpoint),
+            classifier_model: env_or("CLASSIFIER_MODEL", &d.classifier_model),
+            classifier_timeout_ms: env_usize(
+                "CLASSIFIER_TIMEOUT_MS",
+                d.classifier_timeout_ms as usize,
             ) as u64,
         }
     }
