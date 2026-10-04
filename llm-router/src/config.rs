@@ -20,6 +20,15 @@ pub struct GatewayConfig {
     pub default_provider: String,
     /// Backward-compat model when an agent has no `llm_config`. Default `gpt-4o-mini`.
     pub default_model: String,
+    /// Request classifier backend: `regex` (default), `local`, or `hosted`.
+    pub classifier_backend: String,
+    /// Path to a local classifier artifact. Empty means the local backend uses a built-in
+    /// deterministic heuristic and never requires a separate model file.
+    pub classifier_model_path: String,
+    /// Optional hosted classifier endpoint for a remote evaluation service.
+    pub classifier_endpoint: String,
+    /// Timeout for hosted classification requests in milliseconds.
+    pub classifier_timeout_ms: u64,
     /// Platform-owned OpenAI key, used for the `openai` provider (and as the
     /// backward-compat fallback for unknown providers) when an agent sets no
     /// `api_key_secret_name`. Select via [`GatewayConfig::platform_key_for`].
@@ -164,6 +173,10 @@ impl Default for GatewayConfig {
             agent_jwt_algorithm: "HS256".into(),
             default_provider: "openai".into(),
             default_model: "gpt-4o-mini".into(),
+            classifier_backend: "regex".into(),
+            classifier_model_path: String::new(),
+            classifier_endpoint: String::new(),
+            classifier_timeout_ms: 2000,
             platform_openai_api_key: String::new(),
             platform_anthropic_api_key: String::new(),
             platform_gemini_api_key: String::new(),
@@ -210,6 +223,13 @@ impl GatewayConfig {
             agent_jwt_algorithm: env_or("AGENT_JWT_ALGORITHM", &d.agent_jwt_algorithm),
             default_provider: env_or("DEFAULT_PROVIDER", &d.default_provider),
             default_model: env_or("DEFAULT_MODEL", &d.default_model),
+            classifier_backend: env_or("CLASSIFIER_BACKEND", &d.classifier_backend),
+            classifier_model_path: env_or("CLASSIFIER_MODEL_PATH", &d.classifier_model_path),
+            classifier_endpoint: env_or("CLASSIFIER_ENDPOINT", &d.classifier_endpoint),
+            classifier_timeout_ms: std::env::var("CLASSIFIER_TIMEOUT_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(d.classifier_timeout_ms),
             // Per-provider platform keys. Prefer the explicit `PLATFORM_*` name, then
             // fall back to the generic provider key env var (which agents/orchestrator
             // already set), so a single provider key "just works" without duplication.

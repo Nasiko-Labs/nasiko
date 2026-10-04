@@ -21,6 +21,7 @@ pub mod cache;
 pub mod catalog;
 pub mod cells;
 pub mod classifier;
+pub mod request_classifier;
 // The salience classifier itself — feature engine, weight loading, scoring, banding.
 // Private to `routing`: only `salience.rs` (a sibling module) uses it directly, via
 // `ClassifierSalienceGate`.
@@ -35,6 +36,11 @@ pub use cache::{CachedDecision, DecisionCache, NoopCache, RedisCache};
 pub use cells::{CellStore, InMemoryCellStore, PgCellStore};
 pub use classifier::{RequestType, Tier, classify, classify_request_type, signal};
 pub use registry::{PgTierRegistry, TierRegistry};
+pub use request_classifier::{
+    ClassifierBackend, ClassifyInput, Classification, ContextSignals, FallbackRequestClassifier,
+    HostedRequestClassifier, LocalRequestClassifier, RegexRequestClassifier, RequirementProfile,
+    RequestClassifier, build_request_classifier,
+};
 pub use salience::{AllowAllGate, ClassifierSalienceGate, SalienceGate};
 
 /// Which precedence level produced a routing decision — emitted as a structured tag so we
