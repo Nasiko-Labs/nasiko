@@ -1,14 +1,12 @@
-FROM rust:1-alpine AS builder
-RUN apk add --no-cache musl-dev build-base cmake perl
+FROM node:18-alpine
+
 WORKDIR /app
-COPY . .
-RUN cargo build --release
 
-FROM alpine:latest AS certs
-RUN apk --no-cache add ca-certificates
+COPY package.json ./
+RUN npm install
 
-FROM scratch
-COPY --from=certs /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
-COPY --from=builder /app/target/release/nasiko-finance-agent /agent
-EXPOSE 8000
-ENTRYPOINT ["/agent"]
+COPY index.js AgentCard.json ./
+
+EXPOSE 3000
+
+CMD ["npm", "start"]
