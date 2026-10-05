@@ -1,0 +1,159 @@
+{
+  "candidates": [
+    {
+      "name": "Test Candidate",
+      "email": "test@candidate.com",
+      "resume_text": "Sample software engineer resume",
+      "candidate_profile": {},
+      "id": "cand_1789902246464_ertgo",
+      "created_at": "2026-09-20T11:04:06.464Z"
+    }
+  ],
+  "sessions": [
+    {
+      "candidate_id": "cand_1789902246464_ertgo",
+      "target_role": "Full Stack Engineer",
+      "difficulty": "medium",
+      "duration_minutes": 30,
+      "number_of_questions": 3,
+      "status": "in_progress",
+      "current_question_index": 0,
+      "id": "sess_1789902246466_abiju",
+      "started_at": "2026-09-20T11:04:06.466Z"
+    }
+  ],
+  "questions": [
+    {
+      "session_id": "sess_test_1",
+      "question_id": "q_test_1",
+      "question": "Explain indexing in databases.",
+      "topic": "Databases",
+      "category": "Backend",
+      "difficulty": "medium",
+      "reason": "Core database fundamentals probe",
+      "expected_concepts": [
+        "B-Tree",
+        "Scan cost"
+      ],
+      "question_order": 1,
+      "id": "q_1789902246468_wdzk9",
+      "created_at": "2026-09-20T11:04:06.468Z"
+    },
+    {
+      "session_id": "sess_lookup_1",
+      "question_id": "Q099",
+      "question": "What is a closure?",
+      "topic": "JS",
+      "category": "Frontend",
+      "difficulty": "easy",
+      "reason": "Lookup regression probe",
+      "expected_concepts": [
+        "scope"
+      ],
+      "question_order": 1,
+      "id": "q_1789902246494_h25g2",
+      "created_at": "2026-09-20T11:04:06.494Z"
+    }
+  ],
+  "answers": [
+    {
+      "question_id": "q_1789902246468_wdzk9",
+      "session_id": "sess_test_1",
+      "answer": "Indexes use B-trees to speed up lookup times.",
+      "id": "ans_1789902246469_ij48u",
+      "submitted_at": "2026-09-20T11:04:06.471Z"
+    }
+  ],
+  "evaluations": [
+    {
+      "answer_id": "ans_1",
+      "question_id": "q_test_1",
+      "session_id": "sess_test_1",
+      "scores": {
+        "technical_correctness": 9,
+        "completeness": 8,
+        "depth": 8,
+        "problem_solving": 9,
+        "communication": 9,
+        "practical_understanding": 9,
+        "overall": 8.7
+      },
+      "feedback": "Refined evaluation",
+      "strengths": [
+        "Clear terminology"
+      ],
+      "weaknesses": [],
+      "missing_concepts": [],
+      "incorrect_concepts": [],
+      "recommended_followup_topics": [],
+      "id": "eval_1789902246473_jy7xc",
+      "created_at": "2026-09-20T11:04:06.475Z"
+    }
+  ],
+  "reports": [
+    {
+      "session_id": "sess_replace_1",
+      "overall_score": 8.5,
+      "technical_score": 7,
+      "communication_score": 7,
+      "problem_solving_score": 7,
+      "category_scores": {
+        "Backend": 7
+      },
+      "strengths": [
+        "A"
+      ],
+      "weaknesses": [
+        "B"
+      ],
+      "topics_to_improve": [
+        "C"
+      ],
+      "interview_summary": "Second",
+      "detailed_feedback": "First detail",
+      "recommended_focus_areas": [
+        "D"
+      ],
+      "id": "rep_1789902246489_q6pz3",
+      "created_at": "2026-09-20T11:04:06.489Z"
+    }
+  ],
+  "plans": [
+    {
+      "session_id": "sess_replace_1",
+      "learning_priorities": [
+        "P2"
+      ],
+      "study_plan": [
+        {
+          "day": 1,
+          "topic": "T",
+          "goals": [
+            "g"
+          ],
+          "concepts": [
+            "c"
+          ],
+          "practice_tasks": [
+            "p"
+          ],
+          "estimated_minutes": 60
+        }
+      ],
+      "practice_questions": [
+        "Q?"
+      ],
+      "coding_exercises": [],
+      "revision_topics": [
+        "R"
+      ],
+      "recommended_next_interview": {
+        "suggested_role": "Backend",
+        "focus_topics": [],
+        "target_difficulty": "medium"
+      },
+      "id": "plan_1789902246493_uzipe",
+      "created_at": "2026-09-20T11:04:06.493Z"
+    }
+  ]
+}

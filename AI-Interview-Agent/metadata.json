@@ -1,0 +1,7 @@
+{
+  "name": "AI Interview Coach",
+  "description": "Multi-agent technical interview coach with resume parsing, adaptive questioning, deep evaluation, performance reports, and personalized preparation plans.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
