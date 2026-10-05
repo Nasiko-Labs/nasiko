@@ -14,13 +14,10 @@ import tseslint from 'typescript-eslint'
 const PUBLIC = {
   agents: [
     'api',
-    // The Harnesses page's Token optimization switch names itself as the agent's does.
-    'copy',
     'types',
     'format',
     'normalize',
     'status',
-    'components/AgentCard',
     'components/AgentLink',
     'components/bits',
     'components/dialogs',
@@ -31,16 +28,10 @@ const PUBLIC = {
     'components/Markdown',
     'components/RequestCard',
     'api',
-    // The Overview's canvas chat box hands its question to a new routed chat as that chat's draft.
-    'drafts',
     'identity',
     'rememberTarget',
     'types',
     'waiting',
-    // The harness session ledger maps recorded tool calls (plans/feat-agent-centric.md eng PUBLIC adds for PR1b) and
-    // finds its chat past the rail's loaded pages.
-    'recorded',
-    'sessionLookup',
   ],
   deploy: [
     'AgentBuildsTab',
@@ -53,99 +44,14 @@ const PUBLIC = {
     'GithubTab',
     'RegistryTab',
     'search',
-    // The agent hub's deploy markers (plans/feat-agent-centric.md eng): the agent's builds read and its record type.
-    'api',
-    'types',
   ],
-  // Flows (plans/feat-flows.md): the call model and its duration format (the flow narrative), and "Open flow" (F19).
-  // The agent hub's Flows list reads the list query (plans/feat-agent-centric.md eng PUBLIC adds).
-  flows: ['calls', 'precision', 'components/OpenFlowLink', 'paused', 'api'],
-  // Monitor's note while the desktop imports coding agents.
-  harnesses: [
-    'types',
-    'rollup',
-    'copy',
-    'api',
-    'constants',
-    'liveIndividual',
-    'components/ImportNotice',
-  ],
-  // The agent hub (plans/feat-agent-centric.md PR1a): the agent detail's Overview hosts its timeline.
-  // The home's last change links a marker on the hub inside the hub's default window (PR2b).
-  hub: ['components/HubTimeline', 'events', 'search'],
-  // The agent hub's Tools card counts connectors and blocked tools (plans/feat-agent-centric.md PR1c).
-  mcp: ['components/AgentMcpTab', 'api'],
-  narrative: ['tokenops', 'trace', 'harness', 'overview', 'flows', 'agentHub', 'home'],
+  harnesses: ['types', 'rollup', 'copy', 'api', 'constants', 'liveIndividual'],
+  mcp: ['components/AgentMcpTab'],
+  narrative: ['tokenops', 'trace', 'harness', 'overview'],
   onboarding: ['api', 'GuideCard', 'GuideHost', 'index', 'logic', 'types'],
-  // The product tour (common/src/features/tour): the shell's `_app` route mounts its host.
-  tour: ['TourHost'],
-  // Context optimization (plans/feat-context-optimization.md eng D1): its rules, copy, the trace's Optimization block
-  // (M2) and the /optimization Workspace row (T7). TokenOps' own savings panel is main's (PR #28, /finops/savings).
-  optimization: [
-    'api',
-    'copy',
-    'logic',
-    'types',
-    'components/ContextBlock',
-    // The team-name tooltip (B12), on the agent Settings tab's Token optimization title too.
-    'components/Codename',
-    // The Workspace footer's row, so a layer's slot rows (EE Organization policy) line up with the core's.
-    'components/WorkspaceRow',
-  ],
-  // The agent hub rates one agent with the Overview's own rules (plans/feat-agent-centric.md eng PUBLIC adds).
-  // The scoped home (PR2) keeps the Overview's Needs you, first run and Setup guide, its window and its tuning.
-  overview: [
-    'api',
-    'copy',
-    'health',
-    'search',
-    'tuning',
-    'components/NeedsYou',
-    'components/FirstRun',
-    'components/SetupGuide',
-  ],
+  overview: ['api', 'copy'],
   observability: ['StateCard', 'tuning', 'types', 'spans', 'copy', 'sessions', 'limiter'],
-  // Budgets (plans/feat-budget-burn.md eng D1) build their sheet from the router's generic sheet parts.
-  router: [
-    'components/RoutingCard',
-    'api',
-    'types',
-    'routing',
-    'copy',
-    'errors',
-    'form',
-    'focus',
-    'components/bits',
-    'components/SectionError',
-  ],
-  // Budgets (plans/feat-budget-burn.md eng D1): R-L10 + burn. Home, Needs you and the hub read budgets through these.
-  budgets: [
-    'api',
-    'types',
-    'budgets',
-    'copy',
-    'tuning',
-    'errors',
-    'components/BudgetSheet',
-    'components/BudgetsSection',
-    // Whether this server has budgets (F11): the router's Budgets tab, later Home and the hub.
-    'availability',
-    // Home's Budget burn panel (F10, B4), lazy-loaded by the home.
-    'components/BudgetBurnPanel',
-    // The hub's Budget section (B5), lazy-loaded by the hub.
-    'components/AgentBudgetSection',
-    // The session ledger's budget (B5, F9), lazy-loaded by the ledger.
-    'components/SessionBurn',
-    // Who reads budgets and which scopes (B6): Home and Needs you follow /budgets' viewer.
-    'scope',
-    'useBudgetsViewer',
-    // The budget's sentence and whether it needs its reader: the hub's Needs you row (B5).
-    'sentence',
-    // The projection rule (§4.6): Needs you rates the viewer's own budget the way At risk ranks the rest (B4 review).
-    'projection',
-  ],
-  // The hairline rows every Settings page is built from (EE uses them too).
-  settings: ['components/SettingRow', 'components/Chosen', 'components/tileStyles'],
+  router: ['components/RoutingCard', 'api', 'types', 'budgets', 'routing'],
   sessions: ['api', 'search', 'LogDrawer'],
   tokenops: [
     'api',
@@ -157,11 +63,8 @@ const PUBLIC = {
     'csv',
     'attribution',
     'series',
-    // The budget burn's Table view shares the chart panels' table shell (plans/feat-budget-burn.md F1).
-    'components/ChartTable',
   ],
-  // The session ledger (PR1b) shares the session pages' breadcrumb.
-  trace: ['api', 'Waterfall', 'Crumbs'],
+  trace: ['api', 'Waterfall'],
   workflows: [],
 }
 
@@ -261,10 +164,7 @@ export default tseslint.config(
       'coverage/',
       'public/',
       '.claude/',
-      // The design playground (plans/feat-design-playground.md §5): dev-only tooling, never shipped, and its
-      // shell is raw elements by design.
-      'design/',
-      'ee/web/src/genui/lang/',
+      'ee/web/src/weave/core/',
       '**/routeTree.gen.ts',
       'common/src/lib/api/schema.gen.ts',
       '**/*.js',
@@ -335,7 +235,6 @@ export default tseslint.config(
       '@eslint-react/no-array-index-key': 'off',
       'jsx-a11y/click-events-have-key-events': 'off',
       'jsx-a11y/no-noninteractive-element-interactions': 'off',
-      'jsx-a11y/anchor-has-content': 'off',
     },
   },
   // The two ARIA widgets shadcn has no equivalent for (plan §8 Phase 1 exceptions).
@@ -347,15 +246,14 @@ export default tseslint.config(
     rules: { 'no-restricted-syntax': ['error', ...banned, noRawElements[0]] },
   },
   // The one fetch wrapper, and the streams it doesn't cover (SSE bodies need the raw Response): chat turns, the
-  // agent log tail (`useLogStream`), a build's deploy stream (`useBuildStream`) and EE's Weave generation; API
-  // modules, so still no fetch in components.
+  // agent log tail (`useLogStream`) and a build's deploy stream (`useBuildStream`); API modules, so still no fetch in
+  // components.
   {
     files: [
       'common/src/lib/api/client.ts',
       'common/src/features/chat/registry.ts',
       'common/src/features/sessions/api.ts',
       'common/src/features/deploy/api.ts',
-      'ee/web/src/genui/conversation/api.ts',
     ],
     rules: {
       'no-restricted-syntax': [
@@ -382,15 +280,11 @@ export default tseslint.config(
     },
   },
   // Node scripts aren't in a tsconfig program: syntax rules only.
-  { files: ['scripts/**', '*/*/scripts/**'], ...tseslint.configs.disableTypeChecked },
-  {
-    files: ['scripts/**', '*/*/scripts/**'],
-    rules: { '@typescript-eslint/no-non-null-assertion': 'off' },
-  },
+  { files: ['scripts/**'], ...tseslint.configs.disableTypeChecked },
+  { files: ['scripts/**'], rules: { '@typescript-eslint/no-non-null-assertion': 'off' } },
   {
     files: [
       'scripts/**',
-      '*/*/scripts/**',
       'vite.shared.ts',
       'vitest.config.ts',
       '**/vite.config.ts',

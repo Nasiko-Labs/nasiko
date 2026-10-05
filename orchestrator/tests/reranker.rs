@@ -75,7 +75,6 @@ async fn with_history_disabled_store_returns_first_k() {
             role: "user".into(),
             content: "hello".into(),
         }],
-        ..Default::default()
     };
     let result = reranker.rerank(agents, &history, "query", 2).await;
     assert_eq!(result.len(), 2);
@@ -91,7 +90,6 @@ async fn with_history_disabled_store_k_larger_than_list() {
             role: "assistant".into(),
             content: "previous answer".into(),
         }],
-        ..Default::default()
     };
     let result = reranker.rerank(agents, &history, "follow-up", 100).await;
     assert_eq!(result.len(), 2);
@@ -118,7 +116,6 @@ async fn empty_agent_list_with_history_returns_empty() {
             role: "user".into(),
             content: "some message".into(),
         }],
-        ..Default::default()
     };
     let result = reranker.rerank(vec![], &history, "query", 5).await;
     assert!(result.is_empty());
@@ -182,7 +179,6 @@ async fn with_history_and_live_store_returns_scored_results() {
             role: "user".into(),
             content: "I've been looking at BTC prices".into(),
         }],
-        ..Default::default()
     };
 
     let result = reranker

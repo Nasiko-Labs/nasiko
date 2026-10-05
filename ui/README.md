@@ -4,11 +4,10 @@ A React experiment for Nasiko's OpenRuntime frontend. It tests the stack from DO
 React 19 + Vite (static SPA), TanStack Router/Query, Tailwind v4 + shadcn/ui, Recharts, Motion.
 
 What's here:
-- **Home** (`/`): the scoped home (Yours, Fleet and, in EE, an org unit). Needs you (waiting requests, agents that
-  need action, failing sessions), a totals strip (spend, saved tokens, agents needing attention) and one row per agent
-  or coding harness with its health (Healthy / Watch / Needs action / Unknown, linking to `/agents?health=<rating>`),
-  spend, budget use and last change, each opening the agent's hub (`docs/home.md`). A source that can't be checked
-  says so with Retry, so Needs you only says nothing needs you when every source answered. The backend status page
+- **Overview** (`/`): the homepage. Needs you (waiting requests, agents that need action, budget warnings, failing
+  sessions), fleet Spend, Fleet health (each agent rated Healthy / Watch / Needs action / Unknown with the reason; each
+  count opens `/agents?health=<rating>`), coding harnesses, recent sessions and quick actions. A source that can't be
+  checked says so with Retry, so "Nothing needs you" only shows when every source answered. The backend status page
   is at `/status`.
 - **The observability demo**: follow the money from a spend spike to the span that caused it.
   - **TokenOps** (`/tokenops`): a plain-English summary first, details in disclosures.
@@ -21,11 +20,6 @@ What's here:
   - Who drives cost?
   - Which traces burned it?
   - Is cost buying performance?
-- **Optimization** (`/optimization`): what context optimization saved your chats, with a trend you can pick a day or
-  week from, the agents with Token optimization off (one confirmed turn-on for all of them), a By agent table, the
-  biggest senders, what's optimizing your tokens (each mechanism, where it is set, how many agents have it on) and your
-  own history settings under "Your settings". Superusers set tier sizes under Settings → Workspace → Optimization tiers;
-  the EE build adds Settings → Workspace → Organization policy.
 - **Harnesses** (`/harnesses`): coding-harness usage (Claude Code, Codex, OpenCode, Cursor) from Org down to
   one developer. Needs a proposed endpoint; without it the page shows your own usage from existing ones.
 - **Agents** (`/agents`): the catalog of every agent you can see, Your agents (`/agents/mine`) with the ones that
@@ -133,7 +127,7 @@ The improvement plan these checks come from (and what each phase changed) is `do
 
 Workflow: gstack `/autoplan` → build → `/review` → `/qa` → `/ship` → `/land-and-deploy`.
 Conventions for humans and agents are in `CLAUDE.md`; the current plan is in `plans/feat-observability-demo.md`
-(TokenOps: `plans/feat-tokenops-page.md`; Harnesses: `plans/feat-harness-org-view.md`; Agents: `plans/feat-agents.md`; Chat: `plans/feat-chat.md`, routed chat: `plans/feat-chat-v1b.md`; app shell: `plans/feat-app-shell.md`; Overview: `plans/feat-overview.md`; Deploy and Builds: `plans/feat-deploy.md`; Optimization: `plans/feat-context-optimization.md`, page: `plans/feat-optimization-page.md`). Which legacy pages are rebuilt and which are next: `docs/rebuild-status.md`. Server gaps found along the way: `docs/designs/openruntime-server-recommendations.md`
-(agent pages: `docs/designs/openruntime-agents-recommendations.md`; app shell: `docs/designs/openruntime-app-shell-recommendations.md`; Overview: `docs/designs/openruntime-overview-recommendations.md`; Deploy and Builds: `docs/designs/openruntime-deploy-recommendations.md`; Optimization: `docs/designs/openruntime-context-recommendations.md`).
+(TokenOps: `plans/feat-tokenops-page.md`; Harnesses: `plans/feat-harness-org-view.md`; Agents: `plans/feat-agents.md`; Chat: `plans/feat-chat.md`, routed chat: `plans/feat-chat-v1b.md`; app shell: `plans/feat-app-shell.md`; Overview: `plans/feat-overview.md`; Deploy and Builds: `plans/feat-deploy.md`). Which legacy pages are rebuilt and which are next: `docs/rebuild-status.md`. Server gaps found along the way: `docs/designs/openruntime-server-recommendations.md`
+(agent pages: `docs/designs/openruntime-agents-recommendations.md`; app shell: `docs/designs/openruntime-app-shell-recommendations.md`; Overview: `docs/designs/openruntime-overview-recommendations.md`; Deploy and Builds: `docs/designs/openruntime-deploy-recommendations.md`).
 Design: `docs/designs/openruntime-observability-demo.md`; what the stack cost: `docs/designs/openruntime-stack-scorecard.md`.
 Release notes are in `CHANGELOG.md` and deferred work is in `TODOS.md`.

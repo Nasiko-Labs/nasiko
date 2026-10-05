@@ -133,15 +133,6 @@ pub fn protected_router(state: AppState) -> Router<AppState> {
     let finops_routes = Router::new()
         .route("/finops/dashboard", get(handler::get_finops_dashboard))
         .route("/finops/savings", get(handler::get_finops_savings))
-        .route("/finops/context-savings", get(handler::get_context_savings))
-        .route(
-            "/finops/context-savings/agents",
-            get(handler::get_context_savings_agents),
-        )
-        .route(
-            "/finops/context-savings/top-requests",
-            get(handler::get_context_savings_top_requests),
-        )
         .route("/finops/insights", post(handler::get_finops_insights))
         .route("/finops/agent-hours", get(handler::get_agent_hours))
         .route(
@@ -168,12 +159,6 @@ pub fn protected_router(state: AppState) -> Router<AppState> {
         .route("/trace/{trace_id}", get(handler::get_trace_details))
         .route("/span/{trace_id}/{span_id}", get(handler::get_span_details))
         .route("/agent/{agent_id}/stats", get(handler::get_agent_stats))
-        // Coding-harness usage (H-1). Any signed-in caller, narrowed inside the
-        // handler: OSS answers only the caller's own level.
-        .route(
-            "/coding-agents/usage",
-            get(super::coding_agents::get_coding_agent_usage),
-        )
         .merge(finops_routes)
         // Owner-scoped: authenticated, then narrowed by the agent ACL inside the
         // handler. Deliberately NOT admin-gated — an agent's owner may see their

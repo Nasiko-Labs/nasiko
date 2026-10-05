@@ -1321,8 +1321,8 @@ async fn persist_resume_reply(
     let session_id = row.chat_session_id.as_deref().unwrap_or(context_id);
 
     if let Err(e) = sqlx::query(
-        "INSERT INTO chat_sessions (session_id, user_id, agent_id, agent_url, title) \
-         VALUES ($1, $2, $3, '/api/orchestrator/a2a', 'New chat') \
+        "INSERT INTO chat_sessions (session_id, user_id, agent_id, agent_url, title, session_type) \
+         VALUES ($1, $2, $3, '/api/orchestrator/a2a', 'New chat', 'orchestrator') \
          ON CONFLICT (session_id) DO NOTHING",
     )
     .bind(session_id)

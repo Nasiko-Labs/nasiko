@@ -108,7 +108,6 @@ fn route_request_construction() {
         session_id: "sess-abc".to_string(),
         user_id: Uuid::new_v4(),
         file_parts: vec![],
-        org_granted_agent_ids: vec![],
     };
     assert_eq!(req.query, "what is the status of BTC?");
     assert!(req.file_parts.is_empty());
@@ -122,7 +121,6 @@ fn route_request_with_file_parts() {
         session_id: "sess-xyz".to_string(),
         user_id: Uuid::new_v4(),
         file_parts: vec![fp],
-        org_granted_agent_ids: vec![],
     };
     assert_eq!(req.file_parts.len(), 1);
     assert_eq!(req.file_parts[0].filename, "report.pdf");
@@ -138,7 +136,6 @@ fn route_request_with_multiple_file_parts() {
         session_id: "sess-multi".to_string(),
         user_id: Uuid::nil(),
         file_parts: vec![fp1, fp2],
-        org_granted_agent_ids: vec![],
     };
     assert_eq!(req.file_parts.len(), 2);
 }

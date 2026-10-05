@@ -420,6 +420,15 @@ pub(crate) async fn create(
         }
     }
     let skills = serde_json::to_value(&skills_vec).unwrap_or_default();
+    // The card decides whether this agent is offered the minimal-code ladder at all, so it may as
+    // well decide the starting position too: an agent registered with coding skills comes up with
+    // the ladder on. Reversible from the Settings switch, and scoped to *registration* on purpose —
+    // nothing here rewrites an existing agent, whose owner may have turned it off deliberately.
+    //
+    // `has_coding_skills` rather than a local predicate: the dispatch-time gate
+    // (`a2a_dispatch.rs`) calls the same function, and the two disagreeing is precisely the drift
+    // that produced the `/code/i`-vs-`ILIKE '%code%'` bug this helper was extracted to fix.
+    let minimal_code_enabled = super::models::has_coding_skills(&skills_vec);
     let meta = body.metadata.unwrap_or(serde_json::json!({}));
     let owner_id = match claims.user_uuid() {
         Ok(id) => id,
@@ -436,8 +445,8 @@ pub(crate) async fn create(
 
     let result = sqlx
         ::query_as::<_, Agent>(
-            r#"INSERT INTO agents (name, display_name, description, owner_id, url, icon_url, version, documentation_url, capabilities, skills, tags, metadata, image)
-           VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, '1.0.0'), $8, $9, $10, $11, $12, $13)
+            r#"INSERT INTO agents (name, display_name, description, owner_id, url, icon_url, version, documentation_url, capabilities, skills, tags, metadata, image, minimal_code_enabled)
+           VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, '1.0.0'), $8, $9, $10, $11, $12, $13, $14)
            RETURNING *"#
         )
         .bind(&body.name)
@@ -453,6 +462,7 @@ pub(crate) async fn create(
         .bind(&tags)
         .bind(meta)
         .bind(&body.image)
+        .bind(minimal_code_enabled)
         .fetch_one(&mut *tx).await;
 
     let agent = match result {

@@ -211,11 +211,11 @@ export function nasikoApp(o: AppOptions): UserConfig {
       // The React Compiler memoises components and hooks (plan §2, Phase 4). eslint-plugin-react-hooks' compiler rules
       // keep code compilable; a file that can't follow them opts out with 'use no memo' (the chart kit's animation
       // code). Not compiled: tests, test helpers and mocks (they only drive the app; skipping them also keeps Babel off
-      // the biggest files), generated code and the vendored GenUI language runtime.
+      // the biggest files), generated code and vendored Weave core (framework-free).
       babel({
         presets: [reactCompilerPreset()],
         exclude:
-          /[\\/]node_modules[\\/]|[\\/]src[\\/](genui[\\/]lang|mocks|test)[\\/]|\.test\.tsx?$|\.gen\.ts$/,
+          /[\\/]node_modules[\\/]|[\\/]src[\\/](weave[\\/]core|mocks|test)[\\/]|\.test\.tsx?$|\.gen\.ts$/,
       }),
       tailwindcss(),
       routesManifest(routes),

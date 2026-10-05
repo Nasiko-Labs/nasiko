@@ -3,7 +3,6 @@ use std::sync::Arc;
 use futures::FutureExt;
 use nasiko_flow::FlowGuard;
 use nasiko_hitl::{HitlStore, NewHitlRequest};
-use nasiko_types::agent_call::AgentCallMeter;
 use sqlx::PgPool;
 use tracing::{error, info, warn};
 use uuid::Uuid;
@@ -13,7 +12,6 @@ use super::{
     llm::LlmClient,
     types::{MafDefinition, PausedStep, StepOutcome, StepResult},
 };
-use crate::outbound::OutboundPrefix;
 
 /// Redis stream this worker consumes from. `pub` (not just crate-visible) so every producer —
 /// `oss/server/src/maf.rs` (the initial run) and `oss/server/src/hitl/mod.rs` (a resume re-enqueue)
@@ -36,16 +34,11 @@ fn consumer_name() -> String {
 pub async fn run(
     db: PgPool,
     redis: redis::Client,
-    agent_calls: super::AgentCalls,
+    http_client: reqwest::Client,
     flow_guard: Arc<FlowGuard>,
     llm: LlmClient,
     hitl_store: Arc<dyn HitlStore>,
 ) {
-    let super::AgentCalls {
-        client: http_client,
-        meter: agent_calls,
-        outbound,
-    } = agent_calls;
     let consumer = consumer_name();
 
     let mut conn = match redis.get_multiplexed_async_connection().await {
@@ -72,10 +65,8 @@ pub async fn run(
         &db,
         &http_client,
         &flow_guard,
-        &agent_calls,
         &llm,
         &hitl_store,
-        &outbound,
         &consumer,
     )
     .await;
@@ -111,10 +102,8 @@ pub async fn run(
                             &db,
                             &http_client,
                             &flow_guard,
-                            &agent_calls,
                             &llm,
                             &hitl_store,
-                            &outbound,
                         )
                         .await;
                     } else {
@@ -267,10 +256,8 @@ async fn process_job(
     db: &PgPool,
     http_client: &reqwest::Client,
     flow_guard: &Arc<FlowGuard>,
-    agent_calls: &Arc<dyn AgentCallMeter>,
     llm: &LlmClient,
     hitl_store: &Arc<dyn HitlStore>,
-    outbound: &Arc<dyn OutboundPrefix>,
 ) {
     let execution_id = job.execution_id;
     let user_id = job.user_id;
@@ -345,13 +332,11 @@ async fn process_job(
                     http_client,
                     db,
                     flow_guard,
-                    agent_calls,
                     execution_id,
                     user_id,
                     &maf_def,
                     llm,
                     content.as_deref(),
-                    outbound.as_ref(),
                 )
                 .await
             }
@@ -361,7 +346,6 @@ async fn process_job(
                         http_client,
                         db,
                         flow_guard,
-                        agent_calls,
                         execution_id,
                         user_id,
                         &maf_def,
@@ -374,7 +358,6 @@ async fn process_job(
                         resume.task_id,
                         execution_id.to_string(),
                         resume.answer,
-                        outbound.as_ref(),
                     )
                     .await
                 }
@@ -661,16 +644,13 @@ async fn re_enqueue(
     let _: redis::RedisResult<String> = xadd.query_async(conn).await;
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn reclaim_pending(
     conn: &mut redis::aio::MultiplexedConnection,
     db: &PgPool,
     http_client: &reqwest::Client,
     flow_guard: &Arc<FlowGuard>,
-    agent_calls: &Arc<dyn AgentCallMeter>,
     llm: &LlmClient,
     hitl_store: &Arc<dyn HitlStore>,
-    outbound: &Arc<dyn OutboundPrefix>,
     consumer: &str,
 ) {
     let result: redis::RedisResult<redis::Value> = redis::cmd("XAUTOCLAIM")
@@ -720,10 +700,8 @@ async fn reclaim_pending(
                 db,
                 http_client,
                 flow_guard,
-                agent_calls,
                 llm,
                 hitl_store,
-                outbound,
             )
             .await;
         }

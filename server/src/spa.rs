@@ -6,7 +6,7 @@
 //! - `routes.json` — `{"routes": ["/", "/agents/$agentId", …]}`, the paths the
 //!   app owns. `$name` matches exactly one segment.
 //! - `csp.json` — `{"script-src": ["'sha256-…'"]}`, the hashes of the inline
-//!   scripts in `index.html` (the pre-paint theme script and the
+//!   scripts in `index.html` (the pre-paint theme script; OSS adds the
 //!   analytics loader).
 //!
 //! Deciding the shell by `routes.json` rather than by the shape of the URL is
@@ -68,8 +68,9 @@ pub struct Spa {
 
 /// Per-edition additions to the Content-Security-Policy.
 ///
-/// Each binary states its own extras, so one edition's third-party hosts never
-/// widen the other's policy by accident.
+/// OSS's `index.html` loads analytics from a third-party host; EE's does not.
+/// Rather than let one edition's needs widen the other's policy, each binary
+/// states its own.
 #[derive(Default)]
 pub struct CspExtras {
     pub script_src: &'static [&'static str],

@@ -286,53 +286,7 @@ struct LayerRow {
     saved_cost: f64,
     calibrated: i64,
     uncalibrated: i64,
-    /// Saved tokens this layer could not put a price on — no LLM call in the flow, or no
-    /// `model_pricing` row covering the model it used. Drives the note that keeps an unpriceable
-    /// figure from reading as a free one.
-    unpriced: i64,
 }
-
-/// Prices a `token_savings` row at its own request's first LLM call.
-///
-/// # Why the price is resolved here and not written by the emitter
-///
-/// Three of the layers — IP-3, IP-4 and context selection — run in the orchestrator, *around* model
-/// calls rather than inside one. When they measure, no model has been chosen, so there is no rate to
-/// multiply by; their rows carry tokens and `saved_cost_usd = 0`. The flow's first `token_usage` row
-/// names the model that then read the context they trimmed, which is the rate those tokens would
-/// have been billed at. Same join `context_savings.rs` already uses (`PRICE_JOIN` there), keyed on
-/// `flow_id` instead of `trace_id` — the same value under two names.
-///
-/// Rows that already carry a model are left alone: IP-1 priced itself at the **effective blended
-/// input rate**, which accounts for the cached prefix. Re-pricing those at list rate here would
-/// overstate them, in the direction that flatters us, which §2.1 of the attribution plan calls out
-/// specifically.
-///
-/// Input-side only. All three unpriced layers shrink what the model *reads*; none can shorten what
-/// it writes, so their `saved_output_tokens` is 0 and an output rate would multiply by nothing.
-pub(crate) const PRICE_JOIN: &str = " LEFT JOIN LATERAL ( \
-         SELECT (mp.input_price_per_1m / 1000000.0)::FLOAT8 AS rate \
-           FROM token_usage tu \
-           JOIN model_pricing mp \
-             ON mp.provider = tu.provider AND mp.model = tu.model \
-            AND mp.effective_from <= ts.created_at \
-            AND (mp.effective_until IS NULL OR mp.effective_until > ts.created_at) \
-          WHERE tu.session_id = ts.flow_id \
-          ORDER BY tu.created_at ASC, mp.effective_from DESC \
-          LIMIT 1 \
-     ) price ON true ";
-
-/// The cost of one `token_savings` row: its own figure when it has one, otherwise its input tokens
-/// at the flow's resolved rate. `COALESCE(price.rate, 0)` leaves an unpriceable row at zero rather
-/// than dropping it — it still contributes its *tokens*, and [`LayerRow::unpriced`] is what reports
-/// that its money is missing.
-pub(crate) const PRICED_COST: &str = "COALESCE(SUM(CASE WHEN ts.model IS NULL \
-         THEN ts.saved_input_tokens * COALESCE(price.rate, 0) \
-         ELSE ts.saved_cost_usd END), 0)::FLOAT8";
-
-/// Saved tokens on rows that needed a resolved rate and did not get one.
-const UNPRICED_TOKENS: &str = "COALESCE(SUM(CASE WHEN ts.model IS NULL AND price.rate IS NULL \
-         THEN ts.saved_input_tokens + ts.saved_output_tokens ELSE 0 END), 0)::BIGINT";
 
 /// One row of the actual-spend aggregate, over the same window and filters.
 #[derive(sqlx::FromRow)]
@@ -411,21 +365,19 @@ async fn measured_by_layer(
     q: &SavingsQuery<'_>,
 ) -> Result<Vec<LayerRow>, sqlx::Error> {
     let mut qb = QueryBuilder::new(
-        "SELECT ts.layer, ts.program,
-                COALESCE(SUM(ts.saved_input_tokens), 0)::BIGINT  AS saved_input,
-                COALESCE(SUM(ts.saved_output_tokens), 0)::BIGINT AS saved_output,
-                COALESCE(SUM(CASE WHEN NOT ts.token_estimated THEN ts.saved_input_tokens ELSE 0 END), 0)::BIGINT AS calibrated,
-                COALESCE(SUM(CASE WHEN ts.token_estimated     THEN ts.saved_input_tokens ELSE 0 END), 0)::BIGINT AS uncalibrated, ",
+        "SELECT layer, program,
+                COALESCE(SUM(saved_input_tokens), 0)::BIGINT  AS saved_input,
+                COALESCE(SUM(saved_output_tokens), 0)::BIGINT AS saved_output,
+                COALESCE(SUM(saved_cost_usd), 0)::FLOAT8      AS saved_cost,
+                COALESCE(SUM(CASE WHEN NOT token_estimated THEN saved_input_tokens ELSE 0 END), 0)::BIGINT AS calibrated,
+                COALESCE(SUM(CASE WHEN token_estimated     THEN saved_input_tokens ELSE 0 END), 0)::BIGINT AS uncalibrated
+         FROM token_savings",
     );
-    qb.push(PRICED_COST).push(" AS saved_cost, ");
-    qb.push(UNPRICED_TOKENS).push(" AS unpriced ");
-    qb.push("FROM token_savings ts");
-    qb.push(PRICE_JOIN);
-    push_filters(&mut qb, q, "ts.created_at", "ts.agent_id");
+    push_filters(&mut qb, q, "created_at", "agent_id");
     if let Some(session) = q.session_id {
-        qb.push(" AND ts.session_id = ").push_bind(session);
+        qb.push(" AND session_id = ").push_bind(session);
     }
-    qb.push(" GROUP BY ts.layer, ts.program");
+    qb.push(" GROUP BY layer, program");
     qb.build_query_as().fetch_all(db).await
 }
 
@@ -667,13 +619,10 @@ async fn by_agent(db: &PgPool, q: &SavingsQuery<'_>) -> Result<Vec<AgentSavings>
         "WITH spend AS (SELECT agent_id, COUNT(*)::BIGINT AS calls, COALESCE(SUM(input_tokens),0)::BIGINT AS input_tokens, COALESCE(SUM(total_tokens),0)::BIGINT AS tokens, COALESCE(SUM(cost_usd),0)::FLOAT8 AS cost FROM token_usage",
     );
     push_filters(&mut qb, q, "created_at", "agent_id");
-    qb.push(" AND agent_id IS NOT NULL GROUP BY agent_id), sav AS (SELECT ts.agent_id, COALESCE(SUM(ts.saved_input_tokens),0)::BIGINT AS saved_input, COALESCE(SUM(ts.saved_output_tokens),0)::BIGINT AS saved_output, ");
-    qb.push(PRICED_COST)
-        .push(" AS saved_cost FROM token_savings ts");
-    qb.push(PRICE_JOIN);
-    push_filters(&mut qb, q, "ts.created_at", "ts.agent_id");
+    qb.push(" AND agent_id IS NOT NULL GROUP BY agent_id), sav AS (SELECT agent_id, COALESCE(SUM(saved_input_tokens),0)::BIGINT AS saved_input, COALESCE(SUM(saved_output_tokens),0)::BIGINT AS saved_output, COALESCE(SUM(saved_cost_usd),0)::FLOAT8 AS saved_cost FROM token_savings");
+    push_filters(&mut qb, q, "created_at", "agent_id");
     qb.push(
-        " AND ts.agent_id IS NOT NULL GROUP BY ts.agent_id)
+        " AND agent_id IS NOT NULL GROUP BY agent_id)
          SELECT s.agent_id,
                 COALESCE(a.display_name, a.name) AS agent_name,
                 s.calls, s.input_tokens, s.tokens, s.cost,
@@ -735,15 +684,12 @@ async fn by_session(db: &PgPool, q: &SavingsQuery<'_>) -> Result<Vec<SessionSavi
                   MIN(ts.created_at) AS started_at,
                   COUNT(DISTINCT ts.flow_id)::BIGINT AS turn_count,
                   COALESCE(SUM(ts.saved_input_tokens),0)::BIGINT  AS saved_input,
-                  COALESCE(SUM(ts.saved_output_tokens),0)::BIGINT AS saved_output, ",
-    );
-    qb.push(PRICED_COST).push(" AS saved_cost, ");
-    qb.push(
-        "COALESCE(ARRAY_AGG(DISTINCT tr.agent_name) FILTER (WHERE tr.agent_name IS NOT NULL), '{}') AS agent_names
+                  COALESCE(SUM(ts.saved_output_tokens),0)::BIGINT AS saved_output,
+                  COALESCE(SUM(ts.saved_cost_usd),0)::FLOAT8      AS saved_cost,
+                  COALESCE(ARRAY_AGG(DISTINCT tr.agent_name) FILTER (WHERE tr.agent_name IS NOT NULL), '{}') AS agent_names
            FROM token_savings ts
            LEFT JOIN trace_usage tr ON tr.trace_id = ts.flow_id",
     );
-    qb.push(PRICE_JOIN);
     push_filters(&mut qb, q, "ts.created_at", "ts.agent_id");
     if let Some(session) = q.session_id {
         qb.push(" AND COALESCE(ts.session_id, tr.session_id) = ")
@@ -891,14 +837,8 @@ pub async fn get_savings(db: &PgPool, q: &SavingsQuery<'_>) -> Result<SavingsDat
     let uncalibrated: i64 = measured.iter().map(|r| r.uncalibrated).sum();
 
     // Measured layers, grouped into their programs.
-    //
-    // `unpriced_by_program` rides alongside rather than inside `LayerSavings`: it is a statement
-    // about the *response's* completeness, not a savings figure, and putting it in the serialized
-    // layer would invite a consumer to add it to something.
-    let mut unpriced_by_program: HashMap<String, i64> = HashMap::new();
     let mut programs: HashMap<String, Vec<LayerSavings>> = HashMap::new();
     for row in &measured {
-        *unpriced_by_program.entry(row.program.clone()).or_default() += row.unpriced;
         programs
             .entry(row.program.clone())
             .or_default()
@@ -957,9 +897,7 @@ pub async fn get_savings(db: &PgPool, q: &SavingsQuery<'_>) -> Result<SavingsDat
             let note = if saved_input == 0 && saved_output == 0 {
                 Some(zero_note(&program, &layers).to_string())
             } else {
-                partial_note(&program).or_else(|| {
-                    unpriced_note(unpriced_by_program.get(&program).copied().unwrap_or(0))
-                })
+                partial_note(&program)
             };
             ProgramSavings {
                 label: program_label(&program),
@@ -1035,7 +973,10 @@ pub async fn get_savings(db: &PgPool, q: &SavingsQuery<'_>) -> Result<SavingsDat
 /// measured" — out of the response. **Delete an entry the moment its emitter ships**, or the note
 /// starts lying in the other direction.
 const UNINSTRUMENTED_LAYERS: &[&str] = &[
-    "prompt_comments", // measured agent-side; no span attribute carries it out yet
+    "compress_tool_result", // IP-3, oss/react-agent/src/context.rs
+    "compress_history",     // IP-4, oss/orchestrator/src/session_history.rs
+    "context_selection",    // the PACMS budget effect
+    "prompt_comments",      // measured agent-side; no span attribute carries it out yet
 ];
 
 /// Whether a program's whole contribution is still uninstrumented.
@@ -1071,43 +1012,12 @@ fn zero_note(program: &str, layers: &[LayerSavings]) -> &'static str {
 
 /// Names the layers a program is not yet counting, when some of it *is* counted.
 ///
-/// Caveman was the case this exists for: payload compression reported while tool-result and history
-/// compression did not, so the category total was real but low. Saying so is the difference between
-/// an understated number and a wrong one. **All three now write** (IP-3 was the last, see
-/// `crate::telemetry::tool_result_savings`), so this currently returns `None` for every program —
-/// it is kept, rather than deleted, because it fires again the moment a `compress_*` layer rejoins
-/// `UNINSTRUMENTED_LAYERS`, which is exactly when a reader would need telling.
+/// Caveman is the case this exists for: payload compression reports, while tool-result and history
+/// compression do not, so the category total is real but low. Saying so is the difference between
+/// an understated number and a wrong one.
 fn partial_note(program: &str) -> Option<String> {
-    partial_note_from(program, UNINSTRUMENTED_LAYERS)
-}
-
-/// Says that a program's *tokens* are complete while its *money* is not.
-///
-/// The three orchestrator-side layers are priced at read time from the flow's first LLM call
-/// ([`PRICE_JOIN`]). That resolves for an ordinary turn and fails for two real cases: a turn that
-/// never reached a model, and a model with no `model_pricing` row. Both leave tokens counted and
-/// cost at zero — and a zero cost beside a large token figure reads as "this saved nothing worth
-/// money", which is the opposite of true. Naming the gap is the same discipline
-/// `UNINSTRUMENTED_LAYERS` applies one level up.
-fn unpriced_note(unpriced_tokens: i64) -> Option<String> {
-    if unpriced_tokens <= 0 {
-        return None;
-    }
-    Some(format!(
-        "{unpriced_tokens} saved tokens here could not be priced — the model that would have read \
-         them has no rate on file — so the dollar figure is lower than the real one."
-    ))
-}
-
-/// The body of [`partial_note`], with the uninstrumented set injected.
-///
-/// Split out so the copy stays under test after the real set stopped exercising it: with every
-/// `compress_*` layer now writing, a test calling `partial_note("caveman")` can only ever assert
-/// `None`, which would leave the wording and the layer→plain-English mapping unverified until the
-/// day they are needed again.
-fn partial_note_from(program: &str, uninstrumented: &[&str]) -> Option<String> {
     let missing: Vec<&str> = match program {
-        "caveman" => uninstrumented
+        "caveman" => UNINSTRUMENTED_LAYERS
             .iter()
             .filter(|l| l.starts_with("compress_"))
             .copied()
@@ -1331,38 +1241,13 @@ mod tests {
 
     #[test]
     fn an_uninstrumented_program_says_so_instead_of_claiming_nothing_happened() {
-        // The bug this guards: a zero explained as a finding ("nothing exceeded its budget") when
-        // the truth is that nothing measures it. A dashboard that mis-explains a zero is worse
-        // than one that leaves it bare.
-        //
-        // `prompt_comments` is the remaining case: the coding agent measures it and no span
-        // attribute carries it out. PACMS left this list when its writer shipped.
-        let note = zero_note("prompt_comments", &[]);
-        assert!(note.contains("not measured yet"), "{note}");
-        assert!(!note.contains("exceeded"), "{note}");
-    }
-
-    /// The counterpart to the test above, and the reason that list is a `const` and not a comment:
-    /// a layer that is now written must stop claiming it is not, or the note lies in the other
-    /// direction and understates a real figure forever.
-    #[test]
-    fn a_layer_with_a_writer_no_longer_claims_to_be_unmeasured() {
-        assert!(!UNINSTRUMENTED_LAYERS.contains(&"context_selection"));
-        assert!(!UNINSTRUMENTED_LAYERS.contains(&"compress_history"));
-        assert!(!program_uninstrumented("pacms"));
+        // The bug this guards: "No session exceeded its context budget" reads as a measurement
+        // when the truth is that nothing measures it. A dashboard that mis-explains a zero is
+        // worse than one that leaves it bare.
         let note = zero_note("pacms", &[]);
-        assert!(!note.contains("not measured yet"), "{note}");
-
-        // IP-3's emitter is `oss/server/src/telemetry/tool_result_savings.rs`.
-        assert!(!UNINSTRUMENTED_LAYERS.contains(&"compress_tool_result"));
-    }
-
-    /// With all three compression layers writing, Caveman's figure is complete — so the note that
-    /// said it was understated must stop appearing. Left in place it would permanently tell a
-    /// reader the real saving is higher than the one being shown, which is now false.
-    #[test]
-    fn caveman_stops_reporting_as_partial_once_every_compress_layer_writes() {
-        assert_eq!(partial_note("caveman"), None);
+        assert!(note.contains("not measured yet"), "{note}");
+        // The old wording claimed no session had exceeded its budget, which reads as a finding.
+        assert!(!note.contains("exceeded"), "{note}");
     }
 
     #[test]
@@ -1371,53 +1256,22 @@ mod tests {
         assert!(zero_note("caveman", &[]).contains("turned on"));
     }
 
-    /// The copy a partial program shows, exercised against an injected set because the real one no
-    /// longer produces it — IP-3 was the last `compress_*` layer to start writing. Kept under test
-    /// so that if a layer ever rejoins `UNINSTRUMENTED_LAYERS`, the note it produces is already
-    /// known to read correctly rather than being written again from scratch under pressure.
     #[test]
     fn a_partially_counted_program_declares_itself_an_under_estimate() {
-        let note = partial_note_from("caveman", &["compress_tool_result"])
-            .expect("a caveman layer in the uninstrumented set must produce a note");
+        // Caveman reports payload compression but not the tool-result or history layers, so its
+        // total is real and low. Saying so is the difference between understated and wrong.
+        let note = partial_note("caveman").expect("caveman is partial while IP-3/IP-4 are silent");
         assert!(note.contains("higher than this"), "{note}");
         // Named in plain words, not by the ledger's layer key.
-        assert!(note.contains("repeated tool output"), "{note}");
+        assert!(note.contains("chat history"), "{note}");
         assert!(
             !note.contains("compress_"),
             "no internal layer names in user copy: {note}"
-        );
-
-        // Two missing layers read as a list, not as one run-on label.
-        let both = partial_note_from("caveman", &["compress_tool_result", "compress_history"])
-            .expect("two missing layers must still produce a note");
-        assert!(
-            both.contains("repeated tool output or chat history"),
-            "{both}"
         );
     }
 
     #[test]
     fn a_fully_counted_program_carries_no_partial_note() {
         assert_eq!(partial_note("ponytail"), None);
-    }
-
-    /// A fully-priced program must stay silent — the note is for a real gap, and one that fires on
-    /// every response is one nobody reads.
-    #[test]
-    fn a_fully_priced_program_carries_no_unpriced_note() {
-        assert_eq!(unpriced_note(0), None);
-        assert_eq!(unpriced_note(-1), None);
-    }
-
-    /// The failure this exists to prevent: tokens counted, cost zero, and nothing saying why — which
-    /// reads as "this layer saved nothing worth money" when the truth is "we could not price it".
-    #[test]
-    fn unpriced_savings_say_so_rather_than_showing_a_bare_zero() {
-        let note = unpriced_note(12_345).expect("unpriced tokens must explain themselves");
-        assert!(note.contains("12345"), "{note}");
-        assert!(note.contains("lower than the real one"), "{note}");
-        // The reader is a FinOps owner, not someone who knows what a price join is.
-        assert!(!note.contains("token_savings"), "{note}");
-        assert!(!note.contains("JOIN"), "{note}");
     }
 }

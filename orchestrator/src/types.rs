@@ -11,6 +11,15 @@ pub struct AgentCard {
     pub skills: Vec<String>,
     pub tags: Vec<String>,
     pub url: Option<String>,
+    /// Persisted embedding of `name + description + tags`, loaded from
+    /// `agents.embedding`. `None` if never computed.
+    #[serde(default)]
+    pub embedding: Option<Vec<f32>>,
+    /// Hash of the text that produced `embedding` (see `vector_store::hash_prompt`),
+    /// loaded from `agents.embedding_content_hash`. Compared against a freshly
+    /// computed hash to detect a stale embedding.
+    #[serde(default)]
+    pub embedding_content_hash: Option<i64>,
 }
 
 #[derive(Debug, Clone)]

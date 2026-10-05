@@ -16,7 +16,7 @@ use crate::reranker::Reranker;
 use crate::selector::AgentSelector;
 use crate::selector::ConversationMessage;
 use crate::types::{AgentCard, RouteRequest, RouteResult, RouterLogEntry};
-use crate::vector_store::{EmbeddingCache, TextEmbeddingCache, VectorStore};
+use crate::vector_store::{TextEmbeddingCache, VectorStore};
 
 // ── Trait ─────────────────────────────────────────────────────────────────────
 
@@ -65,11 +65,6 @@ pub struct OssRoutingEngine {
     api_key: String,
     base_url: String,
     embedding_model: String,
-    /// Cache of agent embeddings shared across `route()` calls. Without this,
-    /// Stage 1 would re-embed the entire agent catalog against Ollama/OpenAI on
-    /// every incoming request. See `EmbeddingCache` docs for the invalidation
-    /// strategy (TTL + content-hash).
-    embedding_cache: EmbeddingCache,
     /// Cache of PACMS candidate/query embeddings shared across `route()` calls.
     /// PACMS's history pool overlaps heavily turn-to-turn within a session, so
     /// without this `SessionHistory::fetch_pacms` would re-embed the same
@@ -94,7 +89,6 @@ impl OssRoutingEngine {
             api_key,
             base_url,
             embedding_model,
-            embedding_cache: Arc::new(DashMap::new()),
             history_embedding_cache: Arc::new(DashMap::new()),
         }
     }
@@ -127,6 +121,7 @@ impl RoutingEngine for OssRoutingEngine {
         pool: &PgPool,
         policy: Option<&dyn RoutingPolicy>,
     ) -> Result<RouteResult, RouterError> {
+        tracing::info!(query = %req.query, "routing_engine: route() start");
         let t0 = Instant::now();
 
         // Fetch available agents + conversation history in parallel. History
@@ -156,21 +151,28 @@ impl RoutingEngine for OssRoutingEngine {
         }
 
         let registry_ms = t0.elapsed().as_millis() as i32;
+        tracing::info!(
+            agent_count = agents.len(),
+            elapsed_ms = registry_ms,
+            "routing_engine: registry+history fetched"
+        );
 
         // Stage 1 — vector store semantic shortlist (OpenAI embeddings, skipped if no key)
         let t1 = Instant::now();
         let store = Arc::new(if agents.len() < self.config.shortlist_threshold {
+            tracing::info!("routing_engine: stage 1 (shortlist) skipped — fleet below threshold");
             // Catalog too small for semantic shortlisting to matter — skip
             // embedding entirely rather than paying for embeddings API calls
             // we're going to throw away (shortlist() would return `all` anyway).
             VectorStore::disabled_from(agents.clone())
         } else {
+            tracing::info!("routing_engine: stage 1 (shortlist) — building vector store");
             VectorStore::build(
                 agents.clone(),
                 self.api_key.clone(),
                 self.base_url.clone(),
                 self.embedding_model.clone(),
-                &self.embedding_cache,
+                pool,
             )
             .await
         });
@@ -182,20 +184,32 @@ impl RoutingEngine for OssRoutingEngine {
             )
             .await;
         let stage1_count = shortlist.len();
-        let _stage1_ms = t1.elapsed().as_millis() as i32;
+        let stage1_ms = t1.elapsed().as_millis() as i32;
+        tracing::info!(
+            candidates = stage1_count,
+            elapsed_ms = stage1_ms,
+            "routing_engine: stage 1 (shortlist) done"
+        );
 
         // Stage 2 — conversation-aware reranking
+        let t2 = Instant::now();
         let reranker = Reranker::new(Arc::clone(&store));
         let candidates = reranker
             .rerank(shortlist, &history, &req.query, self.config.shortlist_size)
             .await;
         let stage2_count = candidates.len();
+        tracing::info!(
+            candidates = stage2_count,
+            elapsed_ms = t2.elapsed().as_millis() as i32,
+            "routing_engine: stage 2 (rerank) done"
+        );
 
         if candidates.is_empty() {
             return Err(RouterError::NoAgentsAvailable);
         }
 
         // Stage 3 — LLM final selection
+        tracing::info!("routing_engine: stage 3 (select) — calling LLM");
         let t3 = Instant::now();
         let summaries: Vec<AgentCardSummary> = candidates.iter().map(card_to_summary).collect();
         let history_msgs: Vec<ConversationMessage> = history
@@ -280,6 +294,13 @@ impl RoutingEngine for OssRoutingEngine {
         };
         let stage3_ms = t3.elapsed().as_millis() as i32;
         let total_ms = t0.elapsed().as_millis() as i32;
+        tracing::info!(
+            selected_agent = %selected_agent.name,
+            fallback_used,
+            elapsed_ms = stage3_ms,
+            "routing_engine: stage 3 (select) done"
+        );
+        tracing::info!(total_elapsed_ms = total_ms, "routing_engine: route() done");
 
         // Write selector token usage to the token_usage table (fire-and-forget)
         let selection_token_usage_id: Option<Uuid> = if let Some(ref cr) = selector_usage {

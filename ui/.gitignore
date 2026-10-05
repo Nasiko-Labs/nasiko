@@ -50,11 +50,6 @@ coverage/
 
 # Playwright
 test-results/
-genui-eval/
 playwright-report/
 # Storybook
 storybook-static/
-
-# Desktop app (desktop/README.md): the copied web build and electron-builder output.
-desktop/web/
-desktop/release/

@@ -137,6 +137,13 @@ pub struct GatewayConfig {
     /// Raise it only if real traffic turns out to be dominated by very short replies (under
     /// ~250 output tokens), where the fixed cost stops being repaid.
     pub brevity_min_bytes: usize,
+    /// Percent of otherwise-eligible calls the directive is withheld from, to keep a control arm.
+    ///
+    /// This is a real, accepted cost: that slice forgoes the optimization. It buys the only
+    /// unbiased measurement of a layer whose saving cannot be subtracted, and it is bounded by
+    /// exactly the figure it exists to establish. `0` disables the holdout and leaves `apply`
+    /// byte-identical to a build without it.
+    pub brevity_holdout_pct: u8,
 
     /// Persist pre-compression originals so an agent can recover what was elided (IP-5).
     /// Defaults **on**; only ever writes a row when compression actually elided something, which
@@ -185,6 +192,7 @@ impl Default for GatewayConfig {
             compress_dry_run: false,
             brevity_enabled: true,
             brevity_min_bytes: 0,
+            brevity_holdout_pct: 5,
             compress_recovery_enabled: true,
             compress_recovery_min_bytes: 8192,
             compress_recovery_ttl_secs: 86_400,
@@ -283,6 +291,11 @@ impl GatewayConfig {
             compress_dry_run: env_flag("TOKEN_COMPRESS_DRY_RUN", false),
             brevity_enabled: env_flag("TOKEN_BREVITY", d.brevity_enabled),
             brevity_min_bytes: env_usize("TOKEN_BREVITY_MIN_BYTES", d.brevity_min_bytes),
+            brevity_holdout_pct: env_usize(
+                "TOKEN_BREVITY_HOLDOUT_PCT",
+                d.brevity_holdout_pct as usize,
+            )
+            .min(100) as u8,
             compress_recovery_enabled: env_flag(
                 "TOKEN_COMPRESS_RECOVERY",
                 d.compress_recovery_enabled,

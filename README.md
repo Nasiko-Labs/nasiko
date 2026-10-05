@@ -196,8 +196,8 @@ miss:
 
 | Variable                     | Purpose                                                                                                                                                                                                                    |
 | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `AGENT_JWT_SECRET`           | Signs the short-lived per-request router JWTs. Empty ⇒ every router request is rejected with 401 (fail-closed).                                                                                                            |
-| `CODING_AGENT_OTLP_ENDPOINT` | OTLP/HTTP JSON base endpoint for the telemetry outbox worker (the server appends `/v1/traces` and `/v1/logs`). Unset leaves ingested receipts pending and starts no worker, so coding-agent traces never reach Tempo/Loki. |
+| `AGENT_JWT_SECRET` | Required for local coding-agent routing, including custom LLM configs. Signs agent identity tokens separately from user-login JWTs and provider credentials. Missing/empty ⇒ `/api/agents/{id}/llm-token` returns 503; gateway authentication fails closed. |
+| `CODING_AGENT_OTLP_ENDPOINT` | Server-side OTLP/HTTP export for coding-agent telemetry. Compose already sets `http://otel-collector:4318`; for a host-run server with local infra, set `http://localhost:4318` in `server/.env`. Unset leaves receipts pending without an export worker. |
 
 
 ## Features
@@ -356,10 +356,31 @@ cd nasiko
 cp .env.example .env
 ```
 
-Edit `.env` and set at minimum:
+Edit `.env` before starting:
 
-- `OPENAI_API_KEY`: your OpenAI key (used by the routing engine and injected into agents)
-- `ADMIN_PASSWORD`: password for the bootstrap admin account
+- `SECRETS_ENCRYPTION_KEY`: generate with `openssl rand -base64 32` (exactly 32 decoded bytes).
+- `JWT_SECRET`: generate with `openssl rand -base64 48` for user-login tokens.
+- `AGENT_JWT_SECRET`: generate a **separate** value with `openssl rand -base64 48`. Required for
+  local coding-agent LLM routing (`nasiko connect claude|codex|opencode --config <name>`), including
+  custom LLM configs. Keep this signing secret on the server; clients obtain short-lived tokens.
+- `ADMIN_USERNAME` / `ADMIN_PASSWORD`: first-login credentials; replace the demo password.
+- `OPENAI_API_KEY`: a real provider key for the default OpenAI-backed routing/chat setup. Local
+  coding agents using a custom LLM config can instead use its stored provider credentials; those
+  credentials do **not** replace `AGENT_JWT_SECRET`.
+
+Keep the supplied `S3_*` credentials aligned with the bundled RustFS service. They are development
+credentials, not automatically generated secrets. Do not regenerate `SECRETS_ENCRYPTION_KEY` on
+routine restarts: existing encrypted secrets need the same key.
+
+**No manual telemetry URLs are needed for Compose.** It sets `TEMPO_URL`, `LOKI_URL`,
+`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_COLLECTOR_ENDPOINT`, and `CODING_AGENT_OTLP_ENDPOINT`, as well as
+`DATABASE_URL`, `REDIS_URL`, `S3_ENDPOINT`, `MCP_GATEWAY_PUBLIC_URL`, `LLM_GATEWAY_BASE_URL`, and
+`DOCKER_AGENT_NETWORK`. These Compose `environment` entries override `.env` values. Local coding
+clients connect to `http://localhost:8080` (or your reachable server URL), not the Docker-only
+`http://server:8080` address.
+
+After editing an existing `.env`, run `docker compose up -d` to recreate the server with the new
+values; `docker compose restart` alone does not reload its environment.
 
 ### 2. Start the platform
 
@@ -628,12 +649,218 @@ pull from the artifact registry.
 
 Run `nasiko --help` for the full, workflow-ordered command list.
 
+### Give your agent MCP tools
+
+Every deployed agent can call tools through the **MCP Gateway**, a single JSON-RPC endpoint that
+merges Composio toolkits and your own MCP servers into one permission-filtered catalog. The agent
+never holds a third-party credential: it authenticates to the gateway, and the gateway calls the
+tool with the user's stored connection.
+
+> A complete working example of everything in this section and the next is in
+> [`agents/general-assistant-1.1.1.zip`](agents/general-assistant-1.1.1.zip). It's a Python
+> `a2a-sdk` agent that uses whatever MCP tools it is granted, asks the user instead of guessing,
+> and pauses for tool approvals. Deploy it with
+> `nasiko upload agents/general-assistant-1.1.1.zip`. Then type `hitl input test`, `hitl auth test`,
+> `hitl options test` or `hitl multiselect test` to check the HITL wiring without an LLM key.
+> Version 1.1.1 pins `opentelemetry-util-genai==1.1b0`: version 1.2b0 breaks the OpenAI
+> instrumentor's import, leaving request traces visible but LLM token usage missing from TokenOps.
+
+**1. What the platform injects.** At deploy time every agent container gets two env vars
+(when `MCP_GATEWAY_PUBLIC_URL` is set on the server, which compose does for you):
+
+
+| Env var             | Meaning                                                                              |
+| ------------------- | ------------------------------------------------------------------------------------ |
+| `MCP_GATEWAY_URL`   | The gateway's JSON-RPC endpoint (`/api/mcp`)                                         |
+| `MCP_GATEWAY_TOKEN` | This agent's own gateway credential, minted at deploy. Send it as a `Bearer` token. |
+
+
+**2. Make the agent a client.** Plain JSON-RPC over HTTP is enough, no MCP SDK required. Two
+methods: `tools/list` (discover the catalog at runtime) and `tools/call` (invoke one).
+
+```python
+import os, uuid, httpx
+
+async def mcp(client, method, params=None, traceparent=None):
+    headers = {"Authorization": f"Bearer {os.environ['MCP_GATEWAY_TOKEN']}"}
+    if traceparent:
+        headers["traceparent"] = traceparent  # required, see below
+    body = {"jsonrpc": "2.0", "id": str(uuid.uuid4()), "method": method}
+    if params is not None:
+        body["params"] = params
+    resp = (await client.post(os.environ["MCP_GATEWAY_URL"], json=body, headers=headers)).json()
+    if "error" in resp:
+        err = resp["error"]
+        raise McpError(err["code"], err["message"], err.get("data") or {})
+    return resp["result"]
+
+tools = (await mcp(client, "tools/list", traceparent=tp))["tools"]
+result = await mcp(client, "tools/call", {"name": tool_name, "arguments": args}, tp)
+```
+
+Each `tools/list` entry has `name`, `description` and an `inputSchema` (JSON Schema), so it maps
+1:1 onto an OpenAI/Anthropic function-tool definition. Hand the list to your LLM and route any
+tool call it makes back through `tools/call`.
+
+**3. Forward the inbound `traceparent`, untouched.** The gateway authorizes `tools/call` by
+checking that your agent is a participant in the live flow the trace id names. Without the right
+`traceparent`, every call is rejected with 403, even with a valid token. Read the header from the
+A2A request you are serving and send that exact value. Two gotchas, both seen in practice:
+
+- **OTel `httpx` auto-instrumentation overwrites `traceparent`** with one from the ambient span,
+  which is not the inbound flow's span, so calls 403 with "does not resolve to a live flow".
+  Suppress instrumentation for the gateway request only:
+  ```python
+  from opentelemetry.context import attach, detach, set_value
+  from opentelemetry.instrumentation.utils import _SUPPRESS_INSTRUMENTATION_KEY
+
+  token = attach(set_value(_SUPPRESS_INSTRUMENTATION_KEY, True))
+  try:
+      resp = await client.post(url, json=body, headers=headers)
+  finally:
+      detach(token)
+  ```
+- **Read `traceparent` per request, not from a ContextVar.** In `a2a-sdk`, a resumed task runs on
+  the worker created by the *original* request, so a ContextVar holds a stale trace id. Read it from
+  `context.call_context.state["headers"]["traceparent"]` inside `execute()`.
+
+**4. Handle the gateway's error codes.** These are what make a tool call pause instead of fail
+(codes from `mcp-gateway/src/types.rs`):
+
+
+| Code     | Meaning                                                              | What the agent should do                                          |
+| -------- | -------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `-32000` | `TOOL_BLOCKED`: the tool's stance for this agent is `block`         | Return the error to the LLM as a normal tool result               |
+| `-32001` | `TOOL_ASK`: the stance is `ask`, and a human has not approved it yet  | Pause with `auth_required` (see [HITL](#human-in-the-loop-hitl)) |
+| `-32002` | `AUTH_REQUIRED`: the connector's own credential is missing or broken | Pause with `auth_required`                                        |
+
+
+For the two pause codes, `error.data` carries the gateway's own HITL request id:
+`hitl_request_id`, or `hitl_request_ids` (a list) for a batched call such as Composio's
+`COMPOSIO_MULTI_EXECUTE_TOOL`. Read both keys.
+
+**5. Grant the agent access.** An agent only sees the tools it was granted:
+
+```sh
+nasiko mcp catalog                                         # what can be connected
+nasiko mcp connect --toolkit github                        # connect your account (OAuth/API key)
+nasiko mcp agent-tools connectors my-agent                 # what my-agent can see
+nasiko mcp agent-tools enable my-agent <connector-id>      # turn a connector on for my-agent
+nasiko mcp agent-tools set-rule my-agent <connector-id> "GITHUB_DELETE_*" ask   # allow | ask | block
+nasiko mcp agent-tools tools my-agent <connector-id>       # catalog + effective stance per tool
+```
+
+Bring your own MCP server with `nasiko mcp connector register` (a URL), or `upload` /
+`upload-github` to have the platform build and host it. See
+[`docs/MCP_GATEWAY_DESIGN.md`](docs/MCP_GATEWAY_DESIGN.md) for gateway internals.
+
+### Human-in-the-loop (HITL)
+
+An agent can stop mid-task and wait for a person, then resume the **same task** with their answer.
+This is plain A2A with no Nasiko SDK: the agent ends its turn in one of two paused task states, and
+the platform does the rest. It records a pending request, shows it in the chat UI and
+`nasiko chat`, and sends the human's reply back to the agent as the next message on that task.
+
+
+| A2A state                   | Use it when                                                                              |
+| --------------------------- | ---------------------------------------------------------------------------------------- |
+| `TASK_STATE_INPUT_REQUIRED` | The agent is missing information it shouldn't guess (a name, date, amount, recipient...) |
+| `TASK_STATE_AUTH_REQUIRED`  | A human must grant something first: a tool approval (`TOOL_ASK`) or a connector re-auth  |
+
+
+**1. Pause.** With `a2a-sdk` (Python), emit the state with a message and optional `metadata`:
+
+```python
+await updater.update_status(
+    TaskState.TASK_STATE_INPUT_REQUIRED,
+    message=updater.new_agent_message([new_text_part("Which repo should I file this in?")]),
+    metadata={"messages": llm_history, "pending_tool_call_id": call.id},  # your resume state
+)
+```
+
+The message text becomes the question shown to the human. `metadata` is persisted on the task and
+handed back to you on resume, so store everything you need to continue there (the LLM conversation
+so far, the pending tool call). Use a persistent task store if the agent can restart while a task
+is paused, because `InMemoryTaskStore` loses it.
+
+Some `metadata` keys are hoisted onto the question so clients can render them:
+
+
+| Key                                                       | Effect                                                                                                                                                  |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `auth_url`, `provider`                                    | `auth_required`: the client shows an "Authorize with *provider*" link                                                                                   |
+| `expected_input`                                          | `input_required`: hint about the expected answer                                                                                                        |
+| `options`, `header`, `multi_select`, `allow_custom_input` | `input_required`: show selectable choices instead of a free-text box (see below)                                                                        |
+| `hitl_request_id`                                         | `auth_required` that mirrors a gateway `TOOL_ASK` / `AUTH_REQUIRED`: links the pause to the gateway's request, so approving it actually grants the tool |
+
+
+**2. Resume.** The human's reply arrives as a new message on the **same task id**.
+`context.current_task` is the stored task. Its `status.state` is still the paused state, and its
+`metadata` is what you saved. Branch on that state:
+
+```python
+stored = context.current_task
+if stored and stored.status.state == TaskState.TASK_STATE_INPUT_REQUIRED:
+    meta = MessageToDict(stored.metadata)   # metadata comes back as a protobuf Struct
+    history = meta["messages"] + [{"role": "tool",
+                                   "tool_call_id": meta["pending_tool_call_id"],
+                                   "content": user_text}]
+    # ...continue the LLM loop with `history`
+elif stored and stored.status.state == TaskState.TASK_STATE_AUTH_REQUIRED:
+    # retry the exact tool call the human just approved; pause again if it is still TOOL_ASK
+    ...
+```
+
+For an `auth_required` pause, the reply text is `confirmed` or `denied`. Don't treat any other
+value as approval.
+
+**Selectable options (optional).** Add these to `input_required` metadata to give the human
+clickable choices:
+
+```python
+metadata = {
+    "header": "Format",
+    "options": [
+        {"label": "Summary", "description": "Brief overview"},
+        {"label": "Detailed"},
+    ],
+    "multi_select": False,        # default false
+    "allow_custom_input": True,   # also allow a typed answer; default false
+}
+```
+
+On resume you get back the chosen `label` verbatim. For multi-select, each picked label (and any
+custom text) is on its own line. Labels must be non-empty and unique, with at most 20 options. A
+malformed block is dropped and the pause falls back to a plain text question, with a server-side
+warning (`types/src/a2a.rs`).
+
+**Making an LLM agent pause reliably.** Give the model a synthetic `ask_human(question, options?)`
+tool and a `finish_task(message)` tool alongside the MCP tools, and call it with
+`tool_choice="required"`. With `"auto"`, models often ask a clarifying question as plain chat
+text, which you can't tell apart from a final answer. When every turn must be a tool call, "paused"
+and "done" are told apart by the tool called, not by guessing at the text:
+`ask_human` → `input_required`, gateway `TOOL_ASK`/`AUTH_REQUIRED` → `auth_required`,
+`finish_task` → complete.
+
+**Answering a pause outside the chat UI.** `nasiko chat` prompts for pauses inline. For other
+clients, pending requests are at `GET /api/hitl/pending` and `GET /api/hitl/{id}`, and are answered
+with `POST /api/hitl/{id}/resolve`. The body depends on the request kind:
+
+
+| Kind                       | Resolve body                                                                                          |
+| -------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `input_required`           | `{"answer": "acme/api"}`; for multi-select, `{"answer": ["Intro", "Security"], "custom_answer": "..."}` |
+| `auth_required`            | `{"auth_action": "start"}`, then `{"auth_action": "confirm"}` after authorizing                       |
+| tool approval (`TOOL_ASK`) | `{"decision": "approve" \| "reject", "scope": "once" \| "session"}`                                  |
+
+
 ## Environment Variables
 
-Everything is env-driven through a single `Config` struct (`config/src/lib.rs`); required keys fail
-fast at startup. When running via `docker compose`, the infrastructure URLs (`DATABASE_URL`,
-`REDIS_URL`, `S3_ENDPOINT`, OTel/Tempo/Loki, agent network) are set automatically by
-`docker-compose.yml`. See `[.env.example](.env.example)` for every variable with descriptions.
+Configuration is env-driven; startup-required keys are validated separately from feature-specific
+requirements such as local coding-agent routing. See [.env.example](.env.example) for the Compose
+quick start and [server/.env.example](server/.env.example) for the detailed reference.
+`docker-compose.yml` supplies infrastructure and telemetry URLs and the agent network; do not
+replace those with host-local addresses in the Compose setup.
 
 
 | Variable                                                                       | Purpose                                                       | Default                           |
@@ -642,15 +869,16 @@ fast at startup. When running via `docker compose`, the infrastructure URLs (`DA
 | `SECRETS_ENCRYPTION_KEY`                                                       | Base64 32-byte AES-256-GCM key                                | **required**                      |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD`                                            | Bootstrap admin account                                       | `admin` / `changeme`              |
 | `JWT_SECRET`                                                                   | JWT signing secret                                            | **required**                      |
-| `S3_BUCKET` / `S3_ACCESS_KEY` / `S3_SECRET_KEY` / `S3_REGION`                  | S3 storage for the OCI registry                               | set by compose                    |
+| `S3_BUCKET` / `S3_ACCESS_KEY` / `S3_SECRET_KEY` / `S3_REGION` | S3 settings; credentials must match RustFS | supplied by `.env.example`; `S3_SECRET_KEY` required |
+| `OCI_STORAGE_BUCKET` | Bucket for embedded OCI registry blobs/manifests | `nasiko-artifacts` (no override needed) |
 | `AGENT_RUNTIME`                                                                | Container runtime (`docker` in OSS)                           | `docker`                          |
 | `DATABASE_URL` / `REDIS_URL` / `S3_ENDPOINT`                                   | Infra connections                                             | set by compose                    |
 | `COMPOSIO_API_KEY`                                                             | Composio platform (MCP toolkits)                              | optional                          |
 | `SEED_TOOLKITS`                                                                | Composio toolkits to auto-register at boot                    | optional                          |
 | `MCP_GATEWAY_PUBLIC_URL`                                                       | Public URL injected into agents for the MCP gateway           | set by compose                    |
 | `SEED_AGENTS`                                                                  | Space-separated images auto-deployed at boot                  | optional                          |
-| `AGENT_JWT_SECRET`                                                             | Signs coding-agent LLM-router request tokens                  | **required for `nasiko connect`** |
-| `CODING_AGENT_OTLP_ENDPOINT`                                                   | OTLP/HTTP JSON endpoint for the coding-agent telemetry outbox | unset (worker disabled)           |
+| `AGENT_JWT_SECRET` | Signs agent LLM-router identity tokens, including custom config routing | **required for local coding-agent routing**; generate your own |
+| `CODING_AGENT_OTLP_ENDPOINT` | Server-side OTLP/HTTP export for coding-agent telemetry | set by Compose; host-run server must set it |
 | `ROUTER_MODEL` / `EMBEDDING_MODEL`                                             | Routing-engine models                                         | see `config/`                     |
 | `NASIKO_FLOW_MAX_DEPTH` / `NASIKO_FLOW_MAX_FAN_OUT` / `NASIKO_FLOW_MAX_TOKENS` | Flow-guard cascade limits                                     | see `config/`                     |
 
@@ -697,7 +925,7 @@ docs/           Design docs (architecture, protocol, conventions)
 | Agent upload -> `500 agents_owner_id_fkey`                         | Log out and back in, or `docker compose down -v && docker compose up -d` then log in fresh                                                                                                                       |
 | Server can't reach Postgres                                        | `docker compose up -d` and wait for `healthy`                                                                                                                                                                    |
 | Agent `Name or service not known` (Linux Docker)                   | Recreate with `--add-host host.docker.internal:host-gateway`                                                                                                                                                     |
-| `SEED_TOOLKITS is set but COMPOSIO_API_KEY is not` at startup      | Expected and harmless: `SEED_TOOLKITS` ships active by default in `.env.example`. Set `COMPOSIO_API_KEY` in `.env` to actually register Composio toolkits, or comment out `SEED_TOOLKITS` to silence the warning |
+| `SEED_TOOLKITS is set but COMPOSIO_API_KEY is not` at startup | `SEED_TOOLKITS` is optional and commented out in the template. If you enable it, also set `COMPOSIO_API_KEY`, or leave both unset if Composio is not needed. |
 
 
 ### Windows
@@ -749,9 +977,7 @@ docs/           Design docs (architecture, protocol, conventions)
 ## Project Activity
 
 
-|                                                        |                                                                                                                                  |
-| ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
-| ![Star history](.github/shieldcn/star-chart-light.svg) | ![Issues over time](https://shieldcn.dev/chart/github/issues/Nasiko-Labs/nasiko.svg?theme=blue&width=520&height=220&border=true) |
+![Issues over time](https://shieldcn.dev/chart/github/issues/Nasiko-Labs/nasiko.svg?theme=blue&width=520&height=220&border=true)
 
 
 [![GitHub stars](https://shieldcn.dev/github/stars/Nasiko-Labs/nasiko.svg?variant=secondary&mode=light&theme=red&font=geist-mono)](https://github.com/Nasiko-Labs/nasiko/stargazers)

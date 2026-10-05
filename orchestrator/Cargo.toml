@@ -22,9 +22,10 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["full"] }
 tracing.workspace = true
 uuid = { workspace = true, features = ["v4", "serde"] }
+nasiko-agent-proxy.workspace = true
 nasiko-config.workspace = true
+nasiko-flow.workspace = true
 nasiko-types.workspace = true
-nasiko-observability.workspace = true
 nasiko-hitl.workspace = true
 
 [dev-dependencies]

@@ -1894,8 +1894,8 @@ async fn ensure_orchestrator_chat_session(
     };
 
     let _ = sqlx::query(
-        "INSERT INTO chat_sessions (session_id, user_id, agent_id, agent_url, title) \
-         VALUES ($1, $2, NULL, '/api/orchestrator/a2a', $3) \
+        "INSERT INTO chat_sessions (session_id, user_id, agent_id, agent_url, title, session_type) \
+         VALUES ($1, $2, NULL, '/api/orchestrator/a2a', $3, 'orchestrator') \
          ON CONFLICT (session_id) DO NOTHING",
     )
     .bind(context_id)

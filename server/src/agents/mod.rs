@@ -61,11 +61,44 @@ pub(crate) const DEFAULT_AGENT_PORT: u16 = 8000;
 /// after the host and 404s at the Axum router level before any auth/handler
 /// logic runs (found live: BuildKit push to `.../v2/translator/blobs/uploads/`
 /// failed with a plain 404, not a 401/403).
+///
+/// The name segment goes through [`image_name_slug`]: an agent name is a
+/// display string that may legally carry uppercase or spaces, neither of which
+/// an OCI repository name admits.
 pub(crate) fn build_image_tag(registry: &str, name: &str, tag: &str) -> String {
+    let name = image_name_slug(name);
     if registry.is_empty() {
         format!("nasiko/{name}:{tag}")
     } else {
         format!("{registry}/nasiko/{name}:{tag}")
+    }
+}
+
+/// Lowercase a display name into an OCI-safe repository component.
+///
+/// An OCI repository name is `[a-z0-9]+([._-][a-z0-9]+)*` — no uppercase, no
+/// spaces — but an agent name is validated against the *tag* charset
+/// (`build::routes::validate_version_tag`), which permits both. An agent named
+/// "General-Assistant" therefore reached the builder as
+/// `nasiko/General-Assistant:1.0.0`, and docker rejected it ("repository name
+/// must be lowercase") *after* the agent/build/job rows had already committed —
+/// leaving the agent behind with nothing but a failed build.
+///
+/// Idempotent, and registry publishers apply the same rule before pushing, so a
+/// name survives publish → import unchanged and a re-import updates the existing
+/// agent instead of registering a second one under a differently-cased name.
+pub(crate) fn image_name_slug(name: &str) -> String {
+    let slug: String = name
+        .to_lowercase()
+        .replace(' ', "-")
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    let slug = slug.trim_matches('-');
+    if slug.is_empty() {
+        "agent".to_string()
+    } else {
+        slug.to_string()
     }
 }
 
@@ -455,5 +488,51 @@ mod spec_tests {
             build_image_tag("", "my-agent", "1.0.0"),
             "nasiko/my-agent:1.0.0"
         );
+    }
+
+    #[test]
+    fn build_image_tag_slugifies_the_name_segment() {
+        // Found live on POST /api/agents/upload: an agent named
+        // "General-Assistant" produced `nasiko/General-Assistant:<ver>`, and the
+        // docker build failed with "repository name must be lowercase" only
+        // after the agent/build/job rows had committed.
+        assert_eq!(
+            build_image_tag("", "General-Assistant", "1.0.0"),
+            "nasiko/general-assistant:1.0.0"
+        );
+        assert_eq!(
+            build_image_tag("registry.example.com", "Infrastructure Manager", "1.0.0"),
+            "registry.example.com/nasiko/infrastructure-manager:1.0.0"
+        );
+    }
+
+    #[test]
+    fn image_name_slug_yields_oci_safe_repository_components() {
+        assert_eq!(
+            image_name_slug("Infrastructure Manager"),
+            "infrastructure-manager"
+        );
+        assert_eq!(
+            image_name_slug("infrastructure_manager"),
+            "infrastructure_manager"
+        );
+        assert_eq!(image_name_slug("Code Reviewer 2.0"), "code-reviewer-20");
+    }
+
+    #[test]
+    fn image_name_slug_never_yields_an_empty_name() {
+        // An empty repo component is as invalid a reference as a spaced one.
+        assert_eq!(image_name_slug("---"), "agent");
+        assert_eq!(image_name_slug(""), "agent");
+    }
+
+    #[test]
+    fn image_name_slug_is_idempotent() {
+        // Publish slugifies before pushing, and update/rollback re-derive the
+        // tag from the stored name — every re-application must land on the same
+        // repository, or a second build pushes a second image.
+        let published = "infrastructure-manager";
+        assert_eq!(image_name_slug("Infrastructure Manager"), published);
+        assert_eq!(image_name_slug(published), published);
     }
 }

@@ -3,7 +3,6 @@
 // public OSS layout (without ee/) runs the same scripts.
 import { existsSync, readdirSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'
-import { pathToFileURL } from 'node:url'
 
 export interface EditionDir {
   /** 'oss', 'ee', … (the app dir's first segment). */
@@ -41,16 +40,4 @@ export function findEditions(root: string): EditionDir[] {
     .map((p) => relative(root, p))
     .map((dir) => ({ id: dir.split(/[/\\]/)[0]!, dir }))
     .sort((x, y) => (x.id === 'oss' ? -1 : y.id === 'oss' ? 1 : x.id.localeCompare(y.id)))
-}
-
-/**
- * The module at `file` (relative to an app dir) from the first edition that ships one, or undefined when none does:
- * how a published script reaches an edition's feature without naming the edition.
- */
-export async function importEditionModule<T>(root: string, file: string): Promise<T | undefined> {
-  for (const { dir } of findEditions(root)) {
-    const path = join(root, dir, file)
-    if (existsSync(path)) return (await import(pathToFileURL(path).href)) as T
-  }
-  return undefined
 }

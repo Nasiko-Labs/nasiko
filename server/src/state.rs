@@ -392,6 +392,16 @@ impl AppState {
             ));
         }
 
+        // Retires the seeded brevity factor once the holdout has enough samples. Cheap (one
+        // grouped scan) and idempotent, so it rides the same process as the other workers rather
+        // than needing a scheduler.
+        tokio::spawn(crate::observability::savings_factors::run(
+            state.db.clone(),
+            std::time::Duration::from_secs(state.config.savings_factor_refresh_secs),
+            state.config.savings_factor_min_samples,
+            state.config.savings_factor_window_days,
+        ));
+
         state
     }
 

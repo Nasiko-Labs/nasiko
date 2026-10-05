@@ -31,16 +31,11 @@
  *   5eed000f-*), owned by the superuser: platform toolkits, registered and uploaded servers with their tools, the
  *   superuser's credential-free connections, and agent access on the first seed agents. A server whose name the
  *   superuser (or the platform) already uses is skipped, and its rows with it, never an error that rolls back the seed.
- * - Budgets (plans/feat-budget-burn.md #45, docs/requirements/budgets.md §14.8): the golden scenario (ids 5eed0017-*)
- *   anchored at the seed's hour, on seed-only databases (`--marker`) whose server has the budget tables. Budgets
- *   belong to an edition, so the SQL comes from the edition that ships `scripts/lib/budgetSeed.ts`; a checkout with no
- *   such edition writes none, today's servers skip it with a notice, and `nasiko_dev` never gets it.
  * - Live contract (plans/feat-live-contract.md §6): `--marker` adds the seed marker, an llm_config named
  *   `seed-marker-<ISO anchor>` (id 5eed0007-…-000000000099), which the recorder reads back; only for the throwaway
  *   contract and EE databases (scripts/seed-live.ts decides). The seed then asserts no seed agent has an `image` or
  *   `status = 'running'`, so a contract server never tries to deploy one.
  */
-import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import { generateSeed } from '../common/src/mocks/seed.ts'
 import {
@@ -57,13 +52,7 @@ import {
   mcpBuildId,
   mcpConnectorId,
 } from '../common/src/mocks/seed-mcp.ts'
-import { importEditionModule } from './editions.ts'
 import { seedTraceSessions, TRACE_WINDOW_DAYS } from './lib/otlp.ts'
-
-const budgets = await importEditionModule<{
-  BUDGET_RESET: string[]
-  budgetSeedSql: (anchor: number) => string[]
-}>(fileURLToPath(new URL('..', import.meta.url)), 'scripts/lib/budgetSeed.ts')
 
 function parseFlags() {
   try {
@@ -159,8 +148,7 @@ const DELETE_SEED = [
 const out: string[] = ['BEGIN;']
 
 if (values.reset) {
-  // The budgets scenario is only ever written on seed-only databases (--marker); so is its reset.
-  out.push(...(values.marker ? (budgets?.BUDGET_RESET ?? []) : []), ...DELETE_SEED)
+  out.push(...DELETE_SEED)
 } else {
   let anchor: Date | undefined
   if (values.anchor !== undefined) {
@@ -330,10 +318,6 @@ END $$;`)
   out.push(
     `-- harnesses: ${adminAgents.length} coding agents (skipped if the superuser already has them), ${hsessions.length} sessions, ${turnRows.length} turns, ${messageRows.length} messages`,
   )
-  // Budgets (plans/feat-budget-burn.md #45): the golden scenario at the seeding hour, only on seed-only databases
-  // (--marker) whose server has the budget tables (docs/requirements/budgets.md §14.8).
-  if (values.marker && budgets)
-    out.push(...budgets.budgetSeedSql(Math.floor(Date.parse(seed.anchor) / 3_600_000) * 3_600_000))
 }
 
 out.push('COMMIT;')

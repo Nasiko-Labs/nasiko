@@ -18,6 +18,8 @@ pub struct ChatSession {
     pub agent_id: Option<Uuid>,
     pub agent_url: Option<String>,
     pub title: String,
+    /// `orchestrator` | `direct_chat` | `maf_execution` — see migration 0034.
+    pub session_type: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -29,6 +31,8 @@ pub struct ChatSessionView {
     pub agent_id: Option<Uuid>,
     pub agent_url: Option<String>,
     pub title: String,
+    /// `orchestrator` | `direct_chat` | `maf_execution` — see migration 0034.
+    pub session_type: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub agent_name: Option<String>,

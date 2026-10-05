@@ -1,16 +1,10 @@
-//! Turns the brevity and minimal-code holdouts into measured effect factors.
+//! Turns the brevity holdout into a measured effect factor.
 //!
-//! Neither layer's saving can be subtracted — nobody knows what the model would have written, or
-//! how many tool calls it would have made, without them — so the dashboard reports both from
-//! `optimization_effect_factors`, seeded with an assumption. This worker is what retires that
-//! assumption: it compares the calls (brevity) or turns (minimal-code) that got the treatment
-//! against the slice deliberately withheld from it (`brevity::Skipped::Holdout`,
-//! `flows.metadata->'minimal_code'->>'skipped' = 'holdout'`) and writes the measured delta back
-//! with `basis = 'fixture'`. The arithmetic is identical for both — [`pooled_factor`] doesn't know
-//! or care which layer it's measuring — only where each layer's arms come from differs
-//! ([`arms`] vs [`minimal_code_arms`]), because brevity's holdout decision lives on the
-//! `token_usage` row it governs while minimal-code's lives one layer up, on the `flows` row for
-//! the whole turn ([`minimal_code_arms`]'s doc comment has the detail).
+//! The brevity directive's saving cannot be subtracted — nobody knows what the model would have
+//! written without it — so the dashboard reports it from `optimization_effect_factors`, seeded
+//! with an assumption. This worker is what retires that assumption: it compares the calls that got
+//! the directive against the slice deliberately withheld from it (`brevity::Skipped::Holdout`) and
+//! writes the measured delta back with `basis = 'fixture'`.
 //!
 //! # Why a within-model comparison, pooled afterwards
 //!
@@ -90,98 +84,6 @@ pub(crate) fn pooled_factor(rows: &[ArmRow], min_samples: i64) -> Option<Factor>
     })
 }
 
-/// One model's two arms for the minimal-code ladder, over the window.
-///
-/// Unlike brevity, the holdout decision isn't on the `token_usage` row itself — it's made at
-/// `a2a_dispatch.rs`, one layer up from the LLM calls it governs, and recorded on the `flows` row
-/// for that turn (`flows.metadata->'minimal_code'`). A coding turn can make several LLM calls
-/// (tool loop), and every one of them inherits that turn's arm.
-///
-/// Aggregated per flow *first*, then averaged per model — not a flat per-call average. The
-/// ladder's actual mechanism is fewer tool round-trips per turn, not shorter individual replies:
-/// a treated turn might take one chunky call where an untreated turn took seven small ones. A
-/// per-call average scores the treated turn as *worse* for being efficient; comparing each turn's
-/// total against the other arm's turn totals is the comparison the ladder's claim is actually
-/// about. (First shipped as a flat per-call average, which is what measured the ladder as making
-/// output *longer* — it wasn't; it was making turns shorter in fewer, bigger calls.)
-async fn minimal_code_arms(db: &PgPool, window_days: i64) -> Result<Vec<ArmRow>, sqlx::Error> {
-    sqlx::query_as(
-        r#"WITH per_flow AS (
-             SELECT f.flow_id,
-                    MAX(tu.model) AS model,
-                    SUM(tu.output_tokens) AS total_output,
-                    BOOL_OR(f.metadata->'minimal_code'->>'applied' = 'true') AS applied,
-                    BOOL_OR(f.metadata->'minimal_code'->>'skipped' = 'holdout') AS is_holdout
-             FROM token_usage tu
-             JOIN flows f ON f.flow_id = tu.session_id
-             WHERE tu.created_at > now() - make_interval(days => $1::int)
-               AND tu.output_tokens > 0
-               AND f.metadata ? 'minimal_code'
-             GROUP BY f.flow_id
-           )
-           SELECT model,
-                  COUNT(*) FILTER (WHERE applied)::BIGINT AS applied_n,
-                  AVG(total_output) FILTER (WHERE applied)::FLOAT8 AS applied_avg,
-                  COUNT(*) FILTER (WHERE is_holdout)::BIGINT AS holdout_n,
-                  AVG(total_output) FILTER (WHERE is_holdout)::FLOAT8 AS holdout_avg
-           FROM per_flow
-           GROUP BY model"#,
-    )
-    .bind(window_days as i32)
-    .fetch_all(db)
-    .await
-}
-
-/// Same shape as [`refresh_once`], for the `minimal_code` row. Fail-soft: a failure leaves the
-/// existing factor in place.
-async fn refresh_once_minimal_code(
-    db: &PgPool,
-    min_samples: i64,
-    window_days: i64,
-) -> Result<(), String> {
-    let rows = minimal_code_arms(db, window_days)
-        .await
-        .map_err(|e| e.to_string())?;
-    let Some(factor) = pooled_factor(&rows, min_samples) else {
-        tracing::debug!(
-            target: "nasiko::savings::factors",
-            "minimal-code holdout has not cleared the sample floor; the seed stands"
-        );
-        return Ok(());
-    };
-
-    sqlx::query(
-        "UPDATE optimization_effect_factors
-         SET output_token_delta_pct = $1,
-             basis = 'fixture',
-             sample_count = $2,
-             model = $3,
-             measured_at = now(),
-             notes = $4
-         WHERE layer = 'minimal_code'",
-    )
-    .bind(factor.output_token_delta_pct)
-    .bind(factor.sample_count as i32)
-    .bind(&factor.models)
-    .bind(format!(
-        "Measured against the withheld control arm over {window_days}d: {} holdout turns \
-         (each turn's calls summed first, per the ladder's own claim) across {}.",
-        factor.sample_count, factor.models
-    ))
-    .execute(db)
-    .await
-    .map_err(|e| e.to_string())?;
-
-    tracing::info!(
-        target: "nasiko::savings::factors",
-        delta_pct = factor.output_token_delta_pct,
-        samples = factor.sample_count,
-        models = %factor.models,
-        "minimal-code factor measured from the holdout"
-    );
-    Ok(())
-}
-
 async fn arms(db: &PgPool, window_days: i64) -> Result<Vec<ArmRow>, sqlx::Error> {
     sqlx::query_as(
         r#"SELECT model,
@@ -258,10 +160,7 @@ pub async fn run(db: PgPool, interval: Duration, min_samples: i64, window_days: 
     loop {
         tick.tick().await;
         if let Err(e) = refresh_once(&db, min_samples, window_days).await {
-            tracing::warn!(target: "nasiko::savings::factors", error = %e, "brevity factor refresh failed");
-        }
-        if let Err(e) = refresh_once_minimal_code(&db, min_samples, window_days).await {
-            tracing::warn!(target: "nasiko::savings::factors", error = %e, "minimal-code factor refresh failed");
+            tracing::warn!(target: "nasiko::savings::factors", error = %e, "factor refresh failed");
         }
     }
 }
