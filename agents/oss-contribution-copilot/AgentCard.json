@@ -1,0 +1,35 @@
+{
+  "protocolVersion": "0.2.9",
+  "name": "oss-contribution-copilot",
+  "description": "Ships open-source pull requests under three human approval gates, a deny-by-default repo allow-list and a per-contribution cost budget.",
+  "url": "http://localhost:8001/",
+  "agentFramework": "a2a-sdk",
+  "preferredTransport": "JSONRPC",
+  "provider": {
+    "organization": "Nasiko",
+    "url": "https://nasiko.com"
+  },
+  "version": "1.0.0",
+  "capabilities": {
+    "streaming": false,
+    "pushNotifications": false,
+    "stateTransitionHistory": false
+  },
+  "securitySchemes": {},
+  "security": [],
+  "defaultInputModes": ["text/plain"],
+  "defaultOutputModes": ["text/plain"],
+  "skills": [
+    {
+      "id": "contribute",
+      "name": "Governed OSS contribution",
+      "description": "Reads an allow-listed GitHub repo, proposes one contribution, prepares the files and opens a pull request from your fork, pausing at three human approval gates.",
+      "tags": ["github", "open-source", "pull-request", "human-in-the-loop"],
+      "examples": ["contribute to Nasiko-Labs/nasiko", "status t_0d35861c6ea8", "approvals"],
+      "inputModes": ["text/plain"],
+      "outputModes": ["text/plain"]
+    }
+  ],
+  "supportsAuthenticatedExtendedCard": false,
+  "signatures": []
+}
