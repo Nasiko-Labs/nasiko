@@ -556,8 +556,20 @@ fn usage_delta(start: Option<TokenUsage>, end: Option<TokenUsage>) -> TokenUsage
     }
 }
 
+/// The session's running token total at this moment, read from Codex's rollout log.
+///
+/// A readable log with no `token_count` yet — the start of a brand-new session, before the
+/// model has answered once — and a log Codex has not created yet both mean nothing has been
+/// used so far: a zero baseline, not an unknown one. Treating them as unknown made
+/// [`usage_delta`] discard the first turn of every session as 0/0/0. Only a genuine read
+/// failure stays `None`: guessing zero mid-session would charge the whole session's running
+/// total to one turn.
 fn parse_token_usage(path: &Path) -> Option<TokenUsage> {
-    parse_token_usage_lines(&std::fs::read_to_string(path).ok()?)
+    match std::fs::read_to_string(path) {
+        Ok(content) => Some(parse_token_usage_lines(&content).unwrap_or_default()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(TokenUsage::default()),
+        Err(_) => None,
+    }
 }
 
 fn parse_token_usage_lines(content: &str) -> Option<TokenUsage> {
@@ -888,6 +900,54 @@ not-json
                 cache_read: 8
             })
         );
+    }
+
+    #[test]
+    fn first_turn_counts_from_zero_when_log_has_no_token_count_yet() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("rollout.jsonl");
+
+        // New session: UserPromptSubmit fires before Codex has written any token_count.
+        std::fs::write(&log, "{\"type\":\"session_meta\"}\n").unwrap();
+        let start = parse_token_usage(&log);
+        assert_eq!(start, Some(TokenUsage::default()));
+
+        // Stop: the model answered and Codex appended its running total (real session numbers).
+        std::fs::write(
+            &log,
+            concat!(
+                "{\"type\":\"session_meta\"}\n",
+                "{\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":",
+                "{\"input_tokens\":14607,\"cached_input_tokens\":9984,\"output_tokens\":17}}}}\n"
+            ),
+        )
+        .unwrap();
+        let end = parse_token_usage(&log);
+
+        assert_eq!(
+            usage_delta(start, end),
+            TokenUsage {
+                input: 14607,
+                output: 17,
+                cache_read: 9984
+            }
+        );
+    }
+
+    #[test]
+    fn missing_log_file_is_a_zero_baseline() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            parse_token_usage(&dir.path().join("not-created-yet.jsonl")),
+            Some(TokenUsage::default())
+        );
+    }
+
+    #[test]
+    fn unreadable_log_stays_unknown() {
+        // A directory where the log file should be: exists, but cannot be read as a file.
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(parse_token_usage(dir.path()), None);
     }
 
     #[test]
