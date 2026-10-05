@@ -1,0 +1,17 @@
+{
+  "name": "PayFlow",
+  "products": [
+    "Payment Gateway",
+    "Reconciliation",
+    "FraudShield"
+  ],
+  "target_customers": [
+    "SMB",
+    "Mid-Market"
+  ],
+  "competitors": [
+    "Cashfree",
+    "Razorpay",
+    "PayU"
+  ]
+}
