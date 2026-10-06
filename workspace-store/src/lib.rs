@@ -83,8 +83,11 @@ pub enum WorkspaceStoreError {
 /// leading or trailing `/`, no `.` or `..` segment, no leading or trailing
 /// whitespace in a segment (S3 lists such a segment trimmed, under a name the
 /// object was never stored with), no segment ending in an ASCII letter
-/// followed by `:` (the filesystem backend's file URL reads that as a Windows
-/// drive specification and resolves the key to a directory), and none of the
+/// followed by `:` (`Url::to_file_path`, which the filesystem backend resolves
+/// keys through, appends a `/` when the assembled path's last two bytes read
+/// as a Windows drive specification, so the key becomes a directory — only a
+/// final segment can be caught that way, and the rule covers every segment on
+/// purpose, so it needs no positional reasoning), and none of the
 /// characters `object_store` percent-encodes: `%`, `#`, `[`, `]`, `{`, `}`,
 /// `^`, `~`, `<`, `>`, `|`, `\`, `"`, `*`, `?`, the backtick and control
 /// characters — exactly the set `object_store`'s lenient `Path::from` would

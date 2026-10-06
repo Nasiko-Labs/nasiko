@@ -5,9 +5,15 @@
 //! `AWS_ALLOW_HTTP=true` in the env — MinIO, RustFS or real S3).
 //!
 //! Twelve tests are shared and run on every fixture; two are S3-only and, when
-//! the env is unset, print a `skipped:` line of their own straight to the
+//! the env is unset, print a `skipped:` notice of their own straight to the
 //! process's stderr (see `s3_url`), which libtest's capture does not swallow,
 //! so a default `cargo test` run shows it; one is filesystem-only.
+//!
+//! The notice is always written whole and contiguous, but it does not always
+//! get a line to itself: libtest writes a result's status word and the newline
+//! after it to stdout separately, so the notice can land between them. Scripts
+//! must match it as a substring — `grep -F 'skipped: WORKSPACE_TEST_S3_URL not
+//! set'` — never as a whole line.
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -51,16 +57,35 @@ async fn fixtures() -> Vec<Fixture> {
     fixtures
 }
 
+/// Fixtures for a case that exercises a whole-store operation: the cloud store
+/// is scoped to a sub-prefix of its own, so a guard that regressed and swept
+/// everything can at worst empty a scratch prefix nobody else writes to. The
+/// filesystem fixture is already a tempdir of its own.
+async fn guarded_fixtures() -> Vec<Fixture> {
+    let mut fixtures = vec![filesystem_fixture().await];
+    if let Ok(url) = std::env::var(S3_URL_ENV) {
+        let scoped = format!("{}/guarded-{}", url.trim_end_matches('/'), unique());
+        fixtures.push(Fixture {
+            store: build_from_url(&scoped).await.expect("scoped s3 store"),
+            name: scoped,
+            _tempdir: None,
+        });
+    }
+    fixtures
+}
+
 /// `None` skips an S3-only test — loudly, so a run without the env never
 /// looks like a pass of something it never exercised. libtest captures
 /// `eprintln!` from a passing test and prints nothing, so the line goes to the
 /// stderr descriptor directly, which the capture does not intercept. It is
 /// formatted first and written once, so the line cannot be split: the stderr
 /// lock does not exclude libtest's writes to the stdout handle, and a line
-/// emitted in several syscalls comes out interleaved. Whole, it can still
-/// land mid-line, because libtest writes a result's status word and the
-/// newline after it separately — so match the line as a substring, not as a
-/// whole line.
+/// emitted in several syscalls comes out interleaved. Whole, it can still land
+/// mid-line, because libtest writes a result's status word and the newline
+/// after it to stdout separately: the notice is always complete and
+/// contiguous, only its line is not its own. Match it with `grep -F 'skipped:
+/// WORKSPACE_TEST_S3_URL not set'`, never with a whole-line or anchored
+/// pattern.
 fn s3_url() -> Option<String> {
     let url = std::env::var(S3_URL_ENV).ok();
     if url.is_none() {
@@ -89,6 +114,18 @@ async fn collect(mut stream: ByteStream) -> Result<Vec<u8>, WorkspaceStoreError>
         out.extend_from_slice(&chunk?);
     }
     Ok(out)
+}
+
+/// `Ok` when the call refused its key or prefix as invalid, and otherwise what
+/// it did instead, so a failed check names the behaviour rather than the
+/// expectation. Generic over the success type because the calls that must
+/// refuse return counts, metadata, streams and URLs alike.
+fn refused_as_invalid<T>(outcome: Result<T, WorkspaceStoreError>) -> Result<(), String> {
+    match outcome {
+        Err(WorkspaceStoreError::InvalidKey { .. }) => Ok(()),
+        Err(other) => Err(other.to_string()),
+        Ok(_) => Err("the call succeeded".into()),
+    }
 }
 
 #[tokio::test]
@@ -231,34 +268,53 @@ async fn upload_attributes_are_accepted_everywhere_and_served_where_signed() {
     }
 }
 
-/// A key the store would rewrite is refused outright: neither the key as given
-/// nor its rewritten spelling may come into existence. `object_store`
-/// percent-encodes `%`; S3 stores a whitespace-padded segment verbatim but
-/// lists it trimmed, so the object would outlive every sweep of its prefix;
-/// and a segment ending in an ASCII letter and `:` is a Windows drive
-/// specification to the filesystem backend's file URL, which resolves the key
-/// to a directory. Each would round-trip on some backends and not others.
+/// A key the store would rewrite is refused outright by every method that
+/// takes one: neither the key as given nor its rewritten spelling may come
+/// into existence, and no signed URL may hand the raw location to a client
+/// that would create it out of band. `object_store` percent-encodes `%`; S3
+/// stores a whitespace-padded segment verbatim but lists it trimmed, so the
+/// object would outlive every sweep of its prefix; and a segment ending in an
+/// ASCII letter and `:` is read as a Windows drive specification by
+/// `Url::to_file_path`, which the filesystem backend resolves keys through —
+/// it appends a `/` when the assembled path's last two bytes say so, and the
+/// key becomes a directory. That can catch only a key's final segment; the
+/// rule covers every segment on purpose, so it needs no positional reasoning.
+///
+/// The presign checks hold on every fixture: `sign` validates the key before
+/// it looks for a signer, so a backend that cannot sign at all still answers
+/// `InvalidKey` rather than `Unsupported`.
 #[tokio::test]
 async fn keys_the_store_would_rewrite_are_rejected_not_stored() {
+    let ttl = Duration::from_secs(60);
     for Fixture { name, store, .. } in fixtures().await {
         let prefix = format!("workspace/t/{}/", unique());
         for suffix in ["blobs/a%b", "blobs/trail ", "blobs/ lead", "blobs/xy:"] {
             let key = format!("{prefix}{suffix}");
+            let refuses = |method: &str, outcome: Result<(), String>| {
+                outcome.unwrap_or_else(|did| panic!("{name}/{suffix}: {method} {did}"));
+            };
 
-            let err = store
-                .put_stream(&key, stream_of(vec![Bytes::from_static(b"x")]), Some(1))
-                .await
-                .unwrap_err();
-            assert!(
-                matches!(err, WorkspaceStoreError::InvalidKey { .. }),
-                "{name}/{suffix}: {err}"
-            );
-            assert!(
-                matches!(
-                    store.head(&key).await,
-                    Err(WorkspaceStoreError::InvalidKey { .. })
+            refuses(
+                "put_stream",
+                refused_as_invalid(
+                    store
+                        .put_stream(&key, stream_of(vec![Bytes::from_static(b"x")]), Some(1))
+                        .await,
                 ),
-                "{name}/{suffix}"
+            );
+            refuses("head", refused_as_invalid(store.head(&key).await));
+            refuses(
+                "get_stream",
+                refused_as_invalid(store.get_stream(&key, None).await),
+            );
+            refuses("delete", refused_as_invalid(store.delete(&key).await));
+            refuses(
+                "presigned_get_url",
+                refused_as_invalid(store.presigned_get_url(&key, ttl, None).await),
+            );
+            refuses(
+                "presigned_put_url",
+                refused_as_invalid(store.presigned_put_url(&key, ttl, None).await),
             );
         }
         let mut listing = store.list_prefix(&prefix).await.unwrap();
@@ -271,41 +327,70 @@ async fn keys_the_store_would_rewrite_are_rejected_not_stored() {
 
 /// The two prefix methods read the empty prefix differently, and both
 /// readings are contract: it lists the whole store, and it is refused for
-/// deletion — as is `"/"`, which is not a key. The store's default home is a
-/// prefix inside the bucket that also holds the image registry, so a sweep
-/// that widened to everything would take the images with it.
+/// deletion — as is `"/"`, which is not a key, on either method. The store's
+/// default home is a prefix inside the bucket that also holds the image
+/// registry, so a sweep that widened to everything would take the images with
+/// it.
+///
+/// This case is the one that must never run against a store the deployment
+/// cares about. It calls the sweeps it expects to be refused, so the moment
+/// the guard regresses the sweep runs to completion and empties the store
+/// *before* the check can fail — the test that exists to catch the regression
+/// is destructive exactly when it fires. [`guarded_fixtures`] therefore scopes
+/// the cloud store to a sub-prefix of its own; keep it that way.
 #[tokio::test]
 async fn the_whole_store_lists_but_is_never_swept() {
-    for Fixture { name, store, .. } in fixtures().await {
+    for Fixture { name, store, .. } in guarded_fixtures().await {
         let key = format!("workspace/t/{}/blobs/{}", unique(), unique());
         store
             .put_stream(&key, stream_of(vec![Bytes::from_static(b"keep")]), Some(4))
             .await
             .unwrap_or_else(|e| panic!("{name}: {e}"));
 
-        for prefix in ["", "/"] {
-            let err = store.delete_prefix(prefix).await.err().unwrap_or_else(|| {
-                panic!("{name}: delete_prefix({prefix:?}) must refuse the whole store")
-            });
-            assert!(
-                matches!(err, WorkspaceStoreError::InvalidKey { .. }),
-                "{name}/{prefix:?}: {err}"
-            );
-        }
-        assert!(
-            store.head(&key).await.unwrap().is_some(),
-            "{name}: a refused sweep must delete nothing"
-        );
-
-        let mut listing = store.list_prefix("").await.unwrap();
-        let mut listed = false;
-        while let Some(entry) = listing.next().await {
-            listed |= entry.unwrap() == key;
-        }
-        assert!(listed, "{name}: the empty prefix lists the whole store");
-
-        store.delete(&key).await.unwrap();
+        // Held, not asserted, so the planted object is removed even when a
+        // check fails and leaves nothing behind in the scoped prefix.
+        let outcome = whole_store_checks(store.as_ref(), &key).await;
+        let cleanup = store.delete(&key).await;
+        outcome.unwrap_or_else(|did| panic!("{name}: {did}"));
+        cleanup.unwrap_or_else(|e| panic!("{name}: cleanup: {e}"));
     }
+}
+
+/// The body of [`the_whole_store_lists_but_is_never_swept`], as a `Result` so
+/// its caller can clean up before failing. `Err` says what the store did.
+async fn whole_store_checks(store: &dyn WorkspaceObjectStore, key: &str) -> Result<(), String> {
+    for prefix in ["", "/"] {
+        refused_as_invalid(store.delete_prefix(prefix).await)
+            .map_err(|did| format!("delete_prefix({prefix:?}) {did}"))?;
+    }
+    // `list_prefix` reads only the empty string as the whole store; every
+    // other spelling of "everything" is a prefix it must refuse, or the
+    // scope-widening the sweeps are guarded against arrives through listing.
+    for prefix in ["/", "workspace//"] {
+        refused_as_invalid(store.list_prefix(prefix).await)
+            .map_err(|did| format!("list_prefix({prefix:?}) {did}"))?;
+    }
+
+    let survived = store
+        .head(key)
+        .await
+        .map_err(|e| format!("head after the refused sweeps: {e}"))?;
+    if survived.is_none() {
+        return Err("a refused sweep must delete nothing".into());
+    }
+
+    let mut listing = store
+        .list_prefix("")
+        .await
+        .map_err(|e| format!("list_prefix(\"\"): {e}"))?;
+    let mut listed = false;
+    while let Some(entry) = listing.next().await {
+        listed |= entry.map_err(|e| format!("listing: {e}"))? == key;
+    }
+    if !listed {
+        return Err("the empty prefix must list the whole store".into());
+    }
+    Ok(())
 }
 
 #[tokio::test]

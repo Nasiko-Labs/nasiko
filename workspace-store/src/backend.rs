@@ -146,11 +146,17 @@ fn object_path(key: &str) -> Result<Path, WorkspaceStoreError> {
     if key.split('/').any(|segment| segment != segment.trim()) {
         return Err(invalid("segment has leading or trailing whitespace".into()));
     }
-    // The filesystem backend resolves a key through a `file://` URL, and the
-    // URL's file-path builder reads a segment ending in an ASCII letter and
-    // ':' as a Windows drive specification, appending a '/' that makes the key
-    // a directory. S3 would store that key verbatim, so refusing it keeps a
-    // valid key one that round-trips identically on every backend.
+    // The filesystem backend resolves a key by extending a `file://` URL with
+    // its segments and reading the result back, and it is the reader,
+    // `Url::to_file_path`, that rewrites: it appends a '/' when the assembled
+    // path's last two bytes are an ASCII letter followed by ':', taking them
+    // for a Windows drive specification, and the key becomes a directory. Only
+    // those two bytes are examined, so only a key's final segment can be
+    // caught; the check covers every segment deliberately, so the rule holds
+    // for any prefix of a key as well and needs no positional reasoning.
+    // Catalog keys are UUIDs and digests, so the wider rule rejects nothing
+    // real, and S3 stores such a segment verbatim: refusing it keeps a valid
+    // key one that round-trips identically on every backend.
     if key.split('/').any(|segment| {
         segment
             .strip_suffix(':')
@@ -476,12 +482,17 @@ mod tests {
         }
     }
 
-    /// Each of these is rewritten somewhere on the way to storage:
+    /// Each of these either fails to round-trip verbatim on some backend, or
+    /// is refused by a rule deliberately wider than the mechanism behind it:
     /// `object_store` percent-encodes or normalises most of them, an S3
-    /// listing trims whitespace off the ends of a segment, and a file URL
-    /// turns a segment ending in a drive letter into a directory.
+    /// listing trims whitespace off the ends of a segment, and
+    /// `Url::to_file_path` turns a key whose *final* segment ends in a drive
+    /// letter into a directory. `"a/b:/c"` is the wide case — its colon
+    /// segment is not final, so it does round-trip, and the drive-letter rule
+    /// refuses it anyway so that no caller has to reason about where in a key
+    /// a segment sits.
     #[test]
-    fn keys_object_store_would_rewrite_are_rejected() {
+    fn keys_outside_the_invariant_are_rejected() {
         for key in [
             "a%b",
             "a//b",
