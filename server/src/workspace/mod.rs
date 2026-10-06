@@ -1,5 +1,7 @@
 //! Workspace artifacts: the object store the control plane serves them from.
 
+pub mod paths;
+
 use std::sync::Arc;
 
 use nasiko_config::Config;

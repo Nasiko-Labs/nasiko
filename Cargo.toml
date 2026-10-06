@@ -181,6 +181,9 @@ anyhow = "1"
 base64 = "0.22"
 dotenvy = "0.15"
 url = "2"
+# Unicode NFC for user-supplied text (workspace artifact paths). Already in the
+# lockfile transitively via sqlx → stringprep, so declaring it compiles no new crate.
+unicode-normalization = "0.1"
 
 # ─── Embedding / registry ──────────────────────────────────────────────────
 rust-embed = { version = "8", features = ["mime-guess", "include-exclude", "interpolate-folder-path"] }
