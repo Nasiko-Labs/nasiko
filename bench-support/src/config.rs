@@ -146,7 +146,6 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         coding_agent_idle_ttl_secs: 0,
         coding_agent_turn_lease_secs: 60,
         coding_agent_lease_heartbeat_secs: 20,
-        coding_agent_command: vec!["opencode".to_owned(), "acp".to_owned()],
         github_client_id: None,
         github_client_secret: None,
         router_shortlist_threshold: 15,
