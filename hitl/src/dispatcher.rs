@@ -28,8 +28,8 @@ use crate::types::{HitlRequest, ResumeStatus};
 ///
 /// [`NotifyError::is_permanent`] tells the dispatcher's retry loop whether another attempt could
 /// ever change the outcome — `MissingContextId` and a confirmed "no such agent" cannot, no matter
-/// how many times they're retried, so retrying them up to `max_attempts` (found in review) only
-/// delays recording the terminal `failed` status. A DB blip, a container that isn't up yet, and a
+/// how many times they're retried, so retrying them up to `max_attempts` only delays recording
+/// the terminal `failed` status. A DB blip, a container that isn't up yet, and a
 /// transport/peer error are all worth retrying, since the next attempt might land differently.
 #[derive(Debug, thiserror::Error)]
 pub enum NotifyError {
@@ -53,6 +53,16 @@ pub enum NotifyError {
          call could not be authorized"
     )]
     FlowNotLive { context_id: String },
+    /// `context_id` does not name a `chat_sessions` row owned by this HITL row's own
+    /// `owner_user_id` — the `session_traces` insert's `WHERE EXISTS (... user_id = $4)` guard
+    /// found no match. Permanent by construction, same as `FlowNotLive`: a row's ownership never
+    /// changes, so no retry could ever make this succeed, and mapping it anyway would let this
+    /// notifier open a trace correlation into a chat session it does not own.
+    #[error(
+        "context {context_id} does not name a chat session owned by this request's own user, so \
+         no session_traces mapping could be registered"
+    )]
+    ContextNotOwned { context_id: String },
     #[error("transport error delivering resume notification: {0}")]
     Transport(#[from] reqwest::Error),
     #[error("peer rejected the resume notification: {0}")]
@@ -62,7 +72,9 @@ pub enum NotifyError {
 impl NotifyError {
     pub fn is_permanent(&self) -> bool {
         match self {
-            NotifyError::MissingContextId(_) | NotifyError::FlowNotLive { .. } => true,
+            NotifyError::MissingContextId(_)
+            | NotifyError::FlowNotLive { .. }
+            | NotifyError::ContextNotOwned { .. } => true,
             NotifyError::EndpointResolution { permanent, .. } => *permanent,
             NotifyError::Transport(_) | NotifyError::PeerError(_) => false,
         }

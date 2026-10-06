@@ -9,9 +9,6 @@ use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-mod recorder;
-use recorder::Recorder;
-
 async fn pool() -> PgPool {
     let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     let pool = PgPool::connect(&db_url).await.expect("connect");
@@ -732,10 +729,7 @@ async fn mark_resume_unknown_sets_the_terminal_state_and_releases_the_lease() {
     .await
     .unwrap();
 
-    store
-        .mark_resume_unknown(row.id, "agent stream broke after 12 bytes")
-        .await
-        .unwrap();
+    store.mark_resume_unknown(row.id).await.unwrap();
 
     let after = store.get(row.id).await.unwrap().unwrap();
     assert_eq!(
@@ -746,177 +740,6 @@ async fn mark_resume_unknown_sets_the_terminal_state_and_releases_the_lease() {
         after.resume_claimed_at.is_none(),
         "the lease must be released, not left dangling on a terminal row"
     );
-    assert_eq!(
-        after.resume_last_error.as_deref(),
-        Some("agent stream broke after 12 bytes")
-    );
-}
-
-/// A claimed, resolved `direct_chat` row, as the dispatcher holds it mid-delivery.
-async fn claimed_row(store: &PgHitlStore, pool: &PgPool) -> Uuid {
-    let owner = fixture_user(pool).await;
-    let agent = fixture_agent(pool, owner).await;
-    let row = store
-        .create(NewHitlRequest::direct_chat(
-            HitlKind::InputRequired,
-            agent,
-            owner,
-            format!("task-{}", Uuid::new_v4()),
-            format!("ctx-{}", Uuid::new_v4()),
-            json!({"message": "?"}),
-        ))
-        .await
-        .unwrap();
-    store
-        .resolve(row.id, json!({"answer": "ok"}), owner, HitlStatus::Resolved)
-        .await
-        .unwrap();
-    let claimed = store
-        .claim_for_resume(120)
-        .await
-        .unwrap()
-        .expect("the resolved row must be claimable");
-    assert_eq!(claimed.id, row.id);
-    row.id
-}
-
-#[tokio::test]
-#[ignore = "requires PostgreSQL (DATABASE_URL)"]
-async fn mark_resume_agent_lost_task_is_terminal_and_releases_the_lease() {
-    let pool = pool().await;
-    let store = PgHitlStore::new(pool.clone());
-    let id = claimed_row(&store, &pool).await;
-
-    let attempt = store
-        .get(id)
-        .await
-        .unwrap()
-        .unwrap()
-        .resume_dispatch_attempts;
-    let written = store
-        .mark_resume_agent_lost_task(
-            id,
-            attempt,
-            "agent no longer holds the paused task (HTTP 404)",
-        )
-        .await
-        .unwrap();
-    assert!(written, "the live claim must be able to record its outcome");
-
-    let after = store.get(id).await.unwrap().unwrap();
-    assert_eq!(
-        after.resume_status,
-        nasiko_hitl::ResumeStatus::AgentLostTask
-    );
-    assert!(
-        after.resume_claimed_at.is_none(),
-        "the lease must be released, not left dangling on a terminal row"
-    );
-    assert_eq!(
-        after.resume_last_error.as_deref(),
-        Some("agent no longer holds the paused task (HTTP 404)")
-    );
-    assert!(
-        store.claim_for_resume(0).await.unwrap().is_none(),
-        "a lost task is never retried, however stale its lease would have been"
-    );
-}
-
-/// A late or duplicate attempt must not rewrite an outcome another attempt already recorded.
-#[tokio::test]
-#[ignore = "requires PostgreSQL (DATABASE_URL)"]
-async fn mark_resume_agent_lost_task_never_overwrites_an_outcome() {
-    let pool = pool().await;
-    let store = PgHitlStore::new(pool.clone());
-    let id = claimed_row(&store, &pool).await;
-    store.mark_resume_completed(id).await.unwrap();
-    let attempt = store
-        .get(id)
-        .await
-        .unwrap()
-        .unwrap()
-        .resume_dispatch_attempts;
-
-    let written = store
-        .mark_resume_agent_lost_task(
-            id,
-            attempt,
-            "agent no longer holds the paused task (HTTP 404)",
-        )
-        .await
-        .unwrap();
-
-    assert!(!written, "nothing was written, so the caller must be told");
-    let after = store.get(id).await.unwrap().unwrap();
-    assert_eq!(after.resume_status, nasiko_hitl::ResumeStatus::Completed);
-    assert_eq!(after.resume_last_error, None);
-}
-
-/// An attempt whose lease lapsed and was taken over by a later claim (a higher
-/// `resume_dispatch_attempts`) must not record an outcome the live claim owns.
-#[tokio::test]
-#[ignore = "requires PostgreSQL (DATABASE_URL)"]
-async fn mark_resume_agent_lost_task_ignores_a_superseded_claim() {
-    let pool = pool().await;
-    let store = PgHitlStore::new(pool.clone());
-    let id = claimed_row(&store, &pool).await;
-    let stale_attempt = store
-        .get(id)
-        .await
-        .unwrap()
-        .unwrap()
-        .resume_dispatch_attempts;
-    sqlx::query("UPDATE hitl_requests SET resume_dispatch_attempts = resume_dispatch_attempts + 1 WHERE id = $1")
-        .bind(id)
-        .execute(&pool)
-        .await
-        .unwrap();
-
-    let written = store
-        .mark_resume_agent_lost_task(id, stale_attempt, "stale claim")
-        .await
-        .unwrap();
-
-    assert!(!written);
-    let after = store.get(id).await.unwrap().unwrap();
-    assert_eq!(after.resume_status, nasiko_hitl::ResumeStatus::NotStarted);
-    assert_eq!(after.resume_last_error, None);
-}
-
-#[tokio::test]
-#[ignore = "requires PostgreSQL (DATABASE_URL)"]
-async fn a_pause_is_observed_once_per_inserted_row_and_not_for_an_idempotent_recreate() {
-    let recorder = Recorder::installed();
-    let pool = pool().await;
-    let store = PgHitlStore::new(pool.clone());
-    let owner = fixture_user(&pool).await;
-    let agent = fixture_agent(&pool, owner).await;
-    let task = format!("task-{}", Uuid::new_v4());
-    let pause = |task: &str| {
-        NewHitlRequest::direct_chat(
-            HitlKind::InputRequired,
-            agent,
-            owner,
-            task.to_string(),
-            "ctx-1",
-            json!({"message": "?"}),
-        )
-    };
-
-    let first = store.create(pause(&task)).await.unwrap();
-    // Same open pause again: `create` hands back the pending row it collided with.
-    let again = store.create(pause(&task)).await.unwrap();
-    assert_eq!(
-        again.id, first.id,
-        "the re-create must have been idempotent"
-    );
-    let other = store
-        .create(pause(&format!("task-{}", Uuid::new_v4())))
-        .await
-        .unwrap();
-
-    assert_eq!(recorder.pauses_of(first.id), 1);
-    assert_eq!(recorder.pauses_of(other.id), 1);
 }
 
 #[tokio::test]

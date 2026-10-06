@@ -36,13 +36,24 @@ pub use handlers::sharing::grant_response;
 /// - `POST /api/mcp` — credential in `Authorization: Bearer`. Preferred.
 /// - `POST /api/mcp/s/{token}` — credential in the path, for framework MCP
 ///   clients that can only be handed a URL (see `handlers::gateway::mcp_gateway_via_url`).
-pub fn agent_gateway_router() -> Router<AppState> {
+///
+/// `max_body_bytes` scopes a body-size limit to just these two routes (mirrors
+/// [`upload_mutation_router`]'s own `DefaultBodyLimit`) — axum's blanket 2 MiB
+/// default would reject the inline `save_file` payloads a later task
+/// introduces, and raising the workspace-wide default is unwarranted for
+/// every other route. `DefaultBodyLimit` applies before token authentication
+/// (JSON body extraction happens first in the handler), so an unauthenticated
+/// caller can make the server buffer up to this many bytes before the 401 —
+/// acceptable for a single-tenant deployment; revisit if this route is ever
+/// exposed multi-tenant.
+pub fn agent_gateway_router(max_body_bytes: usize) -> Router<AppState> {
     Router::new()
         .route("/mcp", post(handlers::gateway::mcp_gateway))
         .route(
             "/mcp/s/{token}",
             post(handlers::gateway::mcp_gateway_via_url),
         )
+        .layer(axum::extract::DefaultBodyLimit::max(max_body_bytes))
 }
 
 /// Path prefix of the URL-credential gateway form, whose next segment is a live

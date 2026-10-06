@@ -15,7 +15,10 @@ use crate::provider::generic::DEFAULT_CALL_TIMEOUT;
 use crate::router;
 use crate::session::{self, ResolvedSession};
 use crate::state::McpState;
-use crate::types::{ConnectorUnusable, MCPServerConfig, PROTOCOL_VERSION, ServerType, codes};
+use crate::types::{
+    ConnectorUnusable, LATEST_PROTOCOL_VERSION, MCPServerConfig, SUPPORTED_PROTOCOL_VERSIONS,
+    ServerType, codes,
+};
 
 fn ok(req_id: &Value, result: Value) -> Value {
     json!({ "jsonrpc": "2.0", "id": req_id, "result": result })
@@ -37,14 +40,41 @@ pub fn rpc_error(req_id: &Value, code: i64, message: impl Into<String>) -> Value
     err(req_id, code, message)
 }
 
+/// The three tool names the gateway answers itself rather than routing to a
+/// backend. `nasiko_call_tool` refuses every one of them as its inner tool.
+const SEARCH_TOOLS_META: &str = "nasiko_search_tools";
+const CALL_TOOL_META: &str = "nasiko_call_tool";
+const RECOVER_COMPRESSED_META: &str = "recover_compressed";
+
+fn is_meta_tool(name: &str) -> bool {
+    matches!(
+        name,
+        SEARCH_TOOLS_META | CALL_TOOL_META | RECOVER_COMPRESSED_META
+    )
+}
+
 /// Full JSON-RPC dispatch for the agent-facing gateway. Returns `None` for a
 /// notification (a request with no `id`).
+///
+/// `traceparent` and `verified_flow_id` are deliberately two different
+/// parameters, not one: `traceparent` is the raw header, propagated to
+/// backends and used to resolve unrelated things (a flow's title for tool
+/// search, a `context_id` for HITL) that only need a best-effort trace id.
+/// `verified_flow_id` is what the route layer (`oss/server/src/mcp/handlers/
+/// gateway.rs::flow_user`) actually proved resolves to a live flow this agent
+/// participates in — it alone may be signed into the identity header, because
+/// only it is trustworthy. A caller on the read-only owner-fallback path
+/// (flow lookup failed, so `user_id` is the agent's owner instead) must pass
+/// `None` here even when `traceparent` still carries a well-formed but
+/// unverified trace id — signing that trace id back out would launder an
+/// unverified claim into a header a backend is told to trust unconditionally.
 pub async fn handle_request(
     state: &McpState,
     user_id: Uuid,
     agent_id: Uuid,
     body: &Value,
     traceparent: Option<&str>,
+    verified_flow_id: Option<&str>,
 ) -> Option<Value> {
     let method = body.get("method").and_then(|m| m.as_str()).unwrap_or("");
 
@@ -53,20 +83,58 @@ pub async fn handle_request(
         return None;
     };
 
-    match method {
-        "initialize" => return Some(handle_initialize(&req_id)),
-        "ping" => return Some(json!({ "jsonrpc": "2.0", "id": req_id, "result": {} })),
-        _ => {}
+    if !implements(method) {
+        return Some(err(
+            &req_id,
+            codes::METHOD_NOT_FOUND,
+            format!("Method not found: {method}"),
+        ));
+    }
+
+    if method == "ping" {
+        return Some(json!({ "jsonrpc": "2.0", "id": req_id, "result": {} }));
     }
 
     let perms = match permissions::load_permission_context(state, agent_id).await {
         Ok(p) => p,
         Err(e) => return Some(err(&req_id, e.json_rpc_code(), e.to_json_rpc().message)),
     };
-    let resolved = match session::resolve_session(state, user_id).await {
+    let mut resolved = match session::resolve_session(state, user_id).await {
         Ok(r) => r,
         Err(e) => return Some(err(&req_id, e.json_rpc_code(), e.to_json_rpc().message)),
     };
+
+    // `initialize` is the one client-agnostic prompt channel the gateway has —
+    // every enabled connector's own harvested `instructions` rides on it,
+    // alongside the gateway's own sentence. This does mean `initialize` now
+    // performs the permission/session lookups above (it didn't before this
+    // was wired up); that's intended, not a leftover of moving the match arm.
+    if method == "initialize" {
+        let instr: Vec<String> = connector_instructions(&resolved.servers, &perms);
+        return Some(handle_initialize(
+            &req_id,
+            body,
+            &state.config.gateway_instructions,
+            &instr,
+        ));
+    }
+
+    // Stamp every system backend's headers with a freshly-signed
+    // `(agent_id, user_id, verified_flow_id)` so it can trust the caller's
+    // identity without re-deriving it — see `identity.rs`'s module doc. Only
+    // `initialize` (handled above) never needs this; both remaining methods
+    // route to a real backend. `verified_flow_id` — never a re-parse of the
+    // raw `traceparent` — is the only acceptable source for the signed
+    // `flow_id`: see this function's own doc comment for why.
+    if resolved.servers.iter().any(|s| s.system) {
+        let signed = crate::identity::SignedIdentity::new(
+            agent_id,
+            user_id,
+            verified_flow_id.map(str::to_string),
+        )
+        .sign(&state.config.identity_signing_key);
+        inject_identity(&mut resolved.servers, &signed);
+    }
 
     let result = match method {
         "tools/list" => {
@@ -78,6 +146,7 @@ pub async fn handle_request(
                 &resolved.connected_toolkits,
                 &perms,
                 traceparent,
+                verified_flow_id,
             )
             .await
         }
@@ -91,9 +160,16 @@ pub async fn handle_request(
                 &resolved,
                 &perms,
                 traceparent,
+                verified_flow_id,
             )
             .await
         }
+        // Unreachable in practice — `implements(method)` already gated every
+        // other value above — but a request path must never panic
+        // (CLEAN_CODE_GUIDE §6), so this degrades to the same clean
+        // `-32601` a real unimplemented method gets, rather than a `panic!`
+        // that would 500 the whole request over what `implements()` and this
+        // match's arms simply drifted out of sync on.
         other => err(
             &req_id,
             codes::METHOD_NOT_FOUND,
@@ -103,26 +179,126 @@ pub async fn handle_request(
     Some(result)
 }
 
-/// `initialize` — gateway capability handshake.
-pub fn handle_initialize(req_id: &Value) -> Value {
-    ok(
-        req_id,
-        json!({
-            "protocolVersion": PROTOCOL_VERSION,
-            "capabilities": { "tools": {} },
-            "serverInfo": { "name": "MCP Gateway", "version": "1.0.0" },
-        }),
-    )
+/// True for exactly the methods [`handle_request`] answers itself
+/// (`initialize`, `ping`, `tools/list`, `tools/call`) — the single source of
+/// truth for `-32601`. `handle_request` returns `METHOD_NOT_FOUND` for
+/// anything this says `false` to, before either match runs, so a method added
+/// to either match must be added here too (see the unit tests below, which
+/// pin both halves of that list together and prove an unknown method never
+/// reaches `load_permission_context`/`resolve_session`).
+///
+/// Used by the route layer (`oss/server/src/mcp/handlers/gateway.rs`) to gate
+/// `MCP-Protocol-Version` header enforcement: streamable-http clients probe
+/// with a method this gateway doesn't implement (e.g. `server/discover`)
+/// before ever calling `initialize`, relying on our `-32601` to trigger their
+/// fallback — that probe must not be rejected with a bare 400 just because it
+/// carries a protocol version we haven't negotiated yet.
+pub fn implements(method: &str) -> bool {
+    matches!(method, "initialize" | "ping" | "tools/list" | "tools/call")
+}
+
+/// Version reported in `initialize`'s `serverInfo.version` — the gateway's own
+/// release marker, unrelated to the negotiated MCP protocol version computed
+/// in `handle_initialize` below.
+const GATEWAY_SERVER_VERSION: &str = "1.1.0";
+
+/// `initialize` — negotiate the protocol version (echo a supported client
+/// version, else our latest) and advertise instructions: the gateway's own
+/// sentence followed by each enabled connector's harvested instructions,
+/// joined with a blank line, trimmed, with empty entries dropped. The
+/// `instructions` key is omitted entirely when both sources are empty.
+pub fn handle_initialize(
+    req_id: &Value,
+    body: &Value,
+    gateway_instructions: &str,
+    connector_instructions: &[String],
+) -> Value {
+    let requested = body
+        .get("params")
+        .and_then(|p| p.get("protocolVersion"))
+        .and_then(Value::as_str);
+    let version = match requested {
+        Some(v) if SUPPORTED_PROTOCOL_VERSIONS.contains(&v) => v,
+        _ => LATEST_PROTOCOL_VERSION,
+    };
+    let mut instructions: Vec<&str> = Vec::new();
+    if !gateway_instructions.trim().is_empty() {
+        instructions.push(gateway_instructions.trim());
+    }
+    instructions.extend(
+        connector_instructions
+            .iter()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty()),
+    );
+    let mut result = json!({
+        "protocolVersion": version,
+        "capabilities": { "tools": {} },
+        "serverInfo": { "name": "MCP Gateway", "version": GATEWAY_SERVER_VERSION },
+    });
+    if !instructions.is_empty() {
+        result["instructions"] = json!(instructions.join("\n\n"));
+    }
+    ok(req_id, result)
+}
+
+/// The instruction-collection step `handle_request` feeds into
+/// [`handle_initialize`]'s `connector_instructions` parameter: every backend
+/// enabled for this agent (Layer 2's connector-level gate — the same one
+/// `aggregator`/`tools/call` use) whose harvested `instructions` is present.
+/// Kept as its own pure function, separate from `resolve_session`/
+/// `load_permission_context` (which need a real DB this crate's hermetic unit
+/// tests can't provide), so the composition itself stays unit-testable.
+fn connector_instructions(servers: &[MCPServerConfig], perms: &PermissionContext) -> Vec<String> {
+    servers
+        .iter()
+        .filter(|s| perms.is_connector_enabled(s.connector_id))
+        .filter_map(|s| s.instructions.clone())
+        .collect()
+}
+
+/// Stamps every system backend's `headers` with `signed` — an already-built
+/// [`crate::identity::SignedIdentity::sign`] header value — so a system
+/// backend (the workspace server) can trust who's calling without
+/// re-deriving it. Non-system backends are left untouched: the identity
+/// header is meaningless (and untrusted) to any backend the platform doesn't
+/// itself serve on loopback.
+///
+/// Deliberately takes the pre-signed string rather than the identity's parts
+/// (`agent_id`/`user_id`/`flow_id`) plus a key: the caller (`handle_request`)
+/// already gates this whole call on "is there a system backend at all", so
+/// signing happens at most once regardless of how many system servers are
+/// present, and this function stays a plain, allocation-free stamp.
+///
+/// Pure and synchronous by design, unlike `handle_request` itself — that
+/// function's `resolve_session`/`load_permission_context` calls need a real
+/// DB this crate's hermetic unit tests can't provide, so this is the seam the
+/// tests below actually exercise.
+fn inject_identity(servers: &mut [MCPServerConfig], signed: &str) {
+    for s in servers.iter_mut().filter(|s| s.system) {
+        s.headers.insert(
+            crate::identity::IDENTITY_HEADER.to_string(),
+            signed.to_string(),
+        );
+    }
 }
 
 /// `tools/list` — query-aware search (semantic/BM25) or eager fan-out (none mode).
 ///
 /// When search is enabled (`MCP_TOOL_SEARCH_MODE != none`):
-/// - With traceparent: resolves the user's query from `flows.title`, runs flat
-///   search, returns top-k matched tools + pinned tools + `nasiko_search_tools`.
-/// - Without traceparent (agent startup): returns only `nasiko_search_tools`.
+/// - With a verified flow: resolves the user's query from `flows.title`, runs
+///   flat search, returns top-k matched tools + the three meta-tools
+///   (`nasiko_search_tools`, `nasiko_call_tool`, `recover_compressed`).
+/// - Without one (agent startup, or a flow-less owner-fallback call): returns
+///   only the meta-tools.
 ///
 /// When search is disabled (`none`): delegates to `aggregate_tools` (legacy fan-out).
+// `verified_flow_id` pushed this from 7 to 8 (added for the same
+// participant-laundering fix `handle_tools_call` below carries) — a params
+// struct isn't worth it for one more `Option<&str>` on an internal function
+// with a single call site; `ask_with_hitl_request` below already carries the
+// same allow for the same reason.
+#[allow(clippy::too_many_arguments)]
 pub async fn handle_tools_list(
     state: &McpState,
     user_id: Uuid,
@@ -131,18 +307,27 @@ pub async fn handle_tools_list(
     connected_toolkits: &[String],
     perms: &PermissionContext,
     traceparent: Option<&str>,
+    verified_flow_id: Option<&str>,
 ) -> Value {
     use crate::config::ToolSearchMode;
 
     if state.config.tool_search_mode == ToolSearchMode::None {
-        // Rollback path: eager fan-out (existing behavior).
+        // Rollback path: eager fan-out (existing behavior). The forwarded trace context is only
+        // ever used as outbound W3C trace context for backend telemetry (`provider.list_tools`),
+        // never to resolve identity or read another flow's data — but it still must not be the
+        // raw `traceparent` unconditionally: a coding-agent row's owner-fallback call can carry a
+        // well-formed traceparent naming a flow it isn't a participant of, and forwarding that
+        // verbatim would land this call's backend spans inside someone else's Tempo trace. Same
+        // `Option::and` collapse `handle_tools_call`'s `outbound_traceparent` uses — only `Some`
+        // on the verified path, where `traceparent` and `verified_flow_id` name the same flow
+        // anyway, so a deployed agent's behavior is unchanged.
         return match aggregator::aggregate_tools(
             state,
             user_id,
             servers,
             connected_toolkits,
             perms,
-            traceparent,
+            verified_flow_id.and(traceparent),
         )
         .await
         {
@@ -154,8 +339,14 @@ pub async fn handle_tools_list(
     // ── Search path ────────────────────────────────────────────────────────
     let mut tools: Vec<Value> = Vec::new();
 
-    // Resolve the user's query from the flow record (if traceparent present).
-    let user_query = resolve_flow_title(state, traceparent).await;
+    // Resolve the user's query from the flow record — keyed on
+    // `verified_flow_id`, never a re-parse of the raw `traceparent`: a
+    // coding-agent row's owner-fallback call carries `verified_flow_id: None`
+    // even when `traceparent` still names some OTHER user's live flow (it
+    // resolves to the owner precisely because it isn't a participant of
+    // that flow), and that other flow's `title` is that user's private query
+    // text — nothing this caller was ever proven to have a claim on.
+    let user_query = resolve_flow_title(state, verified_flow_id).await;
 
     if let Some(ref query) = user_query {
         // Get the connector IDs this user can access.
@@ -186,19 +377,29 @@ pub async fn handle_tools_list(
         }
     }
 
-    // Always include the search meta-tool so the agent can discover more tools.
+    // The meta-tools ride along in every search-mode listing: the search
+    // itself, the executor that runs what it finds (the real tools are not in
+    // this list, so a client that can only call listed tools has no other way
+    // to reach one), and compressed-content recovery.
     tools.push(nasiko_search_tools_definition());
+    tools.push(nasiko_call_tool_definition());
     tools.push(recover_compressed_definition());
 
     ok(req_id, json!({ "tools": tools }))
 }
 
-/// Resolve `flows.title` (the user's original query) from a traceparent header.
-async fn resolve_flow_title(state: &McpState, traceparent: Option<&str>) -> Option<String> {
-    let tp = traceparent?;
-    let flow_id = nasiko_flow::FlowContext::from_traceparent(tp)?.flow_id;
+/// Resolve `flows.title` (the user's original query) for a *verified* flow
+/// id — never a raw `traceparent` re-parse. Only the route layer
+/// (`oss/server/src/mcp/handlers/gateway.rs::flow_user`) proves a trace id
+/// names a live flow this agent actually participates in; keying this lookup
+/// on anything less would let a caller with no claim on a flow (e.g. a
+/// coding-agent row's owner-fallback call, which carries a `None` here
+/// exactly because it ISN'T a participant) read another user's private query
+/// text out of `flows.title` by naming their trace id.
+async fn resolve_flow_title(state: &McpState, verified_flow_id: Option<&str>) -> Option<String> {
+    let flow_id = verified_flow_id?;
     sqlx::query_scalar::<_, Option<String>>("SELECT title FROM flows WHERE flow_id = $1")
-        .bind(&flow_id)
+        .bind(flow_id)
         .fetch_optional(&state.db)
         .await
         .ok()
@@ -224,7 +425,7 @@ fn tool_match_to_json(m: &crate::search::ToolMatch) -> Value {
 /// `tools/list` so agents can search for tools not in the initial set.
 fn nasiko_search_tools_definition() -> Value {
     json!({
-        "name": "nasiko_search_tools",
+        "name": SEARCH_TOOLS_META,
         "description": "Search for available tools by describing what you need. Use this when you need a capability not already in your tool list.",
         "inputSchema": {
             "type": "object",
@@ -242,6 +443,72 @@ fn nasiko_search_tools_definition() -> Value {
             "required": ["query"]
         }
     })
+}
+
+/// The `nasiko_call_tool` meta-tool definition — the executor for an MCP
+/// client that can only invoke tools present in `tools/list` (Claude Code,
+/// Codex, OpenCode). Listed exactly where `nasiko_search_tools` is: in the
+/// search modes the real tools are not in the list, so a tool the search
+/// found is otherwise unreachable from such a client.
+fn nasiko_call_tool_definition() -> Value {
+    json!({
+        "name": CALL_TOOL_META,
+        "description": "Execute a tool found with nasiko_search_tools by name. Use this when you cannot call the found tool directly. `name` is the tool name exactly as returned by the search; `arguments` is the JSON object matching that tool's inputSchema.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "The tool name exactly as returned by nasiko_search_tools"
+                },
+                "arguments": {
+                    "type": "object",
+                    "description": "The arguments for that tool, matching its inputSchema",
+                    "default": {}
+                }
+            },
+            "required": ["name"]
+        }
+    })
+}
+
+/// What `nasiko_call_tool` was asked to run — the inner tool's name and its
+/// own arguments (`{}` when omitted) — or the invalid-params message to
+/// answer with. A gateway meta-tool is refused as the inner name: the
+/// executor exists to reach tools a client cannot call directly, and the
+/// meta-tools are always directly callable, so nesting one could only loop.
+fn parse_call_tool_target(arguments: Option<&Value>) -> Result<(&str, Value), &'static str> {
+    let name = arguments
+        .and_then(|a| a.get("name"))
+        .and_then(Value::as_str)
+        .ok_or("nasiko_call_tool requires `name`, the tool name exactly as returned by nasiko_search_tools")?;
+    if is_meta_tool(name) {
+        return Err("nasiko_call_tool cannot call gateway meta-tools; call them directly");
+    }
+    let inner_arguments = match arguments.and_then(|a| a.get("arguments")) {
+        None | Some(Value::Null) => json!({}),
+        Some(object @ Value::Object(_)) => object.clone(),
+        Some(_) => return Err("nasiko_call_tool `arguments` must be a JSON object"),
+    };
+    Ok((name, inner_arguments))
+}
+
+/// The tool a `tools/call` is really about, for everything outside this
+/// module that records or reports a tool name (usage, metrics, the approval
+/// flow event): `params.name`, except that `nasiko_call_tool` resolves to the
+/// inner tool it dispatches — by the same parse `handle_tools_call` uses, so
+/// the recorded name can never differ from the called one. An executor call
+/// the parse rejects resolves to `nasiko_call_tool` itself: no inner tool was
+/// ever attempted.
+pub fn invoked_tool_name(params: &Value) -> &str {
+    let outer = params.get("name").and_then(Value::as_str).unwrap_or("");
+    if outer != CALL_TOOL_META {
+        return outer;
+    }
+    match parse_call_tool_target(params.get("arguments")) {
+        Ok((inner, _)) => inner,
+        Err(_) => outer,
+    }
 }
 
 /// The W3C trace-id out of a `traceparent`, which is what a flow is keyed by.
@@ -266,7 +533,7 @@ pub(crate) fn flow_id_of(traceparent: &str) -> Option<String> {
 /// meets its first elision marker, because the marker is the only place the handle appears.
 fn recover_compressed_definition() -> Value {
     json!({
-        "name": "recover_compressed",
+        "name": RECOVER_COMPRESSED_META,
         "description": "Retrieve the full, uncompressed content that an elision marker stands in for. Call this when a payload you were given contains a marker like `[… 412 lines elided · recover: nasiko://c/9f3a… ]` and the elided part matters for your answer.",
         "inputSchema": {
             "type": "object",
@@ -307,7 +574,31 @@ fn needs_auth_required(
     }
 }
 
-/// `tools/call` — route, enforce two-layer permissions, forward to the backend.
+/// `tools/call` — answer the gateway's own meta-tools (`nasiko_search_tools`,
+/// `recover_compressed`, and the `nasiko_call_tool` executor), and hand every
+/// real tool — named directly, or as the executor's inner tool — to
+/// `call_routed_tool`, the one path that routes, enforces both permission
+/// layers and forwards to the backend.
+///
+/// `traceparent` and `verified_flow_id` carry the same two-different-things
+/// split `handle_request`'s own doc comment explains: `traceparent` is the
+/// raw header (only ever used below as *outbound* trace context, gated to
+/// the verified case — see `outbound_traceparent`), `verified_flow_id` is
+/// what the route layer actually proved resolves to a live flow this agent
+/// participates in. Every HITL `context_id` resolution in this call tree
+/// (`handle_auth_required`, `create_tool_approval_id`,
+/// `resolve_tool_approval_retry`, and their `detect_composio_auth_required`/
+/// `ask_with_hitl_request` wrappers) takes `verified_flow_id`, never
+/// `traceparent` — see those functions' own docs for why: a raw traceparent
+/// naming a flow this agent isn't a participant of (the coding-agent
+/// owner-fallback path's whole reason for existing) must never seed a HITL
+/// row's `context_id`, or resolving that row would re-open and join the
+/// NAMED flow, not this call's actual one.
+// `verified_flow_id` pushed this from 7 to 8 — same call as `handle_tools_list`'s
+// own identical allow just above: not worth a params struct for one more
+// `Option<&str>` this fix required, on a function with exactly one call site
+// (`handle_request`).
+#[allow(clippy::too_many_arguments)]
 pub async fn handle_tools_call(
     state: &McpState,
     user_id: Uuid,
@@ -316,15 +607,41 @@ pub async fn handle_tools_call(
     resolved: &ResolvedSession,
     perms: &PermissionContext,
     traceparent: Option<&str>,
+    verified_flow_id: Option<&str>,
 ) -> Value {
     let tool_name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
-    let mut arguments = params
+
+    // ── nasiko_call_tool meta-tool: the fixed-menu executor ──────────────
+    // Unwrap and re-enter the routed path with the inner tool, so nothing
+    // downstream can tell the two entry points apart. Handled before the
+    // outer `arguments` are cloned: only the inner object is needed here.
+    if tool_name == CALL_TOOL_META {
+        return match parse_call_tool_target(params.get("arguments")) {
+            Ok((inner_name, inner_arguments)) => {
+                call_routed_tool(
+                    state,
+                    user_id,
+                    req_id,
+                    inner_name,
+                    inner_arguments,
+                    resolved,
+                    perms,
+                    traceparent,
+                    verified_flow_id,
+                )
+                .await
+            }
+            Err(message) => err(req_id, codes::INVALID_PARAMS, message),
+        };
+    }
+
+    let arguments = params
         .get("arguments")
         .cloned()
         .unwrap_or_else(|| json!({}));
 
     // ── nasiko_search_tools meta-tool ────────────────────────────────────
-    if tool_name == "nasiko_search_tools" {
+    if tool_name == SEARCH_TOOLS_META {
         let query = arguments
             .get("query")
             .and_then(|v| v.as_str())
@@ -355,17 +672,24 @@ pub async fn handle_tools_call(
             .await;
 
         let tools: Vec<Value> = matches.iter().map(tool_match_to_json).collect();
-        return ok(
-            req_id,
-            json!({
-                "tools": tools,
-                "search_mode": format!("{:?}", state.config.tool_search_mode),
-            }),
-        );
+        let payload = json!({
+            "tools": tools,
+            "search_mode": format!("{:?}", state.config.tool_search_mode),
+        });
+        // A `tools/call` result is read through `content` by MCP clients (a
+        // fixed-menu client such as Claude Code shows the model nothing else),
+        // and through `structuredContent` by schema-aware ones; the bare
+        // `tools`/`search_mode` fields stay at the top level for programmatic
+        // callers that already read them directly.
+        let text = payload.to_string();
+        let mut result = payload.clone();
+        result["content"] = json!([{ "type": "text", "text": text }]);
+        result["structuredContent"] = payload;
+        return ok(req_id, result);
     }
 
     // ── recover_compressed meta-tool (IP-5) ──────────────────────────────
-    if tool_name == "recover_compressed" {
+    if tool_name == RECOVER_COMPRESSED_META {
         let Some(handle) = arguments
             .get("handle")
             .and_then(|v| v.as_str())
@@ -427,6 +751,53 @@ pub async fn handle_tools_call(
         };
     }
 
+    call_routed_tool(
+        state,
+        user_id,
+        req_id,
+        tool_name,
+        arguments,
+        resolved,
+        perms,
+        traceparent,
+        verified_flow_id,
+    )
+    .await
+}
+
+/// The one path every real tool call takes — routing, both permission
+/// layers, the backend call — whether the client named `tool_name` directly
+/// or asked `nasiko_call_tool` to run it. Taking the name and arguments
+/// rather than the request's `params` is what makes that so: the executor
+/// unwraps its inner call and re-enters here, and from this point on
+/// routing, `perms.decide`, the `Ask` approval record and its retry match,
+/// the backend request and every logged tool name see the inner tool — the
+/// wrapper no longer exists.
+///
+/// `outbound_traceparent` is the only trace context a backend ever receives
+/// — never the fallback path's raw `traceparent`. A coding-agent row's
+/// owner-fallback call may carry a well-formed (self-generated, or another
+/// user's) traceparent even though `verified_flow_id` is `None`; forwarding
+/// it as-is would let that row's spans land inside someone else's Tempo
+/// trace. `Option::and` collapses to `None` unless BOTH sides are `Some` —
+/// i.e. only on the verified path, where `traceparent` and
+/// `verified_flow_id` name the same flow anyway.
+// Nine parameters: `handle_tools_call`'s eight plus the arguments, which the
+// executor supplies from its own `arguments` rather than from `params`.
+#[allow(clippy::too_many_arguments)]
+async fn call_routed_tool(
+    state: &McpState,
+    user_id: Uuid,
+    req_id: &Value,
+    tool_name: &str,
+    mut arguments: Value,
+    resolved: &ResolvedSession,
+    perms: &PermissionContext,
+    traceparent: Option<&str>,
+    verified_flow_id: Option<&str>,
+) -> Value {
+    let outbound_traceparent = verified_flow_id.and(traceparent);
+
     let (server, original) = match router::route_tool(tool_name, &resolved.servers) {
         Ok(pair) => pair,
         Err(e) => {
@@ -456,7 +827,7 @@ pub async fn handle_tools_call(
                     perms.agent_id,
                     connector_id,
                     &info.name,
-                    traceparent,
+                    verified_flow_id,
                 )
                 .await;
             }
@@ -497,7 +868,7 @@ pub async fn handle_tools_call(
                         perms.agent_id,
                         connector.id,
                         &connector.name,
-                        traceparent,
+                        verified_flow_id,
                     )
                     .await;
                 }
@@ -541,7 +912,7 @@ pub async fn handle_tools_call(
                         perms.agent_id,
                         connector.id,
                         &connector.name,
-                        traceparent,
+                        verified_flow_id,
                     )
                     .await;
                 }
@@ -584,7 +955,7 @@ pub async fn handle_tools_call(
                     perms.agent_id,
                     server.connector_id,
                     &original,
-                    traceparent,
+                    verified_flow_id,
                 )
                 .await
                 {
@@ -607,7 +978,7 @@ pub async fn handle_tools_call(
                             &original,
                             &server.name,
                             req_id,
-                            traceparent,
+                            verified_flow_id,
                         )
                         .await;
                     }
@@ -645,7 +1016,7 @@ pub async fn handle_tools_call(
                     perms.agent_id,
                     cid,
                     tool_name,
-                    traceparent,
+                    verified_flow_id,
                 )
                 .await
                 {
@@ -668,7 +1039,7 @@ pub async fn handle_tools_call(
                             tool_name,
                             "composio",
                             req_id,
-                            traceparent,
+                            verified_flow_id,
                         )
                         .await;
                     }
@@ -742,7 +1113,7 @@ pub async fn handle_tools_call(
                             perms.agent_id,
                             cid,
                             slug,
-                            traceparent,
+                            verified_flow_id,
                         )
                         .await
                         {
@@ -769,7 +1140,7 @@ pub async fn handle_tools_call(
                         perms.agent_id,
                         *cid,
                         slug,
-                        traceparent,
+                        verified_flow_id,
                     )
                     .await
                     {
@@ -848,7 +1219,7 @@ pub async fn handle_tools_call(
             &forward_name,
             &forward_args,
             DEFAULT_CALL_TIMEOUT,
-            traceparent,
+            outbound_traceparent,
         )
         .await
     {
@@ -867,7 +1238,7 @@ pub async fn handle_tools_call(
                         req_id,
                         perms.agent_id,
                         connector_id,
-                        traceparent,
+                        verified_flow_id,
                         response,
                     )
                     .await
@@ -884,8 +1255,16 @@ pub async fn handle_tools_call(
             // address and retry exactly once before giving up — mirrors this
             // gateway's own existing precedent for the structurally
             // identical Composio-connection staleness problem (refresh only
-            // on-demand, never on every request).
+            // on-demand, never on every request). `!server.system` excludes
+            // the OTHER kind of trusted backend: a system connector has no
+            // container at all, so the refresher's
+            // `runtime.endpoint(ContainerId::from_uuid(connector_id))` is
+            // meaningless for it — and, under `SimulatedRuntime` with
+            // `SIM_RESOLVE_ALL` (a real test/dev configuration), it would
+            // "succeed" and overwrite the system row's real loopback URL with
+            // a bogus one.
             if server.trusted
+                && !server.system
                 && is_connection_level_failure(&e)
                 && let Some(new_url) = state.endpoint_refresher.refresh(server.connector_id).await
             {
@@ -901,7 +1280,7 @@ pub async fn handle_tools_call(
                         &original,
                         &arguments,
                         DEFAULT_CALL_TIMEOUT,
-                        traceparent,
+                        outbound_traceparent,
                     )
                     .await
                 {
@@ -956,7 +1335,7 @@ async fn detect_composio_auth_required(
     req_id: &Value,
     agent_id: Uuid,
     connector_id: Uuid,
-    traceparent: Option<&str>,
+    verified_flow_id: Option<&str>,
     original_response: Value,
 ) -> Value {
     let Some(provider) = &state.providers.composio else {
@@ -990,7 +1369,7 @@ async fn detect_composio_auth_required(
         agent_id,
         connector_id,
         &connector.name,
-        traceparent,
+        verified_flow_id,
     )
     .await
 }
@@ -1018,7 +1397,7 @@ async fn handle_auth_required(
     agent_id: Uuid,
     connector_id: Uuid,
     connector_name: &str,
-    traceparent: Option<&str>,
+    verified_flow_id: Option<&str>,
 ) -> Value {
     let generic_error = || {
         err(
@@ -1031,13 +1410,19 @@ async fn handle_auth_required(
         )
     };
 
-    // No traceparent at all means nothing to correlate a resumable
+    // No verified flow at all means nothing to correlate a resumable
     // conversation against — fall back to today's generic error rather than
-    // persist a HITL row no future dispatcher could ever address.
-    let Some(context_id) = session::resolve_context_id(state, traceparent).await else {
+    // persist a HITL row no future dispatcher could ever address. Keyed on
+    // `verified_flow_id`, never the raw `traceparent`: a coding-agent row's
+    // owner-fallback call can carry a well-formed traceparent naming a flow
+    // it isn't a participant of, and seeding a HITL row's `context_id` from
+    // that would let approving it re-open and join that OTHER flow (see
+    // `oss/hitl/src/notifier.rs`'s resume path, and the guard added there
+    // against exactly this).
+    let Some(context_id) = session::resolve_context_id(state, verified_flow_id).await else {
         tracing::warn!(
             connector = %connector_name, %connector_id,
-            "auth_required detected but no traceparent to resolve a context_id from — falling back to generic error"
+            "auth_required detected but no verified flow to resolve a context_id from — falling back to generic error"
         );
         return generic_error();
     };
@@ -1111,27 +1496,34 @@ async fn handle_auth_required(
 
 /// Best-effort: persist a pending `tool_approval` row for one `(connector,
 /// tool)` `Stance::Ask` decision (M2's store), returning its id. `None` when
-/// there's no `traceparent` to resolve a `context_id` from (required by
+/// there's no verified flow to resolve a `context_id` from (required by
 /// `chk_hitl_tool_approval_identity`), or on a DB failure (logged) — either
 /// way the caller still returns `TOOL_ASK`; persistence never changes the
 /// ask/deny decision itself, only whether a row exists to resolve against
 /// later. Shared by the single-tool ask path (`ask_with_hitl_request`) and
 /// the `COMPOSIO_MULTI_EXECUTE_TOOL` batch-ask path, which persists one row
 /// per asked tool.
+///
+/// Takes `verified_flow_id`, never the raw `traceparent` — a `context_id`
+/// seeded from an unverified trace id would let a coding-agent row's
+/// owner-fallback call (no participant of the flow it names) plant a
+/// resolvable HITL row against someone else's conversation; see
+/// `oss/hitl/src/notifier.rs`'s resume path for what approving that row
+/// would otherwise do with it.
 async fn create_tool_approval_id(
     state: &McpState,
     user_id: Uuid,
     agent_id: Uuid,
     connector_id: Uuid,
     tool_name: &str,
-    traceparent: Option<&str>,
+    verified_flow_id: Option<&str>,
 ) -> Option<Uuid> {
-    let context_id = match session::resolve_context_id(state, traceparent).await {
+    let context_id = match session::resolve_context_id(state, verified_flow_id).await {
         Some(id) => id,
         None => {
             tracing::warn!(
                 tool = %tool_name, %connector_id,
-                "tool_approval ask with no traceparent to resolve a context_id from — skipping hitl persistence"
+                "tool_approval ask with no verified flow to resolve a context_id from — skipping hitl persistence"
             );
             return None;
         }
@@ -1194,15 +1586,19 @@ enum RetryOutcome {
 /// Takes a single `(connector_id, tool_name)` pair, so M8 reuses it unchanged
 /// per-slug inside the `COMPOSIO_MULTI_EXECUTE_TOOL` batch loop, alongside its
 /// two pre-existing single-tool call sites.
+///
+/// Takes `verified_flow_id`, never the raw `traceparent` — see
+/// `create_tool_approval_id`'s doc comment for why a `context_id` must never
+/// be seeded from a trace id this agent wasn't proven to participate in.
 async fn resolve_tool_approval_retry(
     state: &McpState,
     user_id: Uuid,
     agent_id: Uuid,
     connector_id: Uuid,
     tool_name: &str,
-    traceparent: Option<&str>,
+    verified_flow_id: Option<&str>,
 ) -> RetryOutcome {
-    let Some(context_id) = session::resolve_context_id(state, traceparent).await else {
+    let Some(context_id) = session::resolve_context_id(state, verified_flow_id).await else {
         return RetryOutcome::AskAgain;
     };
 
@@ -1302,7 +1698,7 @@ async fn ask_with_hitl_request(
     tool_name: &str,
     connector_label: &str,
     req_id: &Value,
-    traceparent: Option<&str>,
+    verified_flow_id: Option<&str>,
 ) -> Value {
     let mut data = json!({ "server": connector_label });
     if let Some(id) = create_tool_approval_id(
@@ -1311,7 +1707,7 @@ async fn ask_with_hitl_request(
         agent_id,
         connector_id,
         tool_name,
-        traceparent,
+        verified_flow_id,
     )
     .await
     {
@@ -1499,6 +1895,38 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
 
+    #[test]
+    fn implements_matches_the_dispatch_match_arms() {
+        for method in ["initialize", "ping", "tools/list", "tools/call"] {
+            assert!(implements(method), "{method} must report implemented");
+        }
+        assert!(
+            !implements("server/discover"),
+            "an unhandled method must report unimplemented so the route layer's \
+             MCP-Protocol-Version gate does not block a streamable-http client's \
+             fallback probe"
+        );
+    }
+
+    /// Step 0 (carry-over hardening): an unimplemented method must be rejected
+    /// by the `implements()` gate before `load_permission_context`/
+    /// `resolve_session` ever run. `test_state()`'s pool is lazily connected
+    /// to an unreachable address, so this would hang/error instead of
+    /// returning promptly if the gate ran after either DB call.
+    #[tokio::test]
+    async fn unknown_method_is_rejected_before_permission_or_session_work() {
+        let state = test_state();
+        let body = json!({"jsonrpc": "2.0", "id": 1, "method": "server/discover"});
+        let res = handle_request(&state, Uuid::new_v4(), Uuid::new_v4(), &body, None, None)
+            .await
+            .expect("a request with an id must produce a response");
+        assert_eq!(
+            res["error"]["code"],
+            json!(codes::METHOD_NOT_FOUND),
+            "{res}"
+        );
+    }
+
     fn test_state() -> McpState {
         let db = sqlx::PgPool::connect_lazy("postgres://user:pass@127.0.0.1:1/db")
             .expect("lazy pool construction must not touch the network");
@@ -1527,6 +1955,8 @@ mod tests {
                 tool_search_meta_limit: 0,
                 openai_api_key: None,
                 embedding_model: "".to_string(),
+                gateway_instructions: String::new(),
+                identity_signing_key: b"test-identity-signing-key".to_vec(),
             },
             providers: Providers {
                 composio: None,
@@ -1551,6 +1981,9 @@ mod tests {
                 headers: HashMap::new(),
                 transport: "streamable_http".into(),
                 trusted: false,
+                system: false,
+                tool_names: vec![],
+                instructions: None,
             }],
             connected_toolkits: vec!["gmail".into()],
             toolkit_to_connector: HashMap::from([("gmail".to_string(), cid)]),
@@ -1639,6 +2072,21 @@ mod tests {
         }
     }
 
+    /// Like [`FakeRefresher`], but counts invocations — lets a test assert
+    /// the refresher was never called at all (the system-server exclusion),
+    /// not just that a call's return value went unused.
+    struct CountingRefresher {
+        url: String,
+        calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+    #[async_trait::async_trait]
+    impl crate::endpoint_refresh::EndpointRefresher for CountingRefresher {
+        async fn refresh(&self, _connector_id: Uuid) -> Option<String> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Some(self.url.clone())
+        }
+    }
+
     /// A resolved session with one generic MCP backend (`ServerType::Mcp`,
     /// `trusted`) at `url`, namespaced under `cid`'s connector prefix.
     fn mcp_session(url: &str, cid: Uuid, trusted: bool) -> ResolvedSession {
@@ -1651,6 +2099,34 @@ mod tests {
                 headers: HashMap::new(),
                 transport: "streamable_http".into(),
                 trusted,
+                system: false,
+                tool_names: vec![],
+                instructions: None,
+            }],
+            connected_toolkits: vec![],
+            toolkit_to_connector: HashMap::new(),
+            unusable_connectors: HashMap::new(),
+        }
+    }
+
+    /// Same shape as [`mcp_session`], but a SYSTEM backend (`trusted: true`,
+    /// `system: true`) — the prefixed-tool-name routing path (`{prefix}__x`)
+    /// works identically for a system server (only bare-name routing treats
+    /// `system` specially), so this can reuse the exact connection-failure
+    /// scenario the uploaded-build tests above use.
+    fn system_mcp_session(url: &str, cid: Uuid) -> ResolvedSession {
+        ResolvedSession {
+            servers: vec![MCPServerConfig {
+                connector_id: cid,
+                kind: ServerType::Mcp,
+                name: "system-server".into(),
+                url: url.into(),
+                headers: HashMap::new(),
+                transport: "streamable_http".into(),
+                trusted: true,
+                system: true,
+                tool_names: vec![],
+                instructions: None,
             }],
             connected_toolkits: vec![],
             toolkit_to_connector: HashMap::new(),
@@ -1704,6 +2180,7 @@ mod tests {
             &resolved,
             &p,
             None,
+            None,
         )
         .await;
 
@@ -1737,6 +2214,7 @@ mod tests {
             &resolved,
             &p,
             None,
+            None,
         )
         .await;
 
@@ -1744,6 +2222,52 @@ mod tests {
             res["error"]["code"],
             json!(codes::INTERNAL_ERROR),
             "must surface the original failure, never retry: {res}"
+        );
+    }
+
+    #[tokio::test]
+    async fn system_backend_connection_failure_never_triggers_endpoint_refresh() {
+        // A system connector's `trusted` is also `true` (loopback, same as an
+        // uploaded build) — without the `!server.system` exclusion this would
+        // wrongly take the uploaded-build self-heal path and ask the
+        // refresher for a `ContainerId` that corresponds to no real
+        // container. Asserts the refresher is never even called, not merely
+        // that its result goes unused.
+        let (_guard, fresh_url) = spawn_ok_backend().await;
+        let mut state = test_state();
+        state.authorizer = std::sync::Arc::new(AllowAllAuthorizer);
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        state.endpoint_refresher = std::sync::Arc::new(CountingRefresher {
+            url: fresh_url,
+            calls: calls.clone(),
+        });
+
+        let cid = Uuid::new_v4();
+        let resolved = system_mcp_session("http://127.0.0.1:1/mcp", cid);
+        let p = perms(&[cid], vec![]);
+        let tool = format!("{}__echo", crate::types::connector_prefix(cid));
+
+        let res = handle_tools_call(
+            &state,
+            Uuid::new_v4(),
+            &json!(1),
+            &json!({ "name": tool, "arguments": {} }),
+            &resolved,
+            &p,
+            None,
+            None,
+        )
+        .await;
+
+        assert_eq!(
+            res["error"]["code"],
+            json!(codes::INTERNAL_ERROR),
+            "must surface the original failure, never retry: {res}"
+        );
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "the refresher must never be invoked for a system backend"
         );
     }
 
@@ -1764,6 +2288,7 @@ mod tests {
             &resolved,
             &p,
             None,
+            None,
         )
         .await;
         assert_eq!(res["error"]["code"], json!(codes::TOOL_BLOCKED), "{res}");
@@ -1782,6 +2307,7 @@ mod tests {
             &resolved,
             &p,
             None,
+            None,
         )
         .await;
         assert_eq!(res["error"]["code"], json!(codes::TOOL_BLOCKED), "{res}");
@@ -1799,6 +2325,7 @@ mod tests {
             &json!({ "name": "GMAIL_SEND_EMAIL", "arguments": {} }),
             &resolved,
             &p,
+            None,
             None,
         )
         .await;
@@ -1833,6 +2360,7 @@ mod tests {
             &resolved,
             &p,
             None,
+            None,
         )
         .await;
         assert_eq!(res["result"]["ok"], json!(true), "{res}");
@@ -1865,6 +2393,7 @@ mod tests {
             &json!({ "name": "COMPOSIO_SEARCH_TOOLS", "arguments": {} }),
             &resolved,
             &p,
+            None,
             None,
         )
         .await;
@@ -1918,6 +2447,7 @@ mod tests {
             &resolved,
             &p,
             None,
+            None,
         )
         .await;
 
@@ -1952,6 +2482,7 @@ mod tests {
             &resolved,
             &p,
             None,
+            None,
         )
         .await;
 
@@ -1962,13 +2493,18 @@ mod tests {
     async fn non_auth_required_reason_never_takes_the_auth_required_branch() {
         // NotConfigured/MissingCredential must still produce today's generic
         // "not available" error — only AuthRequired gets the new handling.
-        // A (well-formed but unresolvable) traceparent is deliberately
-        // supplied here: if the reason gate in `handle_tools_call` were ever
-        // loosened to match on `Some(_)` instead of `AuthRequired`
-        // specifically, this would start touching `state.db` — and, since
-        // `test_state()`'s pool can't reach a real Postgres, still degrade to
-        // the same generic error (not crash), but the whole point of the
-        // gate is to skip that DB work entirely for non-AuthRequired reasons.
+        // A (well-formed but unresolvable) traceparent AND a matching
+        // `verified_flow_id` are deliberately supplied here: if the reason
+        // gate in `handle_tools_call` were ever loosened to match on
+        // `Some(_)` instead of `AuthRequired` specifically, this would start
+        // touching `state.db` (`session::resolve_context_id`'s
+        // `session_traces` lookup) — and, since `test_state()`'s pool can't
+        // reach a real Postgres, still degrade to the same generic error
+        // (not crash), but the whole point of the gate is to skip that DB
+        // work entirely for non-AuthRequired reasons. Passing `None` here would
+        // make this a no-op regardless of the gate — `resolve_context_id`
+        // short-circuits on `None` before ever reaching `state.db` — so a
+        // loosened gate would slip past this test undetected.
         let cid = Uuid::new_v4();
         let resolved = unusable_mcp_session(cid, ConnectorUnusable::NotConfigured, "github");
         let p = perms(&[], vec![]);
@@ -1982,6 +2518,7 @@ mod tests {
             &resolved,
             &p,
             Some("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"),
+            Some("0af7651916cd43dd8448eb211c80319c"),
         )
         .await;
 
@@ -2012,6 +2549,7 @@ mod tests {
             &resolved,
             &p,
             None,
+            None,
         )
         .await;
 
@@ -2040,6 +2578,7 @@ mod tests {
             &resolved,
             &perms(&[cid], vec![rule(cid, "*", Stance::Block)]),
             None,
+            None,
         )
         .await;
         assert_eq!(
@@ -2055,6 +2594,7 @@ mod tests {
             &json!({ "name": tool, "arguments": {} }),
             &resolved,
             &perms(&[], vec![]), // connector never enabled
+            None,
             None,
         )
         .await;
@@ -2171,5 +2711,529 @@ mod tests {
         });
         let unwrapped = unwrap_multi_execute_response(response.clone());
         assert_eq!(unwrapped, response);
+    }
+
+    // ─── nasiko_call_tool: the executor for fixed-menu clients ─────────────────
+
+    /// `tools/list` with no verified flow — the agent-startup shape every
+    /// fixed-menu client sees first — under `mode`. Hermetic: no flow means no
+    /// `flows.title` lookup, and `None` mode's manifest cache treats the
+    /// unreachable Redis as a miss.
+    async fn listed_tool_names(mode: ToolSearchMode) -> Vec<String> {
+        let mut state = test_state();
+        state.config.tool_search_mode = mode;
+        let res = handle_tools_list(
+            &state,
+            Uuid::new_v4(),
+            &json!(1),
+            &[],
+            &[],
+            &perms(&[], vec![]),
+            None,
+            None,
+        )
+        .await;
+        res["result"]["tools"]
+            .as_array()
+            .unwrap_or_else(|| panic!("tools array: {res}"))
+            .iter()
+            .filter_map(|t| t["name"].as_str().map(str::to_string))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn nasiko_call_tool_is_listed_exactly_where_nasiko_search_tools_is() {
+        // A fixed-menu client can only invoke what `tools/list` carries, so
+        // wherever the search meta-tool hides the real tools, the executor
+        // that runs a found one must sit beside it.
+        for mode in [ToolSearchMode::Semantic, ToolSearchMode::Keyword] {
+            let names = listed_tool_names(mode).await;
+            assert!(
+                names.iter().any(|n| n == "nasiko_search_tools"),
+                "{mode:?}: {names:?}"
+            );
+            assert!(
+                names.iter().any(|n| n == "nasiko_call_tool"),
+                "{mode:?}: {names:?}"
+            );
+        }
+        // `None` lists the real tools themselves — no search, no executor.
+        let names = listed_tool_names(ToolSearchMode::None).await;
+        assert!(
+            !names.iter().any(|n| n == "nasiko_call_tool"),
+            "None mode must not advertise the executor: {names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n == "nasiko_search_tools"),
+            "None mode must not advertise the search meta-tool: {names:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn nasiko_call_tool_with_invalid_params_is_rejected_before_routing() {
+        // 127.0.0.1:9 is unreachable — a rejected executor call must never
+        // reach the backend, so this neither hangs nor errors on the network.
+        let cid = Uuid::new_v4();
+        let resolved = mcp_session("http://127.0.0.1:9/mcp", cid, false);
+        let p = perms(&[cid], vec![]);
+        let tool = format!("{}__echo", crate::types::connector_prefix(cid));
+        for (arguments, expected) in [
+            (json!({}), "requires `name`"),
+            (json!({"name": 42}), "requires `name`"),
+            (json!({"arguments": {}}), "requires `name`"),
+            (
+                json!({"name": tool, "arguments": "not-an-object"}),
+                "must be a JSON object",
+            ),
+        ] {
+            let res = handle_tools_call(
+                &test_state(),
+                Uuid::new_v4(),
+                &json!(1),
+                &json!({ "name": "nasiko_call_tool", "arguments": arguments }),
+                &resolved,
+                &p,
+                None,
+                None,
+            )
+            .await;
+            assert_eq!(res["error"]["code"], json!(codes::INVALID_PARAMS), "{res}");
+            let message = res["error"]["message"].as_str().unwrap_or("");
+            assert!(message.contains(expected), "{res}");
+        }
+    }
+
+    #[tokio::test]
+    async fn nasiko_call_tool_refuses_to_call_a_gateway_meta_tool() {
+        let cid = Uuid::new_v4();
+        let resolved = mcp_session("http://127.0.0.1:9/mcp", cid, false);
+        let p = perms(&[cid], vec![]);
+        for inner in [
+            "nasiko_call_tool",
+            "nasiko_search_tools",
+            "recover_compressed",
+        ] {
+            let res = handle_tools_call(
+                &test_state(),
+                Uuid::new_v4(),
+                &json!(1),
+                &json!({ "name": "nasiko_call_tool", "arguments": { "name": inner } }),
+                &resolved,
+                &p,
+                None,
+                None,
+            )
+            .await;
+            assert_eq!(res["error"]["code"], json!(codes::INVALID_PARAMS), "{res}");
+            assert_eq!(
+                res["error"]["message"],
+                json!("nasiko_call_tool cannot call gateway meta-tools; call them directly"),
+                "{res}"
+            );
+        }
+    }
+
+    /// Both entry points, same inner call, same `req_id` — so a byte-identical
+    /// comparison is meaningful.
+    async fn direct_and_via_executor(
+        state: &McpState,
+        resolved: &ResolvedSession,
+        p: &PermissionContext,
+        tool: &str,
+        arguments: Value,
+    ) -> (Value, Value) {
+        let user = Uuid::new_v4();
+        let direct = handle_tools_call(
+            state,
+            user,
+            &json!(1),
+            &json!({ "name": tool, "arguments": arguments }),
+            resolved,
+            p,
+            None,
+            None,
+        )
+        .await;
+        let via_executor = handle_tools_call(
+            state,
+            user,
+            &json!(1),
+            &json!({
+                "name": "nasiko_call_tool",
+                "arguments": { "name": tool, "arguments": arguments },
+            }),
+            resolved,
+            p,
+            None,
+            None,
+        )
+        .await;
+        (direct, via_executor)
+    }
+
+    #[tokio::test]
+    async fn nasiko_call_tool_is_indistinguishable_from_the_direct_call_at_the_backend() {
+        // The backend accepts only the inner tool's un-namespaced name with the
+        // inner arguments, twice: once from the direct call, once unwrapped by
+        // the executor. Anything else — the wrapper's own name, or arguments
+        // nested one level too deep — misses the mock and fails the call.
+        let mut backend = mockito::Server::new_async().await;
+        let hit = backend
+            .mock("POST", "/mcp")
+            .match_body(mockito::Matcher::PartialJson(json!({
+                "method": "tools/call",
+                "params": { "name": "echo", "arguments": { "path": "notes.md" } },
+            })))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"jsonrpc":"2.0","id":1,"result":{"ok":true}}"#)
+            .expect(2)
+            .create_async()
+            .await;
+        let url = format!("http://localhost:{}/mcp", backend.socket_address().port());
+
+        let mut state = test_state();
+        state.authorizer = std::sync::Arc::new(AllowAllAuthorizer);
+        let cid = Uuid::new_v4();
+        let resolved = mcp_session(&url, cid, true);
+        let p = perms(&[cid], vec![]);
+        let tool = format!("{}__echo", crate::types::connector_prefix(cid));
+
+        let (direct, via_executor) =
+            direct_and_via_executor(&state, &resolved, &p, &tool, json!({ "path": "notes.md" }))
+                .await;
+
+        assert_eq!(direct["result"]["ok"], json!(true), "{direct}");
+        assert_eq!(
+            via_executor, direct,
+            "the executor's response must be byte-identical to the direct call's"
+        );
+        hit.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn nasiko_call_tool_is_blocked_exactly_as_the_direct_call_is() {
+        // Unreachable backend on purpose: a Denied decision returns before any
+        // backend call, so the executor must also never get that far.
+        let mut state = test_state();
+        state.authorizer = std::sync::Arc::new(AllowAllAuthorizer);
+        let cid = Uuid::new_v4();
+        let resolved = mcp_session("http://127.0.0.1:9/mcp", cid, false);
+        let p = perms(&[cid], vec![rule(cid, "*", Stance::Block)]);
+        let tool = format!("{}__echo", crate::types::connector_prefix(cid));
+
+        let (direct, via_executor) =
+            direct_and_via_executor(&state, &resolved, &p, &tool, json!({})).await;
+
+        assert_eq!(
+            direct["error"]["code"],
+            json!(codes::TOOL_BLOCKED),
+            "{direct}"
+        );
+        assert_eq!(via_executor, direct, "{via_executor}");
+        let message = via_executor["error"]["message"].as_str().unwrap_or("");
+        assert!(
+            message.contains(&tool) && !message.contains("nasiko_call_tool"),
+            "the denial must name the inner tool, never the wrapper: {via_executor}"
+        );
+    }
+
+    #[tokio::test]
+    async fn nasiko_call_tool_ask_decision_is_the_inner_tools_ask_decision() {
+        // No flow, so nothing is persisted (hermetic, same as
+        // `generic_mcp_ask_without_traceparent_returns_tool_ask_without_hitl_id`)
+        // — but the TOOL_ASK the executor answers must be the inner tool's own:
+        // same code, same connector label, the inner name in the message.
+        let mut state = test_state();
+        state.authorizer = std::sync::Arc::new(AllowAllAuthorizer);
+        let cid = Uuid::new_v4();
+        let resolved = mcp_session("http://127.0.0.1:9/mcp", cid, false);
+        let p = perms(&[cid], vec![rule(cid, "*", Stance::Ask)]);
+        let tool = format!("{}__echo", crate::types::connector_prefix(cid));
+
+        let (direct, via_executor) =
+            direct_and_via_executor(&state, &resolved, &p, &tool, json!({})).await;
+
+        assert_eq!(direct["error"]["code"], json!(codes::TOOL_ASK), "{direct}");
+        assert_eq!(via_executor, direct, "{via_executor}");
+        assert_eq!(
+            via_executor["error"]["data"]["server"],
+            json!("uploaded-server"),
+            "{via_executor}"
+        );
+        // The ask names the un-namespaced inner tool, exactly as the direct
+        // path does (`ask_with_hitl_request` takes `original`).
+        let message = via_executor["error"]["message"].as_str().unwrap_or("");
+        assert!(
+            message.contains("'echo'") && !message.contains("nasiko_call_tool"),
+            "the ask must name the inner tool, never the wrapper: {via_executor}"
+        );
+    }
+
+    // The adapter itself — the one parse both the executor's dispatch and the
+    // route layer's `invoked_tool_name` go through.
+
+    #[test]
+    fn invoked_tool_name_is_the_inner_tool_only_for_an_executor_call_that_dispatches() {
+        assert_eq!(
+            invoked_tool_name(&json!({ "name": "abcd__echo", "arguments": {} })),
+            "abcd__echo"
+        );
+        assert_eq!(
+            invoked_tool_name(&json!({
+                "name": "nasiko_call_tool",
+                "arguments": { "name": "abcd__echo", "arguments": { "path": "x" } },
+            })),
+            "abcd__echo"
+        );
+        // What the parse rejects was never attempted as an inner tool, so the
+        // record must say the executor itself failed — not blame a tool the
+        // client never validly named.
+        for rejected in [
+            json!({}),
+            json!({ "name": "nasiko_search_tools" }),
+            json!({ "name": "abcd__echo", "arguments": "not-an-object" }),
+        ] {
+            assert_eq!(
+                invoked_tool_name(&json!({ "name": "nasiko_call_tool", "arguments": rejected })),
+                "nasiko_call_tool"
+            );
+        }
+        assert_eq!(invoked_tool_name(&json!({})), "");
+    }
+
+    #[test]
+    fn parse_call_tool_target_defaults_omitted_arguments_to_an_empty_object() {
+        let omitted = json!({ "name": "abcd__echo" });
+        let (name, arguments) = parse_call_tool_target(Some(&omitted)).expect("valid target");
+        assert_eq!(name, "abcd__echo");
+        assert_eq!(arguments, json!({}));
+
+        let null = json!({ "name": "abcd__echo", "arguments": null });
+        let (_, arguments) =
+            parse_call_tool_target(Some(&null)).expect("null arguments mean omitted");
+        assert_eq!(arguments, json!({}));
+
+        assert!(parse_call_tool_target(None).is_err());
+    }
+
+    #[test]
+    fn nasiko_call_tool_definition_requires_only_the_inner_name() {
+        let def = nasiko_call_tool_definition();
+        assert_eq!(def["name"], "nasiko_call_tool");
+        assert_eq!(def["inputSchema"]["required"], json!(["name"]));
+        assert_eq!(def["inputSchema"]["properties"]["name"]["type"], "string");
+        assert_eq!(
+            def["inputSchema"]["properties"]["arguments"]["type"],
+            "object"
+        );
+        assert_eq!(
+            def["inputSchema"]["properties"]["arguments"]["default"],
+            json!({})
+        );
+    }
+}
+
+#[cfg(test)]
+mod initialize_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn initialize_echoes_a_supported_client_version() {
+        let req = json!({"jsonrpc":"2.0","id":1,"method":"initialize",
+            "params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}});
+        let out = handle_initialize(
+            &json!(1),
+            &req,
+            "GATEWAY-INSTR",
+            &["CONNECTOR-INSTR".to_string()],
+        );
+        assert_eq!(out["result"]["protocolVersion"], "2025-06-18");
+        assert!(
+            out["result"]["instructions"]
+                .as_str()
+                .unwrap()
+                .contains("GATEWAY-INSTR")
+        );
+        assert!(
+            out["result"]["instructions"]
+                .as_str()
+                .unwrap()
+                .contains("CONNECTOR-INSTR")
+        );
+    }
+
+    /// Backward-compat guarantee: every version this gateway claims to support
+    /// — including older ones like 2024-11-05 — is echoed back verbatim, not
+    /// silently upgraded to the latest.
+    #[test]
+    fn initialize_echoes_every_supported_version_verbatim() {
+        for &v in SUPPORTED_PROTOCOL_VERSIONS {
+            let req = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":v}});
+            let out = handle_initialize(&json!(1), &req, "x", &[]);
+            assert_eq!(
+                out["result"]["protocolVersion"], v,
+                "version {v} should be echoed back unchanged"
+            );
+        }
+    }
+
+    #[test]
+    fn initialize_falls_back_to_latest_supported_for_unknown_version() {
+        let req = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2031-01-01"}});
+        let out = handle_initialize(&json!(1), &req, "x", &[]);
+        assert_eq!(out["result"]["protocolVersion"], LATEST_PROTOCOL_VERSION);
+    }
+
+    #[test]
+    fn initialize_falls_back_to_latest_supported_for_missing_params() {
+        let out = handle_initialize(&json!(1), &json!({"method":"initialize"}), "x", &[]);
+        assert_eq!(out["result"]["protocolVersion"], LATEST_PROTOCOL_VERSION);
+    }
+
+    /// A non-string `protocolVersion` (a client sending a bare number instead
+    /// of a string) must not panic or coerce — `Value::as_str` returns `None`
+    /// for it, same fallback path as an unknown or missing version.
+    #[test]
+    fn initialize_falls_back_to_latest_supported_for_non_string_version() {
+        let req =
+            json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":2025}});
+        let out = handle_initialize(&json!(1), &req, "x", &[]);
+        assert_eq!(out["result"]["protocolVersion"], LATEST_PROTOCOL_VERSION);
+    }
+
+    #[test]
+    fn initialize_omits_instructions_when_empty() {
+        let out = handle_initialize(&json!(1), &json!({"method":"initialize"}), "", &[]);
+        assert!(out["result"].get("instructions").is_none());
+    }
+
+    /// Exact composition: gateway instructions first, then connector
+    /// instructions in order, joined by a blank line, each trimmed, and any
+    /// whitespace-only entry dropped rather than contributing a stray blank.
+    #[test]
+    fn initialize_composes_instructions_in_order_trimmed_and_joined() {
+        let out = handle_initialize(
+            &json!(1),
+            &json!({"method":"initialize"}),
+            "  G  ",
+            &["  ".to_string(), " C ".to_string()],
+        );
+        assert_eq!(out["result"]["instructions"], json!("G\n\nC"));
+    }
+
+    // ─── connector_instructions() — the collection step `handle_request` feeds
+    // into `handle_initialize`. `resolve_session`/`load_permission_context`
+    // need a real DB this crate's hermetic tests can't provide, so the
+    // composition is tested here as its own pure function instead of through
+    // `handle_request` end-to-end.
+
+    fn cfg(connector_id: Uuid, instructions: Option<&str>) -> MCPServerConfig {
+        MCPServerConfig {
+            connector_id,
+            kind: ServerType::Mcp,
+            name: "test".into(),
+            url: "http://127.0.0.1:1/mcp".into(),
+            headers: std::collections::HashMap::new(),
+            transport: "streamable_http".into(),
+            trusted: false,
+            system: false,
+            tool_names: vec![],
+            instructions: instructions.map(str::to_string),
+        }
+    }
+
+    fn ctx(enabled: &[Uuid]) -> PermissionContext {
+        PermissionContext {
+            agent_id: Uuid::nil(),
+            enabled_connectors: enabled.iter().copied().collect(),
+            rules: vec![],
+            hash: "h".into(),
+        }
+    }
+
+    #[test]
+    fn connector_instructions_collects_only_enabled_connectors_with_instructions() {
+        let enabled_with_instr = Uuid::new_v4();
+        let enabled_without_instr = Uuid::new_v4();
+        let disabled_with_instr = Uuid::new_v4();
+        let servers = vec![
+            cfg(enabled_with_instr, Some("WS-INSTR")),
+            cfg(enabled_without_instr, None),
+            cfg(disabled_with_instr, Some("SHOULD-NOT-APPEAR")),
+        ];
+        let perms = ctx(&[enabled_with_instr, enabled_without_instr]);
+        let got = connector_instructions(&servers, &perms);
+        assert_eq!(got, vec!["WS-INSTR".to_string()]);
+    }
+
+    #[test]
+    fn connector_instructions_is_empty_when_nothing_qualifies() {
+        let id = Uuid::new_v4();
+        let servers = vec![cfg(id, Some("X"))];
+        let perms = ctx(&[]); // never enabled
+        assert!(connector_instructions(&servers, &perms).is_empty());
+    }
+
+    // ── inject_identity: stamps only system backends ─────────────────────────
+
+    fn system_cfg(connector_id: Uuid) -> MCPServerConfig {
+        let mut s = cfg(connector_id, None);
+        s.system = true;
+        s.trusted = true;
+        s
+    }
+
+    #[test]
+    fn inject_identity_stamps_only_system_servers_with_the_given_header() {
+        let key = b"test-identity-key".to_vec();
+        let agent_id = Uuid::new_v4();
+        let user_id = Uuid::new_v4();
+        let signed =
+            crate::identity::SignedIdentity::new(agent_id, user_id, Some("flow-abc".to_string()))
+                .sign(&key);
+        let mut servers = vec![system_cfg(Uuid::new_v4()), cfg(Uuid::new_v4(), None)];
+
+        inject_identity(&mut servers, &signed);
+
+        let system_server = servers.iter().find(|s| s.system).expect("system server");
+        let header = system_server
+            .headers
+            .get(crate::identity::IDENTITY_HEADER)
+            .expect("system server must carry the identity header");
+        let verified = crate::identity::SignedIdentity::verify(header, &key)
+            .expect("the gateway's own signature must verify with the same key");
+        assert_eq!(verified.agent_id, agent_id);
+        assert_eq!(verified.user_id, user_id);
+        assert_eq!(verified.flow_id.as_deref(), Some("flow-abc"));
+
+        let non_system = servers
+            .iter()
+            .find(|s| !s.system)
+            .expect("non-system server");
+        assert!(
+            !non_system
+                .headers
+                .contains_key(crate::identity::IDENTITY_HEADER),
+            "a non-system backend must never receive the identity header: {non_system:?}"
+        );
+    }
+
+    #[test]
+    fn inject_identity_is_a_no_op_when_there_is_no_system_backend() {
+        let key = b"test-identity-key".to_vec();
+        let signed =
+            crate::identity::SignedIdentity::new(Uuid::new_v4(), Uuid::new_v4(), None).sign(&key);
+        let mut servers = vec![cfg(Uuid::new_v4(), None), cfg(Uuid::new_v4(), None)];
+
+        inject_identity(&mut servers, &signed);
+
+        assert!(
+            servers
+                .iter()
+                .all(|s| !s.headers.contains_key(crate::identity::IDENTITY_HEADER)),
+            "no backend is system, so nothing should be stamped: {servers:?}"
+        );
     }
 }
