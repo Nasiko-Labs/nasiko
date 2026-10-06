@@ -79,7 +79,15 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         mcp_tool_search_mode: "none".into(),
         mcp_tool_search_tool_limit: 15,
         mcp_tool_search_meta_limit: 10,
+        mcp_gateway_instructions: String::new(),
+        // This literal is built directly, not through `Config::from_env` — so
+        // it bypasses that function's JWT_SECRET-derived fallback (which
+        // domain-separates with an `mcp-identity::` prefix; see
+        // `Config::from_env`'s own derivation in `nasiko-config`). Set directly to
+        // `BENCH_JWT_SECRET`'s own value, unprefixed.
+        mcp_identity_signing_key: BENCH_JWT_SECRET.to_string(),
         mcp_upload_max_bytes: 50 * 1024 * 1024,
+        mcp_gateway_max_body_bytes: 8 * 1024 * 1024,
         mcp_upload_default_port: 8080,
         mcp_servers_network: "nasiko-mcp-servers-net".into(),
         mcp_upload_max_replicas: 1,
@@ -146,6 +154,7 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         coding_agent_idle_ttl_secs: 0,
         coding_agent_turn_lease_secs: 60,
         coding_agent_lease_heartbeat_secs: 20,
+        coding_agent_command: vec!["opencode".to_owned(), "acp".to_owned()],
         github_client_id: None,
         github_client_secret: None,
         router_shortlist_threshold: 15,

@@ -375,7 +375,7 @@ pub async fn agent_proxy(
         let request = crate::coding::turn::CodingTurnRequest {
             session_id: info.session_id.clone(),
             spec: crate::coding::proxy::build_spec(agent_id, &target),
-            acp_command: target.acp_command.clone(),
+            acp_command: state.config.coding_agent_command.clone(),
             env,
             user_id: claims.user_uuid().ok(),
             prompt: info.user_text.clone(),
