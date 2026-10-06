@@ -10,6 +10,7 @@ members = [
     "pricing",
     "savings",
     "runtime",
+    "workspace-store",
     "react-agent",
     "acp-client",
     "session-token",
@@ -128,6 +129,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # ─── AWS ────────────────────────────────────────────────────────────────────
 aws-sdk-s3 = "1"
 aws-config = "1"
+# Cloud-agnostic object storage: one client for S3-compatible stores, Azure
+# Blob and GCS, whose `Signer` impls presign URLs so signing needs no vendor
+# SDK. `nasiko-workspace-store` selects a backend by URL; the Kubernetes
+# build-context push and the Azure Blob `BlobStore` reuse the same crate.
+object_store = { version = "0.10", features = ["aws", "azure", "gcp"] }
 
 # ─── Crypto ─────────────────────────────────────────────────────────────────
 sha2 = "0.10"
@@ -174,6 +180,7 @@ thiserror = "2"
 anyhow = "1"
 base64 = "0.22"
 dotenvy = "0.15"
+url = "2"
 
 # ─── Embedding / registry ──────────────────────────────────────────────────
 rust-embed = { version = "8", features = ["mime-guess", "include-exclude", "interpolate-folder-path"] }
