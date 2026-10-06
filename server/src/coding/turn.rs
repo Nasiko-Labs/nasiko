@@ -17,8 +17,8 @@ use agent_client_protocol::ByteStreams;
 use agent_client_protocol::schema::v1::{HttpHeader, McpServer, McpServerHttp};
 use chrono::Utc;
 use nasiko_acp_client::{
-    AcpConnectConfig, AcpConnection, CapturePolicy, NewSessionParams, TurnEvent, TurnStream,
-    TurnTelemetry,
+    AcpConnectConfig, AcpConnection, CapturePolicy, NewSessionParams, PermissionPolicy, TurnEvent,
+    TurnStream, TurnTelemetry,
 };
 use nasiko_runtime::{ContainerId, DeploymentSpec, RuntimeState, SessionAttach};
 use tokio::sync::mpsc;
@@ -153,7 +153,17 @@ async fn start_turn(
     };
     let stdio = state.runtime.attach_stdio(&container_id, attach).await?;
     let transport = ByteStreams::new(stdio.stdin.compat_write(), stdio.stdout.compat());
-    let conn = AcpConnection::connect(transport, AcpConnectConfig::default()).await?;
+    // Auto mode for now: approve every permission request the agent makes mid-turn
+    // so a turn runs unattended end to end. Real human-in-the-loop routing will
+    // replace this with a `Delegate` policy to the Nasiko HITL surface (NAS-842).
+    let conn = AcpConnection::connect(
+        transport,
+        AcpConnectConfig {
+            permission_policy: PermissionPolicy::ApproveAll,
+            ..Default::default()
+        },
+    )
+    .await?;
 
     // Open the agent session in its per-session workspace dir (the same dir the
     // attach cd'd the process into), remember the agent's session id for a later
