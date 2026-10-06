@@ -363,9 +363,12 @@ async fn whole_store_checks(store: &dyn WorkspaceObjectStore, key: &str) -> Resu
         refused_as_invalid(store.delete_prefix(prefix).await)
             .map_err(|did| format!("delete_prefix({prefix:?}) {did}"))?;
     }
-    // `list_prefix` reads only the empty string as the whole store; every
-    // other spelling of "everything" is a prefix it must refuse, or the
-    // scope-widening the sweeps are guarded against arrives through listing.
+    // `list_prefix` reads only the empty string as the whole store; every other
+    // non-key spelling is refused, each for its own reason. `"/"` is not a key:
+    // stripping the one trailing slash a prefix may carry leaves nothing, so it
+    // cannot widen to everything. `"workspace//"` carries a second trailing
+    // slash, which survives that strip — read leniently it would widen to
+    // `workspace`, not to the store root, and it is refused either way.
     for prefix in ["/", "workspace//"] {
         refused_as_invalid(store.list_prefix(prefix).await)
             .map_err(|did| format!("list_prefix({prefix:?}) {did}"))?;

@@ -154,9 +154,11 @@ fn object_path(key: &str) -> Result<Path, WorkspaceStoreError> {
     // those two bytes are examined, so only a key's final segment can be
     // caught; the check covers every segment deliberately, so the rule holds
     // for any prefix of a key as well and needs no positional reasoning.
-    // Catalog keys are UUIDs and digests, so the wider rule rejects nothing
-    // real, and S3 stores such a segment verbatim: refusing it keeps a valid
-    // key one that round-trips identically on every backend.
+    // A catalog key is `workspace/{agent}/{user}/blobs/{upload}` — two literals
+    // and three UUIDs, none of which can end in ':' — so the wider rule rejects
+    // nothing the catalog produces, and S3 stores such a segment verbatim:
+    // refusing it keeps a valid key one that round-trips identically on every
+    // backend.
     if key.split('/').any(|segment| {
         segment
             .strip_suffix(':')
