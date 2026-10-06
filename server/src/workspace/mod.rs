@@ -1,5 +1,6 @@
 //! Workspace artifacts: the object store the control plane serves them from.
 
+pub mod catalog;
 pub mod paths;
 
 use std::sync::Arc;
