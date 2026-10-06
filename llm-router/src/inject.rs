@@ -66,30 +66,54 @@ pub fn inject_llm_env(
     )
     .map_err(|e| GatewayError::Internal(format!("failed to mint agent token: {e}")))?;
 
-    // The router mounts its routes directly on the server (`/v1/...`, `/v1beta/...`) —
-    // there is no longer an edge proxy stripping a `/llm` prefix. Each SDK appends its
-    // own suffix to the base URL, so the injected base differs per SDK:
-    //   OpenAI    — appends `/chat/completions`, expects the version in the base ⇒ `{base}/v1`
-    //   Anthropic — appends `/v1/messages` (version in the suffix)               ⇒ `{base}`
-    //   Gemini    — appends `/v1beta/models/{model}:…` (version in the suffix)   ⇒ `{base}`
-    let base = cfg.llm_gateway_base_url.trim_end_matches('/');
+    // Point the SDK at the router (base URL), then hand it the identity token as
+    // the provider key. The base-URL mapping is shared with the coding-agent
+    // per-turn path via `inject_llm_base_url`.
+    inject_llm_base_url(env_vars, &cfg.llm_gateway_base_url, ctx.inbound_format);
 
     match ctx.inbound_format {
         InboundFormat::OpenAi => {
-            env_vars.insert("OPENAI_BASE_URL".into(), format!("{base}/v1"));
             env_vars.insert("OPENAI_API_KEY".into(), token);
         }
         InboundFormat::Anthropic => {
-            env_vars.insert("ANTHROPIC_BASE_URL".into(), base.to_string());
             env_vars.insert("ANTHROPIC_API_KEY".into(), token);
         }
         InboundFormat::Gemini => {
-            env_vars.insert("GOOGLE_GEMINI_BASE_URL".into(), base.to_string());
             env_vars.insert("GEMINI_API_KEY".into(), token.clone());
             env_vars.insert("GOOGLE_API_KEY".into(), token);
         }
     }
     Ok(())
+}
+
+/// Write only the SDK base-URL env var(s) for `format`, pointing the agent's LLM
+/// SDK at the router mounted at `gateway_base_url`.
+///
+/// Unlike [`inject_llm_env`] this mints no token and writes no key: it is for
+/// callers that supply their own credential separately — notably the coding-agent
+/// per-turn path, which carries a session token rather than a deploy-time agent
+/// JWT. The router mounts on the server (`/v1/...`, `/v1beta/...`) and each SDK
+/// appends its own suffix, so the written base differs per format:
+///   OpenAI    — appends `/chat/completions`, version in the base ⇒ `{base}/v1`
+///   Anthropic — appends `/v1/messages` (version in the suffix)   ⇒ `{base}`
+///   Gemini    — appends `/v1beta/models/{model}:…`               ⇒ `{base}`
+pub fn inject_llm_base_url(
+    env_vars: &mut HashMap<String, String>,
+    gateway_base_url: &str,
+    format: InboundFormat,
+) {
+    let base = gateway_base_url.trim_end_matches('/');
+    match format {
+        InboundFormat::OpenAi => {
+            env_vars.insert("OPENAI_BASE_URL".into(), format!("{base}/v1"));
+        }
+        InboundFormat::Anthropic => {
+            env_vars.insert("ANTHROPIC_BASE_URL".into(), base.to_string());
+        }
+        InboundFormat::Gemini => {
+            env_vars.insert("GOOGLE_GEMINI_BASE_URL".into(), base.to_string());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -168,6 +192,27 @@ mod tests {
         );
         assert!(env.contains_key("GEMINI_API_KEY"));
         assert!(env.contains_key("GOOGLE_API_KEY"));
+    }
+
+    #[test]
+    fn base_url_only_helper_writes_url_and_no_key() {
+        // The coding-agent path supplies its own session-token credential, so the
+        // helper must write the base URL but never a key.
+        let mut env = HashMap::new();
+        inject_llm_base_url(&mut env, "http://gateway:8080", InboundFormat::OpenAi);
+        assert_eq!(
+            env.get("OPENAI_BASE_URL").map(String::as_str),
+            Some("http://gateway:8080/v1")
+        );
+        assert!(!env.contains_key("OPENAI_API_KEY"));
+
+        let mut env = HashMap::new();
+        inject_llm_base_url(&mut env, "http://gateway:8080/", InboundFormat::Anthropic);
+        assert_eq!(
+            env.get("ANTHROPIC_BASE_URL").map(String::as_str),
+            Some("http://gateway:8080")
+        );
+        assert!(!env.contains_key("ANTHROPIC_API_KEY"));
     }
 
     #[test]

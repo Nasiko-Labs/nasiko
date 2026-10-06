@@ -345,6 +345,26 @@ pub async fn agent_proxy(
                     env.insert("ANTHROPIC_API_KEY".to_string(), minted.token.clone());
                     env.insert("NASIKO_SESSION_TOKEN".to_string(), minted.token.clone());
                     session_token = Some(minted.token);
+
+                    // Point the agent's model SDK at the LLM router so those calls
+                    // actually reach Nasiko (authenticated by the session token
+                    // above, billed to the turn's user). Without a base URL the
+                    // credential has nowhere to go. Mirrors the deploy-time agent
+                    // wiring, but with the per-turn session token instead of an
+                    // agent JWT, and hedges both SDK families like the keys above.
+                    let gw = nasiko_llm_router::GatewayConfig::from_env();
+                    if !gw.llm_gateway_base_url.trim().is_empty() {
+                        nasiko_llm_router::inject_llm_base_url(
+                            &mut env,
+                            &gw.llm_gateway_base_url,
+                            nasiko_llm_router::InboundFormat::OpenAi,
+                        );
+                        nasiko_llm_router::inject_llm_base_url(
+                            &mut env,
+                            &gw.llm_gateway_base_url,
+                            nasiko_llm_router::InboundFormat::Anthropic,
+                        );
+                    }
                 }
                 Err(e) => {
                     tracing::error!(error = %e, %agent_id, "coding-agent: session token mint failed; proceeding without")
