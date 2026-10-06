@@ -675,3 +675,92 @@ fn admin_username_can_be_overridden() {
     unsafe { std::env::remove_var("ADMIN_USERNAME") };
     unset_required_vars();
 }
+
+// ─── Workspace object store ──────────────────────────────────────────────────
+
+/// Every workspace test starts from a clean slate: the derived default reads
+/// `OCI_STORAGE_BUCKET` and `STORAGE_PROVIDER`, so a value left behind by an
+/// earlier test would change the URL under us.
+fn unset_workspace_vars() {
+    unset_vars(&[
+        "WORKSPACE_STORE_URL",
+        "OCI_STORAGE_BUCKET",
+        "STORAGE_PROVIDER",
+    ]);
+}
+
+#[test]
+#[serial]
+fn explicit_workspace_store_url_wins_and_claims_no_oci_credentials() {
+    set_required_vars();
+    unset_workspace_vars();
+    unsafe { std::env::set_var("WORKSPACE_STORE_URL", "gs://my-bucket/artifacts") };
+
+    let cfg = Config::from_env().unwrap();
+    assert_eq!(cfg.workspace_store_url, "gs://my-bucket/artifacts");
+    assert!(
+        !cfg.workspace_store_shares_oci_s3,
+        "an explicit URL authenticates from the provider's own environment"
+    );
+
+    unset_workspace_vars();
+    unset_required_vars();
+}
+
+#[test]
+#[serial]
+fn unset_workspace_store_url_derives_a_prefix_in_the_oci_bucket() {
+    set_required_vars();
+    unset_workspace_vars();
+    unsafe { std::env::set_var("OCI_STORAGE_BUCKET", "nasiko-artifacts") };
+
+    let cfg = Config::from_env().unwrap();
+    assert_eq!(cfg.workspace_store_url, "s3://nasiko-artifacts/workspace");
+    assert!(
+        cfg.workspace_store_shares_oci_s3,
+        "the derived default shares the OCI bucket, so it needs the S3_* settings"
+    );
+
+    unset_workspace_vars();
+    unset_required_vars();
+}
+
+#[test]
+#[serial]
+fn derived_default_on_azure_blob_claims_no_s3_credentials() {
+    set_required_vars();
+    unset_workspace_vars();
+    unsafe { std::env::set_var("STORAGE_PROVIDER", "azure-blob") };
+    unsafe { std::env::set_var("OCI_STORAGE_BUCKET", "nasiko-artifacts") };
+
+    let cfg = Config::from_env().unwrap();
+    assert_eq!(cfg.workspace_store_url, "s3://nasiko-artifacts/workspace");
+    assert!(
+        !cfg.workspace_store_shares_oci_s3,
+        "an Azure Blob deployment holds no S3 credential to bridge"
+    );
+
+    unset_workspace_vars();
+    unset_required_vars();
+}
+
+#[test]
+#[serial]
+fn workspace_defaults_are_the_documented_ones() {
+    set_required_vars();
+    unset_workspace_vars();
+    unset_vars(&[
+        "WORKSPACE_TRANSFER_MODE",
+        "WORKSPACE_UPLOAD_TTL_SECS",
+        "WORKSPACE_SWEEP_INTERVAL_SECS",
+        "WORKSPACE_MCP_URL",
+    ]);
+
+    let cfg = Config::from_env().unwrap();
+    assert_eq!(cfg.workspace_transfer_mode, "auto");
+    assert_eq!(cfg.workspace_upload_ttl_secs, 900);
+    assert_eq!(cfg.workspace_sweep_interval_secs, 60);
+    assert_eq!(cfg.workspace_mcp_url, None);
+
+    unset_required_vars();
+}

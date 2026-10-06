@@ -59,6 +59,7 @@ nasiko-utils = { path = "utils" }
 nasiko-server = { path = "server" }
 nasiko-coding-policy = { path = "coding-policy" }
 nasiko-oci = { path = "oci" }
+nasiko-workspace-store = { path = "workspace-store" }
 nasiko-llm-router = { path = "llm-router" }
 nasiko-bench-support = { path = "bench-support" }
 

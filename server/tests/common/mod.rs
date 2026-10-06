@@ -328,8 +328,18 @@ impl TestServer {
         let oci_storage: Arc<dyn nasiko_runtime::BlobStore> = Arc::new(
             nasiko_oci::storage::S3Storage::from_env(config.oci_storage_bucket.clone()).await,
         );
-        let state =
-            AppState::from_config_with_db(config, auth, runtime, oci_storage, db.clone()).await;
+        let workspace_store = nasiko_server::workspace::store_from_config(&config)
+            .await
+            .expect("workspace store");
+        let state = AppState::from_config_with_db(
+            config,
+            auth,
+            runtime,
+            oci_storage,
+            workspace_store,
+            db.clone(),
+        )
+        .await;
         let flow_events = state.flow_events.clone();
         let app = nasiko_server::build_app(state, fallback);
 
@@ -402,8 +412,18 @@ impl TestServer {
         let oci_storage: Arc<dyn nasiko_runtime::BlobStore> = Arc::new(
             nasiko_oci::storage::S3Storage::from_env(config.oci_storage_bucket.clone()).await,
         );
-        let state =
-            AppState::from_config_with_db(config, auth, runtime, oci_storage, db.clone()).await;
+        let workspace_store = nasiko_server::workspace::store_from_config(&config)
+            .await
+            .expect("workspace store");
+        let state = AppState::from_config_with_db(
+            config,
+            auth,
+            runtime,
+            oci_storage,
+            workspace_store,
+            db.clone(),
+        )
+        .await;
         let flow_events = state.flow_events.clone();
 
         let app = nasiko_server::build_app(state, fallback);
@@ -527,6 +547,7 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         coding_agent_idle_ttl_secs: 0,
         coding_agent_turn_lease_secs: 60,
         coding_agent_lease_heartbeat_secs: 20,
+        coding_agent_command: vec!["opencode".to_owned(), "acp".to_owned()],
         github_client_id: None,
         github_client_secret: None,
         router_shortlist_threshold: 15,
@@ -597,6 +618,14 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         // oauth callback test already sets to an HTTPS test domain — no
         // separate override needed for that test to keep passing.
         mcp_oauth_redirect_base_url: None,
+        // The derived default: a `workspace/` prefix in the test OCI bucket,
+        // reached with the `S3_*` MinIO credentials set above.
+        workspace_store_url: "s3://nasiko-test-artifacts/workspace".into(),
+        workspace_store_shares_oci_s3: true,
+        workspace_transfer_mode: "auto".into(),
+        workspace_upload_ttl_secs: 900,
+        workspace_sweep_interval_secs: 60,
+        workspace_mcp_url: None,
         composio_callback_base_url: None,
         mcp_session_ttl_seconds: 300,
         mcp_perm_cache_ttl_seconds: 30,

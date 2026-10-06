@@ -22,6 +22,10 @@ pub struct AppState {
     pub db: PgPool,
     pub redis: redis::Client,
     pub oci_storage: Arc<dyn nasiko_runtime::BlobStore>,
+    /// Where workspace artifacts live. Received, not constructed, for the same
+    /// reason `oci_storage` is: which backend is in play is a composition-root
+    /// decision, and the default one shares the OCI bucket's credentials.
+    pub workspace_store: Arc<dyn nasiko_workspace_store::WorkspaceObjectStore>,
     pub usage_tracker: UsageTracker,
     pub http_client: reqwest::Client,
     pub auth: Arc<dyn AuthService>,
@@ -111,11 +115,12 @@ impl AppState {
         auth: Arc<dyn AuthService>,
         runtime: Arc<dyn ContainerRuntime>,
         oci_storage: Arc<dyn nasiko_runtime::BlobStore>,
+        workspace_store: Arc<dyn nasiko_workspace_store::WorkspaceObjectStore>,
     ) -> Self {
         let db = PgPool::connect(&config.database_url)
             .await
             .unwrap_or_else(|e| panic!("{}", pg_connect_error_message(&config.database_url, &e)));
-        Self::from_config_with_db(config, auth, runtime, oci_storage, db).await
+        Self::from_config_with_db(config, auth, runtime, oci_storage, workspace_store, db).await
     }
 
     pub async fn run_migrations(db: &PgPool) {
@@ -141,6 +146,7 @@ impl AppState {
         auth: Arc<dyn AuthService>,
         runtime: Arc<dyn ContainerRuntime>,
         oci_storage: Arc<dyn nasiko_runtime::BlobStore>,
+        workspace_store: Arc<dyn nasiko_workspace_store::WorkspaceObjectStore>,
         db: PgPool,
     ) -> Self {
         let redis = redis::Client::open(config.redis_url.as_str()).expect("invalid redis url");
@@ -279,6 +285,7 @@ impl AppState {
             db,
             redis,
             oci_storage,
+            workspace_store,
             usage_tracker,
             resource_stats,
             http_client,

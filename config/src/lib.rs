@@ -145,6 +145,12 @@ pub struct Config {
     /// `coding_agent_turn_lease_secs` so a live turn never lets its own lock
     /// lapse mid-turn.
     pub coding_agent_lease_heartbeat_secs: u64,
+    /// The command the control plane execs per session inside a coding-agent
+    /// container to launch the agent in ACP mode (space-separated in
+    /// `CODING_AGENT_COMMAND`, default `opencode acp`). One value for now since
+    /// OpenCode is the only supported ACP agent; a per-agent command can move to
+    /// the catalog row when more agent types are added.
+    pub coding_agent_command: Vec<String>,
     pub github_client_id: Option<String>,
     pub github_client_secret: Option<String>,
     /// Multi-tenant mode (per-CP): when on, this control plane runs behind the
@@ -290,6 +296,25 @@ pub struct Config {
     /// Public URL of the MCP gateway, injected into every deployed agent as
     /// `MCP_GATEWAY_URL`. When unset, no MCP env is injected at deploy time.
     pub mcp_gateway_public_url: Option<String>,
+    /// Where workspace artifacts live: `s3://bucket[/prefix]`, `gs://bucket[/prefix]`,
+    /// `az://container[/prefix]` or `file:///path`. Unset means a `workspace/` prefix
+    /// inside the OCI bucket, so a single-node install needs nothing new.
+    pub workspace_store_url: String,
+    /// True when `workspace_store_url` is that derived default on an S3 provider, and
+    /// therefore reaches the same bucket the OCI store does. Only then do the `S3_*`
+    /// settings apply to it; an explicit URL authenticates from the provider's own
+    /// standard environment (`AWS_*`, `GOOGLE_*`, `AZURE_*`).
+    pub workspace_store_shares_oci_s3: bool,
+    /// How workspace bytes move: `auto` picks presigned URLs when the backend can
+    /// sign and the deployment says clients can reach it, else the relay.
+    pub workspace_transfer_mode: String,
+    /// How long a begun upload stays claimable before the sweeper abandons it.
+    pub workspace_upload_ttl_secs: u64,
+    /// How often the workspace sweeper runs (expiry, retention, orphan GC).
+    pub workspace_sweep_interval_secs: u64,
+    /// Loopback URL the MCP gateway dials for the in-process workspace server;
+    /// derived from the bind address when unset.
+    pub workspace_mcp_url: Option<String>,
     /// Base URL for the generic-connector OAuth 2.1 browser redirect
     /// (`{base}/oauth/callback`), distinct from `mcp_gateway_public_url` on
     /// purpose: that value is told to agent *containers* (may be a
@@ -555,6 +580,11 @@ impl Config {
             coding_agent_idle_ttl_secs: env_parse("CODING_AGENT_IDLE_TTL_SECS", 0),
             coding_agent_turn_lease_secs: env_parse("CODING_AGENT_TURN_LEASE_SECS", 60),
             coding_agent_lease_heartbeat_secs: env_parse("CODING_AGENT_LEASE_HEARTBEAT_SECS", 20),
+            coding_agent_command: std::env::var("CODING_AGENT_COMMAND")
+                .ok()
+                .map(|s| s.split_whitespace().map(str::to_owned).collect::<Vec<_>>())
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| vec!["opencode".to_owned(), "acp".to_owned()]),
             github_client_id: std::env::var("GITHUB_CLIENT_ID").ok(),
             github_client_secret: std::env::var("GITHUB_CLIENT_SECRET").ok(),
             multi_tenant_mode: std::env::var("MULTI_TENANT_MODE")
@@ -657,6 +687,26 @@ impl Config {
                 .ok()
                 .filter(|s| !s.is_empty()),
             mcp_gateway_public_url: std::env::var("MCP_GATEWAY_PUBLIC_URL")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            workspace_store_url: std::env::var("WORKSPACE_STORE_URL")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| {
+                    format!(
+                        "s3://{}/workspace",
+                        env_or("OCI_STORAGE_BUCKET", "nasiko-artifacts")
+                    )
+                }),
+            workspace_store_shares_oci_s3: std::env::var("WORKSPACE_STORE_URL")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .is_none()
+                && uses_s3_storage(&env_or("STORAGE_PROVIDER", "s3")),
+            workspace_transfer_mode: env_or("WORKSPACE_TRANSFER_MODE", "auto"),
+            workspace_upload_ttl_secs: env_parse("WORKSPACE_UPLOAD_TTL_SECS", 900),
+            workspace_sweep_interval_secs: env_parse("WORKSPACE_SWEEP_INTERVAL_SECS", 60),
+            workspace_mcp_url: std::env::var("WORKSPACE_MCP_URL")
                 .ok()
                 .filter(|s| !s.is_empty()),
             mcp_oauth_redirect_base_url: std::env::var("MCP_OAUTH_REDIRECT_BASE_URL")

@@ -47,6 +47,7 @@ pub mod titling;
 pub mod transcribe;
 pub mod usage;
 pub mod users;
+pub mod workspace;
 
 use axum::handler::Handler;
 use axum::http::Method;

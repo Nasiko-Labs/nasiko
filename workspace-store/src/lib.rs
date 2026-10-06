@@ -19,7 +19,7 @@ use futures::Stream;
 
 mod backend;
 
-pub use backend::build_from_url;
+pub use backend::{build_from_url, build_from_url_with};
 
 /// Object bytes in order; the stream ends at the first error.
 pub type ByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, WorkspaceStoreError>> + Send>>;
@@ -44,6 +44,44 @@ pub struct PutOptions {
     pub content_type: Option<String>,
     /// Full header value, e.g. `attachment; filename="report.pdf"`.
     pub content_disposition: Option<String>,
+}
+
+/// Explicit S3-compatible connection settings. Applied to an `s3://` store when
+/// supplied, overriding the `AWS_*` environment; other schemes ignore them.
+///
+/// `secret_access_key` is a secret, so `Debug` redacts it rather than deriving it
+/// — a config struct that carries a credential must not leak it into a log line.
+#[derive(Clone, Default)]
+pub struct S3Settings {
+    /// Endpoint URL, e.g. `http://localhost:9000`. `None` leaves the builder's
+    /// own resolution (`AWS_ENDPOINT`, else the public AWS endpoint) in place.
+    pub endpoint: Option<String>,
+    /// Access key id.
+    pub access_key_id: Option<String>,
+    /// Secret access key. Never printed by `Debug`.
+    pub secret_access_key: Option<String>,
+    /// Region, e.g. `us-east-1`. S3-compatible stores still require one.
+    pub region: Option<String>,
+    /// `true` addresses the bucket as `endpoint/bucket/key`. MinIO and RustFS
+    /// require it; AWS and DigitalOcean Spaces accept either. `None` leaves
+    /// `object_store`'s own default (path-style) and its
+    /// `AWS_VIRTUAL_HOSTED_STYLE_REQUEST` in charge.
+    pub force_path_style: Option<bool>,
+}
+
+impl std::fmt::Debug for S3Settings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("S3Settings")
+            .field("endpoint", &self.endpoint)
+            .field("access_key_id", &self.access_key_id)
+            .field(
+                "secret_access_key",
+                &self.secret_access_key.as_ref().map(|_| "<redacted>"),
+            )
+            .field("region", &self.region)
+            .field("force_path_style", &self.force_path_style)
+            .finish()
+    }
 }
 
 /// Why a store operation did not complete. Variants are what a caller

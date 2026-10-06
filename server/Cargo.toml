@@ -21,6 +21,7 @@ nasiko-mcp-gateway.workspace = true
 nasiko-secrets.workspace = true
 nasiko-github = { workspace = true }
 nasiko-oci.workspace = true
+nasiko-workspace-store.workspace = true
 nasiko-pricing.workspace = true
 nasiko-runtime = { workspace = true, features = ["docker", "simulated"] }
 nasiko-react-agent.workspace = true

@@ -18,7 +18,8 @@ use reqwest::Method;
 use url::Url;
 
 use crate::{
-    ByteStream, KeyStream, ObjectMeta, PutOptions, WorkspaceObjectStore, WorkspaceStoreError,
+    ByteStream, KeyStream, ObjectMeta, PutOptions, S3Settings, WorkspaceObjectStore,
+    WorkspaceStoreError,
 };
 
 /// Multipart part size: above S3's 5 MiB minimum for non-final parts, and the
@@ -66,11 +67,26 @@ pub struct ObjectStoreBackend {
 pub async fn build_from_url(
     url: &str,
 ) -> Result<Box<dyn WorkspaceObjectStore>, WorkspaceStoreError> {
+    build_from_url_with(url, None).await
+}
+
+/// [`build_from_url`], with explicit S3 settings that override the `AWS_*`
+/// environment for an `s3://` store. Every other scheme ignores `s3` and
+/// authenticates from its own standard environment exactly as above.
+///
+/// This exists because the embedded OCI registry reads its credentials from
+/// `S3_ENDPOINT`/`S3_ACCESS_KEY`/`S3_SECRET_KEY`/`S3_REGION`, which
+/// `AmazonS3Builder::from_env` does not look at. A store derived to sit inside
+/// the OCI bucket would otherwise resolve to the right bucket with no
+/// credentials, so its composition root bridges them here.
+pub async fn build_from_url_with(
+    url: &str,
+    s3: Option<&S3Settings>,
+) -> Result<Box<dyn WorkspaceObjectStore>, WorkspaceStoreError> {
     let parsed = Url::parse(url).map_err(|e| WorkspaceStoreError::InvalidUrl(e.to_string()))?;
     let backend = match parsed.scheme() {
         "s3" => ObjectStoreBackend::cloud(
-            AmazonS3Builder::from_env()
-                .with_url(url)
+            apply_s3_settings(AmazonS3Builder::from_env().with_url(url), s3)
                 .build()
                 .map_err(invalid_url)?,
             &parsed,
@@ -105,6 +121,38 @@ pub async fn build_from_url(
         }
     };
     Ok(Box::new(backend))
+}
+
+/// Overlays whichever settings were supplied onto an `AmazonS3Builder` that has
+/// already read the environment, so each `None` field leaves the `AWS_*` value
+/// in place. `force_path_style` is expressed as `with_virtual_hosted_style_request`,
+/// its inverse; left `None`, `object_store`'s own default (path-style, which is
+/// what MinIO and RustFS need) and `AWS_VIRTUAL_HOSTED_STYLE_REQUEST` stay in
+/// charge. An `http://` endpoint also enables plaintext, since a MinIO on
+/// localhost is otherwise refused.
+fn apply_s3_settings(mut builder: AmazonS3Builder, s3: Option<&S3Settings>) -> AmazonS3Builder {
+    let Some(s3) = s3 else {
+        return builder;
+    };
+    if let Some(endpoint) = &s3.endpoint {
+        builder = builder.with_endpoint(endpoint);
+        if endpoint.starts_with("http://") {
+            builder = builder.with_allow_http(true);
+        }
+    }
+    if let Some(key) = &s3.access_key_id {
+        builder = builder.with_access_key_id(key);
+    }
+    if let Some(secret) = &s3.secret_access_key {
+        builder = builder.with_secret_access_key(secret);
+    }
+    if let Some(region) = &s3.region {
+        builder = builder.with_region(region);
+    }
+    if let Some(path_style) = s3.force_path_style {
+        builder = builder.with_virtual_hosted_style_request(!path_style);
+    }
+    builder
 }
 
 /// The URL path after the bucket, as a key prefix; `None` when there is none.
@@ -577,5 +625,69 @@ mod tests {
                 "{url} must be rejected"
             );
         }
+    }
+
+    /// A secret distinctive enough that a `Debug` leak cannot hide in the
+    /// surrounding field names.
+    const TEST_SECRET: &str = "sk-workspace-must-never-be-printed";
+
+    /// The settings a shared-bucket deployment bridges. Building a client does
+    /// no I/O, so these stay hermetic.
+    fn minio_settings() -> S3Settings {
+        S3Settings {
+            endpoint: Some("http://127.0.0.1:1".into()),
+            access_key_id: Some("a".into()),
+            secret_access_key: Some(TEST_SECRET.into()),
+            region: Some("us-east-1".into()),
+            force_path_style: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn explicit_s3_settings_build_a_client() {
+        build_from_url_with("s3://b/p", Some(&minio_settings()))
+            .await
+            .expect("explicit settings must configure an s3 store");
+    }
+
+    #[tokio::test]
+    async fn virtual_hosted_addressing_is_accepted_too() {
+        // object_store validates the combination at build time, so this proves
+        // the call is accepted and not merely that it type-checks.
+        let settings = S3Settings {
+            force_path_style: Some(false),
+            ..minio_settings()
+        };
+        build_from_url_with("s3://b/p", Some(&settings))
+            .await
+            .expect("virtual-hosted addressing must configure an s3 store");
+    }
+
+    #[tokio::test]
+    async fn s3_settings_are_ignored_by_other_schemes() {
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("file://{}", dir.path().display());
+        build_from_url_with(&url, Some(&minio_settings()))
+            .await
+            .expect("a filesystem store must ignore s3 settings, not fail on them");
+    }
+
+    #[test]
+    fn debug_does_not_print_the_secret() {
+        let rendered = format!("{:?}", minio_settings());
+        assert!(
+            !rendered.contains(TEST_SECRET),
+            "the secret leaked: {rendered}"
+        );
+        assert!(
+            rendered.contains("<redacted>"),
+            "the secret must be redacted: {rendered}"
+        );
+        // The other fields are not secret and stay legible, or the redaction
+        // would have cost the type its usefulness in a log line.
+        assert!(
+            rendered.contains("127.0.0.1:1") && rendered.contains("us-east-1"),
+            "non-secret fields must survive: {rendered}"
+        );
     }
 }
