@@ -11,11 +11,15 @@ use object_store::local::LocalFileSystem;
 use object_store::path::Path;
 use object_store::prefix::PrefixStore;
 use object_store::signer::Signer;
-use object_store::{GetOptions, GetRange, ObjectStore, WriteMultipart};
+use object_store::{
+    Attribute, Attributes, GetOptions, GetRange, ObjectStore, PutMultipartOpts, WriteMultipart,
+};
 use reqwest::Method;
 use url::Url;
 
-use crate::{ByteStream, KeyStream, ObjectMeta, WorkspaceObjectStore, WorkspaceStoreError};
+use crate::{
+    ByteStream, KeyStream, ObjectMeta, PutOptions, WorkspaceObjectStore, WorkspaceStoreError,
+};
 
 /// Multipart part size: above S3's 5 MiB minimum for non-final parts, and the
 /// unit of memory one upload buffers.
@@ -37,6 +41,10 @@ pub struct ObjectStoreBackend {
     /// Key prefix from the store URL's path. Signers work on the raw bucket,
     /// so signed URLs apply it explicitly.
     prefix: Option<Path>,
+    /// Whether uploads may carry object attributes. `LocalFileSystem` rejects
+    /// any with `NotImplemented` rather than ignoring them, so the backend
+    /// drops them itself to keep `put_stream_with` portable.
+    stores_attributes: bool,
 }
 
 /// Builds the store for `s3://bucket[/prefix]`, `gs://bucket[/prefix]`,
@@ -45,33 +53,42 @@ pub struct ObjectStoreBackend {
 /// `AWS_ENDPOINT`, `AWS_ALLOW_HTTP`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
 /// and `AWS_REGION`. The filesystem backend cannot presign, so every transfer
 /// on it is relayed.
+///
+/// Presigning needs a credential that can sign, which is narrower than one
+/// that can read and write: S3 signs with static keys or any credential
+/// provider the builder resolves (env, web identity, instance metadata); GCS
+/// with a service-account key, or through IAM `signBlob` when the credential
+/// carries no private key (application-default or metadata-server
+/// credentials); Azure with an account key, or an AAD bearer token via a user
+/// delegation key. An Azure SAS token or skip-signature mode cannot sign and
+/// fails at call time with [`WorkspaceStoreError::Backend`] — the server's
+/// probe should treat that as "relay", not as a transient fault.
 pub async fn build_from_url(
     url: &str,
 ) -> Result<Box<dyn WorkspaceObjectStore>, WorkspaceStoreError> {
     let parsed = Url::parse(url).map_err(|e| WorkspaceStoreError::InvalidUrl(e.to_string()))?;
-    let prefix = key_prefix(&parsed);
     let backend = match parsed.scheme() {
-        "s3" => with_signer(
+        "s3" => ObjectStoreBackend::cloud(
             AmazonS3Builder::from_env()
                 .with_url(url)
                 .build()
                 .map_err(invalid_url)?,
-            prefix,
-        ),
-        "gs" => with_signer(
+            &parsed,
+        )?,
+        "gs" => ObjectStoreBackend::cloud(
             GoogleCloudStorageBuilder::from_env()
                 .with_url(url)
                 .build()
                 .map_err(invalid_url)?,
-            prefix,
-        ),
-        "az" | "azure" | "abfs" => with_signer(
+            &parsed,
+        )?,
+        "az" | "azure" | "abfs" => ObjectStoreBackend::cloud(
             MicrosoftAzureBuilder::from_env()
                 .with_url(url)
                 .build()
                 .map_err(invalid_url)?,
-            prefix,
-        ),
+            &parsed,
+        )?,
         "file" => {
             let dir = parsed.to_file_path().map_err(|()| {
                 WorkspaceStoreError::InvalidUrl("file:// needs an absolute path".into())
@@ -79,7 +96,7 @@ pub async fn build_from_url(
             std::fs::create_dir_all(&dir)
                 .map_err(|e| WorkspaceStoreError::Backend(e.to_string()))?;
             let fs = LocalFileSystem::new_with_prefix(dir).map_err(invalid_url)?;
-            ObjectStoreBackend::new(Arc::new(fs), None, None)
+            ObjectStoreBackend::filesystem(fs)
         }
         other => {
             return Err(WorkspaceStoreError::InvalidUrl(format!(
@@ -90,16 +107,48 @@ pub async fn build_from_url(
     Ok(Box::new(backend))
 }
 
-/// Backends that both store and sign share one handle for both roles.
-fn with_signer<S: ObjectStore + Signer>(store: S, prefix: Option<Path>) -> ObjectStoreBackend {
-    let store = Arc::new(store);
-    ObjectStoreBackend::new(store.clone(), Some(store), prefix)
+/// The URL path after the bucket, as a key prefix; `None` when there is none.
+/// Validated like a key, so a prefix the store would rewrite is refused up
+/// front rather than scattering objects under a name nobody asked for.
+fn key_prefix(url: &Url) -> Result<Option<Path>, WorkspaceStoreError> {
+    let path = url.path().strip_prefix('/').unwrap_or(url.path());
+    let prefix = prefix_path(path)
+        .map_err(|err| WorkspaceStoreError::InvalidUrl(format!("path prefix: {err}")))?;
+    Ok((!prefix.as_ref().is_empty()).then_some(prefix))
 }
 
-/// The URL path after the bucket, as a key prefix; `None` when there is none.
-fn key_prefix(url: &Url) -> Option<Path> {
-    let path = url.path().trim_matches('/');
-    (!path.is_empty()).then(|| Path::from(path))
+/// Parses `key` as a store path without rewriting it. `object_store`'s lenient
+/// `Path::from` percent-encodes some characters and collapses or strips
+/// slashes, which stores an object under a different name than the one later
+/// looked up or listed; a key it would alter is rejected instead.
+fn object_path(key: &str) -> Result<Path, WorkspaceStoreError> {
+    let invalid = |reason: String| WorkspaceStoreError::InvalidKey {
+        key: key.to_owned(),
+        reason,
+    };
+    if key.is_empty() {
+        return Err(invalid("empty".into()));
+    }
+    let path = Path::parse(key).map_err(|e| invalid(e.to_string()))?;
+    if path.as_ref() != key {
+        return Err(invalid("leading or trailing '/'".into()));
+    }
+    if Path::from(key).as_ref() != key {
+        return Err(invalid(
+            "contains a character object_store would percent-encode".into(),
+        ));
+    }
+    Ok(path)
+}
+
+/// A listing prefix is a key, optionally with the trailing `/` a directory
+/// style prefix naturally carries; empty means the whole store.
+fn prefix_path(prefix: &str) -> Result<Path, WorkspaceStoreError> {
+    let prefix = prefix.strip_suffix('/').unwrap_or(prefix);
+    if prefix.is_empty() {
+        return Ok(Path::default());
+    }
+    object_path(prefix)
 }
 
 fn invalid_url(err: object_store::Error) -> WorkspaceStoreError {
@@ -113,26 +162,51 @@ fn map_err(err: object_store::Error, key: &str) -> WorkspaceStoreError {
     }
 }
 
+/// The attribute set `opts` asks for, in `object_store`'s terms.
+fn attributes(opts: PutOptions) -> Attributes {
+    let mut attributes = Attributes::new();
+    if let Some(content_type) = opts.content_type {
+        attributes.insert(Attribute::ContentType, content_type.into());
+    }
+    if let Some(disposition) = opts.content_disposition {
+        attributes.insert(Attribute::ContentDisposition, disposition.into());
+    }
+    attributes
+}
+
 impl ObjectStoreBackend {
-    fn new(
-        inner: Arc<dyn ObjectStore>,
-        signer: Option<Arc<dyn Signer>>,
-        prefix: Option<Path>,
-    ) -> Self {
-        let store: Arc<dyn ObjectStore> = match &prefix {
+    /// A cloud backend: one handle both stores and signs, scoped to the URL's
+    /// path prefix when it has one.
+    fn cloud<S: ObjectStore + Signer>(store: S, url: &Url) -> Result<Self, WorkspaceStoreError> {
+        let prefix = key_prefix(url)?;
+        let store = Arc::new(store);
+        let inner: Arc<dyn ObjectStore> = store.clone();
+        let scoped: Arc<dyn ObjectStore> = match &prefix {
             Some(prefix) => Arc::new(PrefixStore::new(inner, prefix.clone())),
             None => inner,
         };
-        Self {
-            store,
-            signer,
+        Ok(Self {
+            store: scoped,
+            signer: Some(store),
             prefix,
+            stores_attributes: true,
+        })
+    }
+
+    /// The filesystem backend: cannot sign, and rejects object attributes
+    /// rather than ignoring them. Its directory is already the root, so no
+    /// prefix applies.
+    fn filesystem(fs: LocalFileSystem) -> Self {
+        Self {
+            store: Arc::new(fs),
+            signer: None,
+            prefix: None,
+            stores_attributes: false,
         }
     }
 
     /// The bucket-level location of `key`, for signers that bypass `PrefixStore`.
-    fn signed_location(&self, key: &str) -> Path {
-        let key = Path::from(key);
+    fn signed_location(&self, key: Path) -> Path {
         match &self.prefix {
             Some(prefix) => prefix.parts().chain(key.parts()).collect(),
             None => key,
@@ -145,14 +219,25 @@ impl ObjectStoreBackend {
         key: &str,
         ttl: Duration,
     ) -> Result<Url, WorkspaceStoreError> {
+        let location = self.signed_location(object_path(key)?);
         let signer = self
             .signer
             .as_ref()
             .ok_or(WorkspaceStoreError::Unsupported(CANNOT_PRESIGN))?;
         signer
-            .signed_url(method, &self.signed_location(key), ttl)
+            .signed_url(method, &location, ttl)
             .await
             .map_err(|e| map_err(e, key))
+    }
+
+    /// The attributes an upload sends: none on a backend that would reject
+    /// them, so `put_stream_with` behaves the same everywhere.
+    fn upload_attributes(&self, opts: PutOptions) -> Attributes {
+        if self.stores_attributes {
+            attributes(opts)
+        } else {
+            Attributes::default()
+        }
     }
 }
 
@@ -195,15 +280,21 @@ fn byte_range(range: Range<u64>) -> GetRange {
 
 #[async_trait]
 impl WorkspaceObjectStore for ObjectStoreBackend {
-    async fn put_stream(
+    async fn put_stream_with(
         &self,
         key: &str,
         body: ByteStream,
         len: Option<u64>,
+        opts: PutOptions,
     ) -> Result<ObjectMeta, WorkspaceStoreError> {
+        let path = object_path(key)?;
+        let multipart_opts = PutMultipartOpts {
+            attributes: self.upload_attributes(opts),
+            ..PutMultipartOpts::default()
+        };
         let upload = self
             .store
-            .put_multipart(&Path::from(key))
+            .put_multipart_opts(&path, multipart_opts)
             .await
             .map_err(|e| map_err(e, key))?;
         let mut writer = WriteMultipart::new_with_chunk_size(upload, PART_SIZE);
@@ -228,13 +319,14 @@ impl WorkspaceObjectStore for ObjectStoreBackend {
         key: &str,
         range: Option<Range<u64>>,
     ) -> Result<ByteStream, WorkspaceStoreError> {
+        let path = object_path(key)?;
         let options = GetOptions {
             range: range.map(byte_range),
             ..GetOptions::default()
         };
         let result = self
             .store
-            .get_opts(&Path::from(key), options)
+            .get_opts(&path, options)
             .await
             .map_err(|e| map_err(e, key))?;
         let key = key.to_owned();
@@ -244,7 +336,8 @@ impl WorkspaceObjectStore for ObjectStoreBackend {
     }
 
     async fn head(&self, key: &str) -> Result<Option<ObjectMeta>, WorkspaceStoreError> {
-        match self.store.head(&Path::from(key)).await {
+        let path = object_path(key)?;
+        match self.store.head(&path).await {
             Ok(meta) => Ok(Some(ObjectMeta {
                 size: meta.size as u64,
                 etag: meta.e_tag,
@@ -255,19 +348,20 @@ impl WorkspaceObjectStore for ObjectStoreBackend {
     }
 
     async fn delete(&self, key: &str) -> Result<(), WorkspaceStoreError> {
-        match self.store.delete(&Path::from(key)).await {
+        let path = object_path(key)?;
+        match self.store.delete(&path).await {
             Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
             Err(err) => Err(map_err(err, key)),
         }
     }
 
     async fn list_prefix(&self, prefix: &str) -> Result<KeyStream, WorkspaceStoreError> {
+        let path = prefix_path(prefix)?;
         // `ObjectStore::list` borrows the store for the stream's lifetime; the
         // generator owns a handle so the returned stream is self-contained.
         let store = Arc::clone(&self.store);
         let prefix = prefix.to_owned();
         Ok(Box::pin(async_stream::stream! {
-            let path = Path::from(prefix.as_str());
             let mut entries = store.list(Some(&path));
             while let Some(entry) = entries.next().await {
                 yield entry.map(|meta| meta.location.to_string()).map_err(|e| map_err(e, &prefix));
@@ -276,7 +370,7 @@ impl WorkspaceObjectStore for ObjectStoreBackend {
     }
 
     async fn delete_prefix(&self, prefix: &str) -> Result<u64, WorkspaceStoreError> {
-        let path = Path::from(prefix);
+        let path = prefix_path(prefix)?;
         let locations = self
             .store
             .list(Some(&path))
@@ -285,8 +379,14 @@ impl WorkspaceObjectStore for ObjectStoreBackend {
         let mut deleted = self.store.delete_stream(locations);
         let mut count = 0u64;
         while let Some(result) = deleted.next().await {
-            result.map_err(|e| map_err(e, prefix))?;
-            count += 1;
+            match result {
+                Ok(_) => count += 1,
+                // Gone since it was listed — another sweeper got there first.
+                // Absence is the goal, so this is neither an error nor a
+                // deletion of ours.
+                Err(object_store::Error::NotFound { .. }) => {}
+                Err(err) => return Err(map_err(err, prefix)),
+            }
         }
         Ok(count)
     }
@@ -315,5 +415,60 @@ impl WorkspaceObjectStore for ObjectStoreBackend {
 
     fn supports_presigned(&self) -> bool {
         self.signer.is_some()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn is_invalid_key(result: Result<Path, WorkspaceStoreError>) -> bool {
+        matches!(result, Err(WorkspaceStoreError::InvalidKey { .. }))
+    }
+
+    #[test]
+    fn valid_keys_parse_verbatim() {
+        for key in ["workspace/x/y/blobs/z", "a", "a.b/c-d_e", "with space/f"] {
+            let path = object_path(key).unwrap_or_else(|e| panic!("{key}: {e}"));
+            assert_eq!(path.as_ref(), key);
+        }
+    }
+
+    #[test]
+    fn keys_object_store_would_rewrite_are_rejected() {
+        for key in [
+            "a%b", "a//b", "/a", "a/", "", "a/../b", "a/./b", "a#b", "a?b", "résumé",
+        ] {
+            assert!(is_invalid_key(object_path(key)), "{key:?} must be rejected");
+        }
+    }
+
+    #[test]
+    fn prefixes_allow_one_trailing_slash_and_empty_means_root() {
+        assert_eq!(prefix_path("workspace/p/").unwrap().as_ref(), "workspace/p");
+        assert_eq!(prefix_path("workspace/p").unwrap().as_ref(), "workspace/p");
+        assert_eq!(prefix_path("").unwrap().as_ref(), "");
+        assert_eq!(prefix_path("/").unwrap().as_ref(), "");
+        assert!(is_invalid_key(prefix_path("workspace//p/")));
+        assert!(is_invalid_key(prefix_path("workspace/p//")));
+    }
+
+    #[test]
+    fn url_path_prefix_is_validated_like_a_key() {
+        let prefix = |url: &str| key_prefix(&Url::parse(url).expect("url"));
+        assert_eq!(prefix("s3://bucket").unwrap(), None);
+        assert_eq!(prefix("s3://bucket/").unwrap(), None);
+        assert_eq!(
+            prefix("s3://bucket/team/a/")
+                .unwrap()
+                .map(|p| p.to_string()),
+            Some("team/a".into())
+        );
+        for url in ["s3://bucket/a%20b", "s3://bucket//a", "s3://bucket/a//b"] {
+            assert!(
+                matches!(prefix(url), Err(WorkspaceStoreError::InvalidUrl(_))),
+                "{url} must be rejected"
+            );
+        }
     }
 }

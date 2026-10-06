@@ -3,14 +3,18 @@
 //! endpoint when `WORKSPACE_TEST_S3_URL` is set (e.g. `s3://nasiko-workspace-test`
 //! with `AWS_ENDPOINT`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
 //! `AWS_ALLOW_HTTP=true` in the env — MinIO, RustFS or real S3).
+//!
+//! Eleven tests are shared and run on every fixture; two are S3-only and skip
+//! loudly (see `s3_url`) when the env is unset; one is filesystem-only.
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use futures::StreamExt;
 use nasiko_workspace_store::{
-    ByteStream, WorkspaceObjectStore, WorkspaceStoreError, build_from_url,
+    ByteStream, PutOptions, WorkspaceObjectStore, WorkspaceStoreError, build_from_url,
 };
+use reqwest::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
 use tempfile::TempDir;
 
 const S3_URL_ENV: &str = "WORKSPACE_TEST_S3_URL";
@@ -22,14 +26,18 @@ struct Fixture {
     _tempdir: Option<TempDir>,
 }
 
-async fn fixtures() -> Vec<Fixture> {
+async fn filesystem_fixture() -> Fixture {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let file_url = format!("file://{}", tempdir.path().display());
-    let mut fixtures = vec![Fixture {
+    Fixture {
         store: build_from_url(&file_url).await.expect("filesystem store"),
         name: file_url,
         _tempdir: Some(tempdir),
-    }];
+    }
+}
+
+async fn fixtures() -> Vec<Fixture> {
+    let mut fixtures = vec![filesystem_fixture().await];
     if let Ok(url) = std::env::var(S3_URL_ENV) {
         fixtures.push(Fixture {
             store: build_from_url(&url).await.expect("s3 store"),
@@ -40,8 +48,14 @@ async fn fixtures() -> Vec<Fixture> {
     fixtures
 }
 
+/// `None` skips an S3-only test — loudly, so a run without the env never
+/// looks like a pass of something it never exercised.
 fn s3_url() -> Option<String> {
-    std::env::var(S3_URL_ENV).ok()
+    let url = std::env::var(S3_URL_ENV).ok();
+    if url.is_none() {
+        eprintln!("skipped: {S3_URL_ENV} not set");
+    }
+    url
 }
 
 /// Unique per process and per call, so parallel tests never share a key.
@@ -156,6 +170,87 @@ async fn declared_length_mismatch_is_rejected_without_storing() {
     }
 }
 
+/// Attributes ride on every backend's upload; only a signing backend can
+/// prove it serves them back, through the URL a direct-mode download uses.
+#[tokio::test]
+async fn upload_attributes_are_accepted_everywhere_and_served_where_signed() {
+    for Fixture { name, store, .. } in fixtures().await {
+        let key = format!("workspace/t/{}/blobs/{}", unique(), unique());
+        let opts = PutOptions {
+            content_type: Some("text/plain".into()),
+            content_disposition: Some("attachment; filename=\"a.txt\"".into()),
+        };
+
+        store
+            .put_stream_with(
+                &key,
+                stream_of(vec![Bytes::from_static(b"attr")]),
+                Some(4),
+                opts,
+            )
+            .await
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(store.head(&key).await.unwrap().unwrap().size, 4, "{name}");
+        let got = collect(store.get_stream(&key, None).await.unwrap())
+            .await
+            .unwrap();
+        assert_eq!(got, b"attr", "{name}");
+
+        if store.supports_presigned() {
+            let url = store
+                .presigned_get_url(&key, Duration::from_secs(60), None)
+                .await
+                .unwrap();
+            let response = reqwest::get(url).await.unwrap();
+            assert!(
+                response.status().is_success(),
+                "{name}: {}",
+                response.status()
+            );
+            let header = |name| response.headers().get(name).and_then(|v| v.to_str().ok());
+            assert_eq!(header(CONTENT_TYPE), Some("text/plain"), "{name}");
+            assert_eq!(
+                header(CONTENT_DISPOSITION),
+                Some("attachment; filename=\"a.txt\""),
+                "{name}"
+            );
+        }
+
+        store.delete(&key).await.unwrap();
+    }
+}
+
+/// A key `object_store` would percent-encode is refused outright: neither the
+/// key as given nor its encoded spelling may come into existence.
+#[tokio::test]
+async fn keys_the_store_would_rewrite_are_rejected_not_stored() {
+    for Fixture { name, store, .. } in fixtures().await {
+        let prefix = format!("workspace/t/{}/", unique());
+        let key = format!("{prefix}blobs/a%b");
+
+        let err = store
+            .put_stream(&key, stream_of(vec![Bytes::from_static(b"x")]), Some(1))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, WorkspaceStoreError::InvalidKey { .. }),
+            "{name}: {err}"
+        );
+        assert!(
+            matches!(
+                store.head(&key).await,
+                Err(WorkspaceStoreError::InvalidKey { .. })
+            ),
+            "{name}"
+        );
+        let mut listing = store.list_prefix(&prefix).await.unwrap();
+        assert!(
+            listing.next().await.is_none(),
+            "{name}: nothing may exist under the prefix, encoded spelling included"
+        );
+    }
+}
+
 #[tokio::test]
 async fn ranged_get_returns_only_the_requested_bytes() {
     for Fixture { name, store, .. } in fixtures().await {
@@ -248,6 +343,43 @@ async fn list_and_delete_prefix() {
         );
         store.delete(&sibling).await.unwrap();
     }
+}
+
+/// Filesystem only: two sweepers racing over one prefix. Keys the slower one
+/// finds already gone are skipped, so both sweeps succeed and nothing
+/// survives. The counts stay advisory — every key is deleted at least once,
+/// but a filesystem may report success to both racing unlinks (macOS does).
+/// S3's bulk delete reports a missing key as deleted, so it stays out.
+#[tokio::test]
+async fn racing_prefix_sweeps_both_succeed_and_leave_nothing() {
+    let fixture = filesystem_fixture().await;
+    let store = &fixture.store;
+    let prefix = format!("workspace/p/{}/", unique());
+    const KEYS: u64 = 16;
+    for i in 0..KEYS {
+        store
+            .put_stream(
+                &format!("{prefix}blobs/{i}"),
+                stream_of(vec![Bytes::from_static(b"x")]),
+                Some(1),
+            )
+            .await
+            .unwrap();
+    }
+
+    let (first, second) = tokio::join!(store.delete_prefix(&prefix), store.delete_prefix(&prefix));
+    let first = first.unwrap_or_else(|e| panic!("first sweep: {e}"));
+    let second = second.unwrap_or_else(|e| panic!("second sweep: {e}"));
+
+    assert!(
+        first + second >= KEYS,
+        "every key is deleted at least once ({first} + {second})"
+    );
+    let mut remaining = store.list_prefix(&prefix).await.unwrap();
+    assert!(
+        remaining.next().await.is_none(),
+        "nothing may survive the sweeps"
+    );
 }
 
 #[tokio::test]

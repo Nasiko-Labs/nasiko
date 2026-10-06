@@ -129,10 +129,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # ─── AWS ────────────────────────────────────────────────────────────────────
 aws-sdk-s3 = "1"
 aws-config = "1"
-# Cloud-agnostic object storage: one client for S3-compatible stores, Azure
-# Blob and GCS, whose `Signer` impls presign URLs so signing needs no vendor
-# SDK. `nasiko-workspace-store` selects a backend by URL; the Kubernetes
-# build-context push and the Azure Blob `BlobStore` reuse the same crate.
+# Cloud-agnostic object storage for `nasiko-workspace-store`: S3-compatible,
+# GCS and Azure Blob clients selected by URL, whose `Signer` impls presign URLs
+# without a vendor SDK.
 object_store = { version = "0.10", features = ["aws", "azure", "gcp"] }
 
 # ─── Crypto ─────────────────────────────────────────────────────────────────
