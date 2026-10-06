@@ -146,6 +146,20 @@ fn object_path(key: &str) -> Result<Path, WorkspaceStoreError> {
     if key.split('/').any(|segment| segment != segment.trim()) {
         return Err(invalid("segment has leading or trailing whitespace".into()));
     }
+    // The filesystem backend resolves a key through a `file://` URL, and the
+    // URL's file-path builder reads a segment ending in an ASCII letter and
+    // ':' as a Windows drive specification, appending a '/' that makes the key
+    // a directory. S3 would store that key verbatim, so refusing it keeps a
+    // valid key one that round-trips identically on every backend.
+    if key.split('/').any(|segment| {
+        segment
+            .strip_suffix(':')
+            .is_some_and(|stem| stem.ends_with(|c: char| c.is_ascii_alphabetic()))
+    }) {
+        return Err(invalid(
+            "segment ends in what a file URL reads as a drive letter".into(),
+        ));
+    }
     Ok(path)
 }
 
@@ -450,15 +464,22 @@ mod tests {
 
     #[test]
     fn valid_keys_parse_verbatim() {
-        for key in ["workspace/x/y/blobs/z", "a", "a.b/c-d_e", "with space/f"] {
+        for key in [
+            "workspace/x/y/blobs/z",
+            "a",
+            "a.b/c-d_e",
+            "with space/f",
+            "blobs/a:b",
+        ] {
             let path = object_path(key).unwrap_or_else(|e| panic!("{key}: {e}"));
             assert_eq!(path.as_ref(), key);
         }
     }
 
     /// Each of these is rewritten somewhere on the way to storage:
-    /// `object_store` percent-encodes or normalises most of them, and an S3
-    /// listing trims whitespace off the ends of a segment.
+    /// `object_store` percent-encodes or normalises most of them, an S3
+    /// listing trims whitespace off the ends of a segment, and a file URL
+    /// turns a segment ending in a drive letter into a directory.
     #[test]
     fn keys_object_store_would_rewrite_are_rejected() {
         for key in [
@@ -475,6 +496,9 @@ mod tests {
             "trail ",
             " lead",
             "a/trail /b",
+            "blobs/xy:",
+            "c:",
+            "a/b:/c",
         ] {
             assert!(is_invalid_key(object_path(key)), "{key:?} must be rejected");
         }
@@ -490,6 +514,34 @@ mod tests {
         assert!(is_invalid_key(prefix_path("workspace/p//")));
     }
 
+    /// The whole-store refusal is `delete_prefix`'s own, taken before the
+    /// prefix is parsed: `prefix_path("")` resolves to the store root, so this
+    /// check is all that stands between one call and an empty bucket — one
+    /// shared with the image registry in the default layout.
+    #[tokio::test]
+    async fn delete_prefix_refuses_the_whole_store() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = build_from_url(&format!("file://{}", dir.path().display()))
+            .await
+            .expect("filesystem store");
+        for prefix in ["", "/"] {
+            assert!(
+                matches!(
+                    store.delete_prefix(prefix).await,
+                    Err(WorkspaceStoreError::InvalidKey { .. })
+                ),
+                "{prefix:?} must be refused"
+            );
+        }
+        assert_eq!(
+            prefix_path("")
+                .expect("the empty prefix is the store root")
+                .as_ref(),
+            "",
+            "the refusal is delete_prefix's own, not the prefix parser's"
+        );
+    }
+
     #[test]
     fn url_path_prefix_is_validated_like_a_key() {
         let prefix = |url: &str| key_prefix(&Url::parse(url).expect("url"));
@@ -501,7 +553,12 @@ mod tests {
                 .map(|p| p.to_string()),
             Some("team/a".into())
         );
-        for url in ["s3://bucket/a%20b", "s3://bucket//a", "s3://bucket/a//b"] {
+        for url in [
+            "s3://bucket/a%20b",
+            "s3://bucket//",
+            "s3://bucket//a",
+            "s3://bucket/a//b",
+        ] {
             assert!(
                 matches!(prefix(url), Err(WorkspaceStoreError::InvalidUrl(_))),
                 "{url} must be rejected"

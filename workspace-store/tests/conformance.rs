@@ -4,7 +4,7 @@
 //! with `AWS_ENDPOINT`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
 //! `AWS_ALLOW_HTTP=true` in the env — MinIO, RustFS or real S3).
 //!
-//! Eleven tests are shared and run on every fixture; two are S3-only and, when
+//! Twelve tests are shared and run on every fixture; two are S3-only and, when
 //! the env is unset, print a `skipped:` line of their own straight to the
 //! process's stderr (see `s3_url`), which libtest's capture does not swallow,
 //! so a default `cargo test` run shows it; one is filesystem-only.
@@ -54,11 +54,17 @@ async fn fixtures() -> Vec<Fixture> {
 /// `None` skips an S3-only test — loudly, so a run without the env never
 /// looks like a pass of something it never exercised. libtest captures
 /// `eprintln!` from a passing test and prints nothing, so the line goes to the
-/// stderr descriptor directly, which the capture does not intercept.
+/// stderr descriptor directly, which the capture does not intercept. It is
+/// formatted first and written once, so the line cannot be split: the stderr
+/// lock does not exclude libtest's writes to the stdout handle, and a line
+/// emitted in several syscalls comes out interleaved. Whole, it can still
+/// land mid-line, because libtest writes a result's status word and the
+/// newline after it separately — so match the line as a substring, not as a
+/// whole line.
 fn s3_url() -> Option<String> {
     let url = std::env::var(S3_URL_ENV).ok();
     if url.is_none() {
-        let _ = writeln!(std::io::stderr(), "skipped: {S3_URL_ENV} not set");
+        let _ = std::io::stderr().write_all(format!("skipped: {S3_URL_ENV} not set\n").as_bytes());
     }
     url
 }
@@ -228,12 +234,15 @@ async fn upload_attributes_are_accepted_everywhere_and_served_where_signed() {
 /// A key the store would rewrite is refused outright: neither the key as given
 /// nor its rewritten spelling may come into existence. `object_store`
 /// percent-encodes `%`; S3 stores a whitespace-padded segment verbatim but
-/// lists it trimmed, so the object would outlive every sweep of its prefix.
+/// lists it trimmed, so the object would outlive every sweep of its prefix;
+/// and a segment ending in an ASCII letter and `:` is a Windows drive
+/// specification to the filesystem backend's file URL, which resolves the key
+/// to a directory. Each would round-trip on some backends and not others.
 #[tokio::test]
 async fn keys_the_store_would_rewrite_are_rejected_not_stored() {
     for Fixture { name, store, .. } in fixtures().await {
         let prefix = format!("workspace/t/{}/", unique());
-        for suffix in ["blobs/a%b", "blobs/trail ", "blobs/ lead"] {
+        for suffix in ["blobs/a%b", "blobs/trail ", "blobs/ lead", "blobs/xy:"] {
             let key = format!("{prefix}{suffix}");
 
             let err = store
@@ -257,6 +266,45 @@ async fn keys_the_store_would_rewrite_are_rejected_not_stored() {
             listing.next().await.is_none(),
             "{name}: nothing may exist under the prefix, rewritten spellings included"
         );
+    }
+}
+
+/// The two prefix methods read the empty prefix differently, and both
+/// readings are contract: it lists the whole store, and it is refused for
+/// deletion — as is `"/"`, which is not a key. The store's default home is a
+/// prefix inside the bucket that also holds the image registry, so a sweep
+/// that widened to everything would take the images with it.
+#[tokio::test]
+async fn the_whole_store_lists_but_is_never_swept() {
+    for Fixture { name, store, .. } in fixtures().await {
+        let key = format!("workspace/t/{}/blobs/{}", unique(), unique());
+        store
+            .put_stream(&key, stream_of(vec![Bytes::from_static(b"keep")]), Some(4))
+            .await
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+
+        for prefix in ["", "/"] {
+            let err = store.delete_prefix(prefix).await.err().unwrap_or_else(|| {
+                panic!("{name}: delete_prefix({prefix:?}) must refuse the whole store")
+            });
+            assert!(
+                matches!(err, WorkspaceStoreError::InvalidKey { .. }),
+                "{name}/{prefix:?}: {err}"
+            );
+        }
+        assert!(
+            store.head(&key).await.unwrap().is_some(),
+            "{name}: a refused sweep must delete nothing"
+        );
+
+        let mut listing = store.list_prefix("").await.unwrap();
+        let mut listed = false;
+        while let Some(entry) = listing.next().await {
+            listed |= entry.unwrap() == key;
+        }
+        assert!(listed, "{name}: the empty prefix lists the whole store");
+
+        store.delete(&key).await.unwrap();
     }
 }
 
