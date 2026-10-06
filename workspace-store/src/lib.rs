@@ -80,12 +80,17 @@ pub enum WorkspaceStoreError {
 /// by the catalog; the store never interprets them.
 ///
 /// Key invariant: a key is `/`-joined, non-empty segments of ASCII, with no
-/// leading or trailing `/`, no `.` or `..` segment, and none of the characters
-/// `object_store` percent-encodes: `%`, `#`, `[`, `]`, `{`, `}`, `^`, `~`,
-/// `<`, `>`, `|`, `\`, `"`, `*`, `?`, the backtick and control characters.
-/// Every backend then stores and lists a valid key verbatim. A key outside
-/// that set is rejected with [`WorkspaceStoreError::InvalidKey`], never
-/// rewritten. A prefix is a key, optionally with a trailing `/`.
+/// leading or trailing `/`, no `.` or `..` segment, no leading or trailing
+/// whitespace in a segment (S3 lists such a segment trimmed, under a name the
+/// object was never stored with), and none of the characters `object_store`
+/// percent-encodes: `%`, `#`, `[`, `]`, `{`, `}`, `^`, `~`, `<`, `>`, `|`,
+/// `\`, `"`, `*`, `?`, the backtick and control characters — exactly the set
+/// `object_store`'s lenient `Path::from` would percent-encode, which is what
+/// the code checks, not this list. Every backend then stores and lists a
+/// valid key verbatim. A key outside that set is rejected with
+/// [`WorkspaceStoreError::InvalidKey`], never rewritten. A prefix is a key,
+/// optionally with a trailing `/`; the empty string is the one prefix that is
+/// not a key, and it means the whole store.
 #[async_trait]
 pub trait WorkspaceObjectStore: Send + Sync {
     /// [`Self::put_stream_with`] with no attributes.
@@ -126,11 +131,14 @@ pub trait WorkspaceObjectStore: Send + Sync {
     /// Idempotent: deleting a missing key succeeds.
     async fn delete(&self, key: &str) -> Result<(), WorkspaceStoreError>;
 
-    /// Every key under `prefix`. GC and delete-my-data only — never on a
-    /// request path.
+    /// Every key under `prefix`, or every key in the store when `prefix` is
+    /// empty. GC and delete-my-data only — never on a request path.
     async fn list_prefix(&self, prefix: &str) -> Result<KeyStream, WorkspaceStoreError>;
 
-    /// Deletes every key under `prefix`; returns how many were deleted. A key
+    /// Deletes every key under `prefix`; returns how many were deleted. An
+    /// empty prefix is rejected with [`WorkspaceStoreError::InvalidKey`]
+    /// rather than read as the whole store: every sweep names an agent or a
+    /// user subtree, so no single call can wipe the store. A key
     /// that disappears between listing and deletion (two sweepers racing) is
     /// skipped, not an error, and is left uncounted when the backend reports
     /// its absence. The count is advisory: S3's bulk delete reports a missing

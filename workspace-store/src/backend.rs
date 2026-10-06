@@ -138,17 +138,33 @@ fn object_path(key: &str) -> Result<Path, WorkspaceStoreError> {
             "contains a character object_store would percent-encode".into(),
         ));
     }
+    // An S3 listing is XML, and an XML parser trims the text before an end
+    // tag, so a segment padded with whitespace is listed under a shorter name
+    // than it was stored with: `head` on the listed key misses, and a prefix
+    // sweep deletes that shorter name and leaves the object behind. Refusing
+    // the key keeps "every backend stores and lists a valid key verbatim" true.
+    if key.split('/').any(|segment| segment != segment.trim()) {
+        return Err(invalid("segment has leading or trailing whitespace".into()));
+    }
     Ok(path)
 }
 
 /// A listing prefix is a key, optionally with the trailing `/` a directory
-/// style prefix naturally carries; empty means the whole store.
+/// style prefix naturally carries. Only the empty string means the whole
+/// store: `"/"` is not a key, so a prefix built from an empty component
+/// cannot silently widen to everything.
 fn prefix_path(prefix: &str) -> Result<Path, WorkspaceStoreError> {
-    let prefix = prefix.strip_suffix('/').unwrap_or(prefix);
     if prefix.is_empty() {
         return Ok(Path::default());
     }
-    object_path(prefix)
+    let stripped = prefix.strip_suffix('/').unwrap_or(prefix);
+    if stripped.is_empty() {
+        return Err(WorkspaceStoreError::InvalidKey {
+            key: prefix.to_owned(),
+            reason: "a prefix is a key with an optional trailing '/'".into(),
+        });
+    }
+    object_path(stripped)
 }
 
 fn invalid_url(err: object_store::Error) -> WorkspaceStoreError {
@@ -370,6 +386,12 @@ impl WorkspaceObjectStore for ObjectStoreBackend {
     }
 
     async fn delete_prefix(&self, prefix: &str) -> Result<u64, WorkspaceStoreError> {
+        if prefix.is_empty() {
+            return Err(WorkspaceStoreError::InvalidKey {
+                key: prefix.to_owned(),
+                reason: "a sweep names a subtree; the whole store is not one".into(),
+            });
+        }
         let path = prefix_path(prefix)?;
         let locations = self
             .store
@@ -434,10 +456,25 @@ mod tests {
         }
     }
 
+    /// Each of these is rewritten somewhere on the way to storage:
+    /// `object_store` percent-encodes or normalises most of them, and an S3
+    /// listing trims whitespace off the ends of a segment.
     #[test]
     fn keys_object_store_would_rewrite_are_rejected() {
         for key in [
-            "a%b", "a//b", "/a", "a/", "", "a/../b", "a/./b", "a#b", "a?b", "résumé",
+            "a%b",
+            "a//b",
+            "/a",
+            "a/",
+            "",
+            "a/../b",
+            "a/./b",
+            "a#b",
+            "a?b",
+            "résumé",
+            "trail ",
+            " lead",
+            "a/trail /b",
         ] {
             assert!(is_invalid_key(object_path(key)), "{key:?} must be rejected");
         }
@@ -448,7 +485,7 @@ mod tests {
         assert_eq!(prefix_path("workspace/p/").unwrap().as_ref(), "workspace/p");
         assert_eq!(prefix_path("workspace/p").unwrap().as_ref(), "workspace/p");
         assert_eq!(prefix_path("").unwrap().as_ref(), "");
-        assert_eq!(prefix_path("/").unwrap().as_ref(), "");
+        assert!(is_invalid_key(prefix_path("/")));
         assert!(is_invalid_key(prefix_path("workspace//p/")));
         assert!(is_invalid_key(prefix_path("workspace/p//")));
     }
