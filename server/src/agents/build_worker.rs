@@ -373,14 +373,9 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
             env,
             writable,
             writable_path,
-            workload_kind,
         } => {
             let mut platform_env = state.agent_env(agent_id).await;
             platform_env.extend(env);
-            // Empty (old job rows) or unrecognized → `Agent`, the pre-existing
-            // behavior.
-            let workload_kind =
-                nasiko_runtime::WorkloadKind::from_db_str(&workload_kind).unwrap_or_default();
             execute_upload_and_deploy(
                 state.runtime.clone(),
                 state.db.clone(),
@@ -403,7 +398,6 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
                 writable,
                 writable_path,
                 state.config.agent_default_memory.clone(),
-                workload_kind,
                 state.agent_deletion_hook.clone(),
             )
             .await;
@@ -794,6 +788,7 @@ fn decrypt_build_secrets(env: &HashMap<String, String>, owner_id: Uuid) -> HashM
 mod tests {
     use super::super::upload::McpBuildSourcePayload;
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn mcp_server_upload_payload_round_trips_through_json() {
@@ -814,7 +809,10 @@ mod tests {
         assert_eq!(payload.label(), restored.label());
     }
 
+    /// Mutates process environment, so it must not overlap another test in
+    /// this binary that sets the same variable.
     #[test]
+    #[serial]
     fn decrypt_build_secrets_recovers_encrypted_values_and_drops_bad_ones() {
         // 32 bytes of 0x41 ('A'), base64-encoded — same fixture value used by
         // oss/server/tests/common/mod.rs's test harness.
