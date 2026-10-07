@@ -20,8 +20,9 @@ use serde_json::{Map, Value, json};
 use super::sse::sse_data_stream;
 use super::{ProviderClient, ProviderError, delta_chunk, finish_chunk, now_unix, usage_chunk};
 use crate::ir::{
-    ChatChunk, ChatRequest, ChatResponse, Choice, Delta, EmbeddingsRequest, EmbeddingsResponse,
-    FunctionCall, FunctionCallDelta, Message, ToolCall, ToolCallDelta, ToolDef, Usage,
+    ChatChunk, ChatRequest, ChatResponse, Choice, ContentPart, ContentView, DataSource, Delta,
+    EmbeddingsRequest, EmbeddingsResponse, FunctionCall, FunctionCallDelta, Message, ToolCall,
+    ToolCallDelta, ToolDef, UnsupportedPart, Usage,
 };
 use crate::resolver::ResolvedConfig;
 
@@ -333,127 +334,62 @@ impl ProviderClient for AnthropicProvider {
 
 // ── OpenAI → Anthropic (request) ─────────────────────────────────────────────
 
-fn parse_data_url(url: &str) -> Option<(&str, &str)> {
-    let without_prefix = url.strip_prefix("data:")?;
-    let (header, data) = without_prefix.split_once(',')?;
-    let media_type = header.strip_suffix(";base64")?;
-    Some((media_type, data))
+/// A part the hub carries but Anthropic cannot, rendered onto this edge's error type.
+fn unsupported(err: UnsupportedPart) -> ProviderError {
+    ProviderError::Status {
+        status: 400,
+        message: err.into_message(),
+        retryable: false,
+    }
 }
 
-fn convert_openai_part_to_anthropic(p: &Value) -> Result<Value, ProviderError> {
-    let part_type = p.get("type").and_then(Value::as_str).unwrap_or_default();
-    match part_type {
-        "text" => {
-            let text = p.get("text").and_then(Value::as_str).unwrap_or_default();
-            Ok(json!({
-                "type": "text",
-                "text": text,
-            }))
-        }
-        "image_url" => {
-            let url = p
-                .get("image_url")
-                .and_then(|u| u.get("url"))
-                .and_then(Value::as_str)
-                .ok_or_else(|| ProviderError::Status {
-                    status: 400,
-                    message: "image_url missing url".to_string(),
-                    retryable: false,
-                })?;
-            if url.starts_with("data:") {
-                let (mime, data) = parse_data_url(url).ok_or_else(|| ProviderError::Status {
-                    status: 400,
-                    message: "invalid base64 data URL in image_url".to_string(),
-                    retryable: false,
-                })?;
-                Ok(json!({
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": mime,
-                        "data": data,
-                    }
-                }))
-            } else if url.starts_with("http://") || url.starts_with("https://") {
-                Ok(json!({
-                    "type": "image",
-                    "source": {
-                        "type": "url",
-                        "url": url,
-                    }
-                }))
-            } else {
-                Err(ProviderError::Status {
-                    status: 400,
-                    message: "unsupported image_url protocol (must be http(s) or base64 data URL)"
-                        .to_string(),
-                    retryable: false,
-                })
-            }
-        }
-        "file" => {
-            if let Some(file_data) = p
-                .get("file")
-                .and_then(|f| f.get("file_data"))
-                .and_then(Value::as_str)
-            {
-                if file_data.starts_with("data:") {
-                    let (mime, data) =
-                        parse_data_url(file_data).ok_or_else(|| ProviderError::Status {
-                            status: 400,
-                            message: "invalid base64 data URL in file_data".to_string(),
-                            retryable: false,
-                        })?;
-                    Ok(json!({
-                        "type": "document",
-                        "source": {
-                            "type": "base64",
-                            "media_type": mime,
-                            "data": data,
-                        }
-                    }))
-                } else if file_data.starts_with("http://") || file_data.starts_with("https://") {
-                    Ok(json!({
-                        "type": "document",
-                        "source": {
-                            "type": "url",
-                            "url": file_data,
-                        }
-                    }))
-                } else {
-                    Err(ProviderError::Status {
-                        status: 400,
-                        message:
-                            "unsupported file_data format (must be http(s) or base64 data URL)"
-                                .to_string(),
-                        retryable: false,
-                    })
-                }
-            } else if p.get("file").and_then(|f| f.get("file_id")).is_some() {
-                Err(ProviderError::Status {
-                    status: 400,
-                    message: "unsupported content part type: 'file.file_id'".to_string(),
-                    retryable: false,
-                })
-            } else {
-                Err(ProviderError::Status {
-                    status: 400,
-                    message: "file part missing file_data".to_string(),
-                    retryable: false,
-                })
-            }
-        }
-        "input_audio" => Err(ProviderError::Status {
-            status: 400,
-            message: "unsupported content part type: 'input_audio'".to_string(),
-            retryable: false,
-        }),
-        other => Err(ProviderError::Status {
-            status: 400,
-            message: format!("unsupported content part type: '{other}'"),
-            retryable: false,
-        }),
+fn empty_user_content() -> ProviderError {
+    ProviderError::Status {
+        status: 400,
+        message: "user message content cannot be empty".to_string(),
+        retryable: false,
     }
+}
+
+/// Anthropic takes bytes inline or by URL, so both [`DataSource`] arms map directly.
+fn anthropic_source(source: &DataSource) -> Value {
+    match source {
+        DataSource::Inline { media_type, data } => json!({
+            "type": "base64",
+            "media_type": media_type,
+            "data": data,
+        }),
+        DataSource::Url(url) => json!({ "type": "url", "url": url }),
+    }
+}
+
+/// Canonical part → Anthropic content block.
+///
+/// The Messages API has no audio input, so audio is refused by name here rather than
+/// dropped — a model answering confidently about audio it never received is the worse
+/// failure. `detail` and `filename` have no Anthropic equivalent and stop at this edge.
+fn anthropic_block(part: &ContentPart) -> Result<Value, UnsupportedPart> {
+    match part {
+        ContentPart::Text(text) => Ok(json!({ "type": "text", "text": text })),
+        ContentPart::Image { source, .. } => Ok(json!({
+            "type": "image",
+            "source": anthropic_source(source),
+        })),
+        ContentPart::File { source, .. } => Ok(json!({
+            "type": "document",
+            "source": anthropic_source(source),
+        })),
+        ContentPart::Audio { .. } => Err(UnsupportedPart::new(
+            "unsupported content part type: 'input_audio'",
+        )),
+    }
+}
+
+fn anthropic_blocks(parts: &[ContentPart]) -> Result<Vec<Value>, ProviderError> {
+    parts
+        .iter()
+        .map(|p| anthropic_block(p).map_err(unsupported))
+        .collect()
 }
 
 fn to_anthropic_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Result<Value, ProviderError> {
@@ -469,16 +405,10 @@ fn to_anthropic_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Result<Value
                 }
             }
             "tool" => {
-                let content_val = match &m.content {
-                    Some(Value::String(s)) => Value::String(s.clone()),
-                    Some(Value::Array(oa_parts)) => {
-                        let mut a_blocks = Vec::new();
-                        for p in oa_parts {
-                            a_blocks.push(convert_openai_part_to_anthropic(p)?);
-                        }
-                        Value::Array(a_blocks)
-                    }
-                    _ => Value::String(String::new()),
+                let content_val = match m.content_view().map_err(unsupported)? {
+                    ContentView::Text(s) => Value::String(s),
+                    ContentView::Parts(parts) => Value::Array(anthropic_blocks(&parts)?),
+                    ContentView::Empty => Value::String(String::new()),
                 };
                 pending_tool_results.push(json!({
                     "type": "tool_result",
@@ -492,38 +422,12 @@ fn to_anthropic_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Result<Value
             }
             _ => {
                 flush_tool_results(&mut pending_tool_results, &mut messages);
-                let content_val = match &m.content {
-                    Some(Value::String(s)) => {
-                        if s.is_empty() {
-                            return Err(ProviderError::Status {
-                                status: 400,
-                                message: "user message content cannot be empty".to_string(),
-                                retryable: false,
-                            });
-                        }
-                        Value::String(s.clone())
+                let content_val = match m.content_view().map_err(unsupported)? {
+                    ContentView::Text(s) if !s.is_empty() => Value::String(s),
+                    ContentView::Parts(parts) if !parts.is_empty() => {
+                        Value::Array(anthropic_blocks(&parts)?)
                     }
-                    Some(Value::Array(oa_parts)) => {
-                        let mut a_blocks = Vec::new();
-                        for p in oa_parts {
-                            a_blocks.push(convert_openai_part_to_anthropic(p)?);
-                        }
-                        if a_blocks.is_empty() {
-                            return Err(ProviderError::Status {
-                                status: 400,
-                                message: "user message content cannot be empty".to_string(),
-                                retryable: false,
-                            });
-                        }
-                        Value::Array(a_blocks)
-                    }
-                    _ => {
-                        return Err(ProviderError::Status {
-                            status: 400,
-                            message: "user message content cannot be empty".to_string(),
-                            retryable: false,
-                        });
-                    }
+                    _ => return Err(empty_user_content()),
                 };
                 messages.push(json!({ "role": "user", "content": content_val }));
             }

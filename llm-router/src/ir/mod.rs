@@ -3,9 +3,13 @@
 
 pub mod chat;
 pub mod embeddings;
+pub mod parts;
 
 pub use chat::{
     CacheCreationUsage, ChatChunk, ChatRequest, ChatResponse, Choice, ChunkChoice, Delta,
     FunctionCall, FunctionCallDelta, FunctionDef, Message, ToolCall, ToolCallDelta, ToolDef, Usage,
 };
 pub use embeddings::{Embedding, EmbeddingsRequest, EmbeddingsResponse};
+pub use parts::{
+    ContentPart, ContentView, DataSource, UnsupportedPart, parts_to_content_value, split_data_url,
+};

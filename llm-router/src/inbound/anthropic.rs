@@ -18,7 +18,10 @@ use serde_json::{Value, json};
 
 use super::{ChatStreamRenderer, InboundParser};
 use crate::error::GatewayError;
-use crate::ir::{ChatChunk, ChatRequest, ChatResponse, EmbeddingsRequest, EmbeddingsResponse};
+use crate::ir::{
+    ChatChunk, ChatRequest, ChatResponse, ContentPart, DataSource, EmbeddingsRequest,
+    EmbeddingsResponse, parts_to_content_value,
+};
 
 pub struct AnthropicInbound;
 
@@ -195,89 +198,69 @@ fn assistant_from_anthropic(content: &Value) -> Value {
     }
 }
 
-fn anthropic_block_to_oa_part(b: &Value) -> Result<Option<Value>, GatewayError> {
+/// Anthropic `source` object → canonical [`DataSource`].
+///
+/// `kind` ("image"/"document") only shapes the error text; the two block types carry an
+/// identical source grammar, which is why they share this.
+fn anthropic_source(
+    b: &Value,
+    kind: &str,
+    default_media_type: &str,
+) -> Result<DataSource, GatewayError> {
+    let source = b
+        .get("source")
+        .ok_or_else(|| GatewayError::BadRequest(format!("{kind} block missing source")))?;
+    match source
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+    {
+        "base64" => {
+            let media_type = source
+                .get("media_type")
+                .and_then(Value::as_str)
+                .unwrap_or(default_media_type);
+            let data = source
+                .get("data")
+                .and_then(Value::as_str)
+                .ok_or_else(|| GatewayError::BadRequest(format!("base64 {kind} missing data")))?;
+            Ok(DataSource::Inline {
+                media_type: media_type.to_string(),
+                data: data.to_string(),
+            })
+        }
+        "url" => {
+            let url = source
+                .get("url")
+                .and_then(Value::as_str)
+                .ok_or_else(|| GatewayError::BadRequest(format!("url {kind} missing url")))?;
+            Ok(DataSource::Url(url.to_string()))
+        }
+        other => Err(GatewayError::BadRequest(format!(
+            "unsupported {kind} source type: '{other}'"
+        ))),
+    }
+}
+
+/// Anthropic content block → canonical part.
+///
+/// `Ok(None)` means "contributes nothing to this turn" — an empty text block, or a
+/// `tool_result`, which the caller lifts into its own `{role:"tool"}` message instead.
+fn anthropic_block_to_part(b: &Value) -> Result<Option<ContentPart>, GatewayError> {
     let block_type = b.get("type").and_then(Value::as_str).unwrap_or_default();
     match block_type {
         "text" => {
-            let t = b.get("text").and_then(Value::as_str).unwrap_or_default();
-            if t.is_empty() {
-                Ok(None)
-            } else {
-                Ok(Some(json!({ "type": "text", "text": t })))
-            }
+            let text = b.get("text").and_then(Value::as_str).unwrap_or_default();
+            Ok((!text.is_empty()).then(|| ContentPart::Text(text.to_string())))
         }
-        "image" => {
-            let source = b.get("source").ok_or_else(|| {
-                GatewayError::BadRequest("image block missing source".to_string())
-            })?;
-            let source_type = source
-                .get("type")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let url = match source_type {
-                "base64" => {
-                    let media_type = source
-                        .get("media_type")
-                        .and_then(Value::as_str)
-                        .unwrap_or("image/jpeg");
-                    let data = source.get("data").and_then(Value::as_str).ok_or_else(|| {
-                        GatewayError::BadRequest("base64 image missing data".to_string())
-                    })?;
-                    format!("data:{media_type};base64,{data}")
-                }
-                "url" => {
-                    let url = source.get("url").and_then(Value::as_str).ok_or_else(|| {
-                        GatewayError::BadRequest("url image missing url".to_string())
-                    })?;
-                    url.to_string()
-                }
-                other => {
-                    return Err(GatewayError::BadRequest(format!(
-                        "unsupported image source type: '{other}'"
-                    )));
-                }
-            };
-            Ok(Some(json!({
-                "type": "image_url",
-                "image_url": { "url": url }
-            })))
-        }
-        "document" => {
-            let source = b.get("source").ok_or_else(|| {
-                GatewayError::BadRequest("document block missing source".to_string())
-            })?;
-            let source_type = source
-                .get("type")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let file_data = match source_type {
-                "base64" => {
-                    let media_type = source
-                        .get("media_type")
-                        .and_then(Value::as_str)
-                        .unwrap_or("application/pdf");
-                    let data = source.get("data").and_then(Value::as_str).ok_or_else(|| {
-                        GatewayError::BadRequest("base64 document missing data".to_string())
-                    })?;
-                    format!("data:{media_type};base64,{data}")
-                }
-                "url" => {
-                    let url = source.get("url").and_then(Value::as_str).ok_or_else(|| {
-                        GatewayError::BadRequest("url document missing url".to_string())
-                    })?;
-                    url.to_string()
-                }
-                other => {
-                    return Err(GatewayError::BadRequest(format!(
-                        "unsupported document source type: '{other}'"
-                    )));
-                }
-            };
-            Ok(Some(json!({
-                "type": "file",
-                "file": { "file_data": file_data }
-            })))
-        }
+        "image" => Ok(Some(ContentPart::Image {
+            source: anthropic_source(b, "image", "image/jpeg")?,
+            detail: None,
+        })),
+        "document" => Ok(Some(ContentPart::File {
+            source: anthropic_source(b, "document", "application/pdf")?,
+            filename: None,
+        })),
         "tool_result" => Ok(None),
         other => Err(GatewayError::BadRequest(format!(
             "unsupported content block type: '{other}'"
@@ -299,7 +282,7 @@ fn append_user_from_anthropic(content: &Value, out: &mut Vec<Value>) -> Result<(
             Ok(())
         }
         Value::Array(blocks) => {
-            let mut user_parts: Vec<Value> = Vec::new();
+            let mut user_parts: Vec<ContentPart> = Vec::new();
             let mut had_tool_result = false;
             for b in blocks {
                 if b.get("type").and_then(Value::as_str) == Some("tool_result") {
@@ -311,19 +294,13 @@ fn append_user_from_anthropic(content: &Value, out: &mut Vec<Value>) -> Result<(
                     let tr_content = match b.get("content") {
                         Some(Value::String(s)) => Value::String(s.clone()),
                         Some(Value::Array(sub_blocks)) => {
-                            let mut sub_parts: Vec<Value> = Vec::new();
+                            let mut sub_parts = Vec::new();
                             for sb in sub_blocks {
-                                if let Some(part) = anthropic_block_to_oa_part(sb)? {
+                                if let Some(part) = anthropic_block_to_part(sb)? {
                                     sub_parts.push(part);
                                 }
                             }
-                            if sub_parts.len() == 1
-                                && sub_parts[0].get("type").and_then(Value::as_str) == Some("text")
-                            {
-                                sub_parts[0]["text"].clone()
-                            } else {
-                                Value::Array(sub_parts)
-                            }
+                            parts_to_content_value(&sub_parts)
                         }
                         _ => Value::String(String::new()),
                     };
@@ -332,18 +309,12 @@ fn append_user_from_anthropic(content: &Value, out: &mut Vec<Value>) -> Result<(
                         "tool_call_id": id,
                         "content": tr_content,
                     }));
-                } else if let Some(part) = anthropic_block_to_oa_part(b)? {
+                } else if let Some(part) = anthropic_block_to_part(b)? {
                     user_parts.push(part);
                 }
             }
             if !user_parts.is_empty() {
-                let content_val = if user_parts.len() == 1
-                    && user_parts[0].get("type").and_then(Value::as_str) == Some("text")
-                {
-                    user_parts[0]["text"].clone()
-                } else {
-                    Value::Array(user_parts)
-                };
+                let content_val = parts_to_content_value(&user_parts);
                 out.push(json!({ "role": "user", "content": content_val }));
             } else if !had_tool_result {
                 return Err(GatewayError::BadRequest(

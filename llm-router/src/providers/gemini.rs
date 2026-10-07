@@ -22,8 +22,9 @@ use serde_json::{Map, Value, json};
 use super::sse::sse_data_stream;
 use super::{ProviderClient, ProviderError, delta_chunk, finish_chunk, now_unix, usage_chunk};
 use crate::ir::{
-    ChatChunk, ChatRequest, ChatResponse, Choice, Delta, Embedding, EmbeddingsRequest,
-    EmbeddingsResponse, FunctionCall, FunctionCallDelta, Message, ToolCall, ToolCallDelta, Usage,
+    ChatChunk, ChatRequest, ChatResponse, Choice, ContentPart, ContentView, DataSource, Delta,
+    Embedding, EmbeddingsRequest, EmbeddingsResponse, FunctionCall, FunctionCallDelta, Message,
+    ToolCall, ToolCallDelta, UnsupportedPart, Usage,
 };
 use crate::resolver::ResolvedConfig;
 
@@ -325,121 +326,57 @@ fn uncached_prompt(prompt: Option<i64>, cached: Option<i64>) -> Option<i64> {
     }
 }
 
-fn parse_data_url(url: &str) -> Option<(&str, &str)> {
-    let rest = url.strip_prefix("data:")?;
-    let (meta, data) = rest.split_once(',')?;
-    let media_type = meta.strip_suffix(";base64")?;
-    Some((media_type, data))
+/// A part the hub carries but Gemini cannot, rendered onto this edge's error type.
+fn unsupported(err: UnsupportedPart) -> ProviderError {
+    ProviderError::Status {
+        status: 400,
+        message: err.into_message(),
+        retryable: false,
+    }
 }
 
-fn convert_openai_part_to_gemini(p: &Value) -> Result<Value, ProviderError> {
-    let part_type = p.get("type").and_then(Value::as_str).unwrap_or_default();
-    match part_type {
-        "text" => {
-            let text = p.get("text").and_then(Value::as_str).unwrap_or_default();
-            Ok(json!({ "text": text }))
-        }
-        "image_url" => {
-            let url = p
-                .get("image_url")
-                .and_then(|iu| iu.get("url"))
-                .and_then(Value::as_str)
-                .ok_or_else(|| ProviderError::Status {
-                    status: 400,
-                    message: "image_url part missing url".to_string(),
-                    retryable: false,
-                })?;
-            if url.starts_with("data:") {
-                let (mime, data) = parse_data_url(url).ok_or_else(|| ProviderError::Status {
-                    status: 400,
-                    message: "invalid base64 data URL in image_url".to_string(),
-                    retryable: false,
-                })?;
-                Ok(json!({
-                    "inlineData": {
-                        "mimeType": mime,
-                        "data": data,
-                    }
-                }))
-            } else {
-                Err(ProviderError::Status {
-                    status: 400,
-                    message: "unsupported content part type: 'image_url' with web URL (Gemini requires base64 data URL)".to_string(),
-                    retryable: false,
-                })
-            }
-        }
-        "file" => {
-            if let Some(file_data) = p
-                .get("file")
-                .and_then(|f| f.get("file_data"))
-                .and_then(Value::as_str)
-            {
-                if file_data.starts_with("data:") {
-                    let (mime, data) =
-                        parse_data_url(file_data).ok_or_else(|| ProviderError::Status {
-                            status: 400,
-                            message: "invalid base64 data URL in file_data".to_string(),
-                            retryable: false,
-                        })?;
-                    Ok(json!({
-                        "inlineData": {
-                            "mimeType": mime,
-                            "data": data,
-                        }
-                    }))
-                } else {
-                    Err(ProviderError::Status {
-                        status: 400,
-                        message: "unsupported file_data format (must be base64 data URL)"
-                            .to_string(),
-                        retryable: false,
-                    })
-                }
-            } else if p.get("file").and_then(|f| f.get("file_id")).is_some() {
-                Err(ProviderError::Status {
-                    status: 400,
-                    message: "unsupported content part type: 'file.file_id'".to_string(),
-                    retryable: false,
-                })
-            } else {
-                Err(ProviderError::Status {
-                    status: 400,
-                    message: "file part missing file_data".to_string(),
-                    retryable: false,
-                })
-            }
-        }
-        "input_audio" => {
-            let audio = p.get("input_audio").ok_or_else(|| ProviderError::Status {
-                status: 400,
-                message: "input_audio part missing data".to_string(),
-                retryable: false,
-            })?;
-            let data =
-                audio
-                    .get("data")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| ProviderError::Status {
-                        status: 400,
-                        message: "input_audio missing base64 data".to_string(),
-                        retryable: false,
-                    })?;
-            let format = audio.get("format").and_then(Value::as_str).unwrap_or("wav");
-            let mime = format!("audio/{format}");
-            Ok(json!({
-                "inlineData": {
-                    "mimeType": mime,
-                    "data": data,
-                }
-            }))
-        }
-        other => Err(ProviderError::Status {
-            status: 400,
-            message: format!("unsupported content part type: '{other}'"),
-            retryable: false,
-        }),
+fn empty_user_content() -> ProviderError {
+    ProviderError::Status {
+        status: 400,
+        message: "user message content cannot be empty".to_string(),
+        retryable: false,
     }
+}
+
+/// Canonical part → Gemini part.
+///
+/// `generateContent` carries media only as `inlineData` bytes — it will not fetch a URL
+/// on the caller's behalf — so every media arm goes through [`DataSource::inline`] and a
+/// URL source is refused here rather than sent as an empty part. That rule belongs to
+/// this spoke: the same URL is perfectly valid on the Anthropic edge.
+fn gemini_part(part: &ContentPart) -> Result<Value, UnsupportedPart> {
+    let inline = |source: &DataSource, message: &str| -> Result<Value, UnsupportedPart> {
+        let (mime, data) = source
+            .inline()
+            .ok_or_else(|| UnsupportedPart::new(message))?;
+        Ok(json!({ "inlineData": { "mimeType": mime, "data": data } }))
+    };
+    match part {
+        ContentPart::Text(text) => Ok(json!({ "text": text })),
+        ContentPart::Image { source, .. } => inline(
+            source,
+            "unsupported content part type: 'image_url' with web URL (Gemini requires base64 data URL)",
+        ),
+        ContentPart::File { source, .. } => inline(
+            source,
+            "unsupported file_data format (must be base64 data URL)",
+        ),
+        ContentPart::Audio { data, format } => Ok(json!({
+            "inlineData": { "mimeType": format!("audio/{format}"), "data": data },
+        })),
+    }
+}
+
+fn gemini_parts(parts: &[ContentPart]) -> Result<Vec<Value>, ProviderError> {
+    parts
+        .iter()
+        .map(|p| gemini_part(p).map_err(unsupported))
+        .collect()
 }
 
 fn to_gemini_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Result<Value, ProviderError> {
@@ -477,38 +414,10 @@ fn to_gemini_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Result<Value, P
             }
             _ => {
                 flush_fn_responses(&mut pending_fn_responses, &mut contents);
-                let parts = match &m.content {
-                    Some(Value::String(s)) => {
-                        if s.is_empty() {
-                            return Err(ProviderError::Status {
-                                status: 400,
-                                message: "user message content cannot be empty".to_string(),
-                                retryable: false,
-                            });
-                        }
-                        vec![json!({ "text": s })]
-                    }
-                    Some(Value::Array(oa_parts)) => {
-                        let mut g_parts = Vec::new();
-                        for p in oa_parts {
-                            g_parts.push(convert_openai_part_to_gemini(p)?);
-                        }
-                        if g_parts.is_empty() {
-                            return Err(ProviderError::Status {
-                                status: 400,
-                                message: "user message content cannot be empty".to_string(),
-                                retryable: false,
-                            });
-                        }
-                        g_parts
-                    }
-                    _ => {
-                        return Err(ProviderError::Status {
-                            status: 400,
-                            message: "user message content cannot be empty".to_string(),
-                            retryable: false,
-                        });
-                    }
+                let parts = match m.content_view().map_err(unsupported)? {
+                    ContentView::Text(s) if !s.is_empty() => vec![json!({ "text": s })],
+                    ContentView::Parts(parts) if !parts.is_empty() => gemini_parts(&parts)?,
+                    _ => return Err(empty_user_content()),
                 };
                 contents.push(json!({
                     "role": "user",

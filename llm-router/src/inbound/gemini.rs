@@ -22,7 +22,8 @@ use serde_json::{Value, json};
 use super::{ChatStreamRenderer, InboundParser};
 use crate::error::GatewayError;
 use crate::ir::{
-    ChatChunk, ChatRequest, ChatResponse, EmbeddingsRequest, EmbeddingsResponse, Usage,
+    ChatChunk, ChatRequest, ChatResponse, ContentPart, DataSource, EmbeddingsRequest,
+    EmbeddingsResponse, Usage, parts_to_content_value,
 };
 
 pub struct GeminiInbound;
@@ -98,7 +99,7 @@ impl InboundParser for GeminiInbound {
                 oa_messages.push(msg);
             } else {
                 // user turn: text parts, inlineData parts, and/or functionResponse parts.
-                let mut user_parts: Vec<Value> = Vec::new();
+                let mut user_parts: Vec<ContentPart> = Vec::new();
                 let mut had_fr = false;
                 for part in parts.into_iter().flatten() {
                     if let Some(fr) = part.get("functionResponse") {
@@ -115,7 +116,7 @@ impl InboundParser for GeminiInbound {
                         }));
                     } else if let Some(t) = part.get("text").and_then(Value::as_str) {
                         if !t.is_empty() {
-                            user_parts.push(json!({ "type": "text", "text": t }));
+                            user_parts.push(ContentPart::Text(t.to_string()));
                         }
                     } else if let Some(inline) = part.get("inlineData") {
                         let mime_type =
@@ -130,21 +131,21 @@ impl InboundParser for GeminiInbound {
                         let data = inline.get("data").and_then(Value::as_str).ok_or_else(|| {
                             GatewayError::BadRequest("inlineData missing data".to_string())
                         })?;
+                        let source = DataSource::Inline {
+                            media_type: mime_type.to_string(),
+                            data: data.to_string(),
+                        };
 
                         if mime_type.starts_with("image/") {
-                            user_parts.push(json!({
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": format!("data:{mime_type};base64,{data}")
-                                }
-                            }));
+                            user_parts.push(ContentPart::Image {
+                                source,
+                                detail: None,
+                            });
                         } else if mime_type == "application/pdf" {
-                            user_parts.push(json!({
-                                "type": "file",
-                                "file": {
-                                    "file_data": format!("data:{mime_type};base64,{data}")
-                                }
-                            }));
+                            user_parts.push(ContentPart::File {
+                                source,
+                                filename: None,
+                            });
                         } else {
                             return Err(GatewayError::BadRequest(format!(
                                 "unsupported inlineData mimeType: '{mime_type}'"
@@ -161,13 +162,7 @@ impl InboundParser for GeminiInbound {
                     }
                 }
                 if !user_parts.is_empty() {
-                    let content = if user_parts.len() == 1
-                        && user_parts[0].get("type").and_then(Value::as_str) == Some("text")
-                    {
-                        user_parts[0]["text"].clone()
-                    } else {
-                        Value::Array(user_parts)
-                    };
+                    let content = parts_to_content_value(&user_parts);
                     oa_messages.push(json!({ "role": "user", "content": content }));
                 } else if !had_fr {
                     return Err(GatewayError::BadRequest(
