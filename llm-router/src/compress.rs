@@ -138,7 +138,8 @@ fn compress_content(
     stats: &mut CompressionStats,
 ) {
     match content {
-        // Anthropic and Gemini inbound always flatten to this shape.
+        // Anthropic and Gemini inbound flatten to this shape for text-only turns;
+        // multimodal turns arrive as part arrays and take the branch below.
         Value::String(s) => compress_str(s, policy, recovery, stats),
 
         // OpenAI inbound preserves whatever the caller sent, including multimodal part arrays.
