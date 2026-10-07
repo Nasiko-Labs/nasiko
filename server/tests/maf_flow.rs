@@ -1379,3 +1379,172 @@ async fn test_run_stepless_workflow_is_400() {
 
     server.cleanup().await;
 }
+
+/// The open-source edition stores only the step fields it defines. A client that
+/// sends more — the branching fields an enterprise server understands, or a stale
+/// `step_index` — gets exactly the workflow it always got: the extras are dropped
+/// on create and on update, and the workflow still runs.
+#[tokio::test]
+#[serial]
+async fn test_extra_step_fields_are_dropped_and_the_workflow_still_runs() {
+    let server = common::TestServer::start().await;
+    let user_id = Uuid::new_v4();
+    seed_user(&server, user_id).await;
+    let agent_id = seed_agent(&server, user_id).await;
+
+    let extra_fields = json!({
+        "name": "Extras",
+        "steps": [
+            { "agent_id": agent_id, "task_description": "first",
+              "node_id": "a", "from": ["__start__"],
+              "to": [{ "node_id": "b", "when": "always" }, { "node_id": "__end__", "when": "never" }] },
+            { "agent_id": agent_id, "task_description": "second", "node_id": "b", "step_index": 9 }
+        ]
+    });
+    let created = auth(
+        server
+            .client
+            .post(server.url("/api/maf/workflows"))
+            .json(&extra_fields),
+        user_id,
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(created.status(), 201);
+    let created: Value = created.json().await.unwrap();
+    let maf_id = created["data"]["id"].as_str().unwrap().to_string();
+
+    let stored_keys = |body: &Value| -> Vec<Vec<String>> {
+        body["data"]["maf_json"]["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| {
+                let mut keys: Vec<String> = s.as_object().unwrap().keys().cloned().collect();
+                keys.sort();
+                keys
+            })
+            .collect()
+    };
+    let expected: Vec<String> = [
+        "agent_endpoint",
+        "agent_id",
+        "agent_name",
+        "step_id",
+        "step_index",
+        "task_description",
+    ]
+    .iter()
+    .map(|k| k.to_string())
+    .collect();
+    assert!(
+        stored_keys(&created).iter().all(|keys| keys == &expected),
+        "only the fields this edition defines are stored: {:?}",
+        stored_keys(&created)
+    );
+    assert_eq!(created["data"]["maf_json"]["steps"][1]["step_index"], 1);
+
+    let updated = auth(
+        server
+            .client
+            .put(server.url(&format!("/api/maf/workflow/{maf_id}")))
+            .json(&json!({ "steps": extra_fields["steps"] })),
+        user_id,
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(updated.status(), 200);
+    let updated: Value = updated.json().await.unwrap();
+    assert!(stored_keys(&updated).iter().all(|keys| keys == &expected));
+
+    let run = auth(
+        server
+            .client
+            .post(server.url(&format!("/api/maf/workflow/{maf_id}/run"))),
+        user_id,
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(run.status(), 202, "no policy gates a run in this edition");
+
+    server.cleanup().await;
+}
+
+/// A step with no trace id never called its agent (a step that didn't run, or
+/// failed before the call), so the usage report doesn't wait on it: only steps
+/// that did call an agent and have no usage yet count as unresolved.
+#[tokio::test]
+#[serial]
+async fn test_usage_counts_only_steps_that_called_an_agent_as_unresolved() {
+    let server = common::TestServer::start_with(|config| {
+        config.observability_enabled = true;
+        config.trace_usage_sync_secs = 3600;
+    })
+    .await;
+    let user_id = Uuid::new_v4();
+    seed_user(&server, user_id).await;
+    let agent_id = seed_agent(&server, user_id).await;
+    let created: Value = auth(
+        server
+            .client
+            .post(server.url("/api/maf/workflows"))
+            .json(&create_maf_body("Usage", agent_id)),
+        user_id,
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    let maf_id: Uuid = created["data"]["id"].as_str().unwrap().parse().unwrap();
+
+    let step = |index: i32| nasiko_orchestrator::maf::types::MafStep {
+        step_id: Uuid::new_v4(),
+        step_index: index,
+        agent_id,
+        agent_name: "MAF Test Agent".to_string(),
+        agent_endpoint: String::new(),
+        task_description: format!("task {index}"),
+        ext: serde_json::Map::new(),
+    };
+    let mut ran = nasiko_orchestrator::maf::executor::pending_result(&step(0));
+    ran.status = "success".to_string();
+    ran.trace_id = Some("0af7651916cd43dd8448eb211c80319c".to_string());
+    let mut never_called = nasiko_orchestrator::maf::executor::pending_result(&step(1));
+    never_called.status = "skipped".to_string();
+    let execution_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO maf_executions (maf_id, user_id, status, max_attempts, maf_json, step_results, completed_at) \
+         VALUES ($1, $2, 'success', 3, '{}'::jsonb, $3::jsonb, now()) RETURNING id",
+    )
+    .bind(maf_id)
+    .bind(user_id)
+    .bind(serde_json::to_string(&vec![ran, never_called]).unwrap())
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+
+    let usage: Value = auth(
+        server
+            .client
+            .get(server.url(&format!("/api/maf/execution/{execution_id}/usage"))),
+        user_id,
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+
+    assert_eq!(usage["data"]["unresolved_steps"], 1, "{usage}");
+    assert_eq!(
+        usage["data"]["complete"], false,
+        "the step that called its agent is still awaited"
+    );
+
+    server.cleanup().await;
+}
