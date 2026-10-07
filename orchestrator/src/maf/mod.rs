@@ -3,8 +3,11 @@ pub mod decomposer;
 pub mod executor;
 pub mod llm;
 pub mod planner;
+pub mod runner;
 pub mod types;
 mod worker;
+
+pub use runner::{LinearMafExecutor, MafExecutor, MafResume, MafRunContext};
 
 /// The Redis stream key this crate's worker consumes from — re-exported so every producer
 /// (`oss/server/src/maf.rs`, `oss/server/src/hitl/mod.rs`) binds to the same constant instead of
@@ -39,6 +42,8 @@ pub fn start_worker(
     flow_guard: Arc<FlowGuard>,
     llm_config: LlmConfig,
     hitl_store: Arc<dyn nasiko_hitl::HitlStore>,
+    // What each job runs through — received from the composition root, like the guard.
+    maf_executor: Arc<dyn MafExecutor>,
 ) {
     let llm = LlmClient::new(
         http_client.clone(),
@@ -53,5 +58,6 @@ pub fn start_worker(
         flow_guard,
         llm,
         hitl_store,
+        maf_executor,
     ));
 }

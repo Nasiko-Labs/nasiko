@@ -11,6 +11,11 @@ pub struct MafStep {
     /// What this step should accomplish — used by the runtime planner to generate
     /// the actual prompt and extraction goal at execution time (Python MAF parity).
     pub task_description: String,
+    /// Fields this crate does not define, kept verbatim for a `MafExecutor` that
+    /// reads them. Empty by default, and an empty map serializes to nothing, so a
+    /// step without extensions stores exactly the JSON it always did.
+    #[serde(flatten)]
+    pub ext: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -89,6 +94,10 @@ pub struct StepResult {
     pub latency_ms: i64,
     pub context: Option<String>,
     pub obs_logs: serde_json::Value,
+    /// Per-step data recorded by a `MafExecutor` beyond the fields above. Same
+    /// contract as `MafStep::ext`: empty unless an executor writes to it.
+    #[serde(flatten)]
+    pub ext: serde_json::Map<String, serde_json::Value>,
 }
 
 fn default_pending_status() -> String {

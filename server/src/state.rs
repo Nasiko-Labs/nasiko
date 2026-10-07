@@ -22,10 +22,6 @@ pub struct AppState {
     pub db: PgPool,
     pub redis: redis::Client,
     pub oci_storage: Arc<dyn nasiko_runtime::BlobStore>,
-    /// Where workspace artifacts live. Received, not constructed, for the same
-    /// reason `oci_storage` is: which backend is in play is a composition-root
-    /// decision, and the default one shares the OCI bucket's credentials.
-    pub workspace_store: Arc<dyn nasiko_workspace_store::WorkspaceObjectStore>,
     pub usage_tracker: UsageTracker,
     pub http_client: reqwest::Client,
     pub auth: Arc<dyn AuthService>,
@@ -40,6 +36,15 @@ pub struct AppState {
     /// `NoOrchestratorPolicy`, which imposes nothing; the EE composition root
     /// replaces it, the same way it replaces `routing_engine`.
     pub orchestrator_policy: Arc<dyn crate::orchestrator_policy::OrchestratorPolicySource>,
+    /// What the MAF worker runs each queued workflow through. OSS wires
+    /// `LinearMafExecutor` (steps in array order); the EE composition root
+    /// replaces it before the app is built, the same way it replaces
+    /// `routing_engine`, so the worker started by the app sees the swap.
+    pub maf_executor: Arc<dyn nasiko_orchestrator::maf::MafExecutor>,
+    /// What the MAF workflow routes consult beyond their own checks when a
+    /// workflow is saved or run. OSS wires `NoMafWorkflowPolicy`, which changes
+    /// nothing; the EE composition root replaces it.
+    pub maf_policy: Arc<dyn crate::maf_policy::MafWorkflowPolicy>,
     /// Supplemental per-agent prompt context (e.g. admin-authored knowledge) added before an
     /// agent runs. OSS default is a no-op; the EE composition root installs the real
     /// implementation through this cell (`SwappablePromptContext::install`, not a plain
@@ -115,12 +120,11 @@ impl AppState {
         auth: Arc<dyn AuthService>,
         runtime: Arc<dyn ContainerRuntime>,
         oci_storage: Arc<dyn nasiko_runtime::BlobStore>,
-        workspace_store: Arc<dyn nasiko_workspace_store::WorkspaceObjectStore>,
     ) -> Self {
         let db = PgPool::connect(&config.database_url)
             .await
             .unwrap_or_else(|e| panic!("{}", pg_connect_error_message(&config.database_url, &e)));
-        Self::from_config_with_db(config, auth, runtime, oci_storage, workspace_store, db).await
+        Self::from_config_with_db(config, auth, runtime, oci_storage, db).await
     }
 
     pub async fn run_migrations(db: &PgPool) {
@@ -146,7 +150,6 @@ impl AppState {
         auth: Arc<dyn AuthService>,
         runtime: Arc<dyn ContainerRuntime>,
         oci_storage: Arc<dyn nasiko_runtime::BlobStore>,
-        workspace_store: Arc<dyn nasiko_workspace_store::WorkspaceObjectStore>,
         db: PgPool,
     ) -> Self {
         let redis = redis::Client::open(config.redis_url.as_str()).expect("invalid redis url");
@@ -185,6 +188,10 @@ impl AppState {
         );
         let orchestrator_policy: Arc<dyn crate::orchestrator_policy::OrchestratorPolicySource> =
             Arc::new(crate::orchestrator_policy::NoOrchestratorPolicy);
+        let maf_executor: Arc<dyn nasiko_orchestrator::maf::MafExecutor> =
+            Arc::new(nasiko_orchestrator::maf::LinearMafExecutor);
+        let maf_policy: Arc<dyn crate::maf_policy::MafWorkflowPolicy> =
+            Arc::new(crate::maf_policy::NoMafWorkflowPolicy);
         let prompt_context = Arc::new(SwappablePromptContext::new(Arc::new(
             crate::prompt_context::NoopPromptContextProvider,
         )));
@@ -285,7 +292,6 @@ impl AppState {
             db,
             redis,
             oci_storage,
-            workspace_store,
             usage_tracker,
             resource_stats,
             http_client,
@@ -297,6 +303,8 @@ impl AppState {
             config: Arc::new(config),
             routing_engine,
             orchestrator_policy,
+            maf_executor,
+            maf_policy,
             prompt_context,
             agent_deletion_hook,
             history_embedding_cache,

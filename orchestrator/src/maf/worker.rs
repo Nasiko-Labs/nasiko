@@ -10,6 +10,7 @@ use uuid::Uuid;
 use super::{
     executor,
     llm::LlmClient,
+    runner::{MafExecutor, MafResume, MafRunContext},
     types::{MafDefinition, PausedStep, StepOutcome, StepResult},
 };
 
@@ -38,6 +39,7 @@ pub async fn run(
     flow_guard: Arc<FlowGuard>,
     llm: LlmClient,
     hitl_store: Arc<dyn HitlStore>,
+    maf_executor: Arc<dyn MafExecutor>,
 ) {
     let consumer = consumer_name();
 
@@ -67,6 +69,7 @@ pub async fn run(
         &flow_guard,
         &llm,
         &hitl_store,
+        &maf_executor,
         &consumer,
     )
     .await;
@@ -104,6 +107,7 @@ pub async fn run(
                             &flow_guard,
                             &llm,
                             &hitl_store,
+                            &maf_executor,
                         )
                         .await;
                     } else {
@@ -258,6 +262,7 @@ async fn process_job(
     flow_guard: &Arc<FlowGuard>,
     llm: &LlmClient,
     hitl_store: &Arc<dyn HitlStore>,
+    maf_executor: &Arc<dyn MafExecutor>,
 ) {
     let execution_id = job.execution_id;
     let user_id = job.user_id;
@@ -325,41 +330,30 @@ async fn process_job(
     // half-updated after a panic — everything panic could interrupt is either `Copy` (`db`,
     // `execution_id`, `user_id`), a fresh owned value about to be dropped and replaced with an
     // `Err`, or (`&mut conn`, held by the caller) untouched by the executor itself.
+    let ctx = MafRunContext {
+        client: http_client,
+        db,
+        flow_guard,
+        llm,
+        execution_id,
+        user_id,
+    };
     let outcome = std::panic::AssertUnwindSafe(async {
         match job.resume {
-            None => {
-                executor::run_maf(
-                    http_client,
-                    db,
-                    flow_guard,
-                    execution_id,
-                    user_id,
-                    &maf_def,
-                    llm,
-                    content.as_deref(),
-                )
-                .await
-            }
+            None => maf_executor.run(&ctx, &maf_def, content.as_deref()).await,
             Some(resume) => match fetch_resume_state(db, execution_id).await {
                 Ok((step_results, tokens_used, cost_used, output_generation)) => {
-                    executor::run_maf_from(
-                        http_client,
-                        db,
-                        flow_guard,
-                        execution_id,
-                        user_id,
-                        &maf_def,
-                        llm,
+                    let resume = MafResume {
                         step_results,
                         tokens_used,
                         cost_used,
                         output_generation,
-                        resume.step_index as usize,
-                        resume.task_id,
-                        execution_id.to_string(),
-                        resume.answer,
-                    )
-                    .await
+                        step_index: resume.step_index as usize,
+                        task_id: resume.task_id,
+                        context_id: execution_id.to_string(),
+                        answer: resume.answer,
+                    };
+                    maf_executor.resume(&ctx, &maf_def, resume).await
                 }
                 Err(e) => Err(format!("failed to load resume state: {e}")),
             },
@@ -644,6 +638,7 @@ async fn re_enqueue(
     let _: redis::RedisResult<String> = xadd.query_async(conn).await;
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn reclaim_pending(
     conn: &mut redis::aio::MultiplexedConnection,
     db: &PgPool,
@@ -651,6 +646,7 @@ async fn reclaim_pending(
     flow_guard: &Arc<FlowGuard>,
     llm: &LlmClient,
     hitl_store: &Arc<dyn HitlStore>,
+    maf_executor: &Arc<dyn MafExecutor>,
     consumer: &str,
 ) {
     let result: redis::RedisResult<redis::Value> = redis::cmd("XAUTOCLAIM")
@@ -702,6 +698,7 @@ async fn reclaim_pending(
                 flow_guard,
                 llm,
                 hitl_store,
+                maf_executor,
             )
             .await;
         }
