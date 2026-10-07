@@ -372,6 +372,34 @@ fn gemini_part(part: &ContentPart) -> Result<Value, UnsupportedPart> {
     }
 }
 
+/// Splits a tool result into the text that goes *inside* `functionResponse.response`
+/// and the media parts that must travel *beside* it.
+///
+/// This is not a straight translation of the Anthropic path. Anthropic's `tool_result`
+/// takes a content-block array, so an image simply goes in it. Gemini's
+/// `functionResponse.response` is plain JSON with nowhere to put bytes, so the text goes
+/// in `response.result` and the media becomes sibling parts of the same turn — which is
+/// where Gemini actually reads them from.
+fn split_tool_result(m: &Message) -> Result<(String, Vec<Value>), ProviderError> {
+    match m.content_view().map_err(unsupported)? {
+        ContentView::Text(text) => Ok((text, Vec::new())),
+        ContentView::Empty => Ok((String::new(), Vec::new())),
+        ContentView::Parts(parts) => {
+            // Text parts concatenate with no separator, matching Message::text().
+            let text = parts
+                .iter()
+                .filter_map(ContentPart::non_empty_text)
+                .collect::<String>();
+            let media = parts
+                .iter()
+                .filter(|p| !matches!(p, ContentPart::Text(_)))
+                .map(|p| gemini_part(p).map_err(unsupported))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok((text, media))
+        }
+    }
+}
+
 fn gemini_parts(parts: &[ContentPart]) -> Result<Vec<Value>, ProviderError> {
     parts
         .iter()
@@ -396,12 +424,17 @@ fn to_gemini_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Result<Value, P
                 let id = m.tool_call_id.clone().unwrap_or_default();
                 // Gemini wants the function name; recover it from the call this answers.
                 let name = id_to_name.get(&id).cloned().unwrap_or(id);
+                let (result, media) = split_tool_result(m)?;
                 pending_fn_responses.push(json!({
                     "functionResponse": {
                         "name": name,
-                        "response": { "result": m.text().unwrap_or_default() }
+                        "response": { "result": result }
                     }
                 }));
+                // Media rides beside the functionResponse, not inside it — see
+                // split_tool_result. flush_fn_responses collects the whole pending run
+                // into one user turn, so these land as siblings of the response.
+                pending_fn_responses.extend(media);
             }
             "assistant" => {
                 flush_fn_responses(&mut pending_fn_responses, &mut contents);
@@ -1046,6 +1079,92 @@ mod tests {
     #[test]
     fn gemini_prompt_count_clamps_instead_of_going_negative() {
         assert_eq!(uncached_prompt(Some(100), Some(640)), Some(0));
+    }
+
+    #[test]
+    fn tool_result_media_rides_beside_the_function_response() {
+        // functionResponse.response is plain JSON with nowhere to put bytes, so the
+        // image has to become a sibling part of the same turn. Before this, m.text()
+        // silently dropped it and Gemini answered about an image it never saw.
+        let req: ChatRequest = serde_json::from_value(json!({
+            "model": "gemini-1.5-pro",
+            "messages": [
+                { "role": "user", "content": "chart it" },
+                { "role": "assistant", "content": null, "tool_calls": [{
+                    "id": "c1", "type": "function",
+                    "function": { "name": "chart", "arguments": "{}" }
+                }]},
+                { "role": "tool", "tool_call_id": "c1", "content": [
+                    { "type": "text", "text": "here is the chart" },
+                    { "type": "image_url", "image_url": { "url": "data:image/png;base64,iVBORw0KGgo=" } }
+                ]}
+            ]
+        }))
+        .unwrap();
+
+        let body = to_gemini_request(&req, &resolved()).unwrap();
+        let parts = body["contents"][2]["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 2, "media must survive as a sibling part");
+        // Text stays inside the response envelope, keyed by function name.
+        assert_eq!(parts[0]["functionResponse"]["name"], "chart");
+        assert_eq!(
+            parts[0]["functionResponse"]["response"]["result"],
+            "here is the chart"
+        );
+        // Bytes ride alongside it.
+        assert_eq!(parts[1]["inlineData"]["mimeType"], "image/png");
+        assert_eq!(parts[1]["inlineData"]["data"], "iVBORw0KGgo=");
+    }
+
+    #[test]
+    fn text_only_tool_results_are_unchanged() {
+        // The common path must keep its exact previous shape: one part, no siblings.
+        let req: ChatRequest = serde_json::from_value(json!({
+            "model": "gemini-1.5-pro",
+            "messages": [
+                { "role": "user", "content": "go" },
+                { "role": "assistant", "content": null, "tool_calls": [{
+                    "id": "c1", "type": "function",
+                    "function": { "name": "one", "arguments": "{}" }
+                }]},
+                { "role": "tool", "tool_call_id": "c1", "content": "done" }
+            ]
+        }))
+        .unwrap();
+
+        let body = to_gemini_request(&req, &resolved()).unwrap();
+        let parts = body["contents"][2]["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0]["functionResponse"]["response"]["result"], "done");
+    }
+
+    #[test]
+    fn unfetchable_tool_result_media_is_refused_rather_than_dropped() {
+        let req: ChatRequest = serde_json::from_value(json!({
+            "model": "gemini-1.5-pro",
+            "messages": [
+                { "role": "user", "content": "go" },
+                { "role": "assistant", "content": null, "tool_calls": [{
+                    "id": "c1", "type": "function",
+                    "function": { "name": "one", "arguments": "{}" }
+                }]},
+                { "role": "tool", "tool_call_id": "c1", "content": [
+                    { "type": "image_url", "image_url": { "url": "https://example.com/c.png" } }
+                ]}
+            ]
+        }))
+        .unwrap();
+
+        let err = to_gemini_request(&req, &resolved()).unwrap_err();
+        match err {
+            ProviderError::Status {
+                status, message, ..
+            } => {
+                assert_eq!(status, 400);
+                assert!(message.contains("web URL"), "{message}");
+            }
+            other => panic!("expected a 400, got {other:?}"),
+        }
     }
 
     #[test]
