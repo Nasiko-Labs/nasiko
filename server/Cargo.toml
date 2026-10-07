@@ -21,7 +21,6 @@ nasiko-mcp-gateway.workspace = true
 nasiko-secrets.workspace = true
 nasiko-github = { workspace = true }
 nasiko-oci.workspace = true
-nasiko-workspace-store.workspace = true
 nasiko-pricing.workspace = true
 nasiko-runtime = { workspace = true, features = ["docker", "simulated"] }
 nasiko-react-agent.workspace = true
@@ -77,7 +76,6 @@ hex = { workspace = true }
 dashmap = { workspace = true }
 async-trait = { workspace = true }
 rand = { workspace = true }
-unicode-normalization = { workspace = true }
 
 # OpenTelemetry
 opentelemetry = { version = "0.28", features = ["metrics"] }

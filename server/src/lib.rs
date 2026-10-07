@@ -15,6 +15,7 @@ pub mod build;
 pub mod capabilities;
 pub mod catalog;
 pub mod chat;
+pub mod coding;
 pub mod coding_agent_otlp;
 pub mod coding_agent_telemetry;
 pub mod context_selection;
@@ -24,7 +25,6 @@ pub mod hitl;
 pub mod llm_configs;
 pub mod llm_router;
 pub mod maf;
-pub mod maf_policy;
 pub mod mcp;
 pub mod multipart_util;
 pub mod observability;
@@ -187,7 +187,6 @@ where
             std::sync::Arc::new(state.flow_guard.clone()),
             llm_config,
             state.hitl_store.clone(),
-            state.maf_executor.clone(),
         );
     } else {
         tracing::warn!(

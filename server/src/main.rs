@@ -116,20 +116,10 @@ async fn main() {
         ),
     };
 
-    let workspace_store = nasiko_server::workspace::store_from_config(&config)
-        .await
-        .unwrap_or_else(|e| panic!("WORKSPACE_STORE_URL={}: {e}", config.workspace_store_url));
-
     nasiko_server::state::AppState::run_migrations(&db).await;
-    let state = nasiko_server::state::AppState::from_config_with_db(
-        config,
-        auth,
-        runtime,
-        oci_storage,
-        workspace_store,
-        db,
-    )
-    .await;
+    let state =
+        nasiko_server::state::AppState::from_config_with_db(config, auth, runtime, oci_storage, db)
+            .await;
     state.init().await;
     // Clear stale coding-agent session leases left by a prior crash, then keep
     // reconciling session rows against live containers in the background.

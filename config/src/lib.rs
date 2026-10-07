@@ -21,21 +21,6 @@ pub struct Config {
     pub s3_access_key: String,
     pub s3_secret_key: String,
     pub s3_region: String,
-    /// `S3_FORCE_PATH_STYLE`: address buckets as `endpoint/bucket/key` rather
-    /// than `bucket.endpoint/key`. Defaults **true** — RustFS/MinIO (every
-    /// in-cluster install) require it, so only an explicit `false`/`0`
-    /// switches to virtual-hosted style.
-    ///
-    /// The canonical statement of that rule is
-    /// `nasiko_oci::storage::force_path_style_from_env`, which the embedded
-    /// registry's own client is built from; the parse is replicated here
-    /// rather than called because `nasiko-config` is a leaf crate and
-    /// depending on `nasiko-oci` would pull the AWS SDK, axum, sqlx and the
-    /// Docker runtime into every crate that reads configuration. **The two
-    /// must not diverge**: in shared mode the workspace object store and the
-    /// registry address the same bucket, so a disagreement here leaves one of
-    /// them on the wrong addressing style.
-    pub s3_force_path_style: bool,
     pub secrets_encryption_key: String,
     pub oci_storage_bucket: String,
     /// Registry prefix prepended to agent image tags at build time.
@@ -311,35 +296,6 @@ pub struct Config {
     /// Public URL of the MCP gateway, injected into every deployed agent as
     /// `MCP_GATEWAY_URL`. When unset, no MCP env is injected at deploy time.
     pub mcp_gateway_public_url: Option<String>,
-    /// Where workspace artifacts live: `s3://bucket[/prefix]`, `gs://bucket[/prefix]`,
-    /// `az://container[/prefix]` or `file:///path`. Unset means a `workspace/` prefix
-    /// inside the OCI bucket, so a single-node install needs nothing new; the scheme
-    /// of that derived default follows `STORAGE_PROVIDER` (`s3://` for every
-    /// S3-compatible store, `az://` for Azure Blob).
-    ///
-    /// Setting this to the exact value the default would have derived is **not** a
-    /// no-op — a plausible thing to pin in a compose file, but any explicit value
-    /// opts out of the `S3_*` credential bridge below, so a working deployment stops
-    /// authenticating. Leave it unset to keep the bridge.
-    pub workspace_store_url: String,
-    /// True when `workspace_store_url` is that derived default on an S3 provider, and
-    /// therefore reaches the same bucket the OCI store does. Only then do the `S3_*`
-    /// settings apply to it; an explicit URL authenticates from the provider's own
-    /// standard environment (`AWS_*`, `GOOGLE_*`, `AZURE_*`), and so does the derived
-    /// `az://` default — Azure needs no bridge, because the OCI container name is all
-    /// the two stores have to agree on.
-    pub workspace_store_shares_oci_s3: bool,
-    /// How workspace bytes move: `auto` picks presigned URLs when the backend can
-    /// sign and the deployment says clients can reach it, else the relay. Validated
-    /// at startup against [`WORKSPACE_TRANSFER_MODES`] and held lowercased.
-    pub workspace_transfer_mode: String,
-    /// How long a begun upload stays claimable before the sweeper abandons it.
-    pub workspace_upload_ttl_secs: u64,
-    /// How often the workspace sweeper runs (expiry, retention, orphan GC).
-    pub workspace_sweep_interval_secs: u64,
-    /// Loopback URL the MCP gateway dials for the in-process workspace server;
-    /// derived from the bind address when unset.
-    pub workspace_mcp_url: Option<String>,
     /// Base URL for the generic-connector OAuth 2.1 browser redirect
     /// (`{base}/oauth/callback`), distinct from `mcp_gateway_public_url` on
     /// purpose: that value is told to agent *containers* (may be a
@@ -523,9 +479,6 @@ impl Config {
                 String::new()
             },
             s3_region: env_or("S3_REGION", "us-east-1"),
-            s3_force_path_style: parse_force_path_style(
-                std::env::var("S3_FORCE_PATH_STYLE").ok().as_deref(),
-            ),
             secrets_encryption_key: required_env("SECRETS_ENCRYPTION_KEY")?,
             oci_storage_bucket: env_or("OCI_STORAGE_BUCKET", "nasiko-artifacts"),
             agent_image_registry: env_or("AGENT_IMAGE_REGISTRY", ""),
@@ -717,29 +670,6 @@ impl Config {
             mcp_gateway_public_url: std::env::var("MCP_GATEWAY_PUBLIC_URL")
                 .ok()
                 .filter(|s| !s.is_empty()),
-            workspace_store_url: std::env::var("WORKSPACE_STORE_URL")
-                .ok()
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| {
-                    derived_workspace_store_url(
-                        &env_or("STORAGE_PROVIDER", "s3"),
-                        &env_or("OCI_STORAGE_BUCKET", "nasiko-artifacts"),
-                    )
-                }),
-            workspace_store_shares_oci_s3: std::env::var("WORKSPACE_STORE_URL")
-                .ok()
-                .filter(|s| !s.is_empty())
-                .is_none()
-                && uses_s3_storage(&env_or("STORAGE_PROVIDER", "s3")),
-            workspace_transfer_mode: parse_transfer_mode(&env_or(
-                "WORKSPACE_TRANSFER_MODE",
-                "auto",
-            ))?,
-            workspace_upload_ttl_secs: env_parse("WORKSPACE_UPLOAD_TTL_SECS", 900),
-            workspace_sweep_interval_secs: env_parse("WORKSPACE_SWEEP_INTERVAL_SECS", 60),
-            workspace_mcp_url: std::env::var("WORKSPACE_MCP_URL")
-                .ok()
-                .filter(|s| !s.is_empty()),
             mcp_oauth_redirect_base_url: std::env::var("MCP_OAUTH_REDIRECT_BASE_URL")
                 .ok()
                 .filter(|s| !s.is_empty()),
@@ -929,60 +859,9 @@ pub fn uses_s3_storage(provider: &str) -> bool {
     )
 }
 
-/// `S3_FORCE_PATH_STYLE`, parsed negatively: only an explicit `false`/`0`
-/// switches path-style addressing off, so a typo'd value cannot silently flip
-/// the default out from under existing stores. Mirrors
-/// `nasiko_oci::storage::force_path_style_from_env`, which is the canonical
-/// rule — see [`Config::s3_force_path_style`] for why it is replicated here
-/// rather than called, and why the two must not diverge.
-fn parse_force_path_style(value: Option<&str>) -> bool {
-    !matches!(value.map(str::trim), Some("false") | Some("0"))
-}
-
-/// Where workspace artifacts live when `WORKSPACE_STORE_URL` is unset: a
-/// `workspace/` prefix inside the OCI bucket, addressed with the scheme the
-/// selected `provider` speaks.
-///
-/// The scheme has to follow the provider. Deriving `s3://` on an Azure Blob
-/// deployment builds an S3 client from an empty `AWS_*` environment, which
-/// does no I/O and therefore boots green; the first workspace write then dies
-/// with an EC2 instance-metadata error naming neither Azure nor the variable
-/// the operator needed to set. The bucket name carries over unchanged because
-/// the enterprise composition root already passes `OCI_STORAGE_BUCKET` to
-/// `nasiko_blob_store::blob_store_from_env` as the Azure *container* name.
-fn derived_workspace_store_url(provider: &str, bucket: &str) -> String {
-    let scheme = if uses_s3_storage(provider) {
-        "s3"
-    } else {
-        "az"
-    };
-    format!("{scheme}://{bucket}/workspace")
-}
-
-/// Every spelling `WORKSPACE_TRANSFER_MODE` accepts.
-const WORKSPACE_TRANSFER_MODES: [&str; 3] = ["auto", "direct", "relay"];
-
-/// Validates `WORKSPACE_TRANSFER_MODE`, normalised to one of
-/// [`WORKSPACE_TRANSFER_MODES`]. Accepting any other string would let a typo
-/// survive startup and silently select whichever branch the transfer selector
-/// falls through to — a failure that surfaces on the first transfer rather
-/// than at boot.
-fn parse_transfer_mode(raw: &str) -> anyhow::Result<String> {
-    let mode = raw.trim().to_ascii_lowercase();
-    if WORKSPACE_TRANSFER_MODES.contains(&mode.as_str()) {
-        return Ok(mode);
-    }
-    anyhow::bail!(
-        "WORKSPACE_TRANSFER_MODE must be one of {}; got {raw:?}",
-        WORKSPACE_TRANSFER_MODES.join(", ")
-    )
-}
-
 #[cfg(test)]
 mod storage_provider_tests {
-    use super::{
-        derived_workspace_store_url, parse_force_path_style, parse_transfer_mode, uses_s3_storage,
-    };
+    use super::uses_s3_storage;
 
     #[test]
     fn s3_credentials_are_required_only_for_an_s3_backend() {
@@ -993,42 +872,5 @@ mod storage_provider_tests {
         // A typo must not silently waive the S3 requirement — the provider
         // parser is what reports it.
         assert!(uses_s3_storage("azureblob"));
-    }
-
-    #[test]
-    fn force_path_style_defaults_true_and_only_explicit_false_disables() {
-        // Must stay identical to `nasiko_oci::storage::force_path_style_from_env`.
-        assert!(parse_force_path_style(None));
-        assert!(parse_force_path_style(Some("true")));
-        assert!(parse_force_path_style(Some("1")));
-        assert!(parse_force_path_style(Some("garbage")));
-        assert!(!parse_force_path_style(Some("false")));
-        assert!(!parse_force_path_style(Some("0")));
-        assert!(!parse_force_path_style(Some(" false ")));
-    }
-
-    #[test]
-    fn the_derived_store_url_follows_the_storage_provider() {
-        assert_eq!(
-            derived_workspace_store_url("s3", "nasiko-artifacts"),
-            "s3://nasiko-artifacts/workspace"
-        );
-        assert_eq!(
-            derived_workspace_store_url("azure-blob", "nasiko-artifacts"),
-            "az://nasiko-artifacts/workspace"
-        );
-    }
-
-    #[test]
-    fn transfer_mode_accepts_the_three_spellings_and_rejects_anything_else() {
-        assert_eq!(parse_transfer_mode("auto").unwrap(), "auto");
-        assert_eq!(parse_transfer_mode(" Direct ").unwrap(), "direct");
-        assert_eq!(parse_transfer_mode("relay").unwrap(), "relay");
-
-        let err = parse_transfer_mode("diract").unwrap_err().to_string();
-        assert!(
-            err.contains("auto, direct, relay"),
-            "the error must name every accepted spelling, got: {err}"
-        );
     }
 }

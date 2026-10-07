@@ -328,18 +328,8 @@ impl TestServer {
         let oci_storage: Arc<dyn nasiko_runtime::BlobStore> = Arc::new(
             nasiko_oci::storage::S3Storage::from_env(config.oci_storage_bucket.clone()).await,
         );
-        let workspace_store = nasiko_server::workspace::store_from_config(&config)
-            .await
-            .expect("workspace store");
-        let state = AppState::from_config_with_db(
-            config,
-            auth,
-            runtime,
-            oci_storage,
-            workspace_store,
-            db.clone(),
-        )
-        .await;
+        let state =
+            AppState::from_config_with_db(config, auth, runtime, oci_storage, db.clone()).await;
         let flow_events = state.flow_events.clone();
         let app = nasiko_server::build_app(state, fallback);
 
@@ -412,18 +402,8 @@ impl TestServer {
         let oci_storage: Arc<dyn nasiko_runtime::BlobStore> = Arc::new(
             nasiko_oci::storage::S3Storage::from_env(config.oci_storage_bucket.clone()).await,
         );
-        let workspace_store = nasiko_server::workspace::store_from_config(&config)
-            .await
-            .expect("workspace store");
-        let state = AppState::from_config_with_db(
-            config,
-            auth,
-            runtime,
-            oci_storage,
-            workspace_store,
-            db.clone(),
-        )
-        .await;
+        let state =
+            AppState::from_config_with_db(config, auth, runtime, oci_storage, db.clone()).await;
         let flow_events = state.flow_events.clone();
 
         let app = nasiko_server::build_app(state, fallback);
@@ -501,7 +481,6 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         s3_access_key: "nasiko".into(),
         s3_secret_key: "nasiko123".into(),
         s3_region: "us-east-1".into(),
-        s3_force_path_style: true,
         secrets_encryption_key: "12345678901234567890123456789012".into(),
         oci_storage_bucket: "nasiko-test-artifacts".into(),
         agent_image_registry: String::new(),
@@ -619,14 +598,6 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         // oauth callback test already sets to an HTTPS test domain — no
         // separate override needed for that test to keep passing.
         mcp_oauth_redirect_base_url: None,
-        // The derived default: a `workspace/` prefix in the test OCI bucket,
-        // reached with the `S3_*` MinIO credentials set above.
-        workspace_store_url: "s3://nasiko-test-artifacts/workspace".into(),
-        workspace_store_shares_oci_s3: true,
-        workspace_transfer_mode: "auto".into(),
-        workspace_upload_ttl_secs: 900,
-        workspace_sweep_interval_secs: 60,
-        workspace_mcp_url: None,
         composio_callback_base_url: None,
         mcp_session_ttl_seconds: 300,
         mcp_perm_cache_ttl_seconds: 30,

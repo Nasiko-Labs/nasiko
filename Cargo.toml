@@ -10,7 +10,6 @@ members = [
     "pricing",
     "savings",
     "runtime",
-    "workspace-store",
     "react-agent",
     "acp-client",
     "session-token",
@@ -59,7 +58,6 @@ nasiko-utils = { path = "utils" }
 nasiko-server = { path = "server" }
 nasiko-coding-policy = { path = "coding-policy" }
 nasiko-oci = { path = "oci" }
-nasiko-workspace-store = { path = "workspace-store" }
 nasiko-llm-router = { path = "llm-router" }
 nasiko-bench-support = { path = "bench-support" }
 
@@ -130,10 +128,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # ─── AWS ────────────────────────────────────────────────────────────────────
 aws-sdk-s3 = "1"
 aws-config = "1"
-# Cloud-agnostic object storage for `nasiko-workspace-store`: S3-compatible,
-# GCS and Azure Blob clients selected by URL, whose `Signer` impls presign URLs
-# without a vendor SDK.
-object_store = { version = "0.10", features = ["aws", "azure", "gcp"] }
 
 # ─── Crypto ─────────────────────────────────────────────────────────────────
 sha2 = "0.10"
@@ -180,10 +174,6 @@ thiserror = "2"
 anyhow = "1"
 base64 = "0.22"
 dotenvy = "0.15"
-url = "2"
-# Unicode NFC for user-supplied text (workspace artifact paths). Already in the
-# lockfile transitively via sqlx → stringprep, so declaring it compiles no new crate.
-unicode-normalization = "0.1"
 
 # ─── Embedding / registry ──────────────────────────────────────────────────
 rust-embed = { version = "8", features = ["mime-guess", "include-exclude", "interpolate-folder-path"] }
