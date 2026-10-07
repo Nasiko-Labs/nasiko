@@ -284,17 +284,25 @@ fn unwrap_agents(raw: serde_json::Value) -> Result<Vec<AgentRecord>> {
 /// Used by `nasiko chat -a <target>` so callers can pass a name instead of a
 /// full proxy URL.
 pub fn resolve_chat_target(target: &str) -> Result<String> {
+    resolve_chat_target_with_kind(target).map(|(url, _)| url)
+}
+
+/// Like [`resolve_chat_target`], but also returns the resolved agent's
+/// `workload_kind` (e.g. `acp_coding_agent`) so `chat` can label it and the
+/// `--coding-agent` guardrail can assert on it. The kind is `None` for a raw URL
+/// or the orchestrator endpoint (neither resolves to a single catalog agent).
+pub fn resolve_chat_target_with_kind(target: &str) -> Result<(String, Option<String>)> {
     if target.starts_with("http://") || target.starts_with("https://") {
-        return Ok(target.to_string());
+        return Ok((target.to_string(), None));
     }
 
     // "orchestrator" is not a catalog agent — it's the CP's own routing
     // endpoint (same one `nasiko chat` with no target uses).
     if target.eq_ignore_ascii_case("orchestrator") {
         let base = crate::config::active_url()?;
-        return Ok(format!(
-            "{}/api/orchestrator/a2a",
-            base.trim_end_matches('/')
+        return Ok((
+            format!("{}/api/orchestrator/a2a", base.trim_end_matches('/')),
+            None,
         ));
     }
 
@@ -313,7 +321,10 @@ pub fn resolve_chat_target(target: &str) -> Result<String> {
 
     let base = client.base_url().trim_end_matches('/');
     let path = agent.transport_path.as_deref().unwrap_or("/");
-    Ok(format!("{}/api/agents/{}{}", base, agent.id, path))
+    Ok((
+        format!("{}/api/agents/{}{}", base, agent.id, path),
+        agent.workload_kind.clone(),
+    ))
 }
 
 /// Resolve a name or UUID into a deployed agent's UUID via the CP registry.
@@ -520,9 +531,10 @@ pub fn cmd_deploy(source: &str, agent_name: Option<&str>) -> Result<()> {
         "latest",
         &[8000],
         &std::collections::HashMap::new(),
-        // `nasiko agents deploy` has no --writable/--writable-path flags of
-        // its own yet.
+        // `nasiko agents deploy` has no --writable/--writable-path/--coding-agent
+        // flags of its own yet.
         false,
+        None,
         None,
     );
 

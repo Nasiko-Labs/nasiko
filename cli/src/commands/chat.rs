@@ -126,11 +126,23 @@ fn print_history(history: &[cp::CpMessage]) {
 ///
 /// `target_label` is what the user typed (agent name/id, or "" for the
 /// orchestrator) — used verbatim in the resume hint so it can be copy-pasted.
+/// Human label for an agent's `workload_kind`, or `None` for a raw URL /
+/// orchestrator target (nothing to label).
+fn agent_kind_label(kind: Option<&str>) -> Option<&'static str> {
+    match kind {
+        Some("acp_coding_agent") => Some("ACP coding agent"),
+        Some("mcp_connector") => Some("MCP connector"),
+        Some("agent") => Some("agent"),
+        _ => None,
+    }
+}
+
 pub fn chat(
     url: &str,
     message: Option<&str>,
     session_id: Option<&str>,
     target_label: &str,
+    agent_kind: Option<&str>,
 ) -> Result<()> {
     use std::io::IsTerminal;
 
@@ -159,6 +171,12 @@ pub fn chat(
     // conversation — answer it and keep the session open. Piped/scripted
     // invocations (non-TTY) stay strictly one-shot.
     let interactive = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+
+    // Always surface the agent's kind so a coding agent is never mistaken for a
+    // normal one (and vice-versa). Printed once, above the reply/header.
+    if let Some(label) = agent_kind_label(agent_kind) {
+        println!("\x1b[2m{target_label} · {label}\x1b[0m");
+    }
 
     if let Some(msg) = message {
         print_history(&history);
@@ -1231,5 +1249,26 @@ mod linkify_tests {
         let out = linkify_markdown_links("see [here](https://example.com/x) for details", false);
         assert_eq!(out, "see here for details");
         assert!(!out.contains('\x1b'));
+    }
+}
+
+#[cfg(test)]
+mod agent_kind_tests {
+    use super::agent_kind_label;
+
+    #[test]
+    fn labels_each_known_kind_and_skips_url_or_orchestrator() {
+        assert_eq!(
+            agent_kind_label(Some("acp_coding_agent")),
+            Some("ACP coding agent")
+        );
+        assert_eq!(
+            agent_kind_label(Some("mcp_connector")),
+            Some("MCP connector")
+        );
+        assert_eq!(agent_kind_label(Some("agent")), Some("agent"));
+        // None (raw URL / orchestrator) and unknown kinds produce no label.
+        assert_eq!(agent_kind_label(None), None);
+        assert_eq!(agent_kind_label(Some("bogus")), None);
     }
 }

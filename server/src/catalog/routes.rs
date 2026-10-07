@@ -435,6 +435,23 @@ pub(crate) async fn create(
         Err(e) => return e.into_response(),
     };
 
+    // Validate the workload kind at the edge so a bad value is a clean 400 rather
+    // than a database CHECK violation. Omitted = `agent` (every existing on-ramp
+    // and caller is unaffected).
+    let workload_kind = match body.workload_kind.as_deref() {
+        None => nasiko_runtime::WorkloadKind::Agent,
+        Some(raw) => match nasiko_runtime::WorkloadKind::from_db_str(raw) {
+            Some(kind) => kind,
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "workload_kind must be one of: agent, mcp_connector, acp_coding_agent",
+                )
+                    .into_response();
+            }
+        },
+    };
+
     let mut tx = match state.db.begin().await {
         Ok(t) => t,
         Err(e) => {
@@ -445,8 +462,8 @@ pub(crate) async fn create(
 
     let result = sqlx
         ::query_as::<_, Agent>(
-            r#"INSERT INTO agents (name, display_name, description, owner_id, url, icon_url, version, documentation_url, capabilities, skills, tags, metadata, image, minimal_code_enabled)
-           VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, '1.0.0'), $8, $9, $10, $11, $12, $13, $14)
+            r#"INSERT INTO agents (name, display_name, description, owner_id, url, icon_url, version, documentation_url, capabilities, skills, tags, metadata, image, minimal_code_enabled, workload_kind)
+           VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, '1.0.0'), $8, $9, $10, $11, $12, $13, $14, $15)
            RETURNING *"#
         )
         .bind(&body.name)
@@ -463,6 +480,7 @@ pub(crate) async fn create(
         .bind(meta)
         .bind(&body.image)
         .bind(minimal_code_enabled)
+        .bind(workload_kind.as_db_str())
         .fetch_one(&mut *tx).await;
 
     let agent = match result {
@@ -951,6 +969,23 @@ pub(crate) async fn update(
         return StatusCode::FORBIDDEN.into_response();
     }
 
+    // Validate workload_kind at the edge (clean 400 vs a DB CHECK violation).
+    // `None` leaves the column untouched via the COALESCE below, so a plain
+    // metadata edit never clears an agent's coding-agent marking.
+    let workload_kind = match body.workload_kind.as_deref() {
+        None => None,
+        Some(raw) => match nasiko_runtime::WorkloadKind::from_db_str(raw) {
+            Some(kind) => Some(kind.as_db_str()),
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "workload_kind must be one of: agent, mcp_connector, acp_coding_agent",
+                )
+                    .into_response();
+            }
+        },
+    };
+
     let mut tx = match state.db.begin().await {
         Ok(t) => t,
         Err(e) => {
@@ -1018,6 +1053,7 @@ pub(crate) async fn update(
              image = COALESCE($13, image),
              minimal_code_enabled = COALESCE($14, minimal_code_enabled),
              compress_enabled = COALESCE($15, compress_enabled),
+             workload_kind = COALESCE($16, workload_kind),
              updated_at = now()
            WHERE id = $1
            RETURNING *"#,
@@ -1041,6 +1077,7 @@ pub(crate) async fn update(
     .bind(&agent_image)
     .bind(body.minimal_code_enabled)
     .bind(body.compress_enabled)
+    .bind(workload_kind)
     .fetch_optional(&mut *tx)
     .await;
 

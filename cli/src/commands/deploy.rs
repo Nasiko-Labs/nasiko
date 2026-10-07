@@ -32,6 +32,7 @@ pub fn deploy_with_version_flags(
     flags: VersionFlags,
     writable: bool,
     writable_path: Option<&str>,
+    coding_agent: bool,
 ) -> Result<()> {
     let client = Client::from_active_cluster()?;
     let env = parse_env(env_file, env_args)?;
@@ -47,6 +48,7 @@ pub fn deploy_with_version_flags(
             flags,
             writable,
             writable_path,
+            coding_agent,
             &client,
         )
     } else {
@@ -58,8 +60,38 @@ pub fn deploy_with_version_flags(
             flags,
             writable,
             writable_path,
+            coding_agent,
             &client,
         )
+    }
+}
+
+/// Resolve the agent's workload kind for a deploy: an explicit `--coding-agent`
+/// flag wins; otherwise a `"workloadKind"` string in AgentCard.json is the
+/// default; otherwise `None` (an ordinary HTTP agent — the server defaults the
+/// column to `agent`). Returned as the DB token the server validates. Shared
+/// with `push` (same flag + card-default rule).
+pub(crate) fn resolve_workload_kind(
+    coding_agent: bool,
+    card: &serde_json::Value,
+) -> Option<String> {
+    if coding_agent {
+        return Some("acp_coding_agent".to_owned());
+    }
+    card.get("workloadKind")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+}
+
+/// The container ports for a deploy: a coding agent is driven over stdio and
+/// exposes none, so it deploys port-less; every other agent uses its service
+/// port.
+fn deploy_ports(workload_kind: Option<&str>, port: u16) -> Vec<u16> {
+    if workload_kind == Some("acp_coding_agent") {
+        Vec::new()
+    } else {
+        vec![port]
     }
 }
 
@@ -168,6 +200,7 @@ fn deploy_from_directory(
     flags: VersionFlags,
     writable: bool,
     writable_path: Option<&str>,
+    coding_agent: bool,
     client: &Client,
 ) -> Result<()> {
     let root = Path::new(dir);
@@ -176,6 +209,10 @@ fn deploy_from_directory(
         &fs::read_to_string(&card_path).context("cannot read AgentCard.json")?,
     )
     .context("invalid AgentCard.json")?;
+
+    // Flag wins, AgentCard `workloadKind` is the default. Used both to mark the
+    // catalog row and to deploy a coding agent port-less.
+    let workload_kind = resolve_workload_kind(coding_agent, &card);
 
     let agent_name = name_override
         .map(String::from)
@@ -240,10 +277,11 @@ fn deploy_from_directory(
             let spec = DeploySpec {
                 image: image_ref.clone(),
                 name: agent_name.clone(),
-                ports: vec![port],
+                ports: deploy_ports(workload_kind.as_deref(), port),
                 env: env.clone(),
                 writable,
                 writable_path: writable_path.map(str::to_owned),
+                workload_kind: workload_kind.clone(),
             };
             let status: ContainerStatus = client.post_json("/containers", &spec)?;
             println!("  {} → {}", agent_name, status.state);
@@ -254,6 +292,7 @@ fn deploy_from_directory(
                 "description": card.get("description"),
                 "skills": card.get("skills"),
                 "capabilities": card.get("capabilities"),
+                "workload_kind": workload_kind,
             });
             let _: serde_json::Value = client.put_json(&format!("/agents/{id}"), &update)?;
             if let Err(e) = crate::util::sync_card_version(&card_path, &card, &version) {
@@ -278,6 +317,7 @@ fn deploy_from_directory(
                 "image": image_ref,
                 "skills": card.get("skills").unwrap_or(&serde_json::json!([])),
                 "capabilities": card.get("capabilities"),
+                "workload_kind": workload_kind,
             });
             let resp: serde_json::Value = client.post_json("/agents", &create)?;
             let id = resp
@@ -295,10 +335,11 @@ fn deploy_from_directory(
     let spec = DeploySpec {
         image: image_ref.clone(),
         name: agent_name.clone(),
-        ports: vec![port],
+        ports: deploy_ports(workload_kind.as_deref(), port),
         env: env.clone(),
         writable,
         writable_path: writable_path.map(str::to_owned),
+        workload_kind: workload_kind.clone(),
     };
     let status: ContainerStatus = client.post_json("/containers", &spec)?;
     println!("  {} → {}", agent_name, status.state);
@@ -334,8 +375,13 @@ fn deploy_from_image(
     flags: VersionFlags,
     writable: bool,
     writable_path: Option<&str>,
+    coding_agent: bool,
     client: &Client,
 ) -> Result<()> {
+    // No AgentCard.json on the raw-image path, so only the explicit flag can mark
+    // a coding agent here.
+    let workload_kind: Option<String> = coding_agent.then(|| "acp_coding_agent".to_owned());
+
     // A bare image name means Docker's implicit `:latest`, not a real
     // choice — require an explicit tag so the deployed version always
     // matches what `nasiko build` actually produced.
@@ -404,10 +450,11 @@ fn deploy_from_image(
         let spec = DeploySpec {
             image: image_ref.clone(),
             name: agent_name.clone(),
-            ports: vec![port],
+            ports: deploy_ports(workload_kind.as_deref(), port),
             env: env.clone(),
             writable,
             writable_path: writable_path.map(str::to_owned),
+            workload_kind: workload_kind.clone(),
         };
         let status: ContainerStatus = client.post_json("/containers", &spec)?;
         println!("  {} → {}", agent_name, status.state);
@@ -415,6 +462,7 @@ fn deploy_from_image(
         let update = serde_json::json!({
             "version": version,
             "image": image_ref,
+            "workload_kind": workload_kind,
         });
         let _: serde_json::Value = client.put_json(&format!("/agents/{id}"), &update)?;
         println!("\n✓ Deployed {agent_name}:{version}");
@@ -427,6 +475,7 @@ fn deploy_from_image(
         "display_name": agent_name,
         "version": version,
         "image": image_ref,
+        "workload_kind": workload_kind,
     });
     let _: serde_json::Value = client.post_json("/agents", &create)?;
 
@@ -436,10 +485,11 @@ fn deploy_from_image(
     let spec = DeploySpec {
         image: image_ref,
         name: agent_name.clone(),
-        ports: vec![port],
+        ports: deploy_ports(workload_kind.as_deref(), port),
         env: env.clone(),
         writable,
         writable_path: writable_path.map(str::to_owned),
+        workload_kind: workload_kind.clone(),
     };
     let status: ContainerStatus = client.post_json("/containers", &spec)?;
     println!("  {} → {}", agent_name, status.state);

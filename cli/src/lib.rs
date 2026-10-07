@@ -121,6 +121,11 @@ pub enum AgentOpsCommands {
         /// Non-interactive: auto-accept the suggested version instead of prompting
         #[arg(long, short = 'y')]
         yes: bool,
+        /// Register as an ACP coding agent (e.g. OpenCode): driven over a stdio
+        /// turn instead of HTTP, and deployed port-less with a workspace volume.
+        /// Overrides any `workloadKind` in AgentCard.json.
+        #[arg(long)]
+        coding_agent: bool,
     },
     /// Push image to cluster OCI registry (without deploying)
     Push {
@@ -135,6 +140,11 @@ pub enum AgentOpsCommands {
         /// Non-interactive: auto-accept the suggested version instead of prompting
         #[arg(long, short = 'y')]
         yes: bool,
+        /// Mark the registered agent as an ACP coding agent (e.g. OpenCode).
+        /// Overrides any `workloadKind` in AgentCard.json. `push` only registers
+        /// the image; `nasiko deploy` then brings it up port-less.
+        #[arg(long)]
+        coding_agent: bool,
     },
     /// Upload source directory or .zip and let the server build + deploy (no local Docker needed)
     #[command(
@@ -169,6 +179,11 @@ pub enum AgentOpsCommands {
         /// the mount hides whatever the image ships at that path
         #[arg(long, value_name = "PATH")]
         writable_path: Option<String>,
+        /// Register as an ACP coding agent (e.g. OpenCode): built, then deployed
+        /// port-less with a workspace volume and driven over a stdio turn.
+        /// Overrides any `workloadKind` in AgentCard.json.
+        #[arg(long)]
+        coding_agent: bool,
     },
     /// Deploy an agent from an OCI/artifact-registry reference
     ///
@@ -283,6 +298,10 @@ pub enum AgentOpsCommands {
         /// Route message to an existing session (one-shot mode)
         #[arg(long)]
         session_id: Option<String>,
+        /// Assert the target is an ACP coding agent — fail loudly if it isn't.
+        /// A guardrail only; the server still drives the turn by the agent's kind.
+        #[arg(long)]
+        coding_agent: bool,
     },
     /// List chat sessions
     Sessions {
@@ -1013,6 +1032,7 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             writable_path,
             version,
             yes,
+            coding_agent,
         } => commands::deploy::deploy_with_version_flags(
             &image,
             name.as_deref(),
@@ -1025,12 +1045,14 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             },
             writable,
             writable_path.as_deref(),
+            coding_agent,
         ),
         AgentOpsCommands::Push {
             image,
             name,
             version,
             yes,
+            coding_agent,
         } => commands::push::push_with_version_flags(
             &image,
             name.as_deref(),
@@ -1038,6 +1060,7 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
                 version: version.as_deref(),
                 yes,
             },
+            coding_agent,
         ),
         AgentOpsCommands::Upload {
             source,
@@ -1048,6 +1071,7 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             env,
             writable,
             writable_path,
+            coding_agent,
         } => commands::upload::upload(
             &source,
             name.as_deref(),
@@ -1057,6 +1081,7 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             &env,
             writable,
             writable_path.as_deref(),
+            coding_agent,
         ),
         AgentOpsCommands::Import { reference } => commands::import::from_registry(&reference),
         AgentOpsCommands::Ps { json } => commands::agents::ps(json),
@@ -1113,6 +1138,7 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             tui,
             resume,
             session_id,
+            coding_agent,
         } => {
             // `nasiko chat "some message"` — a lone positional *containing
             // whitespace* is a natural-language message for the orchestrator,
@@ -1146,21 +1172,31 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
                 .or(url.as_deref())
                 .unwrap_or("")
                 .to_string();
-            let resolved = match (url, agent) {
-                // `url` is documented to accept a full URL, an agent
-                // UUID/name, or "orchestrator" — `resolve_chat_target`
-                // is what actually implements that (URL passthrough,
-                // orchestrator special-case, agent lookup by id/name);
-                // using `u` as-is here skipped that resolution entirely,
-                // so `nasiko chat <agent-name>` sent the literal name as
-                // the HTTP endpoint instead of resolving it first.
-                (Some(u), _) => commands::agents::resolve_chat_target(&u)?,
-                (None, Some(a)) => commands::agents::resolve_chat_target(&a)?,
+            // Resolve to (endpoint, workload_kind). `resolve_chat_target_with_kind`
+            // accepts a full URL, an agent UUID/name, or "orchestrator"; the kind
+            // is `None` for a URL / the orchestrator (neither is one catalog agent).
+            let (resolved, kind) = match (url, agent) {
+                (Some(u), _) => commands::agents::resolve_chat_target_with_kind(&u)?,
+                (None, Some(a)) => commands::agents::resolve_chat_target_with_kind(&a)?,
                 (None, None) => {
                     let base = config::active_url()?;
-                    format!("{}/api/orchestrator/a2a", base.trim_end_matches('/'))
+                    (
+                        format!("{}/api/orchestrator/a2a", base.trim_end_matches('/')),
+                        None,
+                    )
                 }
             };
+            // `--coding-agent` guardrail: assert the resolved target really is an
+            // ACP coding agent, so a wrong name/id fails loudly instead of silently
+            // chatting the wrong (or a normal) agent. It changes nothing on the wire
+            // — the server drives the turn by the agent's stored `workload_kind`.
+            if coding_agent && kind.as_deref() != Some("acp_coding_agent") {
+                let got = kind.as_deref().unwrap_or("unknown (URL/orchestrator)");
+                anyhow::bail!(
+                    "--coding-agent was given but '{target_label}' resolves to a '{got}' target, \
+                     not an ACP coding agent. Drop the flag, or check the name with `nasiko ps`."
+                );
+            }
             if tui || resume.is_some() {
                 commands::tui::run_tui(&resolved, resume.as_deref(), &target_label)
             } else {
@@ -1169,6 +1205,7 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
                     message.as_deref(),
                     session_id.as_deref(),
                     &target_label,
+                    kind.as_deref(),
                 )
             }
         }

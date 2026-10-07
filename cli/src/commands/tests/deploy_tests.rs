@@ -272,3 +272,43 @@ fn dir_references_mcp_gateway_ignores_skipped_directories() {
     .unwrap();
     assert!(!dir_references_mcp_gateway(dir.path()));
 }
+
+// ─── resolve_workload_kind / deploy_ports ────────────────────────────────────
+
+#[test]
+fn coding_agent_flag_wins_over_the_card() {
+    // The explicit flag marks a coding agent even when the card says otherwise.
+    let card = serde_json::json!({ "workloadKind": "agent" });
+    assert_eq!(
+        resolve_workload_kind(true, &card).as_deref(),
+        Some("acp_coding_agent")
+    );
+}
+
+#[test]
+fn card_workload_kind_is_the_default_without_the_flag() {
+    let card = serde_json::json!({ "workloadKind": "acp_coding_agent" });
+    assert_eq!(
+        resolve_workload_kind(false, &card).as_deref(),
+        Some("acp_coding_agent")
+    );
+}
+
+#[test]
+fn no_flag_and_no_card_field_means_ordinary_agent() {
+    // No flag, no (or empty) card field → None, so the server defaults to `agent`.
+    assert_eq!(resolve_workload_kind(false, &serde_json::json!({})), None);
+    assert_eq!(
+        resolve_workload_kind(false, &serde_json::json!({ "workloadKind": "" })),
+        None
+    );
+}
+
+#[test]
+fn a_coding_agent_deploys_port_less() {
+    // Coding agents are driven over stdio, so they carry no container port;
+    // everything else keeps its service port.
+    assert!(deploy_ports(Some("acp_coding_agent"), 8000).is_empty());
+    assert_eq!(deploy_ports(None, 8000), vec![8000]);
+    assert_eq!(deploy_ports(Some("agent"), 8000), vec![8000]);
+}

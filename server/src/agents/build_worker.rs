@@ -18,7 +18,7 @@ const STUCK_JOB_MINS: i64 = 60;
 use super::update::{AgentVersionRow, execute_agent_rollback, execute_agent_update};
 use super::upload::{
     BuildJobPayload, McpBuildSourcePayload, execute_clone_and_deploy,
-    execute_github_clone_and_deploy, execute_upload_and_deploy, open_job_env,
+    execute_github_clone_and_deploy, execute_upload_and_deploy,
 };
 use crate::build::routes::execute_build;
 
@@ -371,27 +371,20 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
             image_tag,
             ports,
             env,
-            env_encrypted,
             writable,
             writable_path,
+            workload_kind,
         } => {
-            let job_env = match open_job_env(owner_id, env, env_encrypted) {
-                Ok(env) => env,
-                Err(e) => {
-                    tracing::error!(job_id = %job.id, %agent_id, %e, "build worker: job env does not decrypt, failing");
-                    mark_job(
-                        &state.db,
-                        job.id,
-                        "failed",
-                        Some("job env could not be decrypted"),
-                    )
-                    .await;
-                    fail_agent_terminal(&state.db, agent_id, &state.agent_deletion_hook).await;
-                    return;
-                }
-            };
+            let mut platform_env = state.agent_env(agent_id).await;
+            platform_env.extend(env);
+            // Empty (old job rows) or unrecognized → `Agent`, the pre-existing
+            // behavior.
+            let workload_kind =
+                nasiko_runtime::WorkloadKind::from_db_str(&workload_kind).unwrap_or_default();
             execute_upload_and_deploy(
-                &state,
+                state.runtime.clone(),
+                state.db.clone(),
+                state.http_client.clone(),
                 build_id,
                 agent_id,
                 owner_id,
@@ -400,9 +393,18 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
                 std::path::PathBuf::from(&zip_path),
                 image_tag,
                 ports,
-                job_env,
+                platform_env,
+                // Inject server LLM secrets at execution — not persisted in the payload (RUN-5).
+                state.config.openai_api_key.clone(),
+                state.config.openai_base_url.clone(),
+                state.config.agent_runtime.clone(),
+                state.config.agent_image_registry.clone(),
+                state.config.agent_max_replicas,
                 writable,
                 writable_path,
+                state.config.agent_default_memory.clone(),
+                workload_kind,
+                state.agent_deletion_hook.clone(),
             )
             .await;
         }
@@ -501,10 +503,14 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
             ports,
             env,
         } => {
+            let mut platform_env = state.agent_env(agent_id).await;
+            platform_env.extend(env);
             // This legacy job variant is never actually enqueued anymore
             // (superseded by `GithubClone`), kept for in-flight compat.
             execute_clone_and_deploy(
-                &state,
+                state.runtime.clone(),
+                state.db.clone(),
+                state.http_client.clone(),
                 build_id,
                 agent_id,
                 owner_id,
@@ -512,7 +518,13 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
                 name,
                 std::path::PathBuf::from(&tar_gz_path),
                 ports,
-                env,
+                platform_env,
+                state.config.openai_api_key.clone(),
+                state.config.openai_base_url.clone(),
+                state.config.agent_runtime.clone(),
+                state.config.agent_image_registry.clone(),
+                state.config.agent_max_replicas,
+                state.config.agent_default_memory.clone(),
                 None,
                 // This legacy job variant is never actually enqueued
                 // anymore (superseded by `GithubClone`), so there's no
@@ -520,6 +532,7 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
                 None,
                 None,
                 None,
+                state.agent_deletion_hook.clone(),
             )
             .await;
         }

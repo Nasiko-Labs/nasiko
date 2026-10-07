@@ -518,6 +518,30 @@ impl WorkloadKind {
     pub fn requires_inbound_port(&self) -> bool {
         !matches!(self, WorkloadKind::AcpCodingAgent)
     }
+
+    /// The token stored in `agents.workload_kind`. These strings are the single
+    /// source of truth for the column and MUST match its `CHECK` constraint
+    /// (migration `0054_acp_coding_agent.sql`); [`WorkloadKind::from_db_str`] is
+    /// the inverse.
+    pub fn as_db_str(&self) -> &'static str {
+        match self {
+            WorkloadKind::Agent => "agent",
+            WorkloadKind::McpConnector => "mcp_connector",
+            WorkloadKind::AcpCodingAgent => "acp_coding_agent",
+        }
+    }
+
+    /// Parse a `agents.workload_kind` value back into a variant. Returns `None`
+    /// for any string outside the column's `CHECK` set, so a caller can reject a
+    /// bad value at the edge rather than letting the database do it.
+    pub fn from_db_str(s: &str) -> Option<Self> {
+        match s {
+            "agent" => Some(WorkloadKind::Agent),
+            "mcp_connector" => Some(WorkloadKind::McpConnector),
+            "acp_coding_agent" => Some(WorkloadKind::AcpCodingAgent),
+            _ => None,
+        }
+    }
 }
 
 impl DeploymentSpec {

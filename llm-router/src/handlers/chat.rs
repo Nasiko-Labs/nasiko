@@ -290,6 +290,10 @@ async fn chat_core(
         turn_ordinal: routing::user_turn_ordinal(&req.messages),
         is_tool_continuation: routing::is_tool_continuation(&req.messages),
     };
+    // Capture the session id before `session` is moved into routing below; used to
+    // stamp `session.id` on the gen_ai span so a coding agent's orphan LLM trace is
+    // discoverable by session (see the span record further down).
+    let session_id_for_span: Option<String> = session.as_ref().map(|s| s.session_id.clone());
     let routed = resolve_routed_request(
         ctx, store, headers, agent_id, owner_id, hint, signals, session,
     )
@@ -413,6 +417,9 @@ async fn chat_core(
         gen_ai.request.model = %resolved.model,
         gen_ai.provider.name = %resolved.provider,
         gen_ai.agent.id = %agent_id,
+        // Set for a session caller (coding agent) below, so this span's trace is
+        // discoverable by `session.id` like a normal agent's own spans are.
+        session.id = tracing::field::Empty,
         gen_ai.response.model = tracing::field::Empty,
         gen_ai.usage.input_tokens = tracing::field::Empty,
         gen_ai.usage.output_tokens = tracing::field::Empty,
@@ -433,6 +440,14 @@ async fn chat_core(
         llm_span.record("nasiko.compress.bytes_in", compression.bytes_in);
         llm_span.record("nasiko.compress.bytes_out", compression.bytes_out);
         llm_span.record("nasiko.compress.elapsed_us", compression.elapsed_us);
+    }
+    // A coding agent (session-token caller) emits no OTel spans of its own and
+    // doesn't propagate the turn's traceparent, so this router span is the only
+    // record of the call and would otherwise sit in an orphan trace. Stamping the
+    // session id links it to the conversation, so the session/FinOps views (which
+    // discover traces by `session.id`) find and attribute it.
+    if let Some(sid) = session_id_for_span.as_deref() {
+        llm_span.record("session.id", sid);
     }
 
     let started = Instant::now();

@@ -16,75 +16,9 @@ fn check_status(resp: &mut ureq::http::Response<ureq::Body>, url: &str) -> Resul
         return Ok(());
     }
     let body = resp.body_mut().read_to_string().unwrap_or_default();
-    Err(ApiFailure::new(status, url, body).into_error())
-}
-
-/// A non-2xx response, kept as data so a caller can branch on the status and the body
-/// instead of only printing them.
-///
-/// [`check_status`] flattens every failure into one message, which is right for the
-/// ~50 call sites that can only report it. It is wrong for a status the CLI is expected
-/// to *handle* — the `428` that asks the user to confirm an embedding-model change is
-/// only useful if the command can read the code and the `from`/`to` it carries. Anything
-/// the caller chooses not to handle goes back through [`Self::into_error`] and produces
-/// the identical message it would have had.
-pub struct ApiFailure {
-    pub status: u16,
-    /// Parsed response body, when it was JSON.
-    pub body: Option<serde_json::Value>,
-    detail: String,
-    url: String,
-    /// The `Retry-After` header, as sent: delay-seconds or an HTTP-date.
-    retry_after: Option<String>,
-}
-
-impl ApiFailure {
-    fn new(status: u16, url: &str, raw: String) -> Self {
-        Self {
-            status,
-            body: serde_json::from_str(&raw).ok(),
-            detail: extract_error_detail(&raw),
-            url: url.to_string(),
-            retry_after: None,
-        }
-    }
-
-    /// The `Retry-After` header the server sent with this failure (a `429` or `503`), as sent.
-    pub fn retry_after(&self) -> Option<&str> {
-        self.retry_after.as_deref()
-    }
-
-    /// The machine-readable `code` slug (`API_CONVENTIONS` §2), when the body carries one.
-    pub fn code(&self) -> Option<&str> {
-        self.body.as_ref()?.get("code")?.as_str()
-    }
-
-    /// The `details` object clients switch on for structured context.
-    pub fn details(&self) -> Option<&serde_json::Value> {
-        self.body.as_ref()?.get("details")
-    }
-
-    /// The human-readable message from the body.
-    pub fn message(&self) -> &str {
-        &self.detail
-    }
-
-    /// The error this failure would have produced had the caller not handled it.
-    pub fn into_error(self) -> anyhow::Error {
-        let hint = status_hint(self.status);
-        anyhow::anyhow!(
-            "HTTP {} from {}: {}{hint}",
-            self.status,
-            self.url,
-            self.detail
-        )
-    }
-}
-
-/// A request whose non-2xx outcome the caller handles itself.
-pub enum Attempt<T> {
-    Ok(T),
-    Rejected(ApiFailure),
+    let detail = extract_error_detail(&body);
+    let hint = status_hint(status);
+    bail!("HTTP {status} from {url}: {detail}{hint}");
 }
 
 /// Pull a human-readable message out of a server error body.
@@ -348,22 +282,6 @@ impl Client {
         Ok(resp.body_mut().read_json()?)
     }
 
-    /// Authenticated JSON PUT without terminal status output, for calls made while a progress line
-    /// owns the terminal.
-    pub(crate) fn put_json_quiet<T: for<'de> Deserialize<'de>, B: Serialize>(
-        &self,
-        path: &str,
-        body: &B,
-    ) -> Result<T> {
-        let url = self.api_url(path);
-        let mut resp = self
-            .auth_put(&url)
-            .send_json(body)
-            .context("cannot reach control plane")?;
-        check_status(&mut resp, &url)?;
-        Ok(resp.body_mut().read_json()?)
-    }
-
     pub fn patch_json<T: for<'de> Deserialize<'de>, B: Serialize>(
         &self,
         path: &str,
@@ -377,57 +295,6 @@ impl Client {
             .context("cannot reach control plane")?;
         check_status(&mut resp, &url)?;
         Ok(resp.body_mut().read_json()?)
-    }
-
-    /// POST that hands a non-2xx back as [`ApiFailure`] rather than bailing, so the
-    /// caller can act on it (see [`ApiFailure`]). Transport faults still error.
-    pub fn post_json_attempt<T: for<'de> Deserialize<'de>, B: Serialize>(
-        &self,
-        path: &str,
-        body: &B,
-    ) -> Result<Attempt<T>> {
-        let _spin = nasiko_utils::term::start_status(format!("POST {path}"));
-        let url = self.api_url(path);
-        let mut resp = self
-            .auth_post(&url)
-            .send_json(body)
-            .context("cannot reach control plane")?;
-        Self::into_attempt(&mut resp, &url)
-    }
-
-    /// PATCH counterpart of [`Self::post_json_attempt`].
-    pub fn patch_json_attempt<T: for<'de> Deserialize<'de>, B: Serialize>(
-        &self,
-        path: &str,
-        body: &B,
-    ) -> Result<Attempt<T>> {
-        let _spin = nasiko_utils::term::start_status(format!("PATCH {path}"));
-        let url = self.api_url(path);
-        let mut resp = self
-            .auth_patch(&url)
-            .send_json(body)
-            .context("cannot reach control plane")?;
-        Self::into_attempt(&mut resp, &url)
-    }
-
-    fn into_attempt<T: for<'de> Deserialize<'de>>(
-        resp: &mut ureq::http::Response<ureq::Body>,
-        url: &str,
-    ) -> Result<Attempt<T>> {
-        let status = resp.status().as_u16();
-        if status >= 400 {
-            let retry_after = resp
-                .headers()
-                .get("retry-after")
-                .and_then(|value| value.to_str().ok())
-                .map(str::to_string);
-            let raw = resp.body_mut().read_to_string().unwrap_or_default();
-            return Ok(Attempt::Rejected(ApiFailure {
-                retry_after,
-                ..ApiFailure::new(status, url, raw)
-            }));
-        }
-        Ok(Attempt::Ok(resp.body_mut().read_json()?))
     }
 
     /// POST with no body and ignore the response body (for endpoints that return 200/204 with no JSON).
@@ -454,27 +321,22 @@ impl Client {
         Ok(())
     }
 
-    /// Delivers a batch of coding-agent events. A non-2xx comes back as [`Attempt::Rejected`], so
-    /// delivery can tell a refusal it should give up on from one worth retrying; a transport fault or a
-    /// response it can't read is an error.
     pub(crate) fn post_coding_agent_batch(
         &self,
         body: &CodingAgentEventBatchRequest,
-    ) -> Result<Attempt<CodingAgentEventBatchResponse>> {
+    ) -> Result<CodingAgentEventBatchResponse> {
         let path = "/telemetry/coding-agent/events/batch";
         let url = self.api_url(path);
         let mut resp = self
             .auth_post(&url)
             .send_json(body)
             .context("cannot reach control plane")?;
-        let envelope = match Self::into_attempt::<serde_json::Value>(&mut resp, &url)
-            .with_context(|| format!("invalid coding-agent batch response from {url}"))?
-        {
-            Attempt::Ok(envelope) => envelope,
-            Attempt::Rejected(failure) => return Ok(Attempt::Rejected(failure)),
-        };
+        check_status(&mut resp, &url)?;
+        let envelope: serde_json::Value = resp
+            .body_mut()
+            .read_json()
+            .with_context(|| format!("invalid coding-agent batch response from {url}"))?;
         unwrap_data(envelope)
-            .map(Attempt::Ok)
             .with_context(|| format!("invalid coding-agent batch response from {url}"))
     }
 
@@ -566,35 +428,6 @@ impl Client {
             .call()
             .context("cannot reach control plane")?;
         Ok(resp.body_mut().read_json()?)
-    }
-
-    // ─── LLM router surface (no /api prefix, agent-scoped credential) ───────
-
-    /// POST a JSON body to a non-`/api` path with an explicit bearer token, returning the
-    /// HTTP status and the raw body without treating a non-2xx as an error. The LLM
-    /// router's `/v1/*` routes authenticate an agent's own routing credential rather than
-    /// the user session (`server/src/lib.rs:388`), and the only caller — the coding-agent
-    /// connect preflight — needs the status itself to tell a rejected configuration apart
-    /// from an unreachable upstream.
-    pub(crate) fn post_raw_with_token<B: Serialize>(
-        &self,
-        path: &str,
-        token: &str,
-        body: &B,
-    ) -> Result<(u16, String)> {
-        let url = self.raw_url(path);
-        let mut resp = self
-            .agent
-            .post(&url)
-            .header("Authorization", &format!("Bearer {token}"))
-            .send_json(body)
-            .context("cannot reach control plane")?;
-        let status = resp.status().as_u16();
-        let body = resp
-            .body_mut()
-            .read_to_string()
-            .with_context(|| format!("unreadable response body from {url}"))?;
-        Ok((status, body))
     }
 
     pub fn health_check(url: &str) -> Result<()> {
@@ -928,6 +761,7 @@ impl Client {
         env: &std::collections::HashMap<String, String>,
         writable: bool,
         writable_path: Option<&str>,
+        workload_kind: Option<&str>,
     ) -> anyhow::Result<UploadQueued> {
         let file_bytes = std::fs::read(zip_path)
             .with_context(|| format!("cannot read {}", zip_path.display()))?;
@@ -974,6 +808,12 @@ impl Client {
         if let Some(path) = writable_path {
             body.extend_from_slice(
                 format!("--{boundary}\r\nContent-Disposition: form-data; name=\"writable_path\"\r\n\r\n{path}\r\n").as_bytes(),
+            );
+        }
+        // workload_kind (acp_coding_agent marks an ACP coding agent)
+        if let Some(kind) = workload_kind {
+            body.extend_from_slice(
+                format!("--{boundary}\r\nContent-Disposition: form-data; name=\"workload_kind\"\r\n\r\n{kind}\r\n").as_bytes(),
             );
         }
         // file (the zip file)
@@ -1326,6 +1166,12 @@ pub struct AgentRecord {
     #[tabled(skip)]
     #[serde(default)]
     pub transport_path: Option<String>,
+    /// `agent` (default) | `mcp_connector` | `acp_coding_agent`. Lets `chat` label
+    /// the agent's kind and `--coding-agent` assert on it. `None` from an older
+    /// server that doesn't return it.
+    #[tabled(skip)]
+    #[serde(default)]
+    pub workload_kind: Option<String>,
     #[tabled(skip)]
     #[serde(default)]
     pub framework: Option<String>,
@@ -1522,6 +1368,10 @@ pub struct DeploySpec {
     pub writable: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub writable_path: Option<String>,
+    /// Workload kind (`acp_coding_agent` for an ACP coding agent). Omitted for an
+    /// ordinary HTTP agent, so the server defaults to `agent`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workload_kind: Option<String>,
 }
 
 #[cfg(test)]

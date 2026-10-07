@@ -476,6 +476,25 @@ fn workload_kind_default_is_agent() {
 }
 
 #[test]
+fn workload_kind_db_str_roundtrips_and_matches_check_constraint() {
+    use nasiko_runtime::WorkloadKind;
+    // These exact strings are the `agents.workload_kind` CHECK set
+    // (migration 0054); if a variant's token drifts, an INSERT would be
+    // rejected at runtime, so pin them here.
+    for (kind, token) in [
+        (WorkloadKind::Agent, "agent"),
+        (WorkloadKind::McpConnector, "mcp_connector"),
+        (WorkloadKind::AcpCodingAgent, "acp_coding_agent"),
+    ] {
+        assert_eq!(kind.as_db_str(), token);
+        assert_eq!(WorkloadKind::from_db_str(token), Some(kind));
+    }
+    // Anything outside the CHECK set is rejected rather than silently mapped.
+    assert_eq!(WorkloadKind::from_db_str("bogus"), None);
+    assert_eq!(WorkloadKind::from_db_str(""), None);
+}
+
+#[test]
 fn writable_path_validation_rules() {
     use nasiko_runtime::validate_writable_path as v;
     // Accepted: absolute, dedicated state directories.

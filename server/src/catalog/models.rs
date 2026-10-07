@@ -32,6 +32,11 @@ pub struct Agent {
     pub metadata: sqlx::types::Json<serde_json::Value>,
     pub status: String,
     pub image: Option<String>,
+    /// Workload kind: `agent` (default), `mcp_connector`, or `acp_coding_agent`.
+    /// Exposed so clients can tell a coding agent apart from a normal one (e.g.
+    /// `nasiko chat` labels it, and `--coding-agent` asserts on it).
+    #[serde(default)]
+    pub workload_kind: String,
     /// Path of the agent's advertised JSON-RPC transport (e.g. "/jsonrpc"),
     /// extracted from its AgentCard `supportedInterfaces` at deploy time.
     /// Clients chat via `{base}/api/agents/{id}{transport_path}`.
@@ -124,6 +129,11 @@ pub struct CreateAgent {
     pub tags: Option<Vec<String>>,
     pub metadata: Option<serde_json::Value>,
     pub image: Option<String>,
+    /// Workload kind for this agent: `agent` (default), `mcp_connector`, or
+    /// `acp_coding_agent`. Set to `acp_coding_agent` to register an ACP coding
+    /// agent so the proxy drives it over a stdio turn instead of HTTP. Omitted
+    /// defaults to `agent`.
+    pub workload_kind: Option<String>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -150,6 +160,11 @@ pub struct UpdateAgent {
     #[serde(default = "default_activate_version")]
     pub activate_version: bool,
     pub minimal_code_enabled: Option<bool>,
+    /// Workload kind: `agent`, `mcp_connector`, or `acp_coding_agent`. Omitted =
+    /// leave as-is (so an ordinary metadata edit never clears it); present =
+    /// overwrite, which is how `nasiko deploy --coding-agent` promotes an
+    /// already-registered agent to a coding agent.
+    pub workload_kind: Option<String>,
 }
 
 fn default_activate_version() -> bool {
