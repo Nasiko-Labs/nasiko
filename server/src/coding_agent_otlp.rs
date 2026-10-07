@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use futures::StreamExt;
 use nasiko_types::{
     CapturePolicy, CodingAgentEventV1, CodingAgentTimestampQuality, CodingAgentToolAssociation,
-    CodingAgentToolCall, CodingAgentToolCallStatus,
+    CodingAgentToolCallStatus,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -22,7 +22,6 @@ const MAX_ERROR_BYTES: usize = 4_096;
 struct ClaimedEvent {
     user_id: Uuid,
     event_id: String,
-    agent_id: Uuid,
     payload: Value,
     session_id: String,
     otlp_attempts: i32,
@@ -63,7 +62,7 @@ pub async fn export_once(
         };
         let mut event = event;
         event.session.id = row.session_id.clone();
-        relabel_from_router(db, row.agent_id, &mut event).await;
+        relabel_from_router(db, &mut event).await;
         let delivery = async {
             if row.otlp_trace_delivered_at.is_none() {
                 post_json(
@@ -102,90 +101,36 @@ pub async fn export_once(
     Ok(count)
 }
 
-/// Receipts the outbox may claim now: due for a first attempt or a retry, or
-/// claimed by a worker that has not finished within `STALE_AFTER` — one that
-/// crashed or restarted mid-export — so its claim is taken over. `$1` is
-/// `STALE_AFTER`. `e` is the receipt.
-///
-/// The leading `IN` restates the claim index's (0066) predicate verbatim: the
-/// planner does not infer it from the `OR` below, and without it every user's
-/// pick falls back to scanning all their receipts — hundreds of milliseconds
-/// per claim at an import's scale instead of under one.
-const CLAIMABLE: &str = "(e.otlp_state IN ('pending', 'failed', 'processing')
-        AND ((e.otlp_state IN ('pending', 'failed')
-                AND (e.otlp_next_attempt_at IS NULL OR e.otlp_next_attempt_at <= now()))
-            OR (e.otlp_state = 'processing' AND e.otlp_last_attempt_at < now() - $1::interval)))";
-
-/// Claims up to `BATCH_SIZE` receipts, committing the claim before any export.
-///
-/// Live turns before historical ones (`otlp_historical`, set at ingest), and
-/// round-robin across users within each: every user with claimable work gets
-/// their oldest-received turn into the batch before anyone gets a second. A
-/// history import is thousands of one user's turns; without this it would sit
-/// in front of everyone else's live session until it drained.
-///
-/// Built to stay cheap under that backlog: a skip scan over the claim index
-/// (0066) visits each user once, and each user contributes at most a batch of
-/// candidates, so the cost follows users × batch, not the backlog's size.
-/// The candidates are then locked `SKIP LOCKED`, re-checking that each is still
-/// claimable, so a concurrent worker never claims the same receipt twice.
 async fn claim_batch(db: &PgPool) -> Result<Vec<ClaimedEvent>, sqlx::Error> {
-    static CLAIM: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
-        format!(
-            r#"WITH RECURSIVE claimants AS (
-                   (SELECT e.user_id FROM coding_agent_telemetry_events e
-                     WHERE {CLAIMABLE} ORDER BY e.user_id LIMIT 1)
-                   UNION ALL
-                   SELECT (SELECT e.user_id FROM coding_agent_telemetry_events e
-                            WHERE {CLAIMABLE} AND e.user_id > c.user_id
-                            ORDER BY e.user_id LIMIT 1)
-                     FROM claimants c
-                    WHERE c.user_id IS NOT NULL
-               ),
-               candidates AS (
-                   SELECT pick.user_id, pick.event_id, pick.otlp_historical, pick.received_at,
-                          row_number() OVER (PARTITION BY pick.user_id
-                                             ORDER BY pick.otlp_historical, pick.received_at)
-                              AS user_turn
-                     FROM claimants c
-                     CROSS JOIN LATERAL (
-                         SELECT e.user_id, e.event_id, e.otlp_historical, e.received_at
-                           FROM coding_agent_telemetry_events e
-                          WHERE e.user_id = c.user_id AND {CLAIMABLE}
-                          ORDER BY e.otlp_historical, e.received_at
-                          LIMIT $2
-                     ) pick
-                    WHERE c.user_id IS NOT NULL
-               ),
-               ready AS (
-                   SELECT e.user_id, e.event_id
-                     FROM coding_agent_telemetry_events e
-                     JOIN (SELECT user_id, event_id FROM candidates
-                            ORDER BY otlp_historical, user_turn, received_at
-                            LIMIT $2) chosen
-                       ON chosen.user_id = e.user_id AND chosen.event_id = e.event_id
-                    WHERE {CLAIMABLE}
-                      FOR UPDATE OF e SKIP LOCKED
-               )
-               UPDATE coding_agent_telemetry_events AS events
-               SET otlp_state = 'processing', otlp_attempts = events.otlp_attempts + 1,
-                   otlp_last_attempt_at = now(), otlp_next_attempt_at = NULL,
-                   otlp_last_error = NULL, otlp_last_error_at = NULL, otlp_claim_id = $3
-               FROM ready
-               WHERE events.user_id = ready.user_id AND events.event_id = ready.event_id
-               RETURNING events.user_id, events.event_id, events.agent_id, events.payload,
-                         events.session_id, events.otlp_attempts, events.otlp_claim_id,
-                         events.otlp_trace_delivered_at, events.otlp_log_delivered_at"#
-        )
-    });
     let claim_id = Uuid::new_v4();
     let mut tx = db.begin().await?;
-    let claimed = sqlx::query_as(&CLAIM)
-        .bind(STALE_AFTER)
-        .bind(BATCH_SIZE)
-        .bind(claim_id)
-        .fetch_all(&mut *tx)
-        .await?;
+    let claimed = sqlx::query_as(
+        r#"WITH ready AS (
+               SELECT user_id, event_id
+               FROM coding_agent_telemetry_events
+               WHERE (otlp_state IN ('pending', 'failed')
+                      AND (otlp_next_attempt_at IS NULL OR otlp_next_attempt_at <= now()))
+                  OR (otlp_state = 'processing'
+                      AND otlp_last_attempt_at < now() - $1::interval)
+               ORDER BY received_at
+               FOR UPDATE SKIP LOCKED
+               LIMIT $2
+           )
+           UPDATE coding_agent_telemetry_events AS events
+           SET otlp_state = 'processing', otlp_attempts = events.otlp_attempts + 1,
+               otlp_last_attempt_at = now(), otlp_next_attempt_at = NULL,
+               otlp_last_error = NULL, otlp_last_error_at = NULL, otlp_claim_id = $3
+           FROM ready
+           WHERE events.user_id = ready.user_id AND events.event_id = ready.event_id
+            RETURNING events.user_id, events.event_id, events.payload, events.session_id,
+                      events.otlp_attempts, events.otlp_claim_id,
+                      events.otlp_trace_delivered_at, events.otlp_log_delivered_at"#,
+    )
+    .bind(STALE_AFTER)
+    .bind(BATCH_SIZE)
+    .bind(claim_id)
+    .fetch_all(&mut *tx)
+    .await?;
     tx.commit().await?;
     Ok(claimed)
 }
@@ -211,19 +156,11 @@ const ROUTER_MATCH_TOLERANCE: chrono::Duration = chrono::Duration::seconds(5);
 /// `token_usage` is the authoritative record: the router writes one row per call with
 /// the provider and model that really served it. When no row matches, the agent did not
 /// route through us (reporting-only install), so the reported labels are left alone.
-///
-/// Ingest applies the same relabel before it writes the turn's `trace_usage` row
-/// (`coding_agent_usage`), so the row it writes is the one a read-back of this
-/// export would produce.
-pub(crate) async fn relabel_from_router(
-    db: &PgPool,
-    agent_id: Uuid,
-    event: &mut CodingAgentEventV1,
-) {
+async fn relabel_from_router(db: &PgPool, event: &mut CodingAgentEventV1) {
     if event.turn.llm_calls.is_empty() {
         return;
     }
-    let routed = match routed_labels(db, agent_id, event).await {
+    let routed = match routed_labels(db, event).await {
         Ok(routed) => routed,
         Err(error) => {
             // Labels are cosmetic next to delivering the span at all; a lookup
@@ -251,26 +188,22 @@ fn apply_routed_labels(event: &mut CodingAgentEventV1, provider: &str, model: &s
 /// Modal rather than first: a turn can span several calls, and tier routing may move
 /// between models inside one turn. The event carries a single synthesized LLM call, so
 /// the pair that served most of the turn is the honest single label for it.
-///
-/// Keyed on the receipt's agent, which is its session's agent by construction (ingest
-/// rejects a turn whose session belongs to another): ingest relabels before the
-/// session row of a brand-new session exists, and both paths must agree.
 async fn routed_labels(
     db: &PgPool,
-    agent_id: Uuid,
     event: &CodingAgentEventV1,
 ) -> Result<Option<(String, String)>, sqlx::Error> {
     sqlx::query_as(
         r#"SELECT tu.provider, tu.model
-           FROM token_usage tu
-           WHERE tu.agent_id = $1
+           FROM chat_sessions cs
+           JOIN token_usage tu ON tu.agent_id = cs.agent_id
+           WHERE cs.session_id = $1
              AND tu.created_at >= $2
              AND tu.created_at <= $3
            GROUP BY tu.provider, tu.model
            ORDER BY count(*) DESC, max(tu.created_at) DESC
            LIMIT 1"#,
     )
-    .bind(agent_id)
+    .bind(&event.session.id)
     .bind(event.turn.started_at - ROUTER_MATCH_TOLERANCE)
     .bind(event.turn.ended_at + ROUTER_MATCH_TOLERANCE)
     .fetch_optional(db)
@@ -513,7 +446,8 @@ pub(crate) fn trace_payload(event: &CodingAgentEventV1) -> Value {
                 ));
             }
         }
-        let (started_at, ended_at) = tool_span_window(event, tool);
+        let started_at = tool.started_at.unwrap_or(event.turn.started_at);
+        let ended_at = tool.ended_at.unwrap_or(started_at).max(started_at);
         let mut value = span(
             &trace_id,
             &scoped_id(
@@ -529,9 +463,13 @@ pub(crate) fn trace_payload(event: &CodingAgentEventV1) -> Value {
             (started_at, ended_at),
             attributes,
         );
-        value["status"] = match tool_span_status_code(tool.status) {
-            0 => json!({}),
-            code => json!({ "code": code }),
+        value["status"] = match tool.status {
+            CodingAgentToolCallStatus::Succeeded => json!({"code": 1}),
+            CodingAgentToolCallStatus::Failed
+            | CodingAgentToolCallStatus::Denied
+            | CodingAgentToolCallStatus::TimedOut
+            | CodingAgentToolCallStatus::Cancelled => json!({"code": 2}),
+            _ => json!({}),
         };
         value
     }));
@@ -625,33 +563,6 @@ pub(crate) fn log_payload(event: &CodingAgentEventV1) -> Value {
             }]
         }]
     })
-}
-
-/// A tool span's bounds: its own times where the agent reported them, else the
-/// turn's start, never ending before it starts.
-pub(crate) fn tool_span_window(
-    event: &CodingAgentEventV1,
-    tool: &CodingAgentToolCall,
-) -> (DateTime<Utc>, DateTime<Utc>) {
-    let started_at = tool.started_at.unwrap_or(event.turn.started_at);
-    (
-        started_at,
-        tool.ended_at.unwrap_or(started_at).max(started_at),
-    )
-}
-
-/// OTLP status code of a tool span: 1 ok, 2 error, 0 unset (still running or unknown).
-pub(crate) fn tool_span_status_code(status: CodingAgentToolCallStatus) -> u8 {
-    match status {
-        CodingAgentToolCallStatus::Succeeded => 1,
-        CodingAgentToolCallStatus::Failed
-        | CodingAgentToolCallStatus::Denied
-        | CodingAgentToolCallStatus::TimedOut
-        | CodingAgentToolCallStatus::Cancelled => 2,
-        CodingAgentToolCallStatus::Pending
-        | CodingAgentToolCallStatus::Running
-        | CodingAgentToolCallStatus::Unknown => 0,
-    }
 }
 
 fn tool_status(status: CodingAgentToolCallStatus) -> &'static str {
@@ -814,7 +725,6 @@ mod tests {
                 id: coding_agent_session_id("claude", "session"),
                 source_id: "session".into(),
                 title: None,
-                parent: None,
             },
             turn: CodingAgentTurn {
                 id: "turn".into(),

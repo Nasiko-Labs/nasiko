@@ -66,6 +66,15 @@ pub fn connect(agent: Option<&str>, llm_config: Option<&str>) -> Result<()> {
         llm_config,
         executable.clone(),
     )?;
+    // Both checks below run before anything local is written, so an unusable config costs
+    // only the LLM-config restore — never a half-installed `config.toml`.
+    let routed = match routed_model(&prepared.resolved_config) {
+        Ok(routed) => routed,
+        Err(error) => return rollback_after(&prepared, error),
+    };
+    if let Err(error) = verify_routing(&prepared, &routed.model) {
+        return rollback_after(&prepared, error);
+    }
     // Minting is a network call layered onto an otherwise local-file install; a failure here
     // (or an older control plane with no gateway configured) only softens to a warning — Codex
     // routing must still connect. The credential itself is folded into the same TOML write
@@ -85,8 +94,8 @@ pub fn connect(agent: Option<&str>, llm_config: Option<&str>) -> Result<()> {
         McpMint::Minted(credential) => Some(credential),
         McpMint::Unavailable(_) => None,
     };
-    let result = install_prepared(&prepared, &codex, mcp_credential);
-    let (config_path, model, embed_warning) = match result {
+    let result = install_prepared(&prepared, &codex, &routed.model, mcp_credential);
+    let (config_path, embed_warning) = match result {
         Ok(installed) => installed,
         Err(error) => {
             if mcp_credential.is_some() {
@@ -95,12 +104,7 @@ pub fn connect(agent: Option<&str>, llm_config: Option<&str>) -> Result<()> {
                     &prepared.binding.agent_id,
                 );
             }
-            return match coding_agent_router::rollback_config(&prepared) {
-                Ok(()) => Err(error),
-                Err(rollback) => Err(error.context(format!(
-                    "Codex install failed and the prior Nasiko LLM config could not be restored: {rollback:#}"
-                ))),
-            };
+            return rollback_after(&prepared, error);
         }
     };
     // A credential was minted but couldn't be embedded (`mcp_servers` wasn't a table `apply_installed`
@@ -111,15 +115,12 @@ pub fn connect(agent: Option<&str>, llm_config: Option<&str>) -> Result<()> {
             &prepared.binding.agent_id,
         );
     }
-    let provider = prepared.resolved_config["provider"]
-        .as_str()
-        .expect("provider was validated during installation");
     println!(
-        "Connected Codex routing to Nasiko ({}, {provider}/{model}).",
-        prepared.binding.cluster
+        "Connected Codex routing to Nasiko ({}, {}/{}).",
+        prepared.binding.cluster, routed.provider, routed.model
     );
     println!("Config:                    {}", config_path.display());
-    println!("Provider:                  nasiko ({model})");
+    println!("Provider:                  nasiko ({})", routed.model);
     match (&mcp_mint, &embed_warning) {
         (McpMint::Minted(_), None) => {
             println!("{}", coding_agent_router::mcp_connected_line());
@@ -154,16 +155,16 @@ fn mcp_servers_are_writable(document: &DocumentMut) -> bool {
 }
 
 /// Installs the resolved LLM-routing config (and, when usable, the MCP credential) into
-/// `$CODEX_HOME/config.toml`. Returns the config path, the routed model, and — only when a
-/// credential was minted but `mcp_servers` couldn't hold it — a warning for the caller to report
-/// and revoke; this is decided before `build_state` so the persisted state's
-/// `installed_mcp_server` always matches what actually landed in the file.
+/// `$CODEX_HOME/config.toml`. Returns the config path and — only when a credential was minted
+/// but `mcp_servers` couldn't hold it — a warning for the caller to report and revoke; this is
+/// decided before `build_state` so the persisted state's `installed_mcp_server` always matches
+/// what actually landed in the file.
 fn install_prepared(
     prepared: &coding_agent_router::PreparedConnection,
     codex: &Path,
+    model: &str,
     mcp_credential: Option<&coding_agent_router::McpCredential>,
-) -> Result<(PathBuf, String, Option<String>)> {
-    let model = responses_model(&prepared.resolved_config)?.to_string();
+) -> Result<(PathBuf, Option<String>)> {
     let config_path = config_path();
     let original_config = fs::read(&config_path).ok();
     let mut document = read_config(&config_path)?;
@@ -183,7 +184,7 @@ fn install_prepared(
         config_path.clone(),
         original_config.is_some(),
         &document,
-        &model,
+        model,
         usable_mcp_credential,
     )?;
     apply_installed(&mut document, &state)?;
@@ -208,23 +209,90 @@ fn install_prepared(
             ))),
         };
     }
-    Ok((config_path, model, mcp_warning))
+    Ok((config_path, mcp_warning))
 }
 
-fn responses_model(config: &serde_json::Value) -> Result<&str> {
-    let provider = config
-        .get("provider")
-        .and_then(serde_json::Value::as_str)
+/// The provider/model pair Codex is pointed at, read off the resolved Nasiko LLM config.
+#[derive(Debug)]
+struct RoutedModel {
+    provider: String,
+    model: String,
+}
+
+/// Config fields that can name the model, in the order the router itself falls back through
+/// them (`llm-router/src/resolver/mod.rs:640`). `tier2_model` outranks `tier1_model` there,
+/// so it does here too.
+const MODEL_FIELDS: [&str; 4] = ["model", "tier2_model", "tier1_model", "tier3_model"];
+
+/// Codex names a model in its own config, so the pair has to be readable before anything is
+/// written.
+///
+/// The provider is **not** restricted to an allowlist: the router's Responses surface
+/// forwards OpenAI natively and translates every other provider through the chat IR
+/// (`llm-router/src/handlers/responses.rs:128`), including DB-registered custom providers
+/// such as Bedrock Converse (`llm-router/src/providers/mod.rs:54`). Whether a given provider
+/// is actually routable is settled by `verify_routing`, which asks the router.
+///
+/// `model` is nullable — a tier-routed config leaves it unset — and for an agent that *has*
+/// an LLM config the router ignores whatever the client asked for and routes on the config
+/// row itself (`resolver/mod.rs:637`; `providers/openai.rs:330` "resolved model is
+/// authoritative"). So the name written into `config.toml` is a label, and [`MODEL_FIELDS`]
+/// picks the same one the router will fall back to. The resolver's last two steps — a custom
+/// provider's registered default, then the deployment's `DEFAULT_MODEL` — are not in this
+/// row, so a config naming none of the four is reported rather than guessed at.
+fn routed_model(config: &serde_json::Value) -> Result<RoutedModel> {
+    let provider = config_string(config, "provider")
         .context("resolved Nasiko LLM config is missing a provider")?;
-    if !matches!(provider, "openai" | "anthropic" | "gemini") {
-        bail!("Codex Responses routing does not support provider '{provider}'");
-    }
+    let model = MODEL_FIELDS
+        .iter()
+        .find_map(|field| config_string(config, field))
+        .context(
+            "resolved Nasiko LLM config names no model — it relies on this deployment's \
+             default, which Codex cannot name. Set one with \
+             `nasiko llm-config update <config> --model <model>`",
+        )?;
+    Ok(RoutedModel { provider, model })
+}
+
+/// A trimmed, non-blank string field of the resolved LLM config.
+fn config_string(config: &serde_json::Value, field: &str) -> Option<String> {
     config
-        .get("model")
+        .get(field)
         .and_then(serde_json::Value::as_str)
         .map(str::trim)
-        .filter(|model| !model.is_empty())
-        .context("resolved Nasiko LLM config is missing a model")
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+/// Fails `connect` when the router itself refuses this LLM config, so an unroutable provider
+/// surfaces here rather than as a 400 on the first Codex turn. Anything the probe could not
+/// establish is a warning: routing installs either way.
+fn verify_routing(prepared: &coding_agent_router::PreparedConnection, model: &str) -> Result<()> {
+    match coding_agent_router::preflight_routing(&prepared.entry, &prepared.binding.agent_id, model)
+    {
+        coding_agent_router::RoutingPreflight::Reachable => Ok(()),
+        coding_agent_router::RoutingPreflight::Rejected(reason) => bail!(
+            "Nasiko cannot route Codex with this LLM config: {reason}. Choose another with `nasiko connect codex --config <name>`"
+        ),
+        coding_agent_router::RoutingPreflight::Inconclusive(reason) => {
+            eprintln!("warning: could not verify LLM routing before connecting ({reason})");
+            Ok(())
+        }
+    }
+}
+
+/// Restores the agent's previous LLM config after a failed connect, keeping both failures
+/// when the restore itself fails.
+fn rollback_after(
+    prepared: &coding_agent_router::PreparedConnection,
+    error: anyhow::Error,
+) -> Result<()> {
+    match coding_agent_router::rollback_config(prepared) {
+        Ok(()) => Err(error),
+        Err(rollback) => Err(error.context(format!(
+            "Codex connect failed and the prior Nasiko LLM config could not be restored: {rollback:#}"
+        ))),
+    }
 }
 
 pub fn disconnect(force: bool) -> Result<()> {
@@ -1038,24 +1106,84 @@ base_url = "https://user.example"
     }
 
     #[test]
-    fn codex_provider_validation_accepts_responses_providers() {
+    fn routed_model_accepts_every_provider_the_router_can_reach() {
+        // Built-in, translated built-in, and DB-registered custom providers alike: the
+        // Responses surface translates anything that isn't OpenAI, so the CLI no longer
+        // keeps an allowlist of its own.
         for (provider, model) in [
             ("openai", "gpt-5.4"),
             ("anthropic", "claude-opus-4"),
             ("gemini", "gemini-2.5-pro"),
+            ("openrouter", "z-ai/glm-4.6"),
+            ("bedrock-provider", "anthropic.claude-sonnet-4-v1:0"),
+            ("azure-prod", "gpt-4o"),
         ] {
-            assert_eq!(
-                responses_model(&serde_json::json!({"provider":provider,"model":model})).unwrap(),
-                model
-            );
+            let routed =
+                routed_model(&serde_json::json!({"provider":provider,"model":model})).unwrap();
+            assert_eq!(routed.provider, provider);
+            assert_eq!(routed.model, model);
         }
-        let error =
-            responses_model(&serde_json::json!({"provider":"other","model":"m"})).unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("does not support provider 'other'")
+    }
+
+    #[test]
+    fn a_tier_routed_config_names_the_model_the_router_falls_back_to() {
+        // `model` is nullable: a tier-routed config leaves it unset, and the router falls
+        // back through tier2 → tier1 → tier3 (`resolver/mod.rs:640`). Codex still has to
+        // write *a* model, so it writes that same one rather than refusing to connect.
+        let tiered = serde_json::json!({
+            "provider": "bedrock-provider",
+            "model": serde_json::Value::Null,
+            "tier1_model": "anthropic.claude-haiku-4-v1:0",
+            "tier2_model": "anthropic.claude-sonnet-4-v1:0",
+            "tier3_model": "anthropic.claude-opus-4-v1:0",
+        });
+        assert_eq!(
+            routed_model(&tiered).unwrap().model,
+            "anthropic.claude-sonnet-4-v1:0"
         );
+
+        // An explicit `model` still outranks every tier.
+        let explicit = serde_json::json!({
+            "provider": "bedrock-provider",
+            "model": "anthropic.claude-opus-4-v1:0",
+            "tier2_model": "anthropic.claude-sonnet-4-v1:0",
+        });
+        assert_eq!(
+            routed_model(&explicit).unwrap().model,
+            "anthropic.claude-opus-4-v1:0"
+        );
+
+        // Lower tiers are reached only when the ones above them are absent.
+        let only_tier3 = serde_json::json!({
+            "provider": "bedrock-provider",
+            "tier3_model": "anthropic.claude-opus-4-v1:0",
+        });
+        assert_eq!(
+            routed_model(&only_tier3).unwrap().model,
+            "anthropic.claude-opus-4-v1:0"
+        );
+    }
+
+    #[test]
+    fn routed_model_rejects_a_config_that_names_no_provider_or_no_model_at_all() {
+        for (config, expected) in [
+            (
+                serde_json::json!({"model": "gpt-5.4"}),
+                "missing a provider",
+            ),
+            (
+                serde_json::json!({"provider": "  ", "model": "gpt-5.4"}),
+                "missing a provider",
+            ),
+            (serde_json::json!({"provider": "openai"}), "names no model"),
+            (
+                serde_json::json!({"provider": "openai", "model": "  ", "tier2_model": ""}),
+                "names no model",
+            ),
+        ] {
+            let error = routed_model(&config).unwrap_err();
+            assert!(error.to_string().contains(expected), "{config}: {error}");
+        }
     }
 
     #[cfg(unix)]

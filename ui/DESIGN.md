@@ -42,7 +42,7 @@ Every colour is a CSS variable in `common/src/index.css`, exposed to Tailwind th
   primary, the primary, its pale tint, the ring and the chart order. Dark surfaces are composed, not inverted:
   page < sidebar < card.
 - Both are applied before first paint by the inline script in `index.html` (same keys as `theme.ts`, checked by a test).
-- Settings → Appearance (`/settings/appearance`, also the account menu's Theme submenu) has a Mode radio group and a
+- Account settings → Appearance (`/account/appearance`, also the account menu's Theme submenu) has a Mode radio group and a
   Theme radio group drawn as picture tiles: each mode is a small drawing of the app in that mode (System split on a
   diagonal; fixed `--preview-light-*` / `--preview-dark-*` tokens, the same in every theme and mode), each theme a nav
   tint and button in its light `--primary`. The radio stays in the tile, visually hidden; the chosen tile has a
@@ -128,7 +128,7 @@ Presets in `common/src/lib/motion.ts`; new motion uses the names, never raw numb
 | Width | 240 px expanded, 56 px icon rail; below 768 px a sheet from a slim top bar |
 | Rows | 32 px (44 px on touch), 16 px lucide icons, 14 px labels |
 | Header | the mark and the brand name (`copy.brand`), linking to the Overview, and the collapse button (⌘B / Ctrl+B) top right. In the rail the mark alone is the Expand button: hover or keyboard focus swaps it for the expand icon (150 ms fade, none under reduced motion), with the "Expand (⌘B)" tooltip |
-| Groups | by job: Overview, Chat (no header); FLEET: Agents, Workflows; CONNECT: LLM router, MCP servers; OBSERVE: Sessions, TokenOps, Harnesses; LAB (development builds only): Weave fixtures. In the rail a group header becomes a 20 px `--sidebar-border` hairline (8 px above and below), so the icons stay one even column. Deploy and Builds are Agents' sub-pages (its `SectionNav`: All agents · Your agents · Builds) and mark Agents current |
+| Groups | by job: Overview, Chat (no header); FLEET: Agents, Workflows; CONNECT: LLM router, MCP servers; OBSERVE: Sessions, TokenOps, Optimization, Harnesses; LAB (development builds only): Weave fixtures. In the rail a group header becomes a 20 px `--sidebar-border` hairline (8 px above and below), so the icons stay one even column. Deploy and Builds are Agents' sub-pages (its `SectionNav`: All agents · Your agents · Builds) and mark Agents current |
 | Active item | `--accent` tint fill, `--accent-foreground` label, medium weight, 6 px radius, `aria-current="page"`; hover on other rows is `--muted`, never the tint |
 | Drill-in panel | a page with its own nav (Chat's history, Settings' sections) renders `SidebarPanel`: in the expanded sidebar and the phone sheet it replaces the nav groups under a row reading "Back" (its name and tooltip say where: "Back to TokenOps"): it returns to the last page visited outside the module (with its search; moves inside Chat or Settings don't count; repeated Backs keep going back, like history), or, when the page was opened directly ("Back to main menu"), shows the app nav until the next navigation; the collapsed rail keeps the nav icons and the page shows its own fallback beside it (Chat's rail column or sheet, Settings' section column). Never two sidebars side by side at full width |
 | Footer | status (health + MOCK DATA / LIVE, links to Status at `/status`; dev servers and mock builds only), account (Theme submenu: Mode and Theme radios; Settings; Sign out) |

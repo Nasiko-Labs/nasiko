@@ -1,7 +1,7 @@
 {
   "name": "nasiko-ui-lab",
   "private": true,
-  "version": "0.19.0",
+  "version": "0.21.0",
   "type": "module",
   "engines": {
     "node": ">=22.18"
@@ -11,6 +11,7 @@
   ],
   "scripts": {
     "dev": "node scripts/app.ts dev",
+    "design": "vite --config design/vite.config.ts",
     "build": "node scripts/app.ts typecheck && node scripts/app.ts build",
     "typecheck": "node scripts/app.ts typecheck",
     "lint": "eslint . --max-warnings 0 && prettier --check .",

@@ -60,6 +60,15 @@ pub const MCP_SERVER_NAME: &str = "nasiko";
 /// normal request, short enough that a hung server doesn't stall a local install indefinitely.
 pub(crate) const CP_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// Upper bound on [`preflight_routing`]. Longer than [`CP_CALL_TIMEOUT`] because the probe
+/// is a real (if tiny) provider round trip rather than a control-plane read, and a slow
+/// upstream must not be mistaken for a broken configuration.
+const PREFLIGHT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Output cap for the preflight turn. Deliberately tiny — the probe exists to exercise
+/// resolution and reach the provider, not to produce text, but it is a real billed turn.
+const PREFLIGHT_MAX_OUTPUT_TOKENS: u32 = 16;
+
 /// A minted MCP gateway credential. `token` and `connect_url` are both secrets (the URL embeds
 /// the token), so `Debug` redacts them rather than deriving it.
 #[derive(Clone)]
@@ -531,6 +540,88 @@ pub fn rollback_config(prepared: &PreparedConnection) -> Result<()> {
     Ok(())
 }
 
+/// What [`preflight_routing`] established about an agent's LLM configuration.
+pub enum RoutingPreflight {
+    /// The router resolved the config and reached its provider.
+    Reachable,
+    /// The router refused the configuration itself. Every turn the coding agent makes
+    /// would fail the same way, so `connect` must not proceed.
+    Rejected(String),
+    /// Nothing was established — an older control plane without the route, a transport
+    /// failure, or an upstream outage. The caller warns and connects anyway.
+    Inconclusive(String),
+}
+
+/// Probes LLM routing the way the connected coding agent will: one tiny non-streaming
+/// `/v1/responses` turn carrying the bound agent's own routing credential.
+///
+/// Without it, a config naming a provider that was never registered as a custom-provider
+/// row surfaces only on the developer's first turn, as a 400 from the resolver
+/// (`llm-router/src/resolver/mod.rs:433`) against a config that already looks installed.
+pub fn preflight_routing(entry: &ClusterEntry, agent_id: &str, model: &str) -> RoutingPreflight {
+    let _spin = nasiko_utils::term::start_status("verifying LLM routing");
+    let client = Client::from_cluster_entry_with_timeout(entry, Some(PREFLIGHT_TIMEOUT));
+    let credential = match mint_routing_credential(&client, agent_id) {
+        Ok(credential) => credential,
+        Err(error) => return RoutingPreflight::Inconclusive(one_line_warning(&error)),
+    };
+    match client.post_raw_with_token("/v1/responses", &credential.token, &preflight_body(model)) {
+        Ok((status, body)) => classify_preflight(status, &body),
+        Err(error) => RoutingPreflight::Inconclusive(one_line_warning(&error)),
+    }
+}
+
+fn preflight_body(model: &str) -> Value {
+    json!({
+        "model": model,
+        "input": "ping",
+        "max_output_tokens": PREFLIGHT_MAX_OUTPUT_TOKENS,
+        "stream": false,
+        "store": false,
+    })
+}
+
+/// Only the router's own refusals are fatal. A 4xx is a verdict on this configuration; a
+/// missing route (an older control plane), a throttle, a timeout, or an upstream fault
+/// says nothing about it — `429` and `5xx` in particular reach the router only *after*
+/// resolution has already succeeded.
+fn classify_preflight(status: u16, body: &str) -> RoutingPreflight {
+    if (200..300).contains(&status) {
+        return RoutingPreflight::Reachable;
+    }
+    if status == 404 {
+        return RoutingPreflight::Inconclusive(
+            "this control plane has no /v1/responses route".to_string(),
+        );
+    }
+    let reason = preflight_error_message(body).unwrap_or_else(|| format!("HTTP {status}"));
+    match status {
+        408 | 429 => RoutingPreflight::Inconclusive(reason),
+        400..=499 => RoutingPreflight::Rejected(reason),
+        _ => RoutingPreflight::Inconclusive(reason),
+    }
+}
+
+/// The `error.message` of a router error body (`llm-router/src/handlers/responses.rs:934`).
+fn preflight_error_message(body: &str) -> Option<String> {
+    let body: Value = serde_json::from_str(body).ok()?;
+    body.get("error")?
+        .get("message")?
+        .as_str()
+        .map(str::trim)
+        .filter(|message| !message.is_empty())
+        .map(str::to_string)
+}
+
+/// Mints the bound agent's routing credential — the bearer every connected coding agent
+/// presents to the LLM router, whether it was obtained by the credential helper or by the
+/// connect-time preflight.
+fn mint_routing_credential(client: &Client, agent_id: &str) -> Result<RoutingCredential> {
+    let response: Envelope<RoutingCredential> =
+        client.post_json_quiet(&format!("/agents/{agent_id}/llm-token"), &json!({}))?;
+    Ok(response.data)
+}
+
 pub fn credential(binding: &ConnectionBinding) -> Result<RoutingCredential> {
     credential_from_config(binding, &config::load()?)
 }
@@ -555,11 +646,7 @@ fn credential_from_config(binding: &ConnectionBinding, cfg: &Config) -> Result<R
         bail!("Nasiko login changed since connect; reconnect this coding agent");
     }
     let client = Client::from_cluster_entry_with_timeout(entry, Some(CP_CALL_TIMEOUT));
-    let response: Envelope<RoutingCredential> = client.post_json_quiet(
-        &format!("/agents/{}/llm-token", binding.agent_id),
-        &json!({}),
-    )?;
-    Ok(response.data)
+    mint_routing_credential(&client, &binding.agent_id)
 }
 
 pub fn auth_status(binding: &ConnectionBinding) -> Result<&'static str> {
@@ -683,6 +770,68 @@ mod tests {
     #[test]
     fn disconnect_preflight_allows_stopped_agent() {
         assert!(enforce_disconnect_preflight("Codex", &[], false).is_ok());
+    }
+
+    /// The reason a routing preflight fails `connect`, or `None` when it doesn't.
+    fn rejection(status: u16, body: &str) -> Option<String> {
+        match classify_preflight(status, body) {
+            RoutingPreflight::Rejected(reason) => Some(reason),
+            RoutingPreflight::Reachable | RoutingPreflight::Inconclusive(_) => None,
+        }
+    }
+
+    #[test]
+    fn a_router_refusal_fails_connect_and_carries_its_own_reason() {
+        let unregistered = serde_json::json!({
+            "error": {
+                "message": "provider 'bedrock-provider' is not a registered custom provider",
+                "type": "invalid_request_error",
+                "code": "invalid_request_error",
+            }
+        })
+        .to_string();
+        assert_eq!(
+            rejection(400, &unregistered).as_deref(),
+            Some("provider 'bedrock-provider' is not a registered custom provider")
+        );
+        // An unparseable or empty body still rejects — the status is the verdict, the
+        // message only sharpens it.
+        assert_eq!(rejection(403, "").as_deref(), Some("HTTP 403"));
+    }
+
+    #[test]
+    fn nothing_but_a_router_refusal_blocks_connect() {
+        // Reached the provider: routing resolved.
+        assert!(matches!(
+            classify_preflight(200, "{}"),
+            RoutingPreflight::Reachable
+        ));
+        // A control plane predating `/v1/responses`, a throttle, a timeout, and an upstream
+        // fault all leave this config's routability unknown — none of them may block a
+        // local install.
+        for (status, body) in [
+            (404, ""),
+            (408, ""),
+            (429, r#"{"error":{"message":"rate limited"}}"#),
+            (502, r#"{"error":{"message":"provider returned 500"}}"#),
+            (503, ""),
+        ] {
+            assert!(
+                matches!(
+                    classify_preflight(status, body),
+                    RoutingPreflight::Inconclusive(_)
+                ),
+                "status {status} must not block connect"
+            );
+        }
+    }
+
+    #[test]
+    fn preflight_body_is_the_cheapest_turn_that_still_resolves() {
+        let body = preflight_body("anthropic.claude-sonnet-4-v1:0");
+        assert_eq!(body["model"], "anthropic.claude-sonnet-4-v1:0");
+        assert_eq!(body["max_output_tokens"], PREFLIGHT_MAX_OUTPUT_TOKENS);
+        assert_eq!(body["stream"], false);
     }
 
     #[test]

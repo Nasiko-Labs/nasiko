@@ -4,6 +4,9 @@
     "@fontsource-variable/hanken-grotesk",
     "@fontsource-variable/jetbrains-mono"
   ],
+  "ignore": [
+    "design/**"
+  ],
   "workspaces": {
     ".": {
       "entry": [
@@ -42,7 +45,8 @@
         "src/routes/**/*.tsx",
         "src/**/*.test.{ts,tsx}",
         "src/test/**/*.ts",
-        "src/**/*.stories.tsx"
+        "src/**/*.stories.tsx",
+        "src/features/router/components/Budget*.tsx"
       ],
       "project": [
         "src/**/*.{ts,tsx}"

@@ -430,6 +430,35 @@ impl Client {
         Ok(resp.body_mut().read_json()?)
     }
 
+    // ─── LLM router surface (no /api prefix, agent-scoped credential) ───────
+
+    /// POST a JSON body to a non-`/api` path with an explicit bearer token, returning the
+    /// HTTP status and the raw body without treating a non-2xx as an error. The LLM
+    /// router's `/v1/*` routes authenticate an agent's own routing credential rather than
+    /// the user session (`server/src/lib.rs:388`), and the only caller — the coding-agent
+    /// connect preflight — needs the status itself to tell a rejected configuration apart
+    /// from an unreachable upstream.
+    pub(crate) fn post_raw_with_token<B: Serialize>(
+        &self,
+        path: &str,
+        token: &str,
+        body: &B,
+    ) -> Result<(u16, String)> {
+        let url = self.raw_url(path);
+        let mut resp = self
+            .agent
+            .post(&url)
+            .header("Authorization", &format!("Bearer {token}"))
+            .send_json(body)
+            .context("cannot reach control plane")?;
+        let status = resp.status().as_u16();
+        let body = resp
+            .body_mut()
+            .read_to_string()
+            .with_context(|| format!("unreadable response body from {url}"))?;
+        Ok((status, body))
+    }
+
     pub fn health_check(url: &str) -> Result<()> {
         let agent = Agent::new_with_config(
             ureq::config::Config::builder()
@@ -761,7 +790,6 @@ impl Client {
         env: &std::collections::HashMap<String, String>,
         writable: bool,
         writable_path: Option<&str>,
-        workload_kind: Option<&str>,
     ) -> anyhow::Result<UploadQueued> {
         let file_bytes = std::fs::read(zip_path)
             .with_context(|| format!("cannot read {}", zip_path.display()))?;
@@ -808,12 +836,6 @@ impl Client {
         if let Some(path) = writable_path {
             body.extend_from_slice(
                 format!("--{boundary}\r\nContent-Disposition: form-data; name=\"writable_path\"\r\n\r\n{path}\r\n").as_bytes(),
-            );
-        }
-        // workload_kind (acp_coding_agent marks an ACP coding agent)
-        if let Some(kind) = workload_kind {
-            body.extend_from_slice(
-                format!("--{boundary}\r\nContent-Disposition: form-data; name=\"workload_kind\"\r\n\r\n{kind}\r\n").as_bytes(),
             );
         }
         // file (the zip file)
@@ -1166,12 +1188,6 @@ pub struct AgentRecord {
     #[tabled(skip)]
     #[serde(default)]
     pub transport_path: Option<String>,
-    /// `agent` (default) | `mcp_connector` | `acp_coding_agent`. Lets `chat` label
-    /// the agent's kind and `--coding-agent` assert on it. `None` from an older
-    /// server that doesn't return it.
-    #[tabled(skip)]
-    #[serde(default)]
-    pub workload_kind: Option<String>,
     #[tabled(skip)]
     #[serde(default)]
     pub framework: Option<String>,
@@ -1368,10 +1384,6 @@ pub struct DeploySpec {
     pub writable: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub writable_path: Option<String>,
-    /// Workload kind (`acp_coding_agent` for an ACP coding agent). Omitted for an
-    /// ordinary HTTP agent, so the server defaults to `agent`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workload_kind: Option<String>,
 }
 
 #[cfg(test)]

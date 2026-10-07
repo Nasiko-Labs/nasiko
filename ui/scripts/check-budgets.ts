@@ -12,6 +12,7 @@ import { gzipSync } from 'node:zlib'
 type Chunk = { file: string; src?: string; isEntry?: boolean; imports?: string[]; css?: string[] }
 
 const KB = 1024
+// Shared 200 KB for every edition (EE's 205 KB override went with the zod/mini route schemas, 2026-10-06).
 export const BUDGET = { shellJs: 200 * KB, shellCss: 40 * KB, lazy: 120 * KB }
 /** Chunks that never load in a live build (mock mode only). */
 const MOCK_ONLY = /src\/mocks\/|node_modules\/msw\//

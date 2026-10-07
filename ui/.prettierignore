@@ -9,6 +9,11 @@
 !*/vite.config.ts
 !*/*/vite.config.ts
 !scripts/**/*.ts
+# The design playground (plans/feat-design-playground.md): its code is TypeScript in this repo, so it is
+# formatted like the rest of it. ESLint skips it (its shell is raw elements by design); Prettier does not.
+!design/**/*.ts
+!design/**/*.tsx
+!design/**/*.css
 node_modules/
 .claude/
 **/dist/
@@ -21,3 +26,5 @@ common/src/test/__live__/
 common/src/components/ui/
 # Vendored verbatim from nasiko-cloud-rs (ee/web/src/weave/core/README.md).
 ee/web/src/weave/core/
+# Written by msw on install (package.json "msw.workerDirectory"); CI's npm ci regenerates it unformatted.
+public/mockServiceWorker.js

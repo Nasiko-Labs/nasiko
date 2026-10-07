@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::super::catalog::{self, AgentSpec, Support};
 use super::super::launcher;
-use super::super::model::{LlmCall, SessionSnapshot, ToolCall, Turn, subagent_parent};
+use super::super::model::{LlmCall, SessionSnapshot, ToolCall, Turn};
 use super::super::state;
 
 pub const INSTALL_VERSION: u32 = 2;
@@ -75,10 +75,10 @@ struct ToolCallRecord {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub(super) struct TokenUsage {
-    pub(super) input: u64,
-    pub(super) output: u64,
-    pub(super) cache_read: u64,
+struct TokenUsage {
+    input: u64,
+    output: u64,
+    cache_read: u64,
 }
 
 pub fn config_path() -> PathBuf {
@@ -276,53 +276,11 @@ fn snapshot_in(raw: &str, spool_dir: &Path) -> Result<SessionSnapshot> {
     // watermarks, not this event spool, decide whether export is pending.
     atomic_write(&path, serde_json::to_vec(&pending)?.as_slice())?;
 
-    // Only a completed turn is sent, so only then is it worth asking whether the thread is a subagent's.
-    Ok(match snapshot {
-        Some(snapshot) => SessionSnapshot {
-            parent: payload
-                .transcript_path
-                .as_deref()
-                .and_then(rollout_session_meta)
-                .and_then(|meta| spawned_by(&snapshot.session_id, &meta)),
-            ..snapshot
-        },
-        None => SessionSnapshot {
-            session_id: payload.session_id,
-            title: None,
-            turns: Vec::new(),
-            parent: None,
-        },
-    })
-}
-
-/// The `session_meta` payload a rollout opens with; none when it can't be read or has none.
-fn rollout_session_meta(path: &Path) -> Option<Value> {
-    use std::io::BufRead;
-    let file = std::fs::File::open(path).ok()?;
-    std::io::BufReader::new(file)
-        .lines()
-        .map_while(Result::ok)
-        .take(SESSION_META_SEARCH_LINES)
-        .filter_map(|line| serde_json::from_str::<Value>(&line).ok())
-        .find(|entry| entry["type"] == "session_meta")
-        .map(|entry| entry["payload"].clone())
-}
-
-/// How far into a rollout its `session_meta` line is looked for: it is the first line Codex writes.
-const SESSION_META_SEARCH_LINES: usize = 8;
-
-/// The link from thread `thread_id` to the thread that spawned it, from its `session_meta`: Codex
-/// records a subagent's thread as `source: {"subagent": {"thread_spawn": {"parent_thread_id", ..}}}`.
-pub(super) fn spawned_by(
-    thread_id: &str,
-    session_meta: &Value,
-) -> Option<nasiko_types::coding_agent::CodingAgentSessionParent> {
-    let spawn = &session_meta["source"]["subagent"]["thread_spawn"];
-    let parent_id = spawn["parent_thread_id"].as_str()?;
-    let agent_type = spawn["agent_role"]
-        .as_str()
-        .or_else(|| spawn["agent_nickname"].as_str());
-    subagent_parent(thread_id, parent_id, None, agent_type)
+    Ok(snapshot.unwrap_or_else(|| SessionSnapshot {
+        session_id: payload.session_id,
+        title: None,
+        turns: Vec::new(),
+    }))
 }
 
 fn validate_payload(payload: &HookPayload) -> Result<()> {
@@ -480,7 +438,6 @@ fn apply_event(
     Some(SessionSnapshot {
         session_id: payload.session_id.clone(),
         title: None,
-        parent: None,
         turns: vec![Turn {
             uuid: payload.turn_id.clone(),
             prompt,
@@ -511,7 +468,7 @@ fn value_text(value: &Value) -> String {
         .unwrap_or_else(|| value.to_string())
 }
 
-pub(super) fn tool_response_status(
+fn tool_response_status(
     response: Option<&Value>,
     hook_error: Option<&Value>,
 ) -> (CodingAgentToolCallStatus, Option<String>) {
@@ -570,14 +527,14 @@ pub(super) fn tool_response_status(
     (CodingAgentToolCallStatus::Unknown, None)
 }
 
-pub(super) fn nonempty(value: Option<&str>) -> Option<String> {
+fn nonempty(value: Option<&str>) -> Option<String> {
     value
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
 }
 
-pub(super) fn provider_for(model: &str) -> &'static str {
+fn provider_for(model: &str) -> &'static str {
     let model = model.to_ascii_lowercase();
     if model.starts_with("claude") {
         "anthropic"
@@ -588,7 +545,7 @@ pub(super) fn provider_for(model: &str) -> &'static str {
     }
 }
 
-pub(super) fn usage_delta(start: Option<TokenUsage>, end: Option<TokenUsage>) -> TokenUsage {
+fn usage_delta(start: Option<TokenUsage>, end: Option<TokenUsage>) -> TokenUsage {
     let (Some(start), Some(end)) = (start, end) else {
         return TokenUsage::default();
     };
@@ -619,11 +576,7 @@ fn parse_token_usage_lines(content: &str) -> Option<TokenUsage> {
 }
 
 fn token_usage_line(line: &str) -> Option<TokenUsage> {
-    token_usage_entry(&serde_json::from_str(line).ok()?)
-}
-
-/// The cumulative session usage a rollout `token_count` event carries; `None` for any other line.
-pub(super) fn token_usage_entry(entry: &Value) -> Option<TokenUsage> {
+    let entry: Value = serde_json::from_str(line).ok()?;
     if entry["type"] != "event_msg" || entry["payload"]["type"] != "token_count" {
         return None;
     }
@@ -687,7 +640,7 @@ fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
 }
 
 #[cfg(test)]
-pub(super) mod tests {
+mod tests {
     use super::*;
 
     fn payload(event: &str) -> HookPayload {
@@ -819,61 +772,6 @@ pub(super) mod tests {
         assert_eq!(turn.calls[0].input_tokens, 7);
         assert_eq!(turn.calls[0].output_tokens, 5);
         assert_eq!(turn.calls[0].cache_read_tokens, 3);
-    }
-
-    /// A rollout opening the way Codex writes a subagent's thread.
-    pub(in super::super) fn subagent_rollout_meta(thread: &str, parent: &str) -> String {
-        json!({"timestamp": "2026-01-01T00:00:00Z", "type": "session_meta", "payload": {
-            "id": thread, "cwd": "/tmp", "originator": "codex_cli_rs", "cli_version": "0.157.0",
-            "source": {"subagent": {"thread_spawn": {
-                "parent_thread_id": parent, "depth": 1,
-                "agent_nickname": "Ada", "agent_role": "explorer"}}},
-            "thread_source": "subagent"}})
-        .to_string()
-    }
-
-    #[test]
-    fn a_subagent_threads_completed_turn_is_linked_to_the_thread_that_spawned_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let rollout = dir.path().join("rollout.jsonl");
-        std::fs::write(&rollout, subagent_rollout_meta("child", "parent") + "\n").unwrap();
-        let event = |name: &str, extra: Value| {
-            let mut raw = json!({"session_id": "child", "turn_id": "t", "hook_event_name": name,
-                                 "model": "gpt-5", "transcript_path": rollout});
-            raw.as_object_mut()
-                .unwrap()
-                .extend(extra.as_object().unwrap().clone());
-            raw.to_string()
-        };
-
-        let started = snapshot_in(
-            &event("UserPromptSubmit", json!({"prompt": "look"})),
-            dir.path(),
-        );
-        let stopped = snapshot_in(
-            &event("Stop", json!({"last_assistant_message": "found"})),
-            dir.path(),
-        )
-        .unwrap();
-
-        assert!(
-            started.unwrap().parent.is_none(),
-            "nothing complete, nothing looked up"
-        );
-        assert_eq!(stopped.turns.len(), 1);
-        let parent = stopped.parent.unwrap();
-        assert_eq!(parent.source_id, "parent");
-        assert_eq!(parent.tool_call_id, None);
-        assert_eq!(parent.agent_type.as_deref(), Some("explorer"));
-    }
-
-    #[test]
-    fn a_thread_codex_started_itself_has_no_parent() {
-        let meta = json!({"id": "t", "source": "cli", "thread_source": "user"});
-        assert!(spawned_by("t", &meta).is_none());
-        let review = json!({"id": "t", "source": {"subagent": "review"}});
-        assert!(spawned_by("t", &review).is_none());
-        assert!(rollout_session_meta(Path::new("/nonexistent/rollout.jsonl")).is_none());
     }
 
     #[test]
