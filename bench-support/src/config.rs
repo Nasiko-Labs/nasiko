@@ -114,6 +114,7 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         s3_access_key: "nasiko".into(),
         s3_secret_key: "nasiko123".into(),
         s3_region: "us-east-1".into(),
+        s3_force_path_style: true,
         secrets_encryption_key: "12345678901234567890123456789012".into(),
         oci_storage_bucket: "nasiko-bench-artifacts".into(),
         agent_image_registry: String::new(),

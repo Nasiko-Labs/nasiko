@@ -727,14 +727,38 @@ fn unset_workspace_store_url_derives_a_prefix_in_the_oci_bucket() {
 
 #[test]
 #[serial]
-fn derived_default_on_azure_blob_claims_no_s3_credentials() {
+fn derived_default_with_an_explicit_s3_provider_is_an_s3_url() {
+    set_required_vars();
+    unset_workspace_vars();
+    unsafe { std::env::set_var("STORAGE_PROVIDER", "s3") };
+    unsafe { std::env::set_var("OCI_STORAGE_BUCKET", "nasiko-artifacts") };
+
+    let cfg = Config::from_env().unwrap();
+    assert_eq!(cfg.workspace_store_url, "s3://nasiko-artifacts/workspace");
+    assert!(
+        cfg.workspace_store_shares_oci_s3,
+        "the derived default shares the OCI bucket, so it needs the S3_* settings"
+    );
+
+    unset_workspace_vars();
+    unset_required_vars();
+}
+
+#[test]
+#[serial]
+fn derived_default_on_azure_blob_is_an_az_url_and_claims_no_s3_credentials() {
     set_required_vars();
     unset_workspace_vars();
     unsafe { std::env::set_var("STORAGE_PROVIDER", "azure-blob") };
     unsafe { std::env::set_var("OCI_STORAGE_BUCKET", "nasiko-artifacts") };
 
     let cfg = Config::from_env().unwrap();
-    assert_eq!(cfg.workspace_store_url, "s3://nasiko-artifacts/workspace");
+    assert_eq!(
+        cfg.workspace_store_url, "az://nasiko-artifacts/workspace",
+        "an s3:// default here builds an S3 client from an empty AWS_* env: it \
+         boots green and fails on the first write with an instance-metadata \
+         error naming neither Azure nor the variable to set"
+    );
     assert!(
         !cfg.workspace_store_shares_oci_s3,
         "an Azure Blob deployment holds no S3 credential to bridge"
@@ -762,5 +786,31 @@ fn workspace_defaults_are_the_documented_ones() {
     assert_eq!(cfg.workspace_sweep_interval_secs, 60);
     assert_eq!(cfg.workspace_mcp_url, None);
 
+    unset_required_vars();
+}
+
+#[test]
+#[serial]
+fn a_known_transfer_mode_is_accepted_and_a_typo_fails_startup() {
+    set_required_vars();
+    unset_workspace_vars();
+    unset_vars(&["WORKSPACE_TRANSFER_MODE"]);
+
+    unsafe { std::env::set_var("WORKSPACE_TRANSFER_MODE", "direct") };
+    assert_eq!(
+        Config::from_env().unwrap().workspace_transfer_mode,
+        "direct"
+    );
+
+    unsafe { std::env::set_var("WORKSPACE_TRANSFER_MODE", "dirrect") };
+    let err = Config::from_env()
+        .expect_err("an unrecognised mode must fail at startup, not at the first transfer")
+        .to_string();
+    assert!(
+        err.contains("auto, direct, relay"),
+        "the error must name every accepted spelling, got: {err}"
+    );
+
+    unset_vars(&["WORKSPACE_TRANSFER_MODE"]);
     unset_required_vars();
 }
