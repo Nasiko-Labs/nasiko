@@ -150,6 +150,12 @@ pub enum ContentPart {
         data: String,
         format: String,
     },
+    /// OpenAI has no video part type. `video_url` is the de-facto convention among the
+    /// OpenAI-compatible endpoints that do accept video, and it mirrors `image_url`, so
+    /// that is the shape the hub uses. Gemini and Bedrock carry it; Anthropic refuses it.
+    Video {
+        source: DataSource,
+    },
 }
 
 impl ContentPart {
@@ -217,6 +223,16 @@ impl ContentPart {
                         .to_string(),
                 })
             }
+            "video_url" => {
+                let url = p
+                    .get("video_url")
+                    .and_then(|v| v.get("url"))
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| UnsupportedPart::new("video_url part missing url"))?;
+                Ok(Self::Video {
+                    source: DataSource::from_url_field(url, "video_url")?,
+                })
+            }
             other => Err(UnsupportedPart::new(format!(
                 "unsupported content part type: '{other}'"
             ))),
@@ -244,6 +260,10 @@ impl ContentPart {
             Self::Audio { data, format } => json!({
                 "type": "input_audio",
                 "input_audio": { "data": data, "format": format },
+            }),
+            Self::Video { source } => json!({
+                "type": "video_url",
+                "video_url": { "url": source.to_url_field() },
             }),
         }
     }
@@ -357,6 +377,8 @@ mod tests {
             json!({ "type": "file", "file": { "file_data": "data:application/pdf;base64,JVBE" } }),
             json!({ "type": "file", "file": { "file_data": "data:application/pdf;base64,JVBE", "filename": "q3.pdf" } }),
             json!({ "type": "input_audio", "input_audio": { "data": "UklG", "format": "wav" } }),
+            json!({ "type": "video_url", "video_url": { "url": "data:video/mp4;base64,AAAA" } }),
+            json!({ "type": "video_url", "video_url": { "url": "https://e.com/v.mp4" } }),
         ] {
             let part = ContentPart::from_openai_part(&raw).unwrap();
             assert_eq!(part.to_openai_part(), raw, "round trip lost data for {raw}");
@@ -455,11 +477,11 @@ mod tests {
     fn content_view_surfaces_the_first_unconvertible_part() {
         let err = message(json!([
             { "type": "text", "text": "ok" },
-            { "type": "video_url", "video_url": { "url": "https://e.com/v.mp4" } }
+            { "type": "hologram", "hologram": { "url": "https://e.com/h.bin" } }
         ]))
         .content_view()
         .unwrap_err();
-        assert!(err.message().contains("video_url"));
+        assert!(err.message().contains("hologram"));
     }
 
     #[test]

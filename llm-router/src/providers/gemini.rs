@@ -369,6 +369,10 @@ fn gemini_part(part: &ContentPart) -> Result<Value, UnsupportedPart> {
         ContentPart::Audio { data, format } => Ok(json!({
             "inlineData": { "mimeType": format!("audio/{format}"), "data": data },
         })),
+        ContentPart::Video { source } => inline(
+            source,
+            "unsupported content part type: 'video_url' with web URL (Gemini requires base64 data URL)",
+        ),
     }
 }
 
@@ -1191,6 +1195,21 @@ mod tests {
             parts[1]["inlineData"]["data"],
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
         );
+    }
+
+    #[test]
+    fn video_is_carried_as_inline_data() {
+        let req: ChatRequest = serde_json::from_value(json!({
+            "model": "gemini-1.5-pro",
+            "messages": [{ "role": "user", "content": [
+                { "type": "video_url", "video_url": { "url": "data:video/mp4;base64,AAAA" } }
+            ]}]
+        }))
+        .unwrap();
+        let body = to_gemini_request(&req, &resolved()).unwrap();
+        let part = &body["contents"][0]["parts"][0];
+        assert_eq!(part["inlineData"]["mimeType"], "video/mp4");
+        assert_eq!(part["inlineData"]["data"], "AAAA");
     }
 
     #[test]

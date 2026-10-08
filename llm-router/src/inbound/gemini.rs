@@ -136,21 +136,7 @@ impl InboundParser for GeminiInbound {
                             data: data.to_string(),
                         };
 
-                        if mime_type.starts_with("image/") {
-                            user_parts.push(ContentPart::Image {
-                                source,
-                                detail: None,
-                            });
-                        } else if mime_type == "application/pdf" {
-                            user_parts.push(ContentPart::File {
-                                source,
-                                filename: None,
-                            });
-                        } else {
-                            return Err(GatewayError::BadRequest(format!(
-                                "unsupported inlineData mimeType: '{mime_type}'"
-                            )));
-                        }
+                        user_parts.push(gemini_inline_part(mime_type, source)?);
                     } else if part.get("fileData").is_some() {
                         return Err(GatewayError::BadRequest(
                             "unsupported content part type: 'fileData'".to_string(),
@@ -270,6 +256,60 @@ impl InboundParser for GeminiInbound {
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 /// Concatenate `text` fields across a Gemini `parts` array.
+/// Gemini `inlineData` → canonical part, keyed on the declared mime type.
+///
+/// This used to accept only `image/*` and `application/pdf` and 400 everything else,
+/// which made the router stricter than the service it fronts: Gemini itself takes audio,
+/// video and a range of text/document types. The sharpest symptom was self-inflicted —
+/// our *outbound* Gemini converter emits `inlineData` with `audio/…`, a shape this
+/// parser then refused, so the same audio reached the same backend or not depending
+/// only on which SDK the caller happened to use.
+///
+/// The document list is explicit rather than a blanket accept: an unknown type is still
+/// worth a 400, because forwarding bytes Gemini will reject costs a round trip and
+/// returns a worse error than ours.
+fn gemini_inline_part(mime_type: &str, source: DataSource) -> Result<ContentPart, GatewayError> {
+    /// Non-`text/*` types Gemini accepts as documents.
+    const DOCUMENT_TYPES: &[&str] = &[
+        "application/pdf",
+        "application/json",
+        "application/xml",
+        "application/rtf",
+        "application/x-javascript",
+        "application/x-python",
+    ];
+
+    if mime_type.starts_with("image/") {
+        Ok(ContentPart::Image {
+            source,
+            detail: None,
+        })
+    } else if let Some(format) = mime_type.strip_prefix("audio/") {
+        // ContentPart::Audio carries the bare format token, matching OpenAI's
+        // `input_audio.format`; the outbound converter reassembles `audio/{format}`.
+        match source {
+            DataSource::Inline { data, .. } => Ok(ContentPart::Audio {
+                data,
+                format: format.to_string(),
+            }),
+            DataSource::Url(_) => Err(GatewayError::BadRequest(
+                "inlineData audio must carry inline bytes".to_string(),
+            )),
+        }
+    } else if mime_type.starts_with("video/") {
+        Ok(ContentPart::Video { source })
+    } else if mime_type.starts_with("text/") || DOCUMENT_TYPES.contains(&mime_type) {
+        Ok(ContentPart::File {
+            source,
+            filename: None,
+        })
+    } else {
+        Err(GatewayError::BadRequest(format!(
+            "unsupported inlineData mimeType: '{mime_type}'"
+        )))
+    }
+}
+
 fn parts_text(parts: Option<&Value>) -> String {
     parts
         .and_then(Value::as_array)
@@ -712,6 +752,72 @@ mod tests {
             content_parts[0]["file"]["file_data"],
             "data:application/pdf;base64,JVBERi0xLjQK"
         );
+    }
+
+    #[test]
+    fn audio_video_and_text_inline_data_are_accepted() {
+        // All four were a 400 before; Gemini itself takes every one of them.
+        for (mime, expected_type) in [
+            ("audio/wav", "input_audio"),
+            ("video/mp4", "video_url"),
+            ("text/csv", "file"),
+            ("application/json", "file"),
+        ] {
+            let req = GeminiInbound
+                .parse_chat(json!({
+                    "contents": [{ "role": "user", "parts": [
+                        { "text": "what is this?" },
+                        { "inlineData": { "mimeType": mime, "data": "QUJD" } }
+                    ]}]
+                }))
+                .unwrap_or_else(|e| panic!("{mime} rejected: {e}"));
+            let parts = req.messages[0]
+                .content
+                .as_ref()
+                .unwrap()
+                .as_array()
+                .unwrap();
+            assert_eq!(parts.len(), 2, "{mime}");
+            assert_eq!(parts[1]["type"], expected_type, "{mime}");
+        }
+    }
+
+    /// The asymmetry this change exists to kill: our own outbound Gemini converter
+    /// emits `inlineData` with `audio/…`, and this parser used to refuse that exact
+    /// shape — so the same audio reached the same backend or not depending only on
+    /// which SDK the caller used.
+    #[test]
+    fn audio_the_outbound_converter_emits_is_accepted_by_the_inbound_parser() {
+        let req = GeminiInbound
+            .parse_chat(json!({
+                "contents": [{ "role": "user", "parts": [
+                    { "inlineData": { "mimeType": "audio/wav", "data": "UklGRg==" } }
+                ]}]
+            }))
+            .unwrap();
+        let parts = req.messages[0]
+            .content
+            .as_ref()
+            .unwrap()
+            .as_array()
+            .unwrap();
+        // Round-trips to the canonical audio shape, format token split off the mime type.
+        assert_eq!(parts[0]["type"], "input_audio");
+        assert_eq!(parts[0]["input_audio"]["format"], "wav");
+        assert_eq!(parts[0]["input_audio"]["data"], "UklGRg==");
+    }
+
+    #[test]
+    fn genuinely_unknown_mime_types_are_still_rejected() {
+        // Widening the rule must not make the parser permissive.
+        let err = GeminiInbound
+            .parse_chat(json!({
+                "contents": [{ "role": "user", "parts": [
+                    { "inlineData": { "mimeType": "application/x-tar", "data": "QUJD" } }
+                ]}]
+            }))
+            .unwrap_err();
+        assert!(err.to_string().contains("application/x-tar"), "{err}");
     }
 
     #[test]

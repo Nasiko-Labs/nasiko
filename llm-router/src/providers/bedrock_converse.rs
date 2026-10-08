@@ -762,6 +762,22 @@ fn converse_image_format(media_type: &str) -> Option<&'static str> {
     }
 }
 
+/// `video/quicktime` is the one that proves the point: a `split('/')` guess yields
+/// "quicktime", and Converse only knows "mov".
+fn converse_video_format(media_type: &str) -> Option<&'static str> {
+    match media_type {
+        "video/x-matroska" => Some("mkv"),
+        "video/quicktime" => Some("mov"),
+        "video/mp4" => Some("mp4"),
+        "video/webm" => Some("webm"),
+        "video/x-flv" => Some("flv"),
+        "video/mpeg" => Some("mpeg"),
+        "video/x-ms-wmv" => Some("wmv"),
+        "video/3gpp" => Some("three_gp"),
+        _ => None,
+    }
+}
+
 fn converse_document_format(media_type: &str) -> Option<&'static str> {
     match media_type {
         "application/pdf" => Some("pdf"),
@@ -860,6 +876,21 @@ fn converse_block(
         ContentPart::Audio { .. } => Err(UnsupportedPart::new(
             "unsupported content part type: 'input_audio'",
         )),
+        ContentPart::Video { source } => {
+            let (media_type, data) = source.inline().ok_or_else(|| {
+                UnsupportedPart::new(
+                    "unsupported content part type: 'video_url' with web URL (Bedrock requires base64 data URL)",
+                )
+            })?;
+            let format = converse_video_format(media_type).ok_or_else(|| {
+                UnsupportedPart::new(format!(
+                    "unsupported video media type for Bedrock: '{media_type}'"
+                ))
+            })?;
+            Ok(json!({
+                "video": { "format": format, "source": { "bytes": data } },
+            }))
+        }
     }
 }
 
@@ -1515,6 +1546,30 @@ mod tests {
             assert_eq!(converse_image_format(mime), Some(token));
         }
         assert_eq!(converse_image_format("image/svg+xml"), None);
+    }
+
+    #[test]
+    fn video_maps_to_converse_format_tokens_not_a_split_of_the_mime_type() {
+        // video/quicktime is the case that proves the table earns its keep: a
+        // split('/') guess yields "quicktime", and Converse only knows "mov".
+        assert_eq!(converse_video_format("video/quicktime"), Some("mov"));
+        assert_eq!(converse_video_format("video/x-matroska"), Some("mkv"));
+        assert_eq!(converse_video_format("video/3gpp"), Some("three_gp"));
+        assert_eq!(converse_video_format("video/mp4"), Some("mp4"));
+        assert_eq!(converse_video_format("video/ogg"), None);
+
+        let req: ChatRequest = serde_json::from_value(json!({
+            "model": "anthropic.claude-3-5-sonnet",
+            "messages": [{ "role": "user", "content": [
+                { "type": "video_url", "video_url": { "url": "data:video/quicktime;base64,AAAA" } }
+            ]}]
+        }))
+        .unwrap();
+        let (body, _map) =
+            to_converse_request(&req, &resolved("anthropic.claude-3-5-sonnet")).unwrap();
+        let video = &body["messages"][0]["content"][0]["video"];
+        assert_eq!(video["format"], "mov");
+        assert_eq!(video["source"]["bytes"], "AAAA");
     }
 
     #[test]

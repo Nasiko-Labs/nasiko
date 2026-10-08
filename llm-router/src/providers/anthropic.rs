@@ -382,6 +382,10 @@ fn anthropic_block(part: &ContentPart) -> Result<Value, UnsupportedPart> {
         ContentPart::Audio { .. } => Err(UnsupportedPart::new(
             "unsupported content part type: 'input_audio'",
         )),
+        // The Messages API has no video input of any kind.
+        ContentPart::Video { .. } => Err(UnsupportedPart::new(
+            "unsupported content part type: 'video_url'",
+        )),
     }
 }
 
@@ -1170,6 +1174,28 @@ mod tests {
         assert_eq!(blocks[0]["source"]["type"], "base64");
         assert_eq!(blocks[0]["source"]["media_type"], "image/png");
         assert_eq!(blocks[0]["source"]["data"], "iVBORw0KGgo=");
+    }
+
+    #[test]
+    fn video_is_refused_by_name_rather_than_sent_empty() {
+        // The Messages API has no video input; a silent drop would have the model
+        // answering about a video it never received.
+        let req: ChatRequest = serde_json::from_value(json!({
+            "model": "claude-3-5-sonnet",
+            "messages": [{ "role": "user", "content": [
+                { "type": "video_url", "video_url": { "url": "data:video/mp4;base64,AAAA" } }
+            ]}]
+        }))
+        .unwrap();
+        match to_anthropic_request(&req, &resolved()).unwrap_err() {
+            ProviderError::Status {
+                status, message, ..
+            } => {
+                assert_eq!(status, 400);
+                assert!(message.contains("video_url"), "{message}");
+            }
+            other => panic!("expected a 400, got {other:?}"),
+        }
     }
 
     #[test]
