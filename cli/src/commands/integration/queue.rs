@@ -322,6 +322,8 @@ fn atomic_owner_write(path: &Path, bytes: &[u8]) -> Result<()> {
         file.write_all(bytes)?;
         file.sync_all()?;
         std::fs::rename(&temp, path)?;
+
+        #[cfg(unix)]
         File::open(parent)?.sync_all()?;
         Ok(())
     })();
