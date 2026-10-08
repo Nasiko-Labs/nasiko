@@ -817,6 +817,14 @@ pub enum ObserveCommands {
         #[arg(long)]
         json: bool,
     },
+    /// Show per-turn tokens + cost for a session (from the billing ledger)
+    Turns {
+        /// Session ID (ses_...)
+        session_id: String,
+        /// Output the raw API response as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Show span tree and costs for a trace (ObservabilityService)
     #[command(name = "trace-detail")]
     TraceDetail {
@@ -1284,6 +1292,9 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             }
             ObserveCommands::Session { session_id, json } => {
                 commands::observe::session_detail(&session_id, json)
+            }
+            ObserveCommands::Turns { session_id, json } => {
+                commands::observe::turns(&session_id, json)
             }
             ObserveCommands::TraceDetail { trace_id, json } => {
                 commands::observe::trace_detail(&trace_id, json)

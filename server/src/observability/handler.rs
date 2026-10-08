@@ -343,6 +343,28 @@ pub async fn get_session_details(
     }
 }
 
+/// Per-turn tokens + cost for a chat session, from the `token_usage` ledger
+/// (authoritative; no Tempo dependency). Scoped to the caller unless superuser.
+#[utoipa::path(
+    get,
+    path = "/api/observability/session/{session_id}/turns",
+    tag = "observability",
+    params(("session_id" = String, Path, description = "Chat session id (ses_...)")),
+)]
+pub async fn get_session_turns(
+    State(state): State<AppState>,
+    claims: Claims,
+    Path(session_id): Path<String>,
+) -> impl IntoResponse {
+    match svc(&state)
+        .get_session_turns(&session_id, &claims.sub, claims.is_superuser)
+        .await
+    {
+        Ok(resp) => Json(resp).into_response(),
+        Err(e) => obs_err(e),
+    }
+}
+
 // ─── 3. GET /v1/observability/trace/{trace_id} ───────────────────────────────
 
 /// Detail for one trace: full span tree with per-span token/cost attribution.

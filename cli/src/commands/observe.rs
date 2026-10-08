@@ -370,6 +370,86 @@ fn print_raw_json(client: &Client, path: &str) -> Result<()> {
     Ok(())
 }
 
+// ─── Per-turn usage (token_usage ledger, authoritative) ──────────────────────
+
+#[derive(Deserialize)]
+struct SessionTurnsResp {
+    turns: Vec<TurnRow>,
+}
+
+#[derive(Deserialize, Tabled)]
+struct TurnRow {
+    #[tabled(rename = "TURN", display = "turn_title")]
+    #[serde(default)]
+    title: Option<String>,
+    #[tabled(skip)]
+    #[serde(default)]
+    #[allow(dead_code)]
+    flow_id: String,
+    #[tabled(rename = "CALLS")]
+    calls: i64,
+    #[tabled(rename = "TOKENS")]
+    tokens: i64,
+    #[tabled(rename = "COST", display = "turn_cost")]
+    cost_usd: f64,
+    #[tabled(rename = "STARTED", display = "turn_started")]
+    #[serde(default)]
+    turn_start: String,
+}
+
+fn turn_title(t: &Option<String>) -> String {
+    match t {
+        Some(s) => trunc(s, 48),
+        None => "—".to_string(),
+    }
+}
+fn turn_cost(v: &f64) -> String {
+    format!("${v:.6}")
+}
+fn turn_started(s: &str) -> String {
+    s.chars().take(19).collect()
+}
+
+/// Show per-turn tokens + cost for a session, from the `token_usage` billing
+/// ledger (authoritative — independent of the Tempo materializer).
+///
+/// Hits: GET /api/observability/session/{id}/turns
+pub fn turns(session_id: &str, json: bool) -> Result<()> {
+    let client = Client::from_active_cluster()?;
+    let path = format!(
+        "/observability/session/{}/turns",
+        crate::api::urlencode(session_id)
+    );
+    if json {
+        return print_raw_json(&client, &path);
+    }
+    let resp: SessionTurnsResp = client.get_json(&path)?;
+    if resp.turns.is_empty() {
+        println!(
+            "No turns recorded for {session_id} (no model calls billed to it yet, or not your session)."
+        );
+        return Ok(());
+    }
+    println!("Session: {session_id}\n");
+    println!(
+        "{}",
+        Table::new(&resp.turns)
+            .with(Style::blank())
+            .with(Alignment::left())
+    );
+    let calls: i64 = resp.turns.iter().map(|t| t.calls).sum();
+    let tokens: i64 = resp.turns.iter().map(|t| t.tokens).sum();
+    let cost: f64 = resp.turns.iter().map(|t| t.cost_usd).sum();
+    println!(
+        "\n{} turn(s) · {} call(s) · {} tokens · ${:.6}",
+        resp.turns.len(),
+        calls,
+        tokens,
+        cost
+    );
+    Ok(())
+}
+
 pub fn sessions(start_time: Option<&str>, json: bool) -> Result<()> {
     let client = Client::from_active_cluster()?;
     let path = match start_time {
