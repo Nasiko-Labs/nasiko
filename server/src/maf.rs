@@ -131,6 +131,12 @@ fn bad_request(msg: &str) -> axum::response::Response {
     err_json(StatusCode::BAD_REQUEST, msg)
 }
 
+/// A save or run the workflow policy refused.
+fn policy_refused(refused: &crate::maf_policy::PolicyError) -> axum::response::Response {
+    let (status, message) = refused.status_and_message();
+    err_json(status, &message)
+}
+
 // ─── DB row types (JSONB cast to text in SQL) ──────────────────────────────
 
 #[derive(Debug, sqlx::FromRow)]
@@ -1087,7 +1093,7 @@ async fn create_maf_from_steps(
         .await
     {
         Ok(def) => def,
-        Err(reason) => return bad_request(&reason),
+        Err(refused) => return policy_refused(&refused),
     };
     let maf_json = serde_json::to_value(&maf_def).unwrap_or_default();
     let maf_json_str = maf_json.to_string();
@@ -1641,7 +1647,7 @@ async fn update_maf(
             .await
         {
             Ok(def) => def,
-            Err(reason) => return bad_request(&reason),
+            Err(refused) => return policy_refused(&refused),
         };
         serde_json::to_value(&def).unwrap_or_default().to_string()
     } else {
@@ -1823,12 +1829,12 @@ async fn run_workflow(
         // bypassable by storing malformed JSON.
         Err(e) => return bad_request(&format!("workflow definition is invalid: {e}")),
     };
-    if let Err(reason) = state
+    if let Err(refused) = state
         .maf_policy
         .check_run(&state.db, user_id, &def, content.as_deref())
         .await
     {
-        return bad_request(&reason);
+        return policy_refused(&refused);
     }
 
     let max_attempts: i32 = std::env::var("MAF_MAX_ATTEMPTS")

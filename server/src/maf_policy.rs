@@ -11,14 +11,40 @@
 //! it replaces `routing_engine`.
 
 use async_trait::async_trait;
+use axum::http::StatusCode;
 use nasiko_orchestrator::maf::types::MafDefinition;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+/// Why a policy refused a save or a run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PolicyError {
+    /// The request can't be accepted as sent. The message is for the caller.
+    Rejected(String),
+    /// The policy couldn't decide right now (its database or an upstream is
+    /// failing), so a retry may succeed. The policy logs the cause; it is never
+    /// returned to the caller.
+    Unavailable,
+}
+
+impl PolicyError {
+    /// The status and message the caller gets: `400` with the reason for a
+    /// rejection, `503` with a generic retry hint when the policy couldn't decide.
+    pub fn status_and_message(&self) -> (StatusCode, String) {
+        match self {
+            Self::Rejected(reason) => (StatusCode::BAD_REQUEST, reason.clone()),
+            Self::Unavailable => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "the workflow couldn't be checked right now; try again".to_string(),
+            ),
+        }
+    }
+}
+
 #[async_trait]
 pub trait MafWorkflowPolicy: Send + Sync {
     /// The last word on a definition before it is stored, once every step has its
-    /// agent. May fill in or rewrite it; `Err` rejects the save with `400`.
+    /// agent. May fill in or rewrite it, or refuse the save (see [`PolicyError`]).
     /// `previous` is the stored definition an update replaces; `None` on create.
     async fn finalize(
         &self,
@@ -26,17 +52,17 @@ pub trait MafWorkflowPolicy: Send + Sync {
         user_id: Uuid,
         definition: MafDefinition,
         previous: Option<&MafDefinition>,
-    ) -> Result<MafDefinition, String>;
+    ) -> Result<MafDefinition, PolicyError>;
 
-    /// Called before a run is queued, after the access checks. `Err` rejects the
-    /// run with `400`.
+    /// Called before a run is queued, after the access checks. May refuse the run
+    /// (see [`PolicyError`]).
     async fn check_run(
         &self,
         db: &PgPool,
         user_id: Uuid,
         definition: &MafDefinition,
         content: Option<&str>,
-    ) -> Result<(), String>;
+    ) -> Result<(), PolicyError>;
 }
 
 /// The open-source policy: the routes' own behavior, unchanged.
@@ -52,7 +78,7 @@ impl MafWorkflowPolicy for NoMafWorkflowPolicy {
         _user_id: Uuid,
         mut definition: MafDefinition,
         _previous: Option<&MafDefinition>,
-    ) -> Result<MafDefinition, String> {
+    ) -> Result<MafDefinition, PolicyError> {
         for step in &mut definition.steps {
             step.ext.clear();
         }
@@ -65,7 +91,7 @@ impl MafWorkflowPolicy for NoMafWorkflowPolicy {
         _user_id: Uuid,
         _definition: &MafDefinition,
         _content: Option<&str>,
-    ) -> Result<(), String> {
+    ) -> Result<(), PolicyError> {
         Ok(())
     }
 }
@@ -131,6 +157,24 @@ mod tests {
                 .check_run(&unusable_pool(), Uuid::new_v4(), &definition, None)
                 .await
                 .is_ok()
+        );
+    }
+
+    #[test]
+    fn a_rejection_is_a_400_with_its_reason() {
+        let (status, message) =
+            PolicyError::Rejected("add your Jev API key".into()).status_and_message();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(message, "add your Jev API key");
+    }
+
+    #[test]
+    fn an_unavailable_policy_is_a_503_that_reveals_nothing() {
+        let (status, message) = PolicyError::Unavailable.status_and_message();
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            message,
+            "the workflow couldn't be checked right now; try again"
         );
     }
 }
