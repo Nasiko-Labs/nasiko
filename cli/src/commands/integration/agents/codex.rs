@@ -30,7 +30,7 @@ pub const SPEC: AgentSpec = AgentSpec {
 const HOOK_EVENTS: [&str; 4] = ["UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"];
 const HOOK_TIMEOUT_SECS: u32 = 10;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct HookPayload {
     session_id: String,
     turn_id: String,
@@ -114,6 +114,131 @@ pub fn installed_version() -> Option<u32> {
 
 pub fn snapshot(raw: &str) -> Result<SessionSnapshot> {
     snapshot_in(raw, &state::integrations_dir().join("events").join(SPEC.id))
+}
+
+/// Rebuild a finished rollout's turns through the hooks' own assembly: each
+/// `task_started` is replayed as `UserPromptSubmit` and each `task_complete` as
+/// `Stop`, stamped with the rollout's timestamps and cumulative `token_count`
+/// totals, so ids and token deltas match what the hooks would have reported.
+pub fn history_snapshot(path: &Path) -> Result<Option<SessionSnapshot>> {
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    Ok(rollout_snapshot(&content))
+}
+
+fn rollout_snapshot(content: &str) -> Option<SessionSnapshot> {
+    let (mut session_id, mut model, mut usage) = (None, None, TokenUsage::default());
+    // Older rollouts write the prompt before `task_started` and may leave
+    // `last_agent_message` empty.
+    let (mut next_prompt, mut last_reply) = (None, None);
+    let mut current: Option<(String, PendingTurn)> = None;
+    let mut turns = Vec::new();
+    for line in content.lines() {
+        if let Some(total) = token_usage_line(line) {
+            usage = total;
+            continue;
+        }
+        let Ok(entry) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let Some(at) = entry["timestamp"].as_str().and_then(|at| at.parse().ok()) else {
+            continue;
+        };
+        let item = &entry["payload"];
+        match (entry["type"].as_str(), item["type"].as_str()) {
+            (Some("session_meta"), _) if session_id.is_none() => {
+                session_id = nonempty(item["id"].as_str());
+            }
+            (Some("turn_context"), _) if item["model"].is_string() => {
+                model = nonempty(item["model"].as_str());
+            }
+            (Some("response_item"), Some("message")) => {
+                let Some(text) = message_text(item) else {
+                    continue;
+                };
+                let owner = item["internal_chat_message_metadata_passthrough"]["turn_id"].as_str();
+                match (item["role"].as_str(), current.as_mut()) {
+                    (Some("assistant"), _) => last_reply = Some(text),
+                    (Some("user"), Some((id, pending)))
+                        if pending.prompt.is_none() && owner.is_none_or(|owner| owner == id) =>
+                    {
+                        pending.prompt = Some(text);
+                    }
+                    (Some("user"), _) if owner.is_none() && next_prompt.is_none() => {
+                        next_prompt = Some(text);
+                    }
+                    _ => {}
+                }
+            }
+            (Some("event_msg"), Some("task_started")) => {
+                let (Some(session), Some(turn_id)) =
+                    (session_id.as_deref(), nonempty(item["turn_id"].as_str()))
+                else {
+                    continue;
+                };
+                let mut start = history_event(session, &turn_id, "UserPromptSubmit");
+                start.prompt = next_prompt.take();
+                let mut pending = PendingTurn::default();
+                apply_event(&mut pending, &start, at, Some(usage));
+                last_reply = None;
+                current = Some((turn_id, pending));
+            }
+            (Some("event_msg"), Some("task_complete")) => {
+                let (Some(session), Some((turn_id, mut pending))) =
+                    (session_id.as_deref(), current.take())
+                else {
+                    continue;
+                };
+                let mut stop = history_event(session, &turn_id, "Stop");
+                stop.last_assistant_message =
+                    nonempty(item["last_agent_message"].as_str()).or(last_reply.take());
+                stop.model = model.clone();
+                if let Some(snapshot) = apply_event(&mut pending, &stop, at, Some(usage)) {
+                    turns.extend(snapshot.turns);
+                }
+            }
+            (Some("event_msg"), Some("turn_aborted")) => current = None,
+            _ => {}
+        }
+    }
+    Some(SessionSnapshot {
+        session_id: session_id?,
+        title: None,
+        turns,
+    })
+}
+
+fn history_event(session_id: &str, turn_id: &str, name: &str) -> HookPayload {
+    HookPayload {
+        session_id: session_id.into(),
+        turn_id: turn_id.into(),
+        hook_event_name: name.into(),
+        ..HookPayload::default()
+    }
+}
+
+/// A message's text, minus the context Codex injects as user messages
+/// (`# AGENTS.md instructions…`, `<environment_context>…</environment_context>`).
+fn message_text(message: &Value) -> Option<String> {
+    let text = message["content"]
+        .as_array()?
+        .iter()
+        .filter_map(|item| item["text"].as_str())
+        .map(str::trim)
+        .filter(|text| !text.starts_with("# AGENTS.md") && !is_context_block(text))
+        .collect::<Vec<_>>()
+        .join("\n");
+    nonempty(Some(&text))
+}
+
+fn is_context_block(text: &str) -> bool {
+    text.strip_prefix('<')
+        .and_then(|rest| rest.split_once('>'))
+        .is_some_and(|(tag, _)| {
+            !tag.is_empty()
+                && tag.chars().all(|c| c.is_ascii_lowercase() || c == '_')
+                && text.ends_with(&format!("</{tag}>"))
+        })
 }
 
 fn hooks_path(config: &Path) -> PathBuf {
@@ -642,6 +767,68 @@ fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rollout_replays_turns_with_their_own_times_model_and_usage() {
+        let line = |at: &str, kind: &str, payload: Value| {
+            json!({"timestamp": at, "type": kind, "payload": payload}).to_string()
+        };
+        let usage = |input: u64, cached: u64, output: u64| {
+            json!({"type": "token_count", "info": {"total_token_usage":
+                {"input_tokens": input, "cached_input_tokens": cached, "output_tokens": output}}})
+        };
+        let user = |text: &str| json!({"type": "message", "role": "user", "content": [{"type": "input_text", "text": text}]});
+        let content = [
+            line("2026-03-01T10:00:00Z", "session_meta", json!({"id": "thread-1"})),
+            line("2026-03-01T10:00:00Z", "response_item", user("<environment_context>\n<cwd>/r</cwd>\n</environment_context>")),
+            // Older rollouts: the prompt precedes task_started, no last_agent_message.
+            line("2026-03-01T10:00:01Z", "response_item", user("Fix the build")),
+            line("2026-03-01T10:00:02Z", "event_msg", json!({"type": "task_started", "turn_id": "t1"})),
+            line("2026-03-01T10:00:02Z", "turn_context", json!({"model": "gpt-test"})),
+            line("2026-03-01T10:00:05Z", "event_msg", usage(60, 50, 15)),
+            line("2026-03-01T10:00:06Z", "response_item", json!({"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Fixed"}]})),
+            line("2026-03-01T10:00:07Z", "event_msg", json!({"type": "task_complete", "turn_id": "t1", "last_agent_message": null})),
+            line("2026-03-01T10:01:00Z", "event_msg", json!({"type": "task_started", "turn_id": "t2"})),
+            line("2026-03-01T10:01:01Z", "response_item", user("Now test it")),
+            line("2026-03-01T10:01:05Z", "event_msg", usage(100, 80, 20)),
+            line("2026-03-01T10:01:06Z", "event_msg", json!({"type": "task_complete", "turn_id": "t2", "last_agent_message": "Tested"})),
+            line("2026-03-01T10:02:00Z", "event_msg", json!({"type": "task_started", "turn_id": "t3"})),
+            line("2026-03-01T10:02:01Z", "event_msg", json!({"type": "turn_aborted", "turn_id": "t3"})),
+        ]
+        .join("\n");
+
+        let snapshot = rollout_snapshot(&content).unwrap();
+
+        assert_eq!(snapshot.session_id, "thread-1");
+        let summary: Vec<_> = snapshot
+            .turns
+            .iter()
+            .map(|t| {
+                (
+                    t.uuid.as_str(),
+                    t.prompt.as_str(),
+                    t.response.as_deref().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                ("t1", "Fix the build", "Fixed"),
+                ("t2", "Now test it", "Tested")
+            ]
+        );
+        let first = &snapshot.turns[0];
+        assert_eq!(first.started_at.to_rfc3339(), "2026-03-01T10:00:02+00:00");
+        assert_eq!(first.ended_at.to_rfc3339(), "2026-03-01T10:00:07+00:00");
+        let call = &snapshot.turns[1].calls[0];
+        assert_eq!(
+            (call.uuid.as_str(), call.model.as_str()),
+            ("thread-1:t2:llm", "gpt-test")
+        );
+        assert_eq!((call.output_tokens, call.cache_read_tokens), (5, 30));
+        assert!(rollout_snapshot("{\"type\":\"event_msg\"}").is_none());
+    }
 
     fn payload(event: &str) -> HookPayload {
         HookPayload {

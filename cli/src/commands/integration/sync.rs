@@ -13,6 +13,8 @@ use super::queue::{self, DeliveryState, QueueDestination, QueueRecord};
 use crate::config::{ClusterEntry, Config};
 
 const MAX_DELIVERY_ATTEMPTS: u32 = 5;
+/// Request-body budget per batch, under the server's 8 MiB ingest limit.
+const MAX_BATCH_BYTES: usize = 6 * 1024 * 1024;
 
 pub fn run() -> Result<()> {
     let _lock = queue::acquire_sync_lock(Duration::from_millis(250))?;
@@ -88,11 +90,35 @@ fn sync_records(config: &Config, records: Vec<(PathBuf, QueueRecord)>) -> Result
             Some(Duration::from_secs(10)),
         );
         attempted_delivery = true;
-        for batch in records.chunks(CODING_AGENT_BATCH_MAX_EVENTS) {
+        for batch in batches(&records, CODING_AGENT_BATCH_MAX_EVENTS, MAX_BATCH_BYTES) {
             retry |= deliver_batch(&client, batch)?;
         }
     }
     Ok(retry || attempted_delivery)
+}
+
+/// Consecutive runs of at most `max_events` records whose events fit
+/// `max_bytes` together; one larger event is still sent alone. A backlog of
+/// content events (an `agents import`) otherwise overflows the body limit and
+/// every event in the batch is retried into quarantine.
+fn batches(
+    records: &[(PathBuf, QueueRecord)],
+    max_events: usize,
+    max_bytes: usize,
+) -> Vec<&[(PathBuf, QueueRecord)]> {
+    let (mut batches, mut start, mut bytes) = (Vec::new(), 0, 0);
+    for (index, (_, record)) in records.iter().enumerate() {
+        let size = serde_json::to_vec(&record.event).map_or(0, |event| event.len());
+        if index > start && (index - start == max_events || bytes + size > max_bytes) {
+            batches.push(&records[start..index]);
+            (start, bytes) = (index, 0);
+        }
+        bytes += size;
+    }
+    if start < records.len() {
+        batches.push(&records[start..]);
+    }
+    batches
 }
 
 fn deliver_batch(client: &crate::api::Client, records: &[(PathBuf, QueueRecord)]) -> Result<bool> {
@@ -311,6 +337,28 @@ mod tests {
         let path = dir.path().join(format!("{}.json", record.event.event_id));
         queue::update(&path, &record).unwrap();
         (path, record)
+    }
+
+    #[test]
+    fn batches_respect_the_event_and_byte_budgets() {
+        let records: Vec<_> = (0..5)
+            .map(|turn| {
+                (
+                    PathBuf::new(),
+                    record("c", "https://c", "s", &turn.to_string()),
+                )
+            })
+            .collect();
+        let one = serde_json::to_vec(&records[0].1.event).unwrap().len();
+        let sizes = |max_events, max_bytes| {
+            batches(&records, max_events, max_bytes)
+                .iter()
+                .map(|batch| batch.len())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(sizes(2, usize::MAX), [2, 2, 1]);
+        assert_eq!(sizes(100, one * 3), [3, 2]);
+        assert_eq!(sizes(100, 1), [1, 1, 1, 1, 1]);
     }
 
     #[test]

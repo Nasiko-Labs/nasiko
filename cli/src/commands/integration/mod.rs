@@ -8,6 +8,7 @@
 mod agents;
 mod catalog;
 mod control_plane;
+mod import;
 mod launcher;
 mod model;
 mod queue;
@@ -20,6 +21,7 @@ use std::path::Path;
 
 use agents::Agent;
 use catalog::Support;
+pub use import::ImportOptions;
 use state::{AgentState, InstallationBinding, IntegrationState};
 
 /// Options accepted by `nasiko agents install`.
@@ -131,6 +133,11 @@ pub fn uninstall(agent_id: &str) -> Result<()> {
 /// Hook entry point — see [`report`].
 pub fn report(agent_id: &str) -> Result<()> {
     report::run(resolve(agent_id)?)
+}
+
+/// Report past sessions from local transcripts — see `import`.
+pub fn import_history(options: ImportOptions<'_>) -> Result<()> {
+    import::run(options)
 }
 
 pub fn sync() -> Result<()> {
