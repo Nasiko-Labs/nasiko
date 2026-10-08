@@ -6,8 +6,9 @@ use axum::{
     routing::post,
 };
 use nasiko_types::{
-    CapturePolicy, CodingAgentEventBatchRequest, CodingAgentEventBatchResponse,
-    CodingAgentEventResult, CodingAgentEventStatus, CodingAgentEventV1, coding_agent_session_id,
+    CODING_AGENT_BATCH_MAX_BYTES, CapturePolicy, CodingAgentEventBatchRequest,
+    CodingAgentEventBatchResponse, CodingAgentEventResult, CodingAgentEventStatus,
+    CodingAgentEventV1, coding_agent_session_id,
 };
 use serde_json::json;
 use uuid::Uuid;
@@ -23,7 +24,7 @@ const CODING_SESSION_PLACEHOLDER: &str = "Coding session";
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/telemetry/coding-agent/events/batch", post(ingest_batch))
-        .layer(DefaultBodyLimit::max(8 * 1024 * 1024))
+        .layer(DefaultBodyLimit::max(CODING_AGENT_BATCH_MAX_BYTES))
 }
 
 async fn ingest_batch(
