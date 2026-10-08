@@ -51,6 +51,11 @@ pub struct Agent {
     /// (`nasiko-compress`, applied in the LLM router). Off unless explicitly enabled.
     #[serde(default)]
     pub compress_enabled: bool,
+    /// Whether this coding agent gates its tool use behind human approval
+    /// (NAS-842). Off unless explicitly enabled; only meaningful for
+    /// `workload_kind = acp_coding_agent`.
+    #[serde(default)]
+    pub hitl_enabled: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -134,6 +139,10 @@ pub struct CreateAgent {
     /// agent so the proxy drives it over a stdio turn instead of HTTP. Omitted
     /// defaults to `agent`.
     pub workload_kind: Option<String>,
+    /// Enable human-in-the-loop approval for this coding agent's tool use
+    /// (NAS-842): each ACP permission request is routed to a human instead of
+    /// auto-approved. Omitted = off. Only meaningful for `acp_coding_agent`.
+    pub hitl_enabled: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -165,6 +174,9 @@ pub struct UpdateAgent {
     /// overwrite, which is how `nasiko deploy --coding-agent` promotes an
     /// already-registered agent to a coding agent.
     pub workload_kind: Option<String>,
+    /// Toggle human-in-the-loop approval for this coding agent (NAS-842).
+    /// Omitted = leave as-is, so an ordinary metadata edit never flips it.
+    pub hitl_enabled: Option<bool>,
 }
 
 fn default_activate_version() -> bool {

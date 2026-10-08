@@ -12,6 +12,7 @@ edition.workspace = true
 
 [dependencies]
 agent-client-protocol = { workspace = true }
+async-trait = { workspace = true }
 tokio = { workspace = true }
 futures = { workspace = true }
 thiserror = { workspace = true }

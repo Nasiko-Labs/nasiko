@@ -16,7 +16,9 @@
 //!
 //! `revoked` needs no upstream — the revocation check refuses the call before any
 //! provider is reached — so it runs in CI as a regression guard for the
-//! `revoked_session_tokens` reader (which otherwise has no producer yet).
+//! `revoked_session_tokens` producer (`coding::revocation::revoke_session_token`,
+//! which the turn path calls at turn end) and its reader. `sweep` guards the
+//! companion purge.
 //!
 //! Every test is `#[serial]`: `GatewayConfig::from_env()` is read once when the
 //! app boots, so `AGENT_JWT_SECRET` (and the real key) must be in the environment
@@ -50,6 +52,20 @@ async fn seed_agent(server: &TestServer, owner_id: Uuid, name: &str) -> Uuid {
     .fetch_one(&server.db)
     .await
     .expect("seed agent")
+}
+
+/// Pull the `jti` claim out of a minted token (signature unchecked — we only
+/// need the id the producer records).
+fn jti_of(token: &str) -> String {
+    use jsonwebtoken::{DecodingKey, Validation};
+    let mut v = Validation::new(jsonwebtoken::Algorithm::HS256);
+    v.insecure_disable_signature_validation();
+    v.validate_aud = false;
+    v.validate_exp = false;
+    let data =
+        jsonwebtoken::decode::<serde_json::Value>(token, &DecodingKey::from_secret(b"ignored"), &v)
+            .expect("decode claims");
+    data.claims["jti"].as_str().expect("jti claim").to_owned()
 }
 
 /// Mint a session token exactly as the coding-agent turn does.
@@ -191,28 +207,16 @@ async fn revoked_session_token_is_refused() {
     let flow_id = format!("flow-{}", Uuid::new_v4());
     let token = session_token(agent, user, "coding-revoked-1", &flow_id);
 
-    // Revoke it: record its jti the way a future "kill session" producer would.
-    let jti: String = {
-        use jsonwebtoken::{DecodingKey, Validation};
-        let mut v = Validation::new(jsonwebtoken::Algorithm::HS256);
-        v.insecure_disable_signature_validation();
-        v.validate_aud = false;
-        v.validate_exp = false;
-        let data = jsonwebtoken::decode::<serde_json::Value>(
-            &token,
-            &DecodingKey::from_secret(b"ignored"),
-            &v,
-        )
-        .expect("decode claims");
-        data.claims["jti"].as_str().expect("jti claim").to_owned()
-    };
-    sqlx::query(
-        "INSERT INTO revoked_session_tokens (jti, expires_at) VALUES ($1, now() + interval '1 hour')",
+    // Revoke it through the real producer, exactly as the turn path does at
+    // turn end.
+    let jti = jti_of(&token);
+    nasiko_server::coding::revocation::revoke_session_token(
+        &server.db,
+        &jti,
+        chrono::Utc::now() + chrono::Duration::hours(1),
     )
-    .bind(&jti)
-    .execute(&server.db)
     .await
-    .expect("insert revocation");
+    .expect("revoke token");
 
     let res = server
         .client
@@ -226,6 +230,48 @@ async fn revoked_session_token_is_refused() {
         res.status(),
         403,
         "a revoked session token must be refused before any upstream call"
+    );
+
+    server.cleanup().await;
+}
+
+/// The sweeper drops revocation rows whose token has expired (dead weight) and
+/// keeps the ones that could still verify.
+#[tokio::test]
+#[serial]
+async fn sweep_purges_only_expired_revocations() {
+    let server = TestServer::start().await;
+
+    // One already-expired revocation, one still live.
+    nasiko_server::coding::revocation::revoke_session_token(
+        &server.db,
+        "jti-expired",
+        chrono::Utc::now() - chrono::Duration::hours(1),
+    )
+    .await
+    .expect("record expired");
+    nasiko_server::coding::revocation::revoke_session_token(
+        &server.db,
+        "jti-live",
+        chrono::Utc::now() + chrono::Duration::hours(1),
+    )
+    .await
+    .expect("record live");
+
+    let purged = nasiko_server::coding::revocation::sweep_expired(&server.db)
+        .await
+        .expect("sweep");
+    assert!(purged >= 1, "the expired row must be purged");
+
+    let remaining: Vec<String> =
+        sqlx::query_scalar("SELECT jti FROM revoked_session_tokens WHERE jti LIKE 'jti-%'")
+            .fetch_all(&server.db)
+            .await
+            .expect("list remaining");
+    assert!(
+        remaining.contains(&"jti-live".to_owned())
+            && !remaining.contains(&"jti-expired".to_owned()),
+        "only the live revocation should survive the sweep; got {remaining:?}"
     );
 
     server.cleanup().await;

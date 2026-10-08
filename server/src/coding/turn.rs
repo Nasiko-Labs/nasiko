@@ -10,6 +10,7 @@
 //! to an `AcpConnection`, send the prompt, and stream the agent's updates back —
 //! renewing the lease while the turn runs and releasing it when the turn ends.
 
+use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -55,6 +56,15 @@ pub struct CodingTurnRequest {
     /// calls via [`env`](Self::env)); the gateway and router verify it instead
     /// of inferring identity from a `traceparent`.
     pub session_token: Option<String>,
+    /// The minted token's revocation coordinates, when a token was minted. The
+    /// turn revokes this `jti` when it ends, so the per-turn credential dies with
+    /// the turn rather than lingering its full TTL inside the container (a copy
+    /// that escaped the agent process can't then be replayed).
+    pub session_token_id: Option<super::revocation::RevokedTokenId>,
+    /// Whether this agent gates its tool use behind human approval (NAS-842).
+    /// When set, the turn drives the agent with a [`HitlPermissionDelegate`]
+    /// instead of auto-approving every permission request.
+    pub hitl_enabled: bool,
 }
 
 /// Why a turn could not be started.
@@ -104,6 +114,13 @@ pub async fn run_turn(
         Ok(rx) => Ok(rx),
         Err(e) => {
             let _ = lifecycle::release_turn(&state.db, &lease).await;
+            // `session/new` may already have handed the token to the container,
+            // so a failed turn must still revoke it — the success path revokes in
+            // `drive_turn`, but that never runs here.
+            if let Some(id) = &req.session_token_id {
+                let _ = super::revocation::revoke_session_token(&state.db, &id.jti, id.expires_at)
+                    .await;
+            }
             Err(e)
         }
     }
@@ -153,13 +170,10 @@ async fn start_turn(
     };
     let stdio = state.runtime.attach_stdio(&container_id, attach).await?;
     let transport = ByteStreams::new(stdio.stdin.compat_write(), stdio.stdout.compat());
-    // Auto mode for now: approve every permission request the agent makes mid-turn
-    // so a turn runs unattended end to end. Real human-in-the-loop routing will
-    // replace this with a `Delegate` policy to the Nasiko HITL surface (NAS-842).
     let conn = AcpConnection::connect(
         transport,
         AcpConnectConfig {
-            permission_policy: PermissionPolicy::ApproveAll,
+            permission_policy: permission_policy(state, req),
             ..Default::default()
         },
     )
@@ -199,6 +213,7 @@ async fn start_turn(
         lease_secs,
         heartbeat_secs,
         telemetry,
+        req.session_token_id.clone(),
     ));
 
     Ok(out_rx)
@@ -251,6 +266,7 @@ async fn drive_turn(
     lease_secs: i64,
     heartbeat_secs: u64,
     mut telemetry: Option<TurnTelemetryCtx>,
+    session_token_id: Option<super::revocation::RevokedTokenId>,
 ) {
     let mut beat = tokio::time::interval(Duration::from_secs(heartbeat_secs));
     beat.tick().await; // the first tick fires immediately; skip it
@@ -317,6 +333,15 @@ async fn drive_turn(
     // release the lease (which stamps `last_turn_at` for idle tracking).
     drop(conn);
     let _ = lifecycle::release_turn(&db, &lease).await;
+
+    // Revoke this turn's session token: the turn is over, so the credential has
+    // no more legitimate use, and revoking it caps a leaked copy's lifetime to
+    // the turn rather than the token's full TTL.
+    if let Some(id) = session_token_id
+        && let Err(e) = super::revocation::revoke_session_token(&db, &id.jti, id.expires_at).await
+    {
+        tracing::warn!(error = %e, jti = %id.jti, "coding-agent: session-token revoke failed");
+    }
 }
 
 /// Poll the runtime until the container is `Running`, or fail if it crashes or
@@ -379,6 +404,40 @@ fn workspace_session_name(session_id: &str) -> String {
         use sha2::{Digest, Sha256};
         let digest = hex::encode(Sha256::digest(session_id.as_bytes()));
         format!("s-{}", &digest[..32])
+    }
+}
+
+/// Choose how the turn answers the agent's `session/request_permission` requests.
+///
+/// Auto mode (the default) approves everything so a turn runs unattended. When
+/// the agent is `hitl_enabled`, route each request to the Nasiko HITL surface via
+/// a [`super::permission::HitlPermissionDelegate`] — but only when the turn's user
+/// and agent id are both known; if HITL is asked for and either is missing we
+/// fail closed (reject every request) rather than silently auto-approving an
+/// agent that was meant to be gated.
+fn permission_policy(state: &AppState, req: &CodingTurnRequest) -> PermissionPolicy {
+    if !req.hitl_enabled {
+        return PermissionPolicy::ApproveAll;
+    }
+    match (
+        uuid::Uuid::parse_str(req.spec.container_id.as_str()).ok(),
+        req.user_id,
+    ) {
+        (Some(agent_id), Some(user_id)) => {
+            PermissionPolicy::Delegate(Arc::new(super::permission::HitlPermissionDelegate::new(
+                state.hitl_store.clone(),
+                agent_id,
+                user_id,
+                req.session_id.clone(),
+            )))
+        }
+        _ => {
+            tracing::warn!(
+                session_id = %req.session_id,
+                "coding HITL enabled but the turn's user or agent id is unknown; denying all tool use"
+            );
+            PermissionPolicy::RejectAll
+        }
     }
 }
 

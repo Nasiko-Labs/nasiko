@@ -126,6 +126,11 @@ pub enum AgentOpsCommands {
         /// Overrides any `workloadKind` in AgentCard.json.
         #[arg(long)]
         coding_agent: bool,
+        /// Gate this coding agent's tool use behind human approval (NAS-842):
+        /// each tool call pauses for a decision via the HITL API instead of
+        /// auto-running. Only meaningful with --coding-agent.
+        #[arg(long)]
+        hitl: bool,
     },
     /// Push image to cluster OCI registry (without deploying)
     Push {
@@ -817,14 +822,6 @@ pub enum ObserveCommands {
         #[arg(long)]
         json: bool,
     },
-    /// Show per-turn tokens + cost for a session (from the billing ledger)
-    Turns {
-        /// Session ID (ses_...)
-        session_id: String,
-        /// Output the raw API response as JSON
-        #[arg(long)]
-        json: bool,
-    },
     /// Show span tree and costs for a trace (ObservabilityService)
     #[command(name = "trace-detail")]
     TraceDetail {
@@ -1041,6 +1038,7 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             version,
             yes,
             coding_agent,
+            hitl,
         } => commands::deploy::deploy_with_version_flags(
             &image,
             name.as_deref(),
@@ -1054,6 +1052,7 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             writable,
             writable_path.as_deref(),
             coding_agent,
+            hitl,
         ),
         AgentOpsCommands::Push {
             image,
@@ -1292,9 +1291,6 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             }
             ObserveCommands::Session { session_id, json } => {
                 commands::observe::session_detail(&session_id, json)
-            }
-            ObserveCommands::Turns { session_id, json } => {
-                commands::observe::turns(&session_id, json)
             }
             ObserveCommands::TraceDetail { trace_id, json } => {
                 commands::observe::trace_detail(&trace_id, json)

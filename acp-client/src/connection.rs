@@ -17,9 +17,9 @@ use std::sync::{Arc, Mutex};
 use agent_client_protocol::component::ConnectTo;
 use agent_client_protocol::schema::v1::{
     ContentBlock, InitializeRequest, NewSessionRequest, PromptRequest, RequestPermissionRequest,
-    SessionId, SessionNotification, TextContent,
+    RequestPermissionResponse, SessionId, SessionNotification, TextContent,
 };
-use agent_client_protocol::{Agent, Client, ConnectionTo};
+use agent_client_protocol::{Agent, Client, ConnectionTo, Responder};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::capability::{NegotiatedCapabilities, RequiredCapabilities, negotiate};
@@ -104,8 +104,26 @@ impl AcpConnection {
                     agent_client_protocol::on_receive_notification!(),
                 )
                 .on_receive_request(
-                    async move |request: RequestPermissionRequest, responder, _cx| {
-                        responder.respond(policy.decide(&request))
+                    async move |request: RequestPermissionRequest,
+                                responder: Responder<RequestPermissionResponse>,
+                                cx: ConnectionTo<Agent>| {
+                        match policy.delegate() {
+                            // Delegated (e.g. HITL): answer from a task spawned on
+                            // the connection, so a wait on a human never stalls the
+                            // event loop or the turn's streamed updates. The handler
+                            // itself returns immediately.
+                            Some(delegate) => {
+                                let delegate = delegate.clone();
+                                cx.spawn(async move {
+                                    responder.respond(delegate.decide(&request).await)
+                                })?;
+                            }
+                            // Fixed policy (reject/approve all): answer inline.
+                            None => {
+                                responder.respond(policy.decide_fixed(&request))?;
+                            }
+                        }
+                        Ok(())
                     },
                     agent_client_protocol::on_receive_request!(),
                 )

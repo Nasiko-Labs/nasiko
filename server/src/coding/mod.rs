@@ -12,7 +12,9 @@ use std::time::Duration;
 use crate::state::AppState;
 
 pub mod lifecycle;
+pub mod permission;
 pub mod proxy;
+pub mod revocation;
 pub mod sse;
 pub mod turn;
 

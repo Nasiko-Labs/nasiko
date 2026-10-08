@@ -41,7 +41,7 @@ mod turn;
 pub use capability::{NegotiatedCapabilities, RequiredCapabilities};
 pub use connection::{AcpConnectConfig, AcpConnection, connect_local};
 pub use error::AcpError;
-pub use permission::PermissionPolicy;
+pub use permission::{PermissionDelegate, PermissionPolicy};
 pub use telemetry::{TelemetryError, TurnTelemetry};
 pub use turn::{NewSessionParams, TurnEvent, TurnStream};
 
@@ -52,7 +52,11 @@ pub use nasiko_types::{CapturePolicy, CodingAgentEventV1};
 // Re-export the SDK types that appear in this crate's public API, so callers
 // don't need a direct dependency on `agent-client-protocol` to use them.
 pub use agent_client_protocol::schema::ProtocolVersion;
-pub use agent_client_protocol::schema::v1::{McpServer, SessionId, SessionUpdate, StopReason};
+pub use agent_client_protocol::schema::v1::{
+    McpServer, PermissionOption, PermissionOptionKind, RequestPermissionOutcome,
+    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome, SessionId,
+    SessionUpdate, StopReason,
+};
 
 /// The underlying SDK, re-exported for callers that build a custom transport
 /// (e.g. `ByteStreams` over a container attach) to pass to

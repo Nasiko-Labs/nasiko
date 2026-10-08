@@ -7,21 +7,19 @@
 //! `OPENAI_API_KEY=sk-... cargo test -p nasiko-server --test
 //! coding_agent_proxy_real_reply -- --ignored --nocapture --test-threads=1`.
 //!
-//! KNOWN GAP (surfaced by this test): the prebuilt `opencode:0.1.0` image forces
-//! its model (`openai-chat/gpt-4o`, the one carrying our injected
-//! `OPENAI_BASE_URL` and session token) only through the a2a HTTP wrapper, which
-//! parses `config.json`'s `opencode.model` and passes it as `body.model` per
-//! prompt (see the image's `entrypoint.sh`). Driven over ACP (`opencode acp`) that
-//! wrapper is bypassed, nothing forces the model, and OpenCode falls back to its
-//! built-in free model (`opencode/big-pickle`), which needs no key and routes to
-//! OpenCode's own backend rather than Nasiko. So under ACP the model call does not
-//! yet flow through the router, and no `token_usage` row is written. The fix is an
-//! image/config change (set a default `model` in OpenCode's global config, or have
-//! the ACP client/runtime select it), tracked separately; the `OPENAI_BASE_URL`
-//! injection here is the necessary server-side half. The session-token to router
-//! to billing path itself is proven by `coding_session_router_live.rs`. This test
-//! therefore asserts the full plumbing and a real completed turn, and reports
-//! whether the call routed.
+//! MODEL ROUTING (closed server-side): the a2a HTTP wrapper forces the routed
+//! model (`openai-chat/gpt-4o`) per prompt by parsing `config.json`'s
+//! `opencode.model`, but driven over ACP (`opencode acp`) that wrapper is
+//! bypassed, so OpenCode would fall back to its built-in free model
+//! (`opencode/big-pickle`), which needs no key and routes to OpenCode's own
+//! backend rather than Nasiko. The proxy closes this in code: alongside the
+//! injected `OPENAI_BASE_URL` + session token it sets `OPENCODE_CONFIG_CONTENT`
+//! to force the routed model as the session default (`coding::proxy::
+//! routed_model_env`), which merges over any stock OpenCode image's config — no
+//! special image needed. So under ACP the model call now flows through the router
+//! and a `token_usage` row is written, which this test asserts. The
+//! session-token to router to billing path itself is also proven in isolation by
+//! `coding_session_router_live.rs`.
 
 mod common;
 
@@ -73,11 +71,16 @@ async fn coding_agent_turn_streams_a_real_completion() {
             .await
             .unwrap();
 
+    // Override with OPENCODE_IMAGE to point at an ACP-configured fixture (one that
+    // defaults its model to the routed `openai-chat/gpt-4o` provider); the stock
+    // image defaults to OpenCode's built-in model and bypasses the router.
+    let image = std::env::var("OPENCODE_IMAGE").unwrap_or_else(|_| "opencode:0.1.0".to_owned());
     let agent_id: Uuid = sqlx::query_scalar(
         "INSERT INTO agents (name, owner_id, image, status, workload_kind) \
-         VALUES ('live-opencoder', $1, 'opencode:0.1.0', 'running', 'acp_coding_agent') RETURNING id",
+         VALUES ('live-opencoder', $1, $2, 'running', 'acp_coding_agent') RETURNING id",
     )
     .bind(uid)
+    .bind(&image)
     .fetch_one(&server.db)
     .await
     .unwrap();
@@ -127,10 +130,10 @@ async fn coding_agent_turn_streams_a_real_completion() {
         "expected a real agent reply in the stream; got: {text}"
     );
 
-    // Did the model call route through Nasiko (session token → router → billing)?
-    // A `token_usage` row means yes. Today OpenCode under ACP uses its own built-in
-    // model and bypasses us (see the module docs), so this is REPORTED, not
-    // asserted — the routed billing path is proven by `coding_session_router_live`.
+    // The model call must route through Nasiko (session token → router → billing).
+    // A `token_usage` row billed to the turn's user is the proof; the proxy forces
+    // the routed model so OpenCode under ACP no longer falls back to its free
+    // built-in model (see the module docs).
     let billed: Option<Uuid> = {
         let mut found = None;
         for _ in 0..30 {
@@ -148,16 +151,13 @@ async fn coding_agent_turn_streams_a_real_completion() {
         }
         found.flatten()
     };
-    match billed {
-        Some(u) if u == uid => eprintln!(
-            "ROUTED ✓ model call went through Nasiko and was billed to the turn's user {uid}"
-        ),
-        Some(u) => eprintln!("ROUTED but billed to unexpected user {u} (expected {uid})"),
-        None => eprintln!(
-            "NOT ROUTED: no token_usage row — OpenCode used its built-in model and bypassed \
-             Nasiko under ACP (known image/config gap; see module docs)"
-        ),
-    }
+    eprintln!("billed subject: {billed:?} (expected {uid})");
+    assert_eq!(
+        billed,
+        Some(uid),
+        "the model call must route through Nasiko and bill the turn's user: a \
+         token_usage row for {uid} is required (got {billed:?})",
+    );
 
     let _ = std::process::Command::new("docker")
         .args(["rm", "-f", &format!("nasiko-agent-{agent_id}")])

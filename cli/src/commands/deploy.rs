@@ -33,6 +33,7 @@ pub fn deploy_with_version_flags(
     writable: bool,
     writable_path: Option<&str>,
     coding_agent: bool,
+    hitl: bool,
 ) -> Result<()> {
     let client = Client::from_active_cluster()?;
     let env = parse_env(env_file, env_args)?;
@@ -49,6 +50,7 @@ pub fn deploy_with_version_flags(
             writable,
             writable_path,
             coding_agent,
+            hitl,
             &client,
         )
     } else {
@@ -61,6 +63,7 @@ pub fn deploy_with_version_flags(
             writable,
             writable_path,
             coding_agent,
+            hitl,
             &client,
         )
     }
@@ -201,6 +204,7 @@ fn deploy_from_directory(
     writable: bool,
     writable_path: Option<&str>,
     coding_agent: bool,
+    hitl: bool,
     client: &Client,
 ) -> Result<()> {
     let root = Path::new(dir);
@@ -293,6 +297,8 @@ fn deploy_from_directory(
                 "skills": card.get("skills"),
                 "capabilities": card.get("capabilities"),
                 "workload_kind": workload_kind,
+                // Only send when set, so a plain redeploy never flips HITL off.
+                "hitl_enabled": hitl.then_some(true),
             });
             let _: serde_json::Value = client.put_json(&format!("/agents/{id}"), &update)?;
             if let Err(e) = crate::util::sync_card_version(&card_path, &card, &version) {
@@ -318,6 +324,7 @@ fn deploy_from_directory(
                 "skills": card.get("skills").unwrap_or(&serde_json::json!([])),
                 "capabilities": card.get("capabilities"),
                 "workload_kind": workload_kind,
+                "hitl_enabled": hitl.then_some(true),
             });
             let resp: serde_json::Value = client.post_json("/agents", &create)?;
             let id = resp
@@ -376,6 +383,7 @@ fn deploy_from_image(
     writable: bool,
     writable_path: Option<&str>,
     coding_agent: bool,
+    hitl: bool,
     client: &Client,
 ) -> Result<()> {
     // No AgentCard.json on the raw-image path, so only the explicit flag can mark
@@ -463,6 +471,8 @@ fn deploy_from_image(
             "version": version,
             "image": image_ref,
             "workload_kind": workload_kind,
+            // Only send when set, so a plain redeploy never flips HITL off.
+            "hitl_enabled": hitl.then_some(true),
         });
         let _: serde_json::Value = client.put_json(&format!("/agents/{id}"), &update)?;
         println!("\n✓ Deployed {agent_name}:{version}");
@@ -476,6 +486,7 @@ fn deploy_from_image(
         "version": version,
         "image": image_ref,
         "workload_kind": workload_kind,
+        "hitl_enabled": hitl.then_some(true),
     });
     let _: serde_json::Value = client.post_json("/agents", &create)?;
 

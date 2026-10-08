@@ -63,6 +63,7 @@ db_enum!(HitlOrigin {
     Orchestrator => "orchestrator",
     Maf => "maf",
     McpTool => "mcp_tool",
+    CodingAgent => "coding_agent",
 });
 
 db_enum!(HitlStatus {
@@ -81,19 +82,13 @@ db_enum!(HitlStatus {
 // auto-retried. `Skipped` = resume deliberately never attempted for this row (a mirrored
 // `mcp_tool` row whose real resume happens on its linked `direct_chat`/`agent_proxy` row instead
 // — see `repo::skip_resume_for_mirrored_row`'s own doc comment); distinct from `Completed`
-// because no delivery attempt was ever made. `AgentLostTask` = the agent answered the resume with
-// A2A `TaskNotFoundError` (JSON-RPC -32001, also as the body of an HTTP 404) on every one of a
-// bounded number of re-deliveries: it no longer holds the paused task (it restarted, or the answer
-// never reached a replica that has it), so the answer reached no task.
-// Terminal and never retried or requeued, since re-sending cannot find a task that is gone;
-// distinct from `Failed` (delivery itself failed) and `Completed` (a live task got the answer).
+// because no delivery attempt was ever made.
 db_enum!(ResumeStatus {
     NotStarted => "not_started",
     Completed => "completed",
     Failed => "failed",
     DeliveryOutcomeUnknown => "delivery_outcome_unknown",
     Skipped => "skipped",
-    AgentLostTask => "agent_lost_task",
 });
 
 /// Wire vocabulary for the `tool_approval`/`auth_required` resolve flows. These live outside
@@ -345,6 +340,36 @@ impl NewHitlRequest {
         }
     }
 
+    /// `origin = coding_agent`, `kind = tool_approval` always — a coding agent's ACP
+    /// `session/request_permission`, blocked awaiting human approval (NAS-842). Unlike the
+    /// other origins there is no resume dispatcher: the paused thing is one live ACP request
+    /// on the still-open connection, and the turn's permission handler is itself awaiting this
+    /// row (so no `task_id`). `tool_name` is the gated ACP tool kind (e.g. `edit`/`bash`) for
+    /// display; `question` carries the tool-call details and options the human decides on.
+    pub fn coding_agent(
+        agent_id: Uuid,
+        owner_user_id: Uuid,
+        context_id: impl Into<String>,
+        tool_name: impl Into<String>,
+        question: Value,
+    ) -> Self {
+        Self {
+            kind: HitlKind::ToolApproval,
+            origin: HitlOrigin::CodingAgent,
+            agent_id,
+            owner_user_id,
+            task_id: None,
+            context_id: Some(context_id.into()),
+            chat_session_id: None,
+            maf_execution_id: None,
+            maf_step_index: None,
+            connector_id: None,
+            tool_name: Some(tool_name.into()),
+            arguments_hash: None,
+            question,
+        }
+    }
+
     /// Attaches the owning chat session after construction, additively — every existing
     /// constructor call site keeps compiling unchanged. `direct_chat()` has no
     /// `chat_session_id` parameter of its own (unlike `orchestrator()`, which takes one because
@@ -363,9 +388,10 @@ impl NewHitlRequest {
 mod tests {
     use super::*;
 
-    // Mirrors the CHECK constraint lists in `oss/migrations/0007_hitl.sql` verbatim. There's no
-    // sqlx wiring in this crate yet to derive this from the DB directly, so it's asserted by hand
-    // — if one side changes without the other, these tests catch the drift.
+    // Mirrors the CHECK constraint lists in the migrations verbatim (origin from 0056, the rest
+    // from 0007; see `sql_check_values_match_the_migration_exactly`). There's no sqlx wiring in
+    // this crate yet to derive this from the DB directly, so it's asserted by hand — if one side
+    // changes without the other, these tests catch the drift.
     const SQL_KIND_VALUES: &[&str] = &["input_required", "auth_required", "tool_approval"];
     const SQL_ORIGIN_VALUES: &[&str] = &[
         "direct_chat",
@@ -373,6 +399,7 @@ mod tests {
         "orchestrator",
         "maf",
         "mcp_tool",
+        "coding_agent",
     ];
     const SQL_STATUS_VALUES: &[&str] = &["pending", "resolved", "rejected", "expired", "canceled"];
     const SQL_RESUME_STATUS_VALUES: &[&str] = &[
@@ -381,7 +408,6 @@ mod tests {
         "failed",
         "delivery_outcome_unknown",
         "skipped",
-        "agent_lost_task",
     ];
 
     fn assert_round_trips<T>(variants: &[T])
@@ -430,6 +456,7 @@ mod tests {
             HitlOrigin::Orchestrator,
             HitlOrigin::Maf,
             HitlOrigin::McpTool,
+            HitlOrigin::CodingAgent,
         ];
         assert_round_trips(&all);
         assert_matches_sql_check(&all, SQL_ORIGIN_VALUES);
@@ -456,7 +483,6 @@ mod tests {
             ResumeStatus::Failed,
             ResumeStatus::DeliveryOutcomeUnknown,
             ResumeStatus::Skipped,
-            ResumeStatus::AgentLostTask,
         ];
         assert_round_trips(&all);
         assert_matches_sql_check(&all, SQL_RESUME_STATUS_VALUES);
@@ -491,6 +517,7 @@ mod tests {
             HitlOrigin::Orchestrator,
             HitlOrigin::Maf,
             HitlOrigin::McpTool,
+            HitlOrigin::CodingAgent,
         ]);
         assert_serde_agrees_with_as_str(&[
             HitlStatus::Pending,
@@ -505,7 +532,6 @@ mod tests {
             ResumeStatus::Failed,
             ResumeStatus::DeliveryOutcomeUnknown,
             ResumeStatus::Skipped,
-            ResumeStatus::AgentLostTask,
         ]);
     }
 
@@ -531,19 +557,21 @@ mod tests {
         // migration file and compares it against those consts value-for-value, in order — so
         // the migration and the consts above can't silently drift apart in either direction.
         //
-        // `resume_status` reads from 0070, not 0007: sqlx hashes applied migration files, so a
+        // `resume_status` reads from 0027, not 0007: sqlx hashes applied migration files, so a
         // widened CHECK on an already-shipped column has to be re-expressed as a forward-only
-        // ALTER (0011_baseline_deltas.sql's own precedent) rather than edited in place. 0070 (which
-        // re-states 0027's list plus `agent_lost_task`) is the column's current source of truth,
-        // same as 0007 still is for the other three.
+        // ALTER (0011_baseline_deltas.sql's own precedent) rather than edited in place — 0027 is
+        // the column's current source of truth, same as 0007 still is for the other three.
         let migration_0007 = include_str!("../../migrations/0007_hitl.sql");
-        let migration_0070 =
-            include_str!("../../migrations/0070_hitl_resume_status_agent_lost_task.sql");
+        let migration_0027 = include_str!("../../migrations/0027_hitl_resume_status_skipped.sql");
+        // `origin` reads from 0056, not 0007, for the same reason `resume_status` reads from
+        // 0027: the `coding_agent` value (NAS-842) was added by a forward-only ALTER of the
+        // already-shipped CHECK rather than by editing 0007 in place.
+        let migration_0056 = include_str!("../../migrations/0056_acp_hitl.sql");
         for (migration, column, expected) in [
             (migration_0007, "kind", SQL_KIND_VALUES),
-            (migration_0007, "origin", SQL_ORIGIN_VALUES),
+            (migration_0056, "origin", SQL_ORIGIN_VALUES),
             (migration_0007, "status", SQL_STATUS_VALUES),
-            (migration_0070, "resume_status", SQL_RESUME_STATUS_VALUES),
+            (migration_0027, "resume_status", SQL_RESUME_STATUS_VALUES),
         ] {
             let actual = parse_check_values(migration, column);
             assert_eq!(

@@ -320,6 +320,7 @@ pub async fn agent_proxy(
         // traceparent path.
         let mut env = std::collections::HashMap::new();
         let mut session_token = None;
+        let mut session_token_id = None;
         if !state.config.agent_jwt_secret.is_empty()
             && let Ok(user_id) = claims.user_uuid()
         {
@@ -344,6 +345,13 @@ pub async fn agent_proxy(
                     env.insert("OPENAI_API_KEY".to_string(), minted.token.clone());
                     env.insert("ANTHROPIC_API_KEY".to_string(), minted.token.clone());
                     env.insert("NASIKO_SESSION_TOKEN".to_string(), minted.token.clone());
+                    // Remember the jti + exp so the turn can revoke this token
+                    // when it ends (see `coding::turn` / `coding::revocation`).
+                    session_token_id = Some(crate::coding::revocation::RevokedTokenId {
+                        jti: minted.jti.clone(),
+                        expires_at: chrono::DateTime::from_timestamp(minted.expires_at as i64, 0)
+                            .unwrap_or_else(chrono::Utc::now),
+                    });
                     session_token = Some(minted.token);
 
                     // Point the agent's model SDK at the LLM router so those calls
@@ -364,6 +372,17 @@ pub async fn agent_proxy(
                             &gw.llm_gateway_base_url,
                             nasiko_llm_router::InboundFormat::Anthropic,
                         );
+                        // Point the agent at the routed model too, not just the
+                        // routed base URL. OpenCode under ACP would otherwise fall
+                        // back to its built-in free model and bypass the router
+                        // (see `coding::proxy::routed_model_env`); other agent
+                        // kinds select their model themselves and get nothing.
+                        for (k, v) in crate::coding::proxy::routed_model_env(
+                            &target.image,
+                            target.hitl_enabled,
+                        ) {
+                            env.insert(k, v);
+                        }
                     }
                 }
                 Err(e) => {
@@ -375,11 +394,13 @@ pub async fn agent_proxy(
         let request = crate::coding::turn::CodingTurnRequest {
             session_id: info.session_id.clone(),
             spec: crate::coding::proxy::build_spec(agent_id, &target),
-            acp_command: state.config.coding_agent_command.clone(),
+            acp_command: target.acp_command.clone(),
             env,
             user_id: claims.user_uuid().ok(),
             prompt: info.user_text.clone(),
             session_token,
+            session_token_id,
+            hitl_enabled: target.hitl_enabled,
         };
         let events = crate::coding::turn::run_turn(&state, request)
             .await
