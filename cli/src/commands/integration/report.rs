@@ -13,7 +13,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use super::agents::Agent;
-use super::model::Turn;
+use super::model::{SessionSnapshot, Turn};
 use super::queue::{self, QueueDestination, QueueRecord};
 use super::state::{self, IntegrationState, SessionLock};
 
@@ -23,6 +23,19 @@ pub fn run(agent: Agent) -> Result<()> {
     let deadline = Instant::now() + REPORT_BUDGET;
     let raw = read_payload()?;
     let snapshot = agent.snapshot(&raw, deadline)?;
+    report_snapshot(agent, snapshot, deadline, true).map(|_| ())
+}
+
+/// Queue a session's completed, not-yet-captured turns. The hook and
+/// `agents import` both end here, so they share one watermark per session.
+/// `allow_content: false` withholds text even if the install captures it.
+/// Returns how many turns were queued.
+pub(super) fn report_snapshot(
+    agent: Agent,
+    snapshot: SessionSnapshot,
+    deadline: Instant,
+    allow_content: bool,
+) -> Result<usize> {
     let spec = agent.spec();
     let settings = IntegrationState::load()?;
     let Some(agent_state) = settings.get(spec.id) else {
@@ -44,7 +57,7 @@ pub fn run(agent: Agent) -> Result<()> {
             "session {} — no completed turns; deferred",
             snapshot.session_id
         ));
-        return Ok(());
+        return Ok(0);
     }
     let progress = lock.progress()?;
     if progress.migrated_legacy_counts {
@@ -65,7 +78,7 @@ pub fn run(agent: Agent) -> Result<()> {
                 &snapshot.session_id,
                 snapshot.title.as_deref(),
                 turn,
-                agent_state.capture_content,
+                agent_state.capture_content && allow_content,
             ),
         );
         if let Err(error) = record.event.validate() {
@@ -92,7 +105,7 @@ pub fn run(agent: Agent) -> Result<()> {
             snapshot.session_id, destination.cluster_name
         ));
     }
-    Ok(())
+    Ok(queued)
 }
 
 fn destination_from_state(agent_state: &super::state::AgentState) -> Result<QueueDestination> {

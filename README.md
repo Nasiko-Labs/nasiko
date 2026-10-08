@@ -111,7 +111,13 @@ nasiko agents install <agent>    # claude, codex, opencode, or cursor
 nasiko agents install <agent> --no-content  # omit prompt and response text
 nasiko agents uninstall <agent>
 nasiko agents sync               # flush queued session-turn events to the control plane
+nasiko agents import <agent>     # report sessions from before install: claude, codex, or all
 ```
+
+`agents import` replays local transcripts (`~/.claude/projects`, `$CODEX_HOME/sessions`)
+through the hook's own reporting path, keeping each turn's original time, model and token
+counts. It takes `--since YYYY-MM-DD`, `--dry-run` and `--no-content`, and is safe to re-run:
+turns already reported for a session are skipped.
 
 Auto-install also fires on `nasiko connect <control-plane-url>`, `nasiko use`, and
 `nasiko auth login`, but only when authenticated and only for agents with **no existing install
