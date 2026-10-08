@@ -6,6 +6,7 @@
 //! for delivery to the cluster active when they were captured.
 
 mod agents;
+mod budget;
 mod catalog;
 mod control_plane;
 mod launcher;
