@@ -789,7 +789,8 @@ const WELL_KNOWN_QUESTION_KEYS: &[&str] = &["auth_url", "provider", "expected_in
 /// (`docs/FRONTEND_HITL_API_CONTRACT.md`), so an agent bug or malicious agent must not be able to
 /// balloon it unboundedly.
 const MAX_OPTIONS: usize = 20;
-const MAX_OPTION_LABEL_LEN: usize = 200;
+/// Public so a producer of option labels can reject one that would drop the block.
+pub const MAX_OPTION_LABEL_LEN: usize = 200;
 const MAX_OPTION_DESCRIPTION_LEN: usize = 2000;
 const MAX_QUESTION_HEADER_LEN: usize = 200;
 

@@ -19,11 +19,13 @@ use uuid::Uuid;
 pub trait MafWorkflowPolicy: Send + Sync {
     /// The last word on a definition before it is stored, once every step has its
     /// agent. May fill in or rewrite it; `Err` rejects the save with `400`.
+    /// `previous` is the stored definition an update replaces; `None` on create.
     async fn finalize(
         &self,
         db: &PgPool,
         user_id: Uuid,
         definition: MafDefinition,
+        previous: Option<&MafDefinition>,
     ) -> Result<MafDefinition, String>;
 
     /// Called before a run is queued, after the access checks. `Err` rejects the
@@ -49,6 +51,7 @@ impl MafWorkflowPolicy for NoMafWorkflowPolicy {
         _db: &PgPool,
         _user_id: Uuid,
         mut definition: MafDefinition,
+        _previous: Option<&MafDefinition>,
     ) -> Result<MafDefinition, String> {
         for step in &mut definition.steps {
             step.ext.clear();
@@ -103,7 +106,7 @@ mod tests {
         };
 
         let stored = NoMafWorkflowPolicy
-            .finalize(&unusable_pool(), Uuid::new_v4(), definition)
+            .finalize(&unusable_pool(), Uuid::new_v4(), definition, None)
             .await
             .expect("the open-source policy never rejects a definition");
 
