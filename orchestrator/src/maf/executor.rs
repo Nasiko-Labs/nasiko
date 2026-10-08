@@ -114,16 +114,17 @@ pub struct UsageSource<'a> {
 }
 
 /// [`metered_llm`] for a model call that does not go through [`LlmClient`]: the same span,
-/// timing log and `token_usage` row, attributed to `source`.
-pub async fn metered_call<T>(
+/// timing log and `token_usage` row, attributed to `source`. The error type is the
+/// caller's, so a call that cannot fail can say so with `Infallible`.
+pub async fn metered_call<T, E>(
     phase: &'static str,
     db: &PgPool,
     execution_id: Uuid,
     user_id: Uuid,
     step_index: Option<i32>,
     source: UsageSource<'_>,
-    fut: impl std::future::Future<Output = Result<(T, LlmUsage), String>>,
-) -> Result<(T, LlmUsage), String> {
+    fut: impl std::future::Future<Output = Result<(T, LlmUsage), E>>,
+) -> Result<(T, LlmUsage), E> {
     let start = Instant::now();
     // `otel.name` renames the span for OTel export, which is how one helper
     // emits distinctly-named spans despite `info_span!` needing a constant
@@ -177,9 +178,6 @@ pub async fn metered_call<T>(
 /// sends its step agents — so MAF's own spend and its agents' spend aggregate
 /// under one session, the same convention the LLM router follows by writing
 /// the flow id there.
-///
-/// `cost_usd` is not bound: leaving it NULL is what lets the DB trigger price
-/// the row. Writing a zero here would defeat it.
 async fn write_token_usage(
     db: &PgPool,
     execution_id: Uuid,
@@ -197,25 +195,15 @@ async fn write_token_usage(
         "step_index": step_index,
     });
 
-    let result = sqlx::query(
-        r#"INSERT INTO token_usage
-               (user_id, operation_type, session_id, provider, model,
-                input_tokens, output_tokens, total_tokens,
-                cached_tokens, cache_read_input_tokens,
-                latency_ms, streaming, metadata)
-           VALUES ($1, 'maf_orchestration', $2, $3, $4, $5, $6, $7, $8, $8, $9, false, $10)"#,
+    let session_id = execution_id.to_string();
+    let result = insert_token_usage(
+        db,
+        user_id,
+        Some(&session_id),
+        source.provider,
+        usage,
+        metadata,
     )
-    .bind(user_id)
-    .bind(execution_id.to_string())
-    .bind(source.provider)
-    .bind(&usage.model)
-    .bind(usage.input_tokens as i32)
-    .bind(usage.output_tokens as i32)
-    .bind(usage.total_tokens as i32)
-    .bind(usage.cached_tokens as i32)
-    .bind(usage.latency_ms as i32)
-    .bind(metadata)
-    .execute(db)
     .await;
 
     if let Err(e) = result {
@@ -226,6 +214,65 @@ async fn write_token_usage(
             "maf: token_usage write failed (non-fatal)"
         );
     }
+}
+
+/// The `token_usage` row of one MAF orchestration LLM call, `maf_orchestration`
+/// for `user_id`. The one place the row's columns are written, so every MAF call
+/// is recorded and priced alike; each caller describes its call in `metadata`.
+/// `session_id` is `None` for a call that belongs to no run.
+///
+/// `cost_usd` is not bound: leaving it NULL is what lets the DB trigger price
+/// the row. Writing a zero here would defeat it.
+pub async fn insert_token_usage(
+    db: &PgPool,
+    user_id: Uuid,
+    session_id: Option<&str>,
+    provider: &str,
+    usage: &LlmUsage,
+    metadata: serde_json::Value,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"INSERT INTO token_usage
+               (user_id, operation_type, session_id, provider, model,
+                input_tokens, output_tokens, total_tokens,
+                cached_tokens, cache_read_input_tokens,
+                latency_ms, streaming, metadata)
+           VALUES ($1, 'maf_orchestration', $2, $3, $4, $5, $6, $7, $8, $8, $9, false, $10)"#,
+    )
+    .bind(user_id)
+    .bind(session_id)
+    .bind(provider)
+    .bind(&usage.model)
+    .bind(usage.input_tokens as i32)
+    .bind(usage.output_tokens as i32)
+    .bind(usage.total_tokens as i32)
+    .bind(usage.cached_tokens as i32)
+    .bind(usage.latency_ms as i32)
+    .bind(metadata)
+    .execute(db)
+    .await
+    .map(|_| ())
+}
+
+/// Every step as the planner sees it: this run's content, when it has any,
+/// folded into step 0's task description. Lets one saved workflow shape (e.g.
+/// "summarise this, then translate to japanese") be re-run against different
+/// content each time instead of baking it in at creation. Every step past 0
+/// still gets its input purely from prior steps' extracted context (see
+/// `build_context`), unchanged.
+pub fn planning_steps(definition: &MafDefinition, content: Option<&str>) -> Vec<MafStep> {
+    definition
+        .steps
+        .iter()
+        .enumerate()
+        .map(|(i, step)| match (i, content) {
+            (0, Some(content)) => MafStep {
+                task_description: format!("{} \"{content}\"", step.task_description),
+                ..step.clone()
+            },
+            _ => step.clone(),
+        })
+        .collect()
 }
 
 /// Runs one MAF execution under a `maf.execution` span.
@@ -332,24 +379,7 @@ async fn run_maf_inner(
 
     register_execution_session(db, execution_id, user_id, maf_def).await;
 
-    // Run-time data for this execution only, folded into step 0's task
-    // description before planning — lets one saved workflow shape (e.g.
-    // "summarise this, then translate to japanese") be re-run against
-    // different content each time instead of baking it in at creation.
-    // Every step past 0 still gets its input purely from prior steps'
-    // extracted context (see `build_context`), unchanged.
-    let planning_steps: Vec<MafStep> = maf_def
-        .steps
-        .iter()
-        .enumerate()
-        .map(|(i, step)| match (i, content) {
-            (0, Some(content)) => MafStep {
-                task_description: format!("{} \"{content}\"", step.task_description),
-                ..step.clone()
-            },
-            _ => step.clone(),
-        })
-        .collect();
+    let planning = planning_steps(maf_def, content);
 
     // ── LLM call 1: plan all steps at runtime ────────────────────────────────
     // Generates prompt templates (with <placeholders>), to_extract goals, and
@@ -362,7 +392,7 @@ async fn run_maf_inner(
         user_id,
         None,
         llm,
-        plan_execution(&planning_steps, llm, None),
+        plan_execution(&planning, llm, None),
     )
     .await?;
     let mut total_tokens = plan_usage.total_tokens + resumed_tokens;
@@ -2262,6 +2292,23 @@ mod resume_tests {
             error: Some("agent timed out".to_string()),
             ..pending_result(step)
         }
+    }
+
+    #[test]
+    fn every_step_is_planned_and_content_goes_to_step_0() {
+        let definition = MafDefinition {
+            description: None,
+            steps: vec![step(0), step(1)],
+            output_generation: None,
+        };
+        let planned = planning_steps(&definition, Some("refund me"));
+        assert_eq!(planned.len(), 2);
+        assert_eq!(planned[0].task_description, "task 0 \"refund me\"");
+        assert_eq!(planned[1].task_description, "task 1");
+        assert_eq!(
+            planning_steps(&definition, None)[0].task_description,
+            "task 0"
+        );
     }
 
     #[test]
