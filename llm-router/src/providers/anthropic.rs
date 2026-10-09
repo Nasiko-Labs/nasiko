@@ -1176,6 +1176,35 @@ mod tests {
         assert_eq!(blocks[0]["source"]["data"], "iVBORw0KGgo=");
     }
 
+    /// Emptiness is the destination's rule, not the front door's. The Anthropic inbound
+    /// parser forwards an empty turn; this spoke is what refuses it, because the Messages
+    /// API does. Routed to OpenAI instead, the same request would go through.
+    #[test]
+    fn an_empty_turn_is_refused_by_this_spoke_not_by_the_inbound_parser() {
+        use crate::inbound::{AnthropicInbound, InboundParser};
+
+        // The front door lets it past.
+        let req = AnthropicInbound
+            .parse_chat(json!({
+                "model": "claude-3-5-sonnet-20241022",
+                "max_tokens": 64,
+                "messages": [{ "role": "user", "content": "" }]
+            }))
+            .unwrap();
+        assert_eq!(req.messages[0].content, Some(json!("")));
+
+        // The spoke is where it stops.
+        match to_anthropic_request(&req, &resolved()).unwrap_err() {
+            ProviderError::Status {
+                status, message, ..
+            } => {
+                assert_eq!(status, 400);
+                assert!(message.contains("empty"), "{message}");
+            }
+            other => panic!("expected a 400, got {other:?}"),
+        }
+    }
+
     #[test]
     fn video_is_refused_by_name_rather_than_sent_empty() {
         // The Messages API has no video input; a silent drop would have the model

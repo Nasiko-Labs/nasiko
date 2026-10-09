@@ -270,14 +270,18 @@ fn anthropic_block_to_part(b: &Value) -> Result<Option<ContentPart>, GatewayErro
 
 /// An Anthropic user turn → one or more OpenAI messages. `tool_result` blocks become
 /// `{role:"tool"}` messages (keyed by `tool_use_id`); text/multimodal parts become a user message.
+///
+/// Empty content is **forwarded, not rejected**. Emptiness is not a translation failure —
+/// there is nothing to convert and nothing to lose — so it is not this edge's call to make.
+/// Each provider spoke already enforces its own rule (Anthropic and Gemini both refuse an
+/// empty user turn; OpenAI accepts one), which keeps the limit with the backend that has
+/// it. Unconvertible *content* is still rejected here, because that is a real translation
+/// failure and forwarding it would drop data silently.
 fn append_user_from_anthropic(content: &Value, out: &mut Vec<Value>) -> Result<(), GatewayError> {
     match content {
         Value::String(s) => {
-            if s.is_empty() {
-                return Err(GatewayError::BadRequest(
-                    "user message content cannot be empty".to_string(),
-                ));
-            }
+            // Empty or not, the turn is forwarded. Whether an empty message is legal is
+            // the destination's rule, not ours — see the note on this function.
             out.push(json!({ "role": "user", "content": s }));
             Ok(())
         }
@@ -317,15 +321,18 @@ fn append_user_from_anthropic(content: &Value, out: &mut Vec<Value>) -> Result<(
                 let content_val = parts_to_content_value(&user_parts);
                 out.push(json!({ "role": "user", "content": content_val }));
             } else if !had_tool_result {
-                return Err(GatewayError::BadRequest(
-                    "user message content cannot be empty".to_string(),
-                ));
+                // Blocks that carried nothing, and no tool result to stand in for the
+                // turn. Keep the turn rather than dropping it: losing a message silently
+                // breaks user/assistant alternation downstream.
+                out.push(json!({ "role": "user", "content": "" }));
             }
             Ok(())
         }
-        _ => Err(GatewayError::BadRequest(
-            "user message content cannot be empty".to_string(),
-        )),
+        // `null`, or a shape we do not model.
+        _ => {
+            out.push(json!({ "role": "user", "content": "" }));
+            Ok(())
+        }
     }
 }
 
@@ -1027,15 +1034,30 @@ mod tests {
 
     #[test]
     fn parse_chat_empty_or_unsupported_part_rejected() {
-        // empty user message
-        let err = AnthropicInbound
+        // An empty user message is NOT a translation failure — nothing to convert and
+        // nothing to lose — so it is forwarded and the destination spoke decides. The
+        // Anthropic and Gemini spokes still refuse it; OpenAI accepts it.
+        let req = AnthropicInbound
             .parse_chat(json!({
                 "model": "claude-3-5-sonnet-20241022",
                 "messages": [{ "role": "user", "content": "" }]
             }))
-            .unwrap_err();
-        assert!(matches!(err, GatewayError::BadRequest(_)));
+            .unwrap();
+        assert_eq!(req.messages.len(), 1);
+        assert_eq!(req.messages[0].content, Some(json!("")));
 
+        // A turn whose blocks carry nothing keeps its place rather than vanishing —
+        // dropping it would break user/assistant alternation downstream.
+        let empty_blocks = AnthropicInbound
+            .parse_chat(json!({
+                "model": "claude-3-5-sonnet-20241022",
+                "messages": [{ "role": "user", "content": [] }]
+            }))
+            .unwrap();
+        assert_eq!(empty_blocks.messages.len(), 1);
+        assert_eq!(empty_blocks.messages[0].content, Some(json!("")));
+
+        // Unconvertible *content*, by contrast, is still a real translation failure.
         // unsupported block type
         let err_block = AnthropicInbound
             .parse_chat(json!({
