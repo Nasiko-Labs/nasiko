@@ -13,7 +13,7 @@ use crate::version_prompt::{
 /// Push an agent image to the cluster's OCI registry and register in catalog.
 /// Does NOT deploy a container.
 pub fn push(image: &str, name_override: Option<&str>) -> Result<()> {
-    push_with_version_flags(image, name_override, VersionFlags::default(), false)
+    push_with_version_flags(image, name_override, VersionFlags::default(), false, false)
 }
 
 pub fn push_with_version_flags(
@@ -21,13 +21,14 @@ pub fn push_with_version_flags(
     name_override: Option<&str>,
     flags: VersionFlags,
     coding_agent: bool,
+    hitl: bool,
 ) -> Result<()> {
     let client = Client::from_active_cluster()?;
 
     if Path::new(image).join("AgentCard.json").exists() {
-        push_from_directory(image, name_override, flags, coding_agent, &client)
+        push_from_directory(image, name_override, flags, coding_agent, hitl, &client)
     } else {
-        push_from_image(image, name_override, flags, coding_agent, &client)
+        push_from_image(image, name_override, flags, coding_agent, hitl, &client)
     }
 }
 
@@ -36,6 +37,7 @@ fn push_from_directory(
     name_override: Option<&str>,
     flags: VersionFlags,
     coding_agent: bool,
+    hitl: bool,
     client: &Client,
 ) -> Result<()> {
     let root = Path::new(dir);
@@ -81,6 +83,7 @@ fn push_from_directory(
         &image_ref,
         &card,
         coding_agent,
+        hitl,
     )?;
 
     println!("\n✓ Pushed {agent_name}:{version} (image: {image_ref})");
@@ -93,6 +96,7 @@ fn push_from_image(
     name_override: Option<&str>,
     flags: VersionFlags,
     coding_agent: bool,
+    hitl: bool,
     client: &Client,
 ) -> Result<()> {
     // Same guard as `deploy_from_image`: require an explicit tag, not
@@ -138,6 +142,7 @@ fn push_from_image(
         &image_ref,
         &card,
         coding_agent,
+        hitl,
     )?;
 
     println!("\n✓ Pushed {agent_name}:{version} (image: {image_ref})");
@@ -219,6 +224,7 @@ fn register_agent(
     image_ref: &str,
     card: &serde_json::Value,
     coding_agent: bool,
+    hitl: bool,
 ) -> Result<()> {
     // Flag wins, AgentCard `workloadKind` is the default — the same rule `deploy`
     // uses, reused here so `push` marks the catalog row identically.
@@ -241,6 +247,8 @@ fn register_agent(
             "capabilities": card.get("capabilities"),
             "activate_version": false,
             "workload_kind": workload_kind,
+            // Only send when set, so a plain re-push never flips HITL off.
+            "hitl_enabled": hitl.then_some(true),
         });
         let _: serde_json::Value = client.put_json(&format!("/agents/{id}"), &update)?;
         return Ok(());
@@ -256,6 +264,7 @@ fn register_agent(
         "skills": card.get("skills").unwrap_or(&serde_json::json!([])),
         "capabilities": card.get("capabilities"),
         "workload_kind": workload_kind,
+        "hitl_enabled": hitl.then_some(true),
     });
     let _: serde_json::Value = client.post_json("/agents", &create)?;
     Ok(())

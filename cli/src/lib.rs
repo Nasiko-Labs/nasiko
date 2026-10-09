@@ -150,6 +150,10 @@ pub enum AgentOpsCommands {
         /// the image; `nasiko deploy` then brings it up port-less.
         #[arg(long)]
         coding_agent: bool,
+        /// Gate this coding agent's tool use behind human approval (NAS-842).
+        /// Only meaningful with --coding-agent.
+        #[arg(long)]
+        hitl: bool,
     },
     /// Upload source directory or .zip and let the server build + deploy (no local Docker needed)
     #[command(
@@ -1068,6 +1072,7 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             version,
             yes,
             coding_agent,
+            hitl,
         } => commands::push::push_with_version_flags(
             &image,
             name.as_deref(),
@@ -1076,6 +1081,7 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
                 yes,
             },
             coding_agent,
+            hitl,
         ),
         AgentOpsCommands::Upload {
             source,

@@ -35,12 +35,32 @@ pub struct CodingAgentTarget {
 /// token in the image reference rather than a single global setting. Unknown
 /// images default to OpenCode's `opencode acp` — the historical default — so
 /// existing deployments are unaffected.
-pub fn derive_acp_command(image: &str) -> Vec<String> {
+///
+/// When `hitl_enabled`, Codex also needs its approval policy forced so it routes
+/// tool use through `session/request_permission` (the HITL delegate). codex-acp
+/// honors Codex's `-c key=value` config overrides, so setting
+/// `approval_policy=untrusted` together with `sandbox_mode=read-only` makes it ask
+/// before any edit or command (it otherwise may run them unattended). OpenCode is
+/// nudged a different way — via `OPENCODE_CONFIG_CONTENT`, see
+/// [`routed_model_env`] — and Claude Code already asks by default (its
+/// `claude-code-acp` adapter runs in `permissionMode = "default"`, routing tool
+/// use through the client's permission request), so neither needs a command
+/// argument here.
+pub fn derive_acp_command(image: &str, hitl_enabled: bool) -> Vec<String> {
     let lower = image.to_ascii_lowercase();
     if lower.contains("claude") {
         vec!["claude-code-acp".to_owned()]
     } else if lower.contains("codex") {
-        vec!["codex-acp".to_owned()]
+        let mut cmd = vec!["codex-acp".to_owned()];
+        if hitl_enabled {
+            cmd.extend([
+                "-c".to_owned(),
+                "approval_policy=\"untrusted\"".to_owned(),
+                "-c".to_owned(),
+                "sandbox_mode=\"read-only\"".to_owned(),
+            ]);
+        }
+        cmd
     } else {
         vec!["opencode".to_owned(), "acp".to_owned()]
     }
@@ -70,9 +90,10 @@ pub const OPENCODE_ROUTED_MODEL: &str = "openai-chat/gpt-4o";
 /// `"ask"`: the default is `"allow"` (silent), so without this OpenCode never
 /// sends `session/request_permission` and the HITL delegate has nothing to gate.
 ///
-/// Claude Code and Codex select their model — and would force their own
-/// permission prompts — via their own env / config, so they need nothing here and
-/// get an empty map. Keyed off the image like [`derive_acp_command`].
+/// Claude Code and Codex select their model via their own env / config, so they
+/// get an empty map here. Their HITL prompting is handled elsewhere: Claude Code
+/// asks by default, and Codex is forced to ask via command arguments (see
+/// [`derive_acp_command`]). Keyed off the image like [`derive_acp_command`].
 pub fn routed_model_env(
     image: &str,
     hitl_enabled: bool,
@@ -120,7 +141,7 @@ pub async fn load_target(db: &PgPool, agent_id: Uuid) -> sqlx::Result<Option<Cod
         row.map(|(name, image, owner_id, writable_path, hitl_enabled)| {
             // `image IS NOT NULL` in the query guarantees this unwrap.
             let image = image.unwrap_or_default();
-            let acp_command = derive_acp_command(&image);
+            let acp_command = derive_acp_command(&image, hitl_enabled);
             CodingAgentTarget {
                 name,
                 image,
@@ -169,15 +190,43 @@ mod tests {
     #[test]
     fn acp_command_is_derived_from_the_image() {
         assert_eq!(
-            derive_acp_command("registry/opencode:0.1.0-acp"),
+            derive_acp_command("registry/opencode:0.1.0-acp", false),
             ["opencode", "acp"]
         );
-        assert_eq!(derive_acp_command("claude-code:acp"), ["claude-code-acp"]);
-        assert_eq!(derive_acp_command("myorg/codex:v1"), ["codex-acp"]);
+        assert_eq!(
+            derive_acp_command("claude-code:acp", false),
+            ["claude-code-acp"]
+        );
+        assert_eq!(derive_acp_command("myorg/codex:v1", false), ["codex-acp"]);
         // Unknown images fall back to the OpenCode default.
         assert_eq!(
-            derive_acp_command("some/mystery-agent:1"),
+            derive_acp_command("some/mystery-agent:1", false),
             ["opencode", "acp"]
+        );
+    }
+
+    #[test]
+    fn hitl_forces_codex_approval_but_leaves_others_unchanged() {
+        // Codex gains config overrides that make it ask before acting.
+        assert_eq!(
+            derive_acp_command("myorg/codex:v1", true),
+            [
+                "codex-acp",
+                "-c",
+                "approval_policy=\"untrusted\"",
+                "-c",
+                "sandbox_mode=\"read-only\""
+            ]
+        );
+        // OpenCode (nudged via env) and Claude Code (asks by default) are the
+        // same with or without HITL.
+        assert_eq!(
+            derive_acp_command("opencode:0.1.0", true),
+            derive_acp_command("opencode:0.1.0", false)
+        );
+        assert_eq!(
+            derive_acp_command("claude-code:acp", true),
+            ["claude-code-acp"]
         );
     }
 
@@ -221,7 +270,7 @@ mod tests {
             image: "registry/opencode:v1".to_owned(),
             owner_id: Uuid::nil(),
             writable_path: None,
-            acp_command: derive_acp_command("registry/opencode:v1"),
+            acp_command: derive_acp_command("registry/opencode:v1", false),
             hitl_enabled: false,
         };
         let spec = build_spec(Uuid::nil(), &target);
