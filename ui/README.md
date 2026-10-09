@@ -20,6 +20,11 @@ What's here:
   - Who drives cost?
   - Which traces burned it?
   - Is cost buying performance?
+- **Optimization** (`/optimization`): what context optimization saved your chats, with a trend you can pick a day or
+  week from, the agents with Token optimization off (one confirmed turn-on for all of them), a By agent table, the
+  biggest senders, what's optimizing your tokens (each mechanism, where it is set, how many agents have it on) and your
+  own history settings under "Your settings". Superusers set tier sizes under Settings → Workspace → Optimization tiers;
+  the EE build adds Settings → Workspace → Organization policy.
 - **Harnesses** (`/harnesses`): coding-harness usage (Claude Code, Codex, OpenCode, Cursor) from Org down to
   one developer. Needs a proposed endpoint; without it the page shows your own usage from existing ones.
 - **Agents** (`/agents`): the catalog of every agent you can see, Your agents (`/agents/mine`) with the ones that
@@ -127,7 +132,7 @@ The improvement plan these checks come from (and what each phase changed) is `do
 
 Workflow: gstack `/autoplan` → build → `/review` → `/qa` → `/ship` → `/land-and-deploy`.
 Conventions for humans and agents are in `CLAUDE.md`; the current plan is in `plans/feat-observability-demo.md`
-(TokenOps: `plans/feat-tokenops-page.md`; Harnesses: `plans/feat-harness-org-view.md`; Agents: `plans/feat-agents.md`; Chat: `plans/feat-chat.md`, routed chat: `plans/feat-chat-v1b.md`; app shell: `plans/feat-app-shell.md`; Overview: `plans/feat-overview.md`; Deploy and Builds: `plans/feat-deploy.md`). Which legacy pages are rebuilt and which are next: `docs/rebuild-status.md`. Server gaps found along the way: `docs/designs/openruntime-server-recommendations.md`
-(agent pages: `docs/designs/openruntime-agents-recommendations.md`; app shell: `docs/designs/openruntime-app-shell-recommendations.md`; Overview: `docs/designs/openruntime-overview-recommendations.md`; Deploy and Builds: `docs/designs/openruntime-deploy-recommendations.md`).
+(TokenOps: `plans/feat-tokenops-page.md`; Harnesses: `plans/feat-harness-org-view.md`; Agents: `plans/feat-agents.md`; Chat: `plans/feat-chat.md`, routed chat: `plans/feat-chat-v1b.md`; app shell: `plans/feat-app-shell.md`; Overview: `plans/feat-overview.md`; Deploy and Builds: `plans/feat-deploy.md`; Optimization: `plans/feat-context-optimization.md`, page: `plans/feat-optimization-page.md`). Which legacy pages are rebuilt and which are next: `docs/rebuild-status.md`. Server gaps found along the way: `docs/designs/openruntime-server-recommendations.md`
+(agent pages: `docs/designs/openruntime-agents-recommendations.md`; app shell: `docs/designs/openruntime-app-shell-recommendations.md`; Overview: `docs/designs/openruntime-overview-recommendations.md`; Deploy and Builds: `docs/designs/openruntime-deploy-recommendations.md`; Optimization: `docs/designs/openruntime-context-recommendations.md`).
 Design: `docs/designs/openruntime-observability-demo.md`; what the stack cost: `docs/designs/openruntime-stack-scorecard.md`.
 Release notes are in `CHANGELOG.md` and deferred work is in `TODOS.md`.

@@ -10,6 +10,7 @@
 //! [`GatewayConfig::platform_key_for`]). A fallback with no usable key is skipped.
 
 use futures::stream::BoxStream;
+use serde_json::Value;
 
 use super::{ProviderClient, ProviderError, provider_for};
 use crate::config::GatewayConfig;
@@ -24,6 +25,11 @@ type Effective = (String, String);
 /// giving up on it. A backstop against a provider that keeps rejecting params; real
 /// mismatches resolve in one or two fixes.
 const MAX_PARAM_FIXES: usize = 4;
+
+/// One parameter adjustment already made against the current model: the param, and the
+/// value it was set to (`Value::Null` for a drop). The value is part of the record
+/// because a repair is allowed to revisit a param but never to repeat a value.
+type ParamFix = (String, Value);
 
 /// Run a non-streaming chat with ordered fallbacks. Returns the response and the
 /// effective `(provider, model)`.
@@ -48,7 +54,7 @@ pub async fn execute_chat(
         // Working copies so a parameter-fix retry can mutate the request + config.
         let mut work_req = req.clone();
         let mut work_cfg = attempt.clone();
-        let mut applied: Vec<String> = Vec::new();
+        let mut applied: Vec<ParamFix> = Vec::new();
         loop {
             match provider.chat(&work_req, &work_cfg).await {
                 Ok(resp) => {
@@ -57,7 +63,7 @@ pub async fn execute_chat(
                 }
                 Err(e) => {
                     if try_fix_param(&*provider, &e, &mut work_req, &mut work_cfg, &mut applied) {
-                        log_param_fix(attempt, applied.last().unwrap(), &e);
+                        log_param_fix(attempt, &applied.last().unwrap().0, &e);
                         continue;
                     }
                     warn_attempt(attempt, &e, i, total);
@@ -101,7 +107,7 @@ pub async fn execute_chat_stream(
         // parameter-rejection surfaces here and is safe to fix-and-retry — same as `chat`.
         let mut work_req = req.clone();
         let mut work_cfg = attempt.clone();
-        let mut applied: Vec<String> = Vec::new();
+        let mut applied: Vec<ParamFix> = Vec::new();
         loop {
             match provider.chat_stream(&work_req, &work_cfg).await {
                 Ok(stream) => {
@@ -115,7 +121,7 @@ pub async fn execute_chat_stream(
                 }
                 Err(e) => {
                     if try_fix_param(&*provider, &e, &mut work_req, &mut work_cfg, &mut applied) {
-                        log_param_fix(attempt, applied.last().unwrap(), &e);
+                        log_param_fix(attempt, &applied.last().unwrap().0, &e);
                         continue;
                     }
                     warn_attempt(attempt, &e, i, total);
@@ -206,7 +212,7 @@ pub(crate) fn try_fix_param(
     err: &ProviderError,
     req: &mut ChatRequest,
     cfg: &mut ResolvedConfig,
-    applied: &mut Vec<String>,
+    applied: &mut Vec<ParamFix>,
 ) -> bool {
     if applied.len() >= MAX_PARAM_FIXES {
         return false;
@@ -214,20 +220,28 @@ pub(crate) fn try_fix_param(
     // Guard against a provider that re-reports the same param: if we already adjusted it
     // (or the adjustment is a no-op), retrying would just fail identically — give up.
     if let Some(param) = provider.droppable_param(err) {
-        if applied.iter().any(|a| a == &param) || !strip_param(req, cfg, &param) {
+        if applied.iter().any(|(p, _)| p == &param) || !strip_param(req, cfg, &param) {
             return false;
         }
-        applied.push(param);
+        applied.push((param, Value::Null));
         return true;
     }
     let Some((param, value)) = provider.repairable_param(err) else {
         return false;
     };
-    if applied.iter().any(|a| a == &param) || req.extra.get(&param) == Some(&value) {
+    // A repair, unlike a drop, may legitimately revisit a param it already set: a model
+    // that rejects the first remedy names a second one. What it must never do is cycle —
+    // a model whose two remedies contradict each other (refusing function tools at its
+    // default effort *and* refusing the `'none'` that remedy demands) would otherwise
+    // ping-pong until the cap. Re-sending a value this attempt already tried is that
+    // cycle, so stop at the point it is first provable rather than four calls later.
+    if applied.iter().any(|(p, v)| p == &param && v == &value) {
         return false;
     }
-    req.extra.insert(param.clone(), value);
-    applied.push(param);
+    if !apply_param(req, cfg, &param, value.clone()) {
+        return false;
+    }
+    applied.push((param, value));
     true
 }
 
@@ -250,6 +264,43 @@ fn strip_param(req: &mut ChatRequest, cfg: &mut ResolvedConfig, param: &str) -> 
             had
         }
         other => req.extra.remove(other).is_some(),
+    }
+}
+
+/// Set `param` so the retry carries it — the mirror of [`strip_param`], and it has to be
+/// a mirror: the named params live on both structs, and writing one into the request's
+/// flattened `extra` map instead would serialize it *alongside* the field derived from
+/// the struct (a `max_tokens` repair would emit the clamped value and the original
+/// `max_completion_tokens`). The resolved config wins on the wire, so both are set.
+/// Returns whether the value actually changed — an unchanged one means the retry would
+/// fail identically.
+fn apply_param(req: &mut ChatRequest, cfg: &mut ResolvedConfig, param: &str, value: Value) -> bool {
+    match param {
+        "temperature" => {
+            let Some(t) = value.as_f64() else {
+                return false;
+            };
+            let changed = cfg.temperature != Some(t) || req.temperature != Some(t);
+            req.temperature = Some(t);
+            cfg.temperature = Some(t);
+            changed
+        }
+        "max_tokens" | "max_completion_tokens" => {
+            let Some(n) = value.as_i64() else {
+                return false;
+            };
+            let changed = cfg.max_tokens != Some(n) || req.max_tokens != Some(n);
+            req.max_tokens = Some(n);
+            cfg.max_tokens = Some(n);
+            changed
+        }
+        other => {
+            if req.extra.get(other) == Some(&value) {
+                return false;
+            }
+            req.extra.insert(other.to_string(), value);
+            true
+        }
     }
 }
 
@@ -401,7 +452,7 @@ mod tests {
         let err = reasoning_effort_rejection();
         let mut req = chat_req();
         let mut cfg = primary("openai", vec![]);
-        let mut applied: Vec<String> = Vec::new();
+        let mut applied: Vec<ParamFix> = Vec::new();
 
         assert!(try_fix_param(
             &provider,
@@ -411,7 +462,10 @@ mod tests {
             &mut applied
         ));
         assert_eq!(req.extra.get("reasoning_effort"), Some(&json!("none")));
-        assert_eq!(applied, vec!["reasoning_effort".to_string()]);
+        assert_eq!(
+            applied,
+            vec![("reasoning_effort".to_string(), json!("none"))]
+        );
         // The tools the caller sent are untouched — the repair is additive.
         assert!(req.tools.is_some());
 
@@ -445,7 +499,7 @@ mod tests {
         };
         let mut req = chat_req();
         let mut cfg = primary("openai", vec![]); // temperature: Some(0.3)
-        let mut applied: Vec<String> = Vec::new();
+        let mut applied: Vec<ParamFix> = Vec::new();
 
         assert!(try_fix_param(
             &provider,
@@ -455,7 +509,10 @@ mod tests {
             &mut applied
         ));
         assert_eq!(cfg.temperature, None);
-        assert_eq!(applied, vec!["temperature".to_string()]);
+        assert_eq!(
+            applied,
+            vec![("temperature".to_string(), serde_json::Value::Null)]
+        );
         assert!(!req.extra.contains_key("reasoning_effort"));
     }
 
@@ -465,7 +522,7 @@ mod tests {
             crate::providers::OpenAiProvider::new(reqwest::Client::new(), "http://x".into());
         let mut req = chat_req();
         let mut cfg = primary("openai", vec![]);
-        let mut applied: Vec<String> = Vec::new();
+        let mut applied: Vec<ParamFix> = Vec::new();
 
         assert!(!try_fix_param(
             &provider,
@@ -489,7 +546,9 @@ mod tests {
             crate::providers::OpenAiProvider::new(reqwest::Client::new(), "http://x".into());
         let mut req = chat_req();
         let mut cfg = primary("openai", vec![]);
-        let mut applied: Vec<String> = (0..MAX_PARAM_FIXES).map(|i| format!("param-{i}")).collect();
+        let mut applied: Vec<ParamFix> = (0..MAX_PARAM_FIXES)
+            .map(|i| (format!("param-{i}"), serde_json::Value::Null))
+            .collect();
 
         assert!(!try_fix_param(
             &provider,
@@ -762,6 +821,223 @@ mod tests {
         ok.assert_async().await;
         assert_eq!(provider, "openai"); // recovered on the same model, no fallback
         assert_eq!(model, "gpt-5.5");
+        assert_eq!(resp.choices[0].message.text().as_deref(), Some("ok"));
+    }
+
+    #[tokio::test]
+    async fn a_model_that_rejects_both_its_default_effort_and_none_recovers_on_the_third_call() {
+        // The two-step exchange gpt-6-astra drives: it refuses function tools at its
+        // default effort, then refuses the `'none'` that remedy asks for, naming the
+        // values it does accept. Neither step is droppable — stripping the param just
+        // reinstates the default — so the repair seam has to revisit the same param.
+        let mut openai = mockito::Server::new_async().await;
+        // Created first ⇒ matched first. The repair's own value, rejected in turn.
+        let none_rejected = openai
+            .mock("POST", "/chat/completions")
+            .match_body(mockito::Matcher::PartialJson(
+                json!({ "reasoning_effort": "none" }),
+            ))
+            .with_status(400)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "error": {
+                        "message": "Unsupported value: 'reasoning_effort' does not support 'none' with this model. Supported values are: 'low', 'medium', 'high', and 'xhigh'.",
+                        "type": "invalid_request_error",
+                        "param": "reasoning_effort",
+                        "code": "unsupported_value"
+                    }
+                })
+                .to_string(),
+            )
+            .expect(1)
+            .create_async()
+            .await;
+        let low_accepted = openai
+            .mock("POST", "/chat/completions")
+            .match_body(mockito::Matcher::PartialJson(
+                json!({ "reasoning_effort": "low" }),
+            ))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "id": "chatcmpl-1", "object": "chat.completion", "model": "gpt-6-astra",
+                    "choices": [{ "index": 0, "message": { "role": "assistant", "content": "ok" }, "finish_reason": "stop" }],
+                    "usage": { "prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2 }
+                })
+                .to_string(),
+            )
+            .expect(1)
+            .create_async()
+            .await;
+        // Carries no `reasoning_effort` at all ⇒ the original tool-carrying request.
+        let tools_rejected = openai
+            .mock("POST", "/chat/completions")
+            .with_status(400)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "error": {
+                        "message": "Function tools with reasoning_effort are not supported for gpt-6-astra in /v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to 'none'.",
+                        "type": "invalid_request_error",
+                        "param": "reasoning_effort",
+                        "code": serde_json::Value::Null
+                    }
+                })
+                .to_string(),
+            )
+            .expect(1)
+            .create_async()
+            .await;
+
+        let cfg = GatewayConfig {
+            openai_api_base: openai.url(),
+            ..Default::default()
+        };
+        let mut p = primary("openai", vec![]);
+        p.model = "gpt-6-astra".into();
+        p.temperature = None; // keep the exchange to the one param under test
+        p.max_tokens = None;
+
+        let (resp, (provider, model)) =
+            execute_chat(&reqwest::Client::new(), &cfg, &p, &chat_req())
+                .await
+                .unwrap();
+        tools_rejected.assert_async().await;
+        none_rejected.assert_async().await;
+        low_accepted.assert_async().await;
+        assert_eq!(provider, "openai"); // recovered on the same model, no fallback
+        assert_eq!(model, "gpt-6-astra");
+        assert_eq!(resp.choices[0].message.text().as_deref(), Some("ok"));
+    }
+
+    #[test]
+    fn two_contradictory_remedies_stop_at_the_cycle_rather_than_ping_ponging() {
+        // gpt-6-astra refuses function tools at its default effort AND refuses the
+        // 'none' that remedy demands, so the two repairs point at each other. Without a
+        // value-level guard this burns every one of MAX_PARAM_FIXES before failing.
+        let provider =
+            crate::providers::OpenAiProvider::new(reqwest::Client::new(), "http://x".into());
+        let none_unsupported = ProviderError::Status {
+            status: 400,
+            message: json!({
+                "error": {
+                    "message": "Unsupported value: 'reasoning_effort' does not support 'none' with this model. Supported values are: 'low', 'medium', 'high', and 'xhigh'.",
+                    "param": "reasoning_effort",
+                    "code": "unsupported_value"
+                }
+            })
+            .to_string(),
+            retryable: false,
+        };
+        let mut req = chat_req();
+        let mut cfg = primary("openai", vec![]);
+        let mut applied: Vec<ParamFix> = Vec::new();
+
+        // none → rejected → low.
+        assert!(try_fix_param(
+            &provider,
+            &reasoning_effort_rejection(),
+            &mut req,
+            &mut cfg,
+            &mut applied
+        ));
+        assert_eq!(req.extra.get("reasoning_effort"), Some(&json!("none")));
+        assert!(try_fix_param(
+            &provider,
+            &none_unsupported,
+            &mut req,
+            &mut cfg,
+            &mut applied
+        ));
+        assert_eq!(req.extra.get("reasoning_effort"), Some(&json!("low")));
+
+        // 'low' draws the tools rejection again, whose remedy is the 'none' already
+        // tried — the cycle is now provable, so stop instead of swinging back.
+        assert!(!try_fix_param(
+            &provider,
+            &reasoning_effort_rejection(),
+            &mut req,
+            &mut cfg,
+            &mut applied
+        ));
+        assert_eq!(
+            applied.len(),
+            2,
+            "two fixes, not the full budget of {MAX_PARAM_FIXES}"
+        );
+        assert_eq!(req.extra.get("reasoning_effort"), Some(&json!("low")));
+    }
+
+    #[tokio::test]
+    async fn an_output_cap_above_the_model_ceiling_is_clamped_not_dropped() {
+        // Claude Code asks for 64000 output tokens on every turn; gpt-4o-mini caps at
+        // 16384. The rejection's code is `invalid_value`, which the droppable seam does
+        // not read — the repair must clamp to the ceiling the message states, and must
+        // write it to the named field rather than the flattened `extra` map, or the retry
+        // would carry the clamp *and* the original `max_completion_tokens`.
+        let mut openai = mockito::Server::new_async().await;
+        let rejected = openai
+            .mock("POST", "/chat/completions")
+            .match_body(mockito::Matcher::PartialJson(
+                json!({ "max_completion_tokens": 64000 }),
+            ))
+            .with_status(400)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "error": {
+                        "message": "max_tokens is too large: 64000. This model supports at most 16384 completion tokens, whereas you provided 64000.",
+                        "type": "invalid_request_error",
+                        "param": "max_tokens",
+                        "code": "invalid_value"
+                    }
+                })
+                .to_string(),
+            )
+            .expect(1)
+            .create_async()
+            .await;
+        let ok = openai
+            .mock("POST", "/chat/completions")
+            .match_body(mockito::Matcher::PartialJson(
+                json!({ "max_completion_tokens": 16384 }),
+            ))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "id": "chatcmpl-1", "object": "chat.completion", "model": "gpt-4o-mini",
+                    "choices": [{ "index": 0, "message": { "role": "assistant", "content": "ok" }, "finish_reason": "stop" }],
+                    "usage": { "prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2 }
+                })
+                .to_string(),
+            )
+            .expect(1)
+            .create_async()
+            .await;
+
+        let cfg = GatewayConfig {
+            openai_api_base: openai.url(),
+            ..Default::default()
+        };
+        let mut p = primary("openai", vec![]);
+        p.model = "gpt-4o-mini".into();
+        p.temperature = None;
+        p.max_tokens = None; // the cap comes from the client, as Claude Code sends it
+        let req: ChatRequest = serde_json::from_value(json!({
+            "max_tokens": 64000,
+            "messages": [{ "role": "user", "content": "hi" }]
+        }))
+        .unwrap();
+
+        let (resp, (_, model)) = execute_chat(&reqwest::Client::new(), &cfg, &p, &req)
+            .await
+            .unwrap();
+        rejected.assert_async().await;
+        ok.assert_async().await;
+        assert_eq!(model, "gpt-4o-mini");
         assert_eq!(resp.choices[0].message.text().as_deref(), Some("ok"));
     }
 

@@ -287,7 +287,12 @@ export function crossed(start: Date, end: Date, unit: 'hour' | 'day'): boolean {
 
 // ── Environment for the contract server ──────────────────────────────────────
 
-/** KEY=VALUE lines of an env file (comments and blanks skipped, surrounding quotes removed). */
+/**
+ * KEY=VALUE lines of an env file (comments and blanks skipped, surrounding quotes removed). An unquoted value ends at
+ * an inline ` # comment`, as in dotenv: nasiko-cloud-rs `.env.example` (05f22246) writes
+ * `S3_ENDPOINT=http://localhost:9000        # any S3-compatible endpoint`, and the comment kept in the value made the
+ * contract server's object-store check fail ("dispatch failure").
+ */
 export function parseEnvFile(text: string): Record<string, string> {
   const out: Record<string, string> = {}
   for (const raw of text.split('\n')) {
@@ -295,7 +300,10 @@ export function parseEnvFile(text: string): Record<string, string> {
     if (!line || line.startsWith('#')) continue
     const m = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(line)
     if (!m) continue
-    out[m[1]!] = m[2]!.trim().replace(/^(['"])(.*)\1$/, '$2')
+    const value = m[2]!.trim()
+    // A quoted value may be followed by a comment too (`KEY="x"  # note`); its own # stays.
+    const quoted = /^(['"])(.*?)\1(?:\s+#.*)?$/.exec(value)
+    out[m[1]!] = quoted ? quoted[2]! : value.replace(/\s+#.*$/, '')
   }
   return out
 }

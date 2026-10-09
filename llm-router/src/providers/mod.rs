@@ -33,10 +33,10 @@ pub fn provider_for(
     cfg: &GatewayConfig,
 ) -> Result<Box<dyn ProviderClient>, GatewayError> {
     match resolved.provider.as_str() {
-        "openai" => Ok(Box::new(OpenAiProvider::new(
-            http.clone(),
-            cfg.openai_api_base.clone(),
-        ))),
+        "openai" => Ok(Box::new(
+            OpenAiProvider::new(http.clone(), cfg.openai_api_base.clone())
+                .with_max_tools(cfg.openai_max_tools),
+        )),
         "anthropic" => Ok(Box::new(AnthropicProvider::new(
             http.clone(),
             cfg.anthropic_api_base.clone(),

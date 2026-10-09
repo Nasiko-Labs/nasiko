@@ -65,6 +65,14 @@ pub struct GatewayConfig {
 
     /// Provider base URLs (overridable for tests / self-hosted gateways).
     pub openai_api_base: String,
+    /// Most function tools OpenAI's `/v1/chat/completions` accepts in one request; it
+    /// rejects a longer array outright (`array_above_max_length`), so an agent whose
+    /// tool set has grown past this — a coding client with several MCP servers
+    /// attached, say — fails every turn rather than degrading. Over the cap the
+    /// OpenAI spoke keeps the caller's own tools and fills the remainder with the MCP
+    /// tools most relevant to the turn. `0` disables the cap, for an
+    /// OpenAI-compatible endpoint that has none.
+    pub openai_max_tools: usize,
     pub anthropic_api_base: String,
     pub gemini_api_base: String,
     pub openrouter_api_base: String,
@@ -175,6 +183,7 @@ impl Default for GatewayConfig {
             model_catalog_sync_interval_secs: 86_400,
             pricing_sync_interval_secs: 86_400,
             openai_api_base: "https://api.openai.com/v1".into(),
+            openai_max_tools: 128,
             anthropic_api_base: "https://api.anthropic.com/v1".into(),
             gemini_api_base: "https://generativelanguage.googleapis.com/v1beta".into(),
             openrouter_api_base: "https://openrouter.ai/api/v1".into(),
@@ -255,6 +264,7 @@ impl GatewayConfig {
                 d.pricing_sync_interval_secs,
             ),
             openai_api_base: env_or("OPENAI_API_BASE", &d.openai_api_base),
+            openai_max_tools: env_parse_first(&["OPENAI_MAX_TOOLS"], d.openai_max_tools),
             anthropic_api_base: env_or("ANTHROPIC_API_BASE", &d.anthropic_api_base),
             gemini_api_base: env_or("GEMINI_API_BASE", &d.gemini_api_base),
             openrouter_api_base: env_or("OPENROUTER_API_BASE", &d.openrouter_api_base),
