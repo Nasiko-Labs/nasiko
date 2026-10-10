@@ -1,3 +1,4 @@
+pub mod assertion;
 pub mod jwt;
 pub mod service;
 
@@ -13,6 +14,76 @@ pub const TOKEN_EXPIRY_SECS: u64 = 7 * 24 * 60 * 60;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+
+pub use jwt::DelegatedIdentity;
+
+/// Scopes a delegated token may carry (react/docs/adr/0001a §3–4). The route
+/// gate in `oss/server/src/auth/delegate.rs` maps each one to read-only paths.
+pub const DELEGATION_SCOPES: &[&str] = &[
+    "me:read",
+    "usage:read",
+    "finops:read",
+    "agents:read",
+    "surfaces:read",
+];
+
+/// Longest lifetime a delegated token may have. The issuer clamps requests
+/// to this; nothing can ask for more.
+pub const DELEGATION_MAX_TTL_SECS: u64 = 60;
+
+/// Validates and canonicalises requested scopes against [`DELEGATION_SCOPES`]:
+/// deduplicated, in policy order, and NEVER silently dropped — an unknown
+/// scope is an error so a typo cannot quietly narrow a request.
+pub fn check_delegation_scopes(requested: &[String]) -> Result<Vec<String>, AuthError> {
+    check_delegation_scopes_in(requested, DELEGATION_SCOPES)
+}
+
+/// [`check_delegation_scopes`] against an edition's own scope list. An edition
+/// that adds read-only scopes (each with its own routes in the server's
+/// delegation route table) passes its full list here; the rules are the same:
+/// unknown scopes are refused, the result is in policy order.
+pub fn check_delegation_scopes_in(
+    requested: &[String],
+    known: &[&str],
+) -> Result<Vec<String>, AuthError> {
+    if requested.is_empty() {
+        return Err(AuthError::InvalidToken(
+            "no delegation scopes requested".into(),
+        ));
+    }
+    if let Some(bad) = requested.iter().find(|s| !known.contains(&s.as_str())) {
+        return Err(AuthError::InvalidToken(format!(
+            "unknown delegation scope {bad:?} (known: {})",
+            known.join(", ")
+        )));
+    }
+    Ok(known
+        .iter()
+        .filter(|s| requested.iter().any(|r| r == *s))
+        .map(|s| (*s).to_owned())
+        .collect())
+}
+
+/// What a caller asks `issue_delegated_token` for. Scopes outside
+/// [`DELEGATION_SCOPES`] are refused, never silently dropped.
+#[derive(Debug, Clone)]
+pub struct DelegationRequest {
+    pub scopes: Vec<String>,
+    pub ttl_secs: u64,
+    /// `jti` of the session this delegation derives from (for audit/revocation).
+    pub parent_jti: String,
+    /// The issuing control plane's audience string.
+    pub audience: String,
+}
+
+/// A freshly minted delegated token.
+#[derive(Debug, Clone)]
+pub struct IssuedDelegation {
+    pub token: String,
+    pub jti: String,
+    pub expires_in: u64,
+    pub scopes: Vec<String>,
+}
 
 /// Identity extracted after authentication.
 ///
@@ -39,6 +110,23 @@ pub struct Identity {
 pub trait AuthService: Send + Sync + 'static {
     async fn validate_token(&self, token: &str) -> Result<Identity, AuthError>;
     async fn issue_token(&self, identity: &Identity) -> Result<String, AuthError>;
+    /// Mint a short-lived, scoped, audience-bound token FROM an authenticated
+    /// session (react/docs/adr/0001a). The token is recorded like a session so
+    /// per-user and per-jti revocation cover it. Scopes outside
+    /// [`DELEGATION_SCOPES`] → `InvalidToken`; ttl is clamped to
+    /// [`DELEGATION_MAX_TTL_SECS`].
+    async fn issue_delegated_token(
+        &self,
+        identity: &Identity,
+        request: &DelegationRequest,
+    ) -> Result<IssuedDelegation, AuthError>;
+    /// Verify a delegated token for THIS control plane's audience, including
+    /// revocation and caller-exists. The route/scope gate is the caller's job.
+    async fn validate_delegated_token(
+        &self,
+        token: &str,
+        expected_audience: &str,
+    ) -> Result<DelegatedIdentity, AuthError>;
     async fn authenticate(&self, username: &str, password: &str) -> Result<LoginResult, AuthError>;
     async fn bootstrap_admin(&self, username: &str, password: &str) -> Result<(), AuthError>;
     async fn issue_agent_token(&self, agent_id: &str) -> Result<String, AuthError>;
@@ -365,6 +453,24 @@ impl AuthService for SimpleJwtAuth {
 
     async fn issue_token(&self, identity: &Identity) -> Result<String, AuthError> {
         jwt::encode_jwt(&self.secret, self.expiry_secs, identity)
+    }
+
+    /// No revocation store here, so delegated tokens are not supported by the
+    /// stateless implementation: a token that cannot be revoked must not exist.
+    async fn issue_delegated_token(
+        &self,
+        _identity: &Identity,
+        _request: &DelegationRequest,
+    ) -> Result<IssuedDelegation, AuthError> {
+        Err(AuthError::Unsupported)
+    }
+
+    async fn validate_delegated_token(
+        &self,
+        _token: &str,
+        _expected_audience: &str,
+    ) -> Result<DelegatedIdentity, AuthError> {
+        Err(AuthError::Unsupported)
     }
 
     async fn authenticate(

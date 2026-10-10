@@ -87,6 +87,10 @@ pub struct AppState {
     /// prefix with its own login page. Both editions serve the root mount only;
     /// the slice exists so another frontend can be mounted under its own prefix.
     pub ui_mounts: &'static [crate::auth::UiMount],
+    /// Scope → path table the delegated-token gate enforces (`auth::delegate`).
+    /// OSS: [`crate::auth::delegate::OSS_DELEGATION_ROUTES`]; an edition that
+    /// issues more scopes sets its own table at its composition root.
+    pub delegation_routes: crate::auth::delegate::DelegationRoutes,
 }
 
 impl AppState {
@@ -300,6 +304,7 @@ impl AppState {
             hitl_resume_tx,
             continuation_events,
             ui_mounts: &[crate::auth::UiMount::ROOT],
+            delegation_routes: crate::auth::delegate::OSS_DELEGATION_ROUTES,
         };
 
         // Spawn the durable build worker. It owns the receiver and exits when sender drops.
