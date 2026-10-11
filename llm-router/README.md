@@ -41,7 +41,7 @@ is authoritative on every path (chat, stream, embeddings).
 Errors are `{"detail": "<msg>"}` with the right status (401 auth / 400 client / 500
 internal / 502 upstream-after-fallbacks).
 
-## Layout
+### Layout
 
 ```
 src/
