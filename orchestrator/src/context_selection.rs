@@ -212,8 +212,34 @@ impl ContextTiers {
 /// The two preference lookups are two cheap indexed row reads, issued
 /// concurrently. Neither can fail the request — both fall back to their
 /// column default (see `for_user` on each).
-/// Whether the orchestrator-scoped compression layers (IP-3 tool results, IP-4 session history)
-/// are opted into for `user_id`.
+/// Whose `agents.compress_enabled` decides history compression (IP-4) for one conversation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompressionScope {
+    /// A direct chat with one agent: that agent's own switch decides — `user × agent`, read off
+    /// the agent being talked to, the same way the per-request layers (IP-1, IP-2, IP-5) do.
+    Agent(Uuid),
+    /// An orchestrator-routed chat: no single agent is known when history is read, so
+    /// [`compression_opt_in`]'s unanimity rule decides.
+    Orchestrator,
+}
+
+/// Whether one agent has opted into compression. A missing or soft-deleted agent, or a failed
+/// read, is `false` — history then goes out verbatim, the safe direction.
+pub async fn agent_compression_enabled(pool: &PgPool, agent_id: Uuid) -> bool {
+    sqlx::query_scalar::<_, bool>(
+        "SELECT compress_enabled FROM agents WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(agent_id)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or(false)
+}
+
+/// Whether the orchestrator-scoped compression layers (IP-3 tool results, IP-4 session history
+/// for orchestrator-routed chats) are opted into for `user_id`. Direct chats with one agent do
+/// not use this — see [`CompressionScope::Agent`].
 ///
 /// # Why this is aggregated rather than read off one agent
 ///
@@ -241,17 +267,24 @@ pub async fn compression_opt_in(pool: &PgPool, user_id: Uuid) -> bool {
 pub async fn fetch_for_user(
     pool: &PgPool,
     user_id: Uuid,
+    scope: CompressionScope,
     session_id: &str,
     vector_store: &VectorStore,
     query: &str,
     tiers: &ContextTiers,
 ) -> SessionHistory {
+    let opt_in = async {
+        match scope {
+            CompressionScope::Agent(agent_id) => agent_compression_enabled(pool, agent_id).await,
+            CompressionScope::Orchestrator => compression_opt_in(pool, user_id).await,
+        }
+    };
     let (level, strategy, opted_in) = tokio::join!(
         PacmsBudgetLevel::for_user(pool, user_id),
         ContextSelectionStrategy::for_user(pool, user_id),
-        compression_opt_in(pool, user_id),
+        opt_in,
     );
-    // IP-4 is gated by the deployment flag AND the per-agent switch, so the UI toggle stops it
+    // IP-4 is gated by the deployment flag AND the scope's switch, so the UI toggle stops it
     // as part of one layer rather than leaving history compressed after the rest is off.
     let mut cfg = tiers.resolve(level);
     cfg.compress.enabled = cfg.compress.enabled && opted_in;

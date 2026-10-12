@@ -14,7 +14,8 @@ pub mod types;
 pub mod vector_store;
 
 pub use context_selection::{
-    ContextSelectionStrategy, ContextTiers, PacmsBudgetLevel, compression_opt_in, fetch_for_user,
+    CompressionScope, ContextSelectionStrategy, ContextTiers, PacmsBudgetLevel,
+    agent_compression_enabled, compression_opt_in, fetch_for_user,
 };
 pub use engine::{OssRoutingEngine, RouterConfig, RoutingEngine};
 pub use error::RouterError;

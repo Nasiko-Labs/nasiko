@@ -29,6 +29,15 @@ impl Level {
         }
     }
 
+    /// Non-blank lines kept at the top of each function body before the rest is elided.
+    pub(crate) const fn code_body_keep(self) -> usize {
+        match self {
+            Level::Conservative => 6,
+            Level::Balanced => 3,
+            Level::Aggressive => 1,
+        }
+    }
+
     /// Lines kept at the head and tail of a log before eliding the middle.
     pub(crate) const fn log_head_tail(self) -> (usize, usize) {
         match self {

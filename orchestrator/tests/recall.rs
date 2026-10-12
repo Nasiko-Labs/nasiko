@@ -291,6 +291,7 @@ async fn mean_recall(
         let history = context_selection::fetch_for_user(
             pool,
             user_id,
+            context_selection::CompressionScope::Orchestrator,
             &session_id,
             store,
             topic.query,

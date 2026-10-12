@@ -166,6 +166,54 @@ async fn the_toggle_is_scoped_to_one_agent() {
     );
 }
 
+/// History compression (IP-4) in a direct chat follows the agent being talked to — `user × a1`,
+/// `user × a2` — not every agent the user owns. Orchestrator-routed chats have no single agent
+/// when history is read, so they keep the unanimity rule.
+#[tokio::test]
+#[serial]
+async fn history_compression_follows_the_agent_in_a_direct_chat() {
+    use nasiko_orchestrator::{agent_compression_enabled, compression_opt_in};
+
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap().to_string();
+    let on = create_agent(&server, &uid, &format!("hist-on-{}", uuid::Uuid::new_v4())).await;
+    let off = create_agent(&server, &uid, &format!("hist-off-{}", uuid::Uuid::new_v4())).await;
+    let on_id = on["id"].as_str().unwrap().to_string();
+    put_agent(&server, &uid, &on_id, json!({"compress_enabled": true})).await;
+
+    let user = uuid::Uuid::parse_str(&uid).unwrap();
+    let on_uuid = uuid::Uuid::parse_str(&on_id).unwrap();
+    let off_uuid = uuid::Uuid::parse_str(off["id"].as_str().unwrap()).unwrap();
+
+    assert!(
+        agent_compression_enabled(&server.db, on_uuid).await,
+        "a direct chat with the opted-in agent must compress history"
+    );
+    assert!(
+        !agent_compression_enabled(&server.db, off_uuid).await,
+        "a direct chat with an agent that has not opted in must not"
+    );
+    assert!(
+        !agent_compression_enabled(&server.db, uuid::Uuid::new_v4()).await,
+        "an unknown agent must read as not opted in"
+    );
+    assert!(
+        !compression_opt_in(&server.db, user).await,
+        "orchestrator chats still need every owned agent opted in"
+    );
+
+    sqlx::query("UPDATE agents SET compress_enabled = true WHERE owner_id = $1")
+        .bind(user)
+        .execute(&server.db)
+        .await
+        .unwrap();
+    assert!(
+        compression_opt_in(&server.db, user).await,
+        "with every owned agent opted in, orchestrator chats compress too"
+    );
+}
+
 // ─── metadata / feature flags ───────────────────────────────────────────────
 //
 // Same projection trap as the compress toggle above, third occurrence. The Settings

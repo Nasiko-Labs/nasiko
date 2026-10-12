@@ -538,63 +538,66 @@ pub(crate) async fn resolve_routed_request(
     // otherwise pins every request to Level 4 (the agent's configured `llm_config`) and
     // makes the prompt classifier (Level 3) unreachable. Derive signals from the transcript
     // itself instead for these agents.
-    let (boundary, flow_id, billed_user_id, attribution_source) = if let Some(s) = session.as_ref()
-    {
-        // Session-bound coding agent: the signed token names the user and flow
-        // directly, so bill that user and carry that flow — no traceparent, no
-        // freshness window (a long turn is never rejected for age).
-        (
-            BoundarySignals::for_coding_agent(
+    let (boundary, flow_id, billed_user_id, attribution_source, query) =
+        if let Some(s) = session.as_ref() {
+            // Session-bound coding agent: the signed token names the user and flow
+            // directly, so bill that user and carry that flow — no traceparent, no
+            // freshness window (a long turn is never rejected for age).
+            (
+                BoundarySignals::for_coding_agent(
+                    &agent_id,
+                    signals.turn_ordinal,
+                    signals.query.as_deref(),
+                    signals.is_tool_continuation,
+                ),
+                Some(s.flow_id.clone()),
+                s.user_id.clone(),
+                None,
+                signals.query,
+            )
+        } else if resolved.is_coding_agent {
+            (
+                BoundarySignals::for_coding_agent(
+                    &agent_id,
+                    signals.turn_ordinal,
+                    signals.query.as_deref(),
+                    signals.is_tool_continuation,
+                ),
+                None,
+                owner_id.clone(),
+                None,
+                signals.query,
+            )
+        } else {
+            let raw_traceparent = headers
+                .get(TRACEPARENT_HEADER)
+                .and_then(|value| value.to_str().ok());
+            let trace_flow = raw_traceparent.and_then(parse_flow_id);
+            let attribution = routing::attribution::resolve(
+                store,
                 &agent_id,
-                signals.turn_ordinal,
-                signals.query.as_deref(),
-                signals.is_tool_continuation,
-            ),
-            Some(s.flow_id.clone()),
-            s.user_id.clone(),
-            None,
-        )
-    } else if resolved.is_coding_agent {
-        (
-            BoundarySignals::for_coding_agent(
-                &agent_id,
-                signals.turn_ordinal,
-                signals.query.as_deref(),
-                signals.is_tool_continuation,
-            ),
-            None,
-            owner_id.clone(),
-            None,
-        )
-    } else {
-        let raw_traceparent = headers
-            .get(TRACEPARENT_HEADER)
-            .and_then(|value| value.to_str().ok());
-        let trace_flow = raw_traceparent.and_then(parse_flow_id);
-        let attribution = routing::attribution::resolve(
-            store,
-            &agent_id,
-            trace_flow,
-            ctx.cfg.attribution_window_secs as i64,
-        )
-        .await
-        .map_err(|denied| {
-            GatewayError::Forbidden(format!(
-                "{denied} (received traceparent: {})",
-                raw_traceparent.unwrap_or("<none>")
-            ))
-        })?;
-        let billed_user_id = attribution
-            .user_id
-            .map(|user_id| user_id.to_string())
-            .unwrap_or_else(|| owner_id.clone());
-        (
-            boundary_signals_for(&attribution),
-            Some(attribution.flow_id.clone()),
-            billed_user_id,
-            Some(attribution.source),
-        )
-    };
+                trace_flow,
+                ctx.cfg.attribution_window_secs as i64,
+            )
+            .await
+            .map_err(|denied| {
+                GatewayError::Forbidden(format!(
+                    "{denied} (received traceparent: {})",
+                    raw_traceparent.unwrap_or("<none>")
+                ))
+            })?;
+            let billed_user_id = attribution
+                .user_id
+                .map(|user_id| user_id.to_string())
+                .unwrap_or_else(|| owner_id.clone());
+            (
+                boundary_signals_for(&attribution),
+                Some(attribution.flow_id.clone()),
+                billed_user_id,
+                Some(attribution.source),
+                routing_query(attribution.user_message, signals.query),
+            )
+        };
     let decision = routing::route_model(
         ctx.router_cache.as_ref(),
         ctx.tier_registry.as_ref(),
@@ -610,7 +613,7 @@ pub(crate) async fn resolve_routed_request(
             tier2_model: resolved.tier2_model.as_deref(),
             tier3_model: resolved.tier3_model.as_deref(),
             signals: &boundary,
-            query: signals.query.as_deref(),
+            query: query.as_deref(),
         },
     )
     .await;
@@ -651,6 +654,23 @@ pub(crate) async fn resolve_routed_request(
         flow_id,
         attribution_source,
     })
+}
+
+/// The text the salience gate and classifier score for an in-flow call: the end user's
+/// message as the platform received it, when the flow recorded one, else the latest user
+/// turn parsed from the LLM request.
+///
+/// The recorded message is preferred because the request body is whatever the agent's
+/// framework built — a system prompt glued onto the user turn, retrieved context, packed
+/// history — and scoring that judges the framing, not what the user asked.
+fn routing_query(flow_message: Option<String>, transcript_query: Option<String>) -> Option<String> {
+    let flow_message = flow_message.filter(|m| !m.trim().is_empty());
+    tracing::info!(
+        target: "nasiko::llm_router::chat",
+        source = if flow_message.is_some() { "flow_user_message" } else { "llm_request" },
+        "chat_core: routing query source"
+    );
+    flow_message.or(transcript_query)
 }
 
 /// Derive the model-routing [`BoundarySignals`] from the attributed flow.
@@ -1041,6 +1061,7 @@ mod tests {
                 user_id: None,
                 context_id: Some("ses_test".into()),
                 mode: None,
+                user_message: None,
                 agent_is_participant: true,
             }))
         }
@@ -1485,6 +1506,18 @@ mod tests {
     }
 
     #[test]
+    fn routing_query_prefers_the_flows_user_message() {
+        let wrapped = Some("You are a deployed AI agent...\n\nUser request:\nHi".to_string());
+        assert_eq!(
+            routing_query(Some("Hi".into()), wrapped.clone()).as_deref(),
+            Some("Hi")
+        );
+        // No recorded message (or a blank one) falls back to the request's own text.
+        assert_eq!(routing_query(None, wrapped.clone()), wrapped);
+        assert_eq!(routing_query(Some("  ".into()), wrapped.clone()), wrapped);
+    }
+
+    #[test]
     fn boundary_signals_in_flow_when_attributed() {
         let attribution = routing::attribution::FlowAttribution {
             flow_id: "f1".into(),
@@ -1492,6 +1525,7 @@ mod tests {
             context_id: Some("ses_1".into()),
             mode: routing::Mode::FreeFlowing,
             source: routing::attribution::AttributionSource::Traceparent,
+            user_message: None,
         };
         // The stable context_id keys the decision cache, not the per-turn flow id.
         let signals = boundary_signals_for(&attribution);

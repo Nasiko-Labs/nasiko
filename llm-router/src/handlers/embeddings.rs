@@ -159,6 +159,7 @@ mod tests {
                 user_id: None,
                 context_id: None,
                 mode: None,
+                user_message: None,
                 agent_is_participant: true,
             }))
         }

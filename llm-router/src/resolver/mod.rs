@@ -339,8 +339,16 @@ impl RegistryStore for PgRegistry {
         agent_id: Uuid,
         window_secs: i64,
     ) -> Result<Option<crate::routing::attribution::LiveFlow>, sqlx::Error> {
-        let row: Option<(Option<Uuid>, Option<String>, Option<String>, bool)> = sqlx::query_as(
+        #[allow(clippy::type_complexity)]
+        let row: Option<(
+            Option<Uuid>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            bool,
+        )> = sqlx::query_as(
             "SELECT f.user_id, f.metadata->>'context_id', f.metadata->>'mode', \
+                    f.metadata->>'user_message', \
                     EXISTS(SELECT 1 FROM flow_participants fp \
                            WHERE fp.flow_id = f.flow_id AND fp.agent_id = $2) \
              FROM flows f \
@@ -353,16 +361,17 @@ impl RegistryStore for PgRegistry {
         .bind(window_secs as f64)
         .fetch_optional(&self.db)
         .await?;
-        Ok(
-            row.map(|(user_id, context_id, mode, agent_is_participant)| {
+        Ok(row.map(
+            |(user_id, context_id, mode, user_message, agent_is_participant)| {
                 crate::routing::attribution::LiveFlow {
                     user_id,
                     context_id,
                     mode,
+                    user_message,
                     agent_is_participant,
                 }
-            }),
-        )
+            },
+        ))
     }
 
     async fn fetch_custom_provider(

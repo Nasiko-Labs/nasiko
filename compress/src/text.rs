@@ -13,6 +13,63 @@ pub(crate) fn take_chars(s: &str, n: usize) -> &str {
     }
 }
 
+/// Split a line-number prefix off a line of an agent's file view: `00012| ` (OpenCode),
+/// `    12\t` (`cat -n`), `    12→` (Claude Code). Returns `(prefix, rest)`, or `None` when the
+/// line carries no such prefix. Bare `12: x` is deliberately not a prefix — prose and grep output
+/// use that shape.
+pub(crate) fn split_line_number(line: &str) -> Option<(&str, &str)> {
+    let mut digits = 0usize;
+    for (i, c) in line.char_indices() {
+        if c == ' ' && digits == 0 {
+            continue;
+        }
+        if c.is_ascii_digit() {
+            digits += 1;
+            if digits > 7 {
+                return None;
+            }
+            continue;
+        }
+        if digits == 0 {
+            return None;
+        }
+        let mut end = match c {
+            '|' | '\t' | '→' => i + c.len_utf8(),
+            _ => return None,
+        };
+        if c == '|' && line.get(end..end + 1) == Some(" ") {
+            end += 1;
+        }
+        return Some((line.get(..end)?, line.get(end..)?));
+    }
+    None
+}
+
+/// Every line of `text` as `(line-number prefix, rest)`. Prefixes are split off only when at
+/// least four in five non-blank lines carry one — an agent's file view — so a stray `3|` in
+/// ordinary text is left alone. Unnumbered lines get an empty prefix.
+pub(crate) fn numbered_lines(text: &str) -> Vec<(&str, &str)> {
+    let (mut numbered, mut non_blank) = (0usize, 0usize);
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        non_blank += 1;
+        if split_line_number(line).is_some() {
+            numbered += 1;
+        }
+    }
+    let strip = non_blank > 0 && numbered * 5 >= non_blank * 4;
+    text.lines()
+        .map(
+            |line| match strip.then(|| split_line_number(line)).flatten() {
+                Some(parts) => parts,
+                None => ("", line),
+            },
+        )
+        .collect()
+}
+
 /// Last `n` characters. Returns the whole input when it is shorter.
 pub(crate) fn tail_chars(s: &str, n: usize) -> &str {
     let total = s.chars().count();
@@ -51,6 +108,32 @@ pub(crate) fn head_tail(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn splits_the_line_number_formats_agents_use() {
+        assert_eq!(
+            split_line_number("00012| let x = 1;"),
+            Some(("00012| ", "let x = 1;"))
+        );
+        assert_eq!(
+            split_line_number("    12\tdef f():"),
+            Some(("    12\t", "def f():"))
+        );
+        assert_eq!(
+            split_line_number("    12→    return x"),
+            Some(("    12→", "    return x"))
+        );
+        assert_eq!(split_line_number("12|"), Some(("12|", "")));
+    }
+
+    #[test]
+    fn rejects_lines_without_a_number_prefix() {
+        assert_eq!(split_line_number("def f():"), None);
+        assert_eq!(split_line_number("12: not a prefix"), None);
+        assert_eq!(split_line_number("src/a.rs:12:fn x()"), None);
+        assert_eq!(split_line_number("123456789| too many digits"), None);
+        assert_eq!(split_line_number("   "), None);
+    }
 
     #[test]
     fn take_chars_never_splits_a_multibyte_character() {

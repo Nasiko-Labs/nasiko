@@ -138,6 +138,7 @@ impl RoutingEngine for OssRoutingEngine {
             context_selection::fetch_for_user(
                 pool,
                 req.user_id,
+                context_selection::CompressionScope::Orchestrator,
                 &req.session_id,
                 &history_store,
                 &req.query,
