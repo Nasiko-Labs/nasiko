@@ -23,7 +23,10 @@ use nasiko_acp_client::{
     RequestPermissionResponse, SelectedPermissionOutcome,
 };
 use nasiko_hitl::{HitlError, HitlStatus, HitlStore, NewHitlRequest};
+use tokio::sync::mpsc;
 use uuid::Uuid;
+
+use super::turn::CodingTurnEvent;
 
 /// How often a pending permission row is re-checked.
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
@@ -39,6 +42,10 @@ pub struct HitlPermissionDelegate {
     agent_id: Uuid,
     owner_user_id: Uuid,
     session_id: String,
+    /// Where to announce a newly-created pending request so the turn's SSE stream
+    /// can surface it as `TASK_STATE_INPUT_REQUIRED`. `None` when the turn isn't
+    /// streaming to a client (e.g. hermetic tests).
+    notice_tx: Option<mpsc::UnboundedSender<CodingTurnEvent>>,
 }
 
 impl HitlPermissionDelegate {
@@ -47,12 +54,14 @@ impl HitlPermissionDelegate {
         agent_id: Uuid,
         owner_user_id: Uuid,
         session_id: String,
+        notice_tx: Option<mpsc::UnboundedSender<CodingTurnEvent>>,
     ) -> Self {
         Self {
             store,
             agent_id,
             owner_user_id,
             session_id,
+            notice_tx,
         }
     }
 
@@ -74,6 +83,17 @@ impl HitlPermissionDelegate {
             .await?;
         let id = row.id;
         tracing::info!(hitl_id = %id, agent_id = %self.agent_id, "coding HITL: awaiting human decision");
+
+        // Surface the pending approval on the turn's SSE stream so the client
+        // knows a decision is needed and which id to resolve. Best-effort: a
+        // closed receiver (client hung up) just means no one is watching — the
+        // request is still answerable via the HITL API.
+        if let Some(tx) = &self.notice_tx {
+            let _ = tx.send(CodingTurnEvent::AwaitingApproval {
+                hitl_id: id,
+                tool: tool_label(request),
+            });
+        }
 
         // Poll until the row leaves `pending`, or the cap elapses. The turn's
         // lease heartbeat runs on its own task, so this wait never jeopardizes it.

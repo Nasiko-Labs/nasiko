@@ -13,9 +13,13 @@ use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response};
 use nasiko_acp_client::TurnEvent;
 use nasiko_types::a2a::{
-    agent_message, completed, failed, status_event, text_part, to_sse_data, working_with_message,
+    agent_message, completed, failed, input_required, status_event, text_part, to_sse_data,
+    working_with_message,
 };
 use tokio::sync::mpsc;
+use uuid::Uuid;
+
+use super::turn::CodingTurnEvent;
 
 /// Stream a running turn's events back as A2A `message/stream` SSE.
 ///
@@ -25,7 +29,7 @@ use tokio::sync::mpsc;
 /// "final" flag on the event). The client can't tell this apart from an ordinary
 /// agent's stream.
 pub fn turn_to_sse(
-    mut events: mpsc::UnboundedReceiver<TurnEvent>,
+    mut events: mpsc::UnboundedReceiver<CodingTurnEvent>,
     task_id: String,
     context_id: String,
 ) -> Response {
@@ -33,20 +37,26 @@ pub fn turn_to_sse(
         let mut saw_terminal = false;
         while let Some(event) = events.recv().await {
             match event {
-                TurnEvent::Update(update) => {
+                CodingTurnEvent::Turn(TurnEvent::Update(update)) => {
                     if let Some(text) = agent_text(&update) {
                         yield Ok::<Event, Infallible>(working_sse(&task_id, &context_id, &text));
                     }
                 }
-                TurnEvent::Finished(_) => {
+                CodingTurnEvent::Turn(TurnEvent::Finished(_)) => {
                     saw_terminal = true;
                     yield Ok(completed_sse(&task_id, &context_id));
                     break;
                 }
-                TurnEvent::Failed(err) => {
+                CodingTurnEvent::Turn(TurnEvent::Failed(err)) => {
                     saw_terminal = true;
                     yield Ok(failed_sse(&task_id, &context_id, &err.to_string()));
                     break;
+                }
+                // Non-terminal: a tool call is paused for human approval. Surface
+                // it so the client can resolve the request, then keep streaming —
+                // the turn resumes on its own once the delegate is answered.
+                CodingTurnEvent::AwaitingApproval { hitl_id, tool } => {
+                    yield Ok(input_required_sse(&task_id, &context_id, hitl_id, &tool));
                 }
             }
         }
@@ -96,11 +106,31 @@ fn failed_sse(task_id: &str, context_id: &str, error: &str) -> Event {
     ))))
 }
 
+/// A non-terminal `input-required` status: a tool call is paused for human
+/// approval. The message carries the `hitl_requests` id and how to answer it.
+fn input_required_sse(task_id: &str, context_id: &str, hitl_id: Uuid, tool: &str) -> Event {
+    Event::default().data(to_sse_data(&status_event(input_required(
+        task_id,
+        context_id,
+        &approval_message(hitl_id, tool),
+    ))))
+}
+
+/// The human-facing prompt for a pending tool approval: what will run and how to
+/// resolve it via the HITL API.
+fn approval_message(hitl_id: Uuid, tool: &str) -> String {
+    format!(
+        "Approval required to run {tool:?}. Resolve via \
+         POST /api/hitl/{hitl_id}/resolve with {{\"decision\":\"approve\"}} or \
+         {{\"decision\":\"reject\"}}."
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use agent_client_protocol::schema::v1::ContentChunk;
-    use nasiko_types::a2a::{completed, failed, status_event, to_sse_data};
+    use nasiko_types::a2a::{completed, failed, input_required, status_event, to_sse_data};
 
     #[test]
     fn agent_message_text_is_extracted() {
@@ -116,6 +146,38 @@ mod tests {
         // An empty chunk carries nothing to show.
         let empty = SessionUpdate::AgentMessageChunk(ContentChunk::new("".into()));
         assert_eq!(agent_text(&empty), None);
+    }
+
+    #[test]
+    fn approval_message_carries_the_hitl_id_and_resolve_hint() {
+        let id = uuid::Uuid::from_u128(0x1234_5678);
+        let msg = approval_message(id, "Edit /etc/hosts");
+        assert!(
+            msg.contains(&id.to_string()),
+            "must name the hitl id: {msg}"
+        );
+        assert!(
+            msg.contains("/api/hitl/"),
+            "must point at the resolve route"
+        );
+        assert!(
+            msg.contains("approve") && msg.contains("reject"),
+            "must say how to answer: {msg}"
+        );
+        assert!(msg.contains("Edit /etc/hosts"), "must name the tool");
+    }
+
+    #[test]
+    fn awaiting_approval_serializes_as_input_required() {
+        // The pause maps to the non-terminal input-required state (not failed),
+        // so the client can tell "needs a decision" from "errored".
+        let data = to_sse_data(&status_event(input_required(
+            "t1",
+            "c1",
+            &approval_message(uuid::Uuid::nil(), "Bash"),
+        )));
+        assert!(data.contains("TASK_STATE_INPUT_REQUIRED"), "got: {data}");
+        assert!(data.contains("c1") && data.contains("t1"));
     }
 
     #[test]

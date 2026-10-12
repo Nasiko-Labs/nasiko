@@ -84,7 +84,7 @@ async fn approve_resolves_to_the_allow_once_option() {
     let server = TestServer::start().await;
     let (user, agent) = seed(&server).await;
     let store: Arc<dyn nasiko_hitl::HitlStore> = Arc::new(PgHitlStore::new(server.db.clone()));
-    let delegate = HitlPermissionDelegate::new(store, agent, user, SESSION_ID.to_owned());
+    let delegate = HitlPermissionDelegate::new(store, agent, user, SESSION_ID.to_owned(), None);
 
     let req = permission_request();
     let decide = tokio::spawn(async move { delegate.decide(&req).await });
@@ -125,7 +125,7 @@ async fn reject_resolves_to_cancelled() {
     let server = TestServer::start().await;
     let (user, agent) = seed(&server).await;
     let store: Arc<dyn nasiko_hitl::HitlStore> = Arc::new(PgHitlStore::new(server.db.clone()));
-    let delegate = HitlPermissionDelegate::new(store, agent, user, SESSION_ID.to_owned());
+    let delegate = HitlPermissionDelegate::new(store, agent, user, SESSION_ID.to_owned(), None);
 
     let req = permission_request();
     let decide = tokio::spawn(async move { delegate.decide(&req).await });
