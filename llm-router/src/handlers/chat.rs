@@ -21,10 +21,6 @@ use tracing::Instrument;
 
 use futures::stream::BoxStream;
 
-use nasiko_session_token::{
-    SessionClaims, SessionTokenError, parse_algorithm, verify_session_token,
-};
-
 use crate::LlmRouterCtx;
 use crate::auth::verify_agent_jwt;
 use crate::error::GatewayError;
@@ -99,92 +95,14 @@ fn record_span_usage(span: &tracing::Span, usage: Option<&Usage>) {
     }
 }
 
-/// Who is calling the router.
-pub(crate) enum AuthedCaller {
-    /// The deploy-time agent-identity token: `{agent_id, owner_id}`. Identity for
-    /// the actual turn is still inferred from the request's `traceparent`.
-    Agent { agent_id: String, owner_id: String },
-    /// A coding-agent session token (NAS-839): signed
-    /// `{agent_id, user_id, session_id, flow_id}`, so the user and flow are read
-    /// straight off the claims with no `traceparent` and no freshness window.
-    Session(SessionClaims),
-}
-
-/// Authenticate the caller, preferring a coding-agent session token and falling
-/// back to the agent-identity token.
-///
-/// A valid, non-revoked session token wins; anything that isn't one of our
-/// session tokens falls through to [`verify_agent_jwt`], so A2A agents are
-/// unaffected. Expiry and revocation are hard failures (fail closed).
-pub(crate) async fn authenticate_caller(
-    ctx: &LlmRouterCtx,
+pub(crate) fn authenticate_request(
     headers: &HeaderMap,
-) -> Result<AuthedCaller, GatewayError> {
+    cfg: &crate::config::GatewayConfig,
+) -> Result<(String, String), GatewayError> {
     let authz = headers
         .get(AUTHORIZATION)
         .and_then(|value| value.to_str().ok());
-
-    if !ctx.cfg.agent_jwt_secret.is_empty()
-        && let Some(raw) = authz
-    {
-        let algorithm = parse_algorithm(&ctx.cfg.agent_jwt_algorithm);
-        match verify_session_token(raw, &ctx.cfg.agent_jwt_secret, algorithm) {
-            Ok(claims) => {
-                if is_session_token_revoked(&ctx.db, &claims.jti).await? {
-                    return Err(GatewayError::Forbidden("session token revoked".into()));
-                }
-                return Ok(AuthedCaller::Session(claims));
-            }
-            // Not one of ours → fall through to the agent-identity token.
-            Err(SessionTokenError::NotSessionToken) => {}
-            Err(SessionTokenError::Expired) => return Err(GatewayError::TokenExpired),
-            // SecretNotConfigured / MissingToken can't occur here (secret set,
-            // token present); fall back rather than hard-fail on anything else.
-            Err(_) => {}
-        }
-    }
-
-    let (agent_id, owner_id) = verify_agent_jwt(authz, &ctx.cfg)?;
-    Ok(AuthedCaller::Agent { agent_id, owner_id })
-}
-
-/// True if this session token's `jti` has been revoked. Fails closed (a store
-/// error denies the request) rather than letting a possibly-revoked token through.
-async fn is_session_token_revoked(db: &sqlx::PgPool, jti: &str) -> Result<bool, GatewayError> {
-    let found: Option<i32> =
-        sqlx::query_scalar("SELECT 1 FROM revoked_session_tokens WHERE jti = $1")
-            .bind(jti)
-            .fetch_optional(db)
-            .await
-            .map_err(|e| {
-                tracing::error!(error = %e, "llm-router: revocation check failed — failing closed");
-                GatewayError::Forbidden("identity store unavailable".into())
-            })?;
-    Ok(found.is_some())
-}
-
-/// The owner of the agent a session token names — needed for config/secret
-/// resolution, which is keyed on the agent owner, not the (possibly different)
-/// session user the token bills.
-pub(crate) async fn lookup_agent_owner(
-    db: &sqlx::PgPool,
-    agent_id: &str,
-) -> Result<String, GatewayError> {
-    let id = uuid::Uuid::parse_str(agent_id)
-        .map_err(|_| GatewayError::Forbidden("session token agent_id is not a UUID".into()))?;
-    let owner: Option<uuid::Uuid> = sqlx::query_scalar(
-        "SELECT owner_id FROM agents WHERE id = $1 AND deleted_at IS NULL",
-    )
-    .bind(id)
-    .fetch_optional(db)
-    .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "llm-router: agent owner lookup failed — failing closed");
-        GatewayError::Forbidden("identity store unavailable".into())
-    })?;
-    owner
-        .map(|u| u.to_string())
-        .ok_or_else(|| GatewayError::Forbidden("agent not found for session token".into()))
+    verify_agent_jwt(authz, cfg)
 }
 
 /// Axum handler for the OpenAI surface (`POST /v1/chat/completions`).
@@ -246,23 +164,12 @@ async fn chat_core(
     format: InboundFormat,
     force_stream: Option<bool>,
 ) -> Result<Response, GatewayError> {
-    // A coding-agent session token carries the user + flow in signed claims; the
-    // agent-identity token does not, and still relies on the request traceparent.
-    let (agent_id, owner_id, session) = match authenticate_caller(ctx, headers).await? {
-        AuthedCaller::Agent { agent_id, owner_id } => (agent_id, owner_id, None),
-        AuthedCaller::Session(claims) => {
-            // Config/secrets resolve on the agent owner, which the token doesn't
-            // carry — look it up; the session user is only the billing subject.
-            let owner_id = lookup_agent_owner(&ctx.db, &claims.agent_id).await?;
-            (claims.agent_id.clone(), owner_id, Some(claims))
-        }
-    };
+    let (agent_id, owner_id) = authenticate_request(headers, &ctx.cfg)?;
     tracing::info!(
         target: "nasiko::llm_router::chat",
         %agent_id, %owner_id, ?format,
-        session_bound = session.is_some(),
         has_traceparent = headers.get(TRACEPARENT_HEADER).is_some(),
-        "chat_core: request received (credential verified)"
+        "chat_core: request received (JWT verified)"
     );
 
     let inbound = inbound_for(format);
@@ -290,14 +197,8 @@ async fn chat_core(
         turn_ordinal: routing::user_turn_ordinal(&req.messages),
         is_tool_continuation: routing::is_tool_continuation(&req.messages),
     };
-    // Capture the session id before `session` is moved into routing below; used to
-    // stamp `session.id` on the gen_ai span so a coding agent's orphan LLM trace is
-    // discoverable by session (see the span record further down).
-    let session_id_for_span: Option<String> = session.as_ref().map(|s| s.session_id.clone());
-    let routed = resolve_routed_request(
-        ctx, store, headers, agent_id, owner_id, hint, signals, session,
-    )
-    .await?;
+    let routed =
+        resolve_routed_request(ctx, store, headers, agent_id, owner_id, hint, signals).await?;
     let RoutedRequest {
         agent_id,
         owner_id,
@@ -417,9 +318,6 @@ async fn chat_core(
         gen_ai.request.model = %resolved.model,
         gen_ai.provider.name = %resolved.provider,
         gen_ai.agent.id = %agent_id,
-        // Set for a session caller (coding agent) below, so this span's trace is
-        // discoverable by `session.id` like a normal agent's own spans are.
-        session.id = tracing::field::Empty,
         gen_ai.response.model = tracing::field::Empty,
         gen_ai.usage.input_tokens = tracing::field::Empty,
         gen_ai.usage.output_tokens = tracing::field::Empty,
@@ -440,14 +338,6 @@ async fn chat_core(
         llm_span.record("nasiko.compress.bytes_in", compression.bytes_in);
         llm_span.record("nasiko.compress.bytes_out", compression.bytes_out);
         llm_span.record("nasiko.compress.elapsed_us", compression.elapsed_us);
-    }
-    // A coding agent (session-token caller) emits no OTel spans of its own and
-    // doesn't propagate the turn's traceparent, so this router span is the only
-    // record of the call and would otherwise sit in an orphan trace. Stamping the
-    // session id links it to the conversation, so the session/FinOps views (which
-    // discover traces by `session.id`) find and attribute it.
-    if let Some(sid) = session_id_for_span.as_deref() {
-        llm_span.record("session.id", sid);
     }
 
     let started = Instant::now();
@@ -518,7 +408,6 @@ async fn chat_core(
     Ok(Json(inbound.render_chat_response(resp)).into_response())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn resolve_routed_request(
     ctx: &LlmRouterCtx,
     store: &dyn RegistryStore,
@@ -527,7 +416,6 @@ pub(crate) async fn resolve_routed_request(
     owner_id: String,
     hint: RequestHint<'_>,
     signals: RequestSignals,
-    session: Option<SessionClaims>,
 ) -> Result<RoutedRequest, GatewayError> {
     let mut resolved = resolve(store, &ctx.cache, &ctx.cfg, &agent_id, &owner_id, hint).await?;
     // Model routing: the resolver fixed provider/key/params; routing may override only model.
@@ -538,66 +426,50 @@ pub(crate) async fn resolve_routed_request(
     // otherwise pins every request to Level 4 (the agent's configured `llm_config`) and
     // makes the prompt classifier (Level 3) unreachable. Derive signals from the transcript
     // itself instead for these agents.
-    let (boundary, flow_id, billed_user_id, attribution_source, query) =
-        if let Some(s) = session.as_ref() {
-            // Session-bound coding agent: the signed token names the user and flow
-            // directly, so bill that user and carry that flow — no traceparent, no
-            // freshness window (a long turn is never rejected for age).
-            (
-                BoundarySignals::for_coding_agent(
-                    &agent_id,
-                    signals.turn_ordinal,
-                    signals.query.as_deref(),
-                    signals.is_tool_continuation,
-                ),
-                Some(s.flow_id.clone()),
-                s.user_id.clone(),
-                None,
-                signals.query,
-            )
-        } else if resolved.is_coding_agent {
-            (
-                BoundarySignals::for_coding_agent(
-                    &agent_id,
-                    signals.turn_ordinal,
-                    signals.query.as_deref(),
-                    signals.is_tool_continuation,
-                ),
-                None,
-                owner_id.clone(),
-                None,
-                signals.query,
-            )
-        } else {
-            let raw_traceparent = headers
-                .get(TRACEPARENT_HEADER)
-                .and_then(|value| value.to_str().ok());
-            let trace_flow = raw_traceparent.and_then(parse_flow_id);
-            let attribution = routing::attribution::resolve(
-                store,
+    let (boundary, flow_id, billed_user_id, attribution_source, query) = if resolved.is_coding_agent
+    {
+        (
+            BoundarySignals::for_coding_agent(
                 &agent_id,
-                trace_flow,
-                ctx.cfg.attribution_window_secs as i64,
-            )
-            .await
-            .map_err(|denied| {
-                GatewayError::Forbidden(format!(
-                    "{denied} (received traceparent: {})",
-                    raw_traceparent.unwrap_or("<none>")
-                ))
-            })?;
-            let billed_user_id = attribution
-                .user_id
-                .map(|user_id| user_id.to_string())
-                .unwrap_or_else(|| owner_id.clone());
-            (
-                boundary_signals_for(&attribution),
-                Some(attribution.flow_id.clone()),
-                billed_user_id,
-                Some(attribution.source),
-                routing_query(attribution.user_message, signals.query),
-            )
-        };
+                signals.turn_ordinal,
+                signals.query.as_deref(),
+                signals.is_tool_continuation,
+            ),
+            None,
+            owner_id.clone(),
+            None,
+            signals.query,
+        )
+    } else {
+        let raw_traceparent = headers
+            .get(TRACEPARENT_HEADER)
+            .and_then(|value| value.to_str().ok());
+        let trace_flow = raw_traceparent.and_then(parse_flow_id);
+        let attribution = routing::attribution::resolve(
+            store,
+            &agent_id,
+            trace_flow,
+            ctx.cfg.attribution_window_secs as i64,
+        )
+        .await
+        .map_err(|denied| {
+            GatewayError::Forbidden(format!(
+                "{denied} (received traceparent: {})",
+                raw_traceparent.unwrap_or("<none>")
+            ))
+        })?;
+        let billed_user_id = attribution
+            .user_id
+            .map(|user_id| user_id.to_string())
+            .unwrap_or_else(|| owner_id.clone());
+        (
+            boundary_signals_for(&attribution),
+            Some(attribution.flow_id.clone()),
+            billed_user_id,
+            Some(attribution.source),
+            routing_query(attribution.user_message, signals.query),
+        )
+    };
     let decision = routing::route_model(
         ctx.router_cache.as_ref(),
         ctx.tier_registry.as_ref(),
@@ -1071,6 +943,11 @@ mod tests {
         ) -> Result<Option<crate::resolver::CustomProvider>, sqlx::Error> {
             Ok(None)
         }
+        async fn fetch_org_embedding_default(
+            &self,
+        ) -> Result<Option<crate::resolver::OrgEmbeddingDefault>, sqlx::Error> {
+            Ok(None)
+        }
     }
 
     /// No-op tier registry: attribution now always resolves in these tests
@@ -1142,6 +1019,10 @@ mod tests {
             tier1_model: None,
             tier2_model: None,
             tier3_model: None,
+            embedding_provider: None,
+            embedding_model: None,
+            embedding_api_key_secret_name: None,
+            embedding_model_override: false,
         }
     }
 
@@ -1588,6 +1469,10 @@ mod tests {
                 tier1_model: None,
                 tier2_model: None,
                 tier3_model: None,
+                embedding_provider: None,
+                embedding_model: None,
+                embedding_api_key_secret_name: None,
+                embedding_model_override: false,
             }),
             is_coding_agent: true,
         };
@@ -1606,7 +1491,6 @@ mod tests {
                 turn_ordinal: 1,
                 is_tool_continuation: false,
             },
-            None,
         )
         .await
         .unwrap();
@@ -1634,6 +1518,10 @@ mod tests {
                 tier1_model: None,
                 tier2_model: None,
                 tier3_model: None,
+                embedding_provider: None,
+                embedding_model: None,
+                embedding_api_key_secret_name: None,
+                embedding_model_override: false,
             }),
             is_coding_agent: false,
             compress_enabled: false,
@@ -1653,7 +1541,6 @@ mod tests {
                 turn_ordinal: 1,
                 is_tool_continuation: false,
             },
-            None,
         )
         .await;
         let Err(error) = result else {
@@ -1681,6 +1568,10 @@ mod tests {
                 tier1_model: None,
                 tier2_model: None,
                 tier3_model: None,
+                embedding_provider: None,
+                embedding_model: None,
+                embedding_api_key_secret_name: None,
+                embedding_model_override: false,
             }),
             is_coding_agent: false,
             compress_enabled: false,

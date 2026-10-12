@@ -13,12 +13,6 @@ use uuid::Uuid;
 use crate::auth::Claims;
 use crate::state::AppState;
 
-/// TTL for a coding-agent session token. Comfortably longer than any single turn
-/// (a turn is bounded by the runtime's own deadline), since the token must stay
-/// valid for the whole turn's model and tool calls; a fresh one is minted each
-/// turn, and revocation covers early kill.
-const CODING_SESSION_TOKEN_TTL_SECS: u64 = 3600;
-
 /// Proxy agent requests: auth → flow guard → resolve endpoint → forward.
 ///
 /// Runs inside the `require_auth` middleware so Claims is always present.
@@ -135,48 +129,25 @@ pub async fn agent_proxy(
             nasiko_agent_proxy::ResolveError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
         })?;
 
-    // Coding agents have no HTTP endpoint — they're driven over a per-session
-    // stdio turn, not reverse-proxied — so resolve that discriminator first and
-    // skip the endpoint lookup for them. The shared session/flow setup below
-    // still runs, then the request is diverted to the coding-agent turn path just
-    // before the HTTP forward.
-    let coding_target = crate::coding::proxy::load_target(&state.db, agent_id)
+    let agent_base = match state
+        .runtime
+        .endpoint(&nasiko_runtime::ContainerId::from_uuid(agent_id))
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, %agent_id, "agent proxy: coding-agent lookup failed");
-            match e {
-                // The agent is a coding agent but its image is not a kind we can
-                // drive — a deploy-time misconfiguration, not a transient fault.
-                crate::coding::proxy::LoadTargetError::UnrecognizedImage { .. } => {
-                    StatusCode::BAD_GATEWAY
-                }
-                crate::coding::proxy::LoadTargetError::Db(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            }
-        })?;
-
-    let agent_base = if coding_target.is_some() {
-        String::new()
-    } else {
-        match state
-            .runtime
-            .endpoint(&nasiko_runtime::ContainerId::from_uuid(agent_id))
-            .await
-        {
-            Ok(live) => live.trim_end_matches('/').to_string(),
-            Err(e) => {
-                let Some(stored) = &agent.endpoint else {
-                    tracing::error!(
-                        error = %e, %agent_id,
-                        "agent proxy: live endpoint lookup failed and no stored agents.url to fall back to"
-                    );
-                    return Err(StatusCode::BAD_GATEWAY);
-                };
-                tracing::warn!(
+    {
+        Ok(live) => live.trim_end_matches('/').to_string(),
+        Err(e) => {
+            let Some(stored) = &agent.endpoint else {
+                tracing::error!(
                     error = %e, %agent_id,
-                    "agent proxy: live endpoint lookup failed, falling back to stored agents.url"
+                    "agent proxy: live endpoint lookup failed and no stored agents.url to fall back to"
                 );
-                format!("http://{}:{}", stored.host, stored.port)
-            }
+                return Err(StatusCode::BAD_GATEWAY);
+            };
+            tracing::warn!(
+                error = %e, %agent_id,
+                "agent proxy: live endpoint lookup failed, falling back to stored agents.url"
+            );
+            format!("http://{}:{}", stored.host, stored.port)
         }
     };
     // The forwarded path. A bare `/` (the chat call) must land on the agent's
@@ -307,124 +278,6 @@ pub async fn agent_proxy(
         // as the flows row so it is guaranteed present before the agent can
         // call back into the platform.
         crate::flows::record_participant(&state.db, &flow_ctx.flow_id, agent_id).await;
-    }
-
-    // Coding-agent branch: drive an ACP turn and translate its events into the
-    // standard message/stream SSE, instead of HTTP-forwarding. The shared setup
-    // above (ensure_chat_session, user-message persist, flow row + participant)
-    // already ran, so a coding-agent turn is attributed exactly like any other.
-    if let Some(target) = coding_target {
-        // A coding agent is driven only by chat turns. A non-message request
-        // (agent-card fetch, GetTask, …) has no turn to run and no HTTP container
-        // to serve it — not supported on this path yet.
-        let Some(info) = persist_info.as_ref() else {
-            return Err(StatusCode::NOT_IMPLEMENTED);
-        };
-        let context_id = info.session_id.clone();
-
-        // Mint the session-bound token (NAS-839): it binds this turn's calls to
-        // {agent, user, session, flow} using the *same* flow id the `flows` +
-        // `flow_participants` rows above were written under, so the gateway and
-        // router authorize off the signed claims instead of a traceparent. It is
-        // delivered to the agent's model calls via env and to its MCP calls via
-        // `session/new` (see `coding::turn::session_params`). Minting is
-        // best-effort: without it the agent's calls simply fall back to the
-        // traceparent path.
-        let mut env = std::collections::HashMap::new();
-        let mut session_token = None;
-        let mut session_token_id = None;
-        if !state.config.agent_jwt_secret.is_empty()
-            && let Ok(user_id) = claims.user_uuid()
-        {
-            let algorithm =
-                nasiko_session_token::parse_algorithm(&state.config.agent_jwt_algorithm);
-            let input = nasiko_session_token::SessionTokenInput {
-                agent_id: agent_id.to_string(),
-                user_id: user_id.to_string(),
-                session_id: context_id.clone(),
-                flow_id: flow_ctx.flow_id.clone(),
-            };
-            match nasiko_session_token::mint_session_token(
-                &input,
-                &state.config.agent_jwt_secret,
-                CODING_SESSION_TOKEN_TTL_SECS,
-                algorithm,
-            ) {
-                Ok(minted) => {
-                    // The agent's model calls read their router credential from
-                    // env; set the common provider keys so whichever the image
-                    // uses carries the session token.
-                    env.insert("OPENAI_API_KEY".to_string(), minted.token.clone());
-                    env.insert("ANTHROPIC_API_KEY".to_string(), minted.token.clone());
-                    env.insert("NASIKO_SESSION_TOKEN".to_string(), minted.token.clone());
-                    // Remember the jti + exp so the turn can revoke this token
-                    // when it ends (see `coding::turn` / `coding::revocation`).
-                    session_token_id = Some(crate::coding::revocation::RevokedTokenId {
-                        jti: minted.jti.clone(),
-                        expires_at: chrono::DateTime::from_timestamp(minted.expires_at as i64, 0)
-                            .unwrap_or_else(chrono::Utc::now),
-                    });
-                    session_token = Some(minted.token);
-
-                    // Point the agent's model SDK at the LLM router so those calls
-                    // actually reach Nasiko (authenticated by the session token
-                    // above, billed to the turn's user). Without a base URL the
-                    // credential has nowhere to go. Mirrors the deploy-time agent
-                    // wiring, but with the per-turn session token instead of an
-                    // agent JWT, and hedges both SDK families like the keys above.
-                    let gw = nasiko_llm_router::GatewayConfig::from_env();
-                    if !gw.llm_gateway_base_url.trim().is_empty() {
-                        nasiko_llm_router::inject_llm_base_url(
-                            &mut env,
-                            &gw.llm_gateway_base_url,
-                            nasiko_llm_router::InboundFormat::OpenAi,
-                        );
-                        nasiko_llm_router::inject_llm_base_url(
-                            &mut env,
-                            &gw.llm_gateway_base_url,
-                            nasiko_llm_router::InboundFormat::Anthropic,
-                        );
-                        // Point the agent at the routed model too, not just the
-                        // routed base URL. OpenCode under ACP would otherwise fall
-                        // back to its built-in free model and bypass the router
-                        // (see `coding::proxy::routed_model_env`); other agent
-                        // kinds select their model themselves and get nothing.
-                        for (k, v) in crate::coding::proxy::routed_model_env(
-                            &target.image,
-                            target.hitl_enabled,
-                        ) {
-                            env.insert(k, v);
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::error!(error = %e, %agent_id, "coding-agent: session token mint failed; proceeding without")
-                }
-            }
-        }
-
-        let request = crate::coding::turn::CodingTurnRequest {
-            session_id: info.session_id.clone(),
-            spec: crate::coding::proxy::build_spec(agent_id, &target),
-            acp_command: target.acp_command.clone(),
-            env,
-            user_id: claims.user_uuid().ok(),
-            prompt: info.user_text.clone(),
-            session_token,
-            session_token_id,
-            hitl_enabled: target.hitl_enabled,
-        };
-        let events = crate::coding::turn::run_turn(&state, request)
-            .await
-            .map_err(|e| {
-                tracing::error!(error = %e, %agent_id, "coding-agent turn failed to start");
-                match e {
-                    crate::coding::turn::CodingTurnError::Busy => StatusCode::CONFLICT,
-                    _ => StatusCode::BAD_GATEWAY,
-                }
-            })?;
-        let task_id = nasiko_types::a2a::new_task_id();
-        return Ok(crate::coding::sse::turn_to_sse(events, task_id, context_id));
     }
 
     // Explicit allowlist, not a denylist: the agent container is unvetted, so

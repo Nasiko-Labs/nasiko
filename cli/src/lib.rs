@@ -3,13 +3,12 @@ pub mod commands;
 pub mod config;
 pub mod hitl;
 pub mod oci;
-pub mod session_store;
 pub mod skill;
 pub mod util;
 pub mod version_prompt;
 
 use anyhow::Result;
-use clap::Subcommand;
+use clap::{Args, Subcommand};
 
 #[derive(Subcommand)]
 #[command(next_help_heading = "Create")]
@@ -122,16 +121,6 @@ pub enum AgentOpsCommands {
         /// Non-interactive: auto-accept the suggested version instead of prompting
         #[arg(long, short = 'y')]
         yes: bool,
-        /// Register as an ACP coding agent (e.g. OpenCode): driven over a stdio
-        /// turn instead of HTTP, and deployed port-less with a workspace volume.
-        /// Overrides any `workloadKind` in AgentCard.json.
-        #[arg(long)]
-        coding_agent: bool,
-        /// Gate this coding agent's tool use behind human approval (NAS-842):
-        /// each tool call pauses for a decision via the HITL API instead of
-        /// auto-running. Only meaningful with --coding-agent.
-        #[arg(long)]
-        hitl: bool,
     },
     /// Push image to cluster OCI registry (without deploying)
     Push {
@@ -146,15 +135,6 @@ pub enum AgentOpsCommands {
         /// Non-interactive: auto-accept the suggested version instead of prompting
         #[arg(long, short = 'y')]
         yes: bool,
-        /// Mark the registered agent as an ACP coding agent (e.g. OpenCode).
-        /// Overrides any `workloadKind` in AgentCard.json. `push` only registers
-        /// the image; `nasiko deploy` then brings it up port-less.
-        #[arg(long)]
-        coding_agent: bool,
-        /// Gate this coding agent's tool use behind human approval (NAS-842).
-        /// Only meaningful with --coding-agent.
-        #[arg(long)]
-        hitl: bool,
     },
     /// Upload source directory or .zip and let the server build + deploy (no local Docker needed)
     #[command(
@@ -189,11 +169,6 @@ pub enum AgentOpsCommands {
         /// the mount hides whatever the image ships at that path
         #[arg(long, value_name = "PATH")]
         writable_path: Option<String>,
-        /// Register as an ACP coding agent (e.g. OpenCode): built, then deployed
-        /// port-less with a workspace volume and driven over a stdio turn.
-        /// Overrides any `workloadKind` in AgentCard.json.
-        #[arg(long)]
-        coding_agent: bool,
     },
     /// Deploy an agent from an OCI/artifact-registry reference
     ///
@@ -305,19 +280,9 @@ pub enum AgentOpsCommands {
         /// Resume a previous session by ID (TUI mode)
         #[arg(long)]
         resume: Option<String>,
-        /// Switch to a specific existing conversation by ID. Omit to continue the
-        /// current conversation for this agent (the default); it also becomes the
-        /// new current one.
+        /// Route message to an existing session (one-shot mode)
         #[arg(long)]
         session_id: Option<String>,
-        /// Start a fresh conversation instead of continuing the current one, and
-        /// make it the new current conversation.
-        #[arg(long)]
-        new: bool,
-        /// Assert the target is an ACP coding agent — fail loudly if it isn't.
-        /// A guardrail only; the server still drives the turn by the agent's kind.
-        #[arg(long)]
-        coding_agent: bool,
     },
     /// List chat sessions
     Sessions {
@@ -393,6 +358,29 @@ pub enum AgentOpsCommands {
     },
 }
 
+/// Embedding-routing flags, shared by `llm-config create` and `llm-config update`.
+///
+/// Grouped rather than spelled out twice: both commands already carry a long parameter
+/// list, and these five only ever move together.
+#[derive(Args, Clone, Debug, Default)]
+pub struct EmbeddingArgs {
+    /// Provider for this config's embedding calls (set together with --embedding-model)
+    #[arg(long = "embedding-provider")]
+    pub embedding_provider: Option<String>,
+    /// Embedding model this config routes to (set together with --embedding-provider)
+    #[arg(long = "embedding-model")]
+    pub embedding_model: Option<String>,
+    /// Name of your user-secret holding the embedding provider's API key
+    #[arg(long = "embedding-secret-name")]
+    pub embedding_secret_name: Option<String>,
+    /// Plaintext embedding API key to store under --embedding-secret-name
+    #[arg(long = "embedding-secret-value")]
+    pub embedding_secret_value: Option<String>,
+    /// Let this config's embedding model outrank the model an agent asks for
+    #[arg(long = "embedding-model-override")]
+    pub embedding_model_override: bool,
+}
+
 #[derive(Subcommand)]
 pub enum LlmConfigCommands {
     /// Create a reusable LLM config in your library
@@ -425,6 +413,8 @@ pub enum LlmConfigCommands {
         /// Mark this as your default config
         #[arg(long)]
         default: bool,
+        #[command(flatten)]
+        embedding: EmbeddingArgs,
     },
     /// Update an existing config in your library (only the flags you pass change)
     Update {
@@ -465,6 +455,15 @@ pub enum LlmConfigCommands {
         /// Reset the pinned model to null (pin falls back to the config's model)
         #[arg(long = "clear-pinned-model")]
         clear_pinned_model: bool,
+        #[command(flatten)]
+        embedding: EmbeddingArgs,
+        /// Unset the embedding provider and model (embedding calls fall through to the
+        /// organization default, which is a different vector space — needs --yes)
+        #[arg(long = "clear-embedding-model")]
+        clear_embedding_model: bool,
+        /// Confirm an embedding provider/model change up front, for non-interactive use
+        #[arg(short = 'y', long = "yes")]
+        yes: bool,
     },
     /// Delete a config from your library (must be detached from all agents first)
     #[command(alias = "rm")]
@@ -833,14 +832,6 @@ pub enum ObserveCommands {
         #[arg(long)]
         json: bool,
     },
-    /// Show per-turn tokens + cost for a session (from the billing ledger)
-    Turns {
-        /// Session ID (ses_...)
-        session_id: String,
-        /// Output the raw API response as JSON
-        #[arg(long)]
-        json: bool,
-    },
     /// Show span tree and costs for a trace (ObservabilityService)
     #[command(name = "trace-detail")]
     TraceDetail {
@@ -1056,8 +1047,6 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             writable_path,
             version,
             yes,
-            coding_agent,
-            hitl,
         } => commands::deploy::deploy_with_version_flags(
             &image,
             name.as_deref(),
@@ -1070,16 +1059,12 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             },
             writable,
             writable_path.as_deref(),
-            coding_agent,
-            hitl,
         ),
         AgentOpsCommands::Push {
             image,
             name,
             version,
             yes,
-            coding_agent,
-            hitl,
         } => commands::push::push_with_version_flags(
             &image,
             name.as_deref(),
@@ -1087,8 +1072,6 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
                 version: version.as_deref(),
                 yes,
             },
-            coding_agent,
-            hitl,
         ),
         AgentOpsCommands::Upload {
             source,
@@ -1099,7 +1082,6 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             env,
             writable,
             writable_path,
-            coding_agent,
         } => commands::upload::upload(
             &source,
             name.as_deref(),
@@ -1109,7 +1091,6 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             &env,
             writable,
             writable_path.as_deref(),
-            coding_agent,
         ),
         AgentOpsCommands::Import { reference } => commands::import::from_registry(&reference),
         AgentOpsCommands::Ps { json } => commands::agents::ps(json),
@@ -1166,8 +1147,6 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             tui,
             resume,
             session_id,
-            new,
-            coding_agent,
         } => {
             // `nasiko chat "some message"` — a lone positional *containing
             // whitespace* is a natural-language message for the orchestrator,
@@ -1201,31 +1180,21 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
                 .or(url.as_deref())
                 .unwrap_or("")
                 .to_string();
-            // Resolve to (endpoint, workload_kind). `resolve_chat_target_with_kind`
-            // accepts a full URL, an agent UUID/name, or "orchestrator"; the kind
-            // is `None` for a URL / the orchestrator (neither is one catalog agent).
-            let (resolved, kind) = match (url, agent) {
-                (Some(u), _) => commands::agents::resolve_chat_target_with_kind(&u)?,
-                (None, Some(a)) => commands::agents::resolve_chat_target_with_kind(&a)?,
+            let resolved = match (url, agent) {
+                // `url` is documented to accept a full URL, an agent
+                // UUID/name, or "orchestrator" — `resolve_chat_target`
+                // is what actually implements that (URL passthrough,
+                // orchestrator special-case, agent lookup by id/name);
+                // using `u` as-is here skipped that resolution entirely,
+                // so `nasiko chat <agent-name>` sent the literal name as
+                // the HTTP endpoint instead of resolving it first.
+                (Some(u), _) => commands::agents::resolve_chat_target(&u)?,
+                (None, Some(a)) => commands::agents::resolve_chat_target(&a)?,
                 (None, None) => {
                     let base = config::active_url()?;
-                    (
-                        format!("{}/api/orchestrator/a2a", base.trim_end_matches('/')),
-                        None,
-                    )
+                    format!("{}/api/orchestrator/a2a", base.trim_end_matches('/'))
                 }
             };
-            // `--coding-agent` guardrail: assert the resolved target really is an
-            // ACP coding agent, so a wrong name/id fails loudly instead of silently
-            // chatting the wrong (or a normal) agent. It changes nothing on the wire
-            // — the server drives the turn by the agent's stored `workload_kind`.
-            if coding_agent && kind.as_deref() != Some("acp_coding_agent") {
-                let got = kind.as_deref().unwrap_or("unknown (URL/orchestrator)");
-                anyhow::bail!(
-                    "--coding-agent was given but '{target_label}' resolves to a '{got}' target, \
-                     not an ACP coding agent. Drop the flag, or check the name with `nasiko ps`."
-                );
-            }
             if tui || resume.is_some() {
                 commands::tui::run_tui(&resolved, resume.as_deref(), &target_label)
             } else {
@@ -1233,9 +1202,7 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
                     &resolved,
                     message.as_deref(),
                     session_id.as_deref(),
-                    new,
                     &target_label,
-                    kind.as_deref(),
                 )
             }
         }
@@ -1315,9 +1282,6 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             ObserveCommands::Session { session_id, json } => {
                 commands::observe::session_detail(&session_id, json)
             }
-            ObserveCommands::Turns { session_id, json } => {
-                commands::observe::turns(&session_id, json)
-            }
             ObserveCommands::TraceDetail { trace_id, json } => {
                 commands::observe::trace_detail(&trace_id, json)
             }
@@ -1359,6 +1323,7 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
                 pin,
                 pinned_model,
                 default,
+                embedding,
             } => commands::llm_config::create(
                 &name,
                 &provider,
@@ -1371,6 +1336,7 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
                 pin,
                 pinned_model,
                 default,
+                embedding,
             ),
             LlmConfigCommands::Update {
                 config,
@@ -1387,6 +1353,9 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
                 no_pin,
                 pinned_model,
                 clear_pinned_model,
+                embedding,
+                clear_embedding_model,
+                yes,
             } => commands::llm_config::update(
                 &config,
                 name,
@@ -1402,6 +1371,11 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
                 no_pin,
                 pinned_model,
                 clear_pinned_model,
+                commands::llm_config::EmbeddingUpdate {
+                    args: embedding,
+                    clear: clear_embedding_model,
+                    confirmed: yes,
+                },
             ),
             LlmConfigCommands::Delete { config, force } => {
                 commands::llm_config::delete(&config, force)

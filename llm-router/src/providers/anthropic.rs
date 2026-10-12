@@ -24,7 +24,7 @@ use crate::ir::{
     EmbeddingsRequest, EmbeddingsResponse, FunctionCall, FunctionCallDelta, Message, ToolCall,
     ToolCallDelta, ToolDef, UnsupportedPart, Usage,
 };
-use crate::resolver::ResolvedConfig;
+use crate::resolver::{ResolvedConfig, ResolvedEmbeddingConfig};
 
 /// Anthropic requires `max_tokens`; used when neither config nor request sets it.
 const DEFAULT_MAX_TOKENS: i64 = 4096;
@@ -283,7 +283,7 @@ impl ProviderClient for AnthropicProvider {
     async fn embeddings(
         &self,
         _req: &EmbeddingsRequest,
-        _cfg: &ResolvedConfig,
+        _cfg: &ResolvedEmbeddingConfig,
     ) -> Result<EmbeddingsResponse, ProviderError> {
         Err(ProviderError::Status {
             status: 501,

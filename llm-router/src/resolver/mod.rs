@@ -64,6 +64,23 @@ pub struct LLMConfig {
     pub tier2_model: Option<String>,
     #[serde(default)]
     pub tier3_model: Option<String>,
+    /// Embedding destination, read **only** by [`resolve_embeddings`]. Deliberately a
+    /// separate provider/model/key triple rather than a reuse of the chat columns: an
+    /// embedding model is a vector space, not a quality tier, so it can never be
+    /// substituted for the chat model. The pair is all-or-nothing (DB CHECK); the key
+    /// name is optional and empty means "the platform key for this provider".
+    #[serde(default)]
+    pub embedding_provider: Option<String>,
+    #[serde(default)]
+    pub embedding_model: Option<String>,
+    #[serde(default)]
+    pub embedding_api_key_secret_name: Option<String>,
+    /// When `true`, [`embedding_model`](Self::embedding_model) beats the model named on
+    /// the request. Off by default — the agent knows which vector space its stored data
+    /// lives in and the platform does not, so the agent's own choice wins unless an
+    /// operator deliberately takes it over.
+    #[serde(default)]
+    pub embedding_model_override: bool,
 }
 
 /// The resolved call configuration handed to the provider client.
@@ -106,6 +123,84 @@ pub struct ResolvedConfig {
     /// Whether this agent opted into payload compression. Per-agent by design: compression
     /// changes what the model sees, so its blast radius is one agent. See `crate::compress`.
     pub compress_enabled: bool,
+}
+
+/// The resolved **embedding** call configuration.
+///
+/// A deliberately narrow type: the embedding path must not depend on the chat columns,
+/// and "must not" is enforced here by the type system rather than by a comment. There is
+/// no `fallback_models`, no `temperature`, no `pinned_model` and no tier field, so no
+/// future edit can quietly reintroduce chat semantics — or chaining — on this path.
+#[derive(Debug, Clone)]
+pub struct ResolvedEmbeddingConfig {
+    pub provider: String,
+    /// Bare provider-native embedding model id — sent upstream, echoed in the response,
+    /// and recorded on the usage row.
+    pub model: String,
+    pub api_key: String,
+    /// The custom (DB-registered) endpoint this call goes to. `None` ⇒ a built-in
+    /// provider at its env-configured base URL.
+    pub custom_endpoint: Option<CustomEndpoint>,
+    /// Whether the call is paid with a platform-owned key. Never derived from the chat
+    /// `api_key_secret_name` — an agent with a chat key but no embedding key spends the
+    /// platform's key and must be metered as such.
+    pub platform_paid: bool,
+}
+
+impl ResolvedEmbeddingConfig {
+    /// A minimal built-in-provider destination, for tests that exercise a provider's
+    /// embeddings translation rather than resolution. Test-only so production code has
+    /// to go through [`resolve_embeddings`] and cannot hand-assemble a destination that
+    /// skipped the priority order.
+    #[cfg(test)]
+    pub(crate) fn for_test(provider: &str, model: &str, api_key: &str) -> Self {
+        Self {
+            provider: provider.to_string(),
+            model: model.to_string(),
+            api_key: api_key.to_string(),
+            custom_endpoint: None,
+            platform_paid: true,
+        }
+    }
+}
+
+/// Which level of [`resolve_embeddings`]'s priority order supplied the model. Logged so
+/// an operator can see *why* a given model ran without re-deriving the rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmbeddingSource {
+    /// The config's `embedding_model`, taken ahead of the request's because
+    /// `embedding_model_override` is set.
+    ConfigOverride,
+    /// The `model` field of the request itself.
+    Request,
+    /// The config's `embedding_model`.
+    Config,
+    /// The organization default in `settings`.
+    OrgDefault,
+}
+
+impl EmbeddingSource {
+    /// Stable label for logs.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::ConfigOverride => "config-override",
+            Self::Request => "request",
+            Self::Config => "config",
+            Self::OrgDefault => "org-default",
+        }
+    }
+}
+
+/// The organization-wide embedding default (`settings`), already decrypted.
+///
+/// `api_key` is `None` when the operator set a provider and model but no key — that
+/// means "use the platform key for this provider", the same as an empty secret name on
+/// a per-config embedding entry.
+#[derive(Debug, Clone)]
+pub struct OrgEmbeddingDefault {
+    pub provider: String,
+    pub model: String,
+    pub api_key: Option<String>,
 }
 
 /// What the incoming request itself asked for, used **only** when the agent has no
@@ -206,6 +301,13 @@ pub trait RegistryStore: Send + Sync {
         &self,
         label: &str,
     ) -> Result<Option<CustomProvider>, sqlx::Error>;
+
+    /// The organization-wide embedding default from `settings`, or `None` when the
+    /// operator has not set one. The stored key is decrypted in the impl, so mocks can
+    /// supply plaintext. Read behind the config cache's TTL — this is the last level of
+    /// the embedding priority order, so it is off the hot path for nearly every call.
+    async fn fetch_org_embedding_default(&self)
+    -> Result<Option<OrgEmbeddingDefault>, sqlx::Error>;
 }
 
 /// Postgres-backed [`RegistryStore`].
@@ -232,11 +334,17 @@ type ConfigRow = (
     Option<String>,                 // tier1_model
     Option<String>,                 // tier2_model
     Option<String>,                 // tier3_model
+    Option<String>,                 // embedding_provider
+    Option<String>,                 // embedding_model
+    Option<String>,                 // embedding_api_key_secret_name
+    bool,                           // embedding_model_override
 );
 
 /// The `llm_configs` columns the resolver reads, in [`ConfigRow`] order.
 const CONFIG_COLS: &str = "provider, model, fallback_models, temperature, max_tokens, \
-     api_key_secret_name, pinned, pinned_model, tier1_model, tier2_model, tier3_model";
+     api_key_secret_name, pinned, pinned_model, tier1_model, tier2_model, tier3_model, \
+     embedding_provider, embedding_model, embedding_api_key_secret_name, \
+     embedding_model_override";
 
 fn row_to_config(r: ConfigRow) -> LLMConfig {
     LLMConfig {
@@ -251,6 +359,10 @@ fn row_to_config(r: ConfigRow) -> LLMConfig {
         tier1_model: r.8,
         tier2_model: r.9,
         tier3_model: r.10,
+        embedding_provider: r.11,
+        embedding_model: r.12,
+        embedding_api_key_secret_name: r.13,
+        embedding_model_override: r.14,
     }
 }
 
@@ -399,6 +511,44 @@ impl RegistryStore for PgRegistry {
             default_model,
         }))
     }
+
+    async fn fetch_org_embedding_default(
+        &self,
+    ) -> Result<Option<OrgEmbeddingDefault>, sqlx::Error> {
+        let row: Option<(Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT default_embedding_provider, default_embedding_model, \
+                    default_embedding_api_key_encrypted \
+             FROM settings LIMIT 1",
+        )
+        .fetch_optional(&self.db)
+        .await?;
+        // The DB CHECK keeps provider and model all-or-nothing, so one present and the
+        // other absent cannot be stored; treat it as unset rather than half-routing. An
+        // empty string is not a value either — the write path normalizes blanks to NULL,
+        // and this is the read-side guard for anything stored before it did.
+        let Some((provider, model, encrypted)) = row else {
+            return Ok(None);
+        };
+        let blank_to_none = |v: Option<String>| v.filter(|s| !s.trim().is_empty());
+        let (Some(provider), Some(model)) = (blank_to_none(provider), blank_to_none(model)) else {
+            return Ok(None);
+        };
+        // Shared platform credential (not a per-user secret) → platform-settings scope,
+        // the same one `custom_providers.encrypted_api_key` uses.
+        let api_key = match encrypted.filter(|e| !e.is_empty()) {
+            Some(e) => Some(
+                SecretsCrypto::for_platform_settings()
+                    .decrypt(&e)
+                    .map_err(|err| sqlx::Error::Decode(Box::new(err)))?,
+            ),
+            None => None,
+        };
+        Ok(Some(OrgEmbeddingDefault {
+            provider,
+            model,
+            api_key,
+        }))
+    }
 }
 
 /// Resolve `(agent_id, owner_id)` into a [`ResolvedConfig`].
@@ -507,6 +657,225 @@ pub async fn resolve(
     Ok(resolved)
 }
 
+/// Resolve `(agent_id, owner_id)` into a [`ResolvedEmbeddingConfig`] for `POST /v1/embeddings`.
+///
+/// **Selection is by presence, and it happens exactly once.** We walk the priority order
+/// below, take the first level that has a model, and return that level's provider, model
+/// and key *as a set* — pieces are never mixed across levels. The caller then makes one
+/// upstream call. If it fails, the request fails: the order answers "which model do we
+/// pick?", never "what do we try next?".
+///
+/// | Priority | Model | Provider + key |
+/// | --- | --- | --- |
+/// | 1 | `embedding_model`, when `embedding_model_override` is set | the same config row |
+/// | 2 | the request's own `model` | the inbound OpenAI surface + the platform OpenAI key |
+/// | 3 | `embedding_model` | the same config row |
+/// | 4 | `settings.default_embedding_model` | the `settings` row |
+/// | — | nothing set anywhere | `400` |
+///
+/// There is deliberately no fallback. Embedding models differ in dimensionality and
+/// vector space, so silently substituting one for another does not degrade a result —
+/// it returns vectors that cannot be compared with anything already stored. That is also
+/// why the request's own model outranks the config's by default: the agent knows which
+/// space its corpus lives in and the platform does not. `embedding_model_override`
+/// exists for operators who want to take that decision back, and only reorders levels
+/// 1 and 2 — it adds no chaining.
+///
+/// The chat columns (`model`, `fallback_models`, `pinned_model`, the tier models) and
+/// `agents.pinned_model` are not read here at all, and [`ResolvedEmbeddingConfig`] has
+/// nowhere to put them.
+pub async fn resolve_embeddings(
+    store: &dyn RegistryStore,
+    cache: &ConfigCache,
+    cfg: &GatewayConfig,
+    agent_id: &str,
+    owner_id: &str,
+    request_model: Option<&str>,
+) -> Result<ResolvedEmbeddingConfig, GatewayError> {
+    let agent_uuid = Uuid::parse_str(agent_id)
+        .map_err(|_| GatewayError::NoRegistryEntry(agent_id.to_string()))?;
+    let llm_config = load_llm_config(store, cache, agent_uuid, agent_id)
+        .await?
+        .config;
+
+    let (source, pick) = match pick_embedding(llm_config.as_ref(), request_model) {
+        Some(picked) => picked,
+        // Neither the request, the config nor the org default named a model.
+        None => match load_org_embedding_default(store, cache).await? {
+            Some(org) => (
+                EmbeddingSource::OrgDefault,
+                EmbeddingPick {
+                    provider: org.provider,
+                    model: org.model,
+                    // The org key is platform-owned however it is supplied: either the
+                    // operator's stored key, or the platform key for that provider.
+                    owner_key_secret_name: None,
+                    org_api_key: org.api_key,
+                },
+            ),
+            None => {
+                return Err(GatewayError::BadRequest(
+                    "no embedding model available: the request named no model, the agent's \
+                     LLM config has no embedding_model, and no organization default is set"
+                        .to_string(),
+                ));
+            }
+        },
+    };
+
+    let custom = load_custom_provider(store, &pick.provider).await?;
+    let api_key = match &pick.org_api_key {
+        // Level 4 with a stored key: it is already decrypted and already scoped to this
+        // provider, so it bypasses the per-user secret path entirely.
+        Some(key) => key.clone(),
+        None => {
+            resolve_api_key(
+                store,
+                cfg,
+                owner_id,
+                &pick.provider,
+                pick.owner_key_secret_name.as_deref(),
+                custom.as_ref(),
+            )
+            .await?
+        }
+    };
+    // Mirrors resolve_api_key: only a named per-user secret with a real owner is
+    // bring-your-own-key. Everything else — the platform key, a custom provider's own
+    // stored key, the org key — is platform-owned. Never derived from the chat
+    // `api_key_secret_name`, or an agent with a chat key but no embedding key would be
+    // billed as BYOK while spending the platform's key.
+    let platform_paid = pick.owner_key_secret_name.is_none() || owner_id.is_empty();
+
+    let resolved = ResolvedEmbeddingConfig {
+        provider: pick.provider,
+        model: pick.model,
+        api_key,
+        custom_endpoint: custom.as_ref().map(|c| CustomEndpoint {
+            base_url: c.base_url.clone(),
+            dialect: c.dialect.clone(),
+        }),
+        platform_paid,
+    };
+    tracing::info!(
+        target: "nasiko::llm_router::resolver",
+        %agent_id,
+        source = source.label(),
+        provider = %resolved.provider,
+        model = %resolved.model,
+        platform_paid = resolved.platform_paid,
+        custom_endpoint = ?resolved.custom_endpoint.as_ref().map(|e| &e.base_url),
+        api_key_present = !resolved.api_key.is_empty(),
+        "resolver: resolved embedding config (one attempt, no fallback)"
+    );
+    Ok(resolved)
+}
+
+/// One level's complete (provider, model, key source) set, before the key is fetched.
+struct EmbeddingPick {
+    provider: String,
+    model: String,
+    /// The agent owner's `user_secrets` entry holding the key, when this level names one.
+    owner_key_secret_name: Option<String>,
+    /// An already-decrypted platform-owned key supplied by the level itself (level 4).
+    org_api_key: Option<String>,
+}
+
+/// Pure: the first of levels 1–3 that has a model, or `None` to fall through to the
+/// organization default. Split out so the priority order is unit-testable without a DB.
+fn pick_embedding(
+    llm_config: Option<&LLMConfig>,
+    request_model: Option<&str>,
+) -> Option<(EmbeddingSource, EmbeddingPick)> {
+    let configured = llm_config.and_then(config_embedding_pick);
+    let requested = request_model
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .map(|model| EmbeddingPick {
+            // The call arrived on the OpenAI surface, so the model it names is an OpenAI
+            // model and the platform OpenAI key is the credential that can run it.
+            provider: "openai".to_string(),
+            model: model.to_string(),
+            owner_key_secret_name: None,
+            org_api_key: None,
+        });
+    let overriding = llm_config.is_some_and(|c| c.embedding_model_override);
+
+    match (overriding, configured, requested) {
+        (true, Some(pick), _) => Some((EmbeddingSource::ConfigOverride, pick)),
+        (_, _, Some(pick)) => Some((EmbeddingSource::Request, pick)),
+        (_, Some(pick), None) => Some((EmbeddingSource::Config, pick)),
+        (_, None, None) => None,
+    }
+}
+
+/// Pure: this config row's embedding level, or `None` when it has no embedding model.
+/// Reads only the four embedding columns — never the chat ones.
+fn config_embedding_pick(c: &LLMConfig) -> Option<EmbeddingPick> {
+    let model = c
+        .embedding_model
+        .as_deref()
+        .map(str::trim)
+        .filter(|m| !m.is_empty())?;
+    // The DB CHECK makes the pair all-or-nothing, so a model without a provider cannot
+    // be stored; a row that somehow has one is treated as unset rather than half-routed.
+    let provider = c
+        .embedding_provider
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())?;
+    Some(EmbeddingPick {
+        provider: provider.to_string(),
+        model: model.to_string(),
+        // An empty name means "the platform key for this provider", same as absent.
+        owner_key_secret_name: c
+            .embedding_api_key_secret_name
+            .clone()
+            .filter(|n| !n.is_empty()),
+        org_api_key: None,
+    })
+}
+
+/// The organization embedding default, through the config cache's TTL.
+async fn load_org_embedding_default(
+    store: &dyn RegistryStore,
+    cache: &ConfigCache,
+) -> Result<Option<OrgEmbeddingDefault>, GatewayError> {
+    if let Some(hit) = cache.get_org_embedding_default() {
+        return Ok(hit);
+    }
+    let fetched = store
+        .fetch_org_embedding_default()
+        .await
+        .map_err(|e| GatewayError::Internal(format!("org embedding default read failed: {e}")))?;
+    cache.put_org_embedding_default(fetched.clone());
+    Ok(fetched)
+}
+
+/// The custom-provider row backing `provider`, or `None` for a built-in.
+///
+/// Same fail-closed rule the chat path uses: a non-built-in name with no active row is a
+/// client error, never a silent fallthrough to OpenAI (which would send the platform
+/// OpenAI key to an unknown endpoint).
+async fn load_custom_provider(
+    store: &dyn RegistryStore,
+    provider: &str,
+) -> Result<Option<CustomProvider>, GatewayError> {
+    if is_builtin_provider(provider) {
+        return Ok(None);
+    }
+    store
+        .fetch_custom_provider(provider)
+        .await
+        .map_err(|e| GatewayError::Internal(format!("custom provider read failed: {e}")))?
+        .map(Some)
+        .ok_or_else(|| {
+            GatewayError::BadRequest(format!(
+                "provider '{provider}' is not a registered custom provider"
+            ))
+        })
+}
+
 /// The `api_key_secret_name` from an optional `llm_config` — used only for logging which
 /// key source the resolver will pick (never the secret value itself).
 fn plan_secret_name(llm_config: &Option<LLMConfig>) -> Option<String> {
@@ -607,8 +976,14 @@ struct ConfigPlan {
 
 /// Whether `provider` is one of the built-in providers the router speaks natively.
 /// Everything else is a candidate custom (DB-registered) provider.
+///
+/// Must stay in step with the two functions that answer the same question from the other
+/// side — [`GatewayConfig::platform_key_for`] (which key pays) and
+/// [`crate::providers::provider_for`] (which client runs it). `openrouter` was missing
+/// here while present in both of those, so a config naming it resolved to
+/// "not a registered custom provider" despite the rest of the stack supporting it.
 fn is_builtin_provider(provider: &str) -> bool {
-    matches!(provider, "openai" | "anthropic" | "gemini")
+    matches!(provider, "openai" | "anthropic" | "gemini" | "openrouter")
 }
 
 /// The destination provider name, decided exactly as [`plan_config`] decides it:
@@ -756,6 +1131,7 @@ mod tests {
         secret: Option<String>,
         agent_pinned_model: Option<String>,
         custom_provider: Option<CustomProvider>,
+        org_embedding_default: Option<OrgEmbeddingDefault>,
     }
 
     #[async_trait]
@@ -790,6 +1166,11 @@ mod tests {
         ) -> Result<Option<CustomProvider>, sqlx::Error> {
             Ok(self.custom_provider.clone())
         }
+        async fn fetch_org_embedding_default(
+            &self,
+        ) -> Result<Option<OrgEmbeddingDefault>, sqlx::Error> {
+            Ok(self.org_embedding_default.clone())
+        }
     }
 
     fn cache() -> ConfigCache {
@@ -823,6 +1204,10 @@ mod tests {
             tier1_model: None,
             tier2_model: None,
             tier3_model: None,
+            embedding_provider: None,
+            embedding_model: None,
+            embedding_api_key_secret_name: None,
+            embedding_model_override: false,
         }
     }
 
@@ -834,6 +1219,7 @@ mod tests {
             secret: None,
             agent_pinned_model: None,
             custom_provider: None,
+            org_embedding_default: None,
         };
         let r = resolve(
             &store,
@@ -860,6 +1246,7 @@ mod tests {
             secret: None,
             agent_pinned_model: None,
             custom_provider: None,
+            org_embedding_default: None,
         };
         let err = resolve(
             &store,
@@ -885,6 +1272,7 @@ mod tests {
             secret: None,
             agent_pinned_model: None,
             custom_provider: None,
+            org_embedding_default: None,
         };
         let err = resolve(
             &store,
@@ -915,6 +1303,7 @@ mod tests {
             secret: None,
             agent_pinned_model: None,
             custom_provider: None,
+            org_embedding_default: None,
         };
         let r = resolve(
             &store,
@@ -945,6 +1334,7 @@ mod tests {
             secret: None,
             agent_pinned_model: None,
             custom_provider: None,
+            org_embedding_default: None,
         };
         let err = resolve(
             &store,
@@ -972,6 +1362,7 @@ mod tests {
             secret: None,
             agent_pinned_model: None,
             custom_provider: None,
+            org_embedding_default: None,
         };
         let hint = RequestHint {
             provider: Some("openai"),
@@ -1012,6 +1403,7 @@ mod tests {
             secret: None,
             agent_pinned_model: None,
             custom_provider: None,
+            org_embedding_default: None,
         };
         let hint = RequestHint {
             provider: Some("anthropic"),
@@ -1036,6 +1428,7 @@ mod tests {
             secret: None,
             agent_pinned_model: None,
             custom_provider: None,
+            org_embedding_default: None,
         };
         let hint = RequestHint {
             provider: Some("openai"),
@@ -1066,6 +1459,7 @@ mod tests {
             secret: None,
             agent_pinned_model: None,
             custom_provider: None,
+            org_embedding_default: None,
         };
         let err = resolve(
             &store,
@@ -1107,6 +1501,7 @@ mod tests {
             secret: Some(ciphertext),
             agent_pinned_model: None,
             custom_provider: None,
+            org_embedding_default: None,
         };
         let r = resolve(
             &store,
@@ -1132,6 +1527,7 @@ mod tests {
             secret: None,
             agent_pinned_model: None,
             custom_provider: None,
+            org_embedding_default: None,
         };
         let r = resolve(
             &store,
@@ -1158,6 +1554,7 @@ mod tests {
             secret: None,
             agent_pinned_model: None,
             custom_provider: None,
+            org_embedding_default: None,
         };
         let r = resolve(
             &store,
@@ -1179,6 +1576,7 @@ mod tests {
             secret: None,
             agent_pinned_model: None,
             custom_provider: None,
+            org_embedding_default: None,
         };
         let r = resolve(
             &store,
@@ -1203,6 +1601,7 @@ mod tests {
             secret: None,
             agent_pinned_model: None,
             custom_provider: None,
+            org_embedding_default: None,
         };
         let cache = cache();
         let cfg = cfg("openai", "gpt-4o-mini", "platform-key");
@@ -1239,6 +1638,7 @@ mod tests {
                 "sk-gateway",
                 "llama-3.1-8b",
             )),
+            org_embedding_default: None,
         };
         let r = resolve(
             &store,
@@ -1276,6 +1676,7 @@ mod tests {
                 "sk-gateway",
                 "llama-3.1-8b",
             )),
+            org_embedding_default: None,
         };
         let r = resolve(
             &store,
@@ -1300,6 +1701,7 @@ mod tests {
             secret: None,
             agent_pinned_model: None,
             custom_provider: None,
+            org_embedding_default: None,
         };
         let err = resolve(
             &store,
@@ -1312,5 +1714,341 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, GatewayError::BadRequest(_)));
+    }
+
+    // ── Embedding resolution (resolve_embeddings) ────────────────────────────
+    //
+    // The order under test: config-with-override → request model → config model →
+    // org default → 400. Each level brings its own provider, model and key; pieces are
+    // never mixed across levels, and a chosen level is never abandoned for the next one.
+
+    /// A config whose chat side is deliberately hostile to embeddings — anthropic has no
+    /// embeddings API at all, and the chat model/fallbacks/tiers are all chat models. If
+    /// any of them leaks into the embedding path the assertions below fail loudly.
+    fn embedding_config(provider: &str, model: &str, secret: Option<&str>) -> LLMConfig {
+        let mut c = llm_config("anthropic", "claude-3-5-sonnet-20241022", None);
+        c.fallback_models = vec!["anthropic/claude-haiku-4-5".into()];
+        c.pinned = true;
+        c.pinned_model = Some("claude-locked".into());
+        c.tier1_model = Some("claude-opus-4-8".into());
+        c.tier2_model = Some("claude-sonnet-4-6".into());
+        c.tier3_model = Some("claude-haiku-4-5".into());
+        c.api_key_secret_name = Some("CHAT_KEY".into());
+        c.embedding_provider = Some(provider.into());
+        c.embedding_model = Some(model.into());
+        c.embedding_api_key_secret_name = secret.map(str::to_string);
+        c
+    }
+
+    fn org_default(provider: &str, model: &str, key: Option<&str>) -> OrgEmbeddingDefault {
+        OrgEmbeddingDefault {
+            provider: provider.into(),
+            model: model.into(),
+            api_key: key.map(str::to_string),
+        }
+    }
+
+    async fn embeddings_for(
+        store: &MockRegistry,
+        cfg: &GatewayConfig,
+        request_model: Option<&str>,
+    ) -> Result<ResolvedEmbeddingConfig, GatewayError> {
+        resolve_embeddings(store, &cache(), cfg, AGENT, OWNER, request_model).await
+    }
+
+    #[tokio::test]
+    async fn embedding_request_model_wins_over_config_and_org_default() {
+        // Priority 2 (the default top level): the agent knows which vector space its
+        // corpus lives in, so its own model outranks anything the platform configured.
+        let store = MockRegistry {
+            config: Some(Some(embedding_config("gemini", "text-embedding-004", None))),
+            org_embedding_default: Some(org_default("openai", "org-model", Some("sk-org"))),
+            ..Default::default()
+        };
+        let r = embeddings_for(
+            &store,
+            &cfg("openai", "gpt-4o-mini", "sk-platform"),
+            Some("text-embedding-3-large"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(r.model, "text-embedding-3-large");
+        // Level 2 brings its own provider and key as a set — never the config's Gemini
+        // endpoint with the request's OpenAI model.
+        assert_eq!(r.provider, "openai");
+        assert_eq!(r.api_key, "sk-platform");
+        assert!(r.platform_paid);
+    }
+
+    #[tokio::test]
+    async fn embedding_config_wins_when_the_request_names_no_model() {
+        let store = MockRegistry {
+            config: Some(Some(embedding_config("gemini", "text-embedding-004", None))),
+            org_embedding_default: Some(org_default("openai", "org-model", Some("sk-org"))),
+            ..Default::default()
+        };
+        let r = embeddings_for(&store, &cfg("openai", "gpt-4o-mini", "sk-platform"), None)
+            .await
+            .unwrap();
+        assert_eq!(r.provider, "gemini");
+        assert_eq!(r.model, "text-embedding-004");
+    }
+
+    #[tokio::test]
+    async fn embedding_override_makes_the_config_beat_the_request() {
+        // The escape hatch for "the platform decides, not the agent". It only reorders
+        // levels 1 and 2 — it adds no chaining.
+        let mut c = embedding_config("gemini", "text-embedding-004", None);
+        c.embedding_model_override = true;
+        let store = MockRegistry {
+            config: Some(Some(c)),
+            ..Default::default()
+        };
+        let r = embeddings_for(
+            &store,
+            &cfg("openai", "gpt-4o-mini", "sk-platform"),
+            Some("text-embedding-3-large"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(r.provider, "gemini");
+        assert_eq!(r.model, "text-embedding-004");
+    }
+
+    #[tokio::test]
+    async fn embedding_override_without_an_embedding_model_changes_nothing() {
+        // The flag reorders two levels; it does not invent a level. With no embedding
+        // model on the config there is nothing to promote, so the request still wins.
+        let mut c = llm_config("anthropic", "claude-3-5-sonnet-20241022", None);
+        c.embedding_model_override = true;
+        let store = MockRegistry {
+            config: Some(Some(c)),
+            ..Default::default()
+        };
+        let r = embeddings_for(
+            &store,
+            &cfg("openai", "gpt-4o-mini", "sk-platform"),
+            Some("text-embedding-3-large"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(r.provider, "openai");
+        assert_eq!(r.model, "text-embedding-3-large");
+    }
+
+    #[tokio::test]
+    async fn embedding_org_default_wins_when_request_and_config_are_silent() {
+        let store = MockRegistry {
+            config: Some(Some(llm_config("anthropic", "claude-x", None))),
+            org_embedding_default: Some(org_default(
+                "gemini",
+                "text-embedding-004",
+                Some("sk-org"),
+            )),
+            ..Default::default()
+        };
+        let r = embeddings_for(&store, &cfg("openai", "gpt-4o-mini", "sk-platform"), None)
+            .await
+            .unwrap();
+        assert_eq!(r.provider, "gemini");
+        assert_eq!(r.model, "text-embedding-004");
+        assert_eq!(r.api_key, "sk-org");
+        assert!(r.platform_paid);
+    }
+
+    #[tokio::test]
+    async fn embedding_org_default_without_a_key_uses_the_platform_key() {
+        // Provider + model set, key left empty ⇒ "use the platform key for this provider".
+        let store = MockRegistry {
+            config: Some(None),
+            org_embedding_default: Some(org_default("gemini", "text-embedding-004", None)),
+            ..Default::default()
+        };
+        let r = embeddings_for(&store, &cfg("openai", "gpt-4o-mini", "sk-platform"), None)
+            .await
+            .unwrap();
+        assert_eq!(r.api_key, "sk-platform");
+        assert!(r.platform_paid);
+    }
+
+    #[tokio::test]
+    async fn embedding_with_nothing_set_anywhere_is_bad_request() {
+        let store = MockRegistry {
+            config: Some(Some(llm_config("anthropic", "claude-x", None))),
+            ..Default::default()
+        };
+        let err = embeddings_for(&store, &cfg("openai", "gpt-4o-mini", "sk-platform"), None)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, GatewayError::BadRequest(_)));
+        assert!(err.to_string().contains("no embedding model available"));
+    }
+
+    #[tokio::test]
+    async fn embedding_chat_columns_are_provably_unread() {
+        // `embedding_config` loads every chat field with an anthropic value — a provider
+        // with no embeddings API at all. Nothing from that side may appear here.
+        let store = MockRegistry {
+            config: Some(Some(embedding_config("gemini", "text-embedding-004", None))),
+            agent_pinned_model: Some("claude-agent-pin".into()),
+            secret: Some("must-not-be-read".into()),
+            ..Default::default()
+        };
+        let r = embeddings_for(&store, &cfg("openai", "gpt-4o-mini", "sk-platform"), None)
+            .await
+            .unwrap();
+        assert_eq!(r.provider, "gemini");
+        assert_eq!(r.model, "text-embedding-004");
+        // The chat `api_key_secret_name` ("CHAT_KEY") must not have been consulted; with
+        // no embedding secret name this is the platform key for gemini.
+        assert_eq!(r.api_key, "sk-platform");
+        assert!(r.platform_paid);
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn embedding_secret_name_makes_the_call_bring_your_own_key() {
+        use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
+        let owner = Uuid::parse_str(OWNER).unwrap();
+        // SAFETY: serialized via #[serial]; no other test reads the env concurrently.
+        unsafe {
+            std::env::set_var("SECRETS_ENCRYPTION_KEY", BASE64.encode([7u8; 32]));
+        }
+        let ciphertext = SecretsCrypto::for_user(owner).encrypt("sk-user-embedding");
+        let store = MockRegistry {
+            config: Some(Some(embedding_config(
+                "openai",
+                "text-embedding-3-small",
+                Some("EMBEDDING_KEY"),
+            ))),
+            secret: Some(ciphertext),
+            ..Default::default()
+        };
+        let r = embeddings_for(&store, &cfg("openai", "gpt-4o-mini", "sk-platform"), None)
+            .await
+            .unwrap();
+        assert_eq!(r.api_key, "sk-user-embedding");
+        // Its own key, so it is not platform-paid — and this must follow the *embedding*
+        // secret name, never the chat one.
+        assert!(!r.platform_paid);
+    }
+
+    #[tokio::test]
+    async fn embedding_config_resolves_a_custom_provider_endpoint() {
+        let store = MockRegistry {
+            config: Some(Some(embedding_config("azure-prod", "embed-3-large", None))),
+            custom_provider: Some(custom(
+                "https://acme.openai.azure.com",
+                "sk-azure",
+                "unused",
+            )),
+            ..Default::default()
+        };
+        let r = embeddings_for(&store, &cfg("openai", "gpt-4o-mini", "sk-platform"), None)
+            .await
+            .unwrap();
+        assert_eq!(r.provider, "azure-prod");
+        assert_eq!(r.api_key, "sk-azure");
+        assert_eq!(
+            r.custom_endpoint.expect("custom endpoint").base_url,
+            "https://acme.openai.azure.com"
+        );
+    }
+
+    #[tokio::test]
+    async fn embedding_org_default_resolves_a_custom_provider_endpoint() {
+        // Level 4 has the same reach as level 3: an Azure-only organization can set a
+        // usable default. Its own stored key still wins over the endpoint's.
+        let store = MockRegistry {
+            config: Some(None),
+            org_embedding_default: Some(org_default("azure-prod", "embed-3-large", Some("sk-org"))),
+            custom_provider: Some(custom(
+                "https://acme.openai.azure.com",
+                "sk-azure",
+                "unused",
+            )),
+            ..Default::default()
+        };
+        let r = embeddings_for(&store, &cfg("openai", "gpt-4o-mini", "sk-platform"), None)
+            .await
+            .unwrap();
+        assert_eq!(r.provider, "azure-prod");
+        assert_eq!(r.api_key, "sk-org");
+        assert!(r.custom_endpoint.is_some());
+    }
+
+    #[tokio::test]
+    async fn embedding_unregistered_custom_provider_is_bad_request() {
+        // Fail closed, exactly as chat does: never fall through to OpenAI with the
+        // platform key pointed at an endpoint nobody registered.
+        let store = MockRegistry {
+            config: Some(Some(embedding_config("ghost-gateway", "embed-x", None))),
+            ..Default::default()
+        };
+        let err = embeddings_for(&store, &cfg("openai", "gpt-4o-mini", "sk-platform"), None)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, GatewayError::BadRequest(_)));
+    }
+
+    #[tokio::test]
+    async fn embedding_blank_request_model_falls_through_rather_than_routing_to_empty() {
+        // `{"model": ""}` is not a choice of model. Treating it as one would send an
+        // empty model id upstream instead of using the configured embedding model.
+        let store = MockRegistry {
+            config: Some(Some(embedding_config("gemini", "text-embedding-004", None))),
+            ..Default::default()
+        };
+        let r = embeddings_for(
+            &store,
+            &cfg("openai", "gpt-4o-mini", "sk-platform"),
+            Some("  "),
+        )
+        .await
+        .unwrap();
+        assert_eq!(r.model, "text-embedding-004");
+    }
+
+    #[tokio::test]
+    async fn a_blank_embedding_pair_on_the_config_reads_as_unset() {
+        // `""` is not a destination. The write path normalizes blanks to NULL, but a row
+        // stored before it did must not route to a provider with no name.
+        let store = MockRegistry {
+            config: Some(Some(embedding_config("", "", None))),
+            ..Default::default()
+        };
+        let err = embeddings_for(&store, &cfg("openai", "gpt-4o-mini", "sk-platform"), None)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, GatewayError::BadRequest(_)));
+        assert!(err.to_string().contains("no embedding model available"));
+    }
+
+    #[tokio::test]
+    async fn a_blank_config_pair_still_lets_the_request_model_through() {
+        // The blank must read as "nothing configured", not as a broken config that fails
+        // the whole call — an agent naming its own model is unaffected by it.
+        let store = MockRegistry {
+            config: Some(Some(embedding_config("", "", None))),
+            ..Default::default()
+        };
+        let r = embeddings_for(
+            &store,
+            &cfg("openai", "gpt-4o-mini", "sk-platform"),
+            Some("text-embedding-3-large"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(r.provider, "openai");
+        assert_eq!(r.model, "text-embedding-3-large");
+    }
+
+    #[test]
+    fn embedding_source_labels_are_stable() {
+        // These strings are what an operator greps for to see which level won.
+        assert_eq!(EmbeddingSource::ConfigOverride.label(), "config-override");
+        assert_eq!(EmbeddingSource::Request.label(), "request");
+        assert_eq!(EmbeddingSource::Config.label(), "config");
+        assert_eq!(EmbeddingSource::OrgDefault.label(), "org-default");
     }
 }

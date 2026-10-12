@@ -15,10 +15,7 @@ use axum::response::{IntoResponse, Response};
 use futures::StreamExt;
 use serde_json::{Value, json};
 
-use super::chat::{
-    AuthedCaller, RequestSignals, RoutedRequest, authenticate_caller, lookup_agent_owner,
-    resolve_routed_request,
-};
+use super::chat::{RequestSignals, RoutedRequest, authenticate_request, resolve_routed_request};
 use crate::LlmRouterCtx;
 use crate::error::GatewayError;
 use crate::inbound::responses::{
@@ -92,13 +89,7 @@ async fn responses_core(
     headers: &HeaderMap,
     mut body: Value,
 ) -> Result<Response, GatewayError> {
-    let (agent_id, owner_id, session) = match authenticate_caller(ctx, headers).await? {
-        AuthedCaller::Agent { agent_id, owner_id } => (agent_id, owner_id, None),
-        AuthedCaller::Session(claims) => {
-            let owner_id = lookup_agent_owner(&ctx.db, &claims.agent_id).await?;
-            (claims.agent_id.clone(), owner_id, Some(claims))
-        }
-    };
+    let (agent_id, owner_id) = authenticate_request(headers, &ctx.cfg)?;
     let (requested_model, stream, query) = {
         let object = body.as_object().ok_or_else(|| {
             GatewayError::BadRequest("Responses request must be a JSON object".into())
@@ -131,7 +122,6 @@ async fn responses_core(
             model: requested_model.as_deref(),
         },
         signals,
-        session,
     )
     .await?;
     let attempts = fallback::build_attempts(&routed.resolved, &ctx.cfg);
@@ -254,7 +244,13 @@ async fn translated_attempt(
         );
     }
     let mut guard = AttemptGuard::new(ctx, routed, attempt, started, parsed.stream);
-    let provider = provider_for(attempt, &ctx.http, &ctx.cfg).map_err(|error| {
+    let provider = provider_for(
+        &attempt.provider,
+        attempt.custom_endpoint.as_ref(),
+        &ctx.http,
+        &ctx.cfg,
+    )
+    .map_err(|error| {
         guard.fail("routing", &error);
         TranslatedAttemptError::Configuration(error)
     })?;
@@ -1021,6 +1017,10 @@ mod tests {
                     tier1_model: None,
                     tier2_model: None,
                     tier3_model: None,
+                    embedding_provider: None,
+                    embedding_model: None,
+                    embedding_api_key_secret_name: None,
+                    embedding_model_override: false,
                 }),
                 agent_pinned_model: None,
                 is_coding_agent: true,
@@ -1044,6 +1044,11 @@ mod tests {
             &self,
             _: &str,
         ) -> Result<Option<crate::resolver::CustomProvider>, sqlx::Error> {
+            Ok(None)
+        }
+        async fn fetch_org_embedding_default(
+            &self,
+        ) -> Result<Option<crate::resolver::OrgEmbeddingDefault>, sqlx::Error> {
             Ok(None)
         }
     }

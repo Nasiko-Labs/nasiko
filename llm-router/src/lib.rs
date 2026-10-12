@@ -45,8 +45,8 @@ pub mod usage;
 pub use config::GatewayConfig;
 pub use error::GatewayError;
 pub use inbound::InboundFormat;
-pub use inject::{LlmInjectCtx, inject_llm_base_url, inject_llm_env};
-pub use resolver::{ConfigCache, ResolvedConfig};
+pub use inject::{LlmInjectCtx, inject_llm_env};
+pub use resolver::{ConfigCache, ResolvedConfig, ResolvedEmbeddingConfig};
 pub use routing::{
     AllowAllGate, CellStore, ClassifierSalienceGate, DecisionCache, InMemoryCellStore, NoopCache,
     PgCellStore, PgTierRegistry, RedisCache, SalienceGate, TierRegistry,

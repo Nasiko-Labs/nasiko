@@ -13,7 +13,7 @@ use serde_json::json;
 use super::sse::sse_data_stream;
 use super::{ProviderClient, ProviderError};
 use crate::ir::{ChatChunk, ChatRequest, ChatResponse, EmbeddingsRequest, EmbeddingsResponse};
-use crate::resolver::ResolvedConfig;
+use crate::resolver::{ResolvedConfig, ResolvedEmbeddingConfig};
 
 pub struct OpenRouterProvider {
     http: reqwest::Client,
@@ -150,7 +150,7 @@ impl ProviderClient for OpenRouterProvider {
     async fn embeddings(
         &self,
         req: &EmbeddingsRequest,
-        cfg: &ResolvedConfig,
+        cfg: &ResolvedEmbeddingConfig,
     ) -> Result<EmbeddingsResponse, ProviderError> {
         let mut out = req.clone();
         out.model = Some(cfg.model.clone());

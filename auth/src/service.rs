@@ -267,29 +267,15 @@ impl AuthService for AuthServiceImpl {
         username: &str,
         verified_email: Option<&str>,
     ) -> Result<LoginResult, AuthError> {
-        // Join `users`: `user_identities.user_id` cascades only on a *hard* delete
-        // (0001_schema.sql), so a soft-deleted user keeps every identity row
-        // pointing at it. Reading the identity alone would hand back a
-        // deprovisioned user_id, and the `is_superuser` read at the end of this
-        // function — filtered on `deleted_at IS NULL` — would then fail as
-        // RowNotFound, surfacing a deactivated account as an opaque 500-class
-        // error. Reject here instead, before any row is touched.
-        let existing: Option<(uuid::Uuid, bool, bool)> = sqlx::query_as(
-            "SELECT u.id, u.is_active, (u.deleted_at IS NULL) \
-             FROM user_identities ui JOIN users u ON u.id = ui.user_id \
-             WHERE ui.provider = $1 AND ui.provider_id = $2",
+        let existing: Option<(uuid::Uuid,)> = sqlx::query_as(
+            "SELECT user_id FROM user_identities WHERE provider = $1 AND provider_id = $2",
         )
         .bind(provider)
         .bind(provider_id)
         .fetch_optional(&self.db)
         .await?;
 
-        let user_id = if let Some((uid, is_active, not_deleted)) = existing {
-            // Same bar as the password path (`login` above): a deactivated or
-            // deprovisioned account cannot trade an IdP assertion for a token.
-            if !not_deleted || !is_active {
-                return Err(AuthError::Disabled);
-            }
+        let user_id = if let Some((uid,)) = existing {
             let _ = sqlx::query("UPDATE users SET last_login = now() WHERE id = $1")
                 .bind(uid)
                 .execute(&self.db)
@@ -302,25 +288,17 @@ impl AuthService for AuthServiceImpl {
             // this is how one person keeps a single CP user across Google + GitHub.
             // Synthetic placeholders (`{username}@{provider}.users`) are never
             // matched: callers only pass emails they have verified.
-            // `is_active` comes back with the id rather than being folded into the
-            // WHERE: a deactivated owner of this email must be *rejected*, not
-            // skipped. Filtering it out here would fall through to the INSERT
-            // below and trip the UNIQUE `email` constraint instead.
-            let linked: Option<(uuid::Uuid, bool)> =
-                match verified_email {
-                    Some(email) => sqlx::query_as(
-                        "SELECT id, is_active FROM users WHERE email = $1 AND deleted_at IS NULL",
-                    )
-                    .bind(email)
-                    .fetch_optional(&self.db)
-                    .await?,
-                    None => None,
-                };
-
-            let user_id = if let Some((uid, is_active)) = linked {
-                if !is_active {
-                    return Err(AuthError::Disabled);
+            let linked: Option<(uuid::Uuid,)> = match verified_email {
+                Some(email) => {
+                    sqlx::query_as("SELECT id FROM users WHERE email = $1 AND deleted_at IS NULL")
+                        .bind(email)
+                        .fetch_optional(&self.db)
+                        .await?
                 }
+                None => None,
+            };
+
+            let user_id = if let Some((uid,)) = linked {
                 let _ = sqlx::query("UPDATE users SET last_login = now() WHERE id = $1")
                     .bind(uid)
                     .execute(&self.db)
@@ -337,30 +315,17 @@ impl AuthService for AuthServiceImpl {
                 // provider label changed since a previous login, or the user
                 // was seeded manually), link to the existing row rather than
                 // failing — the identity row created below is what matters.
-                //
-                // The `WHERE` guards that adoption: a soft-deleted row still
-                // holds its username, and adopting it would resurrect a
-                // deprovisioned user's id along with its grants and agents. The
-                // guard makes DO UPDATE affect no row, so RETURNING yields none
-                // — hence `fetch_optional`, not `fetch_one`, which would raise
-                // the RowNotFound this whole path exists to avoid.
-                let row: Option<(uuid::Uuid,)> = sqlx::query_as(
+                let row: (uuid::Uuid,) = sqlx::query_as(
                     "INSERT INTO users (username, email, is_superuser, is_active, last_login) \
                      VALUES ($1, $2, false, true, now()) \
                      ON CONFLICT (username) DO UPDATE SET last_login = now() \
-                     WHERE users.deleted_at IS NULL \
                      RETURNING id",
                 )
                 .bind(username)
                 .bind(&email)
-                .fetch_optional(&self.db)
+                .fetch_one(&self.db)
                 .await?;
-                row.ok_or_else(|| {
-                    AuthError::Conflict(format!(
-                        "username '{username}' belongs to a deactivated account"
-                    ))
-                })?
-                .0
+                row.0
             };
 
             // Link this provider identity to the user (new or existing). ON CONFLICT
@@ -388,23 +353,12 @@ impl AuthService for AuthServiceImpl {
         // "creator is admin" path a no-op. A brand-new SSO user was just INSERTed
         // above with `is_superuser=false`, so this reads false for them: the
         // "new SSO users land as members" default is unchanged.
-        //
-        // `fetch_optional` + `Disabled`, never `fetch_one`: this read is filtered
-        // on `deleted_at IS NULL`, so `fetch_one` turns every deprovisioned
-        // account into `Database(RowNotFound)` — a 500-class error for what is an
-        // ordinary, expected rejection. The branches above reject early; this is
-        // the backstop that keeps any future one from reintroducing the crash.
-        let live: Option<(bool, bool)> = sqlx::query_as(
-            "SELECT is_superuser, is_active FROM users WHERE id = $1 AND deleted_at IS NULL",
+        let is_superuser: bool = sqlx::query_scalar(
+            "SELECT is_superuser FROM users WHERE id = $1 AND deleted_at IS NULL",
         )
         .bind(user_id)
-        .fetch_optional(&self.db)
+        .fetch_one(&self.db)
         .await?;
-
-        let (is_superuser, is_active) = live.ok_or(AuthError::Disabled)?;
-        if !is_active {
-            return Err(AuthError::Disabled);
-        }
 
         let identity = Identity {
             user_id: user_id.to_string(),

@@ -6,7 +6,7 @@
 //! - `routes.json` — `{"routes": ["/", "/agents/$agentId", …]}`, the paths the
 //!   app owns. `$name` matches exactly one segment.
 //! - `csp.json` — `{"script-src": ["'sha256-…'"]}`, the hashes of the inline
-//!   scripts in `index.html` (the pre-paint theme script; OSS adds the
+//!   scripts in `index.html` (the pre-paint theme script and the
 //!   analytics loader).
 //!
 //! Deciding the shell by `routes.json` rather than by the shape of the URL is
@@ -64,14 +64,12 @@ enum Segment {
 pub struct Spa {
     routes: Vec<Vec<Segment>>,
     csp: String,
-    react_spa: bool,
 }
 
 /// Per-edition additions to the Content-Security-Policy.
 ///
-/// OSS's `index.html` loads analytics from a third-party host; EE's does not.
-/// Rather than let one edition's needs widen the other's policy, each binary
-/// states its own.
+/// Each binary states its own extras, so one edition's third-party hosts never
+/// widen the other's policy by accident.
 #[derive(Default)]
 pub struct CspExtras {
     pub script_src: &'static [&'static str],
@@ -93,10 +91,9 @@ impl Spa {
             .map(|r| Self::parse_pattern(r))
             .collect();
 
-        let react_spa = E::get("nasiko-spa-edition").is_some();
-        let strict = CspExtras::default();
-        let csp = Self::build_csp(&Self::read::<E, CspFile>("csp.json").script_src, if react_spa { &strict } else { extras });
-        Self { routes, csp, react_spa }
+        let csp = Self::build_csp(&Self::read::<E, CspFile>("csp.json").script_src, extras);
+
+        Self { routes, csp }
     }
 
     fn read<E: RustEmbed, T: Default + serde::de::DeserializeOwned>(name: &str) -> T {
@@ -160,11 +157,10 @@ impl Spa {
             "default-src 'self'".to_owned(),
             format!("script-src {script}"),
             "style-src 'self' 'unsafe-inline'".to_owned(),
-            join("img-src 'self' data: blob:", extras.img_src),
+            join("img-src 'self' data:", extras.img_src),
             "font-src 'self'".to_owned(),
             join("connect-src 'self'", extras.connect_src),
             "frame-ancestors 'none'".to_owned(),
-            "object-src 'none'".to_owned(),
             "base-uri 'self'".to_owned(),
             "form-action 'self'".to_owned(),
         ]
@@ -272,16 +268,7 @@ pub fn serve<E: RustEmbed>(
     #[cfg(not(debug_assertions))]
     let spa = cache.get_or_init(|| Spa::load::<E>(extras));
 
-    let mut response = serve_from::<E>(req, spa);
-    let headers = response.headers_mut();
-    for (name, value) in [
-        ("x-content-type-options", "nosniff"),
-        ("referrer-policy", "strict-origin-when-cross-origin"),
-        ("x-frame-options", "DENY"),
-        ("permissions-policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()"),
-        ("cross-origin-opener-policy", "same-origin"),
-    ] { headers.insert(name, HeaderValue::from_static(value)); }
-    response
+    serve_from::<E>(req, spa)
 }
 
 fn serve_from<E: RustEmbed>(req: &Request<Body>, spa: &Spa) -> Response {
@@ -291,13 +278,6 @@ fn serve_from<E: RustEmbed>(req: &Request<Body>, spa: &Spa) -> Response {
     // escape the embed set.
     let decoded = percent_decode_str(req.uri().path()).decode_utf8_lossy();
     let path = decoded.trim_start_matches('/');
-
-    if spa.react_spa && (path == "harness" || path.starts_with("harness/") || path == "mockServiceWorker.js") {
-        return (StatusCode::NOT_FOUND, [(header::CACHE_CONTROL, NO_STORE)]).into_response();
-    }
-    if req.method() != axum::http::Method::GET && req.method() != axum::http::Method::HEAD {
-        return (StatusCode::METHOD_NOT_ALLOWED, [(header::CACHE_CONTROL, NO_STORE)]).into_response();
-    }
 
     if !path.is_empty()
         && let Some(file) = E::get(path)
@@ -400,7 +380,6 @@ mod tests {
         Spa {
             routes: patterns.iter().map(|p| Spa::parse_pattern(p)).collect(),
             csp: String::new(),
-            react_spa: false,
         }
     }
 

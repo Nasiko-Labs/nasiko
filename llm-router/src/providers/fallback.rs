@@ -8,6 +8,10 @@
 //! Key selection (decision §6.5): a fallback whose provider matches the primary reuses
 //! the resolved key; a cross-provider fallback uses that provider's platform key (see
 //! [`GatewayConfig::platform_key_for`]). A fallback with no usable key is skipped.
+//!
+//! **Chat only.** Embeddings used to run through here too, which is exactly how an agent
+//! could end up with vectors from two different models in one corpus. They now take a
+//! single attempt in [`crate::providers::execute_embeddings_once`].
 
 use futures::stream::BoxStream;
 use serde_json::Value;
@@ -15,7 +19,7 @@ use serde_json::Value;
 use super::{ProviderClient, ProviderError, provider_for};
 use crate::config::GatewayConfig;
 use crate::error::GatewayError;
-use crate::ir::{ChatChunk, ChatRequest, ChatResponse, EmbeddingsRequest, EmbeddingsResponse};
+use crate::ir::{ChatChunk, ChatRequest, ChatResponse};
 use crate::resolver::ResolvedConfig;
 
 /// The provider/model actually used for a call.
@@ -44,7 +48,12 @@ pub async fn execute_chat(
     let total = attempts.len();
     for (i, attempt) in attempts.iter().enumerate() {
         log_request("chat", attempt, i, total);
-        let provider = match provider_for(attempt, http, cfg) {
+        let provider = match provider_for(
+            &attempt.provider,
+            attempt.custom_endpoint.as_ref(),
+            http,
+            cfg,
+        ) {
             Ok(p) => p,
             Err(e) => {
                 last = Some(e);
@@ -96,7 +105,12 @@ pub async fn execute_chat_stream(
     let total = attempts.len();
     for (i, attempt) in attempts.iter().enumerate() {
         log_request("chat_stream", attempt, i, total);
-        let provider = match provider_for(attempt, http, cfg) {
+        let provider = match provider_for(
+            &attempt.provider,
+            attempt.custom_endpoint.as_ref(),
+            http,
+            cfg,
+        ) {
             Ok(p) => p,
             Err(e) => {
                 last = Some(e);
@@ -129,37 +143,6 @@ pub async fn execute_chat_stream(
                     break;
                 }
             }
-        }
-    }
-    Err(last.unwrap_or_else(|| GatewayError::Upstream("no provider attempts".to_string())))
-}
-
-/// Run embeddings with ordered fallbacks (always non-streaming). Returns the response
-/// and the effective `(provider, model)`. Same key rules as chat; usefully, a primary
-/// that has no embeddings API (e.g. Anthropic → 501) now falls back instead of hard-failing.
-pub async fn execute_embeddings(
-    http: &reqwest::Client,
-    cfg: &GatewayConfig,
-    primary: &ResolvedConfig,
-    req: &EmbeddingsRequest,
-) -> Result<(EmbeddingsResponse, Effective), GatewayError> {
-    let attempts = build_attempts(primary, cfg);
-    let mut last: Option<GatewayError> = None;
-    let total = attempts.len();
-    for (i, attempt) in attempts.iter().enumerate() {
-        log_request("embeddings", attempt, i, total);
-        match provider_for(attempt, http, cfg) {
-            Err(e) => last = Some(e),
-            Ok(provider) => match provider.embeddings(req, attempt).await {
-                Ok(resp) => {
-                    log_response("embeddings", attempt, &resp);
-                    return Ok((resp, (attempt.provider.clone(), attempt.model.clone())));
-                }
-                Err(e) => {
-                    warn_attempt(attempt, &e, i, total);
-                    last = Some(e.into());
-                }
-            },
         }
     }
     Err(last.unwrap_or_else(|| GatewayError::Upstream("no provider attempts".to_string())))
@@ -686,61 +669,6 @@ mod tests {
         assert_eq!(provider, "openai"); // effective = the fallback
         assert_eq!(model, "gpt-4o-mini");
         assert_eq!(resp.choices[0].message.text().as_deref(), Some("ok"));
-    }
-
-    #[tokio::test]
-    async fn embeddings_fall_back_across_providers() {
-        // Primary provider is Anthropic (no embeddings API → 501); fallback OpenAI succeeds.
-        let mut openai = mockito::Server::new_async().await;
-        openai
-            .mock("POST", "/embeddings")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(
-                json!({
-                    "object": "list",
-                    "data": [{ "object": "embedding", "embedding": [0.1, 0.2], "index": 0 }],
-                    "model": "text-embedding-3-small",
-                    "usage": { "prompt_tokens": 2, "total_tokens": 2 }
-                })
-                .to_string(),
-            )
-            .create_async()
-            .await;
-
-        let cfg = GatewayConfig {
-            openai_api_base: openai.url(),
-            platform_openai_api_key: "sk-platform".into(),
-            ..Default::default()
-        };
-        let primary = ResolvedConfig {
-            provider: "anthropic".into(),
-            model: "claude-3-5-sonnet-20241022".into(),
-            litellm_model: "anthropic/claude-3-5-sonnet-20241022".into(),
-            api_key: "sk-ant".into(),
-            fallback_models: vec!["openai/text-embedding-3-small".into()],
-            temperature: None,
-            max_tokens: None,
-            has_llm_config: false,
-            pinned_model: None,
-            tier1_model: None,
-            tier2_model: None,
-            tier3_model: None,
-            platform_paid: true,
-            custom_endpoint: None,
-            is_coding_agent: false,
-            compress_enabled: false,
-        };
-        let req: EmbeddingsRequest =
-            serde_json::from_value(json!({ "model": "x", "input": "hi" })).unwrap();
-
-        let (resp, (provider, model)) =
-            execute_embeddings(&reqwest::Client::new(), &cfg, &primary, &req)
-                .await
-                .unwrap();
-        assert_eq!(provider, "openai"); // effective = the fallback
-        assert_eq!(model, "text-embedding-3-small");
-        assert_eq!(resp.data.len(), 1);
     }
 
     #[tokio::test]

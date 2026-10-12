@@ -30,7 +30,7 @@ use crate::ir::{
     EmbeddingsRequest, EmbeddingsResponse, FunctionCall, FunctionCallDelta, Message, ToolCall,
     ToolCallDelta, ToolDef, UnsupportedPart, Usage,
 };
-use crate::resolver::ResolvedConfig;
+use crate::resolver::{ResolvedConfig, ResolvedEmbeddingConfig};
 
 use super::dialect::{bedrock_region, bedrock_region_prefix};
 
@@ -232,7 +232,7 @@ impl ProviderClient for BedrockConverseProvider {
     async fn embeddings(
         &self,
         _req: &EmbeddingsRequest,
-        _cfg: &ResolvedConfig,
+        _cfg: &ResolvedEmbeddingConfig,
     ) -> Result<EmbeddingsResponse, ProviderError> {
         Err(ProviderError::Status {
             status: 501,

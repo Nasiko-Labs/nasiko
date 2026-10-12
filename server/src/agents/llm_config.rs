@@ -30,6 +30,9 @@ const CONFIG_JSON: &str = "json_build_object(\
      'max_tokens', max_tokens, 'api_key_secret_name', api_key_secret_name, \
      'pinned', pinned, 'pinned_model', pinned_model, \
      'tier1_model', tier1_model, 'tier2_model', tier2_model, 'tier3_model', tier3_model, \
+     'embedding_provider', embedding_provider, 'embedding_model', embedding_model, \
+     'embedding_api_key_secret_name', embedding_api_key_secret_name, \
+     'embedding_model_override', embedding_model_override, \
      'is_default', is_default)";
 
 pub fn router() -> Router<AppState> {

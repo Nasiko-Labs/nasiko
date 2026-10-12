@@ -33,85 +33,12 @@ impl IntoResponse for AuthRejection {
 /// No gateway required: the server validates tokens directly via AuthService.
 /// Revocation is enforced via an O(1) indexed lookup on auth_tokens.token_hash.
 pub async fn require_auth(State(state): State<AppState>, mut req: Request, next: Next) -> Response {
-    // A delegated token (react/docs/adr/0001a) takes its own path: it is only
-    // ever a Bearer header, it is verified against THIS control plane's
-    // audience, it goes through the same revocation and caller-exists checks,
-    // and then it must pass the method/route gate before any handler runs.
-    // Session tokens are untouched by this branch.
-    let bearer = bearer_token(req.headers());
-    if let Some(token) = bearer.as_deref()
-        && nasiko_auth::jwt::peek_token_type(token).as_deref() == Some("delegated")
-    {
-        let delegated = match state
-            .auth
-            .validate_delegated_token(token, &state.config.delegation_audience)
-            .await
-        {
-            Ok(d) => d,
-            Err(nasiko_auth::AuthError::Expired) => {
-                return AuthRejection(StatusCode::UNAUTHORIZED, "delegated token expired")
-                    .into_response();
-            }
-            Err(nasiko_auth::AuthError::Revoked) => {
-                return AuthRejection(StatusCode::UNAUTHORIZED, "delegated token revoked")
-                    .into_response();
-            }
-            Err(_) => {
-                return AuthRejection(StatusCode::UNAUTHORIZED, "invalid delegated token")
-                    .into_response();
-            }
-        };
-        if !super::delegate::request_allowed(
-            req.method(),
-            req.uri().path(),
-            &delegated.scopes,
-            state.delegation_routes,
-        ) {
-            tracing::warn!(
-                user = %delegated.identity.user_id,
-                jti = %delegated.jti,
-                method = %req.method(),
-                path = %req.uri().path(),
-                scopes = ?delegated.scopes,
-                "delegated token refused by the route gate"
-            );
-            return AuthRejection(
-                StatusCode::FORBIDDEN,
-                "delegated token not allowed for this request",
-            )
-            .into_response();
-        }
-        req.extensions_mut()
-            .insert(Claims::from(delegated.identity.clone()));
-        req.extensions_mut().insert(super::delegate::Delegation {
-            scopes: delegated.scopes,
-            jti: delegated.jti,
-            parent_jti: delegated.parent_jti,
-        });
-        return next.run(req).await;
-    }
-
     let claims = match validate_bearer(&state, req.headers()).await {
         Ok(c) => c,
         Err((status, message)) => return AuthRejection(status, message).into_response(),
     };
-    // The session's jti, for `delegate` to record as the token's parent.
-    if let Some(jti) = extract_token(req.headers()).and_then(|t| nasiko_auth::jwt::extract_jti(&t))
-    {
-        req.extensions_mut()
-            .insert(super::delegate::SessionJti(jti));
-    }
     req.extensions_mut().insert(claims);
     next.run(req).await
-}
-
-/// Only the `Authorization: Bearer` form — delegated tokens are never cookies.
-fn bearer_token(headers: &axum::http::HeaderMap) -> Option<String> {
-    headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .map(str::to_owned)
 }
 
 /// A frontend served under a path prefix, with its own login behavior.

@@ -216,6 +216,11 @@ mod tests {
         ) -> Result<Option<crate::resolver::CustomProvider>, sqlx::Error> {
             Ok(None)
         }
+        async fn fetch_org_embedding_default(
+            &self,
+        ) -> Result<Option<crate::resolver::OrgEmbeddingDefault>, sqlx::Error> {
+            Ok(None)
+        }
     }
 
     const AGENT: &str = "11111111-1111-1111-1111-111111111111";
