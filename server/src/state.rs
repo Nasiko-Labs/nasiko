@@ -10,6 +10,7 @@ use sqlx::PgPool;
 use tokio::sync::mpsc;
 
 use crate::agent_lifecycle::SwappableAgentDeletionHook;
+use crate::chat::turn_artifacts::{NoTurnArtifacts, SwappableTurnArtifactSource};
 use crate::prompt_context::SwappablePromptContext;
 use crate::telemetry::GenAiMetrics;
 use crate::usage::UsageTracker;
@@ -49,6 +50,15 @@ pub struct AppState {
     /// cell (`SwappableAgentDeletionHook::install`, not a plain reassignment) for the same reason
     /// `prompt_context` does — see that field's doc comment and `agent_lifecycle` module docs.
     pub agent_deletion_hook: Arc<SwappableAgentDeletionHook>,
+    /// Where a completed chat turn's files may also come from — files a turn
+    /// produced outside this crate's own chat store. OSS default is a no-op
+    /// ([`NoTurnArtifacts`]): no chips are added and no download scheme beyond
+    /// the ones the chat routes own is claimed. The EE composition root installs
+    /// the real implementation through this cell
+    /// (`SwappableTurnArtifactSource::install`, not a plain reassignment) for the
+    /// same reason `prompt_context` does — see that field's doc comment and the
+    /// `chat::turn_artifacts` module docs.
+    pub turn_artifacts: Arc<SwappableTurnArtifactSource>,
     /// PACMS candidate/query embedding cache for the history enrichment done
     /// directly in `a2a_dispatch.rs` (shared across requests, like the one
     /// `OssRoutingEngine` holds internally for its own `fetch_pacms` call —
@@ -87,10 +97,6 @@ pub struct AppState {
     /// prefix with its own login page. Both editions serve the root mount only;
     /// the slice exists so another frontend can be mounted under its own prefix.
     pub ui_mounts: &'static [crate::auth::UiMount],
-    /// Scope → path table the delegated-token gate enforces (`auth::delegate`).
-    /// OSS: [`crate::auth::delegate::OSS_DELEGATION_ROUTES`]; an edition that
-    /// issues more scopes sets its own table at its composition root.
-    pub delegation_routes: crate::auth::delegate::DelegationRoutes,
 }
 
 impl AppState {
@@ -190,6 +196,7 @@ impl AppState {
             Arc::new(crate::agent_lifecycle::SwappableAgentDeletionHook::new(
                 Arc::new(crate::agent_lifecycle::NoopAgentDeletionHook),
             ));
+        let turn_artifacts = Arc::new(SwappableTurnArtifactSource::new(Arc::new(NoTurnArtifacts)));
         let history_embedding_cache: TextEmbeddingCache = Arc::new(DashMap::new());
 
         let flow_config = FlowConfig {
@@ -296,6 +303,7 @@ impl AppState {
             orchestrator_policy,
             prompt_context,
             agent_deletion_hook,
+            turn_artifacts,
             history_embedding_cache,
             observability,
             github_svc,
@@ -304,7 +312,6 @@ impl AppState {
             hitl_resume_tx,
             continuation_events,
             ui_mounts: &[crate::auth::UiMount::ROOT],
-            delegation_routes: crate::auth::delegate::OSS_DELEGATION_ROUTES,
         };
 
         // Spawn the durable build worker. It owns the receiver and exits when sender drops.

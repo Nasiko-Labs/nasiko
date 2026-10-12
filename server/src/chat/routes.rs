@@ -13,6 +13,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::auth::Claims;
+use crate::chat::turn_artifacts::DownloadTarget;
 use crate::state::AppState;
 
 use super::external_turn::{PersistExternalTurnError, persist_external_turn};
@@ -1243,6 +1244,28 @@ async fn capture_turn_files(
     message_id: Uuid,
     reply: &str,
 ) -> Option<serde_json::Value> {
+    // First: a turn-artifact source another edition may have installed (no-op in
+    // OSS, so the phase-1 reader path below is unchanged). When it produces chips
+    // it has already inserted their `chat_message_files` rows under a storage
+    // scheme it owns; we persist the parts onto the message and skip the reader
+    // path entirely.
+    let external = state
+        .turn_artifacts
+        .get()
+        .capture(&state.db, session_id, message_id)
+        .await;
+    if !external.is_empty() {
+        let file_parts = serde_json::Value::Array(external);
+        let _ = sqlx::query(
+            "UPDATE chat_messages SET file_parts = $1, has_file_parts = true WHERE id = $2",
+        )
+        .bind(sqlx::types::Json(&file_parts))
+        .bind(message_id)
+        .execute(&state.db)
+        .await;
+        return Some(file_parts);
+    }
+
     // The session's agent, and whether it can write at all.
     let (agent_id, owner_id, writable): (Uuid, Uuid, bool) = sqlx::query_as(
         "SELECT a.id, a.owner_id, a.writable \
@@ -1495,6 +1518,38 @@ async fn list_message_files(
     }
 }
 
+/// Maps a [`DownloadTarget`] from an installed turn-artifact source onto the HTTP
+/// response the chat download route returns. Factored out so the four status
+/// mappings can be unit-tested without a store or a DB.
+fn download_target_response(target: DownloadTarget) -> axum::response::Response {
+    match target {
+        // A 302 to a presigned URL is correct here: this route serves the user's
+        // own browser, so a redirect is exactly what it wants. (The loopback MCP
+        // download route is the opposite case — it must never redirect, because
+        // its client is an in-cluster agent.)
+        DownloadTarget::Redirect(url) => {
+            (StatusCode::FOUND, [(header::LOCATION, url)]).into_response()
+        }
+        DownloadTarget::Stream {
+            body,
+            mime,
+            size,
+            content_disposition,
+        } => (
+            [
+                (header::CONTENT_TYPE, mime),
+                (header::CONTENT_LENGTH, size.to_string()),
+                (header::CONTENT_DISPOSITION, content_disposition),
+            ],
+            Body::from_stream(body),
+        )
+            .into_response(),
+        DownloadTarget::Gone => StatusCode::GONE.into_response(),
+        // Rendered as 404 so a denied read is never an existence oracle.
+        DownloadTarget::Denied => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
 async fn download_file(
     State(state): State<AppState>,
     claims: Claims,
@@ -1521,6 +1576,18 @@ async fn download_file(
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
+
+    // A turn-artifact source another edition may have installed owns any
+    // `storage_uri` scheme this crate does not. `None` means "not mine", and the
+    // route continues with its own schemes below exactly as before.
+    if let Some(target) = state
+        .turn_artifacts
+        .get()
+        .resolve_download(&state.db, user_id, &file)
+        .await
+    {
+        return download_target_response(target);
+    }
 
     // Phase 1 captures keep their bytes in the agent's PVC; `storage_uri` encodes
     // the reader-side location (`workspace://<owner>/<agent>/<relpath>`) and we
@@ -1659,7 +1726,57 @@ async fn delete_file(
 
 #[cfg(test)]
 mod tests {
-    use super::reply_references_file;
+    use super::{DownloadTarget, download_target_response, reply_references_file};
+    use axum::http::{StatusCode, header};
+
+    /// Each `DownloadTarget` an installed source can return maps to the fixed
+    /// status the chat download route serves: a redirect, a 200 stream, a 410 and
+    /// a 404 (the deny that never leaks existence).
+    #[test]
+    fn download_target_variants_map_to_their_status_codes() {
+        let redirect = download_target_response(DownloadTarget::Redirect(
+            "https://example.test/blob".to_owned(),
+        ));
+        assert_eq!(redirect.status(), StatusCode::FOUND);
+        assert_eq!(
+            redirect
+                .headers()
+                .get(header::LOCATION)
+                .and_then(|v| v.to_str().ok()),
+            Some("https://example.test/blob")
+        );
+
+        let stream = download_target_response(DownloadTarget::Stream {
+            body: Box::pin(futures::stream::empty()),
+            mime: "text/plain".to_owned(),
+            size: 3,
+            content_disposition: "attachment; filename*=UTF-8''a.txt".to_owned(),
+        });
+        assert_eq!(stream.status(), StatusCode::OK);
+        assert_eq!(
+            stream
+                .headers()
+                .get(header::CONTENT_LENGTH)
+                .and_then(|v| v.to_str().ok()),
+            Some("3")
+        );
+        assert_eq!(
+            stream
+                .headers()
+                .get(header::CONTENT_DISPOSITION)
+                .and_then(|v| v.to_str().ok()),
+            Some("attachment; filename*=UTF-8''a.txt")
+        );
+
+        assert_eq!(
+            download_target_response(DownloadTarget::Gone).status(),
+            StatusCode::GONE
+        );
+        assert_eq!(
+            download_target_response(DownloadTarget::Denied).status(),
+            StatusCode::NOT_FOUND
+        );
+    }
 
     #[test]
     fn matches_a_named_file_but_not_a_substring_of_a_longer_token() {
