@@ -15,7 +15,7 @@ use rust_embed::Embed;
 // `index.html`, the hashed `assets/`, and the `routes.json` / `csp.json`
 // sidecars that `nasiko_server::spa` reads at startup.
 #[derive(Embed)]
-#[folder = "$NASIKO_UI/oss/dist/"]
+#[folder = "$NASIKO_SPA_BUNDLE/"]
 struct OssAssets;
 
 /// `depends_on: condition: service_healthy` guarantees Postgres itself is
@@ -117,9 +117,11 @@ async fn main() {
     };
 
     nasiko_server::state::AppState::run_migrations(&db).await;
-    let state =
+    let mut state =
         nasiko_server::state::AppState::from_config_with_db(config, auth, runtime, oci_storage, db)
             .await;
+    state.ui_mounts =
+        nasiko_server::auth::UiMount::for_bundle(OssAssets::get("nasiko-spa-edition").is_some());
     state.init().await;
     let app = nasiko_server::build_app(state, static_handler);
 
@@ -132,13 +134,14 @@ async fn main() {
 /// pointing at this host. The hash of the inline loader itself comes from
 /// `csp.json`; the host it reaches for has to be named here.
 ///
-/// `connect_src` names the host `reo.js` posts its events to
-/// (`/api/v1/ghost/event`), taken from a browser trace rather than a guess, as
-/// docs/designs/openruntime-embedding-recommendations.md asks. If Reo starts
-/// beaconing elsewhere, the console shows a `connect-src` violation naming it.
+/// `connect_src` is deliberately empty: `reo.js` chooses its own beacon
+/// endpoints at runtime, and docs/designs/openruntime-embedding-recommendations.md
+/// is explicit that those hosts must come from a browser network trace rather
+/// than a guess. Until someone takes that trace, analytics beacons are blocked
+/// and the app is unaffected.
 const CSP_EXTRAS: spa::CspExtras = spa::CspExtras {
     script_src: &["https://static.reo.dev"],
-    connect_src: &["https://api.reo.dev"],
+    connect_src: &[],
     img_src: &[],
 };
 

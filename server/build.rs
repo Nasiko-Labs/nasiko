@@ -50,7 +50,9 @@ fn find_ui_root(start: &Path) -> Option<PathBuf> {
 }
 
 fn main() {
-    if react_bundle() { return; }
+    if react_bundle() {
+        return;
+    }
     let manifest_dir = PathBuf::from(
         std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is always set by cargo"),
     );
@@ -93,16 +95,35 @@ fn main() {
 
 /// A release SPA is explicitly selected, never copied over the legacy bundle.
 fn react_bundle() -> bool {
-    println!("cargo:rerun-if-env-changed=NASIKO_REACT_DIST");
-    let Some(path) = std::env::var_os("NASIKO_REACT_DIST") else { return false; };
-    let bundle = PathBuf::from(path).canonicalize().expect("NASIKO_REACT_DIST must exist");
+    println!("cargo:rerun-if-env-changed=NASIKO_REACT_DIST_OSS");
+    let Some(path) = std::env::var_os("NASIKO_REACT_DIST_OSS") else {
+        return false;
+    };
+    let bundle = PathBuf::from(path)
+        .canonicalize()
+        .expect("NASIKO_REACT_DIST_OSS must exist");
     let edition = std::fs::read_to_string(bundle.join("nasiko-spa-edition"))
-        .expect("NASIKO_REACT_DIST must be a Nasiko release SPA (missing edition marker)");
-    assert_eq!(edition, "oss", "wrong edition or test-only SPA cannot be embedded");
-    for file in ["index.html", "routes.json", "csp.json", "nasiko-prepaint.js", "nasiko-spa.json"] {
-        assert!(bundle.join(file).is_file(), "incomplete SPA: missing {file}");
+        .expect("NASIKO_REACT_DIST_OSS must be a Nasiko release SPA (missing edition marker)");
+    assert_eq!(
+        edition, "oss",
+        "wrong edition or test-only SPA cannot be embedded"
+    );
+    for file in [
+        "index.html",
+        "routes.json",
+        "csp.json",
+        "nasiko-prepaint.js",
+        "nasiko-spa.json",
+    ] {
+        assert!(
+            bundle.join(file).is_file(),
+            "incomplete SPA: missing {file}"
+        );
     }
-    assert!(!bundle.join("mockServiceWorker.js").exists(), "mock worker cannot be embedded");
+    assert!(
+        !bundle.join("mockServiceWorker.js").exists(),
+        "mock worker cannot be embedded"
+    );
     println!("cargo:rustc-env=NASIKO_SPA_BUNDLE={}", bundle.display());
     println!("cargo:rerun-if-changed={}", bundle.display());
     println!("cargo:rerun-if-changed=build.rs");
