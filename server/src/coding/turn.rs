@@ -67,6 +67,22 @@ pub struct CodingTurnRequest {
     pub hitl_enabled: bool,
 }
 
+/// What the coding-turn SSE layer consumes: either a raw ACP [`TurnEvent`], or a
+/// control-plane notice that the turn is now blocked on a human HITL decision.
+///
+/// The HITL permission delegate runs off the ACP event loop and so never
+/// produces a `TurnEvent`; without this the SSE stream would simply hang while a
+/// human is asked. [`CodingTurnEvent::AwaitingApproval`] surfaces the pending
+/// `hitl_requests` id to the client (as a `TASK_STATE_INPUT_REQUIRED` event — see
+/// [`super::sse`]) so it can resolve it via `POST /api/hitl/{id}/resolve`.
+pub enum CodingTurnEvent {
+    /// A streamed ACP turn event (agent text, tool call, completion, failure).
+    Turn(TurnEvent),
+    /// A tool-permission request is awaiting a human decision. Carries the
+    /// `hitl_requests` id to resolve and a short label of the gated tool.
+    AwaitingApproval { hitl_id: uuid::Uuid, tool: String },
+}
+
 /// Why a turn could not be started.
 #[derive(Debug, thiserror::Error)]
 pub enum CodingTurnError {
@@ -97,7 +113,7 @@ const READINESS_POLL: Duration = Duration::from_millis(500);
 pub async fn run_turn(
     state: &AppState,
     req: CodingTurnRequest,
-) -> Result<mpsc::UnboundedReceiver<TurnEvent>, CodingTurnError> {
+) -> Result<mpsc::UnboundedReceiver<CodingTurnEvent>, CodingTurnError> {
     let owner = replica_id();
     let turn_id = uuid::Uuid::new_v4().to_string();
     let lease_secs = state.config.coding_agent_turn_lease_secs;
@@ -132,7 +148,7 @@ async fn start_turn(
     req: &CodingTurnRequest,
     lease: &TurnLease,
     turn_id: &str,
-) -> Result<mpsc::UnboundedReceiver<TurnEvent>, CodingTurnError> {
+) -> Result<mpsc::UnboundedReceiver<CodingTurnEvent>, CodingTurnError> {
     let container_id = req.spec.container_id.clone();
     let handle = container_id.as_str().to_owned();
 
@@ -170,10 +186,16 @@ async fn start_turn(
     };
     let stdio = state.runtime.attach_stdio(&container_id, attach).await?;
     let transport = ByteStreams::new(stdio.stdin.compat_write(), stdio.stdout.compat());
+
+    // Create the SSE channel up front so the HITL permission delegate (built
+    // inside the connection below) can push `AwaitingApproval` notices onto the
+    // same stream the turn's updates flow through — it runs off the ACP loop and
+    // has no `TurnEvent` of its own to carry the pause.
+    let (out_tx, out_rx) = mpsc::unbounded_channel::<CodingTurnEvent>();
     let conn = AcpConnection::connect(
         transport,
         AcpConnectConfig {
-            permission_policy: permission_policy(state, req),
+            permission_policy: permission_policy(state, req, out_tx.clone()),
             ..Default::default()
         },
     )
@@ -217,8 +239,8 @@ async fn start_turn(
     let turn = conn.prompt(acp_session, req.prompt.clone())?;
 
     // Drive the turn in the background: forward events to the caller, renew the
-    // lease while it runs, and release it (and close the pipe) when it ends.
-    let (out_tx, out_rx) = mpsc::unbounded_channel::<TurnEvent>();
+    // lease while it runs, and release it (and close the pipe) when it ends. The
+    // `out_tx`/`out_rx` channel was created above so the delegate could share it.
     let db = state.db.clone();
     let lease = lease.clone();
     let lease_secs = state.config.coding_agent_turn_lease_secs;
@@ -281,7 +303,7 @@ fn build_turn_telemetry(
 async fn drive_turn(
     conn: AcpConnection,
     mut turn: TurnStream,
-    out_tx: mpsc::UnboundedSender<TurnEvent>,
+    out_tx: mpsc::UnboundedSender<CodingTurnEvent>,
     db: sqlx::PgPool,
     lease: TurnLease,
     lease_secs: i64,
@@ -311,7 +333,7 @@ async fn drive_turn(
                     }
                     let terminal = ev.is_terminal();
                     // Stop if the caller hung up or the turn reached its end.
-                    if out_tx.send(ev).is_err() || terminal {
+                    if out_tx.send(CodingTurnEvent::Turn(ev)).is_err() || terminal {
                         break;
                     }
                 }
@@ -329,9 +351,8 @@ async fn drive_turn(
                 // Over budget: tell the agent to stop, then end the turn. Dropping
                 // `conn` below closes the pipe as a backstop if cancel is ignored.
                 let _ = conn.cancel(cancel_session.clone());
-                let _ = out_tx.send(TurnEvent::Failed(AcpError::Cancelled(format!(
-                    "turn exceeded its {}s budget",
-                    turn_timeout.as_secs()
+                let _ = out_tx.send(CodingTurnEvent::Turn(TurnEvent::Failed(AcpError::Cancelled(
+                    format!("turn exceeded its {}s budget", turn_timeout.as_secs()),
                 ))));
                 break;
             }
@@ -454,7 +475,11 @@ fn workspace_session_name(session_id: &str) -> String {
 /// and agent id are both known; if HITL is asked for and either is missing we
 /// fail closed (reject every request) rather than silently auto-approving an
 /// agent that was meant to be gated.
-fn permission_policy(state: &AppState, req: &CodingTurnRequest) -> PermissionPolicy {
+fn permission_policy(
+    state: &AppState,
+    req: &CodingTurnRequest,
+    notice_tx: mpsc::UnboundedSender<CodingTurnEvent>,
+) -> PermissionPolicy {
     if !req.hitl_enabled {
         return PermissionPolicy::ApproveAll;
     }
@@ -468,6 +493,7 @@ fn permission_policy(state: &AppState, req: &CodingTurnRequest) -> PermissionPol
                 agent_id,
                 user_id,
                 req.session_id.clone(),
+                Some(notice_tx),
             )))
         }
         _ => {
