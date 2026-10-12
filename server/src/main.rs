@@ -140,14 +140,13 @@ async fn main() {
 /// pointing at this host. The hash of the inline loader itself comes from
 /// `csp.json`; the host it reaches for has to be named here.
 ///
-/// `connect_src` is deliberately empty: `reo.js` chooses its own beacon
-/// endpoints at runtime, and docs/designs/openruntime-embedding-recommendations.md
-/// is explicit that those hosts must come from a browser network trace rather
-/// than a guess. Until someone takes that trace, analytics beacons are blocked
-/// and the app is unaffected.
+/// `connect_src` names the host `reo.js` posts its events to
+/// (`/api/v1/ghost/event`), taken from a browser trace rather than a guess, as
+/// docs/designs/openruntime-embedding-recommendations.md asks. If Reo starts
+/// beaconing elsewhere, the console shows a `connect-src` violation naming it.
 const CSP_EXTRAS: spa::CspExtras = spa::CspExtras {
     script_src: &["https://static.reo.dev"],
-    connect_src: &[],
+    connect_src: &["https://api.reo.dev"],
     img_src: &[],
 };
 
