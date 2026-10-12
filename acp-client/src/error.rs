@@ -21,6 +21,12 @@ pub enum AcpError {
     /// stream closed, or the handle was dropped.
     #[error("acp connection closed")]
     ConnectionClosed,
+
+    /// The turn was cancelled by the control plane — it exceeded its time or
+    /// token budget, so `session/cancel` was dispatched and the turn ended early
+    /// (TRD §3.4, ACP-9).
+    #[error("acp turn cancelled: {0}")]
+    Cancelled(String),
 }
 
 impl AcpError {

@@ -3,6 +3,7 @@ pub mod commands;
 pub mod config;
 pub mod hitl;
 pub mod oci;
+pub mod session_store;
 pub mod skill;
 pub mod util;
 pub mod version_prompt;
@@ -304,9 +305,15 @@ pub enum AgentOpsCommands {
         /// Resume a previous session by ID (TUI mode)
         #[arg(long)]
         resume: Option<String>,
-        /// Route message to an existing session (one-shot mode)
+        /// Switch to a specific existing conversation by ID. Omit to continue the
+        /// current conversation for this agent (the default); it also becomes the
+        /// new current one.
         #[arg(long)]
         session_id: Option<String>,
+        /// Start a fresh conversation instead of continuing the current one, and
+        /// make it the new current conversation.
+        #[arg(long)]
+        new: bool,
         /// Assert the target is an ACP coding agent — fail loudly if it isn't.
         /// A guardrail only; the server still drives the turn by the agent's kind.
         #[arg(long)]
@@ -1159,6 +1166,7 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             tui,
             resume,
             session_id,
+            new,
             coding_agent,
         } => {
             // `nasiko chat "some message"` — a lone positional *containing
@@ -1225,6 +1233,7 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
                     &resolved,
                     message.as_deref(),
                     session_id.as_deref(),
+                    new,
                     &target_label,
                     kind.as_deref(),
                 )

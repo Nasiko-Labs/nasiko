@@ -320,7 +320,16 @@ pub fn resolve_chat_target_with_kind(target: &str) -> Result<(String, Option<Str
         })?;
 
     let base = client.base_url().trim_end_matches('/');
-    let path = agent.transport_path.as_deref().unwrap_or("/");
+    // Append only a real transport path (e.g. `/a2a/jsonrpc` for an HTTP agent).
+    // A coding agent has no HTTP mount, so its card carries no transport path and
+    // this is NULL — the canonical proxy URL is then the bare `/api/agents/{id}`.
+    // A trailing-slash `/api/agents/{id}/` does NOT route (404); one-shot `chat`
+    // hides this by trimming the slash, but the TUI posts the URL verbatim, so an
+    // empty/`"/"` path must contribute no suffix here.
+    let path = match agent.transport_path.as_deref() {
+        Some(p) if !p.is_empty() && p != "/" => p,
+        _ => "",
+    };
     Ok((
         format!("{}/api/agents/{}{}", base, agent.id, path),
         agent.workload_kind.clone(),

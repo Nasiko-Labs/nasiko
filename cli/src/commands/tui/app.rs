@@ -220,7 +220,6 @@ impl App {
                         let icon = if *success { "ok" } else { "err" };
                         format!("[{icon}] {}", status.text)
                     }
-                    StatusKind::Working => status.text.clone(),
                     StatusKind::Failed => format!("FAILED: {}", status.text),
                 }
             } else {

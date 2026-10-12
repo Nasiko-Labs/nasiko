@@ -4,6 +4,7 @@ use anyhow::{Context, Result, bail};
 
 use crate::commands::tui::session::{self as cp};
 use crate::config;
+use crate::session_store;
 use nasiko_utils::term as status;
 
 /// Client budget for one chat turn. Must stay above the server's own agent-call
@@ -141,6 +142,7 @@ pub fn chat(
     url: &str,
     message: Option<&str>,
     session_id: Option<&str>,
+    new_session: bool,
     target_label: &str,
     agent_kind: Option<&str>,
 ) -> Result<()> {
@@ -159,9 +161,18 @@ pub fn chat(
         let (_, rpc_path) = fetch_agent_card(&endpoint);
         format!("{endpoint}{rpc_path}")
     };
-    // The session id, once known: passed in via --session-id, or adopted from
-    // the server's echo after the first turn (see `fetch_cp_history`'s doc).
-    let mut session: Option<String> = session_id.map(str::to_string);
+    // Which conversation this chat belongs to:
+    //   --session-id X  → switch to that conversation,
+    //   --new           → start a fresh one (the server mints it),
+    //   neither         → continue the *current* conversation remembered for this
+    //                     endpoint, so successive `nasiko chat <agent> "..."` calls
+    //                     stay in one conversation without repeating --session-id.
+    // The chosen id is persisted below as the new current conversation.
+    let mut session: Option<String> = match session_id {
+        Some(sid) => Some(sid.to_string()),
+        None if is_cp && !new_session => session_store::current(&endpoint),
+        None => None,
+    };
     let history = match session.as_deref() {
         Some(sid) if is_cp => fetch_cp_history(&endpoint, sid),
         _ => Vec::new(),
@@ -183,6 +194,7 @@ pub fn chat(
         if let Some(sid) = send_message(&endpoint, msg, session.as_deref())? {
             session = Some(sid);
         }
+        remember_session(&endpoint, is_cp, session.as_deref());
         println!();
         if !interactive {
             print_resume_hint(is_cp, session.as_deref(), target_label);
@@ -213,6 +225,7 @@ pub fn chat(
                 if let Some(sid) = sid {
                     session = Some(sid);
                 }
+                remember_session(&endpoint, is_cp, session.as_deref());
                 println!("\n");
             }
             Err(e) => eprintln!("  \x1b[31merror:\x1b[0m {e}\n"),
@@ -220,6 +233,15 @@ pub fn chat(
     }
     print_resume_hint(is_cp, session.as_deref(), target_label);
     Ok(())
+}
+
+/// Persist `session` as the current conversation for `endpoint`, so the next
+/// `nasiko chat` for this agent continues it without `--session-id`. Only for CP
+/// endpoints (the server owns those sessions); best-effort (see [`session_store`]).
+fn remember_session(endpoint: &str, is_cp: bool, session: Option<&str>) {
+    if is_cp && let Some(sid) = session {
+        session_store::set_current(endpoint, sid);
+    }
 }
 
 /// Tell the user which session this chat belongs to and how to pick it back

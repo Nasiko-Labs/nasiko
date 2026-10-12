@@ -32,7 +32,6 @@ pub enum StatusKind {
     Thinking,
     ToolCall,
     ToolResult { success: bool },
-    Working,
     Failed,
 }
 
@@ -251,10 +250,13 @@ fn handle_status_event(event: &serde_json::Value, tx: &mpsc::Sender<AppEvent>) {
                     if let Some(data) = part.get("data") {
                         emit_status_data(data, tx);
                     } else if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
-                        let _ = tx.send(AppEvent::StreamStatus(StatusEvent {
-                            kind: StatusKind::Working,
-                            text: text.to_string(),
-                        }));
+                        // A text part in a WORKING update is the agent's streamed
+                        // reply content — coding agents (and the a2a agents) stream
+                        // the answer as incremental WORKING message parts, with no
+                        // text on the terminal COMPLETED event. Append it to the
+                        // message, not the transient status line, or the reply is
+                        // never shown in the chat pane.
+                        let _ = tx.send(AppEvent::StreamToken(text.to_string()));
                     }
                 }
             }

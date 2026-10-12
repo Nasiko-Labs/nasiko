@@ -16,8 +16,9 @@ use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::component::ConnectTo;
 use agent_client_protocol::schema::v1::{
-    ContentBlock, InitializeRequest, NewSessionRequest, PromptRequest, RequestPermissionRequest,
-    RequestPermissionResponse, SessionId, SessionNotification, TextContent,
+    ContentBlock, InitializeRequest, LoadSessionRequest, NewSessionRequest, PromptRequest,
+    RequestPermissionRequest, RequestPermissionResponse, SessionId, SessionNotification,
+    TextContent,
 };
 use agent_client_protocol::{Agent, Client, ConnectionTo, Responder};
 use tokio::sync::{mpsc, oneshot};
@@ -56,6 +57,11 @@ enum Command {
     NewSession {
         params: NewSessionParams,
         reply: oneshot::Sender<Result<SessionId, AcpError>>,
+    },
+    LoadSession {
+        session_id: SessionId,
+        params: NewSessionParams,
+        reply: oneshot::Sender<Result<(), AcpError>>,
     },
     Prompt {
         session_id: SessionId,
@@ -171,6 +177,30 @@ impl AcpConnection {
         reply_rx.await.map_err(|_| AcpError::ConnectionClosed)?
     }
 
+    /// Restore an existing session (`session/load`) by its agent-side id, so a
+    /// cold turn resumes the agent's conversation state instead of starting over.
+    ///
+    /// Only valid when the agent advertised the `load_session` capability at
+    /// `initialize` ([`capabilities`](Self::capabilities)); the caller checks that
+    /// and falls back to [`new_session`](Self::new_session) otherwise. Reuses
+    /// [`NewSessionParams`] because `session/load` takes the same `cwd` + MCP
+    /// servers as `session/new`.
+    pub async fn load_session(
+        &self,
+        session_id: SessionId,
+        params: NewSessionParams,
+    ) -> Result<(), AcpError> {
+        let (reply, reply_rx) = oneshot::channel();
+        self.commands
+            .send(Command::LoadSession {
+                session_id,
+                params,
+                reply,
+            })
+            .map_err(|_| AcpError::ConnectionClosed)?;
+        reply_rx.await.map_err(|_| AcpError::ConnectionClosed)?
+    }
+
     /// Send a prompt (`session/prompt`) and return the stream of turn events.
     /// Only one turn runs at a time per connection.
     pub fn prompt(
@@ -278,6 +308,25 @@ async fn run_connection(
                     .block_task()
                     .await
                     .map(|resp| resp.session_id)
+                    .map_err(AcpError::from);
+                let _ = reply.send(result);
+            }
+            Command::LoadSession {
+                session_id,
+                params,
+                reply,
+            } => {
+                // `session/load` replays the session's prior `session/update`s
+                // before responding; those land on `update_rx` and are cleared by
+                // the next `run_turn` (which drains stragglers), so the restore is
+                // transparent to the caller.
+                let request =
+                    LoadSessionRequest::new(session_id, params.cwd).mcp_servers(params.mcp_servers);
+                let result = conn
+                    .send_request(request)
+                    .block_task()
+                    .await
+                    .map(|_| ())
                     .map_err(AcpError::from);
                 let _ = reply.send(result);
             }
