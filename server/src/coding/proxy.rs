@@ -28,92 +28,119 @@ pub struct CodingAgentTarget {
     pub hitl_enabled: bool,
 }
 
-/// Derive the ACP stdio command from a coding agent's container image.
+/// The coding-agent kinds Nasiko knows how to drive over ACP.
 ///
-/// Each coding agent exposes ACP through a different entry point
-/// (`opencode acp`, `claude-code-acp`, `codex-acp`), so we key off a recognizable
-/// token in the image reference rather than a single global setting. Unknown
-/// images default to OpenCode's `opencode acp` — the historical default — so
-/// existing deployments are unaffected.
+/// Each exposes ACP through a different entry point and selects its model a
+/// different way, so the *kind* — not the raw image string — is what the rest of
+/// this module branches on. There is deliberately no "default" kind: every kind
+/// is treated the same, and an image that matches none is a misconfiguration the
+/// caller rejects (see [`classify_image`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodingAgentKind {
+    /// Driven with `opencode acp`; model + permissions come from the image's own
+    /// baked `opencode.json`.
+    OpenCode,
+    /// Driven with `claude-code-acp`; routes via env and asks by default.
+    ClaudeCode,
+    /// Driven with `codex-acp`; routes via its baked config, asks only when forced.
+    Codex,
+}
+
+/// Classify a coding agent's container image into a [`CodingAgentKind`], or
+/// `None` when the image matches no kind Nasiko can drive.
 ///
-/// When `hitl_enabled`, Codex also needs its approval policy forced so it routes
-/// tool use through `session/request_permission` (the HITL delegate). codex-acp
-/// honors Codex's `-c key=value` config overrides, so setting
-/// `approval_policy=untrusted` together with `sandbox_mode=read-only` makes it ask
-/// before any edit or command (it otherwise may run them unattended). OpenCode is
-/// nudged a different way — via `OPENCODE_CONFIG_CONTENT`, see
-/// [`routed_model_env`] — and Claude Code already asks by default (its
-/// `claude-code-acp` adapter runs in `permissionMode = "default"`, routing tool
-/// use through the client's permission request), so neither needs a command
-/// argument here.
-pub fn derive_acp_command(image: &str, hitl_enabled: bool) -> Vec<String> {
+/// Keyed off a recognizable token in the image reference. There is **no default
+/// kind**: an image that is neither OpenCode, Claude Code nor Codex cannot be run
+/// with any of their adapters, so the caller must reject it rather than guess —
+/// silently assuming one adapter would just fail obscurely at attach time.
+pub fn classify_image(image: &str) -> Option<CodingAgentKind> {
     let lower = image.to_ascii_lowercase();
     if lower.contains("claude") {
-        vec!["claude-code-acp".to_owned()]
+        Some(CodingAgentKind::ClaudeCode)
     } else if lower.contains("codex") {
-        let mut cmd = vec!["codex-acp".to_owned()];
-        if hitl_enabled {
-            cmd.extend([
-                "-c".to_owned(),
-                "approval_policy=\"untrusted\"".to_owned(),
-                "-c".to_owned(),
-                "sandbox_mode=\"read-only\"".to_owned(),
-            ]);
-        }
-        cmd
+        Some(CodingAgentKind::Codex)
+    } else if lower.contains("opencode") {
+        Some(CodingAgentKind::OpenCode)
     } else {
-        vec!["opencode".to_owned(), "acp".to_owned()]
+        None
     }
 }
 
-/// The provider/model a managed OpenCode turn defaults to.
+/// Derive the ACP stdio command for a coding agent's image, or `None` when the
+/// image is not a recognized kind (see [`classify_image`]).
 ///
-/// `openai-chat` is the custom `@ai-sdk/openai-compatible` provider our OpenCode
-/// image declares (it targets `/v1/chat/completions` and reads `OPENAI_BASE_URL`
-/// / `OPENAI_API_KEY` from the per-turn env the proxy injects), so this is the
-/// model that carries the session token through the LLM router. It intentionally
-/// matches the provider name baked into the image's `opencode.json`.
-pub const OPENCODE_ROUTED_MODEL: &str = "openai-chat/gpt-4o";
+/// Each kind has its own entry point (`opencode acp`, `claude-code-acp`,
+/// `codex-acp`). When `hitl_enabled`, Codex also needs its approval policy forced
+/// so it routes tool use through `session/request_permission` (the HITL
+/// delegate): codex-acp honors Codex's `-c key=value` overrides, so
+/// `approval_policy=untrusted` + `sandbox_mode=read-only` makes it ask before any
+/// edit or command. OpenCode is nudged a different way — via
+/// `OPENCODE_CONFIG_CONTENT`, see [`routed_model_env`] — and Claude Code asks by
+/// default (its `claude-code-acp` adapter runs in `permissionMode = "default"`),
+/// so neither needs a command argument.
+pub fn derive_acp_command(image: &str, hitl_enabled: bool) -> Option<Vec<String>> {
+    let command = match classify_image(image)? {
+        CodingAgentKind::ClaudeCode => vec!["claude-code-acp".to_owned()],
+        CodingAgentKind::Codex => {
+            let mut cmd = vec!["codex-acp".to_owned()];
+            if hitl_enabled {
+                cmd.extend([
+                    "-c".to_owned(),
+                    "approval_policy=\"untrusted\"".to_owned(),
+                    "-c".to_owned(),
+                    "sandbox_mode=\"read-only\"".to_owned(),
+                ]);
+            }
+            cmd
+        }
+        CodingAgentKind::OpenCode => vec!["opencode".to_owned(), "acp".to_owned()],
+    };
+    Some(command)
+}
 
-/// Per-turn env that makes a coding agent default to the Nasiko-routed model
-/// (and, when `hitl_enabled`, prompt for permission before acting).
+/// Per-turn env a coding agent needs beyond the base routing wiring.
 ///
-/// Driven over ACP, OpenCode bypasses the a2a HTTP wrapper that would otherwise
-/// force the routed model per prompt, so with no default it falls back to its
-/// built-in free model (`opencode/big-pickle`) — which needs no key and routes to
-/// OpenCode's own backend, bypassing the router and billing entirely. Setting
-/// `OPENCODE_CONFIG_CONTENT` (an inline config that *merges* over the image's
-/// `opencode.json`, keeping its `openai-chat` provider) forces the routed model
-/// as the session default instead.
+/// Routing itself — the router base URL and the session-token key — is injected
+/// by the proxy, and every coding-agent image now bakes its own default model
+/// (the `openai-chat/gpt-4o` provider for OpenCode, the `nasiko` provider for
+/// Codex, pure env for Claude Code), so there is nothing to inject for routing.
 ///
-/// When `hitl_enabled`, the same config forces OpenCode's `permission` rules to
-/// `"ask"`: the default is `"allow"` (silent), so without this OpenCode never
-/// sends `session/request_permission` and the HITL delegate has nothing to gate.
-///
-/// Claude Code and Codex select their model via their own env / config, so they
-/// get an empty map here. Their HITL prompting is handled elsewhere: Claude Code
-/// asks by default, and Codex is forced to ask via command arguments (see
-/// [`derive_acp_command`]). Keyed off the image like [`derive_acp_command`].
+/// The one thing that cannot live in the image is the HITL permission flip:
+/// `hitl_enabled` is a per-agent toggle (the same image is deployed with HITL on
+/// or off), and OpenCode's permissions default to `"allow"` — it acts silently
+/// and never sends `session/request_permission`. So when HITL is on the server
+/// forces them to `"ask"` via `OPENCODE_CONFIG_CONTENT` (an inline config that
+/// *merges* over the image's `opencode.json`, leaving its baked model intact).
+/// Codex is forced to ask via command arguments (see [`derive_acp_command`]) and
+/// Claude Code asks by default, so neither needs anything here — nor does any
+/// agent when HITL is off.
 pub fn routed_model_env(
     image: &str,
     hitl_enabled: bool,
 ) -> std::collections::HashMap<String, String> {
-    let lower = image.to_ascii_lowercase();
     let mut env = std::collections::HashMap::new();
-    // Only OpenCode (the default kind) reads this var and needs the nudge.
-    if lower.contains("claude") || lower.contains("codex") {
-        return env;
-    }
-    let mut config = serde_json::json!({ "model": OPENCODE_ROUTED_MODEL });
-    if hitl_enabled {
-        config["permission"] = serde_json::json!({
-            "edit": "ask",
-            "bash": "ask",
-            "webfetch": "ask",
+    if hitl_enabled && classify_image(image) == Some(CodingAgentKind::OpenCode) {
+        let config = serde_json::json!({
+            "permission": { "edit": "ask", "bash": "ask", "webfetch": "ask" }
         });
+        env.insert("OPENCODE_CONFIG_CONTENT".to_owned(), config.to_string());
     }
-    env.insert("OPENCODE_CONFIG_CONTENT".to_owned(), config.to_string());
     env
+}
+
+/// Why [`load_target`] could not produce a drivable coding-agent target.
+#[derive(Debug, thiserror::Error)]
+pub enum LoadTargetError {
+    #[error(transparent)]
+    Db(#[from] sqlx::Error),
+    /// The agent is marked a coding agent but its image matches no kind Nasiko
+    /// can drive, so there is no ACP command to launch it with. A deploy-time
+    /// mistake that we surface loudly here rather than guessing an adapter.
+    #[error(
+        "coding-agent image {image:?} is not a recognized ACP kind \
+         (the image name must contain 'opencode', 'claude', or 'codex')"
+    )]
+    UnrecognizedImage { image: String },
 }
 
 /// The `agents` columns a coding-agent turn needs: `(name, image, owner_id,
@@ -125,8 +152,14 @@ type TargetRow = (String, Option<String>, Uuid, Option<String>, bool);
 ///
 /// A coding agent with no `image` is a misconfiguration we can't deploy, so it
 /// is treated as "not a coding agent" here rather than failing every request —
-/// the row simply never matches.
-pub async fn load_target(db: &PgPool, agent_id: Uuid) -> sqlx::Result<Option<CodingAgentTarget>> {
+/// the row simply never matches. An agent that *is* a coding agent but whose
+/// image matches no known kind is a different kind of misconfiguration: there is
+/// no adapter to drive it, so it fails loudly with [`LoadTargetError::UnrecognizedImage`]
+/// rather than being driven with the wrong command.
+pub async fn load_target(
+    db: &PgPool,
+    agent_id: Uuid,
+) -> Result<Option<CodingAgentTarget>, LoadTargetError> {
     let row: Option<TargetRow> = sqlx::query_as(
         "SELECT name, image, owner_id, writable_path, hitl_enabled \
          FROM agents \
@@ -137,21 +170,24 @@ pub async fn load_target(db: &PgPool, agent_id: Uuid) -> sqlx::Result<Option<Cod
     .fetch_optional(db)
     .await?;
 
-    Ok(
-        row.map(|(name, image, owner_id, writable_path, hitl_enabled)| {
-            // `image IS NOT NULL` in the query guarantees this unwrap.
-            let image = image.unwrap_or_default();
-            let acp_command = derive_acp_command(&image, hitl_enabled);
-            CodingAgentTarget {
-                name,
-                image,
-                owner_id,
-                writable_path,
-                acp_command,
-                hitl_enabled,
-            }
-        }),
-    )
+    let Some((name, image, owner_id, writable_path, hitl_enabled)) = row else {
+        return Ok(None);
+    };
+    // `image IS NOT NULL` in the query guarantees this unwrap.
+    let image = image.unwrap_or_default();
+    let acp_command = derive_acp_command(&image, hitl_enabled).ok_or_else(|| {
+        LoadTargetError::UnrecognizedImage {
+            image: image.clone(),
+        }
+    })?;
+    Ok(Some(CodingAgentTarget {
+        name,
+        image,
+        owner_id,
+        writable_path,
+        acp_command,
+        hitl_enabled,
+    }))
 }
 
 /// Build the container spec for a coding agent.
@@ -188,28 +224,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn classify_image_recognizes_known_kinds_and_rejects_others() {
+        assert_eq!(
+            classify_image("registry/opencode:0.1.0-acp"),
+            Some(CodingAgentKind::OpenCode)
+        );
+        assert_eq!(
+            classify_image("claude-code:acp"),
+            Some(CodingAgentKind::ClaudeCode)
+        );
+        assert_eq!(
+            classify_image("myorg/codex:v1"),
+            Some(CodingAgentKind::Codex)
+        );
+        // No default kind: an unrecognized image is not silently an OpenCode.
+        assert_eq!(classify_image("some/mystery-agent:1"), None);
+    }
+
+    #[test]
     fn acp_command_is_derived_from_the_image() {
         assert_eq!(
-            derive_acp_command("registry/opencode:0.1.0-acp", false),
+            derive_acp_command("registry/opencode:0.1.0-acp", false).unwrap(),
             ["opencode", "acp"]
         );
         assert_eq!(
-            derive_acp_command("claude-code:acp", false),
+            derive_acp_command("claude-code:acp", false).unwrap(),
             ["claude-code-acp"]
         );
-        assert_eq!(derive_acp_command("myorg/codex:v1", false), ["codex-acp"]);
-        // Unknown images fall back to the OpenCode default.
         assert_eq!(
-            derive_acp_command("some/mystery-agent:1", false),
-            ["opencode", "acp"]
+            derive_acp_command("myorg/codex:v1", false).unwrap(),
+            ["codex-acp"]
         );
+        // Unrecognized images have no command — the caller must reject them,
+        // rather than being driven with a guessed adapter.
+        assert_eq!(derive_acp_command("some/mystery-agent:1", false), None);
     }
 
     #[test]
     fn hitl_forces_codex_approval_but_leaves_others_unchanged() {
         // Codex gains config overrides that make it ask before acting.
         assert_eq!(
-            derive_acp_command("myorg/codex:v1", true),
+            derive_acp_command("myorg/codex:v1", true).unwrap(),
             [
                 "codex-acp",
                 "-c",
@@ -225,25 +280,27 @@ mod tests {
             derive_acp_command("opencode:0.1.0", false)
         );
         assert_eq!(
-            derive_acp_command("claude-code:acp", true),
+            derive_acp_command("claude-code:acp", true).unwrap(),
             ["claude-code-acp"]
         );
     }
 
     #[test]
-    fn routed_model_env_forces_the_model_for_opencode_only() {
-        // OpenCode (and the unknown→OpenCode default) gets the routed-model nudge.
-        for image in ["registry/opencode:0.1.0", "some/mystery-agent:1"] {
-            let content = routed_model_env(image, false);
-            let config: serde_json::Value =
-                serde_json::from_str(&content["OPENCODE_CONFIG_CONTENT"]).unwrap();
-            assert_eq!(config["model"], "openai-chat/gpt-4o", "{image}");
+    fn routed_model_env_is_empty_unless_opencode_hitl() {
+        // The model is baked in each image now, so nothing is injected for
+        // routing — with HITL off, every kind gets an empty map.
+        for image in [
+            "registry/opencode:0.1.0",
+            "claude-code:acp",
+            "myorg/codex:v1",
+        ] {
             assert!(
-                config.get("permission").is_none(),
-                "no HITL => no permission block"
+                routed_model_env(image, false).is_empty(),
+                "{image} without HITL must inject nothing"
             );
         }
-        // Claude Code and Codex route via their own env/config — no nudge.
+        // Claude Code and Codex force "ask" by other means, so still nothing here
+        // even with HITL on.
         for image in ["claude-code:acp", "myorg/codex:v1"] {
             assert!(
                 routed_model_env(image, true).is_empty(),
@@ -253,14 +310,19 @@ mod tests {
     }
 
     #[test]
-    fn routed_model_env_forces_permission_ask_when_hitl_enabled() {
+    fn routed_model_env_forces_opencode_permission_ask_when_hitl_enabled() {
         let content = routed_model_env("registry/opencode:0.1.0", true);
         let config: serde_json::Value =
             serde_json::from_str(&content["OPENCODE_CONFIG_CONTENT"]).unwrap();
-        assert_eq!(config["model"], "openai-chat/gpt-4o");
+        // Only the permission flip — the model comes from the image's own config.
+        assert!(
+            config.get("model").is_none(),
+            "model must be baked in the image, not injected"
+        );
         // Defaults are "allow" (silent); HITL needs them forced to "ask".
         assert_eq!(config["permission"]["edit"], "ask");
         assert_eq!(config["permission"]["bash"], "ask");
+        assert_eq!(config["permission"]["webfetch"], "ask");
     }
 
     #[test]
@@ -270,7 +332,7 @@ mod tests {
             image: "registry/opencode:v1".to_owned(),
             owner_id: Uuid::nil(),
             writable_path: None,
-            acp_command: derive_acp_command("registry/opencode:v1", false),
+            acp_command: derive_acp_command("registry/opencode:v1", false).unwrap(),
             hitl_enabled: false,
         };
         let spec = build_spec(Uuid::nil(), &target);

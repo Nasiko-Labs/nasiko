@@ -7,19 +7,19 @@
 //! `OPENAI_API_KEY=sk-... cargo test -p nasiko-server --test
 //! coding_agent_proxy_real_reply -- --ignored --nocapture --test-threads=1`.
 //!
-//! MODEL ROUTING (closed server-side): the a2a HTTP wrapper forces the routed
-//! model (`openai-chat/gpt-4o`) per prompt by parsing `config.json`'s
-//! `opencode.model`, but driven over ACP (`opencode acp`) that wrapper is
-//! bypassed, so OpenCode would fall back to its built-in free model
-//! (`opencode/big-pickle`), which needs no key and routes to OpenCode's own
-//! backend rather than Nasiko. The proxy closes this in code: alongside the
-//! injected `OPENAI_BASE_URL` + session token it sets `OPENCODE_CONFIG_CONTENT`
-//! to force the routed model as the session default (`coding::proxy::
-//! routed_model_env`), which merges over any stock OpenCode image's config — no
-//! special image needed. So under ACP the model call now flows through the router
-//! and a `token_usage` row is written, which this test asserts. The
-//! session-token to router to billing path itself is also proven in isolation by
-//! `coding_session_router_live.rs`.
+//! MODEL ROUTING (closed in the image): driven over ACP (`opencode acp`) the
+//! a2a HTTP wrapper that forces the routed model per prompt is bypassed, so an
+//! OpenCode image with no baked default would fall back to its built-in free
+//! model (`opencode/big-pickle`), which needs no key and routes to OpenCode's own
+//! backend rather than Nasiko. A proper OpenCode ACP image closes this itself by
+//! baking `model = "openai-chat/gpt-4o"` into the `opencode.json` it reads at
+//! `$HOME/.config/opencode/` — the proxy only injects the router base URL + the
+//! session token (and, when HITL is on, an `OPENCODE_CONFIG_CONTENT` permission
+//! flip, which merges over that baked config). So this test needs an ACP image
+//! that bakes the routed model; point `OPENCODE_IMAGE` at one. Under ACP the
+//! model call then flows through the router and a `token_usage` row is written,
+//! which this test asserts. The session-token to router to billing path itself
+//! is also proven in isolation by `coding_session_router_live.rs`.
 
 mod common;
 
@@ -71,9 +71,11 @@ async fn coding_agent_turn_streams_a_real_completion() {
             .await
             .unwrap();
 
-    // Override with OPENCODE_IMAGE to point at an ACP-configured fixture (one that
-    // defaults its model to the routed `openai-chat/gpt-4o` provider); the stock
-    // image defaults to OpenCode's built-in model and bypasses the router.
+    // Point OPENCODE_IMAGE at a proper OpenCode ACP image — one that bakes the
+    // routed `openai-chat/gpt-4o` provider as its default model in the
+    // `opencode.json` it reads under `$HOME/.config/opencode/`. An image that
+    // defaults to OpenCode's built-in model bypasses the router and this test's
+    // `token_usage` assertion fails.
     let image = std::env::var("OPENCODE_IMAGE").unwrap_or_else(|_| "opencode:0.1.0".to_owned());
     let agent_id: Uuid = sqlx::query_scalar(
         "INSERT INTO agents (name, owner_id, image, status, workload_kind) \

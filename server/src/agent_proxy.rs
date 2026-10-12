@@ -144,7 +144,14 @@ pub async fn agent_proxy(
         .await
         .map_err(|e| {
             tracing::error!(error = %e, %agent_id, "agent proxy: coding-agent lookup failed");
-            StatusCode::INTERNAL_SERVER_ERROR
+            match e {
+                // The agent is a coding agent but its image is not a kind we can
+                // drive — a deploy-time misconfiguration, not a transient fault.
+                crate::coding::proxy::LoadTargetError::UnrecognizedImage { .. } => {
+                    StatusCode::BAD_GATEWAY
+                }
+                crate::coding::proxy::LoadTargetError::Db(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            }
         })?;
 
     let agent_base = if coding_target.is_some() {
