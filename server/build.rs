@@ -50,6 +50,7 @@ fn find_ui_root(start: &Path) -> Option<PathBuf> {
 }
 
 fn main() {
+    if react_bundle() { return; }
     let manifest_dir = PathBuf::from(
         std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is always set by cargo"),
     );
@@ -81,17 +82,29 @@ fn main() {
     }
 
     // Absolute, so it does not inherit this crate's depth.
-    println!("cargo:rustc-env=NASIKO_UI={}", ui_root.display());
+    println!("cargo:rustc-env=NASIKO_SPA_BUNDLE={}", bundle.display());
 
     // rust-embed reads the tree at compile time in release builds, so changes
     // to the built bundle must invalidate this crate. Only the bundle matters
     // now — the React sources reach the binary only through it.
     println!("cargo:rerun-if-changed={}", bundle.display());
     println!("cargo:rerun-if-changed=build.rs");
+}
 
-    // `sqlx::migrate!` embeds the migration set at compile time, so the directory
-    // itself is a compile-time input. The macro tracks each file it already saw, but
-    // not the directory — so without this an *added* .sql would not rebuild the
-    // server, and booting it to apply the migration would silently apply nothing.
-    println!("cargo:rerun-if-changed=../migrations");
+/// A release SPA is explicitly selected, never copied over the legacy bundle.
+fn react_bundle() -> bool {
+    println!("cargo:rerun-if-env-changed=NASIKO_REACT_DIST");
+    let Some(path) = std::env::var_os("NASIKO_REACT_DIST") else { return false; };
+    let bundle = PathBuf::from(path).canonicalize().expect("NASIKO_REACT_DIST must exist");
+    let edition = std::fs::read_to_string(bundle.join("nasiko-spa-edition"))
+        .expect("NASIKO_REACT_DIST must be a Nasiko release SPA (missing edition marker)");
+    assert_eq!(edition, "oss", "wrong edition or test-only SPA cannot be embedded");
+    for file in ["index.html", "routes.json", "csp.json", "nasiko-prepaint.js", "nasiko-spa.json"] {
+        assert!(bundle.join(file).is_file(), "incomplete SPA: missing {file}");
+    }
+    assert!(!bundle.join("mockServiceWorker.js").exists(), "mock worker cannot be embedded");
+    println!("cargo:rustc-env=NASIKO_SPA_BUNDLE={}", bundle.display());
+    println!("cargo:rerun-if-changed={}", bundle.display());
+    println!("cargo:rerun-if-changed=build.rs");
+    true
 }

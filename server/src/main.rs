@@ -15,7 +15,7 @@ use rust_embed::Embed;
 // `index.html`, the hashed `assets/`, and the `routes.json` / `csp.json`
 // sidecars that `nasiko_server::spa` reads at startup.
 #[derive(Embed)]
-#[folder = "$NASIKO_UI/oss/dist/"]
+#[folder = "$NASIKO_SPA_BUNDLE/"]
 struct OssAssets;
 
 /// `depends_on: condition: service_healthy` guarantees Postgres itself is
@@ -121,14 +121,6 @@ async fn main() {
         nasiko_server::state::AppState::from_config_with_db(config, auth, runtime, oci_storage, db)
             .await;
     state.init().await;
-    // Clear stale coding-agent session leases left by a prior crash, then keep
-    // reconciling session rows against live containers in the background.
-    nasiko_server::coding::spawn_reconciler(state.clone());
-    // Purge expired session-token revocations so the table only holds tokens that
-    // could still verify (the turn path records them; they self-expire anyway).
-    tokio::spawn(nasiko_server::coding::revocation::sweep_loop(
-        state.db.clone(),
-    ));
     let app = nasiko_server::build_app(state, static_handler);
 
     let listener = tokio::net::TcpListener::bind(&bind).await.unwrap();
@@ -140,13 +132,14 @@ async fn main() {
 /// pointing at this host. The hash of the inline loader itself comes from
 /// `csp.json`; the host it reaches for has to be named here.
 ///
-/// `connect_src` names the host `reo.js` posts its events to
-/// (`/api/v1/ghost/event`), taken from a browser trace rather than a guess, as
-/// docs/designs/openruntime-embedding-recommendations.md asks. If Reo starts
-/// beaconing elsewhere, the console shows a `connect-src` violation naming it.
+/// `connect_src` is deliberately empty: `reo.js` chooses its own beacon
+/// endpoints at runtime, and docs/designs/openruntime-embedding-recommendations.md
+/// is explicit that those hosts must come from a browser network trace rather
+/// than a guess. Until someone takes that trace, analytics beacons are blocked
+/// and the app is unaffected.
 const CSP_EXTRAS: spa::CspExtras = spa::CspExtras {
     script_src: &["https://static.reo.dev"],
-    connect_src: &["https://api.reo.dev"],
+    connect_src: &[],
     img_src: &[],
 };
 
