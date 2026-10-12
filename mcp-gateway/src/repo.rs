@@ -372,16 +372,28 @@ pub async fn list_accessible_mcp_connectors(
 }
 
 /// Ids of the `system` connectors with `auto_enable = true` that `agent_id`'s
-/// OWNER can reach — the default-on set the gateway unions into this agent's
-/// enabled connectors at [`crate::permissions::load_permission_context`].
+/// `PUBLIC`-granted `system` connectors — the default-on set the gateway unions
+/// into this agent's enabled connectors at
+/// [`crate::permissions::load_permission_context`].
 ///
 /// Keyed on `agent_id` (not a request user id) on purpose: the permission
 /// context is cached per agent (`mcp:perm:{agent_id}`), so its inputs must be a
-/// pure function of the agent. The agent's owner is resolved inline and
-/// reachability is the exact owner/user/public grant pattern
-/// [`list_accessible_mcp_connectors`] uses — a `system` connector shared with a
-/// public grant is therefore default-on for every agent. `is_active = false`
-/// rows are excluded, matching the live-server build.
+/// pure function of the agent, independent of who is calling through it.
+///
+/// Default-on therefore requires a **public** grant specifically — not the
+/// broader owner/user reachability [`list_accessible_mcp_connectors`] uses — so
+/// "default-on for every agent" is true for every *user* too, matching the
+/// intended model (a `system` connector that should instead be opt-in per agent
+/// ships `auto_enable = false` and rides the normal `mcp_agent_connector_access`
+/// path). This keeps the agent-keyed enabled set a pure membership flag that
+/// never diverges from per-user reachability. It is not the sole guard against
+/// cross-user exposure: the tools an agent actually sees come from the
+/// request-user-scoped server list ([`list_accessible_mcp_connectors`] via
+/// `build_generic_servers`) and a `user_id`-keyed manifest cache, so a connector
+/// a caller cannot reach yields no server config and nothing to route regardless
+/// of this flag. Requiring a public grant here is enforced intent plus
+/// defense-in-depth. The agent-liveness join drops a deleted/absent agent to the
+/// empty set; `is_active = false` rows are excluded, matching the live-server build.
 pub async fn list_auto_enabled_system_connector_ids(
     db: &PgPool,
     agent_id: Uuid,
@@ -393,13 +405,12 @@ pub async fn list_auto_enabled_system_connector_ids(
            WHERE c.provider_type = 'system'
              AND c.auto_enable = true
              AND c.is_active = true
-             AND ( c.owner_id = a.owner_id
-                OR EXISTS (
-                     SELECT 1 FROM mcp_connector_grants g
-                     WHERE g.connector_id = c.id
-                       AND ( (g.grant_type = 'user'   AND g.grantee_id = a.owner_id::text)
-                          OR (g.grant_type = 'public' AND g.grantee_id = '*') )
-                   ) )"#,
+             AND EXISTS (
+                   SELECT 1 FROM mcp_connector_grants g
+                   WHERE g.connector_id = c.id
+                     AND g.grant_type = 'public'
+                     AND g.grantee_id = '*'
+                 )"#,
     )
     .bind(agent_id)
     .fetch_all(db)
