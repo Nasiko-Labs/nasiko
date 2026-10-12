@@ -82,6 +82,8 @@ pub struct LlmRouterCtx {
     /// classify + pin. [`ClassifierSalienceGate`] when `SALIENCE_GATE_ENABLED`; else [`AllowAllGate`]
     /// (classify at every boundary, i.e. behaviour before the gate existed).
     pub salience_gate: Arc<dyn SalienceGate>,
+    /// Shared request classifier; its backend is selected only at startup.
+    pub request_classifier: Arc<routing::classifier_runtime::ClassifierRuntime>,
     /// The platform's single cost engine. Every `token_usage` row is priced
     /// through this — the DB trigger that used to do it returned NULL for any
     /// model missing from `model_pricing`, which booked 92.8% of calls at $0.
@@ -127,6 +129,7 @@ impl LlmRouterCtx {
         let router_cache = build_router_cache(&cfg);
         let cfg = Arc::new(cfg);
         let salience_gate = build_salience_gate(&cfg);
+        let request_classifier = Arc::new(config::build_classifier(&cfg.classifier));
         let pricing = Arc::new(PricingEngine::new(db.clone()));
         Self {
             db,
@@ -137,6 +140,7 @@ impl LlmRouterCtx {
             tier_registry,
             cell_store,
             salience_gate,
+            request_classifier,
             pricing,
         }
     }

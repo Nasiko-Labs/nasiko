@@ -109,6 +109,11 @@ async fn responses_core(
     let signals = RequestSignals {
         turn_ordinal: user_turn_ordinal(body.get("input")),
         is_tool_continuation: is_tool_continuation(body.get("input")),
+        context: ctx
+            .request_classifier
+            .is_experimental()
+            .then(|| responses_classification_context(&body))
+            .flatten(),
         query,
     };
     let routed = resolve_routed_request(
@@ -952,6 +957,36 @@ fn responses_error(status: StatusCode, message: String, code: &'static str) -> R
         .into_response()
 }
 
+/// Normalize only conversation text into the shared bounded context selector.
+fn responses_classification_context(body: &Value) -> Option<String> {
+    let input = body.get("input")?;
+    let messages = if let Some(text) = input.as_str() {
+        vec![
+            serde_json::from_value::<crate::ir::Message>(
+                serde_json::json!({"role":"user","content":text}),
+            )
+            .ok()?,
+        ]
+    } else {
+        input
+            .as_array()?
+            .iter()
+            .filter_map(|item| {
+                let role = item.get("role")?.as_str()?;
+                if !matches!(role, "user" | "assistant") {
+                    return None;
+                }
+                let text = content_text(item.get("content")?)?;
+                serde_json::from_value::<crate::ir::Message>(
+                    serde_json::json!({"role":role,"content":text}),
+                )
+                .ok()
+            })
+            .collect()
+    };
+    crate::routing::classification_context(&messages)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1058,6 +1093,9 @@ mod tests {
             tier_registry: Arc::new(NoTiers),
             cell_store: Arc::new(crate::routing::InMemoryCellStore::new()),
             salience_gate: Arc::new(crate::routing::salience::AllowAllGate),
+            request_classifier: Arc::new(
+                crate::routing::classifier_runtime::ClassifierRuntime::regex(),
+            ),
             pricing: Arc::new(nasiko_pricing::PricingEngine::new(
                 PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
             )),
