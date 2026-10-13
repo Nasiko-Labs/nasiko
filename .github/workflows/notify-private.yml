@@ -21,19 +21,32 @@ jobs:
       # title, author and base from the API itself and verifies the SHA. The JSON
       # is built by jq from environment variables, never by pasting PR fields into
       # the shell: a PR title is attacker-controlled, and this job holds a secret.
+      # The production public repository notifies the production private one with its own secret. Any other
+      # repository (a sync rehearsal) needs OSS_REHEARSAL_PRIVATE_SLUG naming a *sync-rehearsal* repository and its
+      # own OSS_REHEARSAL_DISPATCH_TOKEN; it can never dispatch to production.
       - name: Trigger PR import in private repo
         env:
-          PAT: ${{ secrets.PRIVATE_REPO_PAT }}
+          PAT: ${{ github.repository == 'Nasiko-Labs/nasiko' && secrets.PRIVATE_REPO_PAT || secrets.OSS_REHEARSAL_DISPATCH_TOKEN }}
+          PRIVATE_SLUG: ${{ github.repository == 'Nasiko-Labs/nasiko' && 'Nasiko-Labs/nasiko-cloud-rs' || vars.OSS_REHEARSAL_PRIVATE_SLUG }}
+          PRODUCTION: ${{ github.repository == 'Nasiko-Labs/nasiko' }}
           ACTION: ${{ github.event.action }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
+          if [ "$PRODUCTION" != "true" ]; then
+            lower=$(printf '%s' "$PRIVATE_SLUG" | tr '[:upper:]' '[:lower:]')
+            case "$lower" in
+              nasiko-labs/nasiko-cloud-rs|nasiko-labs/nasiko|"") echo "::error::not a rehearsal target: '$PRIVATE_SLUG'"; exit 1 ;;
+              *sync-rehearsal*) ;;
+              *) echo "::error::a rehearsal may only dispatch to a *sync-rehearsal* repository"; exit 1 ;;
+            esac
+          fi
           if [ "$ACTION" = "opened" ]; then TYPE=oss-pr-opened; else TYPE=oss-pr-synchronized; fi
           jq -n --arg type "$TYPE" --argjson pr "$PR_NUMBER" --arg sha "$HEAD_SHA" \
             '{event_type: $type, client_payload: {pr_number: $pr, head_sha: $sha}}' \
             | curl -fsSL -X POST \
                 -H "Authorization: token ${PAT}" \
                 -H "Accept: application/vnd.github+json" \
-                "https://api.github.com/repos/Nasiko-Labs/nasiko-cloud-rs/dispatches" \
+                "https://api.github.com/repos/${PRIVATE_SLUG}/dispatches" \
                 --data-binary @-
