@@ -178,9 +178,14 @@ async fn start_turn(
     // AsyncRead/AsyncWrite halves to the futures-io the ACP SDK's ByteStreams
     // transport wants. ByteStreams::new(outgoing, incoming): outgoing is what we
     // write to the agent (its stdin), incoming is what we read (its stdout).
-    let dir = workspace_session_name(&req.session_id);
+    //
+    // The agent works out of the writable mount root (`/workspace`); how on-disk
+    // state is partitioned per session is internal to the ACP agent, not ours, so
+    // we deliberately do not carve a per-session subdirectory here. `session_label`
+    // is an opaque, filesystem/shell-safe identifier carried only for tracing.
+    let session_label = safe_session_label(&req.session_id);
     let attach = SessionAttach {
-        session_id: dir.clone(),
+        session_id: session_label,
         command: req.acp_command.clone(),
         env: req.env.clone(),
     };
@@ -201,16 +206,16 @@ async fn start_turn(
     )
     .await?;
 
-    // Open the agent session in its per-session workspace dir (the same dir the
-    // attach cd'd the process into), then send the prompt.
+    // Open the agent session in the writable mount root (the same directory the
+    // attach cd'd the process into), then send the prompt. Session-scoped file
+    // layout is the ACP agent's own concern — the platform hands it one workspace.
     //
     // Cold-path restore: if this session already has an agent-side id from an
     // earlier turn *and* the agent advertised `session/load`, load it so the
     // agent resumes its conversation state instead of starting fresh. Otherwise
     // open a new session and record its id for next time. Loading reuses the id
     // already on the row, so there's nothing new to record.
-    let cwd =
-        std::path::PathBuf::from(format!("{}/{}", DeploymentSpec::DEFAULT_WRITABLE_PATH, dir));
+    let cwd = std::path::PathBuf::from(DeploymentSpec::DEFAULT_WRITABLE_PATH);
     let params = session_params(state, &req.session_token, cwd);
     let prior = lifecycle::acp_session_id(&state.db, &req.session_id).await?;
     let acp_session = match prior {
@@ -446,13 +451,15 @@ fn session_params(
     }
 }
 
-/// A stable, filesystem- and shell-safe per-session directory name.
+/// A stable, filesystem- and shell-safe per-session label.
 ///
-/// Most A2A context ids (`ses_<alnum>`, a UUID) are already valid
+/// The ACP agent owns how it partitions on-disk state, so this value is not a
+/// directory — it is the opaque per-session identifier the attach carries for
+/// tracing. Most A2A context ids (`ses_<alnum>`, a UUID) are already valid
 /// [`SessionAttach`] segments and pass through unchanged for readability;
-/// anything else is mapped to a collision-resistant hash so two sessions can
-/// never share one workspace directory.
-fn workspace_session_name(session_id: &str) -> String {
+/// anything else is mapped to a collision-resistant hash so the label stays a
+/// safe, stable segment.
+fn safe_session_label(session_id: &str) -> String {
     let already_safe = !session_id.is_empty()
         && session_id.len() <= 63
         && session_id
@@ -520,7 +527,7 @@ fn replica_id() -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::workspace_session_name;
+    use super::safe_session_label;
 
     #[test]
     fn safe_session_ids_pass_through_unchanged() {
@@ -531,29 +538,29 @@ mod tests {
             "6b1f2c9a-0e4d-4a1b-9c3e-2f5a7d8e1b0c",
             "plain_name-1",
         ] {
-            assert_eq!(workspace_session_name(id), id);
+            assert_eq!(safe_session_label(id), id);
         }
     }
 
     #[test]
     fn unsafe_session_ids_hash_to_a_safe_stable_name() {
         // Anything with a separator, colon, emptiness, or over-length becomes a
-        // safe hashed name — deterministic and collision-resistant.
+        // safe hashed label — deterministic and collision-resistant.
         for id in ["a/b", "has:colon", "", &"x".repeat(100)] {
-            let name = workspace_session_name(id);
+            let name = safe_session_label(id);
             assert!(name.starts_with("s-"), "{id:?} -> {name:?}");
             assert_eq!(name.len(), 34);
             assert!(
                 name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'),
                 "{name:?} must be a safe segment"
             );
-            // Stable: same input always yields the same directory.
-            assert_eq!(workspace_session_name(id), name);
+            // Stable: same input always yields the same label.
+            assert_eq!(safe_session_label(id), name);
         }
     }
 
     #[test]
-    fn distinct_unsafe_ids_get_distinct_dirs() {
-        assert_ne!(workspace_session_name("a/b"), workspace_session_name("a/c"));
+    fn distinct_unsafe_ids_get_distinct_labels() {
+        assert_ne!(safe_session_label("a/b"), safe_session_label("a/c"));
     }
 }

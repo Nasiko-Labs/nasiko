@@ -28,10 +28,11 @@ use crate::error::{Result, RuntimeError};
 /// [`DeploymentSpec`](crate::DeploymentSpec) that deployed the container.
 #[derive(Debug, Clone)]
 pub struct SessionAttach {
-    /// Per-session identifier. Doubles as the name of the session's workspace
-    /// subdirectory (`<writable-mount>/<session_id>`) — the "per-session
-    /// subdirectory keyed under the agent's folder" — so it must be a single
-    /// safe path segment. Enforced by [`SessionAttach::validate`].
+    /// Opaque per-session identifier, carried for tracing/logs. On-disk session
+    /// layout is internal to the ACP agent, so this is **not** a workspace
+    /// subdirectory; the agent is launched in the writable mount root. It is
+    /// still validated as a single safe path segment (it rides an exec argv), by
+    /// [`SessionAttach::validate`].
     pub session_id: String,
     /// The argv the container execs for this session (e.g.
     /// `["opencode", "acp"]`). Passed as an argument vector, never a shell
@@ -45,9 +46,8 @@ pub struct SessionAttach {
 }
 
 impl SessionAttach {
-    /// Validate before handing to a backend. `session_id` becomes a filesystem
-    /// path segment and an exec working directory, so it must not be able to
-    /// escape the agent's folder or smuggle shell/label metacharacters; the
+    /// Validate before handing to a backend. `session_id` rides an exec argv, so
+    /// it must not be able to smuggle shell/label metacharacters or `..`; the
     /// command must be non-empty (there is nothing to exec otherwise).
     pub fn validate(&self) -> Result<()> {
         // The session id becomes a folder name and part of a command, so only

@@ -1989,24 +1989,19 @@ impl ContainerRuntime for DockerRuntime {
 
         let name = DockerRuntime::container_name(container_id);
 
-        // Work out where this session's files live. Each session gets its own
-        // sub-folder under the agent's writable mount, so two conversations with
-        // the same agent never collide. The agent's folder is already scoped on
-        // the shared volume (to `<owner_id>/<container_id>`) by the mount set up
-        // at deploy time, so from inside the container we only add the session:
-        // `<mount>/<session_id>`.
-        let workdir = format!(
-            "{}/{}",
-            DeploymentSpec::DEFAULT_WRITABLE_PATH,
-            attach.session_id
-        );
+        // The agent works out of its writable mount root. That folder is already
+        // scoped on the shared volume (to `<owner_id>/<container_id>`) by the
+        // mount set up at deploy time, so from inside the container it is simply
+        // `<mount>`. How on-disk state is partitioned per session is internal to
+        // the ACP agent, so we do not carve a per-session subdirectory here.
+        let workdir = DeploymentSpec::DEFAULT_WRITABLE_PATH.to_owned();
 
-        // Build the command Docker will run. We want to: make the session folder,
-        // move into it, then launch the agent — all in one go, so the folder is
-        // guaranteed to exist and we avoid a second round-trip to Docker. A tiny
-        // shell script does the mkdir+cd+launch; the folder path and the agent's
-        // command are passed as *arguments* to that script (`$1`, then the rest),
-        // never pasted into the script text, so they can never be run as code.
+        // Build the command Docker will run. We want to: ensure the workspace
+        // dir exists, move into it, then launch the agent — all in one go, so we
+        // avoid a second round-trip to Docker. A tiny shell script does the
+        // mkdir+cd+launch; the folder path and the agent's command are passed as
+        // *arguments* to that script (`$1`, then the rest), never pasted into the
+        // script text, so they can never be run as code.
         let mut argv = vec![
             "sh".to_owned(),
             "-c".to_owned(),

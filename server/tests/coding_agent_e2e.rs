@@ -98,7 +98,7 @@ async fn opencode_acp_handshake_through_runtime_attach() {
     // STEP 4: open a session — the next step of a real turn (no prompt; that
     // needs LLM auth). A non-empty agent session id proves session/new worked.
     let session = conn
-        .new_session(NewSessionParams::new("/workspace/s1"))
+        .new_session(NewSessionParams::new("/workspace"))
         .await
         .expect("session/new against real opencode");
     assert!(
