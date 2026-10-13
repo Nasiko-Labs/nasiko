@@ -41,6 +41,16 @@ const REVALIDATE: &str = "no-cache";
 /// bundle without variants (the legacy `ui/` build) is served as before.
 const ENCODINGS: &[(&str, &str)] = &[("br", ".br"), ("gzip", ".gz")];
 
+/// Marks a response this handler negotiated itself (the bundle carries
+/// precompressed variants). A runtime compression layer in front of the
+/// handler must leave it alone: compressing it again would add a second
+/// owner of `Content-Encoding`, recompress formats that are compressed
+/// already, and reuse a validator across representations. EE's static layer
+/// checks for it (ee/server/src/main.rs); the legacy `ui/` bundle, which has
+/// no variants, is not marked and keeps that layer's compression.
+#[derive(Clone, Copy, Debug)]
+pub struct Precompressed;
+
 /// A 404 must never be cacheable — demo.nasiko.dev sits behind Cloudflare,
 /// which edge-cached an uncached 404 for an observed 20 minutes, outliving its
 /// own fix.
@@ -73,6 +83,8 @@ pub struct Spa {
     routes: Vec<Vec<Segment>>,
     csp: String,
     react_spa: bool,
+    /// The bundle carries `.br`/`.gz` variants (react/packages/config/precompress.mjs).
+    precompressed: bool,
 }
 
 /// Per-edition additions to the Content-Security-Policy.
@@ -107,10 +119,14 @@ impl Spa {
             &Self::read::<E, CspFile>("csp.json").script_src,
             if react_spa { &strict } else { extras },
         );
+        let precompressed = ENCODINGS
+            .iter()
+            .any(|(_, suffix)| E::get(&format!("index.html{suffix}")).is_some());
         Self {
             routes,
             csp,
             react_spa,
+            precompressed,
         }
     }
 
@@ -288,6 +304,9 @@ pub fn serve<E: RustEmbed>(
     let spa = cache.get_or_init(|| Spa::load::<E>(extras));
 
     let mut response = serve_from::<E>(req, spa);
+    if spa.precompressed {
+        response.extensions_mut().insert(Precompressed);
+    }
     let headers = response.headers_mut();
     for (name, value) in [
         ("x-content-type-options", "nosniff"),
@@ -378,13 +397,24 @@ fn shell<E: RustEmbed>(
     spa: &Spa,
 ) -> Response {
     let (encoding, body) = negotiate::<E>(req.headers(), "index.html", file);
+    let etag = etag(file, encoding);
+    // `no-cache` means "revalidate", so answer the revalidation: the shell is fetched on every navigation.
+    if if_none_match(req.headers(), &etag) {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::CACHE_CONTROL, HeaderValue::from_static(REVALIDATE));
+        if let Ok(v) = HeaderValue::from_str(&etag) {
+            headers.insert(header::ETAG, v);
+        }
+        headers.insert(header::VARY, HeaderValue::from_static("accept-encoding"));
+        return (StatusCode::NOT_MODIFIED, headers).into_response();
+    }
     let mut headers = HeaderMap::new();
     headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/html"));
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static(REVALIDATE));
     if let Ok(v) = HeaderValue::from_str(spa.csp()) {
         headers.insert(header::CONTENT_SECURITY_POLICY, v);
     }
-    if let Ok(v) = HeaderValue::from_str(&etag(file, encoding)) {
+    if let Ok(v) = HeaderValue::from_str(&etag) {
         headers.insert(header::ETAG, v);
     }
     representation_headers(&mut headers, encoding);
@@ -656,6 +686,31 @@ mod tests {
         );
         // index.html has no gzip variant in the fixture: identity, not a 404.
         assert_eq!(encoding(&get("/agents", Some("gzip"), None)), None);
+        // `no-cache` is answered: the same representation's validator gives a 304, another one a full body.
+        let tag = response.headers()[header::ETAG]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let revalidated = get("/agents", Some("br"), Some(&tag));
+        assert_eq!(revalidated.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(revalidated.headers()[header::CACHE_CONTROL], REVALIDATE);
+        assert_eq!(get("/agents", None, Some(&tag)).status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn responses_from_a_precompressed_bundle_are_marked_for_outer_layers() {
+        for (path, accept) in [
+            (ASSET, Some("br")),
+            (ASSET, None),
+            ("/agents", Some("gzip")),
+            ("/assets/missing.js", None),
+        ] {
+            let response = get(path, accept, None);
+            assert!(
+                response.extensions().get::<Precompressed>().is_some(),
+                "{path} {accept:?}"
+            );
+        }
     }
 
     #[test]
@@ -676,6 +731,7 @@ mod tests {
             routes: patterns.iter().map(|p| Spa::parse_pattern(p)).collect(),
             csp: String::new(),
             react_spa: false,
+            precompressed: false,
         }
     }
 
