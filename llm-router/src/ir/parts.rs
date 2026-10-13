@@ -250,13 +250,13 @@ impl ContentPart {
                 }
                 json!({ "type": "image_url", "image_url": image_url })
             }
-            Self::File { source, filename } => {
-                let mut file = json!({ "file_data": source.to_url_field() });
-                if let Some(filename) = filename {
-                    file["filename"] = json!(filename);
-                }
-                json!({ "type": "file", "file": file })
-            }
+            Self::File { source, filename } => json!({
+                "type": "file",
+                "file": {
+                    "file_data": source.to_url_field(),
+                    "filename": openai_filename(source, filename.as_deref()),
+                },
+            }),
             Self::Audio { data, format } => json!({
                 "type": "input_audio",
                 "input_audio": { "data": data, "format": format },
@@ -274,6 +274,46 @@ impl ContentPart {
             Self::Text(text) if !text.is_empty() => Some(text),
             _ => None,
         }
+    }
+}
+
+/// The `file.filename` an OpenAI-shaped file part must carry.
+///
+/// OpenAI accepts a file part as either `file_id` **or** `file_data` + `filename`, and a
+/// `file` object that satisfies neither is rejected against the *first* variant:
+/// `Missing required parameter: 'messages[N].content[M].file.file_id'`. The name is
+/// therefore not optional on the wire, even though it is optional in the hub — Gemini
+/// `inlineData` never carries one, and an Anthropic `document` only does when the caller
+/// set `title`. Rather than let those render an un-sendable part, one is synthesized from
+/// the declared media type here, the single place that knows OpenAI's rule.
+fn openai_filename(source: &DataSource, filename: Option<&str>) -> String {
+    if let Some(name) = filename.map(str::trim).filter(|n| !n.is_empty()) {
+        return name.to_string();
+    }
+    match source.media_type().and_then(file_extension) {
+        Some(ext) => format!("document.{ext}"),
+        // An extensionless name still beats omitting the field: the part reaches the
+        // provider, which can then refuse it on the media type's own merits.
+        None => "document".to_string(),
+    }
+}
+
+/// Filename extension for a media type, over the document formats a backend will
+/// actually accept. `None` rather than a guess for anything else — a wrong extension
+/// reads as a real file type and is harder to diagnose than a missing one.
+fn file_extension(media_type: &str) -> Option<&'static str> {
+    match media_type.split(';').next()?.trim() {
+        "application/pdf" => Some("pdf"),
+        "application/json" => Some("json"),
+        "application/msword" => Some("doc"),
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => Some("docx"),
+        "application/vnd.ms-excel" => Some("xls"),
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => Some("xlsx"),
+        "text/plain" => Some("txt"),
+        "text/markdown" => Some("md"),
+        "text/csv" => Some("csv"),
+        "text/html" => Some("html"),
+        _ => None,
     }
 }
 
@@ -374,7 +414,6 @@ mod tests {
             json!({ "type": "text", "text": "hi" }),
             json!({ "type": "image_url", "image_url": { "url": "data:image/png;base64,AAAA" } }),
             json!({ "type": "image_url", "image_url": { "url": "https://e.com/c.png", "detail": "low" } }),
-            json!({ "type": "file", "file": { "file_data": "data:application/pdf;base64,JVBE" } }),
             json!({ "type": "file", "file": { "file_data": "data:application/pdf;base64,JVBE", "filename": "q3.pdf" } }),
             json!({ "type": "input_audio", "input_audio": { "data": "UklG", "format": "wav" } }),
             json!({ "type": "video_url", "video_url": { "url": "data:video/mp4;base64,AAAA" } }),
@@ -383,6 +422,54 @@ mod tests {
             let part = ContentPart::from_openai_part(&raw).unwrap();
             assert_eq!(part.to_openai_part(), raw, "round trip lost data for {raw}");
         }
+    }
+
+    #[test]
+    fn a_nameless_file_still_renders_a_filename_openai_will_accept() {
+        // OpenAI rejects `{file_data}` with no `filename` by complaining about the
+        // *other* variant — "Missing required parameter: '…file.file_id'" — so a
+        // translated document (Gemini `inlineData`, an Anthropic `document` without a
+        // `title`) must not reach it nameless.
+        let part = ContentPart::File {
+            source: DataSource::Inline {
+                media_type: "application/pdf".into(),
+                data: "JVBE".into(),
+            },
+            filename: None,
+        };
+        assert_eq!(
+            part.to_openai_part(),
+            json!({ "type": "file", "file": {
+                "file_data": "data:application/pdf;base64,JVBE",
+                "filename": "document.pdf",
+            }})
+        );
+    }
+
+    #[test]
+    fn a_synthesized_filename_takes_the_media_types_extension() {
+        let named = |media_type: &str, filename: Option<&str>| {
+            openai_filename(
+                &DataSource::Inline {
+                    media_type: media_type.into(),
+                    data: "AAAA".into(),
+                },
+                filename,
+            )
+        };
+        assert_eq!(named("application/pdf", None), "document.pdf");
+        assert_eq!(named("text/plain; charset=utf-8", None), "document.txt");
+        // Unknown media type: no guessed extension — the provider refuses it on the
+        // media type's own merits rather than on a wrong-looking name.
+        assert_eq!(named("application/x-tar", None), "document");
+        // A URL-sourced file has no declared media type to derive from.
+        assert_eq!(
+            openai_filename(&DataSource::Url("https://e.com/q3.pdf".into()), None),
+            "document"
+        );
+        // A real name always wins; a blank one does not count as one.
+        assert_eq!(named("application/pdf", Some("q3.pdf")), "q3.pdf");
+        assert_eq!(named("application/pdf", Some("  ")), "document.pdf");
     }
 
     #[test]

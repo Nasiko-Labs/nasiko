@@ -259,7 +259,10 @@ fn anthropic_block_to_part(b: &Value) -> Result<Option<ContentPart>, GatewayErro
         })),
         "document" => Ok(Some(ContentPart::File {
             source: anthropic_source(b, "document", "application/pdf")?,
-            filename: None,
+            // `title` is Anthropic's only name for a document, and OpenAI requires one
+            // alongside `file_data`; absent, the renderer synthesizes it from the media
+            // type (`ir::parts::openai_filename`).
+            filename: b.get("title").and_then(Value::as_str).map(str::to_string),
         })),
         "tool_result" => Ok(None),
         other => Err(GatewayError::BadRequest(format!(
@@ -998,6 +1001,37 @@ mod tests {
             parts[0]["file"]["file_data"],
             "data:application/pdf;base64,JVBERi0xLjQK"
         );
+        // An untitled document still needs a name: OpenAI refuses a `file` object that
+        // carries neither `filename` nor `file_id`.
+        assert_eq!(parts[0]["file"]["filename"], "document.pdf");
+    }
+
+    #[test]
+    fn a_documents_title_becomes_the_filename() {
+        let req = AnthropicInbound
+            .parse_chat(json!({
+                "model": "claude-3-5-sonnet-20241022",
+                "max_tokens": 1024,
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "document",
+                            "title": "q3-earnings.pdf",
+                            "source": { "type": "base64", "media_type": "application/pdf", "data": "JVBERi0xLjQK" }
+                        }
+                    ]
+                }]
+            }))
+            .unwrap();
+
+        let parts = req.messages[0]
+            .content
+            .as_ref()
+            .unwrap()
+            .as_array()
+            .unwrap();
+        assert_eq!(parts[0]["file"]["filename"], "q3-earnings.pdf");
     }
 
     #[test]

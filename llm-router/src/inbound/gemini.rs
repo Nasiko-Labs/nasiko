@@ -752,6 +752,9 @@ mod tests {
             content_parts[0]["file"]["file_data"],
             "data:application/pdf;base64,JVBERi0xLjQK"
         );
+        // `inlineData` never carries a name, and OpenAI refuses a `file` object with
+        // neither `filename` nor `file_id` — so one is synthesized from the mime type.
+        assert_eq!(content_parts[0]["file"]["filename"], "document.pdf");
     }
 
     #[test]
