@@ -167,12 +167,17 @@ async fn the_toggle_is_scoped_to_one_agent() {
 }
 
 /// History compression (IP-4) in a direct chat follows the agent being talked to — `user × a1`,
-/// `user × a2` — not every agent the user owns. Orchestrator-routed chats have no single agent
-/// when history is read, so they keep the unanimity rule.
+/// `user × a2` — not every agent the user owns.
+///
+/// The unanimity assertions that used to close this test are gone with the rule itself: an
+/// orchestrator-routed chat no longer consults any agent's switch, because the Orchestrator's own
+/// model is what reads that history and agents downstream receive whatever it then writes. The
+/// caller passes `true` there and the deployment flag alone decides — see `fetch_for_user`'s
+/// `compress_history` docs, and `162d50bd9`, which retired the rule in the UI first.
 #[tokio::test]
 #[serial]
 async fn history_compression_follows_the_agent_in_a_direct_chat() {
-    use nasiko_orchestrator::{agent_compression_enabled, compression_opt_in};
+    use nasiko_orchestrator::agent_compression_enabled;
 
     let server = common::TestServer::start().await;
     let admin = init_admin(&server).await;
@@ -182,7 +187,6 @@ async fn history_compression_follows_the_agent_in_a_direct_chat() {
     let on_id = on["id"].as_str().unwrap().to_string();
     put_agent(&server, &uid, &on_id, json!({"compress_enabled": true})).await;
 
-    let user = uuid::Uuid::parse_str(&uid).unwrap();
     let on_uuid = uuid::Uuid::parse_str(&on_id).unwrap();
     let off_uuid = uuid::Uuid::parse_str(off["id"].as_str().unwrap()).unwrap();
 
@@ -198,19 +202,12 @@ async fn history_compression_follows_the_agent_in_a_direct_chat() {
         !agent_compression_enabled(&server.db, uuid::Uuid::new_v4()).await,
         "an unknown agent must read as not opted in"
     );
-    assert!(
-        !compression_opt_in(&server.db, user).await,
-        "orchestrator chats still need every owned agent opted in"
-    );
 
-    sqlx::query("UPDATE agents SET compress_enabled = true WHERE owner_id = $1")
-        .bind(user)
-        .execute(&server.db)
-        .await
-        .unwrap();
+    // One agent's switch must not reach another's chats — the coupling the UI copy now denies.
+    put_agent(&server, &uid, &on_id, json!({"compress_enabled": true})).await;
     assert!(
-        compression_opt_in(&server.db, user).await,
-        "with every owned agent opted in, orchestrator chats compress too"
+        !agent_compression_enabled(&server.db, off_uuid).await,
+        "turning one agent on must not turn history compression on for a different agent's chats"
     );
 }
 

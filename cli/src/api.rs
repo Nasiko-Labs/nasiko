@@ -891,6 +891,7 @@ impl Client {
         env: &std::collections::HashMap<String, String>,
         writable: bool,
         writable_path: Option<&str>,
+        workload_kind: Option<&str>,
     ) -> anyhow::Result<UploadQueued> {
         let file_bytes = std::fs::read(zip_path)
             .with_context(|| format!("cannot read {}", zip_path.display()))?;
@@ -937,6 +938,12 @@ impl Client {
         if let Some(path) = writable_path {
             body.extend_from_slice(
                 format!("--{boundary}\r\nContent-Disposition: form-data; name=\"writable_path\"\r\n\r\n{path}\r\n").as_bytes(),
+            );
+        }
+        // workload_kind (acp_coding_agent marks an ACP coding agent)
+        if let Some(kind) = workload_kind {
+            body.extend_from_slice(
+                format!("--{boundary}\r\nContent-Disposition: form-data; name=\"workload_kind\"\r\n\r\n{kind}\r\n").as_bytes(),
             );
         }
         // file (the zip file)
@@ -1289,6 +1296,12 @@ pub struct AgentRecord {
     #[tabled(skip)]
     #[serde(default)]
     pub transport_path: Option<String>,
+    /// `agent` (default) | `mcp_connector` | `acp_coding_agent`. Lets `chat` label
+    /// the agent's kind and `--coding-agent` assert on it. `None` from an older
+    /// server that doesn't return it.
+    #[tabled(skip)]
+    #[serde(default)]
+    pub workload_kind: Option<String>,
     #[tabled(skip)]
     #[serde(default)]
     pub framework: Option<String>,
@@ -1485,6 +1498,10 @@ pub struct DeploySpec {
     pub writable: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub writable_path: Option<String>,
+    /// Workload kind (`acp_coding_agent` for an ACP coding agent). Omitted for an
+    /// ordinary HTTP agent, so the server defaults to `agent`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workload_kind: Option<String>,
 }
 
 #[cfg(test)]

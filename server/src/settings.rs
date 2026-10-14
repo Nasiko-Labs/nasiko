@@ -12,6 +12,11 @@ pub fn router() -> Router<AppState> {
 
     Router::new()
         .route("/settings", get(get_settings))
+        // Its own route, not a field of `PUT /settings`: that one replaces the whole row.
+        .route(
+            "/settings/context-tiers",
+            get(get_context_tiers).put(update_context_tiers),
+        )
         .merge(write_settings)
 }
 
@@ -377,5 +382,272 @@ mod tests {
         assert_eq!(json["default_embedding_api_key_configured"], true);
         assert!(json.get("default_embedding_api_key").is_none());
         assert!(json.get("default_embedding_api_key_encrypted").is_none());
+    }
+}
+
+// ── Context tiers (CX-T1) ─────────────────────────────────────────────────────
+
+/// What each optimization tier is worth in this deployment.
+///
+/// Read by every signed-in user — the Optimization page writes "Medium ≈ 1,000 tokens" from it —
+/// and written only by a superuser. The values are environment variables with a nullable `settings`
+/// override on top: a NULL column means "this workspace has not chosen", so changing the
+/// environment still moves the number.
+///
+/// Deliberately **not** part of `PUT /api/settings`. That route is a full-row replace owned by a
+/// page that knows nothing about these columns and would blank them on every save.
+#[derive(Debug, Serialize)]
+pub struct ContextTiersResponse {
+    pacms_budget: TierTable,
+    context_k: TierTable,
+    compress_history: bool,
+    pool_size: usize,
+    mandatory_recent: usize,
+    compress_min_bytes: usize,
+    /// The write guard. The tiers page sends it back as `expected_updated_at`, and a PUT whose
+    /// guard no longer matches is refused rather than overwriting someone else's save.
+    updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct TierTable {
+    low: i64,
+    medium: i64,
+    high: i64,
+}
+
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct ContextTiersUpdate {
+    pacms_budget: TierTable,
+    context_k: TierTable,
+    compress_history: bool,
+    pool_size: i64,
+    mandatory_recent: i64,
+    compress_min_bytes: i64,
+    expected_updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Validate a proposed tier table.
+///
+/// The messages are shown to the user verbatim, so their wording is part of the contract. Returned
+/// as the first problem found rather than a list: the form highlights one field at a time.
+fn tier_problems(body: &ContextTiersUpdate) -> Option<String> {
+    let whole =
+        |label: &str, v: i64| (v < 1).then(|| format!("{label} must be a whole number ≥ 1"));
+    let ordered = |label: &str, t: &TierTable| {
+        (t.low > t.medium || t.medium > t.high)
+            .then(|| format!("{label}: low ≤ medium ≤ high is required"))
+    };
+
+    for (label, t) in [
+        ("History budget", &body.pacms_budget),
+        ("Item count", &body.context_k),
+    ] {
+        for (field, v) in [("low", t.low), ("medium", t.medium), ("high", t.high)] {
+            if let Some(p) = whole(&format!("{label} {field}"), v) {
+                return Some(p);
+            }
+        }
+        if let Some(p) = ordered(label, t) {
+            return Some(p);
+        }
+    }
+    for (label, v) in [
+        ("Pool size", body.pool_size),
+        ("Mandatory recent", body.mandatory_recent),
+        ("Minimum bytes", body.compress_min_bytes),
+    ] {
+        if let Some(p) = whole(label, v) {
+            return Some(p);
+        }
+    }
+    // PACMS always keeps the newest `mandatory_recent` of the pool, so a floor above the pool
+    // itself is unsatisfiable rather than merely odd.
+    if body.pool_size < body.mandatory_recent {
+        return Some("Pool size must be at least Mandatory recent".into());
+    }
+    None
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/settings/context-tiers",
+    tag = "settings",
+    responses((
+        status = 200,
+        description = "Tier values (env defaults unless superuser-overridden): pacms_budget, context_k, compress_history, pool_size, mandatory_recent, compress_min_bytes, updated_at"
+    )),
+    security(("bearer_auth" = []))
+)]
+pub(crate) async fn get_context_tiers(
+    State(state): State<AppState>,
+    _claims: Claims,
+) -> impl IntoResponse {
+    let tiers = nasiko_orchestrator::ContextTiers::from_config(&state.config)
+        .with_overrides(&state.db)
+        .await;
+    let updated_at: Option<chrono::DateTime<chrono::Utc>> =
+        sqlx::query_scalar("SELECT context_tiers_updated_at FROM settings WHERE id = 1")
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten();
+
+    Json(ContextTiersResponse {
+        pacms_budget: TierTable {
+            low: tiers.budget_low as i64,
+            medium: tiers.budget_medium as i64,
+            high: tiers.budget_high as i64,
+        },
+        context_k: TierTable {
+            low: tiers.k_low as i64,
+            medium: tiers.k_medium as i64,
+            high: tiers.k_high as i64,
+        },
+        compress_history: tiers.compress.enabled,
+        pool_size: tiers.pool_size,
+        mandatory_recent: tiers.mandatory_recent,
+        compress_min_bytes: tiers.compress.min_bytes,
+        // Never NULL on the wire: a response missing `updated_at` leaves the page read-only, and a
+        // workspace that has never saved still needs a guard value to send back.
+        updated_at: updated_at.unwrap_or_else(chrono::Utc::now),
+    })
+    .into_response()
+}
+
+#[utoipa::path(
+    put,
+    path = "/api/settings/context-tiers",
+    tag = "settings",
+    responses(
+        (status = 200, description = "Saved; the tier values after the write"),
+        (status = 400, description = "A value breaks the rules: whole numbers >= 1, low <= medium <= high, pool_size >= mandatory_recent"),
+        (status = 403, description = "requires superuser"),
+        (status = 409, description = "expected_updated_at does not match — reload"),
+    ),
+    security(("bearer_auth" = []))
+)]
+pub(crate) async fn update_context_tiers(
+    State(state): State<AppState>,
+    claims: Claims,
+    Json(body): Json<ContextTiersUpdate>,
+) -> impl IntoResponse {
+    if !claims.is_superuser {
+        return (StatusCode::FORBIDDEN, "requires superuser").into_response();
+    }
+    if let Some(problem) = tier_problems(&body) {
+        return (StatusCode::BAD_REQUEST, problem).into_response();
+    }
+
+    // Compare-and-set on the guard the form loaded, as an upsert: the `settings` row is created
+    // lazily by the general settings save, so a deployment that has never opened that page has no
+    // row at all. A plain UPDATE would touch nothing there and report the conflict below, telling
+    // the first person ever to save that somebody else got there first.
+    //
+    // `ON CONFLICT ... WHERE` is what makes the guard real: the row is only overwritten when it
+    // still carries the value the form loaded.
+    let result = sqlx::query(
+        "INSERT INTO settings (id, pacms_budget_low, pacms_budget_medium, pacms_budget_high, \
+                               context_k_low, context_k_medium, context_k_high, compress_history, \
+                               context_pool_size, context_mandatory_recent, compress_min_bytes, \
+                               context_tiers_updated_at) \
+         VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now()) \
+         ON CONFLICT (id) DO UPDATE SET \
+             pacms_budget_low = EXCLUDED.pacms_budget_low, \
+             pacms_budget_medium = EXCLUDED.pacms_budget_medium, \
+             pacms_budget_high = EXCLUDED.pacms_budget_high, \
+             context_k_low = EXCLUDED.context_k_low, \
+             context_k_medium = EXCLUDED.context_k_medium, \
+             context_k_high = EXCLUDED.context_k_high, \
+             compress_history = EXCLUDED.compress_history, \
+             context_pool_size = EXCLUDED.context_pool_size, \
+             context_mandatory_recent = EXCLUDED.context_mandatory_recent, \
+             compress_min_bytes = EXCLUDED.compress_min_bytes, \
+             context_tiers_updated_at = now() \
+           WHERE settings.context_tiers_updated_at IS NULL \
+              OR settings.context_tiers_updated_at = $11",
+    )
+    .bind(body.pacms_budget.low as i32)
+    .bind(body.pacms_budget.medium as i32)
+    .bind(body.pacms_budget.high as i32)
+    .bind(body.context_k.low as i32)
+    .bind(body.context_k.medium as i32)
+    .bind(body.context_k.high as i32)
+    .bind(body.compress_history)
+    .bind(body.pool_size as i32)
+    .bind(body.mandatory_recent as i32)
+    .bind(body.compress_min_bytes as i32)
+    .bind(body.expected_updated_at)
+    .execute(&state.db)
+    .await;
+
+    match result {
+        Ok(r) if r.rows_affected() == 0 => (
+            StatusCode::CONFLICT,
+            "these tiers changed since you loaded them",
+        )
+            .into_response(),
+        Ok(_) => get_context_tiers(State(state), claims)
+            .await
+            .into_response(),
+        Err(e) => {
+            tracing::error!(%e, "update_context_tiers: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+        }
+    }
+}
+
+#[cfg(test)]
+mod context_tier_tests {
+    use super::*;
+
+    fn body() -> ContextTiersUpdate {
+        ContextTiersUpdate {
+            pacms_budget: TierTable {
+                low: 500,
+                medium: 1000,
+                high: 5000,
+            },
+            context_k: TierTable {
+                low: 1,
+                medium: 5,
+                high: 20,
+            },
+            compress_history: true,
+            pool_size: 150,
+            mandatory_recent: 3,
+            compress_min_bytes: 2048,
+            expected_updated_at: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn the_shipped_defaults_are_valid() {
+        assert_eq!(tier_problems(&body()), None);
+    }
+
+    #[test]
+    fn a_tier_table_must_climb() {
+        let mut b = body();
+        b.pacms_budget.medium = 100; // below low
+        let problem = tier_problems(&b).expect("an out-of-order table is rejected");
+        assert!(problem.contains("low ≤ medium ≤ high"), "{problem}");
+    }
+
+    #[test]
+    fn zero_and_negative_values_are_rejected() {
+        let mut b = body();
+        b.context_k.low = 0;
+        assert!(tier_problems(&b).is_some_and(|p| p.contains("whole number")));
+    }
+
+    /// PACMS always keeps the newest `mandatory_recent` messages of the pool, so this pairing is
+    /// unsatisfiable rather than merely unusual.
+    #[test]
+    fn the_mandatory_window_cannot_exceed_the_pool() {
+        let mut b = body();
+        b.pool_size = 2;
+        let problem = tier_problems(&b).expect("a floor above the pool is rejected");
+        assert!(problem.contains("at least Mandatory recent"), "{problem}");
     }
 }

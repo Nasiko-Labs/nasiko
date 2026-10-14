@@ -160,11 +160,12 @@ async fn compare_strategies_on_one_session() {
             let history = context_selection::fetch_for_user(
                 &pool,
                 user_id,
-                context_selection::CompressionScope::Orchestrator,
                 session_id,
                 &store,
                 QUERY,
                 &ContextTiers::default(),
+                // Measures selection alone; history compression would change the token counts.
+                false,
             )
             .await;
 

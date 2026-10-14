@@ -99,8 +99,29 @@ use crate::state::AppState;
         crate::observability::handler::get_span_details,
         crate::observability::handler::get_agent_stats,
         crate::observability::handler::get_finops_dashboard,
+        // The four FinOps read sources the React data layer consumes; they
+        // were annotated but never registered, so the snapshot the frontend
+        // generates its client from lacked them (react/docs/phase0 X8).
+        crate::observability::handler::get_context_savings,
+        crate::observability::handler::get_context_savings_agents,
+        crate::observability::handler::get_context_savings_top_requests,
+        crate::observability::handler::get_finops_spend_timeseries,
+        crate::observability::handler::get_finops_spend_calendar,
+        crate::observability::handler::get_finops_spend_calendar_day,
+        crate::observability::handler::get_finops_attributions,
         crate::observability::handler::get_finops_insights,
         crate::observability::handler::get_agent_hours,
+        // CX-1: the `/api/me/*` preference routes and `/api/settings/context-tiers` predate the
+        // OpenAPI rollout and were never annotated, so the UI has always typed them by hand.
+        crate::context_selection::get_context_strategy,
+        crate::context_selection::update_context_strategy,
+        crate::context_selection::get_pacms_budget,
+        crate::context_selection::update_pacms_budget,
+        crate::context_selection::update_context,
+        crate::context_selection::context_preview,
+        crate::context_selection::get_settings_history,
+        crate::settings::get_context_tiers,
+        crate::settings::update_context_tiers,
         crate::observability::routes::agent_logs,
         crate::observability::routes::agent_logs_stream,
     ),
@@ -251,6 +272,8 @@ use crate::state::AppState;
         (name = "usage", description = "Per-user token usage and cost reporting"),
         (name = "observability", description = "Sessions, traces, spans, agent logs, and FinOps reporting"),
         (name = "llm-router", description = "LLM routing presets, provider/model catalog, and tier→model registry"),
+        (name = "context-selection", description = "Per-user chat-history selection preferences: strategy, PACMS budget tier, the on/off switch, a dry-run preview, and settings-change history"),
+        (name = "settings", description = "Workspace-wide settings, including the Optimization tiers a user's PACMS budget level resolves against"),
     ),
 )]
 pub struct ApiDoc;

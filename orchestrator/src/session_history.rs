@@ -44,9 +44,73 @@ const FETCH_HISTORY_SQL: &str = "SELECT role, content FROM chat_messages \
        AND NOT COALESCE((metadata->>'orchestrator_refusal')::boolean, false) \
      ORDER BY timestamp DESC LIMIT $2";
 
+/// Chars per token when no provider usage is available to calibrate against. The same divisor the
+/// llm-router falls back to (`nasiko_llm_router::savings::DEFAULT_CHARS_PER_TOKEN`) and the one
+/// `PacmsSelector` budgets with, so the pool measured here and the budget it was selected against
+/// are counted in the same unit.
+const CHARS_PER_TOKEN: usize = 4;
+
+pub(crate) fn est_tokens(bytes: usize) -> usize {
+    bytes / CHARS_PER_TOKEN
+}
+
+/// What selection chose from, and what it kept, for one request.
+///
+/// The counterfactual the Optimization page is built on. Both halves exist only for the few
+/// milliseconds between the pool read and the selected slice being handed to the caller, so they
+/// are captured here and travel out on [`SessionHistory`] — nothing downstream can reconstruct
+/// them.
+///
+/// Counts only, never message content: this is written to a span, where an agent's own exporter
+/// can read it.
+#[derive(Debug, Clone, Default)]
+pub struct ContextReport {
+    /// Messages selection chose from, before selection. The "without optimization" baseline.
+    pub pool_messages: usize,
+    /// Estimated tokens of the pool, uncompressed — what would have been sent with no optimization.
+    pub pool_tokens: usize,
+    pub kept_messages: usize,
+    pub kept_tokens: usize,
+    /// Bytes removed by history compression (IP-4). Zero when it did not run.
+    pub compressed_bytes_saved: usize,
+    /// `pacms` | `topk` | `lastk`, set by [`crate::context_selection::fetch_for_user`].
+    pub strategy: Option<&'static str>,
+    /// `low` | `medium` | `high`, same.
+    pub level: Option<&'static str>,
+    /// The token budget applied (PACMS only).
+    pub budget: Option<usize>,
+    /// Selection fell back — embeddings unavailable, or no complete pairs.
+    pub fallback: bool,
+}
+
+impl ContextReport {
+    fn kept_from(messages: &[ChatMessage]) -> (usize, usize) {
+        let bytes: usize = messages.iter().map(|m| m.content.len()).sum();
+        (messages.len(), est_tokens(bytes))
+    }
+
+    fn set_kept(&mut self, messages: &[ChatMessage]) {
+        let (count, tokens) = Self::kept_from(messages);
+        self.kept_messages = count;
+        self.kept_tokens = tokens;
+    }
+}
+
+/// Byte and message counts for one pool read, so the saving can be split between what compression
+/// removed and what selection dropped without the two double-counting.
+#[derive(Debug, Clone, Copy, Default)]
+struct PoolCounts {
+    messages: usize,
+    /// Before compression — the honest baseline.
+    bytes_in: usize,
+    /// After compression — what selection actually scored over.
+    bytes_out: usize,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct SessionHistory {
     pub messages: Vec<ChatMessage>,
+    pub report: ContextReport,
 }
 
 /// Per-call tuning knobs for [`SessionHistory::fetch_context`], bundled so
@@ -80,6 +144,18 @@ pub(crate) struct ContextFetchConfig {
 }
 
 impl SessionHistory {
+    /// History assembled from messages directly, with no selection report.
+    ///
+    /// For callers that did not run selection — tests, and any path that hands over a slice it
+    /// already holds. A default report reads as "nothing was pooled", which is what keeps such a
+    /// caller out of the Optimization page's counts.
+    pub fn from_messages(messages: Vec<ChatMessage>) -> Self {
+        Self {
+            messages,
+            report: ContextReport::default(),
+        }
+    }
+
     /// Take the LATEST `limit` messages, then restore chronological order —
     /// `ORDER BY timestamp ASC LIMIT n` would pin the window to the oldest
     /// messages and never advance in long sessions.
@@ -94,7 +170,7 @@ impl SessionHistory {
         pool: &PgPool,
         limit: usize,
         compress: &Policy<'_>,
-    ) -> Vec<ChatMessage> {
+    ) -> (Vec<ChatMessage>, PoolCounts) {
         // Rows tagged `orchestrator_refusal` are excluded from reasoning context
         // on purpose. A refusal is persisted so the human still sees it in the
         // transcript, but feeding it back as prior assistant output teaches the
@@ -140,7 +216,65 @@ impl SessionHistory {
             );
         }
         messages.reverse();
-        messages
+        let counts = PoolCounts {
+            messages: messages.len(),
+            bytes_in,
+            bytes_out,
+        };
+        (messages, counts)
+    }
+
+    /// Messages and uncompressed bytes the pool *would* have held, without reading the text.
+    ///
+    /// `LastK` and `TopK` never materialize the pool — they read their own narrower window — so the
+    /// baseline the Optimization page divides by does not exist in memory for them. This counts it
+    /// in the database instead of pulling 150 message bodies into the process to measure them.
+    ///
+    /// Mirrors [`FETCH_HISTORY_SQL`]'s refusal filter exactly: a baseline that counted rows the
+    /// read would have skipped would overstate every saving. `octet_length`, not `length`, because
+    /// the compared figure is Rust's `str::len`.
+    async fn baseline_pool_counts(session_id: &str, pool: &PgPool, pool_size: usize) -> PoolCounts {
+        let row: (i64, Option<i64>) = sqlx::query_as(
+            "SELECT COUNT(*), SUM(octet_length(content)) FROM ( \
+                 SELECT content FROM chat_messages \
+                  WHERE session_id = $1 \
+                    AND NOT COALESCE((metadata->>'orchestrator_refusal')::boolean, false) \
+                  ORDER BY timestamp DESC LIMIT $2) t",
+        )
+        .bind(session_id)
+        .bind(pool_size as i64)
+        .fetch_one(pool)
+        .await
+        .unwrap_or((0, None));
+
+        let bytes = row.1.unwrap_or(0).max(0) as usize;
+        PoolCounts {
+            messages: row.0.max(0) as usize,
+            bytes_in: bytes,
+            bytes_out: bytes,
+        }
+    }
+
+    /// The pool, as read, with no selection applied (CX-5's "context optimization off").
+    ///
+    /// Distinct from [`Self::fetch`], which is the fixed-window HITL read: this one is sized by the
+    /// deployment's pool, carries the compression policy, and reports `pool == kept`, so a user who
+    /// switches selection off shows as saving nothing rather than dropping off the page.
+    pub async fn fetch_pool_unselected(
+        session_id: &str,
+        pool: &PgPool,
+        pool_size: usize,
+        compress: &Policy<'_>,
+    ) -> Self {
+        let (messages, counts) = Self::fetch_raw(session_id, pool, pool_size, compress).await;
+        let mut report = ContextReport {
+            pool_messages: counts.messages,
+            pool_tokens: est_tokens(counts.bytes_in),
+            compressed_bytes_saved: counts.bytes_in.saturating_sub(counts.bytes_out),
+            ..Default::default()
+        };
+        report.set_kept(&messages);
+        Self { messages, report }
     }
 
     /// Plain recency read, uncompressed.
@@ -151,9 +285,28 @@ impl SessionHistory {
     /// again, so eliding the history it is reasoning over has no second chance to recover.
     /// Compression reaches history through [`Self::fetch_context`], which carries a policy.
     pub async fn fetch(session_id: &str, pool: &PgPool, limit: usize) -> Self {
-        Self {
-            messages: Self::fetch_raw(session_id, pool, limit, &Policy::default()).await,
+        let (messages, counts) = Self::fetch_raw(session_id, pool, limit, &Policy::default()).await;
+        let mut report = ContextReport {
+            pool_messages: counts.messages,
+            pool_tokens: est_tokens(counts.bytes_in),
+            ..Default::default()
+        };
+        report.set_kept(&messages);
+        Self { messages, report }
+    }
+
+    /// Replace this read's narrow window with the pool a budgeted strategy would have chosen from.
+    ///
+    /// `LastK` reads `lastk_limit` messages and keeps all of them, so measured against its own read
+    /// it saves nothing — yet it is saving the rest of the pool, which it never fetched. Without
+    /// this the page would report a real strategy as doing nothing.
+    async fn widen_baseline(&mut self, session_id: &str, pool: &PgPool, pool_size: usize) {
+        if pool_size <= self.report.pool_messages {
+            return;
         }
+        let counts = Self::baseline_pool_counts(session_id, pool, pool_size).await;
+        self.report.pool_messages = counts.messages;
+        self.report.pool_tokens = est_tokens(counts.bytes_in);
     }
 
     /// PACMS-selected context: pulls a wider `pool_size` window of recent
@@ -178,9 +331,15 @@ impl SessionHistory {
         mandatory_recent: usize,
         compress: &Policy<'_>,
     ) -> Self {
-        let messages = Self::fetch_raw(session_id, pool, pool_size, compress).await;
+        let (messages, counts) = Self::fetch_raw(session_id, pool, pool_size, compress).await;
+        let mut report = ContextReport {
+            pool_messages: counts.messages,
+            pool_tokens: est_tokens(counts.bytes_in),
+            compressed_bytes_saved: counts.bytes_in.saturating_sub(counts.bytes_out),
+            ..Default::default()
+        };
         if messages.is_empty() {
-            return Self { messages };
+            return Self { messages, report };
         }
 
         let candidates: Vec<String> = messages
@@ -199,6 +358,7 @@ impl SessionHistory {
             Ok(idx) => idx,
             Err(e) => {
                 tracing::warn!(%e, "PACMS context selection failed — falling back to recency selection");
+                report.fallback = true;
                 selector.select_lastk(&candidates, token_budget, Some(&mandatory))
             }
         };
@@ -207,13 +367,15 @@ impl SessionHistory {
         selected.sort_unstable();
         let selected_set: HashSet<usize> = selected.iter().copied().collect();
 
+        // Counts, indexes and flags only. These lines used to carry the user's query and every
+        // pooled message's body, which put whole conversations into the log sink of anyone running
+        // this target at debug — a far wider audience than the chat itself has.
         tracing::debug!(
             target: "pacms_context",
             session_id,
-            query,
             selected_count = selected.len(),
             pool_size = n,
-            "PACMS context selection for query — kept {}/{} pooled messages",
+            "PACMS context selection — kept {}/{} pooled messages",
             selected.len(),
             n
         );
@@ -225,11 +387,10 @@ impl SessionHistory {
                 kept,
                 mandatory = mandatory.contains(&i),
                 role = %m.role,
-                content = %m.content,
-                "{} [{i}] {}: {}",
+                chars = m.content.len(),
+                "{} [{i}] {}",
                 if kept { "KEPT" } else { "DROP" },
-                m.role,
-                m.content
+                m.role
             );
         }
 
@@ -238,7 +399,8 @@ impl SessionHistory {
             .filter_map(|i| messages.get(i).cloned())
             .collect();
 
-        Self { messages }
+        report.set_kept(&messages);
+        Self { messages, report }
     }
 
     /// Dispatch to the user's selected context-selection strategy.
@@ -258,7 +420,7 @@ impl SessionHistory {
     ) -> Self {
         match strategy {
             ContextSelectionStrategy::Pacms => {
-                Self::fetch_pacms(
+                let mut history = Self::fetch_pacms(
                     session_id,
                     pool,
                     vector_store,
@@ -268,7 +430,9 @@ impl SessionHistory {
                     cfg.mandatory_recent,
                     &cfg.compress,
                 )
-                .await
+                .await;
+                history.report.budget = Some(cfg.token_budget);
+                history
             }
             ContextSelectionStrategy::TopK => {
                 let history = Self::fetch_topk(
@@ -282,12 +446,23 @@ impl SessionHistory {
                 )
                 .await;
                 if history.is_empty() {
-                    Self::fetch(session_id, pool, cfg.lastk_limit).await
+                    let mut fallback = Self::fetch(session_id, pool, cfg.lastk_limit).await;
+                    fallback
+                        .widen_baseline(session_id, pool, cfg.pool_size)
+                        .await;
+                    fallback.report.fallback = true;
+                    fallback
                 } else {
                     history
                 }
             }
-            ContextSelectionStrategy::LastK => Self::fetch(session_id, pool, cfg.lastk_limit).await,
+            ContextSelectionStrategy::LastK => {
+                let mut history = Self::fetch(session_id, pool, cfg.lastk_limit).await;
+                history
+                    .widen_baseline(session_id, pool, cfg.pool_size)
+                    .await;
+                history
+            }
         }
     }
 
@@ -311,7 +486,13 @@ impl SessionHistory {
         pool_size: usize,
         compress: &Policy<'_>,
     ) -> Self {
-        let pairs = Self::fetch_pairs(session_id, pool, pool_size, compress).await;
+        let (pairs, counts) = Self::fetch_pairs(session_id, pool, pool_size, compress).await;
+        let mut report = ContextReport {
+            pool_messages: counts.messages,
+            pool_tokens: est_tokens(counts.bytes_in),
+            compressed_bytes_saved: counts.bytes_in.saturating_sub(counts.bytes_out),
+            ..Default::default()
+        };
         if pairs.is_empty() {
             return Self::default();
         }
@@ -335,9 +516,9 @@ impl SessionHistory {
             }
         };
 
-        Self {
-            messages: rank_pairs(&pairs, &pair_embeddings, &query_embedding, top_k),
-        }
+        let messages = rank_pairs(&pairs, &pair_embeddings, &query_embedding, top_k);
+        report.set_kept(&messages);
+        Self { messages, report }
     }
 
     /// Pair up each `user` message with the `assistant` message that
@@ -356,7 +537,7 @@ impl SessionHistory {
         pool: &PgPool,
         pool_size: usize,
         compress: &Policy<'_>,
-    ) -> Vec<MessagePair> {
+    ) -> (Vec<MessagePair>, PoolCounts) {
         // Latest `pool_size` (DESC + LIMIT), then reversed back into
         // chronological order so the pairing below sees user→assistant
         // adjacency — `ORDER BY timestamp ASC LIMIT n` would pin the window to
@@ -373,22 +554,35 @@ impl SessionHistory {
         .unwrap_or_default();
         messages.reverse();
 
+        // The baseline is the whole window read, not only the rows that paired up: an unpaired
+        // trailing query is history this strategy chose not to send, which is a saving, not an
+        // absence.
+        let bytes_in: usize = messages.iter().map(|(_, c)| c.len()).sum();
+        let mut saved = 0usize;
+
         let mut pairs = Vec::new();
         let mut i = 0;
         while i + 1 < messages.len() {
             let (role_a, content_a) = &messages[i];
             let (role_b, content_b) = &messages[i + 1];
             if role_a == "user" && role_b == "assistant" {
-                pairs.push(MessagePair {
-                    query: nasiko_compress::compress(content_a, compress).into_text(),
-                    answer: nasiko_compress::compress(content_b, compress).into_text(),
-                });
+                let query = nasiko_compress::compress(content_a, compress).into_text();
+                let answer = nasiko_compress::compress(content_b, compress).into_text();
+                saved +=
+                    (content_a.len() + content_b.len()).saturating_sub(query.len() + answer.len());
+                pairs.push(MessagePair { query, answer });
                 i += 2; // consume both messages of the pair
             } else {
                 i += 1; // not a user→assistant pair here — slide the window by one
             }
         }
-        pairs
+
+        let counts = PoolCounts {
+            messages: messages.len(),
+            bytes_in,
+            bytes_out: bytes_in.saturating_sub(saved),
+        };
+        (pairs, counts)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -633,7 +827,7 @@ mod ip4_tests {
     #[test]
     fn the_fixed_window_read_carries_no_policy() {
         let src = include_str!("session_history.rs");
-        let marker = "messages: Self::fetch_raw(session_id, pool, limit, &Policy::default()).await";
+        let marker = "Self::fetch_raw(session_id, pool, limit, &Policy::default()).await";
         assert!(
             src.contains(marker),
             "`fetch` must keep reading history uncompressed"
@@ -653,7 +847,10 @@ mod current_query_dedupe_tests {
     }
 
     fn history(messages: Vec<ChatMessage>) -> SessionHistory {
-        SessionHistory { messages }
+        SessionHistory {
+            messages,
+            report: ContextReport::default(),
+        }
     }
 
     #[test]

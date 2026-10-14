@@ -133,6 +133,15 @@ pub fn protected_router(state: AppState) -> Router<AppState> {
     let finops_routes = Router::new()
         .route("/finops/dashboard", get(handler::get_finops_dashboard))
         .route("/finops/savings", get(handler::get_finops_savings))
+        .route("/finops/context-savings", get(handler::get_context_savings))
+        .route(
+            "/finops/context-savings/agents",
+            get(handler::get_context_savings_agents),
+        )
+        .route(
+            "/finops/context-savings/top-requests",
+            get(handler::get_context_savings_top_requests),
+        )
         .route("/finops/insights", post(handler::get_finops_insights))
         .route("/finops/agent-hours", get(handler::get_agent_hours))
         .route(

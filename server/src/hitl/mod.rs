@@ -1230,6 +1230,9 @@ async fn trigger_new_orchestrator_turn(
             user_id: row.owner_user_id,
             is_superuser,
             client_owns_transcript: false,
+            // A resume reads history through the fixed-window path, which selects nothing — so it
+            // is not a request that ran selection and must not count as one.
+            context_report: None,
             // Not `"user"`: `continuation` is written by the platform, not typed by the human.
             // As a user-role row it drew a bubble in the transcript quoting the sub-agent back
             // at them ("The archive agent replied: …"). It still belongs in the session's own

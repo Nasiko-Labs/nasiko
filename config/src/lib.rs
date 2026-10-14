@@ -43,6 +43,12 @@ pub struct Config {
     /// `nasiko_oci::authz::Writer::BuildService`. Empty means not configured
     /// (fine for `AGENT_RUNTIME=local`, where no such build path exists).
     pub build_push_token: String,
+    /// Shared HMAC secret for the agent-identity / coding-agent session JWTs
+    /// (the same `AGENT_JWT_SECRET` the LLM router verifies with). Empty means
+    /// not configured; mint/verify fail closed in that case.
+    pub agent_jwt_secret: String,
+    /// Algorithm for the above (`HS256`/`HS384`/`HS512`); defaults to `HS256`.
+    pub agent_jwt_algorithm: String,
     pub seed_agents: Option<String>,
     pub openai_api_key: Option<String>,
     pub openai_base_url: Option<String>,
@@ -122,6 +128,23 @@ pub struct Config {
     pub hitl_resume_lease_minutes: i64,
     pub hitl_resume_max_attempts: u32,
     pub hitl_resume_retry_delay_secs: u64,
+    /// Coding-agent (ACP) session lifecycle tunables.
+    ///
+    /// `coding_agent_idle_ttl_secs` is how long a coding-agent container may sit
+    /// idle (no turn running) before it is torn down. **Default `0`** = stop
+    /// after every turn (no warm window) — the safe default until the cluster's
+    /// storage class and the agent's session-resume support are confirmed; a
+    /// positive value keeps the container warm for that many seconds so the next
+    /// turn skips cold start.
+    pub coding_agent_idle_ttl_secs: i64,
+    /// How long one turn's lock on a session is held before it lapses. A turn
+    /// that runs longer must renew it (heartbeat); this only bounds how long a
+    /// *dead* turn-owner can block the next turn.
+    pub coding_agent_turn_lease_secs: i64,
+    /// How often a running turn renews its lease. Must be well under
+    /// `coding_agent_turn_lease_secs` so a live turn never lets its own lock
+    /// lapse mid-turn.
+    pub coding_agent_lease_heartbeat_secs: u64,
     pub github_client_id: Option<String>,
     pub github_client_secret: Option<String>,
     /// Multi-tenant mode (per-CP): when on, this control plane runs behind the
@@ -157,6 +180,11 @@ pub struct Config {
     pub savings_factor_min_samples: i64,
     /// Trailing window the holdout comparison reads.
     pub savings_factor_window_days: i64,
+    /// Percent of otherwise-eligible minimal-code flows deliberately withheld from the ladder, to
+    /// give `optimization_effect_factors`'s `minimal_code` row a real control group — same
+    /// mechanism as the brevity directive's own holdout, applied at the a2a-dispatch seam instead
+    /// of the LLM router (`oss/coding-policy::in_minimal_code_holdout`).
+    pub minimal_code_holdout_pct: u8,
     pub react_compress_enabled: bool,
     /// Skip tool results below this size.
     pub react_compress_min_bytes: usize,
@@ -460,6 +488,8 @@ impl Config {
                 .ok()
                 .filter(|s| !s.is_empty()),
             build_push_token: env_or("BUILD_PUSH_TOKEN", ""),
+            agent_jwt_secret: env_or("AGENT_JWT_SECRET", ""),
+            agent_jwt_algorithm: env_or("AGENT_JWT_ALGORITHM", "HS256"),
             seed_agents: std::env::var("SEED_AGENTS").ok(),
             openai_api_key: std::env::var("OPENAI_API_KEY").ok(),
             openai_base_url: std::env::var("OPENAI_BASE_URL").ok(),
@@ -527,6 +557,9 @@ impl Config {
             hitl_resume_lease_minutes: env_parse("HITL_RESUME_LEASE_MINUTES", 16),
             hitl_resume_max_attempts: env_parse("HITL_RESUME_MAX_ATTEMPTS", 3),
             hitl_resume_retry_delay_secs: env_parse("HITL_RESUME_RETRY_DELAY_SECS", 2),
+            coding_agent_idle_ttl_secs: env_parse("CODING_AGENT_IDLE_TTL_SECS", 0),
+            coding_agent_turn_lease_secs: env_parse("CODING_AGENT_TURN_LEASE_SECS", 60),
+            coding_agent_lease_heartbeat_secs: env_parse("CODING_AGENT_LEASE_HEARTBEAT_SECS", 20),
             github_client_id: std::env::var("GITHUB_CLIENT_ID").ok(),
             github_client_secret: std::env::var("GITHUB_CLIENT_SECRET").ok(),
             multi_tenant_mode: std::env::var("MULTI_TENANT_MODE")
@@ -544,6 +577,7 @@ impl Config {
             savings_factor_refresh_secs: env_parse("SAVINGS_FACTOR_REFRESH_SECS", 86_400),
             savings_factor_min_samples: env_parse("SAVINGS_FACTOR_MIN_SAMPLES", 1_600),
             savings_factor_window_days: env_parse("SAVINGS_FACTOR_WINDOW_DAYS", 30),
+            minimal_code_holdout_pct: env_parse("MINIMAL_CODE_HOLDOUT_PCT", 5u8),
             react_compress_enabled: env_parse("TOKEN_COMPRESS_TOOL_RESULTS", true),
             react_compress_min_bytes: env_parse("TOKEN_COMPRESS_TOOL_RESULTS_MIN_BYTES", 2048),
             history_compress_enabled: env_parse("TOKEN_COMPRESS_HISTORY", true),

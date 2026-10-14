@@ -116,8 +116,12 @@ write the code directly in your response. Do not create a file, set up a project
 run a build or test cycle for a standalone example — the person asking has no access to your \
 sandbox and wants \
 something to read or copy, not a file left behind where they can't reach it.
+- Keep the written explanation brief: a short summary of what changed is enough. Don't restate \
+the plan, narrate each step, or add a \"why this works\" section — the code and a one-line \
+summary should speak for themselves unless something about the change is genuinely non-obvious.
 - This does not apply to trust-boundary checks, error handling for real failure modes, \
-security, or data-loss prevention — those are never skipped for brevity.";
+security, or data-loss prevention — those are never skipped for brevity, and code blocks, file \
+paths, commands, and error text must stay exact and in full regardless.";
 
 /// Continuing, established: several turns in, the model has already built up
 /// real context of this workspace from its own earlier tool calls this
@@ -138,8 +142,12 @@ write the code directly in your response. Do not create a file, set up a project
 run a build or test cycle for a standalone example — the person asking has no access to your \
 sandbox and wants \
 something to read or copy, not a file left behind where they can't reach it.
+- Keep the written explanation brief: a short summary of what changed is enough. Don't restate \
+the plan, narrate each step, or add a \"why this works\" section — the code and a one-line \
+summary should speak for themselves unless something about the change is genuinely non-obvious.
 - This does not apply to trust-boundary checks, error handling for real failure modes, \
-security, or data-loss prevention — those are never skipped for brevity.";
+security, or data-loss prevention — those are never skipped for brevity, and code blocks, file \
+paths, commands, and error text must stay exact and in full regardless.";
 
 /// Below this many prior turns, "continuing" stays in the early-session
 /// wording; at or above it, the established wording takes over. Picked as a
@@ -168,8 +176,12 @@ write the code directly in your response. Do not create a file, set up a project
 run a build or test cycle for a standalone example — the person asking has no access to your \
 sandbox and wants \
 something to read or copy, not a file left behind where they can't reach it.
+- Keep the written explanation brief: a short summary of what changed is enough. Don't restate \
+the plan, narrate each step, or add a \"why this works\" section — the code and a one-line \
+summary should speak for themselves unless something about the change is genuinely non-obvious.
 - This does not apply to trust-boundary checks, error handling for real failure modes, \
-security, or data-loss prevention — those are never skipped for brevity.";
+security, or data-loss prevention — those are never skipped for brevity, and code blocks, file \
+paths, commands, and error text must stay exact and in full regardless.";
 
 /// Which ladder text to inject, given how many turns this session already
 /// had before this one. Callers pass `history.messages.iter().filter(|m|
@@ -203,6 +215,30 @@ Otherwise, confirm your changes are minimal and give your summary.";
 /// being off, never sees this extra turn.
 pub fn wants_self_review(minimal_code: bool, wrote_code: bool, final_text: &str) -> bool {
     minimal_code && wrote_code && !final_text.is_empty()
+}
+
+/// Whether this flow falls in the slice deliberately withheld from the ladder.
+///
+/// The ladder's saving can't be measured by subtraction — nobody knows how many tokens the agent
+/// would have used without it — so, exactly like the brevity directive
+/// (`oss/llm-router/src/brevity.rs::in_holdout`), a small deterministic slice of otherwise-eligible
+/// flows is withheld to give the dashboard's `optimization_effect_factors` row for `minimal_code` a
+/// real control group instead of a permanent guess. Same FNV-1a hash for the same reason: stable
+/// across processes and releases, unlike `DefaultHasher`. Kept as its own copy rather than a shared
+/// dependency — it's six lines, and `oss/coding-policy` has no reason to depend on `oss/llm-router`.
+///
+/// Keyed on the flow id so a flow's arm doesn't change between turns, which would mix treated and
+/// untreated turns inside one comparison.
+pub fn in_minimal_code_holdout(flow_id: &str, holdout_pct: u8) -> bool {
+    if holdout_pct == 0 || flow_id.is_empty() {
+        return false;
+    }
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in flow_id.as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x1000_0000_01b3);
+    }
+    (hash % 100) < holdout_pct.min(100) as u64
 }
 
 #[cfg(test)]
@@ -253,6 +289,25 @@ mod tests {
         ] {
             assert!(addendum.contains("never skipped for brevity"));
             assert!(addendum.contains("give me code for X"));
+        }
+    }
+
+    /// Added after the holdout measured the ladder *increasing* output tokens on real traffic
+    /// (two models, two separate test runs) instead of reducing them — the addendum told the
+    /// model to search and rewrite less, but said nothing about explaining less, so responses
+    /// grew a "why this works" section the untreated arm didn't have. This is the fix, and it
+    /// must keep the same exact-reproduction guarantee brevity's own directive carries.
+    #[test]
+    fn all_three_variants_now_ask_for_a_brief_explanation_without_weakening_the_exactness_guarantee()
+     {
+        for addendum in [
+            minimal_code_addendum(0),
+            minimal_code_addendum(1),
+            minimal_code_addendum(ESTABLISHED_SESSION_THRESHOLD),
+        ] {
+            assert!(addendum.contains("Keep the written explanation brief"));
+            assert!(addendum.contains("why this works"));
+            assert!(addendum.contains("exact and in full"));
         }
     }
 
@@ -352,5 +407,42 @@ mod tests {
     #[test]
     fn self_review_fires_when_all_conditions_met() {
         assert!(wants_self_review(true, true, "did something"));
+    }
+
+    // ── holdout ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn a_zero_percent_holdout_withholds_nothing() {
+        assert!(!in_minimal_code_holdout("flow-1", 0));
+    }
+
+    #[test]
+    fn an_empty_flow_id_is_never_withheld() {
+        assert!(!in_minimal_code_holdout("", 100));
+    }
+
+    #[test]
+    fn arm_assignment_is_stable_for_a_given_flow() {
+        for flow in ["flow-a", "flow-b", "0af7651916cd43dd8448eb211c80319c"] {
+            let first = in_minimal_code_holdout(flow, 50);
+            for _ in 0..100 {
+                assert_eq!(
+                    in_minimal_code_holdout(flow, 50),
+                    first,
+                    "{flow} changed arms"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_withheld_share_is_near_the_configured_rate() {
+        let withheld = (0..10_000)
+            .filter(|i| in_minimal_code_holdout(&format!("flow-{i}"), 5))
+            .count();
+        assert!(
+            (300..=700).contains(&withheld),
+            "expected ~500 of 10000 withheld at 5%, got {withheld}"
+        );
     }
 }

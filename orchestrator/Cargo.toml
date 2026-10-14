@@ -27,6 +27,11 @@ nasiko-config.workspace = true
 nasiko-flow.workspace = true
 nasiko-types.workspace = true
 nasiko-hitl.workspace = true
+# Derived `token_savings` rows, so /finops/savings and the Optimization page agree
+nasiko-savings.workspace = true
+# ToSchema on the wire-facing preference enums, so the server's OpenAPI registration (CX-1) for
+# `/api/me/context-strategy` and `/api/me/pacms-budget` doesn't need a server-side mirror type.
+utoipa = { workspace = true }
 
 [dev-dependencies]
 mockito.workspace = true

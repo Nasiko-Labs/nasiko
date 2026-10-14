@@ -14,8 +14,9 @@ pub mod types;
 pub mod vector_store;
 
 pub use context_selection::{
-    CompressionScope, ContextSelectionStrategy, ContextTiers, PacmsBudgetLevel,
-    agent_compression_enabled, compression_opt_in, fetch_for_user,
+    ContextPreview, ContextSelectionStrategy, ContextTiers, PacmsBudgetLevel, ReportAttribution,
+    TierCounts, agent_compression_enabled, fetch_for_user, preview, record_context_report,
+    selection_enabled, selection_enabled_checked,
 };
 pub use engine::{OssRoutingEngine, RouterConfig, RoutingEngine};
 pub use error::RouterError;
@@ -24,6 +25,7 @@ pub use policy::{RoutingPolicy, SelectionSchemaExtra};
 pub use reranker::Reranker;
 pub use selector::AgentSelector;
 pub use selector::ConversationMessage;
+pub use session_history::ContextReport;
 pub use session_history::SessionHistory;
 pub use types::{AgentCard, FilePart, RouteRequest, RouteResult, RouterLogEntry};
 pub use vector_store::{TextEmbeddingCache, VectorStore, embed_and_store_agent};

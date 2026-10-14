@@ -1080,6 +1080,11 @@ mod tests {
         ) -> Result<Option<crate::resolver::CustomProvider>, sqlx::Error> {
             Ok(None)
         }
+        async fn fetch_org_embedding_default(
+            &self,
+        ) -> Result<Option<crate::resolver::OrgEmbeddingDefault>, sqlx::Error> {
+            Ok(None)
+        }
     }
 
     /// No-op tier registry: attribution now always resolves in these tests
@@ -1151,6 +1156,10 @@ mod tests {
             tier1_model: None,
             tier2_model: None,
             tier3_model: None,
+            embedding_provider: None,
+            embedding_model: None,
+            embedding_api_key_secret_name: None,
+            embedding_model_override: false,
         }
     }
 
@@ -1597,6 +1606,10 @@ mod tests {
                 tier1_model: None,
                 tier2_model: None,
                 tier3_model: None,
+                embedding_provider: None,
+                embedding_model: None,
+                embedding_api_key_secret_name: None,
+                embedding_model_override: false,
             }),
             is_coding_agent: true,
         };
@@ -1643,6 +1656,10 @@ mod tests {
                 tier1_model: None,
                 tier2_model: None,
                 tier3_model: None,
+                embedding_provider: None,
+                embedding_model: None,
+                embedding_api_key_secret_name: None,
+                embedding_model_override: false,
             }),
             is_coding_agent: false,
             compress_enabled: false,
@@ -1690,6 +1707,10 @@ mod tests {
                 tier1_model: None,
                 tier2_model: None,
                 tier3_model: None,
+                embedding_provider: None,
+                embedding_model: None,
+                embedding_api_key_secret_name: None,
+                embedding_model_override: false,
             }),
             is_coding_agent: false,
             compress_enabled: false,

@@ -15,7 +15,10 @@ use axum::response::{IntoResponse, Response};
 use futures::StreamExt;
 use serde_json::{Value, json};
 
-use super::chat::{RequestSignals, RoutedRequest, authenticate_request, resolve_routed_request};
+use super::chat::{
+    AuthedCaller, RequestSignals, RoutedRequest, authenticate_caller, lookup_agent_owner,
+    resolve_routed_request,
+};
 use crate::LlmRouterCtx;
 use crate::error::GatewayError;
 use crate::inbound::responses::{
@@ -89,7 +92,13 @@ async fn responses_core(
     headers: &HeaderMap,
     mut body: Value,
 ) -> Result<Response, GatewayError> {
-    let (agent_id, owner_id) = authenticate_request(headers, &ctx.cfg)?;
+    let (agent_id, owner_id, session) = match authenticate_caller(ctx, headers).await? {
+        AuthedCaller::Agent { agent_id, owner_id } => (agent_id, owner_id, None),
+        AuthedCaller::Session(claims) => {
+            let owner_id = lookup_agent_owner(&ctx.db, &claims.agent_id).await?;
+            (claims.agent_id.clone(), owner_id, Some(claims))
+        }
+    };
     let (requested_model, stream, query) = {
         let object = body.as_object().ok_or_else(|| {
             GatewayError::BadRequest("Responses request must be a JSON object".into())
@@ -122,6 +131,7 @@ async fn responses_core(
             model: requested_model.as_deref(),
         },
         signals,
+        session,
     )
     .await?;
     let attempts = fallback::build_attempts(&routed.resolved, &ctx.cfg);
