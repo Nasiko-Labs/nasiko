@@ -6,6 +6,9 @@ __pycache__/
 .env.*
 *.env.toml
 !.env.example
+# The UI toolchain's telemetry opt-out (ADR-0002): no secrets, and the install
+# guard (ui/tooling/security/assert-telemetry-env.mjs) tells everyone to source it.
+!ui/.env.tooling
 .venv/
 node_modules/
 .turbo/
