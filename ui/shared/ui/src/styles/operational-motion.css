@@ -1,0 +1,167 @@
+/* Shared product feedback. Only opacity/transform animate; geometry and state update immediately.
+   The tokens.css OS/surface clamps win over these rules, including portalled overlays. */
+:root {
+  --motion-toggle: 200ms;
+  --motion-copy: 300ms;
+  --motion-loading-cycle: 1400ms;
+  --motion-status-cycle: 1500ms;
+  --motion-panel-close: 160ms;
+}
+
+[data-slot="button"] {
+  transition-property: color, background-color, border-color, opacity, scale;
+  transition-duration: var(--motion-feedback);
+  transition-timing-function: ease-out;
+}
+@media (hover: hover) and (pointer: fine) {
+  [data-slot="button"][data-variant="default"]:not(:disabled):not([data-disabled]):not(
+      [aria-disabled="true"]
+    ):hover {
+    scale: 1.01;
+  }
+}
+[data-slot="button"]:not(:disabled):not([data-disabled]):not([aria-disabled="true"]):not(
+    [data-variant="link"]
+  ):active {
+  scale: 0.98;
+}
+[data-slot="switch"] {
+  transition-property: background-color, border-color, opacity;
+  transition-duration: var(--motion-toggle);
+  transition-timing-function: var(--motion-ease-in-out);
+}
+[data-slot="switch-thumb"] {
+  transition-duration: var(--motion-toggle);
+  transition-timing-function: var(--motion-ease-in-out);
+}
+[data-slot="tabs-trigger"] {
+  transition-property: color, background-color, border-color, opacity, box-shadow;
+  transition-duration: var(--motion-feedback);
+  transition-timing-function: ease-out;
+}
+[data-slot="tabs-content"]:not([hidden]):not([data-hidden]):not([data-ending-style]) {
+  animation: nasiko-tab-enter var(--motion-micro) var(--motion-ease-out) both;
+}
+[data-slot="tabs-content"][data-ending-style] {
+  display: none;
+  animation: none;
+}
+
+:is(
+  [data-slot="dialog-content"],
+  [data-slot="dialog-overlay"],
+  [data-slot="sheet-content"],
+  [data-slot="sheet-overlay"],
+  [data-slot="alert-dialog-content"],
+  [data-slot="alert-dialog-overlay"]
+) {
+  animation-duration: var(--motion-panel);
+  animation-timing-function: var(--motion-ease-in-out);
+}
+:is(
+  [data-slot="dialog-content"],
+  [data-slot="dialog-overlay"],
+  [data-slot="sheet-content"],
+  [data-slot="sheet-overlay"],
+  [data-slot="alert-dialog-content"],
+  [data-slot="alert-dialog-overlay"]
+)[data-closed] {
+  animation-duration: var(--motion-panel-close);
+}
+
+[data-copy-feedback] {
+  display: inline-flex;
+  align-items: center;
+}
+[data-copy-feedback="copied"] {
+  animation: nasiko-copy-confirm var(--motion-copy) ease-out;
+}
+
+/* Three cycles, then a static placeholder: never permanent decoration on a monitoring screen. */
+[data-slot="skeleton"] {
+  position: relative;
+  overflow: hidden;
+  animation: none;
+}
+[data-slot="skeleton"]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    110deg,
+    transparent 25%,
+    color-mix(in oklab, var(--foreground) 6%, transparent) 50%,
+    transparent 75%
+  );
+  translate: -100% 0;
+  animation: nasiko-loading-sweep var(--motion-loading-cycle) linear 3;
+}
+[data-state="current"] [data-slot="progress-indicator"],
+[data-slot="activity-indicator"][data-active="true"] {
+  animation: nasiko-active-status var(--motion-status-cycle) ease-in-out 3;
+}
+
+@keyframes nasiko-tab-enter {
+  from {
+    opacity: 0.85;
+    translate: 0 var(--motion-distance-sm);
+  }
+  to {
+    opacity: 1;
+    translate: 0 0;
+  }
+}
+@keyframes nasiko-copy-confirm {
+  0% {
+    opacity: 0.6;
+    scale: 0.85;
+  }
+  50% {
+    opacity: 1;
+    scale: 1.08;
+  }
+  100% {
+    opacity: 1;
+    scale: 1;
+  }
+}
+@keyframes nasiko-loading-sweep {
+  to {
+    translate: 100% 0;
+  }
+}
+@keyframes nasiko-active-status {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+
+/* Suppress spatial feedback as well as its duration. A reduced/off press never shrinks. */
+@media (prefers-reduced-motion: reduce) {
+  [data-slot="button"]:is(:hover, :active) {
+    scale: none !important;
+  }
+  [data-slot="tabs-content"],
+  [data-copy-feedback],
+  [data-slot="skeleton"]::after,
+  [data-state="current"] [data-slot="progress-indicator"],
+  [data-slot="activity-indicator"] {
+    animation: none;
+  }
+}
+:is([data-motion="reduced"], [data-motion="none"]) [data-slot="button"]:is(:hover, :active) {
+  scale: none !important;
+}
+:is([data-motion="reduced"], [data-motion="none"])
+  :is([data-slot="tabs-content"], [data-copy-feedback], [data-slot="activity-indicator"]),
+:is([data-motion="reduced"], [data-motion="none"]) [data-slot="skeleton"]::after,
+:is([data-motion="reduced"], [data-motion="none"])
+  [data-state="current"]
+  [data-slot="progress-indicator"] {
+  animation: none;
+}

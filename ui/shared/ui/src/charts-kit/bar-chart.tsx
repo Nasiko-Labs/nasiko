@@ -19,7 +19,7 @@ import {
   useState,
 } from "react";
 import { cn } from "../lib/cn";
-import { DEFAULT_ANIMATION_EASING } from "./animation";
+import { DEFAULT_ANIMATION_DURATION_MS, DEFAULT_ANIMATION_EASING } from "./animation";
 import { useKitReducedMotion } from "./use-kit-reduced-motion";
 import type { BarProps } from "./bar";
 import { topSquareCenterY } from "./bar-squares-layout";
@@ -64,7 +64,7 @@ export interface BarChartProps {
   xDataKey?: string | undefined;
   /** Chart margins */
   margin?: Partial<Margin> | undefined;
-  /** Animation duration in milliseconds. Default: 1100 */
+  /** Animation duration in milliseconds. Default: 500 */
   animationDuration?: number | undefined;
   /** CSS easing for bar grow transitions. */
   animationEasing?: string | undefined;
@@ -650,7 +650,7 @@ export function BarChart({
   data,
   xDataKey = "name",
   margin: marginProp,
-  animationDuration = 1100,
+  animationDuration = DEFAULT_ANIMATION_DURATION_MS,
   animationEasing = DEFAULT_ANIMATION_EASING,
   enterTransition,
   revealSignature,

@@ -1,12 +1,12 @@
 import type { Easing, Transition } from "motion/react";
 
 /** Default clip-reveal easing for cartesian charts. */
-export const DEFAULT_ANIMATION_EASING = "cubic-bezier(0.85, 0, 0.15, 1)";
+export const DEFAULT_ANIMATION_EASING = "cubic-bezier(0.25, 1, 0.5, 1)";
 
-export const DEFAULT_ANIMATION_DURATION_MS = 1100;
+export const DEFAULT_ANIMATION_DURATION_MS = 500;
 
 /** The default enter ease, typed so `ease` is never `undefined` (exactOptionalPropertyTypes). */
-export const DEFAULT_CHART_ENTER_EASE: Easing = [0.85, 0, 0.15, 1];
+export const DEFAULT_CHART_ENTER_EASE: Easing = [0.25, 1, 0.5, 1];
 
 /** Default enter transition — matches the original line chart reveal. */
 export const DEFAULT_CHART_ENTER_TRANSITION: Transition = {

@@ -14,6 +14,7 @@ import {
   useState,
 } from "react";
 import { cn } from "../lib/cn";
+import { DEFAULT_ANIMATION_DURATION_MS } from "./animation";
 import type { LineConfig, Margin } from "./chart-context";
 import { ChartLoadingLabel } from "./chart-loading-label";
 import {
@@ -33,9 +34,9 @@ export interface LineChartProps {
   xDataKey?: string | undefined;
   /** Chart margins */
   margin?: Partial<Margin> | undefined;
-  /** Animation duration in milliseconds. Default: 1100 */
+  /** Animation duration in milliseconds. Default: 500 */
   animationDuration?: number | undefined;
-  /** CSS easing for clip-reveal. Default: cubic-bezier(0.85, 0, 0.15, 1) */
+  /** CSS easing for clip-reveal. Default: cubic-bezier(0.25, 1, 0.5, 1) */
   animationEasing?: string | undefined;
   enterTransition?: Transition | undefined;
   revealSignature?: string | undefined;
@@ -209,7 +210,7 @@ export function LineChart({
   data,
   xDataKey = "date",
   margin: marginProp,
-  animationDuration = 1100,
+  animationDuration = DEFAULT_ANIMATION_DURATION_MS,
   animationEasing,
   enterTransition,
   revealSignature,

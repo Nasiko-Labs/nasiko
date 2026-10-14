@@ -123,6 +123,8 @@ export function ActivityTimeline({
               data-status={e.status ?? "none"}
             >
               <span
+                data-slot="activity-indicator"
+                data-active={e.status === "running"}
                 className={cn(
                   "absolute -left-[25px] top-0.5 flex size-4 items-center justify-center rounded-full bg-background",
                   tone,

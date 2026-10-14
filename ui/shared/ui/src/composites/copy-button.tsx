@@ -39,11 +39,9 @@ export function CopyButton({
         onClick={() => void onCopy()}
         aria-label={label}
       >
-        {state === "copied" ? (
-          <Check className="size-3.5" aria-hidden />
-        ) : (
-          <Copy className="size-3.5" aria-hidden />
-        )}
+        <span key={state} data-copy-feedback={state} aria-hidden>
+          {state === "copied" ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+        </span>
         <span className="sr-only">{label}</span>
       </Button>
       {state === "copied" ? (
@@ -83,7 +81,9 @@ export function CopyMenuItem({ text, label }: { text: string; label?: string | u
             className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground"
             role="status"
           >
-            <Check className="size-3.5" aria-hidden />
+            <span data-copy-feedback="copied" aria-hidden>
+              <Check className="size-3.5" />
+            </span>
             {COPIED}
           </span>
         ) : (

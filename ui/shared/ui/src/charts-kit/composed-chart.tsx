@@ -11,6 +11,7 @@ import {
   useRef,
 } from "react";
 import { cn } from "../lib/cn";
+import { DEFAULT_ANIMATION_DURATION_MS } from "./animation";
 import { Area, type AreaProps } from "./area";
 import type { LineConfig, Margin } from "./chart-context";
 import type { ChartPhase } from "./chart-phase";
@@ -277,7 +278,7 @@ export function ComposedChart({
   data,
   xDataKey = "date",
   margin: marginProp,
-  animationDuration = 1100,
+  animationDuration = DEFAULT_ANIMATION_DURATION_MS,
   animationEasing,
   enterTransition,
   revealSignature,

@@ -3,6 +3,7 @@
 @import "tw-animate-css";
 @import "./shadcn-tailwind.css";
 @import "./tokens.css";
+@import "./operational-motion.css";
 
 @custom-variant dark (&:is(.dark *));
 
