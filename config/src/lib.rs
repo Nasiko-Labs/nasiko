@@ -203,6 +203,11 @@ pub struct Config {
     pub savings_factor_min_samples: i64,
     /// Trailing window the holdout comparison reads.
     pub savings_factor_window_days: i64,
+    /// Percent of otherwise-eligible minimal-code flows deliberately withheld from the ladder, to
+    /// give `optimization_effect_factors`'s `minimal_code` row a real control group — same
+    /// mechanism as the brevity directive's own holdout, applied at the a2a-dispatch seam instead
+    /// of the LLM router (`oss/coding-policy::in_minimal_code_holdout`).
+    pub minimal_code_holdout_pct: u8,
     pub react_compress_enabled: bool,
     /// Skip tool results below this size.
     pub react_compress_min_bytes: usize,
@@ -594,6 +599,7 @@ impl Config {
             savings_factor_refresh_secs: env_parse("SAVINGS_FACTOR_REFRESH_SECS", 86_400),
             savings_factor_min_samples: env_parse("SAVINGS_FACTOR_MIN_SAMPLES", 1_600),
             savings_factor_window_days: env_parse("SAVINGS_FACTOR_WINDOW_DAYS", 30),
+            minimal_code_holdout_pct: env_parse("MINIMAL_CODE_HOLDOUT_PCT", 5u8),
             react_compress_enabled: env_parse("TOKEN_COMPRESS_TOOL_RESULTS", true),
             react_compress_min_bytes: env_parse("TOKEN_COMPRESS_TOOL_RESULTS_MIN_BYTES", 2048),
             history_compress_enabled: env_parse("TOKEN_COMPRESS_HISTORY", true),
