@@ -4,6 +4,23 @@ use crate::config;
 
 /// Login to the active cluster with username/password.
 pub fn login() -> Result<()> {
+    let (name, username) = authenticate()?;
+    crate::commands::integration::auto_install_if_authenticated();
+    println!("Logged in to {} as {}", name, username);
+    crate::commands::integration::auto_install_if_authenticated();
+    Ok(())
+}
+
+/// Login without the automatic coding-agent setup — for `nasiko connect`, which asks what
+/// to set up itself.
+pub fn login_without_setup() -> Result<()> {
+    let (name, username) = authenticate()?;
+    println!("Logged in to {} as {}", name, username);
+    Ok(())
+}
+
+/// Prompts for credentials and saves the session token. Returns the cluster and username.
+fn authenticate() -> Result<(String, String)> {
     let (name, entry) = config::active_cluster()?;
 
     let username: String = dialoguer::Input::new()
@@ -49,10 +66,7 @@ pub fn login() -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("no token in login response"))?;
 
     config::save_login(&username, token)?;
-    crate::commands::integration::auto_install_if_authenticated();
-    println!("Logged in to {} as {}", name, username);
-    crate::commands::integration::auto_install_if_authenticated();
-    Ok(())
+    Ok((name, username))
 }
 
 /// Show current auth status.

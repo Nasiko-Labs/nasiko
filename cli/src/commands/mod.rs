@@ -15,6 +15,7 @@ pub mod github;
 pub mod import;
 pub mod integration;
 pub mod llm_config;
+pub mod local_agents;
 pub mod maf;
 pub mod mcp;
 pub mod model_registry;

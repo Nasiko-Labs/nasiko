@@ -10,7 +10,9 @@ use serde::{Deserialize, Serialize};
 use toml_edit::{Array, DocumentMut, Item, Table, value};
 
 use crate::api::Client;
-use crate::commands::coding_agent_router::{self, AgentSpec, ConnectionBinding, McpMint};
+use crate::commands::coding_agent_router::{
+    self, AgentSpec, ConnectionBinding, McpMint, RoutingOptions, RoutingSummary,
+};
 
 const CONFIG_VERSION: u32 = 1;
 const PROVIDER_ID: &str = "nasiko";
@@ -49,11 +51,14 @@ struct ConnectionState {
     installed_mcp_server: Option<String>,
 }
 
-pub fn connect(agent: Option<&str>, llm_config: Option<&str>) -> Result<()> {
+pub fn connect(options: &RoutingOptions<'_>) -> Result<()> {
     let codex =
         which::which("codex").context("Codex is not installed or 'codex' is not on PATH")?;
     if state_path().exists() {
-        bail!("Codex routing is already connected; run `nasiko disconnect codex` first");
+        bail!(
+            "Codex routing is already connected; run `{} disconnect codex` first",
+            crate::commands::local_agents::cli_name()
+        );
     }
     let executable = std::env::current_exe().context("cannot locate the nasiko executable")?;
     let prepared = coding_agent_router::prepare(
@@ -62,8 +67,8 @@ pub fn connect(agent: Option<&str>, llm_config: Option<&str>) -> Result<()> {
             display_name: "Codex CLI",
             default_name: "codex",
         },
-        agent,
-        llm_config,
+        options.agent,
+        options.llm_config,
         executable.clone(),
     )?;
     // Both checks below run before anything local is written, so an unusable config costs
@@ -85,14 +90,16 @@ pub fn connect(agent: Option<&str>, llm_config: Option<&str>) -> Result<()> {
         &prepared.entry,
         Some(coding_agent_router::CP_CALL_TIMEOUT),
     );
-    let mcp_mint = coding_agent_router::mint_mcp_credential(
-        &mcp_client,
-        &prepared.binding.agent_id,
-        &prepared.entry.url,
-    );
+    let mcp_mint = options.mcp.then(|| {
+        coding_agent_router::mint_mcp_credential(
+            &mcp_client,
+            &prepared.binding.agent_id,
+            &prepared.entry.url,
+        )
+    });
     let mcp_credential = match &mcp_mint {
-        McpMint::Minted(credential) => Some(credential),
-        McpMint::Unavailable(_) => None,
+        Some(McpMint::Minted(credential)) => Some(credential),
+        Some(McpMint::Unavailable(_)) | None => None,
     };
     let result = install_prepared(&prepared, &codex, &routed.model, mcp_credential);
     let (config_path, embed_warning) = match result {
@@ -121,22 +128,15 @@ pub fn connect(agent: Option<&str>, llm_config: Option<&str>) -> Result<()> {
     );
     println!("Config:                    {}", config_path.display());
     println!("Provider:                  nasiko ({})", routed.model);
-    match (&mcp_mint, &embed_warning) {
-        (McpMint::Minted(_), None) => {
-            println!("{}", coding_agent_router::mcp_connected_line());
-            println!("{}", coding_agent_router::mcp_multi_machine_note());
-        }
-        (McpMint::Minted(_), Some(reason)) => {
-            eprintln!("warning: {reason}; LLM routing is connected, MCP tools are not");
-        }
-        (McpMint::Unavailable(message), _) => {
-            eprintln!(
-                "warning: MCP gateway unavailable ({message}); LLM routing is connected, MCP tools are not"
-            );
-        }
-    }
-    println!("Session reporting is separate: nasiko agents install codex");
+    coding_agent_router::print_mcp_outcome(mcp_mint.as_ref(), embed_warning.as_deref());
     Ok(())
+}
+
+/// The current connection, if any, for `nasiko status`'s overview.
+pub fn summary() -> Result<Option<RoutingSummary>> {
+    Ok(load_state()?.map(|state| {
+        RoutingSummary::from_binding(&state.binding, state.installed_mcp_server.is_some())
+    }))
 }
 
 /// Whether `mcp_servers` (if present) can hold a new sub-table: absent (a `[mcp_servers]` header
@@ -272,7 +272,8 @@ fn verify_routing(prepared: &coding_agent_router::PreparedConnection, model: &st
     {
         coding_agent_router::RoutingPreflight::Reachable => Ok(()),
         coding_agent_router::RoutingPreflight::Rejected(reason) => bail!(
-            "Nasiko cannot route Codex with this LLM config: {reason}. Choose another with `nasiko connect codex --config <name>`"
+            "Nasiko cannot route Codex with this LLM config: {reason}. Choose another with `{cli} connect codex --config <name>`",
+            cli = crate::commands::local_agents::cli_name()
         ),
         coding_agent_router::RoutingPreflight::Inconclusive(reason) => {
             eprintln!("warning: could not verify LLM routing before connecting ({reason})");
@@ -334,7 +335,7 @@ pub fn disconnect(force: bool) -> Result<()> {
     }
     fs::remove_file(state_path()).context("failed to remove Codex routing state")?;
     println!("Disconnected Codex routing from Nasiko.");
-    println!("Session reporting, hooks, auth, history, and the registered agent were kept.");
+    println!("Codex auth, history, and the registered agent were kept.");
     println!("Restart Codex so the restored provider settings take effect.");
     Ok(())
 }
@@ -344,7 +345,10 @@ pub fn status() -> Result<()> {
     let Some(state) = load_state()? else {
         println!("Codex routing:           not connected");
         println!("Codex session reporting: {reporting}");
-        println!("Connect routing with: nasiko connect codex");
+        println!(
+            "Connect routing with: {} connect codex",
+            crate::commands::local_agents::cli_name()
+        );
         return Ok(());
     };
     let document = read_config(&state.config_path)?;
@@ -386,7 +390,10 @@ pub fn status() -> Result<()> {
 /// Command-backed Codex provider auth. Stdout must contain only the bearer token.
 pub fn credential() -> Result<()> {
     let state = load_state()?.ok_or_else(|| {
-        anyhow::anyhow!("Codex routing is not connected; run: nasiko connect codex")
+        anyhow::anyhow!(
+            "Codex routing is not connected; run: {} connect codex",
+            crate::commands::local_agents::cli_name()
+        )
     })?;
     println!("{}", coding_agent_router::credential(&state.binding)?.token);
     Ok(())

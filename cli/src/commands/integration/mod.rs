@@ -1,82 +1,90 @@
 //! Detect local coding agents and report their sessions to Nasiko.
 //!
-//! `nasiko agents discover` answers "what coding agents are on this machine".
-//! `nasiko agents install <id>` goes further: it registers that agent in
-//! the control plane and installs a hook that durably queues completed turns
-//! for delivery to the cluster active when they were captured.
-//! `nasiko agents setup` installs every detected agent and imports the sessions
-//! they kept from before (`import`), newest first, reporting its progress to
-//! the server (`onboarding`).
+//! [`local_agents`](super::local_agents) answers "what coding agents are on this machine" and
+//! drives setup. [`install`] registers an agent in the control plane (or reuses the one LLM
+//! routing already uses) and installs a hook that durably queues completed turns for delivery
+//! to the cluster active when they were captured.
 
 mod agents;
-mod background;
-mod backlog;
 mod catalog;
 mod control_plane;
-mod courier;
-mod import;
 mod launcher;
-mod ledger;
 mod model;
-mod onboarding;
-mod pace;
 mod queue;
 mod report;
-mod sanitize;
-mod setup;
 mod state;
 mod sync;
-mod windows;
 
 use anyhow::{Context, Result, bail};
 use std::path::Path;
 
 use agents::Agent;
 use catalog::Support;
-use onboarding::AgentReport;
 use state::{AgentState, InstallationBinding, IntegrationState};
-
-pub use setup::SetupOptions;
 
 /// Options accepted by `nasiko agents install`.
 pub struct InstallOptions<'a> {
     pub agent_id: &'a str,
     /// Keep prompt and response text out of exported spans.
     pub no_content: bool,
+    /// Report under this already-registered agent (the one LLM routing uses) instead of
+    /// registering the account's default integration agent.
+    pub agent_name: Option<&'a str>,
+}
+
+/// One catalogued coding agent as `nasiko connect`/`nasiko status` present it.
+#[derive(Debug, Clone)]
+pub struct LocalAgent {
+    pub id: &'static str,
+    pub display_name: &'static str,
+    pub detected: bool,
+    pub reporting_active: bool,
+    pub reporting_installed: bool,
+    pub reporting_status: String,
+    pub capture_content: bool,
+    pub hook_location: String,
+}
+
+/// Every catalogued coding agent with its detection and reporting state.
+pub fn local_agents() -> Result<Vec<LocalAgent>> {
+    let settings = IntegrationState::load()?;
+    Ok(Agent::ALL
+        .iter()
+        .copied()
+        .map(|agent| {
+            let spec = agent.spec();
+            let reporting = reporting_details(agent, &settings);
+            let state = settings.get(spec.id);
+            LocalAgent {
+                id: spec.id,
+                display_name: spec.display_name,
+                detected: detect(agent).is_present(),
+                reporting_active: reporting.connected,
+                reporting_installed: state.is_some(),
+                reporting_status: reporting.status,
+                capture_content: state.is_none_or(|state| state.capture_content),
+                hook_location: tildify(&agent.config_path()),
+            }
+        })
+        .collect())
+}
+
+/// Whether `id` names a catalogued coding agent.
+pub fn is_known_agent(id: &str) -> bool {
+    catalog::find(id).is_some()
+}
+
+/// Comma-separated ids of every catalogued coding agent.
+pub fn known_agent_ids() -> String {
+    catalog::known_ids()
+}
+
+/// Queued coding-agent events not yet delivered to any cluster.
+pub fn pending_event_count() -> Result<usize> {
+    Ok(queue::records()?.len())
 }
 
 // ─── Commands ────────────────────────────────────────────────────────────────
-
-/// Print every catalogued agent, whether it is on this machine, and whether
-/// session reporting is installed.
-pub fn status() -> Result<()> {
-    let settings = IntegrationState::load()?;
-
-    println!(
-        "{:<10} {:<10} {:<11} {:<20} CONFIG",
-        "AGENT", "DETECTED", "CONNECTED", "VERSION"
-    );
-    println!("{}", "-".repeat(88));
-    for agent in Agent::ALL.iter().copied() {
-        let spec = agent.spec();
-        let reporting = reporting_details(agent, &settings);
-        println!(
-            "{:<10} {:<10} {:<11} {:<20} {}",
-            spec.id,
-            if detect(agent).is_present() {
-                "yes"
-            } else {
-                "-"
-            },
-            if reporting.connected { "yes" } else { "no" },
-            reporting.version,
-            tildify(&agent.config_path()),
-        );
-    }
-
-    println!("\nInstall session reporting:  nasiko agents install <agent>");
-    Ok(())
-}
 
 /// Register a coding agent with the control plane and install its hook.
 pub fn install(options: InstallOptions<'_>) -> Result<()> {
@@ -85,16 +93,33 @@ pub fn install(options: InstallOptions<'_>) -> Result<()> {
     require_present(agent)?;
 
     let spec = agent.spec();
-    let registration = control_plane::register_agent(agent)?;
-    println!(
-        "{} agent '{}' in the control plane",
-        if registration.created {
-            "Registered"
-        } else {
-            "Found"
-        },
-        registration.agent_name
-    );
+    let registration = match options.agent_name {
+        Some(agent_name) => {
+            let registration = control_plane::Registration {
+                created: false,
+                agent_name: agent_name.to_string(),
+                binding: control_plane::installation_binding()?,
+            };
+            println!(
+                "Reporting under agent '{}' (the same agent LLM routing uses)",
+                registration.agent_name
+            );
+            registration
+        }
+        None => {
+            let registration = control_plane::register_agent(agent)?;
+            println!(
+                "{} agent '{}' in the control plane",
+                if registration.created {
+                    "Registered"
+                } else {
+                    "Found"
+                },
+                registration.agent_name
+            );
+            registration
+        }
+    };
 
     let artifacts = agent.install()?;
     let (script, registration) = persist_installed_artifacts(
@@ -149,46 +174,8 @@ pub fn report(agent_id: &str) -> Result<()> {
     report::run(resolve(agent_id)?)
 }
 
-/// `nasiko agents sync` — see [`setup::sync`].
-pub fn sync(retry_rejected: bool) -> Result<()> {
-    setup::sync(retry_rejected)
-}
-
-/// `nasiko agents setup` — see [`setup`].
-pub fn setup(options: SetupOptions) -> Result<()> {
-    setup::setup(options)
-}
-
-/// `nasiko agents import` — see [`setup`].
-pub fn import() -> Result<()> {
-    setup::import()
-}
-
-/// `nasiko agents status` — see [`setup::status`].
-pub fn import_status() -> Result<()> {
-    setup::status()
-}
-
-/// `nasiko agents import-worker`, which `nasiko agents setup` starts in the background — see
-/// [`setup::import_worker`].
-pub fn import_worker() -> Result<()> {
-    setup::import_worker()
-}
-
-/// Every catalogued agent as a sync-report row: on this computer, and connected, as they stand now.
-fn agent_rows() -> Vec<AgentReport> {
-    let settings = IntegrationState::load().unwrap_or_default();
-    Agent::ALL
-        .iter()
-        .copied()
-        .map(|agent| {
-            onboarding::agent_row(
-                agent,
-                detect(agent).is_present(),
-                agent.is_instrumented() && settings.get(agent.spec().id).is_some(),
-            )
-        })
-        .collect()
+pub fn sync() -> Result<()> {
+    sync::run()
 }
 
 /// Discover and install every supported local coding agent after a successful
@@ -224,6 +211,7 @@ pub fn auto_install_detected() -> Result<()> {
         match install(InstallOptions {
             agent_id: spec.id,
             no_content,
+            agent_name: None,
         }) {
             Ok(()) => installed += 1,
             Err(error) => eprintln!(
@@ -253,8 +241,11 @@ pub fn auto_install_if_authenticated() {
         );
         return;
     }
-    // Nothing touches the user's coding agents until they run `nasiko agents setup` themselves.
-    setup::print_setup_hint();
+    if let Err(error) = auto_install_detected() {
+        eprintln!(
+            "warning: automatic coding-agent discovery failed: {error:#}\n  Retry with: nasiko agents discover"
+        );
+    }
 }
 
 // ─── Detection ───────────────────────────────────────────────────────────────
@@ -284,7 +275,6 @@ fn detect(agent: Agent) -> Detection {
 
 struct ReportingDetails {
     connected: bool,
-    version: String,
     status: String,
 }
 
@@ -293,7 +283,6 @@ fn reporting_details(agent: Agent, settings: &IntegrationState) -> ReportingDeta
     if spec.support == Support::DetectOnly {
         return ReportingDetails {
             connected: false,
-            version: "-".into(),
             status: Support::DetectOnly.label().to_string(),
         };
     }
@@ -303,7 +292,6 @@ fn reporting_details(agent: Agent, settings: &IntegrationState) -> ReportingDeta
     let Some(state) = settings.get(spec.id) else {
         return ReportingDetails {
             connected: false,
-            version: "-".into(),
             status: "not installed".into(),
         };
     };
@@ -311,24 +299,20 @@ fn reporting_details(agent: Agent, settings: &IntegrationState) -> ReportingDeta
         Some(version) if version == expected => match state.hook_version {
             version if version == expected => ReportingDetails {
                 connected: true,
-                version: format!("v{version}"),
                 status: format!("active (v{version})"),
             },
             // Script and saved state are from different install versions.
             _ => ReportingDetails {
                 connected: false,
-                version: format!("v{version} (state v{})", state.hook_version),
                 status: "needs reinstall".into(),
             },
         },
         Some(version) => ReportingDetails {
             connected: false,
-            version: format!("v{version} -> v{expected}"),
             status: format!("stale (v{version}; current v{expected})"),
         },
         None => ReportingDetails {
             connected: false,
-            version: "-".into(),
             status: "not installed".into(),
         },
     }

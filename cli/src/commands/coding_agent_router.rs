@@ -31,6 +31,56 @@ pub struct ConnectionBinding {
     pub executable: Option<PathBuf>,
 }
 
+/// What a routing `connect` installs, chosen by `nasiko connect` (flags or prompts).
+#[derive(Debug, Clone, Copy)]
+pub struct RoutingOptions<'a> {
+    /// Existing routing agent name or UUID; `None` uses the account's default integration agent.
+    pub agent: Option<&'a str>,
+    /// LLM config name or UUID to attach; `None` keeps the agent's current (or default) config.
+    pub llm_config: Option<&'a str>,
+    /// Whether to mint and register an MCP gateway credential alongside LLM routing.
+    pub mcp: bool,
+}
+
+/// A connected routing integration, as `nasiko status` summarizes it.
+#[derive(Debug, Clone)]
+pub struct RoutingSummary {
+    pub cluster: String,
+    pub cluster_url: String,
+    pub agent_name: String,
+    pub mcp_installed: bool,
+}
+
+impl RoutingSummary {
+    pub fn from_binding(binding: &ConnectionBinding, mcp_installed: bool) -> Self {
+        Self {
+            cluster: binding.cluster.clone(),
+            cluster_url: binding.cluster_url.clone(),
+            agent_name: binding.agent_name.clone(),
+            mcp_installed,
+        }
+    }
+}
+
+/// The MCP outcome every routing `connect` reports once its install has completed.
+pub fn print_mcp_outcome(mint: Option<&McpMint>, registration_warning: Option<&str>) {
+    match (mint, registration_warning) {
+        (None, _) => println!("MCP gateway: not requested"),
+        (Some(McpMint::Minted(_)), None) => {
+            println!("{}", mcp_connected_line());
+            println!("{}", mcp_multi_machine_note());
+        }
+        (Some(McpMint::Minted(_)), Some(reason)) => {
+            eprintln!("warning: {reason}; LLM routing is connected, MCP tools are not");
+        }
+        (Some(McpMint::Unavailable(message)), _) => {
+            eprintln!(
+                "warning: MCP gateway unavailable ({message}); LLM routing is connected, MCP tools are not"
+            );
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AgentSpec<'a> {
     pub id: &'a str,
@@ -631,7 +681,8 @@ fn credential_from_config(binding: &ConnectionBinding, cfg: &Config) -> Result<R
         binding,
         cfg,
         &format!(
-            "run: nasiko connect {}",
+            "run: {} connect {}",
+            crate::commands::local_agents::cli_name(),
             binding.integration_id.as_deref().unwrap_or("claude")
         ),
     )?;
