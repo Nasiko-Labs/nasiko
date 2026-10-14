@@ -1,6 +1,6 @@
 //! Serving a built single-page app out of a `rust-embed` bundle.
 //!
-//! The UI is a Vite build (`ui/oss/dist`, `ui/ee/web/dist`). Beside `index.html`
+//! The UI is a Vite build (`react/oss/app/dist`, `react/ee/app/dist`). Beside `index.html`
 //! it writes two sidecar files that this module reads once at startup:
 //!
 //! - `routes.json` — `{"routes": ["/", "/agents/$agentId", …]}`, the paths the
@@ -38,7 +38,8 @@ const REVALIDATE: &str = "no-cache";
 /// `Content-Encoding` token and the file suffix. Nothing is compressed at run
 /// time — the bundle is embedded, so its compressed bytes can be too — and only
 /// this handler serves them, so API and SSE responses are never touched. A
-/// bundle without variants (the legacy `ui/` build) is served as before.
+/// bundle without variants (the frozen legacy bundle the public repo still
+/// builds, or build.rs's placeholder) is served as before.
 const ENCODINGS: &[(&str, &str)] = &[("br", ".br"), ("gzip", ".gz")];
 
 /// Marks a response this handler negotiated itself (the bundle carries
@@ -46,8 +47,8 @@ const ENCODINGS: &[(&str, &str)] = &[("br", ".br"), ("gzip", ".gz")];
 /// handler must leave it alone: compressing it again would add a second
 /// owner of `Content-Encoding`, recompress formats that are compressed
 /// already, and reuse a validator across representations. EE's static layer
-/// checks for it (ee/server/src/main.rs); the legacy `ui/` bundle, which has
-/// no variants, is not marked and keeps that layer's compression.
+/// checks for it (ee/server/src/main.rs); a bundle with no variants (build.rs's
+/// placeholder) is not marked and keeps that layer's compression.
 #[derive(Clone, Copy, Debug)]
 pub struct Precompressed;
 

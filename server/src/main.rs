@@ -7,9 +7,9 @@ use nasiko_server::spa::{self, Spa};
 use nasiko_server::telemetry::{TelemetryConfig, init_telemetry};
 use rust_embed::Embed;
 
-// `NASIKO_UI` is resolved by build.rs — see the comment there for why this
-// path cannot be a literal (this crate sits at a different depth in the public
-// repo, where the `oss/` prefix is stripped).
+// `NASIKO_SPA_BUNDLE` is resolved and checked by build.rs — see the comment
+// there for why this path cannot be a literal (this crate sits at a different
+// depth in the public repo, where the `oss/` prefix is stripped).
 //
 // One folder, not an overlay chain: a Vite build is self-contained. It carries
 // `index.html`, the hashed `assets/`, and the `routes.json` / `csp.json`
