@@ -20,6 +20,18 @@ export interface MotionInventoryEntry {
 
 export const MOTION_INVENTORY: readonly MotionInventoryEntry[] = [
   {
+    recipe: "reveal",
+    adapter: "workspace router <Reveal>",
+    trigger: "incoming signed-in route commits; not a filter or search-param update",
+    region: "page content only; sidebar, session and data providers remain mounted",
+    token: "--motion-micro (≤180 ms), 4 px travel",
+    interruption: "incoming only; no exit wait or duplicated outgoing screen; unmount cancels",
+    reducedFallback: "opacity only",
+    noneFallback: "render in place",
+    cost: "one opacity/transform wrapper; no row stagger or new motion runtime",
+    evidence: "router.navigation.test.tsx; policy.test.ts; local EE navigation smoke",
+  },
+  {
     recipe: "feedback",
     adapter: "CSS (`transition-colors duration-feedback`) on primitives",
     trigger: "hover / press / selection",

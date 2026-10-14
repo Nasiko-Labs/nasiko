@@ -18,6 +18,7 @@ import { useQuery } from "@tanstack/react-query";
 import { RouterNavigation } from "@nasiko/app-core/router-provider";
 import { useRouter } from "@nasiko/app-core/navigation";
 import { meQueryOptions, useProductScope } from "@nasiko/data-access/product";
+import { Reveal } from "@nasiko/ui/motion";
 const loadWorkspaceLayout = () =>
   import("./workspace/WorkspaceLayout").then((m) => ({ default: m.WorkspaceLayout }));
 const WorkspaceLayout = lazy(loadWorkspaceLayout);
@@ -86,7 +87,11 @@ export function createWorkspaceRouter(routes: readonly AppRoute[], history?: Rou
     component: preloadable(
       () => (
         <WorkspaceLayout>
-          <Outlet />
+          {/* Route chunks may suspend on a cold click. Keep the authenticated shell and its
+              providers visible while only the page content shows its loading state. */}
+          <Suspense fallback={<WorkspaceLoading />}>
+            <Outlet />
+          </Suspense>
         </WorkspaceLayout>
       ),
       loadWorkspaceLayout,
@@ -97,17 +102,24 @@ export function createWorkspaceRouter(routes: readonly AppRoute[], history?: Rou
     return createRoute({
       getParentRoute: () => (route.public || route.redirect ? root : workspace),
       path: route.path.replace(/\[([^\]]+)\]/g, (_match, name: string) => "$" + name),
-      component: preloadable(
-        () =>
-          route.redirect ? (
-            <Redirect to={route.redirect} />
-          ) : route.superuserOr ? (
-            <Superuser to={route.superuserOr} Page={Page} />
-          ) : (
-            createElement(Page)
-          ),
-        route.load,
-      ),
+      component: preloadable(() => {
+        const content = route.redirect ? (
+          <Redirect to={route.redirect} />
+        ) : route.superuserOr ? (
+          <Superuser to={route.superuserOr} Page={Page} />
+        ) : (
+          createElement(Page)
+        );
+        // One entrance on the incoming route, with no retained outgoing screen or exit delay.
+        // Query/filter changes keep this component mounted and do not replay the entrance.
+        return route.public || route.redirect ? (
+          content
+        ) : (
+          <Reveal recipe="reveal" className="h-full min-h-0 w-full" data-route-transition="">
+            {content}
+          </Reveal>
+        );
+      }, route.load),
     });
   };
   return createRouter({
