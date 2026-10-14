@@ -13,6 +13,12 @@ use uuid::Uuid;
 use crate::auth::Claims;
 use crate::state::AppState;
 
+/// TTL for a coding-agent session token. Comfortably longer than any single turn
+/// (a turn is bounded by the runtime's own deadline), since the token must stay
+/// valid for the whole turn's model and tool calls; a fresh one is minted each
+/// turn, and revocation covers early kill.
+const CODING_SESSION_TOKEN_TTL_SECS: u64 = 3600;
+
 /// Proxy agent requests: auth → flow guard → resolve endpoint → forward.
 ///
 /// Runs inside the `require_auth` middleware so Claims is always present.
@@ -328,41 +334,115 @@ pub async fn agent_proxy(
     if let Some(target) = coding_target {
         // A coding agent is driven only by chat turns. A non-message request
         // (agent-card fetch, GetTask, …) has no turn to run and no HTTP container
-        // to serve it, so answer those gracefully instead of a bare 501: a
-        // synthetic card for discovery, a well-formed JSON-RPC error otherwise.
+        // to serve it — not supported on this path yet.
         let Some(info) = persist_info.as_ref() else {
-            return Ok(coding_non_chat_response(
-                &target,
-                agent_id,
-                &forwarded_path,
-                &body_bytes,
-            ));
+            return Err(StatusCode::NOT_IMPLEMENTED);
         };
         let context_id = info.session_id.clone();
-        let task_id = nasiko_types::a2a::new_task_id();
 
-        // The shared helper mints the session-bound token (NAS-839, bound to the
-        // same `flow_id` the `flows` + `flow_participants` rows above were written
-        // under), wires the agent's env, runs the ACP turn, and streams it back —
-        // identically to the orchestrator-dispatch path (see `coding::entry`).
-        return crate::coding::entry::run_coding_turn_sse(
-            &state,
-            agent_id,
-            &target,
-            claims.user_uuid().ok(),
-            &context_id,
-            &info.user_text,
-            &flow_ctx.flow_id,
-            &task_id,
-        )
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, %agent_id, "coding-agent turn failed to start");
-            match e {
-                crate::coding::turn::CodingTurnError::Busy => StatusCode::CONFLICT,
-                _ => StatusCode::BAD_GATEWAY,
+        // Mint the session-bound token (NAS-839): it binds this turn's calls to
+        // {agent, user, session, flow} using the *same* flow id the `flows` +
+        // `flow_participants` rows above were written under, so the gateway and
+        // router authorize off the signed claims instead of a traceparent. It is
+        // delivered to the agent's model calls via env and to its MCP calls via
+        // `session/new` (see `coding::turn::session_params`). Minting is
+        // best-effort: without it the agent's calls simply fall back to the
+        // traceparent path.
+        let mut env = std::collections::HashMap::new();
+        let mut session_token = None;
+        let mut session_token_id = None;
+        if !state.config.agent_jwt_secret.is_empty()
+            && let Ok(user_id) = claims.user_uuid()
+        {
+            let algorithm =
+                nasiko_session_token::parse_algorithm(&state.config.agent_jwt_algorithm);
+            let input = nasiko_session_token::SessionTokenInput {
+                agent_id: agent_id.to_string(),
+                user_id: user_id.to_string(),
+                session_id: context_id.clone(),
+                flow_id: flow_ctx.flow_id.clone(),
+            };
+            match nasiko_session_token::mint_session_token(
+                &input,
+                &state.config.agent_jwt_secret,
+                CODING_SESSION_TOKEN_TTL_SECS,
+                algorithm,
+            ) {
+                Ok(minted) => {
+                    // The agent's model calls read their router credential from
+                    // env; set the common provider keys so whichever the image
+                    // uses carries the session token.
+                    env.insert("OPENAI_API_KEY".to_string(), minted.token.clone());
+                    env.insert("ANTHROPIC_API_KEY".to_string(), minted.token.clone());
+                    env.insert("NASIKO_SESSION_TOKEN".to_string(), minted.token.clone());
+                    // Remember the jti + exp so the turn can revoke this token
+                    // when it ends (see `coding::turn` / `coding::revocation`).
+                    session_token_id = Some(crate::coding::revocation::RevokedTokenId {
+                        jti: minted.jti.clone(),
+                        expires_at: chrono::DateTime::from_timestamp(minted.expires_at as i64, 0)
+                            .unwrap_or_else(chrono::Utc::now),
+                    });
+                    session_token = Some(minted.token);
+
+                    // Point the agent's model SDK at the LLM router so those calls
+                    // actually reach Nasiko (authenticated by the session token
+                    // above, billed to the turn's user). Without a base URL the
+                    // credential has nowhere to go. Mirrors the deploy-time agent
+                    // wiring, but with the per-turn session token instead of an
+                    // agent JWT, and hedges both SDK families like the keys above.
+                    let gw = nasiko_llm_router::GatewayConfig::from_env();
+                    if !gw.llm_gateway_base_url.trim().is_empty() {
+                        nasiko_llm_router::inject_llm_base_url(
+                            &mut env,
+                            &gw.llm_gateway_base_url,
+                            nasiko_llm_router::InboundFormat::OpenAi,
+                        );
+                        nasiko_llm_router::inject_llm_base_url(
+                            &mut env,
+                            &gw.llm_gateway_base_url,
+                            nasiko_llm_router::InboundFormat::Anthropic,
+                        );
+                        // Point the agent at the routed model too, not just the
+                        // routed base URL. OpenCode under ACP would otherwise fall
+                        // back to its built-in free model and bypass the router
+                        // (see `coding::proxy::routed_model_env`); other agent
+                        // kinds select their model themselves and get nothing.
+                        for (k, v) in crate::coding::proxy::routed_model_env(
+                            &target.image,
+                            target.hitl_enabled,
+                        ) {
+                            env.insert(k, v);
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, %agent_id, "coding-agent: session token mint failed; proceeding without")
+                }
             }
-        });
+        }
+
+        let request = crate::coding::turn::CodingTurnRequest {
+            session_id: info.session_id.clone(),
+            spec: crate::coding::proxy::build_spec(agent_id, &target),
+            acp_command: target.acp_command.clone(),
+            env,
+            user_id: claims.user_uuid().ok(),
+            prompt: info.user_text.clone(),
+            session_token,
+            session_token_id,
+            hitl_enabled: target.hitl_enabled,
+        };
+        let events = crate::coding::turn::run_turn(&state, request)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, %agent_id, "coding-agent turn failed to start");
+                match e {
+                    crate::coding::turn::CodingTurnError::Busy => StatusCode::CONFLICT,
+                    _ => StatusCode::BAD_GATEWAY,
+                }
+            })?;
+        let task_id = nasiko_types::a2a::new_task_id();
+        return Ok(crate::coding::sse::turn_to_sse(events, task_id, context_id));
     }
 
     // Explicit allowlist, not a denylist: the agent container is unvetted, so
@@ -670,56 +750,6 @@ const MESSAGE_SEND_METHODS: &[&str] = &[
     "message/send",
     "message/stream",
 ];
-
-/// Answer a non-chat A2A request to a coding agent, which has no HTTP server of
-/// its own to forward to. Discovery (`agent-card` / `.well-known`) gets a
-/// minimal, valid synthetic AgentCard; any other method gets a well-formed
-/// JSON-RPC `method not found` error (echoing the request id) rather than a bare
-/// 501, so clients degrade gracefully.
-fn coding_non_chat_response(
-    target: &crate::coding::proxy::CodingAgentTarget,
-    agent_id: Uuid,
-    forwarded_path: &str,
-    body: &[u8],
-) -> Response {
-    use axum::response::IntoResponse;
-
-    if forwarded_path.contains("agent-card") || forwarded_path.contains(".well-known") {
-        let card = serde_json::json!({
-            "protocolVersion": "0.3.0",
-            "name": target.name,
-            "description": "ACP coding agent — driven over a stdio turn; accepts message/send and message/stream only.",
-            "url": format!("/api/agents/{agent_id}"),
-            "preferredTransport": "JSONRPC",
-            "version": "1.0.0",
-            "capabilities": { "streaming": true },
-            "defaultInputModes": ["text/plain"],
-            "defaultOutputModes": ["text/plain"],
-            "skills": [],
-        });
-        return axum::Json(card).into_response();
-    }
-
-    // Any other A2A method: echo the JSON-RPC id and return a method-not-found
-    // error (-32601). A2A JSON-RPC errors ride a 200, not an HTTP error status.
-    let rpc: serde_json::Value = serde_json::from_slice(body).unwrap_or(serde_json::Value::Null);
-    let id = rpc.get("id").cloned().unwrap_or(serde_json::Value::Null);
-    let method = rpc
-        .get("method")
-        .and_then(|m| m.as_str())
-        .unwrap_or("this method");
-    let err = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "error": {
-            "code": -32601,
-            "message": format!(
-                "{method} is not supported for ACP coding agents — use message/send or message/stream"
-            ),
-        },
-    });
-    axum::Json(err).into_response()
-}
 
 /// Session and user-message info extracted during `ensure_chat_session` so the
 /// proxy can persist both user and agent messages to `chat_messages` without
