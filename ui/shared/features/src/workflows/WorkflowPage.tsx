@@ -108,7 +108,7 @@ function Loaded({ wf, run }: { wf: Workflow; run?: string | undefined }) {
     );
   return (
     <div className={COLUMN}>
-      <title>{`${wf.name} · OpenRuntime`}</title>
+      <title>{`${wf.name} · Nasiko`}</title>
       <div>
         <ButtonLink
           variant="ghost"

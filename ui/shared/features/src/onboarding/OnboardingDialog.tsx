@@ -106,6 +106,7 @@ export function OnboardingDialog({
     >
       <DialogContent
         showCloseButton={false}
+        overlayClassName="backdrop-blur-sm"
         // Start on the step's own action (Get started), not the rail's first button.
         initialFocus={primary}
         className="grid h-[min(45rem,calc(100svh-2rem))] grid-rows-1 gap-0 overflow-hidden p-0 sm:max-w-6xl md:grid-cols-[17rem_minmax(0,1fr)]"

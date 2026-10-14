@@ -496,7 +496,7 @@ function NewChatView({ userId, registry, search, railButton, username }: ViewPro
 
   return (
     <>
-      <title>{`${titlePrefix}${agent ? copy.askAgent(agentLabel(agent)) : routed ? copy.askOrchestrator : copy.chatsNav} · OpenRuntime`}</title>
+      <title>{`${titlePrefix}${agent ? copy.askAgent(agentLabel(agent)) : routed ? copy.askOrchestrator : copy.chatsNav} · Nasiko`}</title>
       <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-3">
         {railButton}
         <h2 className="truncate text-sm font-medium">{copy.newChat}</h2>

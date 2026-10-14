@@ -38,6 +38,32 @@ export function clearSignedOutMark() {
   }
 }
 
+/**
+ * Set when this tab leaves for an external sign-in (a `loginMethods` slot, e.g. EE single sign-on). Per tab, so it
+ * survives the provider's redirects; /login takes it on return, and only then may that sign-in lift the barrier above:
+ * a bare link to /login?signin=external must not resume a session the user tried to end.
+ */
+const EXTERNAL_SIGNIN_KEY = "openruntime.externalSignIn";
+
+export function markExternalSignIn() {
+  try {
+    window.sessionStorage.setItem(EXTERNAL_SIGNIN_KEY, "1");
+  } catch {
+    // Storage blocked: so is the barrier (signedOutMark() is null), so the return needs no proof.
+  }
+}
+
+/** Whether this tab started an external sign-in; clears it, so it counts once. */
+export function takeExternalSignIn(): boolean {
+  try {
+    const started = window.sessionStorage.getItem(EXTERNAL_SIGNIN_KEY) === "1";
+    window.sessionStorage.removeItem(EXTERNAL_SIGNIN_KEY);
+    return started;
+  } catch {
+    return false;
+  }
+}
+
 export function isSignedOutLocally(): boolean {
   return signedOutMark() === true;
 }

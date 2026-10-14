@@ -36,7 +36,7 @@ describe("Needs attention", () => {
     expect(
       within(s).getByText(
         new RegExp(
-          `^${mine} of your agents have Token optimization \\(Caveman\\) off, so history compression is off for your chats\\.`,
+          `^${mine} of your agents have Token optimization \\(Caveman\\) off, so their chats aren’t optimized\\.`,
         ),
       ),
     ).toBeInTheDocument();

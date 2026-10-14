@@ -9,7 +9,7 @@
  * calls are overlapping bars (sub-rows within one agent's lane) on a tinted "N in parallel" band. Colours are
  * DESIGN.md's Two-tone series per agent by first call (F21); waits are hatched; a long wait collapses into a labelled
  * break (F28). Lanes are zebra bands with faint tick lines. Soft curves under the bars join a caller to each call it
- * made; on the critical path (F22) they and the bars' outline take the info colour (F30: the Carbon accent is near-black).
+ * made; on the critical path (F22) they take the info colour and the bars off it dim (F30: the Carbon accent is near-black).
  *
  * Keyboard and screen readers (F25): every bar is a button with its whole story as its name and in a tooltip (so a
  * bar too narrow for text still says it); the chart is one tab stop (roving tabindex): ←/→ in start order, ↑/↓ across
@@ -46,6 +46,8 @@ const ROW_PX = 24;
 const LANE_MIN_PX = 32;
 const BAR_PX = 20;
 const BRACKET_PX = 14;
+/** Calls starting this close together share one trunk. */
+const TRUNK_PX = 24;
 const GRID = "grid grid-cols-[minmax(8rem,14rem)_1fr] gap-x-3 max-sm:grid-cols-[6rem_1fr]";
 /** The label column stays in place while a phone scrolls the time area (F24). */
 const STICKY = "max-sm:sticky max-sm:left-0 max-sm:z-10 max-sm:bg-card";
@@ -148,11 +150,12 @@ export function Swimlane({
   for (const { call } of centre.values()) {
     const from = call.parentKey ? centre.get(call.parentKey) : undefined;
     const to = centre.get(call.key);
-    if (from && to) edges.set(`${call.parentKey}>${call.key}`, { from, to, onPath: false });
+    if (from && to) edges.set(call.key, { from, to, onPath: false });
   }
+  // A call the critical path reaches is joined by that link alone: one line into each bar.
   path.slice(1).forEach((to, i) => {
     const from = path[i];
-    if (from) edges.set(`${from.call.key}>${to.call.key}`, { from, to, onPath: true });
+    if (from) edges.set(to.call.key, { from, to, onPath: true });
   });
 
   // The curves are drawn in pixels: the track's width is measured (none until it is, e.g. in jsdom).
@@ -173,13 +176,20 @@ export function Swimlane({
     const p = position(axis, t);
     return (trackPx - (axis.gap ? BREAK_PX : 0)) * p.frac + p.px;
   };
-  // One trunk per caller: just left of its earliest drop-in call, never left of the caller's own start.
+  // Calls a caller made together (starts within TRUNK_PX) branch off one trunk, just left of the first of them; a
+  // call made later drops on its own line instead of running a long elbow back to that trunk.
   const trunk = new Map<string, number>();
-  for (const e of edges.values()) {
+  const drops = [...edges.values()]
+    .filter((e) => xAt(e.from.call.endMs ?? now) > xAt(e.to.call.startMs) + 1)
+    .sort((a, b) => a.to.call.startMs - b.to.call.startMs);
+  const lastTrunk = new Map<string, { bx: number; x: number }>();
+  for (const e of drops) {
     const bx = xAt(e.to.call.startMs);
-    if (xAt(e.from.call.endMs ?? now) <= bx + 1) continue;
-    const x = Math.max(xAt(e.from.call.startMs) + 4, bx - 8);
-    trunk.set(e.from.call.key, Math.min(trunk.get(e.from.call.key) ?? x, x));
+    const prev = lastTrunk.get(e.from.call.key);
+    const x =
+      prev && bx - prev.bx <= TRUNK_PX ? prev.x : Math.max(xAt(e.from.call.startMs) + 4, bx - 8);
+    if (!prev || prev.x !== x) lastTrunk.set(e.from.call.key, { bx, x });
+    trunk.set(e.to.call.key, x);
   }
 
   return (
@@ -187,7 +197,11 @@ export function Swimlane({
       {/* One tab stop (the current bar); arrows move between bars. Named by the flow's summary. */}
       {/* Phones (F24): the time area scrolls sideways inside the panel, never the page; the labels stay put. */}
       <div className="max-sm:overflow-x-auto">
-        <div role="group" aria-label={label} className="relative flex flex-col max-sm:min-w-160">
+        <div
+          role="group"
+          aria-label={label}
+          className={cn("relative flex flex-col max-sm:min-w-160", BAR_TINT)}
+        >
           <AxisRow axis={axis} />
           {orchestrator ? (
             <div className={cn(GRID, STRIPE)}>
@@ -198,19 +212,19 @@ export function Swimlane({
                 top={(LANE_MIN_PX - BAR_PX) / 2}
               />
               <Track axis={axis} height={LANE_MIN_PX}>
-                {/* A neutral bar with a real outline: the Orchestrator spans the flow, so it frames rather than tints. */}
+                {/* The Orchestrator isn't a task, it spans the flow: a dimension line (├──┤), not a bar. Its name is the lane's. */}
                 <div
                   aria-hidden
-                  className="absolute z-2 h-5 overflow-hidden rounded-sm border border-l-2 px-1 text-2xs leading-[18px] font-medium whitespace-nowrap text-foreground"
+                  className="absolute top-1/2 z-2 h-3 -translate-y-1/2 border-x-2"
                   style={{
-                    top: (LANE_MIN_PX - BAR_PX) / 2,
                     ...span(axis, orchestrator.startMs, orchestrator.endMs ?? now),
-                    backgroundColor: "var(--card)",
-                    backgroundImage: `linear-gradient(${tint("var(--chart-other)", 70)}, ${tint("var(--chart-other)", 70)})`,
                     borderColor: "var(--chart-other-edge)",
                   }}
                 >
-                  {copy.panel.orchestrator}
+                  <span
+                    className="absolute inset-x-0 top-1/2 h-0.5 -translate-y-1/2 rounded-full"
+                    style={{ backgroundColor: "var(--chart-other-edge)" }}
+                  />
                 </div>
               </Track>
             </div>
@@ -249,7 +263,7 @@ export function Swimlane({
                     <path
                       key={key}
                       data-edge={e.onPath ? "critical" : "call"}
-                      d={curve(e, xAt, now, BAR_PX, trunk.get(e.from.call.key))}
+                      d={curve(e, xAt, now, BAR_PX, trunk.get(e.to.call.key))}
                       stroke={e.onPath ? "var(--info)" : "var(--chart-other-edge)"}
                       strokeOpacity={e.onPath ? 1 : 0.7}
                       strokeWidth={e.onPath ? 1.75 : 1.25}
@@ -412,7 +426,7 @@ function LaneRow({
           <div
             key={b.keys.join()}
             aria-hidden
-            className="absolute inset-y-1 rounded-md bg-muted ring-1 ring-border"
+            className="absolute inset-y-1 rounded-md bg-muted/70"
             style={span(axis, b.fromMs, b.toMs)}
           >
             <span className="absolute top-0 left-1.5 text-2xs leading-[14px] font-medium whitespace-nowrap text-muted-foreground">
@@ -493,6 +507,10 @@ function Bar({
       ? call.waitStartMs
       : null;
   const onPath = critical?.has(call.key) ?? false;
+  const fill = tint(
+    s.fill,
+    pending ? "10%" : critical && !onPath ? "var(--bar-dim)" : "var(--bar)",
+  );
   const task = taskOf(call);
   const name = barLabel(call, from, onPath);
   return (
@@ -506,7 +524,7 @@ function Bar({
             top,
             ...span(axis, call.startMs, pausedAt),
             backgroundColor: "var(--card)",
-            backgroundImage: `linear-gradient(${tint(s.fill, 30)}, ${tint(s.fill, 30)})`,
+            backgroundImage: `linear-gradient(${tint(s.fill, "var(--bar)")}, ${tint(s.fill, "var(--bar)")})`,
             borderLeftColor: s.edge,
           }}
         >
@@ -533,7 +551,6 @@ function Bar({
                 "pointer-coarse:after:absolute pointer-coarse:after:inset-x-0 pointer-coarse:after:-inset-y-3 pointer-coarse:after:content-['']",
                 pending && "border border-dashed",
                 call.maybeSame && "outline-1 outline-muted-foreground outline-dashed",
-                critical && onPath && "outline-[1.5px] outline-offset-1 outline-info outline-solid",
                 // Selection is its own mark (a thick edge and bold text), never the focus ring or the path's outline.
                 selected && "border-l-4 font-semibold",
               )}
@@ -545,7 +562,7 @@ function Bar({
                 backgroundImage: waiting
                   ? "repeating-linear-gradient(45deg, color-mix(in oklab, var(--warning) 35%, transparent) 0 2px, transparent 2px 6px)"
                   : // Off the critical path only the fill dims: the 11 px label keeps its contrast.
-                    `linear-gradient(${tint(s.fill, pending || (critical && !onPath) ? 10 : 30)}, ${tint(s.fill, pending || (critical && !onPath) ? 10 : 30)})`,
+                    `linear-gradient(${fill}, ${fill})`,
                 borderLeftColor: failed
                   ? "var(--destructive)"
                   : waiting
@@ -585,4 +602,10 @@ function Bar({
 /** Every other lane is a faint band across its name and its track, so a bar always reads against its lane. */
 const STRIPE = "bg-muted/40";
 
-const tint = (fill: string, pct: number) => `color-mix(in oklab, ${fill} ${pct}%, transparent)`;
+/**
+ * How strongly a bar's series fill shows over the card. Pastels at a third vanish on white, so light mode runs them
+ * twice as strong; dark cards need less. `--bar-dim` is a bar off the critical path.
+ */
+const BAR_TINT = "[--bar:70%] [--bar-dim:30%] dark:[--bar:34%] dark:[--bar-dim:16%]";
+
+const tint = (fill: string, pct: string) => `color-mix(in oklab, ${fill} ${pct}, transparent)`;

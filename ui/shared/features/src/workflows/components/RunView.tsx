@@ -103,7 +103,7 @@ export function RunView({ wf, exec, onBack }: { wf: Workflow; exec: string; onBa
 
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-col gap-6 [&>*]:min-w-0">
-      <title>{`${title} · OpenRuntime`}</title>
+      <title>{`${title} · Nasiko`}</title>
       <div className="flex items-center gap-2">
         <Button variant="ghost" size="icon-sm" aria-label={copy.backToWorkflow} onClick={onBack}>
           <ChevronLeft aria-hidden />

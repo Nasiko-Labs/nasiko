@@ -31,7 +31,8 @@
     "IconPlaceholder -> lucide-react: XIcon",
     "import @/registry/base-nova/ui/button -> ./button",
     "1\u00d7 Portal: `container={usePortalContainer()}` so a surface-scope MotionProvider owns where its overlays mount (motion/portal.tsx)",
-    "fidelity: nasiko-ui-lab@1b99bdda \u2014 overlay bg-black/50, content rounded-lg border bg-background p-6 shadow-lg duration-200 sm:max-w-lg, plain Close with the lab's classes, header text-center sm:text-left, plain footer, title text-lg font-semibold"
+    "fidelity: nasiko-ui-lab@1b99bdda \u2014 overlay bg-black/50, content rounded-lg border bg-background p-6 shadow-lg duration-200 sm:max-w-lg, plain Close with the lab's classes, header text-center sm:text-left, plain footer, title text-lg font-semibold",
+    "DialogContent takes `overlayClassName` (the onboarding guide blurs the page behind it); ported from the legacy ui/ on development (ae16426f7)"
   ],
   "dropdown-menu.tsx": [
     "IconPlaceholder -> lucide-react: CheckIcon, ChevronRightIcon",

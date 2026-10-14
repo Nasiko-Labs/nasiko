@@ -47,6 +47,13 @@ beforeEach(() => {
     writable: true,
     value: memoryStorage(),
   });
+  // jsdom's own sessionStorage works (tests spy on `Storage.prototype`, so it is kept), but it lives for the whole
+  // file: empty it, so /login's external sign-in mark (session.ts markExternalSignIn) never leaks between tests.
+  try {
+    globalThis.sessionStorage.clear();
+  } catch {
+    // No sessionStorage in this environment.
+  }
 });
 
 // jsdom has no layout: visx's ParentSize and the primitives need ResizeObserver to exist.

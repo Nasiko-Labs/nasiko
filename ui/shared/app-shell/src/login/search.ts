@@ -12,5 +12,7 @@ export const loginSearchSchema = z.object({
   signout: opt(z.literal("failed")),
   // Set by Settings when a password change came back without a new session (plans/feat-settings.md §1.1).
   password: opt(z.literal("changed")),
+  // Back from a `loginMethods` slot's provider (EE single sign-on): its cookie is set, or `#error=<code>` says why not.
+  signin: opt(z.literal("external")),
 });
 export type LoginSearch = z.infer<typeof loginSearchSchema>;

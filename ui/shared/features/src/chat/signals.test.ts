@@ -560,16 +560,16 @@ describe("signals (test 6)", () => {
 
 describe("hidden-tab title count (test 20, C4, E11)", () => {
   it("prefixes the title while hidden, counting replies that finished before, and restores it", () => {
-    const doc = fakeDoc("Agents · OpenRuntime");
+    const doc = fakeDoc("Agents · Nasiko");
     const { end } = signalsWith(doc);
     end("a", "reply");
-    expect(doc.title).toBe("Agents · OpenRuntime");
+    expect(doc.title).toBe("Agents · Nasiko");
     doc.set("hidden");
-    expect(doc.title).toBe("(1) Agents · OpenRuntime");
+    expect(doc.title).toBe("(1) Agents · Nasiko");
     end("b", "reply");
-    expect(doc.title).toBe("(2) Agents · OpenRuntime");
+    expect(doc.title).toBe("(2) Agents · Nasiko");
     doc.set("visible");
-    expect(doc.title).toBe("Agents · OpenRuntime");
+    expect(doc.title).toBe("Agents · Nasiko");
   });
 
   it("a title someone else changed while hidden is never overwritten back", () => {
@@ -586,19 +586,19 @@ describe("hidden-tab title count (test 20, C4, E11)", () => {
   });
 
   it("while a chat page owns the title it gives the prefix instead, and leaving never double-prefixes", () => {
-    const doc = fakeDoc("Chat · OpenRuntime");
+    const doc = fakeDoc("Chat · Nasiko");
     const { s, end } = signalsWith(doc);
     const release = s.ownTitle();
     doc.set("hidden");
     end("a", "reply");
     expect(s.titlePrefix()).toBe("(1) ");
-    expect(doc.title).toBe("Chat · OpenRuntime");
+    expect(doc.title).toBe("Chat · Nasiko");
     // React rendered the prefix; the page unmounts while hidden.
-    doc.title = "(1) Chat · OpenRuntime";
+    doc.title = "(1) Chat · Nasiko";
     release();
-    expect(doc.title).toBe("(1) Chat · OpenRuntime");
+    expect(doc.title).toBe("(1) Chat · Nasiko");
     end("b", "reply");
-    expect(doc.title).toBe("(2) Chat · OpenRuntime");
+    expect(doc.title).toBe("(2) Chat · Nasiko");
   });
 
   it("dispose restores the title (clearChatRegistry)", () => {

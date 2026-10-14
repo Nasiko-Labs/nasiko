@@ -9,12 +9,27 @@ import { securityHeaders } from "./security-headers.mjs";
 import { precompress } from "./precompress.mjs";
 
 /**
+ * Reo.dev product analytics, as each edition root configures it (`Reo.init` options). Release builds only: the
+ * loader is a same-origin file, so `script-src 'self'` plus the control plane's Reo hosts (`CSP_EXTRAS` in
+ * oss/server/src/main.rs) admit it without an inline-script hash. Development and test builds never load it.
+ */
+export interface ReoAnalytics {
+  clientID: string;
+  [option: string]: string | boolean;
+}
+
+const reoLoader = (reo: ReoAnalytics) =>
+  `(function(){var o=${JSON.stringify(reo)},s=document.createElement("script");` +
+  `s.src="https://static.reo.dev/"+o.clientID+"/reo.js";s.defer=true;` +
+  `s.onload=function(){window.Reo&&window.Reo.init(o)};document.head.appendChild(s)})();\n`;
+
+/**
  * Shared build policy; each composition root supplies its edition, entry point and route table. A private root
  * passes its own extra routes (`privateRoutes`): this shared, publication-approved file never reads private paths.
  */
 export function createViteConfig(
   edition: "oss" | "ee",
-  options: { privateRoutes?: readonly { path: string }[] } = {},
+  options: { privateRoutes?: readonly { path: string }[]; reo?: ReoAnalytics } = {},
 ) {
   return defineConfig(({ command, mode }) => {
     const env = { ...loadEnv(mode, process.cwd(), ""), ...process.env };
@@ -35,8 +50,20 @@ export function createViteConfig(
     if (!["http:", "https:"].includes(upstream.protocol) || upstream.username || upstream.password)
       throw new Error("Invalid API upstream");
     const headers = securityHeaders({ development });
+    const analytics = !development && !testBuild ? options.reo : undefined;
     const prepaint: Plugin = {
       name: "nasiko-static-policy",
+      transformIndexHtml() {
+        return analytics
+          ? [
+              {
+                tag: "script",
+                attrs: { src: "/nasiko-analytics.js", defer: true },
+                injectTo: "head",
+              },
+            ]
+          : [];
+      },
       configureServer(server) {
         server.middlewares.use((req, res, next) => {
           if (req.url?.startsWith("/harness/server-identity") && harness) {
@@ -128,6 +155,12 @@ export function createViteConfig(
           fileName: "nasiko-boot-guard.js",
           source: BOOT_GUARD_SCRIPT,
         });
+        if (analytics)
+          this.emitFile({
+            type: "asset",
+            fileName: "nasiko-analytics.js",
+            source: reoLoader(analytics),
+          });
         this.emitFile({
           type: "asset",
           fileName: "security-headers.json",

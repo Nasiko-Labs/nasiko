@@ -7,12 +7,15 @@
 // `FieldError` slots and `aria-invalid`; `login(username, password, LOGIN_TIMEOUT_MS)` -> `login(…, { timeout })`
 // (the product port's signature); `ApiError`/`isTimeoutError` from `@nasiko/data-access/product`; `pinAccent`/
 // `LOGIN_ACCENT` from `@nasiko/ui/theme`; the search schema is ./search.ts; imports mapped to `@nasiko/ui/*`; Prettier.
+// Ported from nasiko-cloud-rs development (59fbea8df, the legacy ui/ /login): the `loginMethods` slot (EE single
+// sign-on) under the form, and finishing an external sign-in on return (`?signin=external`, error in `#error=`). The
+// hash is read from `window.location` once mounted (the router's location has no hash here); `/api/me` is `fetchMe`.
 "use client";
 
 import { useQueryClient } from "@tanstack/react-query";
 import { ArrowRight, CircleAlert, Eye, EyeOff } from "lucide-react";
 import { useRouter } from "@nasiko/app-core/navigation";
-import { useEffect, useState, type SyntheticEvent } from "react";
+import { useEffect, useRef, useState, type SyntheticEvent } from "react";
 import * as z from "zod/mini";
 import {
   Alert,
@@ -31,6 +34,7 @@ import {
 } from "@nasiko/ui/primitives";
 import { LOGIN_ACCENT, pinAccent } from "@nasiko/ui/theme";
 import {
+  fetchMe,
   isTimeoutError,
   lockedFor,
   login,
@@ -54,9 +58,12 @@ import {
   broadcastSession,
   bumpSignInGeneration,
   clearSignedOutMark,
+  markExternalSignIn,
   signedOutMark,
+  takeExternalSignIn,
   withSessionLock,
 } from "@nasiko/app-core/session";
+import { useSlots } from "@nasiko/app-core/edition/edition-context";
 import { env } from "@nasiko/app-core/env";
 import type { LoginSearch } from "./search";
 
@@ -84,9 +91,46 @@ function loginHref(search: { redirect?: string | undefined; expired?: LoginSearc
 }
 
 export function LoginPage({ search }: { search: LoginSearch }) {
-  const { redirect, expired, signout, password } = search;
+  const { redirect, expired, signout, password, signin } = search;
   const router = useRouter();
   const queryClient = useQueryClient();
+  const LoginMethods = useSlots().loginMethods;
+  const [externalError, setExternalError] = useState<string | undefined>(undefined);
+  const [finishing, setFinishing] = useState(signin === "external");
+  const finishStarted = useRef(false);
+  // An external sign-in comes back here, its cookie already set (or `#error=<code>` saying why not), to finish as the
+  // password one does below.
+  useEffect(() => {
+    if (signin !== "external" || finishStarted.current) return;
+    finishStarted.current = true;
+    const error = new URLSearchParams(window.location.hash.replace(/^#/, "")).get("error");
+    if (error) {
+      setExternalError(error);
+      setFinishing(false);
+      return;
+    }
+    const startedHere = takeExternalSignIn();
+    void (async () => {
+      try {
+        // A failed logout's barrier lifts only for a sign-in this tab started (review D1).
+        if (signedOutMark() === true && !startedHere) throw new Error("not started in this tab");
+        await whenSignedOut();
+        await withSessionLock(async () => {
+          const me = await fetchMe({ timeout: LOGIN_TIMEOUT_MS });
+          bumpSignInGeneration();
+          clearSignedOutMark();
+          broadcastSession({ type: "signed-in", sub: me.sub });
+        });
+        await resetQueryClient(queryClient);
+        router.replace(safeRedirect(redirect));
+      } catch {
+        // No session came back (or not ours to resume): the form, as on any visit.
+        setFinishing(false);
+      }
+    })();
+  }, [signin, queryClient, redirect, router]);
+  // Where an external sign-in returns to: here, carrying the page to open after.
+  const returnTo = `/login?${new URLSearchParams({ signin: "external", ...(redirect ? { redirect: safeRedirect(redirect) } : {}) }).toString()}`;
   const [errors, setErrors] = useState<FieldErrors>({});
   const [busy, setBusy] = useState(false);
   // Carbon while this page is open (arriving by sign-out included); leaving it restores the stored theme.
@@ -274,14 +318,21 @@ export function LoginPage({ search }: { search: LoginSearch }) {
                   type="submit"
                   size="lg"
                   className="h-13 rounded-[10px] text-[15px]"
-                  disabled={busy || retrying}
+                  disabled={busy || retrying || finishing}
                 >
-                  {busy ? <Spinner aria-hidden /> : null}
-                  {busy ? copy.login.submitting : copy.login.submit}
-                  {busy ? null : <ArrowRight aria-hidden />}
+                  {busy || finishing ? <Spinner aria-hidden /> : null}
+                  {busy || finishing ? copy.login.submitting : copy.login.submit}
+                  {busy || finishing ? null : <ArrowRight aria-hidden />}
                 </Button>
               </FieldGroup>
             </form>
+            {LoginMethods ? (
+              <LoginMethods
+                returnTo={returnTo}
+                onStart={markExternalSignIn}
+                error={externalError}
+              />
+            ) : null}
             <WaitlistLoginLink />
           </div>
         </div>
