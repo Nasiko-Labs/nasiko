@@ -62,6 +62,64 @@ const ROUTES = [
 ];
 
 describe("navigation on the app router", () => {
+  it("keeps a section heading and tab bar mounted while its routed panel suspends", async () => {
+    function SectionLayout({ children }: { children: ReactNode }) {
+      return (
+        <section>
+          <h1>Stable section</h1>
+          <nav aria-label="Section tabs">One · Two</nav>
+          <input aria-label="Section draft" defaultValue="" />
+          {children}
+        </section>
+      );
+    }
+    let finishPanel = () => {};
+    const ready = new Promise<void>((resolve) => {
+      finishPanel = resolve;
+    });
+    function SecondPanel() {
+      use(ready);
+      return <h2>Second panel</h2>;
+    }
+    const layout = {
+      id: "section",
+      load: () => Promise.resolve({ default: SectionLayout }),
+    };
+    const history = createMemoryHistory({ initialEntries: ["/sections/one"] });
+    const router = createWorkspaceRouter(
+      [
+        { path: "/sections/one", layout, load: page("First panel") },
+        { path: "/sections/two", layout, load: () => Promise.resolve({ default: SecondPanel }) },
+      ],
+      history,
+    );
+    render(<RouterProvider router={router} />);
+    await screen.findByRole("heading", { name: "First panel" });
+    const heading = screen.getByRole("heading", { name: "Stable section" });
+    const tabs = screen.getByRole("navigation", { name: "Section tabs" });
+    const draft = screen.getByRole("textbox", { name: "Section draft" });
+    fireEvent.change(draft, { target: { value: "Keep this" } });
+    await act(async () => {
+      await router.navigate({ to: "/sections/two" });
+    });
+    await screen.findByRole("img", { name: "Loading page" });
+    expect(heading).toBeVisible();
+    expect(tabs).toBeVisible();
+    expect(heading.closest("[data-route-transition]")).toBeNull();
+    await act(async () => {
+      finishPanel();
+    });
+    await screen.findByRole("heading", { name: "Second panel" });
+    expect(screen.getByRole("heading", { name: "Stable section" })).toBe(heading);
+    expect(screen.getByRole("navigation", { name: "Section tabs" })).toBe(tabs);
+    expect(draft).toHaveValue("Keep this");
+    act(() => {
+      history.back();
+    });
+    await screen.findByRole("heading", { name: "First panel" });
+    expect(screen.getByRole("navigation", { name: "Section tabs" })).toBe(tabs);
+  });
+
   it("keeps the shell visible and mounted while a cold route chunk is loading", async () => {
     let resolvePage: (page: { default: () => ReactNode }) => void = () => {
       throw new Error("Pending page loader was not initialized");

@@ -46,6 +46,11 @@ export interface AppRoute {
   load?: () => Promise<{ default: ComponentType }>;
   redirect?: string;
   superuserOr?: string;
+  /** Edition-owned persistent frame shared by related routes; only its outlet changes. */
+  layout?: {
+    id: string;
+    load: () => Promise<{ default: ComponentType<{ children: ReactNode }> }>;
+  };
 }
 
 function Redirect({ to }: { to: string }) {
@@ -100,7 +105,8 @@ export function createWorkspaceRouter(routes: readonly AppRoute[], history?: Rou
   const makeRoute = (route: AppRoute) => {
     const Page = route.load ? lazy(route.load) : NotFoundRoute;
     return createRoute({
-      getParentRoute: () => (route.public || route.redirect ? root : workspace),
+      getParentRoute: () =>
+        route.public || route.redirect ? root : route.layout ? getLayout(route.layout) : workspace,
       path: route.path.replace(/\[([^\]]+)\]/g, (_match, name: string) => "$" + name),
       component: preloadable(() => {
         const content = route.redirect ? (
@@ -110,22 +116,66 @@ export function createWorkspaceRouter(routes: readonly AppRoute[], history?: Rou
         ) : (
           createElement(Page)
         );
-        // One entrance on the incoming route, with no retained outgoing screen or exit delay.
+        // Slide the incoming route only; never retain an outgoing screen or wait for an exit.
         // Query/filter changes keep this component mounted and do not replay the entrance.
         return route.public || route.redirect ? (
           content
         ) : (
-          <Reveal recipe="reveal" className="h-full min-h-0 w-full" data-route-transition="">
-            {content}
-          </Reveal>
+          <div className="h-full min-h-0 w-full overflow-x-clip" data-route-viewport="">
+            <Reveal
+              recipe={
+                route.layout || route.path.split("/").filter(Boolean).length > 1
+                  ? "reveal"
+                  : "panel"
+              }
+              from="end"
+              className="h-full min-h-0 w-full"
+              data-route-transition=""
+            >
+              {content}
+            </Reveal>
+          </div>
         );
       }, route.load),
     });
   };
+  const layouts = new Map<string, ReturnType<typeof buildLayout>>();
+  function buildLayout(layout: NonNullable<AppRoute["layout"]>) {
+    const Layout = lazy(layout.load);
+    const parent = createRoute({
+      getParentRoute: () => workspace,
+      id: `layout-${layout.id}`,
+      component: preloadable(
+        () => (
+          <Layout>
+            <Suspense fallback={<WorkspaceLoading />}>
+              <Outlet />
+            </Suspense>
+          </Layout>
+        ),
+        layout.load,
+      ),
+    });
+    return parent;
+  }
+  function getLayout(layout: NonNullable<AppRoute["layout"]>) {
+    const existing = layouts.get(layout.id);
+    if (existing) return existing;
+    const parent = buildLayout(layout);
+    layouts.set(layout.id, parent);
+    return parent;
+  }
+  const protectedRoutes = routes.filter((r) => !r.public && !r.redirect);
+  for (const route of protectedRoutes) if (route.layout) getLayout(route.layout);
   return createRouter({
     routeTree: root.addChildren([
       ...routes.filter((r) => r.public || r.redirect).map(makeRoute),
-      workspace.addChildren(routes.filter((r) => !r.public && !r.redirect).map(makeRoute)),
+      workspace.addChildren([
+        ...protectedRoutes.filter((r) => !r.layout).map(makeRoute),
+        ...[...layouts].map(([id, parent]) =>
+          parent.addChildren(protectedRoutes.filter((r) => r.layout?.id === id).map(makeRoute)),
+        ),
+      ]),
     ]),
     ...(history ? { history } : {}),
     // Links are the navigation port's, which preload on intent through `router.preloadRoute` (navigation.tsx).

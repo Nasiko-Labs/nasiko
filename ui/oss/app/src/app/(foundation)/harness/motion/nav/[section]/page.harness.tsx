@@ -6,7 +6,7 @@ export default function SectionPage() {
   const { section } = useParams<{ section: string }>();
   if (section === "broken") throw new Error("synthetic route error");
   return (
-    <Reveal recipe="section" data-testid={`section-${section}`}>
+    <Reveal recipe="section" from="end" data-testid={`section-${section}`}>
       <Card size="sm">
         <CardHeader>
           <CardTitle>{section}</CardTitle>

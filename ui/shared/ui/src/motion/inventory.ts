@@ -20,11 +20,11 @@ export interface MotionInventoryEntry {
 
 export const MOTION_INVENTORY: readonly MotionInventoryEntry[] = [
   {
-    recipe: "reveal",
+    recipe: "panel",
     adapter: "workspace router <Reveal>",
     trigger: "incoming signed-in route commits; not a filter or search-param update",
     region: "page content only; sidebar, session and data providers remain mounted",
-    token: "--motion-micro (≤180 ms), 4 px travel",
+    token: "panel ≤240 ms / 16 px horizontal; nested reveal ≤180 ms / 4 px horizontal",
     interruption: "incoming only; no exit wait or duplicated outgoing screen; unmount cancels",
     reducedFallback: "opacity only",
     noneFallback: "render in place",

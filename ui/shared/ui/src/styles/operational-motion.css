@@ -39,8 +39,14 @@
   transition-duration: var(--motion-feedback);
   transition-timing-function: ease-out;
 }
+[data-slot="tabs-content"] {
+  --tab-slide-offset: var(--motion-distance-md);
+}
 [data-slot="tabs-content"]:not([hidden]):not([data-hidden]):not([data-ending-style]) {
   animation: nasiko-tab-enter var(--motion-micro) var(--motion-ease-out) both;
+}
+[data-slot="tabs-content"][data-activation-direction="left"] {
+  --tab-slide-offset: calc(-1 * var(--motion-distance-md));
 }
 [data-slot="tabs-content"][data-ending-style] {
   display: none;
@@ -105,7 +111,7 @@
 @keyframes nasiko-tab-enter {
   from {
     opacity: 0.85;
-    translate: 0 var(--motion-distance-sm);
+    translate: var(--tab-slide-offset) 0;
   }
   to {
     opacity: 1;
@@ -151,7 +157,7 @@
   [data-slot="skeleton"]::after,
   [data-state="current"] [data-slot="progress-indicator"],
   [data-slot="activity-indicator"] {
-    animation: none;
+    animation: none !important;
   }
 }
 :is([data-motion="reduced"], [data-motion="none"]) [data-slot="button"]:is(:hover, :active) {
@@ -163,5 +169,5 @@
 :is([data-motion="reduced"], [data-motion="none"])
   [data-state="current"]
   [data-slot="progress-indicator"] {
-  animation: none;
+  animation: none !important;
 }
