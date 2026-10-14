@@ -1,0 +1,38 @@
+{
+  "name": "@nasiko/testing",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Test harness for the workspace apps and features: the Next router/history harness, pinned seed, setup files. devDependency only.",
+  "sideEffects": false,
+  "exports": {
+    "./gated-sse": "./src/gated-sse.ts",
+    "./intersection": "./src/intersection.ts",
+    "./pinned-seed": "./src/pinned-seed.ts",
+    "./router": "./src/router.tsx"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint src --max-warnings 0"
+  },
+  "dependencies": {
+    "@nasiko/data-access": "workspace:*",
+    "@nasiko/features": "workspace:*",
+    "@nasiko/mocks": "workspace:*",
+    "@nasiko/ui": "workspace:*",
+    "msw": "3.0.1",
+    "react": "19.3.0",
+    "@nasiko/app-core": "workspace:*"
+  },
+  "devDependencies": {
+    "@nasiko/config": "workspace:*",
+    "@testing-library/jest-dom": "7.0.1",
+    "@testing-library/react": "16.3.3",
+    "@testing-library/user-event": "14.6.7",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "eslint": "9.39.5",
+    "typescript": "5.9.3",
+    "vitest": "5.0.3"
+  }
+}

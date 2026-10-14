@@ -1,0 +1,25 @@
+{
+  "name": "@nasiko/contracts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Cross-boundary contracts: pure TypeScript + zod. May not import React, Next, DOM or network adapters (enforced by check:architecture).",
+  "exports": {
+    ".": "./src/index.ts",
+    "./motion": "./src/motion.ts",
+    "./content-policy": "./src/content-policy.ts",
+    "./limits": "./src/limits.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint src --max-warnings 0"
+  },
+  "dependencies": {
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@nasiko/config": "workspace:*",
+    "eslint": "9.39.5",
+    "typescript": "5.9.3"
+  }
+}

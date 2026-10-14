@@ -1,0 +1,116 @@
+{
+  "alert-dialog.tsx": [
+    "import @/registry/base-nova/ui/button -> ./button",
+    "1\u00d7 Portal: `container={usePortalContainer()}` so a surface-scope MotionProvider owns where its overlays mount (motion/portal.tsx)",
+    "fidelity: nasiko-ui-lab@1b99bdda \u2014 overlay/content/header/footer/media/title/description classes the lab's"
+  ],
+  "alert.tsx": [
+    "fidelity: nasiko-ui-lab@1b99bdda \u2014 alert/title/description classes the lab's (px-4 py-3, grid-cols-[0_1fr], line-clamp-1 title, grid description); AlertAction kept"
+  ],
+  "badge.tsx": [
+    "lab edits (nasiko-ui-lab@1b99bdda common/src/components/ui/badge.tsx): focus: 2 px `--ring` with a 2 px page-coloured offset (`focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background`) instead of the 3 px `ring-ring/50` glow; link `text-primary` -> `text-primary-text`; new variants success/warning/info/muted",
+    "fidelity: nasiko-ui-lab@1b99bdda \u2014 base and variant class strings are the lab's (rounded-full, [a&]:hover, solid destructive, accent ghost/outline)",
+    "a11y (source defect fixed): the warning variant's text is `text-warning-text` (#a34400 light), not `text-warning`: on a tinted row (Your agents' attention rows) the lab's warning badge measured 4.42:1, under WCAG AA's 4.5:1 (axe, per-route journey); 5.43:1 now. Dark mode is unchanged (`--warning-text` is `--warning` there)"
+  ],
+  "breadcrumb.tsx": [
+    "IconPlaceholder -> lucide-react: ChevronRightIcon, MoreHorizontalIcon",
+    "fidelity: nasiko-ui-lab@1b99bdda \u2014 list sm:gap-2.5 break-words, item gap-1.5, ellipsis size-9 with a size-4 icon; cn-rtl-flip kept on the separator"
+  ],
+  "button.tsx": [
+    "lab edits (nasiko-ui-lab@1b99bdda common/src/components/ui/button.tsx): focus: 2 px `--ring` with a 2 px page-coloured offset (`focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background`) instead of the 3 px `ring-ring/50` glow; `transition-all` -> `transition-[color,background-color,border-color,opacity]`; destructive drops its focus-ring recolour; link `text-primary` -> `text-primary-text`; default hover `bg-primary/80` -> `bg-primary-hover`",
+    "fidelity: nasiko-ui-lab@1b99bdda \u2014 base, variant and size class strings are the lab's (rounded-md, h-9/h-8/h-10, px-4/3/6, icon size-9/6/8/10, solid destructive, accent hovers); data-variant/data-size attributes added",
+    "destination (2026-10-08): `buttonVariants()` returns the variant classes merged through `cn`, so a size's `gap-1.5` replaces the base `gap-2` for links styled as buttons too (fidelity compare: 'Turn on for an agent \u2192' rendered with an 8 px gap instead of the lab's 6 px)"
+  ],
+  "card.tsx": [
+    "lab edits (nasiko-ui-lab@1b99bdda common/src/components/ui/card.tsx): `Card` takes `render` (useRender + mergeProps; data-slot/data-size via state); radius `rounded-xl` -> `rounded-lg` on the card, header, footer and image corners",
+    "fidelity: nasiko-ui-lab@1b99bdda \u2014 Card/Header/Title/Content/Footer class strings are the lab's (border, gap-6/py-6/px-6, font-semibold title); size prop kept as data-size only"
+  ],
+  "checkbox.tsx": ["IconPlaceholder -> lucide-react: CheckIcon"],
+  "collapsible.tsx": [],
+  "dialog.tsx": [
+    "IconPlaceholder -> lucide-react: XIcon",
+    "import @/registry/base-nova/ui/button -> ./button",
+    "1\u00d7 Portal: `container={usePortalContainer()}` so a surface-scope MotionProvider owns where its overlays mount (motion/portal.tsx)",
+    "fidelity: nasiko-ui-lab@1b99bdda \u2014 overlay bg-black/50, content rounded-lg border bg-background p-6 shadow-lg duration-200 sm:max-w-lg, plain Close with the lab's classes, header text-center sm:text-left, plain footer, title text-lg font-semibold"
+  ],
+  "dropdown-menu.tsx": [
+    "IconPlaceholder -> lucide-react: CheckIcon, ChevronRightIcon",
+    "2\u00d7 Portal: `container={usePortalContainer()}` so a surface-scope MotionProvider owns where its overlays mount (motion/portal.tsx)",
+    "fidelity: nasiko-ui-lab@1b99bdda \u2014 content/item/checkbox/radio/label/shortcut/sub-trigger/sub-content classes the lab's (rounded-sm, py-1.5 px-2 gap-2, pl-8 inset, left-2 indicators, CircleIcon radio dot); data-state/inset/disabled \u2192 data-open/inset/disabled; sub-trigger keeps data-popup-open twin",
+    "DropdownMenuLabel outside a DropdownMenuGroup renders a plain div (Base UI's GroupLabel throws error #31 there; the lab's Radix Label did not): full-migration fidelity run, the agent page's actions menu crashed the page"
+  ],
+  "empty.tsx": [
+    "lab edit (nasiko-ui-lab@1b99bdda common/src/components/ui/empty.tsx): description links hover `text-primary` -> `text-primary-text`",
+    "fidelity: nasiko-ui-lab@1b99bdda \u2014 Empty/Header/Media/Title/Content classes the lab's (gap-6 md:p-12 rounded-lg, text-lg title, size-10 icon media)"
+  ],
+  "field.tsx": [
+    "import @/registry/base-nova/ui/label -> ./label",
+    "import @/registry/base-nova/ui/separator -> ./separator",
+    "fidelity: nasiko-ui-lab@1b99bdda \u2014 FieldContent's gap is the lab's gap-1.5 (base-nova: gap-0.5): every row with a label and a description was 4 px shorter (the agent Settings switch rows; measured 46.25 px lab vs 42.25 px, the switch itself was identical)",
+    "fidelity: nasiko-ui-lab@1b99bdda \u2014 FieldTitle has the lab's leading-snug (base-nova has none): a title's line box was 20 px instead of 19.25 px, so the agent Settings rows with a FieldTitle sat 0.75 px lower each (the danger card's 'Delete this agent' 2 px lower on narrow)"
+  ],
+  "input.tsx": [
+    "lab edit (nasiko-ui-lab@1b99bdda common/src/components/ui/input.tsx): focus: 2 px `--ring` with a 2 px page-coloured offset (`focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background`) instead of the 3 px `ring-ring/50` glow",
+    "fidelity: nasiko-ui-lab@1b99bdda \u2014 h-9 px-3 rounded-md shadow-xs selection:* file:h-7 (the lab's three strings)"
+  ],
+  "item.tsx": [
+    "import @/registry/base-nova/ui/separator -> ./separator",
+    "cn import from registry lib/utils -> \"cn\" package (same helper)"
+  ],
+  "kbd.tsx": [],
+  "label.tsx": [],
+  "popover.tsx": [
+    "1\u00d7 Portal: `container={usePortalContainer()}` so a surface-scope MotionProvider owns where its overlays mount (motion/portal.tsx)",
+    "fidelity: nasiko-ui-lab@1b99bdda \u2014 content w-72 rounded-md border p-4 (data-state \u2192 data-open/closed, origin \u2192 --transform-origin); header gap-1"
+  ],
+  "progress.tsx": [
+    "fidelity: nasiko-ui-lab@1b99bdda \u2014 Track carries the lab's root classes (h-2 rounded-full bg-primary/20), Indicator the lab's (h-full w-full flex-1 bg-primary transition-all); compound API kept"
+  ],
+  "scroll-area.tsx": [
+    "removed unused `import * as React` (noUnusedLocals)",
+    "lab edit (nasiko-ui-lab@1b99bdda common/src/components/ui/scroll-area.tsx): viewport focus: 2 px `--ring` with a 2 px page-coloured offset (`focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background`) instead of the 3 px `ring-ring/50` glow"
+  ],
+  "select.tsx": [
+    "IconPlaceholder -> lucide-react: CheckIcon, ChevronDownIcon, ChevronUpIcon",
+    "1\u00d7 Portal: `container={usePortalContainer()}` so a surface-scope MotionProvider owns where its overlays mount (motion/portal.tsx)",
+    "lab edits (nasiko-ui-lab@1b99bdda common/src/components/ui/select.tsx): trigger focus: 2 px `--ring` with a 2 px page-coloured offset (`focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background`) instead of the 3 px `ring-ring/50` glow; `SelectContent` defaults `alignItemWithTrigger={{false}}` and `align=\"start\"` (the lab's popper/start)",
+    "fidelity: nasiko-ui-lab@1b99bdda \u2014 trigger/content/list/label/item/indicator/scroll-arrow classes the lab's (Radix vars \u2192 --available-height/--anchor-width/--transform-origin; popper translate gap = sideOffset 4; no trigger-height var in Base UI; arrows keep top-0/bottom-0 z-10 w-full bg-popover)"
+  ],
+  "separator.tsx": [],
+  "sheet.tsx": [
+    "IconPlaceholder -> lucide-react: XIcon",
+    "import @/registry/base-nova/ui/button -> ./button",
+    "1\u00d7 Portal: `container={usePortalContainer()}` so a surface-scope MotionProvider owns where its overlays mount (motion/portal.tsx)",
+    "fidelity: nasiko-ui-lab@1b99bdda \u2014 overlay bg-black/50, content bg-background with 220 ms open / 160 ms close animate-in/out slides, reduced motion fade-only, plain Close with the lab's classes (Button import dropped), header gap-1.5, title font-semibold"
+  ],
+  "skeleton.tsx": ["fidelity: nasiko-ui-lab@1b99bdda \u2014 bg-accent"],
+  "spinner.tsx": ["IconPlaceholder -> lucide-react: Loader2Icon"],
+  "switch.tsx": [],
+  "table.tsx": [
+    "fidelity: nasiko-ui-lab@1b99bdda \u2014 [&>[role=checkbox]]:translate-y-[2px] on TableHead/TableCell"
+  ],
+  "tabs.tsx": [
+    "lab edits (nasiko-ui-lab@1b99bdda common/src/components/ui/tabs.tsx): trigger focus: 2 px `--ring` with a 2 px page-coloured offset (`focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background`) instead of the 3 px `ring-ring/50` glow; inactive `text-foreground/60` -> `text-muted-foreground`",
+    "fidelity: nasiko-ui-lab@1b99bdda \u2014 root/list/trigger/content classes the lab's (h-9 list, px-2 py-1 trigger; data-[state=active] \u2192 data-active:, data-[orientation=\u2026] kept since Base UI renders data-orientation)"
+  ],
+  "textarea.tsx": [
+    "fidelity: nasiko-ui-lab@1b99bdda \u2014 the lab's class string (px-3, shadow-xs, rounded-md, the app's 2 px offset focus ring); the base-nova string drew a shorter field (full-migration fidelity run, agent Settings description)"
+  ],
+  "toggle-group.tsx": [
+    "import @/registry/base-nova/ui/toggle -> ./toggle",
+    "fidelity: nasiko-ui-lab@1b99bdda \u2014 group and item classes the lab's, default spacing 0; orientation prop kept with only its data-vertical: layout classes",
+    "a11y: a single-choice group (no `multiple`) is a radio group: root `role=\"radiogroup\"`, items `role=\"radio\"` + `aria-checked` (the lab's Radix `type=\"single\"` items were radios), one tab stop on the checked item, Arrow keys move and select, Home/End, wrap unless `loopFocus={false}`; a `multiple` group keeps Base UI's pressed buttons"
+  ],
+  "toggle.tsx": [
+    "fidelity: nasiko-ui-lab@1b99bdda \u2014 base/variant/size classes the lab's (h-9/8/10, rounded-md, accent pressed state via aria-pressed:)",
+    "a11y follow-up: `aria-checked:` copies of the pressed classes, so a single-choice ToggleGroup item (a radio, see toggle-group.tsx) shows its checked state"
+  ],
+  "tooltip.tsx": [
+    "1\u00d7 Portal: `container={usePortalContainer()}` so a surface-scope MotionProvider owns where its overlays mount (motion/portal.tsx)",
+    "lab edit (nasiko-ui-lab@1b99bdda common/src/components/ui/tooltip.tsx): `collisionPadding` prop on TooltipContent, default 8, passed to the Positioner",
+    "fidelity: nasiko-ui-lab@1b99bdda \u2014 sideOffset default 0; popup classes the lab's (origin \u2192 --transform-origin, closed \u2192 data-closed:); the Arrow keeps base-nova's per-side positioning (Base UI positions it, Radix's svg did)"
+  ],
+  "chart.tsx (shipped as charts/chart.tsx)": [
+    "ChartStyle <style dangerouslySetInnerHTML> replaced by validated CSS custom properties on the container (isSafeChartColor, chartStyleVars); `style` prop merged; THEMES const -> type; two new exports"
+  ]
+}

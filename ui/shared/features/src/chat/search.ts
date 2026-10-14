@@ -1,0 +1,54 @@
+// Ported from nasiko-ui-lab@1b99bdda common/src/features/chat/search.ts. Local edits: `import * as z from "zod/mini"` (a named import keeps all zod locales in the bundle); the `@tanstack/react-router`
+// `HistoryState` augmentation (`waitingRequest`) is dropped: there is no TanStack Router here, and the Waiting row's
+// history state returns with the chat page port; Prettier formatting.
+import * as z from "zod/mini";
+import { opt } from "@nasiko/app-core/search";
+import { CHAT_PAGE_VARIANT_KEYS, CHAT_SCENARIO_KEYS } from "./scenarioKeys";
+
+/**
+ * URL state for Chat (plan §5; v1b §5.1). The rail filter is local state, not a param.
+ * - `agent` keeps its presence whatever its value: the router's JSON search parser turns
+ *   `?agent=123` into a number and `?agent=true` into a boolean, and a blank, oversized or
+ *   non-string value must show the banner, never fall back to another kind of chat (DX-1, G-16).
+ * - `auto` arrives as the number 1 through that parser (`main.tsx`), or as '1'.
+ * `mock` and `debug` are dev/mock aids; they survive the create and opt-in navigations (DX-A2).
+ */
+export const chatSearchSchema = z.object({
+  agent: z.optional(z.unknown()),
+  auto: opt(z.union([z.literal(1), z.literal("1")])),
+  // Kept raw so an unknown value can be named in the dev banner (DX-7); isChatScenario checks it.
+  mock: opt(z.string().check(z.maxLength(200))),
+  debug: opt(z.literal("turn")),
+});
+export type ChatSearch = z.infer<typeof chatSearchSchema>;
+/** The dev aids every chat link carries (DX-A2). */
+export type ChatCarry = Pick<ChatSearch, "mock" | "debug">;
+
+/** `/chat?auto=1`: the routed empty state (UC1). */
+export const isAuto = (s: Pick<ChatSearch, "auto">) => s.auto === 1 || s.auto === "1";
+
+/** The `agent` value as text for keys and the banner (a number or array shows as typed). */
+export function agentParamText(v: unknown): string {
+  if (v === undefined) return "";
+  if (typeof v === "string") return v;
+  // From the router's JSON search parser: plain values, so stringify can't throw.
+  // eslint-disable-next-line @typescript-eslint/no-base-to-string -- plain values from the URL parser
+  return typeof v === "object" ? JSON.stringify(v) : String(v);
+}
+
+/** A `?mock=` value Chat knows (the mock handlers read the same list). */
+const isChatScenario = (v: string | undefined) =>
+  !!v && (CHAT_SCENARIO_KEYS as readonly string[]).includes(v);
+
+/** `?mock=` is a comma list (v1c DX1): at most one stream scenario plus any page variants. */
+export const mockEntries = (v: string | undefined): string[] =>
+  (v ?? "")
+    .split(",")
+    .map((e) => e.trim())
+    .filter(Boolean);
+
+/** The entries Chat doesn't know, for the dev banner. */
+export const unknownMockEntries = (v: string | undefined): string[] =>
+  mockEntries(v).filter(
+    (e) => !isChatScenario(e) && !(CHAT_PAGE_VARIANT_KEYS as readonly string[]).includes(e),
+  );

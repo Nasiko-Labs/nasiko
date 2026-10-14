@@ -1,0 +1,24 @@
+{
+  "extends": "@nasiko/config/tsconfig/base",
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "noEmit": true,
+    "incremental": true,
+    "allowJs": false,
+    "paths": {
+      "@/*": ["./src/*"]
+    },
+    "types": ["node", "vitest/globals", "@testing-library/jest-dom/vitest", "vite/client"],
+    "allowImportingTsExtensions": true
+  },
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "tests/**/*.ts",
+    "tests/**/*.tsx",
+    "vitest.config.ts",
+    "postcss.config.mjs",
+    "vite.config.ts"
+  ],
+  "exclude": ["node_modules", "dist", "dist-test"]
+}

@@ -1,0 +1,7 @@
+{
+  "extends": "@nasiko/config/tsconfig/library",
+  "compilerOptions": {
+    "types": ["node", "vitest/globals", "@testing-library/jest-dom/vitest", "vite/client"]
+  },
+  "include": ["src"]
+}

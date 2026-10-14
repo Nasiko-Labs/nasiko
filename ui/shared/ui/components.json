@@ -1,0 +1,23 @@
+{
+  "$schema": "https://ui.shadcn.com/schema.json",
+  "style": "base-nova",
+  "rsc": true,
+  "tsx": true,
+  "tailwind": {
+    "config": "",
+    "css": "src/styles/index.css",
+    "baseColor": "neutral",
+    "cssVariables": true,
+    "prefix": ""
+  },
+  "iconLibrary": "lucide",
+  "rtl": false,
+  "aliases": {
+    "components": "@nasiko/ui",
+    "utils": "@nasiko/ui/cn",
+    "ui": "@nasiko/ui/primitives",
+    "lib": "@nasiko/ui/cn",
+    "hooks": "@nasiko/ui"
+  },
+  "registries": {}
+}

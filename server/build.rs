@@ -2,14 +2,14 @@
 //! `NASIKO_SPA_BUNDLE`, which `main.rs` interpolates into `#[folder]` (rust-embed's
 //! `interpolate-folder-path` feature).
 //!
-//! The UI is the React workspace at `react/`; this binary serves its OSS app,
-//! `react/oss/app/dist`. Resolution, first match wins:
+//! The UI is the React workspace at `ui/`; this binary serves its OSS app,
+//! `ui/oss/app/dist`. Resolution, first match wins:
 //!
 //! 1. `NASIKO_REACT_DIST_OSS` — an explicitly selected release SPA (release and
 //!    image pipelines). It must exist and be a release build of this edition.
 //! 2. The workspace's own build, found by walking up from this crate to the
-//!    directory holding `react/pnpm-workspace.yaml`. Walking up, rather than a
-//!    literal `../../react/…`, is what keeps this correct at both depths: this
+//!    directory holding `ui/pnpm-workspace.yaml`. Walking up, rather than a
+//!    literal `../../ui/…`, is what keeps this correct at both depths: this
 //!    crate is `oss/server/` here and `server/` in the public repo.
 //! 3. The legacy layout (`ui/common/` beside `ui/oss/dist`). Only the public
 //!    repo still has it: while React publication is closed, the OSS sync keeps
@@ -59,9 +59,9 @@ fn resolve_bundle() -> PathBuf {
     }
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("set by cargo"));
     if let Some(workspace) = find_up(&manifest, |d| {
-        d.join("react/pnpm-workspace.yaml")
+        d.join("ui/pnpm-workspace.yaml")
             .is_file()
-            .then(|| d.join("react"))
+            .then(|| d.join("ui"))
     }) {
         let app = workspace.join(APP_DIST);
         if app.join("index.html").is_file() {
@@ -74,7 +74,7 @@ fn resolve_bundle() -> PathBuf {
             "cargo:rerun-if-changed={}",
             app.parent().expect("has a parent").display()
         );
-        return placeholder(&format!("react/{APP_DIST}"));
+        return placeholder(&format!("ui/{APP_DIST}"));
     }
     if let Some(legacy) = find_up(&manifest, |d| {
         let ui = d.join("ui");
@@ -89,7 +89,7 @@ fn resolve_bundle() -> PathBuf {
         return placeholder(&format!("ui/{LEGACY_DIST}"));
     }
     panic!(
-        "could not locate the UI: walked up from {} looking for react/pnpm-workspace.yaml \
+        "could not locate the UI: walked up from {} looking for ui/pnpm-workspace.yaml \
          (or the legacy ui/common/). The server embeds a built UI, so the tree must be present.",
         manifest.display()
     );

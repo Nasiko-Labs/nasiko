@@ -1,0 +1,9 @@
+Detach the config from an agent (falls back to your default, if any)
+
+Usage: nasiko llm-config detach <AGENT>
+
+Arguments:
+  <AGENT>  Agent name or ID
+
+Options:
+  -h, --help  Print help

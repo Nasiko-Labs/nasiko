@@ -1,0 +1,12 @@
+"use client";
+
+// Ported from nasiko-ui-lab@1b99bdda common/src/app/EditionProvider.tsx. Local edits: `"use client"`; imports ../zod-jitless for its effect (no eval under the CSP).
+import "../zod-jitless";
+import { useMemo, type ReactNode } from "react";
+import { resolveSlots, type Edition } from "./edition";
+import { EditionContext } from "./edition-context";
+
+export function EditionProvider({ edition, children }: { edition: Edition; children: ReactNode }) {
+  const value = useMemo(() => ({ edition, slots: resolveSlots(edition.layers) }), [edition]);
+  return <EditionContext value={value}>{children}</EditionContext>;
+}

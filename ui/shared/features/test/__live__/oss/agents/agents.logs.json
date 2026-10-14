@@ -1,0 +1,28 @@
+{
+  "fixture_version": 1,
+  "id": "agents.logs",
+  "recorded_at": "2026-09-29T06:41:18.040Z",
+  "window": {
+    "start": "2026-09-29T06:41:18.040Z",
+    "end": "2026-09-29T06:41:18.056Z"
+  },
+  "anchor": "2026-09-29T06:41:14.754Z",
+  "edition": "oss",
+  "identity": "admin",
+  "server": {
+    "sha": "ea233d201502a205e78339a7cb2688856b9ec2fa",
+    "dirty": false,
+    "openapi_sha256": "71f2d54fd3466adb48d9d26eed66afe028ed153262b6eeb57445c5b03b6bd9f7",
+    "binary_mtime": "2026-09-29T04:15:34.033Z"
+  },
+  "request": {
+    "method": "GET",
+    "path": "/api/observability/agents/{agent0}/logs",
+    "query": {
+      "limit": "200"
+    }
+  },
+  "status": 200,
+  "content_type": "application/json",
+  "body": []
+}

@@ -1,0 +1,19 @@
+Upload source directory or .zip and let the server build + deploy (no local Docker needed)
+
+Usage: nasiko upload [OPTIONS] [SOURCE]
+
+Arguments:
+  [SOURCE]  Agent directory or .zip file (defaults to current directory) [default: .]
+
+Options:
+  -n, --name <NAME>           Agent name (defaults to 'name' in AgentCard.json, then directory name)
+  -v, --version <VERSION>     Version tag (defaults to 'version' in AgentCard.json, then 0.1.0)
+      --port <PORT>           Container port [default: 8000]
+      --env-file <ENV_FILE>   Path to .env file with KEY=VALUE pairs
+  -e, --env <ENV>             Environment variable override (can be repeated: -e KEY=VALUE)
+      --writable              Mount a persistent, private-per-agent directory at /workspace — survives restarts, redeploys, and code updates (see docs/WRITABLE_STORAGE_FLAG.md)
+      --writable-path <PATH>  Mount the persistent directory at this absolute path instead of /workspace (implies --writable). Pick a dedicated state directory — the mount hides whatever the image ships at that path
+  -h, --help                  Print help
+
+Reads: AgentCard.json (for name/version defaults)
+Source can be a directory (auto-zipped) or a pre-made .zip file

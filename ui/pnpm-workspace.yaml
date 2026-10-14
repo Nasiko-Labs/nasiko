@@ -1,0 +1,37 @@
+# Product structure (ADR-0009). shared/ and oss/ are the publication-approved subset; ee/ is private and is
+# never exported. The public workspace file is generated from this one (tooling/editions/public-workspace.mjs).
+packages:
+  - shared/*
+  - oss/app
+  - tooling/*
+  # Private Enterprise: the full product, its feature packages, tenancy and the separately released Registry.
+  - ee/app
+  - ee/features/*
+  - ee/tenancy
+  - ee/registry/app
+  - ee/registry/features/*
+  # The private tooling extension (tooling/extensions.cjs): Enterprise rules, fixtures, ledger, publication tools.
+  - ee/tooling
+minimumReleaseAgeExclude:
+  - "@vitest/mocker@5.0.3"
+  - "@vitest/spy@5.0.3"
+  - dependency-cruiser@18.5.0
+  - ignore@7.0.11
+  - msw@3.0.1
+  - vitest@5.0.3
+# Dependency lifecycle scripts (pnpm 12 `allowBuilds`): every script-bearing
+# package must be decided here explicitly; `false` means the script is never
+# run. Nothing is approved. This is what keeps @openuidev/lang-core's
+# postinstall telemetry from executing (ADR-0002); evidence in
+# docs/phase1/evidence.md.
+#   @openuidev/lang-core  — postinstall telemetry (PostHog)
+#   esbuild               — postinstall only re-validates the optional native binary
+#   unrs-resolver         — postinstall only builds a napi fallback; prebuilt optional dep is used
+allowBuilds:
+  "@openuidev/lang-core": false
+  esbuild: false
+  unrs-resolver: false
+# Advisory overrides (security:check): patched release of a transitive dep.
+overrides:
+  "handlebars@<4.7.10": "4.7.10"
+  "source-map-js@<1.2.2": "1.2.2"

@@ -1,0 +1,56 @@
+{
+  "fixture_version": 1,
+  "id": "agents.stats",
+  "recorded_at": "2026-09-29T06:41:18.022Z",
+  "window": {
+    "start": "2026-09-29T06:41:18.022Z",
+    "end": "2026-09-29T06:41:18.035Z"
+  },
+  "anchor": "2026-09-29T06:41:14.754Z",
+  "edition": "oss",
+  "identity": "admin",
+  "server": {
+    "sha": "ea233d201502a205e78339a7cb2688856b9ec2fa",
+    "dirty": false,
+    "openapi_sha256": "71f2d54fd3466adb48d9d26eed66afe028ed153262b6eeb57445c5b03b6bd9f7",
+    "binary_mtime": "2026-09-29T04:15:34.033Z"
+  },
+  "request": {
+    "method": "GET",
+    "path": "/api/observability/agent/{agent0}/stats",
+    "query": {}
+  },
+  "status": 200,
+  "content_type": "application/json",
+  "body": {
+    "data": {
+      "project": {
+        "id": "seed-support-bot",
+        "trace_count": 11,
+        "cost_summary": {
+          "total": {
+            "cost": 0.19032400000000002
+          },
+          "prompt": {
+            "cost": 0.07237400000000001
+          },
+          "completion": {
+            "cost": 0.11794999999999999
+          },
+          "cache_read": {
+            "cost": 0
+          },
+          "cache_creation": {
+            "cost": 0
+          }
+        },
+        "latency_ms_p50": 2700,
+        "latency_ms_p99": 8146,
+        "span_annotation_names": [],
+        "document_evaluation_names": []
+      }
+    },
+    "status_code": 200,
+    "message": "Agent stats retrieved successfully"
+  }
+}

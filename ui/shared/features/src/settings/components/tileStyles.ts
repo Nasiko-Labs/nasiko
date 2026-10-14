@@ -1,0 +1,11 @@
+// Ported from nasiko-ui-lab@1b99bdda common/src/features/settings/components/tileStyles.ts. Local edits: Radix's
+// `group-has-[[data-state=checked]]` is Base UI's `group-has-[[data-checked]]` (the radio's checked attribute);
+// Prettier formatting.
+/**
+ * The choice tile of Appearance and Optimization: the whole tile is the label (the click target), its picture takes the
+ * ring when checked or focused. Shared so both pages keep one look (review advisory b).
+ */
+// items-stretch: the Label primitive centres its children, which would shrink each picture to its content.
+export const TILE = "group flex cursor-pointer flex-col items-stretch gap-2 text-sm font-normal";
+export const PICTURE =
+  "relative overflow-hidden rounded-lg border border-border transition-[border-color,box-shadow] group-hover:border-muted-foreground/50 group-has-[[data-checked]]:border-primary group-has-[[data-checked]]:ring-1 group-has-[[data-checked]]:ring-primary group-has-focus-visible:ring-2 group-has-focus-visible:ring-ring group-has-focus-visible:ring-offset-2 group-has-focus-visible:ring-offset-card motion-reduce:transition-none";

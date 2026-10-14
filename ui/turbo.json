@@ -1,0 +1,34 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "globalEnv": [
+    "NODE_ENV",
+    "OPENUI_TELEMETRY_DISABLED",
+    "DO_NOT_TRACK",
+    "NEXT_TELEMETRY_DISABLED",
+    "STORYBOOK_DISABLE_TELEMETRY",
+    "NASIKO_DEPLOYMENT",
+    "NASIKO_HARNESS",
+    "NASIKO_FLAGS",
+    "VITE_*",
+    "NASIKO_TEST_BUILD",
+    "NASIKO_API_UPSTREAM",
+    "NASIKO_WORKSPACE_ID"
+  ],
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**", "dist-test*/**"]
+    },
+    "typecheck": {
+      "dependsOn": ["^build"]
+    },
+    "lint": {},
+    "test": {
+      "dependsOn": ["^build"]
+    },
+    "dev": {
+      "cache": false,
+      "persistent": true
+    }
+  }
+}

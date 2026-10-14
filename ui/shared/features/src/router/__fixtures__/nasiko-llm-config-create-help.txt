@@ -1,0 +1,29 @@
+Create a reusable LLM config in your library
+
+Usage: nasiko llm-config create [OPTIONS] --name <NAME> --provider <PROVIDER> --model <MODEL>
+
+Options:
+      --name <NAME>
+          
+      --provider <PROVIDER>
+          
+      --model <MODEL>
+          
+      --fallback <FALLBACK>
+          Fallback model, repeatable: --fallback a --fallback b
+      --temperature <TEMPERATURE>
+          
+      --max-tokens <MAX_TOKENS>
+          
+      --api-key-secret <API_KEY_SECRET>
+          Name of your user-secret holding the provider API key
+      --secret-value <SECRET_VALUE>
+          Plaintext API key to store under --api-key-secret when it doesn't exist yet
+      --pin
+          Pin routing so the smart router never re-selects
+      --pinned-model <PINNED_MODEL>
+          Model to pin to (defaults to --model when --pin is set)
+      --default
+          Mark this as your default config
+  -h, --help
+          Print help

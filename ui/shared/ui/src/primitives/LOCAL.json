@@ -1,0 +1,30 @@
+[
+  {
+    "source": "nasiko-ui-lab",
+    "commit": "1b99bdda",
+    "name": "sidebar",
+    "from": "common/src/components/ui/sidebar.tsx",
+    "written": "packages/ui/src/primitives/sidebar.tsx",
+    "upstream": "shadcn sidebar (new-york-v4) with the lab's listed edits",
+    "localEdits": "see the provenance comment at the top of the file (Radix Slot/asChild -> Base UI useRender/render; Sheet finalFocus; TooltipProvider delay)"
+  },
+  {
+    "source": "nasiko-ui-lab",
+    "commit": "1b99bdda",
+    "name": "input-group",
+    "from": "common/src/components/ui/input-group.tsx",
+    "written": "packages/ui/src/primitives/input-group.tsx",
+    "upstream": "shadcn input-group (new-york-v4) with the lab's listed edits",
+    "localEdits": "see the provenance comment at the top of the file",
+    "note": "replaces the dropped base-nova input-group in REGISTRY-extra.json"
+  },
+  {
+    "source": "nasiko-ui-lab",
+    "commit": "1b99bdda",
+    "name": "button-group",
+    "from": "common/src/components/ui/button-group.tsx",
+    "written": "packages/ui/src/primitives/button-group.tsx",
+    "upstream": "shadcn button-group (new-york-v4)",
+    "localEdits": "see the provenance comment at the top of the file (Radix Slot/asChild -> Base UI useRender/render)"
+  }
+]

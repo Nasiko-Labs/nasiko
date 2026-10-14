@@ -33,7 +33,7 @@ impl IntoResponse for AuthRejection {
 /// No gateway required: the server validates tokens directly via AuthService.
 /// Revocation is enforced via an O(1) indexed lookup on auth_tokens.token_hash.
 pub async fn require_auth(State(state): State<AppState>, mut req: Request, next: Next) -> Response {
-    // A delegated token (react/docs/adr/0001a) takes its own path: it is only
+    // A delegated token (ui/docs/adr/0001a) takes its own path: it is only
     // ever a Bearer header, it is verified against THIS control plane's
     // audience, it goes through the same revocation and caller-exists checks,
     // and then it must pass the method/route gate before any handler runs.

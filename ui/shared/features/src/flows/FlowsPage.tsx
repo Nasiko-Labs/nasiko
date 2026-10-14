@@ -1,0 +1,441 @@
+// Ported from nasiko-ui-lab@1b99bdda common/src/features/flows/FlowsPage.tsx. Local edits: `Link` is the navigation port's `Link` (`@nasiko/app-core/navigation`) to
+// `/flows/<encoded id>`; `<Button asChild><Link to="/chat">` is a `ButtonLink` (../agents/components/ButtonLink.tsx);
+// the return-tick re-read invalidates the scoped `[...flowKeys.all(scope), "list"]` prefix (`useProductScope()`); Base
+// UI's ToggleGroup is value-array based (`value={[value]}`, `onValueChange` reads `v[0]`, an empty array keeps the
+// value as the lab's `v &&` did); `setSearch`'s `replace` admits `undefined` (exactOptionalPropertyTypes); Prettier
+// formatting.
+/**
+ * Your flows (plans/feat-flows.md §3, §2a; T5): a wide search row with the Kind and Status filters, the window in the
+ * header, requests per day by status and the Duration panel over the table.
+ *
+ * The server filters only status and search (`q`), newest first, so the page reads pages back to the window start
+ * (A2, cap 500) and applies the window and Kind itself; the charts and the table always share the same rows, and the
+ * charts say "From your latest N flows" until the server summary (FL-6) replaces them. Search, Kind and Status replace
+ * history; the window pushes it, as on Sessions.
+ */
+import Link from "@nasiko/app-core/navigation";
+import { ArrowRight, Network, Workflow } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
+import { useEffect, useRef, useState } from "react";
+import { PageHeader } from "@nasiko/ui/composites";
+import { PageLoader } from "@nasiko/ui/composites";
+import { Panel, PanelError } from "@nasiko/ui/composites";
+import { SearchInput } from "@nasiko/ui/composites";
+import { LabEmptyState as EmptyState, StateCard } from "@nasiko/ui/composites";
+import { TimeControl } from "@nasiko/ui/composites";
+import { Badge } from "@nasiko/ui/primitives";
+import { Button } from "@nasiko/ui/primitives";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@nasiko/ui/primitives";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@nasiko/ui/primitives";
+import { ToggleGroup, ToggleGroupItem } from "@nasiko/ui/primitives";
+import { ButtonLink } from "../agents/components/ButtonLink";
+import { relTime } from "../agents/format";
+import { resolveWindow } from "../tokenops/window";
+import { isEndpointAbsent, useProductScope } from "@nasiko/data-access/product";
+import { useFrozenNow, useReturnTick } from "@nasiko/app-core/useReturnTick";
+import { flowKeys, useFlowsList } from "./api";
+import { DurationPanel } from "./components/DurationPanel";
+import { RequestsChart } from "./components/RequestsChart";
+import { copy, own } from "./copy";
+import { flowKind, type FlowKind } from "./kind";
+import { buckets, durationOf, filterRows, percentiles } from "./list";
+import { rememberListSearch } from "./listSearch";
+import { LIST_CAP, LIVE_EDGE_MS, SEARCH_DEBOUNCE_MS } from "./tuning";
+import { fmtDuration } from "./precision";
+import { KIND_FILTERS, STATUS_FILTERS, type FlowsSearch } from "./search";
+import type { Flow } from "./types";
+
+const STATUS_BADGE: Record<string, "success" | "info" | "warning" | "destructive" | "muted"> = {
+  completed: "success",
+  running: "info",
+  paused: "warning",
+  failed: "destructive",
+};
+const KIND_ICON: Record<FlowKind, typeof Network> = {
+  orchestrated: Network,
+  direct: ArrowRight,
+  workflow: Workflow,
+};
+
+export function FlowsPage({
+  search,
+  setSearch,
+}: {
+  search: FlowsSearch;
+  setSearch: (patch: Partial<FlowsSearch>, opts?: { replace?: boolean | undefined }) => void;
+}) {
+  // "Now" is frozen per window, as on Sessions and TokenOps; coming back after a while moves it and re-reads the list
+  // (a fixed custom window keeps its key, so the read is explicit).
+  const returnTick = useReturnTick();
+  const queryClient = useQueryClient();
+  const scope = useProductScope();
+  const nowDate = useFrozenNow(search.preset, search.from, search.to, returnTick);
+  const win = resolveWindow({ preset: search.preset, from: search.from, to: search.to }, nowDate);
+  // A window whose start moves with "now" (24h, 7d, 30d) gets a new key, so a new read. One whose start stays (this
+  // month, last month, custom) keeps its key: on a return tick that didn't move it, re-read explicitly. A window
+  // change alone never invalidates (its new key is already reading).
+  const sinceMs = win.start.getTime();
+  const seenStart = useRef(sinceMs);
+  const seenTick = useRef(returnTick);
+  useEffect(() => {
+    if (returnTick !== seenTick.current && sinceMs === seenStart.current)
+      void queryClient.invalidateQueries({ queryKey: [...flowKeys.all(scope), "list"] });
+    seenStart.current = sinceMs;
+    seenTick.current = returnTick;
+  }, [returnTick, sinceMs, queryClient, scope]);
+  const today = nowDate.toISOString().slice(0, 10);
+  const status = search.status === "all" ? undefined : search.status;
+  const list = useFlowsList({ status, q: search.q, sinceMs });
+
+  // "← Flows" on a flow page comes back to the list as it is now (F20).
+  useEffect(() => {
+    rememberListSearch(search);
+  }, [search]);
+
+  // The search box commits after a pause; Clear filters or Back (a URL change) resets it. Its own commit doesn't: the
+  // trimmed value would eat a typed trailing space, and a key typed before the URL caught up would be lost.
+  const [draft, setDraft] = useState(search.q ?? "");
+  const [shownQ, setShownQ] = useState(search.q);
+  // The value the box last committed, until the URL shows it (null: none in flight).
+  const [committed, setCommitted] = useState<string | undefined | null>(null);
+  if (shownQ !== search.q) {
+    setShownQ(search.q);
+    if (committed !== null && committed === search.q) setCommitted(null);
+    else {
+      if (committed !== null) setCommitted(null);
+      if ((draft.trim() || undefined) !== search.q) setDraft(search.q ?? "");
+    }
+  }
+  useEffect(() => {
+    const next = draft.trim() || undefined;
+    if (next === search.q) return;
+    const t = setTimeout(() => {
+      setCommitted(next);
+      setSearch({ q: next }, { replace: true });
+    }, SEARCH_DEBOUNCE_MS);
+    return () => {
+      clearTimeout(t);
+    };
+  }, [draft, search.q, setSearch]);
+
+  const header = (
+    <PageHeader
+      title={copy.list.title}
+      description={copy.list.description}
+      actions={
+        <TimeControl
+          preset={search.preset}
+          from={search.from}
+          to={search.to}
+          today={today}
+          onChange={(n) => {
+            setSearch({ preset: n.preset, from: n.from, to: n.to });
+          }}
+        />
+      }
+    />
+  );
+
+  // The search and filters stay mounted while results load, so typing keeps its focus.
+  const controls = (
+    <div className="flex flex-wrap items-center gap-3">
+      <SearchInput
+        className="max-w-none min-w-60 flex-1"
+        aria-label={copy.list.search}
+        placeholder={copy.list.search}
+        value={draft}
+        onChange={(e) => {
+          setDraft(e.target.value);
+        }}
+      />
+      <Filter
+        label={copy.list.kind}
+        value={search.kind}
+        options={KIND_FILTERS}
+        names={copy.list.kinds}
+        onChange={(kind) => {
+          setSearch({ kind: kind }, { replace: true });
+        }}
+      />
+      <Filter
+        label={copy.list.statusLabel}
+        value={search.status}
+        options={STATUS_FILTERS}
+        names={copy.list.statuses}
+        onChange={(s) => {
+          setSearch({ status: s }, { replace: true });
+        }}
+      />
+    </div>
+  );
+
+  if (list.isPending)
+    return (
+      <Frame>
+        {header}
+        {controls}
+        <PageLoader label={copy.list.loading} inline className="h-80" />
+      </Frame>
+    );
+  // A failed re-read keeps the last good list (TanStack keeps `data`); only a first read that failed replaces it.
+  if (list.isError && !list.data)
+    return (
+      <Frame>
+        {header}
+        {controls}
+        {isEndpointAbsent(list.error) ? (
+          <StateCard tone="warning" title={copy.list.absent}>
+            {copy.list.absentBody}
+          </StateCard>
+        ) : (
+          <PanelError
+            error={list.error}
+            onRetry={() => void list.refetch()}
+            what={copy.list.what}
+          />
+        )}
+      </Frame>
+    );
+
+  const { rows: read, capped, error: partial } = list.data;
+  // A window that ends now has no upper bound: its end is rounded to the minute, and a flow that started since then
+  // belongs in it. A past window (custom, last month) stops at its end.
+  const nowMs = nowDate.getTime();
+  const end =
+    win.end.getTime() >= nowMs - LIVE_EDGE_MS ? Number.POSITIVE_INFINITY : win.end.getTime();
+  const rows = filterRows(read, win.start.getTime(), end, search.kind);
+  // The read starts at the newest flow: past the cap with every row still newer than a past window's end, nothing in
+  // the window was reached, which no filter can fix.
+  const oldestRead = read.reduce((m, f) => Math.min(m, Date.parse(f.created_at) || m), Infinity);
+  const outOfReach = capped && end !== Number.POSITIVE_INFINITY && oldestRead > end;
+  const filtered = !!search.q || search.kind !== "all" || search.status !== "all";
+  const hourly = search.preset === "24h";
+  // The chart covers the same rows as the table: an open window reaches the newest row read, even one from after the
+  // frozen "now" (a refetch).
+  const newest = rows.reduce((m, f) => Math.max(m, Date.parse(f.created_at) || 0), 0);
+  const chartEnd = end === Number.POSITIVE_INFINITY ? Math.max(nowMs, newest) + 1 : end;
+  const chartRows = buckets(rows, win.start.getTime(), chartEnd, hourly);
+  const stats = percentiles(rows);
+  const sample = copy.list.sample(rows.length);
+
+  return (
+    <Frame>
+      {header}
+      {controls}
+
+      {list.isError ? (
+        <StateCard
+          tone="warning"
+          title={copy.list.stale}
+          action={
+            <Button size="sm" variant="outline" onClick={() => void list.refetch()}>
+              {copy.list.retry}
+            </Button>
+          }
+        />
+      ) : null}
+
+      {partial ? (
+        <StateCard
+          tone="warning"
+          title={copy.list.readFailed}
+          action={
+            <Button size="sm" variant="outline" onClick={() => void list.refetch()}>
+              {copy.list.retry}
+            </Button>
+          }
+        />
+      ) : null}
+
+      {outOfReach ? (
+        <StateCard tone="warning" title={copy.list.outOfReach(LIST_CAP)}>
+          {copy.list.outOfReachBody}
+        </StateCard>
+      ) : !read.length && !filtered ? (
+        <EmptyState
+          title={copy.list.firstRun}
+          action={
+            <ButtonLink href="/chat" size="sm">
+              {copy.list.openChat}
+            </ButtonLink>
+          }
+        >
+          {copy.list.firstRunBody}
+        </EmptyState>
+      ) : (
+        <>
+          <div className="grid gap-4 lg:grid-cols-[2fr_1fr]">
+            <Panel title={copy.list.requests} labelledBy="flows-requests" subtitle={sample}>
+              <RequestsChart rows={chartRows} />
+            </Panel>
+            <Panel
+              title={copy.list.duration}
+              labelledBy="flows-duration"
+              subtitle={`${sample}. ${copy.list.durationSub}`}
+            >
+              <DurationPanel stats={stats} />
+            </Panel>
+          </div>
+          {capped ? (
+            <p className="text-xs text-muted-foreground">{copy.list.capped(LIST_CAP)}</p>
+          ) : null}
+          {rows.length ? (
+            <FlowsTable rows={rows} now={nowMs} />
+          ) : (
+            <EmptyState
+              title={copy.list.filteredEmpty(
+                search.status === "all" ? null : copy.list.statuses[search.status],
+                search.q ?? null,
+              )}
+              action={
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    setSearch({ q: undefined, kind: "all", status: "all" }, { replace: true });
+                  }}
+                >
+                  {copy.list.clear}
+                </Button>
+              }
+            />
+          )}
+        </>
+      )}
+    </Frame>
+  );
+}
+
+/** A filter: a toggle group, or a Select on phones (F24). Only one is displayed, so only one is in the a11y tree. */
+function Filter<T extends string>({
+  label,
+  value,
+  options,
+  names,
+  onChange,
+}: {
+  label: string;
+  value: T;
+  options: readonly T[];
+  names: Record<T, string>;
+  onChange: (v: T) => void;
+}) {
+  return (
+    <>
+      <ToggleGroup
+        variant="outline"
+        size="sm"
+        aria-label={label}
+        value={[value]}
+        // A click on the pressed item would clear it: keep a value.
+        onValueChange={(v: unknown[]) => {
+          if (typeof v[0] === "string" && v[0]) onChange(v[0] as T);
+        }}
+        className="max-sm:hidden"
+      >
+        {options.map((o) => (
+          <ToggleGroupItem key={o} value={o} className="pointer-coarse:min-h-11">
+            {names[o]}
+          </ToggleGroupItem>
+        ))}
+      </ToggleGroup>
+      <Select
+        value={value}
+        onValueChange={(v) => {
+          onChange(v as T);
+        }}
+      >
+        <SelectTrigger size="sm" aria-label={label} className="min-h-11 flex-1 sm:hidden">
+          {/* The label in the box too: two dropdowns that both read "All" wouldn't say which is which. */}
+          <SelectValue>{`${label}: ${names[value]}`}</SelectValue>
+        </SelectTrigger>
+        <SelectContent>
+          {options.map((o) => (
+            <SelectItem key={o} value={o}>
+              {names[o]}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </>
+  );
+}
+
+function FlowsTable({ rows, now }: { rows: Flow[]; now: number }) {
+  return (
+    <Table aria-label={copy.list.tableLabel}>
+      <TableHeader>
+        <TableRow>
+          <TableHead>{copy.list.cols.question}</TableHead>
+          <TableHead className="max-sm:hidden">{copy.list.cols.agent}</TableHead>
+          <TableHead className="max-sm:hidden">{copy.list.cols.status}</TableHead>
+          <TableHead className="text-right max-sm:hidden">{copy.list.cols.duration}</TableHead>
+          <TableHead className="text-right max-sm:hidden">{copy.list.cols.started}</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {rows.map((f) => {
+          const kind = flowKind(f);
+          const Icon = KIND_ICON[kind];
+          const root = f.root_agent_name ?? copy.panel.unknownAgent;
+          const d = durationOf(f);
+          return (
+            <TableRow key={f.flow_id}>
+              <TableCell className="max-w-0 min-w-56 max-sm:min-w-0">
+                <span className="flex min-w-0 items-center gap-2">
+                  <Icon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+                  <span className="sr-only">{copy.list.kindIcon[kind]}: </span>
+                  <Link
+                    href={`/flows/${encodeURIComponent(f.flow_id)}`}
+                    className="truncate font-medium hover:underline"
+                  >
+                    {f.title || copy.callTo(root)}
+                  </Link>
+                </span>
+                {/* Phones (F24): status and duration on a second line, the other columns hidden. */}
+                <span className="mt-1 flex items-center gap-2 pl-6 text-xs text-muted-foreground sm:hidden">
+                  <Badge variant={own(STATUS_BADGE, f.status) ?? "muted"}>
+                    {own(copy.list.statuses, f.status) ?? f.status}
+                  </Badge>
+                  {d === null ? null : <span className="tabular-nums">{fmtDuration(d)}</span>}
+                  <span>{relTime(f.created_at, now)}</span>
+                </span>
+              </TableCell>
+              <TableCell className="text-muted-foreground max-sm:hidden">
+                {kind === "orchestrated" ? copy.panel.orchestrator : root}
+              </TableCell>
+              <TableCell className="max-sm:hidden">
+                <Badge variant={own(STATUS_BADGE, f.status) ?? "muted"}>
+                  {own(copy.list.statuses, f.status) ?? f.status}
+                </Badge>
+              </TableCell>
+              <TableCell className="text-right tabular-nums max-sm:hidden">
+                {d === null ? "—" : fmtDuration(d)}
+              </TableCell>
+              <TableCell className="text-right whitespace-nowrap text-muted-foreground max-sm:hidden">
+                {relTime(f.created_at, now)}
+              </TableCell>
+            </TableRow>
+          );
+        })}
+      </TableBody>
+    </Table>
+  );
+}
+
+function Frame({ children }: { children: React.ReactNode }) {
+  return <div className="mx-auto flex w-full max-w-page flex-col gap-4">{children}</div>;
+}

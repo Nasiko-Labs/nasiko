@@ -1,0 +1,23 @@
+{
+  "name": "@nasiko/config",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./tsconfig/base": "./tsconfig.base.json",
+    "./tsconfig/library": "./tsconfig.library.json",
+    "./eslint": "./eslint.config.mjs",
+    "./eslint-react": "./eslint-react.config.mjs",
+    "./vite": "./vite.config.ts"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.5",
+    "eslint": "9.39.5",
+    "eslint-plugin-boundaries": "7.2.0",
+    "eslint-plugin-react-hooks": "7.0.1",
+    "typescript-eslint": "8.71.0",
+    "vite": "8.3.1",
+    "@vitejs/plugin-react": "6.1.1",
+    "@types/node": "24.6.0"
+  }
+}

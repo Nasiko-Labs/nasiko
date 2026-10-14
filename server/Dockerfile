@@ -13,11 +13,11 @@
 # in a component renames most of the bundle's files, because a content hash cascades through
 # every chunk that imports it.
 #
-# Two layouts, detected rather than assumed, because this file is published:
-#   react/ (pnpm workspace) — the UI. The private repo, and the public one once React
-#                             publication opens.
-#   ui/common/ (npm)        — the frozen legacy UI the public repo keeps until then
-#                             (docs/UI_SYNC.md §4). Delete this branch when the gate opens.
+# Two layouts at ui/, detected rather than assumed, because this file is published:
+#   ui/pnpm-workspace.yaml — the React workspace. The private repo, and the public one
+#                            once React publication opens.
+#   ui/common/ (npm)       — the frozen legacy UI the public repo keeps until then
+#                            (docs/UI_SYNC.md §4). Delete this branch when the gate opens.
 # The whole context is copied (not one tree) because COPY cannot name an optional directory;
 # the pnpm store cache keeps the cost to the build itself.
 FROM node:24-slim AS ui
@@ -32,15 +32,15 @@ COPY . .
 RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
     --mount=type=cache,target=/root/.npm \
     set -eu; mkdir -p /out; \
-    if [ -f react/pnpm-workspace.yaml ]; then \
-        cd react && pnpm install --frozen-lockfile && \
+    if [ -f ui/pnpm-workspace.yaml ]; then \
+        cd ui && pnpm install --frozen-lockfile && \
         NASIKO_TEST_BUILD=0 NASIKO_HARNESS=0 NASIKO_DEPLOYMENT=workspace VITE_NASIKO_API_MODE=live \
             pnpm --filter @nasiko/web build && \
         cp -R oss/app/dist/. /out/; \
     elif [ -d ui/common ]; then \
         cd ui && npm ci && node scripts/app.ts build oss && cp -R oss/dist/. /out/; \
     else \
-        echo "no UI tree in the build context (react/ or ui/)" >&2; exit 1; \
+        echo "no UI in the build context (ui/pnpm-workspace.yaml or ui/common/)" >&2; exit 1; \
     fi
 
 # ── Stage 2: build ──────────────────────────────────────────────────────────────────────────

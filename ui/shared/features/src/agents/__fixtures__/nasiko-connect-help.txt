@@ -1,0 +1,14 @@
+Register a CP by URL, or connect a supported coding agent
+
+Usage: nasiko connect [OPTIONS] <TARGET>
+
+Arguments:
+  <TARGET>  Control-plane URL, `claude`, `codex`, or `opencode`
+
+Options:
+      --name <NAME>      
+      --agent <AGENT>    Existing routing agent name or UUID (coding-agent targets only)
+      --config <CONFIG>  Nasiko LLM config name or UUID (coding-agent targets only)
+  -h, --help             Print help
+
+Config: ~/.nasiko/config.json

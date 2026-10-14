@@ -1,6 +1,6 @@
 //! Serving a built single-page app out of a `rust-embed` bundle.
 //!
-//! The UI is a Vite build (`react/oss/app/dist`, `react/ee/app/dist`). Beside `index.html`
+//! The UI is a Vite build (`ui/oss/app/dist`, `ui/ee/app/dist`). Beside `index.html`
 //! it writes two sidecar files that this module reads once at startup:
 //!
 //! - `routes.json` — `{"routes": ["/", "/agents/$agentId", …]}`, the paths the
@@ -34,7 +34,7 @@ const IMMUTABLE: &str = "public, max-age=31536000, immutable";
 const REVALIDATE: &str = "no-cache";
 
 /// Precompressed variants the SPA build writes beside a text asset
-/// (`react/packages/config/precompress.mjs`), in order of preference: the
+/// (`ui/packages/config/precompress.mjs`), in order of preference: the
 /// `Content-Encoding` token and the file suffix. Nothing is compressed at run
 /// time — the bundle is embedded, so its compressed bytes can be too — and only
 /// this handler serves them, so API and SSE responses are never touched. A
@@ -84,7 +84,7 @@ pub struct Spa {
     routes: Vec<Vec<Segment>>,
     csp: String,
     react_spa: bool,
-    /// The bundle carries `.br`/`.gz` variants (react/packages/config/precompress.mjs).
+    /// The bundle carries `.br`/`.gz` variants (ui/packages/config/precompress.mjs).
     precompressed: bool,
 }
 

@@ -1,0 +1,123 @@
+import {
+  createRootRoute,
+  createRoute,
+  createRouter,
+  Outlet,
+  type RouteComponent,
+  type RouterHistory,
+} from "@tanstack/react-router";
+import {
+  createElement,
+  lazy,
+  Suspense,
+  useEffect,
+  type ComponentType,
+  type ReactNode,
+} from "react";
+import { useQuery } from "@tanstack/react-query";
+import { RouterNavigation } from "@nasiko/app-core/router-provider";
+import { useRouter } from "@nasiko/app-core/navigation";
+import { meQueryOptions, useProductScope } from "@nasiko/data-access/product";
+const loadWorkspaceLayout = () =>
+  import("./workspace/WorkspaceLayout").then((m) => ({ default: m.WorkspaceLayout }));
+const WorkspaceLayout = lazy(loadWorkspaceLayout);
+
+/**
+ * A route component the router can preload (the `preload` it calls from `router.preloadRoute`, as
+ * `lazyRouteComponent` provides): `load` is the same import React.lazy uses, so a link's intent fetches the chunk
+ * and the click then renders without a Suspense fallback.
+ */
+function preloadable(component: () => ReactNode, load?: () => Promise<unknown>): RouteComponent {
+  if (!load) return component;
+  return Object.assign(component, {
+    preload: async () => {
+      await load();
+    },
+  });
+}
+import { WorkspaceLoading } from "./workspace/WorkspaceLoading";
+import { NotFoundRoute } from "./root/NotFoundRoute";
+import { RouteError } from "./root/RouteError";
+
+export interface AppRoute {
+  path: string;
+  public?: boolean;
+  load?: () => Promise<{ default: ComponentType }>;
+  redirect?: string;
+  superuserOr?: string;
+}
+
+function Redirect({ to }: { to: string }) {
+  const router = useRouter();
+  useEffect(() => {
+    router.replace(to);
+  }, [router, to]);
+  return null;
+}
+function Superuser({ to, Page }: { to: string; Page: ComponentType }) {
+  const me = useQuery(meQueryOptions(useProductScope()));
+  if (!me.data) return <p role="status">Checking access…</p>;
+  return me.data.is_superuser ? <Page /> : <Redirect to={to} />;
+}
+
+/** Both edition roots provide their own generated, lazy route inventory. */
+export function createWorkspaceRouter(routes: readonly AppRoute[], history?: RouterHistory) {
+  const root = createRootRoute({
+    component: () => (
+      <RouterNavigation>
+        <Suspense fallback={<WorkspaceLoading />}>
+          <Outlet />
+        </Suspense>
+      </RouterNavigation>
+    ),
+    notFoundComponent: NotFoundRoute,
+    errorComponent: ({ error, reset }) => (
+      <RouterNavigation>
+        <RouteError
+          error={error instanceof Error ? error : new Error("Route failed")}
+          reset={reset}
+        />
+      </RouterNavigation>
+    ),
+  });
+  const workspace = createRoute({
+    getParentRoute: () => root,
+    id: "workspace",
+    component: preloadable(
+      () => (
+        <WorkspaceLayout>
+          <Outlet />
+        </WorkspaceLayout>
+      ),
+      loadWorkspaceLayout,
+    ),
+  });
+  const makeRoute = (route: AppRoute) => {
+    const Page = route.load ? lazy(route.load) : NotFoundRoute;
+    return createRoute({
+      getParentRoute: () => (route.public || route.redirect ? root : workspace),
+      path: route.path.replace(/\[([^\]]+)\]/g, (_match, name: string) => "$" + name),
+      component: preloadable(
+        () =>
+          route.redirect ? (
+            <Redirect to={route.redirect} />
+          ) : route.superuserOr ? (
+            <Superuser to={route.superuserOr} Page={Page} />
+          ) : (
+            createElement(Page)
+          ),
+        route.load,
+      ),
+    });
+  };
+  return createRouter({
+    routeTree: root.addChildren([
+      ...routes.filter((r) => r.public || r.redirect).map(makeRoute),
+      workspace.addChildren(routes.filter((r) => !r.public && !r.redirect).map(makeRoute)),
+    ]),
+    ...(history ? { history } : {}),
+    // Links are the navigation port's, which preload on intent through `router.preloadRoute` (navigation.tsx).
+    defaultPreload: false,
+    scrollRestoration: true,
+  });
+}
