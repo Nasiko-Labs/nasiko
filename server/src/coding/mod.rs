@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use crate::state::AppState;
 
+pub mod entry;
 pub mod lifecycle;
 pub mod permission;
 pub mod proxy;

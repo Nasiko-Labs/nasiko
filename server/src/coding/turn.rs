@@ -79,8 +79,13 @@ pub enum CodingTurnEvent {
     /// A streamed ACP turn event (agent text, tool call, completion, failure).
     Turn(TurnEvent),
     /// A tool-permission request is awaiting a human decision. Carries the
-    /// `hitl_requests` id to resolve and a short label of the gated tool.
-    AwaitingApproval { hitl_id: uuid::Uuid, tool: String },
+    /// `hitl_requests` id to resolve and the question payload (the tool call and
+    /// the offered options) so the chat UI can render the approve/reject card
+    /// inline from the stream — not just via the Waiting-queue poll.
+    AwaitingApproval {
+        hitl_id: uuid::Uuid,
+        question: serde_json::Value,
+    },
 }
 
 /// Why a turn could not be started.
@@ -327,14 +332,25 @@ async fn drive_turn(
     let deadline = tokio::time::sleep(turn_timeout);
     tokio::pin!(deadline);
 
+    // Accumulate the agent's visible reply text across streamed chunks, so it can
+    // be persisted to `chat_messages` when the turn ends (NAS-C2). Without this the
+    // reply only ever lives in the SSE stream and the UI shows "No reply saved" on
+    // reload.
+    let mut reply = String::new();
+
     loop {
         tokio::select! {
             event = turn.recv() => match event {
                 Some(ev) => {
-                    // Fold streamed updates into the telemetry event before
-                    // forwarding them on.
-                    if let (Some(ctx), TurnEvent::Update(update)) = (telemetry.as_mut(), &ev) {
-                        ctx.telemetry.observe(update, Utc::now());
+                    // Fold streamed updates into the telemetry event and the reply
+                    // accumulator before forwarding them on.
+                    if let TurnEvent::Update(update) = &ev {
+                        if let Some(ctx) = telemetry.as_mut() {
+                            ctx.telemetry.observe(update, Utc::now());
+                        }
+                        if let Some(text) = super::sse::agent_text(update) {
+                            reply.push_str(&text);
+                        }
                     }
                     let terminal = ev.is_terminal();
                     // Stop if the caller hung up or the turn reached its end.
@@ -391,6 +407,25 @@ async fn drive_turn(
                 tracing::warn!(error = %e, %agent_id, "coding-agent: telemetry event invalid")
             }
         }
+    }
+
+    // Persist the agent's reply so it survives a reload: the chat UI loads the
+    // transcript from `chat_messages`, but a coding turn only ever streamed its
+    // answer over SSE. Role `assistant` matches the normal agent path; the dedup
+    // guard mirrors the other transcript writers in case the client saved it too.
+    // Best-effort — a persistence failure never fails the turn.
+    if !reply.trim().is_empty() {
+        let _ = sqlx::query(
+            "INSERT INTO chat_messages (session_id, role, content) \
+             SELECT $1, 'assistant', $2 WHERE NOT EXISTS ( \
+                 SELECT 1 FROM chat_messages \
+                 WHERE session_id = $1 AND role = 'assistant' AND content = $2 \
+                   AND timestamp > now() - INTERVAL '10 seconds')",
+        )
+        .bind(&lease.session_id)
+        .bind(&reply)
+        .execute(&db)
+        .await;
     }
 
     // Dropping the connection closes the pipe; the per-session agent process

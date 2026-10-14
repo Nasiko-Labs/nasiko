@@ -71,6 +71,7 @@ impl HitlPermissionDelegate {
         &self,
         request: &RequestPermissionRequest,
     ) -> Result<RequestPermissionResponse, HitlError> {
+        let question = permission_question(request);
         let row = self
             .store
             .create(NewHitlRequest::coding_agent(
@@ -78,20 +79,20 @@ impl HitlPermissionDelegate {
                 self.owner_user_id,
                 self.session_id.clone(),
                 tool_label(request),
-                permission_question(request),
+                question.clone(),
             ))
             .await?;
         let id = row.id;
         tracing::info!(hitl_id = %id, agent_id = %self.agent_id, "coding HITL: awaiting human decision");
 
-        // Surface the pending approval on the turn's SSE stream so the client
-        // knows a decision is needed and which id to resolve. Best-effort: a
-        // closed receiver (client hung up) just means no one is watching — the
-        // request is still answerable via the HITL API.
+        // Surface the pending approval on the turn's SSE stream, carrying the
+        // question so the chat UI renders the approve/reject card inline. Best-
+        // effort: a closed receiver (client hung up) just means no one is watching
+        // — the request is still answerable via the HITL API.
         if let Some(tx) = &self.notice_tx {
             let _ = tx.send(CodingTurnEvent::AwaitingApproval {
                 hitl_id: id,
-                tool: tool_label(request),
+                question,
             });
         }
 

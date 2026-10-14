@@ -73,11 +73,14 @@ pub fn classify_image(image: &str) -> Option<CodingAgentKind> {
 /// `codex-acp`). When `hitl_enabled`, Codex also needs its approval policy forced
 /// so it routes tool use through `session/request_permission` (the HITL
 /// delegate): codex-acp honors Codex's `-c key=value` overrides, so
-/// `approval_policy=untrusted` + `sandbox_mode=read-only` makes it ask before any
-/// edit or command. OpenCode is nudged a different way — via
-/// `OPENCODE_CONFIG_CONTENT`, see [`routed_model_env`] — and Claude Code asks by
-/// default (its `claude-code-acp` adapter runs in `permissionMode = "default"`),
-/// so neither needs a command argument.
+/// `approval_policy=untrusted` makes it ask before acting, and
+/// `sandbox_mode=workspace-write` lets the gated action actually run once
+/// approved. (A read-only sandbox makes Codex conclude it *cannot* write and
+/// decline outright — suggesting a shell command to the user — rather than
+/// requesting permission, so no approval is ever raised.) OpenCode is nudged a
+/// different way — via `OPENCODE_CONFIG_CONTENT`, see [`routed_model_env`] — and
+/// Claude Code asks by default (its `claude-code-acp` adapter runs in
+/// `permissionMode = "default"`), so neither needs a command argument.
 pub fn derive_acp_command(image: &str, hitl_enabled: bool) -> Option<Vec<String>> {
     let command = match classify_image(image)? {
         CodingAgentKind::ClaudeCode => vec!["claude-code-acp".to_owned()],
@@ -88,7 +91,7 @@ pub fn derive_acp_command(image: &str, hitl_enabled: bool) -> Option<Vec<String>
                     "-c".to_owned(),
                     "approval_policy=\"untrusted\"".to_owned(),
                     "-c".to_owned(),
-                    "sandbox_mode=\"read-only\"".to_owned(),
+                    "sandbox_mode=\"workspace-write\"".to_owned(),
                 ]);
             }
             cmd
@@ -270,7 +273,7 @@ mod tests {
                 "-c",
                 "approval_policy=\"untrusted\"",
                 "-c",
-                "sandbox_mode=\"read-only\""
+                "sandbox_mode=\"workspace-write\""
             ]
         );
         // OpenCode (nudged via env) and Claude Code (asks by default) are the

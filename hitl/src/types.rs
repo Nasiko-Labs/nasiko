@@ -353,14 +353,19 @@ impl NewHitlRequest {
         tool_name: impl Into<String>,
         question: Value,
     ) -> Self {
+        // For a coding agent the ACP session and the outer chat session are the
+        // same A2A contextId, so set both: `chat_session_id` is what the chat UI's
+        // pending-approval matcher keys on to show an approve/reject prompt inline
+        // (origin `coding_agent` isn't matched by the context_id-only path).
+        let context_id = context_id.into();
         Self {
             kind: HitlKind::ToolApproval,
             origin: HitlOrigin::CodingAgent,
             agent_id,
             owner_user_id,
             task_id: None,
-            context_id: Some(context_id.into()),
-            chat_session_id: None,
+            context_id: Some(context_id.clone()),
+            chat_session_id: Some(context_id),
             maf_execution_id: None,
             maf_step_index: None,
             connector_id: None,

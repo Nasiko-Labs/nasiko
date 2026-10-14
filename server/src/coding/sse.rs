@@ -13,8 +13,8 @@ use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response};
 use nasiko_acp_client::TurnEvent;
 use nasiko_types::a2a::{
-    agent_message, completed, failed, input_required, status_event, text_part, to_sse_data,
-    working_with_message,
+    AwaitingHumanKind, agent_message, awaiting_human, completed, data_part, failed, status_event,
+    text_part, to_sse_data, working_with_message,
 };
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -35,16 +35,24 @@ pub fn turn_to_sse(
 ) -> Response {
     let stream = async_stream::stream! {
         let mut saw_terminal = false;
+        // Accumulate the reply so the terminal COMPLETED can carry the full text.
+        // The streamed chunks ride `working` status-updates, which a consuming UI
+        // treats as live *activity*, not the reply; only text on the terminal
+        // COMPLETED is read back as the reply (its `outcomeOf`/`replyText`). Without
+        // it the turn settles as "no reply" and the UI warns the turn may still be
+        // running on the next send, even though it completed.
+        let mut reply = String::new();
         while let Some(event) = events.recv().await {
             match event {
                 CodingTurnEvent::Turn(TurnEvent::Update(update)) => {
                     if let Some(text) = agent_text(&update) {
+                        reply.push_str(&text);
                         yield Ok::<Event, Infallible>(working_sse(&task_id, &context_id, &text));
                     }
                 }
                 CodingTurnEvent::Turn(TurnEvent::Finished(_)) => {
                     saw_terminal = true;
-                    yield Ok(completed_sse(&task_id, &context_id));
+                    yield Ok(completed_sse(&task_id, &context_id, &reply));
                     break;
                 }
                 CodingTurnEvent::Turn(TurnEvent::Failed(err)) => {
@@ -52,11 +60,12 @@ pub fn turn_to_sse(
                     yield Ok(failed_sse(&task_id, &context_id, &err.to_string()));
                     break;
                 }
-                // Non-terminal: a tool call is paused for human approval. Surface
-                // it so the client can resolve the request, then keep streaming —
-                // the turn resumes on its own once the delegate is answered.
-                CodingTurnEvent::AwaitingApproval { hitl_id, tool } => {
-                    yield Ok(input_required_sse(&task_id, &context_id, hitl_id, &tool));
+                // Non-terminal: a tool call is paused for human approval. Emit the
+                // `hitl` data frame so the chat UI renders the inline approve/reject
+                // card live, then keep streaming — the turn resumes on its own once
+                // the delegate is answered.
+                CodingTurnEvent::AwaitingApproval { hitl_id, question } => {
+                    yield Ok(hitl_frame_sse(&task_id, &context_id, hitl_id, &question));
                 }
             }
         }
@@ -77,7 +86,9 @@ pub fn turn_to_sse(
 /// The visible reply text in an agent message chunk, if this update carries one.
 /// Thoughts, tool calls, plans and other update kinds aren't part of the
 /// user-visible reply, so they're skipped (v1 streams the agent's answer text).
-fn agent_text(update: &SessionUpdate) -> Option<String> {
+/// `pub(crate)` so the turn driver can reuse it to accumulate the reply for
+/// persistence (see `coding::turn::drive_turn`).
+pub(crate) fn agent_text(update: &SessionUpdate) -> Option<String> {
     match update {
         SessionUpdate::AgentMessageChunk(chunk) => match &chunk.content {
             ContentBlock::Text(t) if !t.text.is_empty() => Some(t.text.clone()),
@@ -94,9 +105,16 @@ fn working_sse(task_id: &str, context_id: &str, text: &str) -> Event {
     Event::default().data(to_sse_data(&event))
 }
 
-/// The terminal `completed` status-update that ends the stream.
-fn completed_sse(task_id: &str, context_id: &str) -> Event {
-    Event::default().data(to_sse_data(&status_event(completed(task_id, context_id))))
+/// The terminal `completed` status-update that ends the stream, carrying the full
+/// reply text. A consumer reads this text as the turn's reply (its streamed
+/// `working` chunks are treated as activity only), so without it the turn settles
+/// as "no reply." Empty when the agent produced no visible text.
+fn completed_sse(task_id: &str, context_id: &str, reply: &str) -> Event {
+    let mut event = completed(task_id, context_id);
+    if !reply.trim().is_empty() {
+        event.status.message = Some(agent_message(context_id, task_id, text_part(reply)));
+    }
+    Event::default().data(to_sse_data(&status_event(event)))
 }
 
 /// A terminal `failed` status-update carrying the error text.
@@ -106,31 +124,40 @@ fn failed_sse(task_id: &str, context_id: &str, error: &str) -> Event {
     ))))
 }
 
-/// A non-terminal `input-required` status: a tool call is paused for human
-/// approval. The message carries the `hitl_requests` id and how to answer it.
-fn input_required_sse(task_id: &str, context_id: &str, hitl_id: Uuid, tool: &str) -> Event {
-    Event::default().data(to_sse_data(&status_event(input_required(
+/// A non-terminal `input-required` status carrying the `hitl` data frame for a
+/// pending tool approval. The frame (`{type:"hitl", id, kind, context_id,
+/// question}`) is what the chat UI reads to render the inline approve/reject card
+/// and to resolve it via `POST /api/hitl/{id}/resolve` — the same shape the
+/// orchestrator's `build_hitl_stream_data` emits. `question` carries the ACP
+/// tool-call and the offered options.
+fn hitl_frame_sse(
+    task_id: &str,
+    context_id: &str,
+    hitl_id: Uuid,
+    question: &serde_json::Value,
+) -> Event {
+    let payload = serde_json::json!({
+        "type": "hitl",
+        "id": hitl_id.to_string(),
+        "kind": "tool_approval",
+        "task_id": task_id,
+        "context_id": context_id,
+        "question": question,
+    });
+    let message = agent_message(context_id, task_id, data_part(payload));
+    Event::default().data(to_sse_data(&status_event(awaiting_human(
         task_id,
         context_id,
-        &approval_message(hitl_id, tool),
+        AwaitingHumanKind::InputRequired,
+        message,
     ))))
-}
-
-/// The human-facing prompt for a pending tool approval: what will run and how to
-/// resolve it via the HITL API.
-fn approval_message(hitl_id: Uuid, tool: &str) -> String {
-    format!(
-        "Approval required to run {tool:?}. Resolve via \
-         POST /api/hitl/{hitl_id}/resolve with {{\"decision\":\"approve\"}} or \
-         {{\"decision\":\"reject\"}}."
-    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use agent_client_protocol::schema::v1::ContentChunk;
-    use nasiko_types::a2a::{completed, failed, input_required, status_event, to_sse_data};
+    use nasiko_types::a2a::{completed, failed, status_event, to_sse_data};
 
     #[test]
     fn agent_message_text_is_extracted() {
@@ -149,35 +176,61 @@ mod tests {
     }
 
     #[test]
-    fn approval_message_carries_the_hitl_id_and_resolve_hint() {
+    fn awaiting_approval_emits_a_hitl_frame_the_ui_can_render() {
+        // The pause is a non-terminal input-required status whose message carries
+        // the `hitl` data frame: id + kind + question, which the chat UI reads to
+        // render the inline approve/reject card and to call the resolve API.
         let id = uuid::Uuid::from_u128(0x1234_5678);
-        let msg = approval_message(id, "Edit /etc/hosts");
+        let question = serde_json::json!({
+            "kind": "acp_tool_permission",
+            "tool_call": { "title": "Edit /etc/hosts" },
+            "options": [{ "optionId": "once", "kind": "allow_once" }],
+        });
+        let data = to_sse_data(&status_event(nasiko_types::a2a::awaiting_human(
+            "t1",
+            "c1",
+            nasiko_types::a2a::AwaitingHumanKind::InputRequired,
+            nasiko_types::a2a::agent_message(
+                "c1",
+                "t1",
+                nasiko_types::a2a::data_part(serde_json::json!({
+                    "type": "hitl",
+                    "id": id.to_string(),
+                    "kind": "tool_approval",
+                    "context_id": "c1",
+                    "question": question,
+                })),
+            ),
+        )));
+        assert!(data.contains("TASK_STATE_INPUT_REQUIRED"), "got: {data}");
         assert!(
-            msg.contains(&id.to_string()),
-            "must name the hitl id: {msg}"
+            data.contains("\"type\":\"hitl\""),
+            "must carry a hitl frame: {data}"
         );
         assert!(
-            msg.contains("/api/hitl/"),
-            "must point at the resolve route"
+            data.contains("tool_approval"),
+            "frame kind must be tool_approval"
         );
+        assert!(data.contains(&id.to_string()), "must carry the hitl id");
         assert!(
-            msg.contains("approve") && msg.contains("reject"),
-            "must say how to answer: {msg}"
+            data.contains("Edit /etc/hosts"),
+            "must carry the tool-call question"
         );
-        assert!(msg.contains("Edit /etc/hosts"), "must name the tool");
     }
 
     #[test]
-    fn awaiting_approval_serializes_as_input_required() {
-        // The pause maps to the non-terminal input-required state (not failed),
-        // so the client can tell "needs a decision" from "errored".
-        let data = to_sse_data(&status_event(input_required(
-            "t1",
-            "c1",
-            &approval_message(uuid::Uuid::nil(), "Bash"),
-        )));
-        assert!(data.contains("TASK_STATE_INPUT_REQUIRED"), "got: {data}");
-        assert!(data.contains("c1") && data.contains("t1"));
+    fn completed_carries_the_reply_so_the_turn_settles_as_a_reply() {
+        // The reply rides the terminal COMPLETED (mirrors `completed_sse`); a
+        // consumer reads the streamed `working` chunks as activity, so only this
+        // text settles the turn as a reply rather than "no reply".
+        let mut event = completed("t1", "c1");
+        event.status.message = Some(agent_message("c1", "t1", text_part("the answer")));
+        let data = to_sse_data(&status_event(event));
+        assert!(data.contains("TASK_STATE_COMPLETED"), "got: {data}");
+        assert!(
+            data.contains("the answer"),
+            "reply text must ride the completed event: {data}"
+        );
     }
 
     #[test]
