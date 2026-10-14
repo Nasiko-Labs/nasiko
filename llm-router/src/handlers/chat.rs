@@ -122,7 +122,16 @@ pub(crate) async fn authenticate_caller(
 ) -> Result<AuthedCaller, GatewayError> {
     let authz = headers
         .get(AUTHORIZATION)
-        .and_then(|value| value.to_str().ok());
+        .and_then(|value| value.to_str().ok())
+        // Anthropic-format clients (e.g. Claude Code) authenticate with
+        // `x-api-key`, not `Authorization: Bearer` — so a coding agent using the
+        // Anthropic SDK carries its session token there. Accept it as a fallback;
+        // `verify_session_token` tolerates a raw token with no `Bearer` prefix.
+        .or_else(|| {
+            headers
+                .get("x-api-key")
+                .and_then(|value| value.to_str().ok())
+        });
 
     if !ctx.cfg.agent_jwt_secret.is_empty()
         && let Some(raw) = authz
