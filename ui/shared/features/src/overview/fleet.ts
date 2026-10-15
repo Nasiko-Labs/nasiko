@@ -39,6 +39,24 @@ const usage = (rows: readonly AgentFinopsRow[] | undefined) => {
     });
   return m;
 };
+/**
+ * The preceding window, read off `compare=previous` instead of a second request (ported from nasiko-cloud-rs
+ * development, 480650a69). `null` when the response carried no comparison, so "no previous data" stays
+ * distinguishable from "every agent spent nothing".
+ */
+const previousUsage = (rows: readonly AgentFinopsRow[] | undefined) => {
+  if (!rows?.some((r) => r.previous)) return null;
+  const m = new Map<string, UsageWindow>();
+  for (const r of rows)
+    m.set(r.agent_id, {
+      cost: r.previous?.total_cost ?? 0,
+      operations: r.previous?.operations ?? 0,
+      // The comparison window only carries what a delta needs; p95 is not part
+      // of it, and inventing one would rate latency against a fabricated number.
+      p95: null,
+    });
+  return m;
+};
 const ZERO: UsageWindow = { cost: 0, operations: 0, p95: null };
 
 export interface FleetHealth {
@@ -80,8 +98,9 @@ export function useFleetHealth(now: Date, enabled = true): FleetHealth {
   );
   // First run (no agents but harnesses) fetches nothing else (design review 7A).
   const on = enabled && agents.length > 0;
-  const cur = useDashboard(win7, {}, "agent", "current", on);
-  const prev = useDashboard(win7, {}, "agent", "previous", on);
+  // One dashboard, not two: `compare=previous` carries each agent's preceding
+  // window in the same response.
+  const cur = useDashboard(win7, {}, "agent", "current", on, true);
   const d30 = useDashboard(win30, {}, "agent", "current", on);
   const ts = useTimeseries(win30, {}, on);
   // Budgets hidden: no server support for /api/budgets yet (R-L10). Restore the commented lines when it lands.
@@ -107,7 +126,6 @@ export function useFleetHealth(now: Date, enabled = true): FleetHealth {
   const costFailed =
     on &&
     (cur.isError ||
-      prev.isError ||
       d30.isError ||
       ts.isError ||
       (budgets.isError && !budgetsAbsent) ||
@@ -117,7 +135,8 @@ export function useFleetHealth(now: Date, enabled = true): FleetHealth {
     if (!enabled || !dir.data) return null;
     const t = now.getTime();
     const current = cur.data && !costFailed ? usage(cur.data.agents) : null;
-    const previous = prev.data && !prev.isError ? usage(prev.data.agents) : null;
+    // Same response as `current`, so it can no longer fail or arrive separately.
+    const previous = cur.data ? previousUsage(cur.data.agents) : null;
     const perOp30 = new Map(
       // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive read of server data (the lab's)
       (d30.data?.agents ?? []).map((r) => [r.agent_id, r.avg_cost_per_operation ?? null]),
@@ -167,8 +186,6 @@ export function useFleetHealth(now: Date, enabled = true): FleetHealth {
     now,
     cur.data,
     costFailed,
-    prev.data,
-    prev.isError,
     d30.data,
     ts.data,
     win30,
@@ -188,8 +205,7 @@ export function useFleetHealth(now: Date, enabled = true): FleetHealth {
   const budgetsSettled =
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- the lab's guard, kept as written
     budgetsAbsent || budgets.isError || budgetStatus.isSuccess || budgetStatus.isError;
-  const ratingsPending =
-    on && (cur.isPending || prev.isPending || d30.isPending || ts.isPending || !budgetsSettled);
+  const ratingsPending = on && (cur.isPending || d30.isPending || ts.isPending || !budgetsSettled);
   return {
     isPending: dir.isPending || (on && cur.isPending),
     error: dir.error,
@@ -203,7 +219,7 @@ export function useFleetHealth(now: Date, enabled = true): FleetHealth {
     p95,
     retry: () => void dir.refetch(),
     retryCost: () => {
-      for (const q of [cur, prev, d30, ts, budgets, budgetStatus]) if (q.isError) void q.refetch();
+      for (const q of [cur, d30, ts, budgets, budgetStatus]) if (q.isError) void q.refetch();
     },
   };
 }

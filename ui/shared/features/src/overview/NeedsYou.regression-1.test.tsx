@@ -24,7 +24,7 @@ const data = (n: number): NeedsYouData => ({
     requests: { state: "ok", value: { chats: [], outside: 0 } },
     agents: { state: "ok", value: agents(n) },
     budgets: { state: "absent" },
-    sessions: { state: "ok", value: { failed: 0, checked: 25, agents: [] } },
+    sessions: { state: "ok", value: { failed: 0, agents: [] } },
   }),
   lastChecked: 0,
   retry: { requests: () => {}, agents: () => {}, budgets: () => {}, sessions: () => {} },

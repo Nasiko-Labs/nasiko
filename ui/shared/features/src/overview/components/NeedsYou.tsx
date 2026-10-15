@@ -261,7 +261,7 @@ function Row({
       );
       break;
     case "sessions":
-      title = copy.needs.sessions(row.failed, row.checked);
+      title = copy.needs.sessions(row.failed);
       detail = row.agents.join(", ");
       action = (
         <Action

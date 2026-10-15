@@ -5,7 +5,8 @@
 // `meQueryOptions(scope)` (the lab's `meQuery`); `ApiError` is `ProductApiError`; `!` on the row and verdict reads by
 // index of the arrays they were mapped from (`noUncheckedIndexedAccess` here); the prefetches and the session re-check use `query`/`infiniteQuery` (the lab's
 // `prefetchQuery`/`prefetchInfiniteQuery`/`fetchQuery`, deprecated here; prefetches swallow errors as before);
-// Prettier formatting.
+// Prettier formatting. Ported from nasiko-cloud-rs development (480650a69): `useSessionPage` (a small filtered page
+// for the Overview), its key scoped as above.
 /* eslint-disable @typescript-eslint/no-non-null-assertion -- rows and verdicts are read at the indexes they were mapped from */
 /**
  * Sessions queries. The server's session/list takes only start_time/limit/offset
@@ -71,7 +72,57 @@ export const sessionKeys = {
   day: (scope: Scope, day: string) => productKey(scope, "sessions", "day", day),
   detail: (scope: Scope, id: string) => productKey(scope, "sessions", "detail", id),
   trace: (scope: Scope, id: string) => productKey(scope, "trace", id),
+  /** A small, filtered page under its own key — the Overview's two reads. */
+  page: (scope: Scope, windowKey: string, limit: number, status?: string) =>
+    productKey(scope, "sessions", "page", windowKey, limit, status ?? "any"),
 };
+
+export interface SessionPageOptions {
+  limit: number;
+  /** Filtered in SQL, so `matchingCount` is every match in the window. */
+  status?: "failed" | "ok" | "running";
+}
+
+/**
+ * One small page of `session/list`, with the server's own status and count.
+ *
+ * Separate from `useFleetSessions` on purpose: that one is the Sessions page's
+ * 100-row infinite list, and sharing its key made the Overview pay for 100 rows
+ * to show five.
+ */
+export function useSessionPage(
+  windowKey: string,
+  start: Date,
+  end: Date,
+  opts: SessionPageOptions,
+  enabled: boolean,
+) {
+  const path = withQuery(`${OBS}/session/list`, {
+    start_time: start.toISOString(),
+    end_time: end.toISOString(),
+    limit: opts.limit,
+    ...(opts.status ? { status: opts.status } : {}),
+  });
+  const q = useQuery({
+    queryKey: sessionKeys.page(useProductScope(), windowKey, opts.limit, opts.status),
+    queryFn: async ({ signal }) => {
+      const raw = await apiFetch<SessionListResponse>(path, { signal });
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- server data, read defensively whatever the generated type says
+      if (!raw?.data?.sessions)
+        throw new ApiError(200, raw, path, "session/list → unexpected response");
+      return raw.data;
+    },
+    staleTime: Infinity,
+    enabled,
+    meta: { path },
+  });
+  return {
+    ...q,
+    rows: q.data?.sessions ?? [],
+    /** Every row matching the filter in the window, not just this page. */
+    matchingCount: q.data?.matching_count ?? 0,
+  };
+}
 
 function listPath(start: Date, limit: number, offset: number) {
   return withQuery(`${OBS}/session/list`, { start_time: start.toISOString(), limit, offset });

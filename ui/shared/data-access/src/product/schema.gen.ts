@@ -375,6 +375,48 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/agents/{id}/mcp-token": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Mint (rotate) a local process's MCP gateway credential.
+     * @description The same credential a deployed container receives as `MCP_GATEWAY_TOKEN`
+     *     at deploy time (`mcp::wiring::inject_agent_gateway_token`), minted here on
+     *     demand for a local coding agent (Claude Code / Codex / OpenCode, bound via
+     *     `nasiko connect`), which is never deployed and so never receives one
+     *     automatically. Owner-only, and restricted to CLI-bound rows
+     *     (`coding_agent_integration_id` set): minting for a deployed agent would
+     *     leave its running container(s) holding a token the row stops recognizing
+     *     once the rotation grace window lapses, with no way to hand them the new
+     *     one short of a redeploy. Rotation keeps that same grace window
+     *     (`nasiko_mcp_gateway::agent_tokens::ROTATION_GRACE_SECS`): the previous
+     *     token keeps authenticating for a while after a re-mint, so POST alone does
+     *     not immediately cut off a leaked credential — use `DELETE` for that.
+     */
+    post: operations["issue_mcp_token"];
+    /**
+     * Revoke the agent's MCP gateway credential.
+     * @description Kills every gateway credential of the agent — the live one and any
+     *     grace-window predecessor (`nasiko_mcp_gateway::agent_tokens::revoke`) —
+     *     immediately, with none of POST's rotation grace. A superuser may call this
+     *     on any agent: revoking grants nothing, so unlike minting it cannot
+     *     impersonate the agent. Idempotent: revoking an agent with no live
+     *     credential still answers 204. For a deployed agent this leaves it 401ing
+     *     at `/api/mcp` until its next redeploy re-mints a credential — the
+     *     documented recovery.
+     */
+    delete: operations["revoke_mcp_token"];
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/agents/{id}/rollback": {
     parameters: {
       query?: never;
@@ -628,6 +670,10 @@ export interface paths {
      *     1. bearer token missing/unknown/revoked → 401
      *     2. `tools/list` (and initialize/ping) → allowed with agent-only identity
      *     3. `tools/call` with no/unknown/dead-flow traceparent → 403
+     *     3b. …unless the agent's row is a CLI-bound local coding agent
+     *         (`coding_agent_integration_id` set) — such a row is never
+     *         dispatched through a flow, so a flow-less `tools/call` resolves to its
+     *         owner instead of 403 (`agent_owner`, below `dispatch`)
      *     4. `tools/call` where the agent is not a recorded flow participant → 403
      *     5. identity store unreachable → 403
      */
@@ -1333,6 +1379,102 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/me/context": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    /**
+     * `PATCH /api/me/context` — strategy, tier and switch in one transaction.
+     * @description The two older routes stay for compatibility, but a Save that writes through them can half
+     *     succeed: the strategy lands, the tier 500s, and the page is left holding a draft that disagrees
+     *     with the server. One statement cannot.
+     */
+    patch: operations["update_context"];
+    trace?: never;
+  };
+  "/api/me/context-preview": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * `POST /api/me/context-preview` — what each tier would keep, on the caller's latest chat.
+     * @description Runs the real selectors over real history and sends nothing to any model, so the figures cannot
+     *     drift from what a turn would actually carry.
+     */
+    post: operations["context_preview"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/me/context-strategy": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get: operations["get_context_strategy"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch: operations["update_context_strategy"];
+    trace?: never;
+  };
+  "/api/me/pacms-budget": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get: operations["get_pacms_budget"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch: operations["update_pacms_budget"];
+    trace?: never;
+  };
+  "/api/me/settings-history": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * `GET /api/me/settings-history` — when the caller's own preferences changed.
+     * @description A bare JSON array, newest first. The chart reads it to mark the day a user switched strategy, so
+     *     a jump in the trend has a cause beside it.
+     */
+    get: operations["get_settings_history"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/model-registry": {
     parameters: {
       query?: never;
@@ -1435,6 +1577,78 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/observability/finops/attributions": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Agent/Workflow attribution table, server-side sorted and paginated —
+     *     separate from `/dashboard` so a sort/page click doesn't re-run the
+     *     KPI/timeseries work.
+     */
+    get: operations["get_finops_attributions"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/observability/finops/context-savings": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** `GET /api/observability/finops/context-savings` */
+    get: operations["get_context_savings"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/observability/finops/context-savings/agents": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** `GET /api/observability/finops/context-savings/agents` */
+    get: operations["get_context_savings_agents"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/observability/finops/context-savings/top-requests": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** `GET /api/observability/finops/context-savings/top-requests` */
+    get: operations["get_context_savings_top_requests"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/observability/finops/dashboard": {
     parameters: {
       query?: never;
@@ -1469,6 +1683,60 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/observability/finops/spend-calendar": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Day-of-month spend heatmap for the given month. */
+    get: operations["get_finops_spend_calendar"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/observability/finops/spend-calendar/day": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Hourly spend drill-down for one calendar day. */
+    get: operations["get_finops_spend_calendar_day"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/observability/finops/spend-timeseries": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Spend-over-time series, dollar-only, honoring the full requested range
+     *     (not silently clamped to Tempo's 168h single-search limit).
+     */
+    get: operations["get_finops_spend_timeseries"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/observability/session/list": {
     parameters: {
       query?: never;
@@ -1476,7 +1744,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** List chat sessions (DB-authoritative, enriched from Tempo when available). */
+    /** List chat sessions. Served entirely from Postgres — no trace-store reads. */
     get: operations["get_all_sessions"];
     put?: never;
     post?: never;
@@ -1732,6 +2000,22 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/settings/context-tiers": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get: operations["get_context_tiers"];
+    put: operations["update_context_tiers"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/usage/by-agent": {
     parameters: {
       query?: never;
@@ -1809,7 +2093,7 @@ export interface paths {
     };
     /**
      * List users (superuser-only; EE additionally exposes a role/org-scoped
-     *     listing at `/api/org/users` — see the EE server's org users route).
+     *     listing at `/api/org/users` — see the EE org-users routes).
      */
     get: operations["list_users"];
     put?: never;
@@ -1851,7 +2135,7 @@ export interface paths {
     };
     /**
      * The caller's own user record (superuser-only route; EE overrides this
-     *     with the same EE-aware shape as `get_user` — see the EE server's users routes).
+     *     with the same EE-aware shape as `get_user` — see the EE users module).
      */
     get: operations["get_me"];
     put?: never;
@@ -1891,7 +2175,7 @@ export interface paths {
     /**
      * Update a user's own-editable fields (superuser-only; EE overrides this
      *     route to additionally accept `department_id`/`team_id` — see
-     *     the EE server's `ee_update_user`). An `is_active: false`
+     *     the EE `ee_update_user` override). An `is_active: false`
      *     transition here runs the same self-deactivate/last-admin guards as the
      *     dedicated `/deactivate` route.
      */
@@ -1916,7 +2200,7 @@ export interface paths {
     };
     /**
      * Agents accessible to a user (owner ∪ public ∪ direct user-grant; EE's
-     *     override in the EE server additionally checks team/department
+     *     EE override additionally checks team/department
      *     grants).
      */
     get: operations["accessible_agents_for_user"];
@@ -1996,7 +2280,7 @@ export interface paths {
     /**
      * Change a user's role and immediately revoke their live tokens. EE wraps
      *     this with a leadership-displacement cascade — see
-     *     the EE server's `ee_change_role`.
+     *     the EE `ee_change_role` override.
      */
     put: operations["change_role"];
     post?: never;
@@ -2071,6 +2355,11 @@ export interface components {
     };
     Agent: {
       capabilities: unknown;
+      /**
+       * @description Per-agent opt-in for structural payload compression on this agent's LLM calls
+       *     (`nasiko-compress`, applied in the LLM router). Off unless explicitly enabled.
+       */
+      compress_enabled?: boolean;
       /** Format: date-time */
       created_at: string;
       default_input_modes: string[];
@@ -2083,6 +2372,14 @@ export interface components {
       id: string;
       image?: string | null;
       metadata: unknown;
+      /**
+       * @description Drives the control plane's own minimal-code ladder injection at A2A
+       *     dispatch time (a2a_dispatch.rs), not a secret — unlike the old
+       *     CODING_AGENT_MINIMAL_CODE env var this replaces, this column has a
+       *     real read-back route, which is what lets the Settings-tab switch show
+       *     its actual current state instead of a per-browser guess.
+       */
+      minimal_code_enabled: boolean;
       name: string;
       /** Format: uuid */
       owner_id: string;
@@ -2114,6 +2411,11 @@ export interface components {
       can_manage: boolean;
       capabilities: unknown;
       coding_agent_integration_id?: string | null;
+      /**
+       * @description Per-agent payload-compression opt-in. The Settings toggle renders from this, so a
+       *     projection that omits it shows the switch off however the column reads.
+       */
+      compress_enabled: boolean;
       /** Format: date-time */
       created_at: string;
       defaultInputModes: string[];
@@ -2121,10 +2423,35 @@ export interface components {
       description: string;
       display_name?: string | null;
       documentationUrl?: string | null;
+      /**
+       * @description Whether this agent's card reads as code work, and so should be offered minimal-code
+       *     mode at all. Served rather than re-derived in the browser: the settings page used to
+       *     run its own `/code/i` over the skills, mirroring a Postgres `ILIKE '%code%'` in the
+       *     dispatch path, and the two could disagree — which is exactly what happened, since both
+       *     missed `coding` (no "code" in it) while matching `encode`.
+       */
+      has_coding_skills: boolean;
       iconUrl?: string | null;
       /** Format: uuid */
       id: string;
       is_coding_agent: boolean;
+      /**
+       * @description Owner-writable bag, and the home of `features.*` — the flags
+       *     `AppState::agent_env` turns into `NASIKO_<KEY>` on the container.
+       *
+       *     Third occurrence of the same trap the two fields above warn about, and the worst of
+       *     them: the Settings feature switches render from `metadata.features`, and the UI builds
+       *     its `PUT` body by spreading the value it read back. Omitted here it was always
+       *     `undefined`, so every switch showed off however the column read *and* each save
+       *     replaced the whole column with just the one feature it was toggling.
+       */
+      metadata: unknown;
+      /**
+       * @description Drives the control plane's minimal-code ladder injection at A2A dispatch
+       *     time (a2a_dispatch.rs). Same reasoning as compress_enabled above — omit
+       *     it here and the Settings toggle shows off regardless of the real value.
+       */
+      minimal_code_enabled: boolean;
       name: string;
       /**
        * Format: uuid
@@ -2145,6 +2472,21 @@ export interface components {
       updated_at: string;
       url: string;
       version: string;
+    };
+    /**
+     * @description One agent's preceding-window totals. Deliberately a subset: enough to compute
+     *     a delta, not a second full row.
+     */
+    AgentFinopsPrevious: {
+      /** Format: double */
+      avg_latency_ms?: number | null;
+      operations: number;
+      /** Format: int64 */
+      tool_call_count: number;
+      /** Format: double */
+      total_cost: number;
+      /** Format: int64 */
+      total_tokens: number;
     };
     AgentFinopsRow: {
       agent_id: string;
@@ -2183,6 +2525,7 @@ export interface components {
        */
       is_capped: boolean;
       operations: number;
+      previous?: null | components["schemas"]["AgentFinopsPrevious"];
       /** Format: int64 */
       prompt_tokens: number;
       /** Format: int64 */
@@ -2271,6 +2614,11 @@ export interface components {
     AgentSearchResult: components["schemas"]["Agent"] & {
       /** Format: double */
       score: number;
+    };
+    AgentSpendSlice: {
+      agent_name: string;
+      /** Format: double */
+      spend_usd: number;
     };
     AgentStatsData: {
       project: components["schemas"]["AgentProjectStats"];
@@ -2382,6 +2730,37 @@ export interface components {
       parsed_value?: Record<string, never> | null;
       value: string;
     };
+    /**
+     * @description A user's chosen conversation-history context-selection strategy. Mirrors
+     *     the Postgres `context_selection_strategy` enum (migration 0033) —
+     *     deriving `sqlx::Type` lets sqlx decode the column directly instead of
+     *     treating it as TEXT.
+     * @enum {string}
+     */
+    ContextSelectionStrategy: "pacms" | "topk" | "lastk";
+    ContextStrategyUpdate: {
+      /** @description Sent only when it changed. Absent means keep. */
+      enabled?: boolean | null;
+      strategy: components["schemas"]["ContextSelectionStrategy"];
+    };
+    ContextTiersUpdate: {
+      compress_history: boolean;
+      /** Format: int64 */
+      compress_min_bytes: number;
+      context_k: components["schemas"]["TierTable"];
+      /** Format: date-time */
+      expected_updated_at: string;
+      /** Format: int64 */
+      mandatory_recent: number;
+      pacms_budget: components["schemas"]["TierTable"];
+      /** Format: int64 */
+      pool_size: number;
+    };
+    ContextUpdate: {
+      enabled?: boolean | null;
+      level?: null | components["schemas"]["PacmsBudgetLevel"];
+      strategy?: null | components["schemas"]["ContextSelectionStrategy"];
+    };
     CostEntry: {
       /** Format: double */
       cost?: number | null;
@@ -2444,6 +2823,29 @@ export interface components {
        *     platform-key path.
        */
       api_key_secret_name?: string | null;
+      /**
+       * @description Accepted for client uniformity and ignored: a create has no previous embedding
+       *     model, so there is never anything to confirm.
+       */
+      confirm_embedding_change?: boolean;
+      embedding_api_key_secret_name?: string | null;
+      embedding_model?: string | null;
+      /**
+       * @description When true, this config's `embedding_model` outranks the model an agent names on
+       *     its own `POST /v1/embeddings` request.
+       */
+      embedding_model_override?: boolean;
+      /**
+       * @description Embedding destination — independent of the chat provider/model above. Set the
+       *     provider and model together or not at all; the secret name is optional and means
+       *     "use the platform key for this provider" when absent.
+       */
+      embedding_provider?: string | null;
+      /**
+       * @description Plaintext key to store under `embedding_api_key_secret_name` when no such secret
+       *     exists yet — the embedding-side twin of `secret_value`.
+       */
+      embedding_secret_value?: string | null;
       fallback_models?: string[];
       /** @description Mark this as the caller's default (clears any prior default). */
       is_default?: boolean;
@@ -2575,6 +2977,12 @@ export interface components {
           /** @enum {string} */
           view: "workflow";
         };
+    FinopsAttributionsResponse: {
+      data: components["schemas"]["FinopsAttributions"];
+      message: string;
+      /** Format: int32 */
+      status_code: number;
+    };
     FinopsDashboardData: {
       agents: components["schemas"]["AgentFinopsRow"][];
       attributions: components["schemas"]["FinopsAttributions"];
@@ -2594,6 +3002,23 @@ export interface components {
       /** Format: int32 */
       status_code: number;
     };
+    FinopsDayDrilldown: {
+      /** Format: double */
+      avg_hourly_spend_usd: number;
+      date: string;
+      /** @description 24 entries, 12am-12am UTC. */
+      hours: components["schemas"]["SpendHourPoint"][];
+      /** Format: double */
+      others_spend_usd: number;
+      /** @description Top-N agents by total spend that day; the remainder is rolled into `others_spend_usd`. */
+      top_agents: components["schemas"]["AgentSpendSlice"][];
+    };
+    FinopsDayDrilldownResponse: {
+      data: components["schemas"]["FinopsDayDrilldown"];
+      message: string;
+      /** Format: int32 */
+      status_code: number;
+    };
     FinopsKpis: {
       active_agents: components["schemas"]["KpiValue"];
       /** @description Fleet-wide p50 latency (label kept for UI backward compat). */
@@ -2606,6 +3031,47 @@ export interface components {
       total_spend: components["schemas"]["KpiValue"];
       total_tokens: components["schemas"]["KpiValue"];
       total_tool_calls: components["schemas"]["KpiValue"];
+    };
+    FinopsSpendCalendar: {
+      days: components["schemas"]["SpendCalendarDay"][];
+      /**
+       * @description Dates that fall inside the caller's active 24h/7d/30d range, so the
+       *     frontend can pre-highlight matching blocks without recomputing dates.
+       */
+      highlighted_dates: string[];
+    };
+    FinopsSpendCalendarResponse: {
+      data: components["schemas"]["FinopsSpendCalendar"];
+      message: string;
+      /** Format: int32 */
+      status_code: number;
+    };
+    FinopsSpendTimeseries: {
+      /** @description "hour" | "day" */
+      bucket: string;
+      points: components["schemas"]["SpendTimeseriesPoint"][];
+      /**
+       * @description The preceding window of the same length, present only with
+       *     `compare=previous`. Same bucketing, so points line up index-for-index
+       *     once both are zero-filled.
+       */
+      previous?: components["schemas"]["SpendTimeseriesPoint"][] | null;
+      /**
+       * @description Per-agent series, present only with `group_by=agent`. The top `top`
+       *     agents by spend over the whole window, plus one `other` series carrying
+       *     everything below them, so the series still sum to `points`.
+       *
+       *     Without this a caller charting the top N drivers had to issue one
+       *     `agent_id=`-filtered request per driver — a fan-out whose size grew with
+       *     the chart.
+       */
+      series?: components["schemas"]["SpendAgentSeries"][] | null;
+    };
+    FinopsSpendTimeseriesResponse: {
+      data: components["schemas"]["FinopsSpendTimeseries"];
+      message: string;
+      /** Format: int32 */
+      status_code: number;
     };
     FinopsSummary: {
       active_agents: number;
@@ -2813,6 +3279,27 @@ export interface components {
        */
       status_code: number;
     };
+    McpTokenEnvelope: {
+      data: components["schemas"]["McpTokenResponse"];
+      message: string;
+      /** Format: int32 */
+      status_code: number;
+    };
+    McpTokenResponse: {
+      /**
+       * @description `{gateway_url}/s/{token}` — the credential-bearing URL form for MCP
+       *     clients that accept only a `url`, or `null` when `gateway_url` is
+       *     unset. This URL is itself a secret: handle it exactly like `token`.
+       */
+      connect_url?: string | null;
+      /** @description The platform's configured public gateway URL, or `null` when unset. */
+      gateway_url?: string | null;
+      /**
+       * @description The plaintext gateway credential, returned exactly once — store it,
+       *     the control plane keeps only its hash.
+       */
+      token: string;
+    };
     /**
      * @description One model within a provider group. Field names mirror the `model_pricing` columns;
      *     prices are null when the model has no currently-effective price row.
@@ -2894,9 +3381,28 @@ export interface components {
       prompt: components["schemas"]["CostOnly"];
       total: components["schemas"]["CostOnly"];
     };
+    /**
+     * @description A user's chosen conversation-history tier. Mirrors the Postgres
+     *     `pacms_budget_level` enum (migration 0032) — deriving `sqlx::Type` lets
+     *     sqlx decode the column directly instead of treating it as TEXT.
+     *
+     *     The tier only names *which* level a user picked; the actual token counts
+     *     (`Pacms` strategy, via [`Self::tokens`]) and item counts (`TopK`/`LastK`
+     *     strategies, via [`Self::k`]) are both operator-configurable (see
+     *     [`ContextTiers`]), so an operator can retune what "high" means per
+     *     deployment without touching user data.
+     * @enum {string}
+     */
+    PacmsBudgetLevel: "low" | "medium" | "high";
+    PacmsBudgetUpdate: {
+      level: components["schemas"]["PacmsBudgetLevel"];
+    };
     Pagination: {
       end_cursor?: string | null;
       has_next_page: boolean;
+    };
+    PreviewRequest: {
+      strategy: components["schemas"]["ContextSelectionStrategy"];
     };
     ProbeRequest: {
       url: string;
@@ -3118,6 +3624,13 @@ export interface components {
       data: components["schemas"]["SessionDetailData"];
     };
     SessionListData: {
+      /**
+       * Format: int64
+       * @description Rows matching the filters, so a caller can say "3 failed sessions" from
+       *     one request instead of counting a sampled page. Exact when `status`
+       *     narrows the set; otherwise capped (see `sessions_sql`).
+       */
+      matching_count: number;
       pagination: components["schemas"]["Pagination"];
       sessions: components["schemas"]["SessionSummary"][];
       successful_agents: number;
@@ -3132,6 +3645,18 @@ export interface components {
       /** Format: int64 */
       duration_ms?: number | null;
       end_time?: string | null;
+      /**
+       * Format: int32
+       * @description Unrecovered error spans across the session's traces (the SE-3 rule).
+       *     `null` while none of them has been materialized yet -- "not yet known",
+       *     never "zero".
+       */
+      error_count?: number | null;
+      /**
+       * Format: int32
+       * @description Requests in this session that ended in an error.
+       */
+      failed_flows: number;
       first_input?: string | null;
       id: string;
       last_output?: string | null;
@@ -3141,6 +3666,12 @@ export interface components {
       session_annotations: Record<string, never>[];
       session_id: string;
       start_time?: string | null;
+      /**
+       * @description `running` | `ok` | `failed`, derived from the session's flow rows — the
+       *     outcome recorded at the proxy. `null` when the session has no recorded
+       *     flow, which is "unknown", never "ok".
+       */
+      status?: string | null;
       token_usage: components["schemas"]["TokenUsageSummary"];
       /** Format: double */
       trace_latency_ms_p50?: number | null;
@@ -3262,6 +3793,30 @@ export interface components {
       id: string;
       trace_id: string;
     };
+    SpendAgentPoint: {
+      bucket_start: string;
+      operations: number;
+      /** Format: double */
+      spend_usd: number;
+    };
+    /** @description One agent's spend over the window's buckets. */
+    SpendAgentSeries: {
+      /**
+       * @description Resolved agent UUID when exactly one live agent carries that name, so
+       *     callers key on the id rather than the name (TK-3, H-5).
+       */
+      agent_id?: string | null;
+      /**
+       * @description Raw trace name, matching `top_agent_name` on the fleet points. `None` for
+       *     the aggregate `other` series.
+       */
+      agent_name?: string | null;
+      /** @description True for the single aggregate series holding every agent outside the top. */
+      is_other: boolean;
+      points: components["schemas"]["SpendAgentPoint"][];
+      /** Format: double */
+      total_spend_usd: number;
+    };
     SpendByAgentBreakdown: {
       /**
        * @description Top-5 agents by spend, followed by an "Others" entry when there are
@@ -3270,6 +3825,34 @@ export interface components {
       slices: components["schemas"]["SpendPieSlice"][];
       /** Format: double */
       total_spend_usd: number;
+    };
+    SpendCalendarDay: {
+      date: string;
+      /**
+       * Format: double
+       * @description 0.0-1.0, `spend_usd` relative to the month's max — lets the frontend
+       *     shade heatmap intensity without a second pass.
+       */
+      intensity: number;
+      operations: number;
+      /** Format: double */
+      spend_usd: number;
+    };
+    SpendHourPoint: {
+      /**
+       * Format: int32
+       * @description 0-23, UTC.
+       */
+      hour: number;
+      /** Format: double */
+      others_spend_usd: number;
+      /** Format: double */
+      spend_usd: number;
+      /**
+       * @description Per-agent breakdown for this hour: top-N agents by daily spend,
+       *     with the rest rolled into `others_spend_usd`.
+       */
+      top_agents: components["schemas"]["AgentSpendSlice"][];
     };
     SpendPieSlice: {
       agent_name: string;
@@ -3280,6 +3863,40 @@ export interface components {
       pct: number;
       /** Format: double */
       spend_usd: number;
+    };
+    SpendTimeseriesPoint: {
+      /** @description Bucket start, RFC3339. */
+      bucket_start: string;
+      operations: number;
+      /**
+       * Format: double
+       * @description Fleet-wide latency percentiles across all traces in this bucket.
+       *     `None` when no traces carry a latency measurement.
+       */
+      p50_latency_ms?: number | null;
+      /** Format: double */
+      p95_latency_ms?: number | null;
+      /** Format: double */
+      p99_latency_ms?: number | null;
+      /** Format: double */
+      spend_usd: number;
+      /**
+       * Format: int64
+       * @description Total tool calls across all agents in this bucket.
+       */
+      tool_calls: number;
+      /** @description Highest-spend agent in this bucket, for the hover breakdown. */
+      top_agent_name?: string | null;
+      /** Format: double */
+      top_agent_spend_usd?: number | null;
+    };
+    TierTable: {
+      /** Format: int64 */
+      high: number;
+      /** Format: int64 */
+      low: number;
+      /** Format: int64 */
+      medium: number;
     };
     TokenUsageSummary: {
       /** Format: int64 */
@@ -3330,12 +3947,15 @@ export interface components {
        */
       activate_version?: boolean;
       capabilities?: unknown;
+      /** @description Toggle payload compression for this agent. Omitted = leave as-is. */
+      compress_enabled?: boolean | null;
       description?: string | null;
       display_name?: string | null;
       documentation_url?: string | null;
       icon_url?: string | null;
       image?: string | null;
       metadata?: unknown;
+      minimal_code_enabled?: boolean | null;
       skills?: components["schemas"]["Skill"][] | null;
       status?: string | null;
       tags?: string[] | null;
@@ -3388,6 +4008,22 @@ export interface components {
      */
     UpdateLlmConfigRequest: {
       api_key_secret_name?: string | null;
+      /**
+       * @description Clear the embedding destination. Needed because this PATCH is `COALESCE`-partial —
+       *     an absent field means "keep", so there is otherwise no way to express "unset".
+       *     Clearing is itself a confirmable transition (see [`crate::embedding_change`]).
+       */
+      clear_embedding_model?: boolean;
+      /**
+       * @description Acknowledge that changing an already-set embedding provider/model invalidates
+       *     vectors indexed with the old one. Without it such a change is rejected with 428.
+       */
+      confirm_embedding_change?: boolean;
+      embedding_api_key_secret_name?: string | null;
+      embedding_model?: string | null;
+      embedding_model_override?: boolean | null;
+      embedding_provider?: string | null;
+      embedding_secret_value?: string | null;
       fallback_models?: string[] | null;
       /** Format: int64 */
       max_tokens?: number | null;
@@ -4475,6 +5111,85 @@ export interface operations {
       };
     };
   };
+  issue_mcp_token: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Agent id */
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description MCP gateway credential (plaintext, shown once) */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["McpTokenEnvelope"];
+        };
+      };
+      /** @description Caller is not the agent owner */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description No such agent */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Not a CLI-bound coding-agent row — a deployed agent's credential rotates on redeploy instead */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  revoke_mcp_token: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Agent id */
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Credential revoked */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Caller is neither the agent owner nor a superuser */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description No such agent */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
   rollback_agent: {
     parameters: {
       query?: never;
@@ -4818,7 +5533,7 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description `data` is an array of config objects, each with: id, name, provider, model, fallback_models, temperature, max_tokens, api_key_secret_name, pinned, pinned_model, tier1_model, tier2_model, tier3_model, is_default, created_at, updated_at */
+      /** @description `data` is an array of config objects, each with: id, name, provider, model, fallback_models, temperature, max_tokens, api_key_secret_name, pinned, pinned_model, tier1_model, tier2_model, tier3_model, embedding_provider, embedding_model, embedding_api_key_secret_name, embedding_model_override, is_default, created_at, updated_at */
       200: {
         headers: {
           [name: string]: unknown;
@@ -4849,7 +5564,7 @@ export interface operations {
       };
     };
     responses: {
-      /** @description `data` is the created config object (id, name, provider, model, fallback_models, temperature, max_tokens, api_key_secret_name, pinned, pinned_model, tier1_model, tier2_model, tier3_model, is_default, created_at, updated_at) */
+      /** @description `data` is the created config object (id, name, provider, model, fallback_models, temperature, max_tokens, api_key_secret_name, pinned, pinned_model, tier1_model, tier2_model, tier3_model, embedding_provider, embedding_model, embedding_api_key_secret_name, embedding_model_override, is_default, created_at, updated_at) */
       201: {
         headers: {
           [name: string]: unknown;
@@ -4858,7 +5573,7 @@ export interface operations {
           "application/json": components["schemas"]["McpEnvelope"];
         };
       };
-      /** @description Validation failed (name/provider/model/pinned_model/secret) */
+      /** @description Validation failed (name/provider/model/pinned_model/secret, or embedding_provider/embedding_model not set together) */
       400: {
         headers: {
           [name: string]: unknown;
@@ -4893,7 +5608,7 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description `data` is the config object (id, name, provider, model, fallback_models, temperature, max_tokens, api_key_secret_name, pinned, pinned_model, tier1_model, tier2_model, tier3_model, is_default, created_at, updated_at) */
+      /** @description `data` is the config object (id, name, provider, model, fallback_models, temperature, max_tokens, api_key_secret_name, pinned, pinned_model, tier1_model, tier2_model, tier3_model, embedding_provider, embedding_model, embedding_api_key_secret_name, embedding_model_override, is_default, created_at, updated_at) */
       200: {
         headers: {
           [name: string]: unknown;
@@ -4978,7 +5693,7 @@ export interface operations {
       };
     };
     responses: {
-      /** @description `data` is the updated config object (id, name, provider, model, fallback_models, temperature, max_tokens, api_key_secret_name, pinned, pinned_model, tier1_model, tier2_model, tier3_model, is_default, created_at, updated_at) */
+      /** @description `data` is the updated config object (id, name, provider, model, fallback_models, temperature, max_tokens, api_key_secret_name, pinned, pinned_model, tier1_model, tier2_model, tier3_model, embedding_provider, embedding_model, embedding_api_key_secret_name, embedding_model_override, is_default, created_at, updated_at) */
       200: {
         headers: {
           [name: string]: unknown;
@@ -4987,7 +5702,7 @@ export interface operations {
           "application/json": components["schemas"]["McpEnvelope"];
         };
       };
-      /** @description Validation failed (name/provider/model/pinned_model/secret) */
+      /** @description Validation failed (name/provider/model/pinned_model/secret, or embedding_provider/embedding_model not set together) */
       400: {
         headers: {
           [name: string]: unknown;
@@ -5015,6 +5730,13 @@ export interface operations {
         };
         content?: never;
       };
+      /** @description The embedding provider/model was already set and is being changed or cleared. Vectors indexed with the previous model cannot be compared with the new one. Body carries `code = embedding_change_requires_confirmation` and `details.from`/`details.to`; re-send with `confirm_embedding_change: true`. */
+      428: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
     };
   };
   set_default: {
@@ -5029,7 +5751,7 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description `data` is the config object now marked as default (id, name, provider, model, fallback_models, temperature, max_tokens, api_key_secret_name, pinned, pinned_model, tier1_model, tier2_model, tier3_model, is_default, created_at, updated_at) */
+      /** @description `data` is the config object now marked as default (id, name, provider, model, fallback_models, temperature, max_tokens, api_key_secret_name, pinned, pinned_model, tier1_model, tier2_model, tier3_model, embedding_provider, embedding_model, embedding_api_key_secret_name, embedding_model_override, is_default, created_at, updated_at) */
       200: {
         headers: {
           [name: string]: unknown;
@@ -5124,8 +5846,10 @@ export interface operations {
       header: {
         /** @description `Bearer <MCP_GATEWAY_TOKEN>` — the per-agent gateway credential injected into the container env at deploy time */
         Authorization: string;
-        /** @description W3C trace context naming the flow this call belongs to — required for `tools/call`; the user identity is resolved from the flow record */
+        /** @description W3C trace context naming the flow this call belongs to — required for `tools/call`, except for a CLI-bound local coding-agent row (`coding_agent_integration_id` set), which resolves to its owner when the flow lookup fails; otherwise the user identity is resolved from the flow record */
         traceparent?: string | null;
+        /** @description Negotiated MCP protocol version; an unsupported value is rejected with 400 on implemented methods */
+        "MCP-Protocol-Version"?: string | null;
       };
       path?: never;
       cookie?: never;
@@ -5155,6 +5879,13 @@ export interface operations {
           "application/json": Record<string, never>;
         };
       };
+      /** @description Unsupported or undecodable `MCP-Protocol-Version` on a method this gateway implements */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
       /** @description Missing/unknown/revoked gateway token */
       401: {
         headers: {
@@ -5162,8 +5893,15 @@ export interface operations {
         };
         content?: never;
       };
-      /** @description `tools/call` outside a live flow the agent participates in, or identity store unavailable */
+      /** @description `tools/call` outside a live flow the agent participates in (except a local coding-agent row, which resolves to its owner instead), or identity store unavailable */
       403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Request body over the configured `MCP_GATEWAY_MAX_BODY_BYTES` limit */
+      413: {
         headers: {
           [name: string]: unknown;
         };
@@ -6777,6 +7515,225 @@ export interface operations {
       };
     };
   };
+  update_context: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ContextUpdate"];
+      };
+    };
+    responses: {
+      /** @description Saved; body `{strategy?, level?, enabled?}` — one transaction (CX-2), full state after the write */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description No such user (CX-4): the update touched no row */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description A value outside an enum (Axum's Json rejection) */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  context_preview: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["PreviewRequest"];
+      };
+    };
+    responses: {
+      /** @description Body `{strategy}`; what each tier would keep on the caller's latest chat, nothing sent to any model */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description `{"error": "no chats yet", "code": "no_session"}` — the caller has no chat */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description A value outside the enum (Axum's Json rejection) */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  get_context_strategy: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The caller's selection strategy and effective state */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Read failed (CX-4): never served as a silent default */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  update_context_strategy: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ContextStrategyUpdate"];
+      };
+    };
+    responses: {
+      /** @description Saved; body `{strategy, enabled?}` — the strategy and effective state after the write */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description No such user (CX-4): the update touched no row */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description A value outside the enum (Axum's Json rejection) */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  get_pacms_budget: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The caller's PACMS budget tier: `{level}` */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Read failed (CX-4): never served as a silent default */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  update_pacms_budget: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["PacmsBudgetUpdate"];
+      };
+    };
+    responses: {
+      /** @description Saved; body `{level}` — the tier after the write */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description No such user (CX-4): the update touched no row */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description A value outside the enum (Axum's Json rejection) */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  get_settings_history: {
+    parameters: {
+      query?: {
+        /** @description Window start, RFC 3339 */
+        start_time?: string;
+        /** @description Window end, RFC 3339 (default now) */
+        end_time?: string;
+        /** @description Preset window: 24h, 7d, 30d, 90d (default 30d when no start_time) */
+        range?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Bare JSON array of changes, newest first */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
   list_mappings: {
     parameters: {
       query?: never;
@@ -6991,6 +7948,101 @@ export interface operations {
       };
     };
   };
+  get_finops_attributions: {
+    parameters: {
+      query?: {
+        start_time?: string | null;
+        end_time?: string | null;
+        range?: string | null;
+        agent_id?: string | null;
+        model?: string | null;
+        provider?: string | null;
+        view?: string | null;
+        /** @description "cost" | "tokens" | "operations" | "avg_latency" | "container_hours" | "name" */
+        sort_by?: string | null;
+        /** @description "asc" | "desc" (default "desc") */
+        sort_dir?: string | null;
+        limit?: number | null;
+        offset?: number | null;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Attribution rows */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["FinopsAttributionsResponse"];
+        };
+      };
+      /** @description Malformed filter */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  get_context_savings: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description History selection savings for a window */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  get_context_savings_agents: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description History volume per agent */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  get_context_savings_top_requests: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The requests that carried the most history */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
   get_finops_dashboard: {
     parameters: {
       query?: {
@@ -7028,6 +8080,23 @@ export interface operations {
          *     Ignored when `agent_id` is also set (already scoped to one agent).
          */
         my_agent?: boolean;
+        /**
+         * @description `previous` adds the preceding window of the same length to the same
+         *     response, so a caller comparing two windows needs one request, not two.
+         *     Anything else is ignored.
+         */
+        compare?: string | null;
+        /**
+         * @description `agent` (spend-timeseries only) adds a per-agent series for the top
+         *     spenders plus an `other` aggregate, replacing one filtered request per
+         *     driver. Any other value is a 400.
+         */
+        group_by?: string | null;
+        /**
+         * @description How many agents get their own series under `group_by=agent`
+         *     (default 5, clamped 1-20). The rest fold into `other`.
+         */
+        top?: number | null;
       };
       header?: never;
       path?: never;
@@ -7091,18 +8160,182 @@ export interface operations {
       };
     };
   };
+  get_finops_spend_calendar: {
+    parameters: {
+      query: {
+        /** @description "YYYY-MM", interpreted in UTC. */
+        month: string;
+        range?: string | null;
+        agent_id?: string | null;
+        model?: string | null;
+        provider?: string | null;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Spend calendar */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["FinopsSpendCalendarResponse"];
+        };
+      };
+      /** @description Malformed month/filter */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  get_finops_spend_calendar_day: {
+    parameters: {
+      query: {
+        /** @description Calendar day, "YYYY-MM-DD", interpreted in UTC. */
+        date: string;
+        agent_id?: string | null;
+        model?: string | null;
+        provider?: string | null;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Hourly spend for one day */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["FinopsDayDrilldownResponse"];
+        };
+      };
+      /** @description Malformed date/filter */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  get_finops_spend_timeseries: {
+    parameters: {
+      query?: {
+        /** @description ISO-8601 window start (default: 30 days ago). Ignored when `range` is set. */
+        start_time?: string | null;
+        /**
+         * @description ISO-8601 window end (default: now). Without it a past-month selection
+         *     means "that month through today" rather than that month.
+         */
+        end_time?: string | null;
+        /** @description "24h" | "7d" | "30d" — quick-select range, overrides `start_time`. */
+        range?: string | null;
+        /** @description Agent UUID or name — scopes the whole response to one agent. */
+        agent_id?: string | null;
+        /** @description Exact model id, matched against span model attributes. */
+        model?: string | null;
+        /**
+         * @description Provider name filter (e.g. "openai", "anthropic"), matched against
+         *     the `provider` column in `trace_usage` (derived from `model_pricing`).
+         */
+        provider?: string | null;
+        /**
+         * @description Org-unit filter — resolved to user_ids by the EE auth layer. OSS
+         *     accepts the param but ignores it (no org hierarchy). EE reads it in
+         *     the handler and passes user_ids to the service.
+         */
+        org_unit?: string | null;
+        /**
+         * @description "agent" | "workflow" — which attribution source powers the response's
+         *     `attributions` field (default "agent").
+         */
+        view?: string | null;
+        /**
+         * @description When `true`, restricts results to agents owned by the caller.
+         *     Ignored when `agent_id` is also set (already scoped to one agent).
+         */
+        my_agent?: boolean;
+        /**
+         * @description `previous` adds the preceding window of the same length to the same
+         *     response, so a caller comparing two windows needs one request, not two.
+         *     Anything else is ignored.
+         */
+        compare?: string | null;
+        /**
+         * @description `agent` (spend-timeseries only) adds a per-agent series for the top
+         *     spenders plus an `other` aggregate, replacing one filtered request per
+         *     driver. Any other value is a 400.
+         */
+        group_by?: string | null;
+        /**
+         * @description How many agents get their own series under `group_by=agent`
+         *     (default 5, clamped 1-20). The rest fold into `other`.
+         */
+        top?: number | null;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Spend time series */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["FinopsSpendTimeseriesResponse"];
+        };
+      };
+      /** @description Malformed filter */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
   get_all_sessions: {
     parameters: {
       query?: {
         /** @description ISO-8601 window start (default: 7 days ago). */
         start_time?: string | null;
-        /**
-         * @description Page size (default 25, max 100). Each row costs one trace-store lookup,
-         *     so this bounds the request's real work — it is not just a display limit.
-         */
+        /** @description ISO-8601 window end (default: open-ended). */
+        end_time?: string | null;
+        /** @description Page size (default 25, max 100). */
         limit?: number | null;
-        /** @description Rows to skip, for offset paging (default 0). */
+        /**
+         * @description Rows to skip, for offset paging (default 0). Superseded by `cursor`,
+         *     which pages on the sort key instead; kept because the Sessions page
+         *     still sends it. `cursor` wins when both are given.
+         */
         offset?: number | null;
+        /**
+         * @description Keyset cursor on `(created_at, session_id)` — the `end_cursor` of the
+         *     previous page.
+         */
+        cursor?: string | null;
+        /**
+         * @description `failed` | `ok` | `running`. Filtered in SQL, so `matching_count` counts
+         *     every match in the window rather than the rows on this page.
+         */
+        status?: string | null;
+        /**
+         * @description Sort order. Only `created_at` (the default) is supported; see the
+         *     handler for why `cost` is rejected rather than approximated.
+         */
+        sort?: string | null;
       };
       header?: never;
       path?: never;
@@ -7118,6 +8351,13 @@ export interface operations {
         content: {
           "application/json": components["schemas"]["SessionListResponse"];
         };
+      };
+      /** @description Unknown status, sort or cursor value */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
       };
       /** @description Missing or invalid session */
       401: {
@@ -7210,6 +8450,13 @@ export interface operations {
         content: {
           "application/json": components["schemas"]["TraceDetailResponse"];
         };
+      };
+      /** @description Not modified (settled trace, matching If-None-Match) */
+      304: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
       };
       /** @description Trace not found */
       404: {
@@ -7629,6 +8876,67 @@ export interface operations {
       };
       /** @description No secret with this name */
       404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  get_context_tiers: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Tier values (env defaults unless superuser-overridden): pacms_budget, context_k, compress_history, pool_size, mandatory_recent, compress_min_bytes, updated_at */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  update_context_tiers: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ContextTiersUpdate"];
+      };
+    };
+    responses: {
+      /** @description Saved; the tier values after the write */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description A value breaks the rules: whole numbers >= 1, low <= medium <= high, pool_size >= mandatory_recent */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description requires superuser */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description expected_updated_at does not match — reload */
+      409: {
         headers: {
           [name: string]: unknown;
         };

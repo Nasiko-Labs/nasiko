@@ -47,10 +47,10 @@ function filterParams(f: Filters) {
 export const TOKENOPS_FEATURE = "tokenops";
 
 const tokenopsKeys = {
-  dashboard: (scope: Scope, w: string, f: Filters, view: string) =>
-    productKey(scope, TOKENOPS_FEATURE, "dashboard", w, f, view),
-  timeseries: (scope: Scope, w: string, f: Filters) =>
-    productKey(scope, TOKENOPS_FEATURE, "timeseries", w, f),
+  dashboard: (scope: Scope, w: string, f: Filters, view: string, compare = false) =>
+    productKey(scope, TOKENOPS_FEATURE, "dashboard", w, f, view, compare),
+  timeseries: (scope: Scope, w: string, f: Filters, shape = "") =>
+    productKey(scope, TOKENOPS_FEATURE, "timeseries", w, f, shape),
   calendar: (scope: Scope, month: string, f: Filters) =>
     productKey(scope, TOKENOPS_FEATURE, "calendar", month, f),
   day: (scope: Scope, date: string, f: Filters) =>
@@ -63,8 +63,13 @@ const tokenopsKeys = {
   providers: (scope: Scope) => productKey(scope, "providers"),
 };
 
-function dashboardPath(params: ApiWindowParams, f: Filters, view: string) {
-  return withQuery(`${FINOPS}/dashboard`, { ...params, ...filterParams(f), view });
+function dashboardPath(params: ApiWindowParams, f: Filters, view: string, compare: boolean) {
+  return withQuery(`${FINOPS}/dashboard`, {
+    ...params,
+    ...filterParams(f),
+    view,
+    ...(compare ? { compare: "previous" } : {}),
+  });
 }
 
 export function dashboardQuery(
@@ -73,15 +78,22 @@ export function dashboardQuery(
   f: Filters,
   view: "agent" | "workflow",
   which: "current" | "previous",
+  /**
+   * Ask the server for each agent's preceding-window totals in the same
+   * response (`compare=previous`), instead of issuing a second whole dashboard
+   * request for the earlier window. Only meaningful with `which: 'current'` —
+   * the server compares against the window it was given.
+   */
+  compare = false,
 ) {
   const params = which === "current" ? win.params : win.prevParams;
   const windowKey =
     which === "current"
       ? win.key
       : `prev|${win.prevStart.toISOString()}|${win.prevEnd.toISOString()}`;
-  const path = dashboardPath(params, f, view);
+  const path = dashboardPath(params, f, view, compare);
   return queryOptions({
-    queryKey: tokenopsKeys.dashboard(scope, windowKey, f, view),
+    queryKey: tokenopsKeys.dashboard(scope, windowKey, f, view, compare),
     queryFn: ({ signal }) =>
       apiData<FinopsDashboardData>(path, { signal, schema: finopsDashboardSchema }),
     meta: { path },
@@ -94,28 +106,62 @@ export function useDashboard(
   view: "agent" | "workflow",
   which: "current" | "previous",
   enabled: boolean,
+  compare = false,
 ) {
   const scope = useProductScope();
   return useQuery({
-    ...dashboardQuery(scope, win, f, view, which),
+    ...dashboardQuery(scope, win, f, view, which, compare),
     placeholderData: keepPreviousData,
     enabled,
   });
 }
 
-export function timeseriesQuery(scope: Scope, win: ResolvedWindow, f: Filters) {
-  const path = withQuery(`${FINOPS}/spend-timeseries`, { ...win.params, ...filterParams(f) });
+/** Extra shapes the server can fold into one spend-timeseries response. */
+export interface TimeseriesShape {
+  /** Per-agent series for the top `top` spenders plus an `other` aggregate. */
+  groupByAgent?: boolean;
+  top?: number;
+  /** The preceding window of the same length, in the same response. */
+  compare?: boolean;
+}
+
+export function timeseriesQuery(
+  scope: Scope,
+  win: ResolvedWindow,
+  f: Filters,
+  shape: TimeseriesShape = {},
+) {
+  const path = withQuery(`${FINOPS}/spend-timeseries`, {
+    ...win.params,
+    ...filterParams(f),
+    ...(shape.groupByAgent ? { group_by: "agent" } : {}),
+    ...(shape.groupByAgent && shape.top ? { top: String(shape.top) } : {}),
+    ...(shape.compare ? { compare: "previous" } : {}),
+  });
   return queryOptions({
-    queryKey: tokenopsKeys.timeseries(scope, win.key, f),
+    // The shape changes the payload, so it has to be part of the key — two
+    // callers on the same window must not share a cache entry that is missing
+    // the series one of them needs.
+    queryKey: tokenopsKeys.timeseries(
+      scope,
+      win.key,
+      f,
+      `${shape.groupByAgent ? `agent:${shape.top ?? ""}` : ""}${shape.compare ? "+prev" : ""}`,
+    ),
     queryFn: ({ signal }) => apiData<FinopsSpendTimeseries>(path, { signal }),
     meta: { path },
   });
 }
 
-export function useTimeseries(win: ResolvedWindow, f: Filters, enabled: boolean) {
+export function useTimeseries(
+  win: ResolvedWindow,
+  f: Filters,
+  enabled: boolean,
+  shape: TimeseriesShape = {},
+) {
   const scope = useProductScope();
   return useQuery({
-    ...timeseriesQuery(scope, win, f),
+    ...timeseriesQuery(scope, win, f, shape),
     placeholderData: keepPreviousData,
     enabled,
   });

@@ -77,7 +77,7 @@ describe("Needs you rows", () => {
           },
           sessions: {
             state: "ok",
-            value: { failed: 3, checked: 25, agents: ["Crashy", "Unknown agent"] },
+            value: { failed: 3, agents: ["Crashy", "Unknown agent"] },
           },
         })}
       />,
@@ -93,7 +93,7 @@ describe("Needs you rows", () => {
     expect(within(list).getByText("Your monthly budget is at 80%")).toBeInTheDocument();
     expect(within(list).getByText("Helper budget is over its limit")).toBeInTheDocument();
     expect(href(copy.needs.budgetsLabel("Helper"))).toBe("/router#router-budgets");
-    expect(within(list).getByText(copy.needs.sessions(3, 25))).toBeInTheDocument();
+    expect(within(list).getByText(copy.needs.sessions(3))).toBeInTheDocument();
     expect(href(copy.needs.seeFailing)).toMatch(/^\/sessions\?(?=.*preset=7d)(?=.*lane=failing)/);
     // Severity is said by an icon with a label, most urgent sources first.
     expect(

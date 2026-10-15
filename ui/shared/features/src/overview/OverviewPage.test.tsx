@@ -49,7 +49,7 @@ describe("Spend", () => {
     expect(document.body).not.toHaveTextContent(/You've spent/i);
   });
 
-  it("stacks 30 days by the top drivers, whose own series come from the filtered timeseries", async () => {
+  it("stacks 30 days by the top drivers, whose series come from one grouped timeseries", async () => {
     const reqs = recordRequests();
     renderApp("/");
     await loaded();
@@ -59,15 +59,23 @@ describe("Spend", () => {
     const heads = within(fig)
       .getAllByRole("columnheader")
       .map((h) => h.textContent);
-    const filtered = reqs.urls.filter(
-      (u) => u.pathname.endsWith("/spend-timeseries") && u.searchParams.has("agent_id"),
+    // The drivers' series used to be one filtered request each — a fan-out that
+    // grew with the chart. `group_by=agent` returns all of them at once.
+    expect(
+      reqs.urls.filter(
+        (u) => u.pathname.endsWith("/spend-timeseries") && u.searchParams.has("agent_id"),
+      ),
+    ).toEqual([]);
+    const grouped = reqs.urls.filter(
+      (u) => u.pathname.endsWith("/spend-timeseries") && u.searchParams.get("group_by") === "agent",
     );
-    // One filtered series per driver with spend, at most five (one per chart colour).
-    const k = new Set(filtered.map((u) => u.searchParams.get("agent_id"))).size;
+    expect(grouped).toHaveLength(1);
+    expect(grouped[0]?.searchParams.get("top")).toBe("5");
+    // Columns are Day, one per driver that actually spent, Other, Total — so the
+    // chart can carry fewer series than the drivers table has rows.
+    const k = heads.length - 3;
     expect(k).toBeGreaterThan(0);
     expect(k).toBeLessThanOrEqual(5);
-    // Day, the drivers (named as in the drivers table), Other, Total.
-    expect(heads).toHaveLength(k + 3);
     const drivers = within(spend).getAllByTestId("spend-driver");
     heads.slice(1, k + 1).forEach((h, i) => expect(drivers[i]).toHaveTextContent(h));
     reqs.stop();
@@ -349,7 +357,7 @@ describe("first run (design 7A)", () => {
 });
 
 describe("Recent sessions and the session checks (eng R7)", () => {
-  it("status-checks at most the newest 25 sessions", async () => {
+  it("reads session status from the list, with no per-session or per-trace fan-out", async () => {
     const rec = recordRequests();
     renderApp("/");
     await loaded();
@@ -359,11 +367,17 @@ describe("Recent sessions and the session checks (eng R7)", () => {
       { timeout: 5000 },
     );
     rec.stop();
-    const details = new Set(
-      rec.urls.map((u) => u.pathname).filter((p) => /\/session\/(?!list)[^/]+$/.test(p)),
-    );
-    expect(details.size).toBeGreaterThan(0);
-    expect(details.size).toBeLessThanOrEqual(25);
+    const paths = rec.urls.map((u) => u.pathname);
+    // `session/list` carries `status`, so the Overview no longer downloads a
+    // session detail (and 3 traces each) to compute one boolean per row. This
+    // was up to 100 requests, every one a trace-store read on the server.
+    expect(paths.filter((p) => /\/session\/(?!list)[^/]+$/.test(p))).toEqual([]);
+    expect(paths.filter((p) => p.includes("/trace/"))).toEqual([]);
+    // Two list reads: the 5 rows shown, and the failed ones Needs you counts.
+    const lists = rec.urls.filter((u) => u.pathname.endsWith("/session/list"));
+    expect(lists).toHaveLength(2);
+    expect(lists.map((u) => u.searchParams.get("limit")).sort()).toEqual(["25", "5"]);
+    expect(lists.some((u) => u.searchParams.get("status") === "failed")).toBe(true);
   });
 
   it("says the trace store is needed when the session list fails with a 503", async () => {

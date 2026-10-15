@@ -127,7 +127,7 @@ describe("mergeNeeds edges", () => {
       requests: { state: "ok", value: { chats: [], outside: 0 } },
       agents: { state: "loading" },
       budgets: { state: "absent" },
-      sessions: { state: "ok", value: { failed: 0, checked: 25, agents: [] } },
+      sessions: { state: "ok", value: { failed: 0, agents: [] } },
     });
     expect(n).toMatchObject({
       rows: [],

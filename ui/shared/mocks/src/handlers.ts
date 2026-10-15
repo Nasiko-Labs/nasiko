@@ -1402,6 +1402,7 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
           ...body.data,
           sessions: [],
           successful_agents: 0,
+          matching_count: 0,
           pagination: { end_cursor: null, has_next_page: false },
         };
       return HttpResponse.json(body);

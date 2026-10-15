@@ -40,7 +40,13 @@ export function percentile(values: readonly (number | null | undefined)[], q = P
   return xs[rank - 1] ?? null;
 }
 
-export type Status = "failed" | "ok" | "unchecked" | "unknown" | "checking";
+/**
+ * `failed` / `ok` / `running` are the server's own values (`session/list`,
+ * derived from the flow outcome recorded at the proxy). The rest are client
+ * states: `unchecked` when the server has no recorded request to judge by, and
+ * `unknown` / `checking` for the Sessions page's per-trace checks.
+ */
+export type Status = "failed" | "ok" | "running" | "unchecked" | "unknown" | "checking";
 
 export interface Lanes {
   /** Lanes are hidden below LANE_MIN_SESSIONS loaded rows. */

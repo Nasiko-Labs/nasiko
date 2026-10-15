@@ -278,7 +278,7 @@ function Overview({
     (!firstRun &&
       (spend.isPending ||
         (!spend.totals && !spend.totalsError) ||
-        needsYou.sessions.list.isPending ||
+        needsYou.sessions.recent.isPending ||
         chats.isPending));
   const [painted, setPainted] = useState(false);
   if (!painted && !coldPending) setPainted(true);

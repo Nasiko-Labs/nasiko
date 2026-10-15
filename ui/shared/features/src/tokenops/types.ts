@@ -83,6 +83,19 @@ export interface AgentFinopsRow {
   tool_call_count: number;
   version: string | null;
   container_hours: number;
+  /**
+   * The preceding window of the same length, present only with
+   * `compare=previous`. A subset — enough for a delta, not a second row.
+   */
+  previous?: AgentFinopsPrevious | null;
+}
+
+export interface AgentFinopsPrevious {
+  total_cost: number;
+  operations: number;
+  total_tokens: number;
+  tool_call_count: number;
+  avg_latency_ms: number | null;
 }
 
 export interface WorkflowFinopsRow {
@@ -137,6 +150,29 @@ export interface SpendTimeseriesPoint {
 export interface FinopsSpendTimeseries {
   bucket: "hour" | "day";
   points: SpendTimeseriesPoint[];
+  /**
+   * Per-agent series, only with `group_by=agent`: the top spenders plus one
+   * `other` aggregate, which together sum to `points`.
+   */
+  series?: SpendAgentSeries[] | null;
+  /** The preceding window, only with `compare=previous`. Same bucketing. */
+  previous?: SpendTimeseriesPoint[] | null;
+}
+
+export interface SpendAgentSeries {
+  /** Raw trace agent name; `null` on the aggregate `other` series. */
+  agent_name: string | null;
+  /** Set only when exactly one live agent carries that name. */
+  agent_id: string | null;
+  is_other: boolean;
+  total_spend_usd: number;
+  points: SpendAgentPoint[];
+}
+
+export interface SpendAgentPoint {
+  bucket_start: string;
+  spend_usd: number;
+  operations: number;
 }
 
 export interface SpendCalendarDay {

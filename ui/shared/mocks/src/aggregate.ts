@@ -95,6 +95,12 @@ export interface FilterParams {
   model?: string | null;
   provider?: string | null;
   view?: string | null;
+  /** `previous` folds the preceding window into the same response. */
+  compare?: string | null;
+  /** spend-timeseries only: `agent` adds a series per top spender. */
+  group_by?: string | null;
+  /** How many agents get their own series under `group_by=agent`. */
+  top?: string | null;
 }
 
 interface ServerWindow {
@@ -259,10 +265,27 @@ export function dashboard(seed: Seed, p: FilterParams, now: number): FinopsDashb
   const prevLive = prev.filter((t) => liveNames.has(t.agent_name));
 
   const curByAgent = groupBy(curLive, (t) => t.agent_name);
+  // `compare=previous` keeps the per-agent preceding window instead of folding
+  // it only into the KPI strip (service.rs `compare_previous`). The previous
+  // window is already grouped here either way.
+  const comparing = p.compare === "previous";
+  const prevByAgent = groupBy(prevLive, (t) => t.agent_name);
   const rows: AgentFinopsRow[] = live.map((a) => {
     const s = sumTraces(curByAgent.get(a.name) ?? []);
     const pct = percentiles(s.latencies);
+    const pr = comparing ? sumTraces(prevByAgent.get(a.name) ?? []) : null;
     return {
+      ...(pr
+        ? {
+            previous: {
+              total_cost: pr.cost,
+              operations: pr.ops,
+              total_tokens: pr.tokensAll,
+              tool_call_count: pr.tools,
+              avg_latency_ms: percentiles(pr.latencies).p50,
+            },
+          }
+        : {}),
       agent_id: a.id,
       agent_name: a.display_name,
       total_cost: s.cost,
@@ -400,16 +423,27 @@ export function bucketStart(ts: number, bucket: "hour" | "day"): number {
 }
 
 export function spendTimeseries(seed: Seed, p: FilterParams, now: number): FinopsSpendTimeseries {
+  if (p.group_by && p.group_by !== "agent")
+    throw new MockHttpError(400, `invalid group_by '${p.group_by}' — expected 'agent'`);
   const agentName = resolveAgent(seed, p.agent_id);
   const { start, end, bucket } = resolveServerWindow(p, now);
-  const groups = new Map<number, SeedTrace[]>();
-  for (const t of seed.traces) {
-    if (!inWindow(t, start, end) || !matches(t, agentName, p)) continue;
-    const key = bucketStart(t.ts, bucket);
-    const g = groups.get(key);
-    if (g) g.push(t);
-    else groups.set(key, [t]);
-  }
+
+  const inRange = (from: number, to: number) =>
+    seed.traces.filter((t) => inWindow(t, from, to) && matches(t, agentName, p));
+
+  const bucketed = (rows: SeedTrace[]) => {
+    const groups = new Map<number, SeedTrace[]>();
+    for (const t of rows) {
+      const key = bucketStart(t.ts, bucket);
+      const g = groups.get(key);
+      if (g) g.push(t);
+      else groups.set(key, [t]);
+    }
+    return groups;
+  };
+
+  const windowRows = inRange(start, end);
+  const groups = bucketed(windowRows);
   const points: SpendTimeseriesPoint[] = [...groups.entries()]
     .sort(([a], [b]) => a - b)
     .map(([key, rows]) => {
@@ -431,7 +465,68 @@ export function spendTimeseries(seed: Seed, p: FilterParams, now: number): Finop
         p99_latency_ms: pct.p99,
       };
     });
-  return { bucket, points };
+
+  // `compare=previous`: the preceding window of equal length, same bucketing.
+  const previous =
+    p.compare === "previous" ? simplePoints(bucketed(inRange(start - (end - start), start))) : null;
+
+  // `group_by=agent`: the top `top` agents by whole-window spend get their own
+  // series, everything else folds into one `other` — so the series still sum to
+  // `points` and no spend is hidden by the cut (service.rs `spend_series_by_agent`).
+  let series: FinopsSpendTimeseries["series"] = null;
+  if (p.group_by === "agent") {
+    const topN = Math.min(20, Math.max(1, Number.parseInt(p.top ?? "", 10) || 5));
+    const totals = new Map<string, number>();
+    for (const t of windowRows)
+      totals.set(t.agent_name, (totals.get(t.agent_name) ?? 0) + t.cost_usd);
+    const ranked = [...totals.entries()]
+      .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))
+      .map(([name]) => name);
+    const named = new Set(ranked.slice(0, topN));
+    const byKey = groupBy(windowRows, (t) => (named.has(t.agent_name) ? t.agent_name : ""));
+    series = [...byKey.entries()]
+      .map(([name, rows]) => {
+        const isOther = name === "";
+        const agent = isOther ? undefined : seed.agents.find((a) => a.name === name && !a.deleted);
+        return {
+          agent_name: isOther ? null : name,
+          agent_id: agent?.id ?? null,
+          is_other: isOther,
+          total_spend_usd: r6(rows.reduce((n, t) => n + t.cost_usd, 0)),
+          points: simplePoints(bucketed(rows)).map((pt) => ({
+            bucket_start: pt.bucket_start,
+            spend_usd: pt.spend_usd,
+            operations: pt.operations,
+          })),
+        };
+      })
+      // Named series by spend, `other` last whatever it totals.
+      .sort((a, b) =>
+        a.is_other === b.is_other ? b.total_spend_usd - a.total_spend_usd : a.is_other ? 1 : -1,
+      );
+  }
+  return { bucket, points, ...(series ? { series } : {}), ...(previous ? { previous } : {}) };
+}
+
+/** Bucketed rows as plain points — no top-agent or latency detail needed. */
+function simplePoints(groups: Map<number, SeedTrace[]>): SpendTimeseriesPoint[] {
+  return [...groups.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([key, rows]) => {
+      const s = sumTraces(rows);
+      const pct = percentiles(s.latencies);
+      return {
+        bucket_start: new Date(key).toISOString(),
+        spend_usd: s.cost,
+        operations: s.ops,
+        tool_calls: s.tools,
+        top_agent_name: null,
+        top_agent_spend_usd: null,
+        p50_latency_ms: pct.p50,
+        p95_latency_ms: pct.p95,
+        p99_latency_ms: pct.p99,
+      };
+    });
 }
 
 export function spendCalendar(

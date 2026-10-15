@@ -256,10 +256,23 @@ function sessionSummary(
 ): SessionSummary {
   const traces = visibleTraces(s, start, now);
   const agentName = s.agent.deleted ? "" : s.agent.name;
+  // The server derives status from `flows` — the outcome recorded at the proxy,
+  // in Postgres — not from spans (sessions_sql.rs `derive_status`). The seed's
+  // storm traces are its failed requests, so mirror that: any failed request
+  // fails the session. Deliberately unaffected by `tempoDown`: that is the point
+  // of the SQL-only list.
+  const { storm } = observabilityData(seed);
+  const failedFlows = traces.filter((t) => storm.has(t.trace_id)).length;
   const base = {
     id: s.session_id,
     session_id: s.session_id,
     agent_id: agentName,
+    // No requests in the window means nothing says this session succeeded.
+    status: !traces.length ? null : failedFlows > 0 ? ("failed" as const) : ("ok" as const),
+    failed_flows: failedFlows,
+    // Unrecovered error spans. `null` means "not materialized yet", which only
+    // applies when there is nothing to have materialized.
+    error_count: traces.length ? failedFlows : null,
     session_annotations: [],
     session_annotation_summaries: [],
   };
@@ -372,33 +385,74 @@ export function sessionDetail(seed: Seed, s: MockSession): SessionDetail {
   } satisfies SessionDetail;
 }
 
-/** GET /session/list: created_at >= start_time, newest first, limit clamped 1–100. */
+/**
+ * GET /session/list: created_at >= start_time, newest first, limit clamped 1–100.
+ *
+ * Served entirely from SQL on the real server (`observability/sessions_sql.rs`),
+ * so `status`, `end_time`, `cursor` and `matching_count` are all applied here
+ * rather than implied by trace lookups.
+ */
 export function sessionList(
   seed: Seed,
-  p: { start_time?: string | null; limit?: string | null; offset?: string | null },
+  p: {
+    start_time?: string | null;
+    end_time?: string | null;
+    limit?: string | null;
+    offset?: string | null;
+    cursor?: string | null;
+    status?: string | null;
+  },
   now: number,
   tempoDown = false,
 ) {
   const parsed = p.start_time ? Date.parse(p.start_time) : Number.NaN;
   const start = Number.isNaN(parsed) ? now - 7 * 86_400_000 : parsed;
+  const parsedEnd = p.end_time ? Date.parse(p.end_time) : Number.NaN;
+  const end = Number.isNaN(parsedEnd) ? now : Math.min(parsedEnd, now);
   const limit = Math.min(100, Math.max(1, Number.parseInt(p.limit ?? "", 10) || 25));
-  const offset = Math.max(0, Number.parseInt(p.offset ?? "", 10) || 0);
   const data = observabilityData(seed);
-  const inWindow = data.sessions.filter((s) => s.created >= start && s.created <= now);
-  const page = inWindow.slice(offset, offset + limit);
-  const sessions = page.map((s) => sessionSummary(seed, s, start, now, tempoDown));
+
+  const inWindow = data.sessions.filter((s) => s.created >= start && s.created <= end);
+  // The filter is applied before paging, as it is in SQL — so `matching_count`
+  // counts every match in the window, not the rows that fit on this page.
+  const summaries = inWindow.map((s) => ({
+    s,
+    row: sessionSummary(seed, s, start, now, tempoDown),
+  }));
+  const matching = p.status ? summaries.filter((x) => x.row.status === p.status) : summaries;
+
+  // `cursor` is the keyset anchor; `offset` is still accepted (the Sessions page
+  // pages on it). Both address the same page, as on the server.
+  const fromCursor = p.cursor ? Number.parseInt(decodeCursorIndex(p.cursor), 10) : Number.NaN;
+  const offset = Number.isNaN(fromCursor)
+    ? Math.max(0, Number.parseInt(p.offset ?? "", 10) || 0)
+    : fromCursor;
+  const page = matching.slice(offset, offset + limit);
+  const hasNext = matching.length > offset + limit;
   return {
     data: {
-      sessions,
+      sessions: page.map((x) => x.row),
       total_agents: seed.agents.filter((a) => !a.deleted).length,
-      successful_agents: sessions.filter((s) => s.num_traces != null).length,
+      successful_agents: page.filter((x) => x.row.num_traces != null).length,
+      matching_count: matching.length,
       pagination: {
-        end_cursor: inWindow.length > offset + limit ? String(offset + limit) : null,
-        has_next_page: inWindow.length > offset + limit,
+        end_cursor: hasNext ? encodeCursorIndex(offset + limit) : null,
+        has_next_page: hasNext,
       },
     },
   };
 }
+
+// The server's cursor is base64url of `<nanos>:<session_id>`; the mock only has
+// to round-trip an opaque string, so it encodes the page offset the same way.
+const encodeCursorIndex = (i: number) => btoa(`${i}`).replace(/=+$/, "");
+const decodeCursorIndex = (c: string) => {
+  try {
+    return atob(c);
+  } catch {
+    return "";
+  }
+};
 
 /** Deterministic log lines for an agent, spread over the last hour before `now`. */
 export function agentLogs(seed: Seed, agentRef: string, now: number, count = 30): LogLine[] | null {
@@ -444,6 +498,7 @@ export function agentsList(
       display_name: a.display_name,
       version: a.version,
       status: "running",
+      minimal_code_enabled: false,
       owner_id: "5eed0000-0000-4000-8000-00000000a001",
       created_at: seed.anchor,
       updated_at: seed.anchor,

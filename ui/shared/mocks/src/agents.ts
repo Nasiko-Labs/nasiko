@@ -305,12 +305,12 @@ const capabilities = (a: MockAgent) => ({
 });
 
 /** A full `Agent` row; the generated type predates `compress_enabled` (catalog/models.rs at 05f22246). */
-export function listRow(
-  a: MockAgent,
-  now: number,
-): S["Agent"] & { compress_enabled: boolean; minimal_code_enabled: boolean } {
+export function listRow(a: MockAgent, now: number): S["Agent"] & { compress_enabled: boolean } {
   const row = {
     id: a.id,
+    // `minimal_code_enabled` is part of the generated `Agent` now, so it belongs
+    // inside the `satisfies` check rather than being bolted on after it.
+    minimal_code_enabled: a.minimal_code_enabled ?? false,
     name: a.name,
     display_name: a.display_name,
     description: a.description,
@@ -334,12 +334,8 @@ export function listRow(
     icon_url: a.icon_url,
     documentation_url: a.documentation_url,
   } satisfies S["Agent"];
-  // models.rs `Agent` serializes both columns on list rows and the PUT reply.
-  return {
-    ...row,
-    compress_enabled: a.compress,
-    minimal_code_enabled: a.minimal_code_enabled ?? false,
-  };
+  // models.rs `Agent` serializes this column on list rows and the PUT reply.
+  return { ...row, compress_enabled: a.compress };
 }
 
 /** `AgentDetailResponse`: camelCase except the renamed fields (catalog/routes.rs:616). Status NOT reconciled. */

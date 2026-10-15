@@ -8,7 +8,7 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderWithRouter } from "@nasiko/testing/router";
-import { http, HttpResponse } from "msw";
+import { bypass, http, HttpResponse } from "msw";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { budgetMockState, configureMocks } from "@nasiko/mocks/handlers";
 import { agentsList } from "@nasiko/mocks/observability";
@@ -93,25 +93,30 @@ describe("a failed cost input", () => {
     );
   });
 
-  it("previous week down: no agent is called Healthy on missing comparisons", async () => {
-    let calls = 0;
+  it("no comparison data: no agent is called Healthy", async () => {
+    // The comparison window used to be a second dashboard request that could
+    // fail on its own. It now rides on the current one (`compare=previous`), so
+    // the live risk is a server that doesn't support the parameter and answers
+    // without `previous` — the ratings must go Unknown, never Healthy.
+    let served = 0;
     server.use(
-      http.get("*/api/observability/finops/dashboard", ({ request }) => {
-        // The previous-week window is the only call with explicit bounds 7 days back; fail every call with start_time.
-        if (new URL(request.url).searchParams.get("start_time")) {
-          calls++;
-          return new HttpResponse("boom", { status: 500 });
-        }
-        return undefined;
+      http.get("*/api/observability/finops/dashboard", async ({ request }) => {
+        if (new URL(request.url).searchParams.get("compare") !== "previous") return undefined;
+        served++;
+        const res = await fetch(bypass(request));
+        const body = (await res.json()) as { data: { agents: Record<string, unknown>[] } };
+        body.data.agents = body.data.agents.map((a) => {
+          const rest = { ...a };
+          delete rest.previous;
+          return rest;
+        });
+        return HttpResponse.json(body);
       }),
     );
     renderApp("/");
     const counts = await healthCounts();
-    expect(calls).toBeGreaterThan(0);
+    expect(served).toBeGreaterThan(0);
     expect(counts.healthy).toBe(0);
-    expect(
-      within(await card("overview-health")).getByText(copy.couldntCheck(copy.health.costWhat)),
-    ).toBeInTheDocument();
   });
 });
 

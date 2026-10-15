@@ -132,8 +132,13 @@ export const copy = {
         ? `${label} budget is over its limit`
         : `${label} budget is at ${crossed ?? 0}%`,
     budgetDetail: "This month, routed calls",
-    sessions: (failed: number, checked: number) =>
-      `${failed} of the ${checked} latest sessions checked failed`,
+    // An exact count: `session/list?status=failed` counts every match in the
+    // window in SQL. It used to read "N of the M latest sessions checked
+    // failed", because the status of each row was sampled client-side.
+    sessions: (failed: number) =>
+      failed === 1
+        ? "1 session failed in the last 7 days"
+        : `${failed} sessions failed in the last 7 days`,
     seeSessions: "See sessions",
     unknownAgent: "Unknown agent",
   },
@@ -164,6 +169,7 @@ export const copy = {
     what: "recent sessions",
     failed: "Failed",
     ok: "Succeeded",
+    running: "Running",
     unchecked: "Not checked",
     none: "No sessions in the last 7 days.",
     traceStore: "Sessions need the trace store.",
