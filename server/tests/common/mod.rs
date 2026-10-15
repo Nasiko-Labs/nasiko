@@ -392,8 +392,6 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
     Config {
         bind: "127.0.0.1:0".into(),
         domain: None,
-        delegation_audience: "nasiko-cp-test".to_string(),
-        delegation_enabled: true,
         database_url: db_url,
         redis_url,
         agent_runtime: "local".into(),
@@ -411,6 +409,7 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         agent_registry_username: None,
         agent_registry_password: None,
         build_push_token: String::new(),
+        injection_proxy_token: String::new(),
         seed_agents: None,
         openai_api_key: None,
         openai_base_url: None,

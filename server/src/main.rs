@@ -7,15 +7,15 @@ use nasiko_server::spa::{self, Spa};
 use nasiko_server::telemetry::{TelemetryConfig, init_telemetry};
 use rust_embed::Embed;
 
-// `NASIKO_SPA_BUNDLE` is resolved and checked by build.rs — see the comment
-// there for why this path cannot be a literal (this crate sits at a different
-// depth in the public repo, where the `oss/` prefix is stripped).
+// `NASIKO_UI` is resolved by build.rs — see the comment there for why this
+// path cannot be a literal (this crate sits at a different depth in the public
+// repo, where the `oss/` prefix is stripped).
 //
 // One folder, not an overlay chain: a Vite build is self-contained. It carries
 // `index.html`, the hashed `assets/`, and the `routes.json` / `csp.json`
 // sidecars that `nasiko_server::spa` reads at startup.
 #[derive(Embed)]
-#[folder = "$NASIKO_SPA_BUNDLE/"]
+#[folder = "$NASIKO_UI/oss/dist/"]
 struct OssAssets;
 
 /// `depends_on: condition: service_healthy` guarantees Postgres itself is
@@ -117,11 +117,9 @@ async fn main() {
     };
 
     nasiko_server::state::AppState::run_migrations(&db).await;
-    let mut state =
+    let state =
         nasiko_server::state::AppState::from_config_with_db(config, auth, runtime, oci_storage, db)
             .await;
-    state.ui_mounts =
-        nasiko_server::auth::UiMount::for_bundle(OssAssets::get("nasiko-spa-edition").is_some());
     state.init().await;
     let app = nasiko_server::build_app(state, static_handler);
 

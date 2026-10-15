@@ -8,9 +8,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::api::Client;
-use crate::commands::coding_agent_router::{
-    self, AgentSpec, ConnectionBinding, McpMint, RoutingOptions, RoutingSummary,
-};
+use crate::commands::coding_agent_router::{self, AgentSpec, ConnectionBinding, McpMint};
 
 const ROUTER_VERSION: u32 = 1;
 const ROUTER_PLUGIN: &str = "nasiko-llm-router.js";
@@ -29,19 +27,18 @@ struct ConnectionState {
     mcp_installed: bool,
 }
 
-pub fn connect(options: &RoutingOptions<'_>) -> Result<()> {
+pub fn connect(agent: Option<&str>, llm_config: Option<&str>) -> Result<()> {
     let _opencode = which::which("opencode")
         .context("OpenCode is not installed or 'opencode' is not on PATH")?;
     let nasiko = std::env::current_exe().context("cannot locate the nasiko executable")?;
-    let plugin_path = plugin_path();
+    let plugin_path = config_path().join("plugins").join(ROUTER_PLUGIN);
     let previous_state = load_state()?;
     if let Some(previous) = &previous_state
         && previous.plugin_path != plugin_path
     {
         bail!(
-            "OpenCode routing is connected through {}; run `{} disconnect opencode` before reconnecting with a different config directory",
-            previous.plugin_path.display(),
-            crate::commands::local_agents::cli_name()
+            "OpenCode routing is connected through {}; run `nasiko disconnect opencode` before reconnecting with a different config directory",
+            previous.plugin_path.display()
         );
     }
     if plugin_path.exists() {
@@ -55,8 +52,8 @@ pub fn connect(options: &RoutingOptions<'_>) -> Result<()> {
             display_name: "OpenCode",
             default_name: "opencode",
         },
-        options.agent,
-        options.llm_config,
+        agent,
+        llm_config,
         nasiko.clone(),
     )?;
     // Minting is a network call layered onto an otherwise local-file install; a failure here
@@ -69,16 +66,14 @@ pub fn connect(options: &RoutingOptions<'_>) -> Result<()> {
         &prepared.entry,
         Some(coding_agent_router::CP_CALL_TIMEOUT),
     );
-    let mcp_mint = options.mcp.then(|| {
-        coding_agent_router::mint_mcp_credential(
-            &mcp_client,
-            &prepared.binding.agent_id,
-            &prepared.entry.url,
-        )
-    });
+    let mcp_mint = coding_agent_router::mint_mcp_credential(
+        &mcp_client,
+        &prepared.binding.agent_id,
+        &prepared.entry.url,
+    );
     let mcp_credential = match &mcp_mint {
-        Some(McpMint::Minted(credential)) => Some(credential),
-        Some(McpMint::Unavailable(_)) | None => None,
+        McpMint::Minted(credential) => Some(credential),
+        McpMint::Unavailable(_) => None,
     };
     let state = ConnectionState {
         binding: prepared.binding.clone(),
@@ -113,8 +108,7 @@ pub fn connect(options: &RoutingOptions<'_>) -> Result<()> {
         }
         if mcp_credential.is_some() && reconnect_shares_the_restored_credential {
             eprintln!(
-                "warning: OpenCode reconnect failed; the previous MCP gateway credential may need a fresh `{} connect opencode` before its rotation grace window lapses",
-                crate::commands::local_agents::cli_name()
+                "warning: OpenCode reconnect failed; the previous MCP gateway credential may need a fresh `nasiko connect opencode` before its rotation grace window lapses"
             );
         }
         return match coding_agent_router::rollback_config(&prepared) {
@@ -154,22 +148,20 @@ pub fn connect(options: &RoutingOptions<'_>) -> Result<()> {
     );
     println!("Routing:          nasiko/router");
     println!("Installed plugin: {}", plugin_path.display());
-    coding_agent_router::print_mcp_outcome(mcp_mint.as_ref(), None);
+    match &mcp_mint {
+        McpMint::Minted(_) => {
+            println!("{}", coding_agent_router::mcp_connected_line());
+            println!("{}", coding_agent_router::mcp_multi_machine_note());
+        }
+        McpMint::Unavailable(message) => {
+            eprintln!(
+                "warning: MCP gateway unavailable ({message}); LLM routing is connected, MCP tools are not"
+            );
+        }
+    }
     println!("Restart OpenCode so it loads the new router plugin.");
+    println!("Session reporting is separate: nasiko agents install opencode");
     Ok(())
-}
-
-/// The current connection, if any, for `nasiko status`'s overview.
-pub fn summary() -> Result<Option<RoutingSummary>> {
-    Ok(
-        load_state()?
-            .map(|state| RoutingSummary::from_binding(&state.binding, state.mcp_installed)),
-    )
-}
-
-/// Where `connect` installs the router plugin.
-pub fn plugin_path() -> PathBuf {
-    config_path().join("plugins").join(ROUTER_PLUGIN)
 }
 
 /// Whether reconnecting over an existing OpenCode binding leaves the *previous* connection's MCP
@@ -217,7 +209,7 @@ pub fn disconnect(force: bool) -> Result<()> {
         fs::remove_file(&path).with_context(|| format!("failed to remove {}", path.display()))?;
     }
     println!("Disconnected OpenCode routing from Nasiko.");
-    println!("Queued telemetry, history, and the registered agent were kept.");
+    println!("Session reporting, queued telemetry, history, and the registered agent were kept.");
     println!("Restart OpenCode so it unloads the router plugin.");
     Ok(())
 }
@@ -229,10 +221,7 @@ pub fn status() -> Result<()> {
             "OpenCode session reporting: {}",
             crate::commands::integration::reporting_status_for("opencode")?
         );
-        println!(
-            "Connect routing with: {} connect opencode",
-            crate::commands::local_agents::cli_name()
-        );
+        println!("Connect routing with: nasiko connect opencode");
         return Ok(());
     };
     println!("OpenCode routing:          connected");
@@ -265,10 +254,7 @@ pub fn status() -> Result<()> {
 /// Hidden helper called by the generated plugin. Stdout is credential JSON only.
 pub fn credential() -> Result<()> {
     let state = load_state()?.ok_or_else(|| {
-        anyhow::anyhow!(
-            "OpenCode routing is not connected; run: {} connect opencode",
-            crate::commands::local_agents::cli_name()
-        )
+        anyhow::anyhow!("OpenCode routing is not connected; run: nasiko connect opencode")
     })?;
     let credential = coding_agent_router::credential(&state.binding)?;
     println!("{}", serde_json::to_string(&credential)?);

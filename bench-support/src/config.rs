@@ -54,8 +54,6 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
     Config {
         bind: "127.0.0.1:0".into(),
         domain: None,
-        delegation_audience: "nasiko-cp-test".to_string(),
-        delegation_enabled: true,
         database_url,
         redis_url: redis_url(),
         agent_runtime: "simulated".into(),
@@ -114,6 +112,7 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         agent_registry_username: None,
         agent_registry_password: None,
         build_push_token: String::new(),
+        injection_proxy_token: String::new(),
         seed_agents: None,
         // Dummy but non-empty — ee build_ee_app requires Some(), and a
         // non-empty api_key is also what lets Stage 1 (VectorStore) attempt
