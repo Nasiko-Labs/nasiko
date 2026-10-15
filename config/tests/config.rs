@@ -159,9 +159,6 @@ fn optional_fields_use_defaults_when_not_set() {
         "OCI_STORAGE_BUCKET",
         "AGENT_IMAGE_REGISTRY",
         "SEED_AGENTS",
-        "AGENT_REGISTRY_HOST",
-        "SEED_IMAGE_PLATFORM",
-        "AGENT_IMAGE_REGISTRY_PLACEHOLDER",
         "OPENAI_API_KEY",
         "OPENAI_BASE_URL",
         "OPENAI_MODEL",
@@ -196,6 +193,7 @@ fn optional_fields_use_defaults_when_not_set() {
         "REGISTRY_IMPORT_ALLOWED_HOSTS",
         "ADMIN_USERNAME",
         "BUILD_CONCURRENCY",
+        "MAF_WORKER_CONCURRENCY",
     ]);
 
     let cfg = Config::from_env().expect("Config::from_env() should succeed with all defaults");
@@ -254,6 +252,8 @@ fn optional_fields_use_defaults_when_not_set() {
     // Concurrent by default: shipping 1 here would mean every deployment keeps
     // queuing builds serially until someone discovers the env var.
     assert_eq!(cfg.build_concurrency, 4);
+    // Same reasoning for MAF runs.
+    assert_eq!(cfg.maf_worker_concurrency, 4);
 
     // git_clone_allowed_hosts has a hardcoded default
     assert!(
@@ -373,6 +373,24 @@ fn build_concurrency_is_parsed_and_clamped() {
 
 #[test]
 #[serial]
+fn maf_worker_concurrency_is_parsed_and_clamped() {
+    set_required_vars();
+
+    for (env_value, expected) in [("8", 8), ("1", 1), ("0", 1), ("1000", 32)] {
+        unsafe { std::env::set_var("MAF_WORKER_CONCURRENCY", env_value) };
+        let cfg = Config::from_env().unwrap();
+        assert_eq!(
+            cfg.maf_worker_concurrency, expected,
+            "MAF_WORKER_CONCURRENCY={env_value} should resolve to {expected}"
+        );
+    }
+
+    unsafe { std::env::remove_var("MAF_WORKER_CONCURRENCY") };
+    unset_required_vars();
+}
+
+#[test]
+#[serial]
 fn flow_max_depth_is_parsed_from_env() {
     set_required_vars();
     unsafe { std::env::set_var("NASIKO_FLOW_MAX_DEPTH", "10") };
@@ -470,72 +488,6 @@ fn seed_agents_is_read_from_env() {
     );
 
     unsafe { std::env::remove_var("SEED_AGENTS") };
-    unset_required_vars();
-}
-
-#[test]
-#[serial]
-fn agent_registry_host_is_trimmed_and_blank_means_docker_hub() {
-    set_required_vars();
-    unsafe { std::env::set_var("AGENT_REGISTRY_HOST", " ghcr.io ") };
-    assert_eq!(
-        Config::from_env().unwrap().agent_registry_host,
-        Some("ghcr.io".to_string())
-    );
-
-    unsafe { std::env::set_var("AGENT_REGISTRY_HOST", "  ") };
-    assert_eq!(Config::from_env().unwrap().agent_registry_host, None);
-
-    unsafe { std::env::remove_var("AGENT_REGISTRY_HOST") };
-    unset_required_vars();
-}
-
-#[test]
-#[serial]
-fn agent_image_registry_placeholder_is_trimmed_and_blank_means_unset() {
-    set_required_vars();
-    assert_eq!(
-        Config::from_env().unwrap().agent_image_registry_placeholder,
-        None
-    );
-
-    unsafe {
-        std::env::set_var(
-            "AGENT_IMAGE_REGISTRY_PLACEHOLDER",
-            " nasiko.pending.nip.io ",
-        )
-    };
-    assert_eq!(
-        Config::from_env().unwrap().agent_image_registry_placeholder,
-        Some("nasiko.pending.nip.io".to_string())
-    );
-
-    unsafe { std::env::set_var("AGENT_IMAGE_REGISTRY_PLACEHOLDER", "  ") };
-    assert_eq!(
-        Config::from_env().unwrap().agent_image_registry_placeholder,
-        None
-    );
-
-    unsafe { std::env::remove_var("AGENT_IMAGE_REGISTRY_PLACEHOLDER") };
-    unset_required_vars();
-}
-
-#[test]
-#[serial]
-fn seed_image_platform_defaults_to_linux_amd64() {
-    set_required_vars();
-    assert_eq!(
-        Config::from_env().unwrap().seed_image_platform,
-        "linux/amd64"
-    );
-
-    unsafe { std::env::set_var("SEED_IMAGE_PLATFORM", "linux/arm64") };
-    assert_eq!(
-        Config::from_env().unwrap().seed_image_platform,
-        "linux/arm64"
-    );
-
-    unsafe { std::env::remove_var("SEED_IMAGE_PLATFORM") };
     unset_required_vars();
 }
 

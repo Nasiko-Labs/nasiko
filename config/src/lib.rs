@@ -1,9 +1,55 @@
 use nasiko_utils::{env_bool, env_or, env_parse, required_env};
 
+/// The audience a control plane falls back to when nothing identifies its
+/// public origin. Fine for a standalone deployment; never unique across a
+/// fleet, which is why the assertion exchange refuses it.
+pub const DEFAULT_DELEGATION_AUDIENCE: &str = "nasiko-cp";
+
+fn nonempty_env(key: &str) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+/// `scheme://host[:port]` of a URL, or `None` when it has no scheme.
+fn origin_of(url: &str) -> Option<String> {
+    let (scheme, rest) = url.split_once("://")?;
+    let host = rest.split(['/', '?', '#']).next()?.trim();
+    if host.is_empty() {
+        return None;
+    }
+    Some(format!("{scheme}://{host}"))
+}
+
+/// See [`Config::delegation_audience`].
+fn delegation_audience_from_env() -> String {
+    if let Some(explicit) = nonempty_env("NASIKO_CP_AUDIENCE") {
+        return explicit.trim_end_matches('/').to_string();
+    }
+    if let Some(domain) = nonempty_env("CP_DOMAIN") {
+        return origin_of(&domain).unwrap_or_else(|| format!("https://{domain}"));
+    }
+    if let Some(origin) = nonempty_env("APP_BASE_URL").and_then(|u| origin_of(&u)) {
+        return origin;
+    }
+    DEFAULT_DELEGATION_AUDIENCE.to_string()
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub bind: String,
     pub domain: Option<String>,
+    /// Audience string this control plane stamps into, and requires on,
+    /// delegated tokens (react/docs/adr/0001a). It is this deployment's public
+    /// origin: `NASIKO_CP_AUDIENCE`, else `https://<CP_DOMAIN>`, else the origin
+    /// of `APP_BASE_URL`, else [`DEFAULT_DELEGATION_AUDIENCE`]. Two workspaces
+    /// must never share one, so the cross-workspace (BFF assertion) path refuses
+    /// to run on the shared default — see `oss/server/src/auth/assertion.rs`.
+    pub delegation_audience: String,
+    /// Kill switch for `POST /api/auth/delegate` (default on). Existing
+    /// delegated tokens die within `DELEGATION_MAX_TTL_SECS` anyway.
+    pub delegation_enabled: bool,
     pub database_url: String,
     pub redis_url: String,
     pub agent_runtime: String,
@@ -28,12 +74,6 @@ pub struct Config {
     /// Empty string → no prefix (Docker local mode).
     /// TODO: this needs to be removed.
     pub agent_image_registry: String,
-    /// An `agent_image_registry` value that means "the registry address is
-    /// not known yet" — set by installers that discover the address after
-    /// the server first starts (the server is restarted once it is real).
-    /// Work that bakes the address into deployed agents, such as seeding,
-    /// waits while the two are equal.
-    pub agent_image_registry_placeholder: Option<String>,
     /// Username for authenticating agent-image pulls from a private registry
     /// (e.g. a private Docker Hub repo). `None` (default) means anonymous
     /// pulls only — unchanged behavior for public images. Only meaningful
@@ -43,27 +83,12 @@ pub struct Config {
     /// Password or access token paired with `agent_registry_username`. Never
     /// logged, never returned in any API response.
     pub agent_registry_password: Option<String>,
-    /// Bare host of the registry the credential above belongs to (e.g.
-    /// `ghcr.io`, `us-central1-docker.pkg.dev`). `None` means Docker Hub. The
-    /// credential is only ever sent to this host.
-    pub agent_registry_host: Option<String>,
-    /// `os/arch` copied when a seed image is mirrored from a multi-platform
-    /// index into the built-in registry — the platform the agent nodes run.
-    /// Default `linux/amd64`.
-    pub seed_image_platform: String,
     /// Shared credential the in-cluster BuildKit build Job presents (HTTP
     /// Basic auth, username `"build-service"`) to push freshly-built agent
     /// images into the built-in OCI registry — see
     /// `nasiko_oci::authz::Writer::BuildService`. Empty means not configured
     /// (fine for `AGENT_RUNTIME=local`, where no such build path exists).
     pub build_push_token: String,
-    /// Shared credential the EE injection proxy's internal route requires on every request —
-    /// mirrors `build_push_token`'s shape exactly (one cluster-wide secret, not a per-caller
-    /// identity): the route's only caller is the control plane's own outbound forward to an
-    /// agent, so there is no untrusted external identity to distinguish, just "is this genuinely
-    /// the control plane." Empty means not configured (fine on OSS and on EE with
-    /// `MEMORY_ENABLED=false`, where the route is never mounted at all).
-    pub injection_proxy_token: String,
     pub seed_agents: Option<String>,
     pub openai_api_key: Option<String>,
     pub openai_base_url: Option<String>,
@@ -178,11 +203,6 @@ pub struct Config {
     pub savings_factor_min_samples: i64,
     /// Trailing window the holdout comparison reads.
     pub savings_factor_window_days: i64,
-    /// Percent of otherwise-eligible minimal-code flows deliberately withheld from the ladder, to
-    /// give `optimization_effect_factors`'s `minimal_code` row a real control group — same
-    /// mechanism as the brevity directive's own holdout, applied at the a2a-dispatch seam instead
-    /// of the LLM router (`oss/coding-policy::in_minimal_code_holdout`).
-    pub minimal_code_holdout_pct: u8,
     pub react_compress_enabled: bool,
     /// Skip tool results below this size.
     pub react_compress_min_bytes: usize,
@@ -352,6 +372,13 @@ pub struct Config {
     /// this value — the claim query skips a target that already has a build in
     /// flight (see `build_worker::claim_next_job`).
     pub build_concurrency: usize,
+    /// Number of MAF workflow executions each server process runs concurrently.
+    /// MAF_WORKER_CONCURRENCY, default 4. Clamped to 1..=32. An execution mostly
+    /// waits on agents and LLMs, so the limit that matters is shared capacity, not
+    /// CPU: every execution makes its planning, extraction and final-answer calls on
+    /// the platform's LLM key, so raise this with that key's rate limit in mind.
+    /// Set 1 to restore the old strictly-serial behavior.
+    pub maf_worker_concurrency: usize,
     /// Default memory limit for every agent container, Kubernetes notation
     /// (`"512Mi"`, `"1Gi"`) — see `nasiko_runtime::ResourceLimits::memory`.
     /// AGENT_DEFAULT_MEMORY, default `"1Gi"`. `nasiko_runtime::ResourceLimits`
@@ -457,6 +484,10 @@ impl Config {
         Ok(Self {
             bind: env_or("CP_BIND", "0.0.0.0:8080"),
             domain: std::env::var("CP_DOMAIN").ok(),
+            delegation_audience: delegation_audience_from_env(),
+            delegation_enabled: std::env::var("DELEGATION_ENABLED")
+                .map(|v| !matches!(v.trim(), "0" | "false" | "no" | "off"))
+                .unwrap_or(true),
             database_url: required_env("DATABASE_URL")?,
             redis_url: required_env("REDIS_URL")?,
             agent_runtime: env_or("AGENT_RUNTIME", "local"),
@@ -479,23 +510,13 @@ impl Config {
             secrets_encryption_key: required_env("SECRETS_ENCRYPTION_KEY")?,
             oci_storage_bucket: env_or("OCI_STORAGE_BUCKET", "nasiko-artifacts"),
             agent_image_registry: env_or("AGENT_IMAGE_REGISTRY", ""),
-            agent_image_registry_placeholder: std::env::var("AGENT_IMAGE_REGISTRY_PLACEHOLDER")
-                .ok()
-                .map(|s| s.trim().to_owned())
-                .filter(|s| !s.is_empty()),
             agent_registry_username: std::env::var("AGENT_REGISTRY_USERNAME")
                 .ok()
                 .filter(|s| !s.is_empty()),
             agent_registry_password: std::env::var("AGENT_REGISTRY_PASSWORD")
                 .ok()
                 .filter(|s| !s.is_empty()),
-            agent_registry_host: std::env::var("AGENT_REGISTRY_HOST")
-                .ok()
-                .map(|s| s.trim().to_owned())
-                .filter(|s| !s.is_empty()),
-            seed_image_platform: env_or("SEED_IMAGE_PLATFORM", "linux/amd64"),
             build_push_token: env_or("BUILD_PUSH_TOKEN", ""),
-            injection_proxy_token: env_or("INJECTION_PROXY_TOKEN", ""),
             seed_agents: std::env::var("SEED_AGENTS").ok(),
             openai_api_key: std::env::var("OPENAI_API_KEY").ok(),
             openai_base_url: std::env::var("OPENAI_BASE_URL").ok(),
@@ -580,7 +601,6 @@ impl Config {
             savings_factor_refresh_secs: env_parse("SAVINGS_FACTOR_REFRESH_SECS", 86_400),
             savings_factor_min_samples: env_parse("SAVINGS_FACTOR_MIN_SAMPLES", 1_600),
             savings_factor_window_days: env_parse("SAVINGS_FACTOR_WINDOW_DAYS", 30),
-            minimal_code_holdout_pct: env_parse("MINIMAL_CODE_HOLDOUT_PCT", 5u8),
             react_compress_enabled: env_parse("TOKEN_COMPRESS_TOOL_RESULTS", true),
             react_compress_min_bytes: env_parse("TOKEN_COMPRESS_TOOL_RESULTS_MIN_BYTES", 2048),
             history_compress_enabled: env_parse("TOKEN_COMPRESS_HISTORY", true),
@@ -684,6 +704,7 @@ impl Config {
             mcp_upload_max_replicas: env_parse("MCP_UPLOAD_MAX_REPLICAS", 1),
             agent_max_replicas: env_parse("AGENT_MAX_REPLICAS", 1),
             build_concurrency: env_parse("BUILD_CONCURRENCY", 4).clamp(1, 16),
+            maf_worker_concurrency: env_parse("MAF_WORKER_CONCURRENCY", 4).clamp(1, 32),
             agent_default_memory: env_or("AGENT_DEFAULT_MEMORY", "1Gi"),
             agent_memory_volume: env_or("AGENT_MEMORY_VOLUME", "nasiko-agent-memory"),
             agent_memory_init_image: env_or("AGENT_MEMORY_INIT_IMAGE", "alpine:3.21"),
@@ -746,6 +767,16 @@ fn validate_secrets_key_format(key: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn origin_of_keeps_scheme_and_host_only() {
+        assert_eq!(
+            super::origin_of("https://acme.nasiko.dev/app?x=1"),
+            Some("https://acme.nasiko.dev".to_string())
+        );
+        assert_eq!(super::origin_of("acme.nasiko.dev"), None);
+        assert_eq!(super::origin_of("https:///app"), None);
+    }
+
     use super::*;
 
     #[test]
