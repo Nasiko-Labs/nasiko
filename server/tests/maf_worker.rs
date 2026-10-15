@@ -23,29 +23,66 @@ use serial_test::serial;
 use uuid::Uuid;
 
 const GROUP_NAME: &str = "maf-workers";
-/// How long each fake execution holds its slot.
+/// How long each fake execution holds its slot, unless a test says otherwise.
 const RUN_TIME: Duration = Duration::from_millis(300);
+/// The heartbeat these tests run the worker with: recovery takes a message over after
+/// six missed (6 s) and passes run every three (3 s).
+const HEARTBEAT: Duration = Duration::from_secs(1);
 
 fn test_redis_url() -> String {
     std::env::var("MAF_WORKER_TEST_REDIS_URL")
         .unwrap_or_else(|_| "redis://localhost:6379/15".into())
 }
 
-/// Counts runs and resumes, how many are inside the executor at once, and the most
-/// there ever were.
-#[derive(Default)]
+/// Counts runs and resumes, how many are inside the executor at once and the most there
+/// ever were, and how many ran to the end or were stopped part-way.
 struct CountingExecutor {
+    run_time: Duration,
     runs: AtomicUsize,
     resumes: AtomicUsize,
     running: AtomicUsize,
     most_at_once: AtomicUsize,
+    finished: AtomicUsize,
+    stopped: AtomicUsize,
+}
+
+/// Counts a run dropped before it finished: the worker stopped it.
+struct StopCounter<'a> {
+    stopped: &'a AtomicUsize,
+    finished: bool,
+}
+
+impl Drop for StopCounter<'_> {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.stopped.fetch_add(1, Ordering::SeqCst);
+        }
+    }
 }
 
 impl CountingExecutor {
+    fn taking(run_time: Duration) -> Self {
+        Self {
+            run_time,
+            runs: AtomicUsize::new(0),
+            resumes: AtomicUsize::new(0),
+            running: AtomicUsize::new(0),
+            most_at_once: AtomicUsize::new(0),
+            finished: AtomicUsize::new(0),
+            stopped: AtomicUsize::new(0),
+        }
+    }
+
     async fn hold_a_slot(&self) -> Result<StepOutcome, String> {
         let now = self.running.fetch_add(1, Ordering::SeqCst) + 1;
         self.most_at_once.fetch_max(now, Ordering::SeqCst);
-        tokio::time::sleep(RUN_TIME).await;
+        let mut counter = StopCounter {
+            stopped: &self.stopped,
+            finished: false,
+        };
+        tokio::time::sleep(self.run_time).await;
+        counter.finished = true;
+        self.finished.fetch_add(1, Ordering::SeqCst);
         self.running.fetch_sub(1, Ordering::SeqCst);
         Ok(StepOutcome::Completed(ExecutionResult {
             output: "done".into(),
@@ -170,7 +207,16 @@ async fn queue_executions(
 }
 
 fn start(db: &sqlx::PgPool, redis: redis::Client, concurrency: usize) -> Arc<CountingExecutor> {
-    let executor = Arc::new(CountingExecutor::default());
+    start_with(db, redis, concurrency, CountingExecutor::taking(RUN_TIME))
+}
+
+fn start_with(
+    db: &sqlx::PgPool,
+    redis: redis::Client,
+    concurrency: usize,
+    executor: CountingExecutor,
+) -> Arc<CountingExecutor> {
+    let executor = Arc::new(executor);
     let flow_guard = Arc::new(nasiko_flow::FlowGuard::new(
         redis.clone(),
         nasiko_flow::FlowConfig::default(),
@@ -187,6 +233,7 @@ fn start(db: &sqlx::PgPool, redis: redis::Client, concurrency: usize) -> Arc<Cou
                 model: "unused".into(),
             },
             concurrency,
+            heartbeat: HEARTBEAT,
         },
         Arc::new(nasiko_hitl::PgHitlStore::new(db.clone())),
         executor.clone(),
@@ -217,6 +264,104 @@ async fn pending_count(conn: &mut redis::aio::MultiplexedConnection) -> i64 {
         },
         _ => 0,
     }
+}
+
+/// The consumer `msg_id` is pending to, and its delivery count.
+async fn pending_entry(
+    conn: &mut redis::aio::MultiplexedConnection,
+    msg_id: &str,
+) -> Option<(String, i64)> {
+    let reply: redis::Value = redis::cmd("XPENDING")
+        .arg(STREAM_KEY)
+        .arg(GROUP_NAME)
+        .arg(msg_id)
+        .arg(msg_id)
+        .arg(1)
+        .query_async(conn)
+        .await
+        .expect("XPENDING");
+    let redis::Value::Array(entries) = reply else {
+        return None;
+    };
+    let redis::Value::Array(entry) = entries.into_iter().next()? else {
+        return None;
+    };
+    match (entry.get(1)?, entry.get(3)?) {
+        (redis::Value::BulkString(consumer), redis::Value::Int(count)) => {
+            Some((String::from_utf8_lossy(consumer).into_owned(), *count))
+        }
+        _ => None,
+    }
+}
+
+/// Delivers the stream's next message to `consumer`, a worker that then stops: the message
+/// stays pending to it, untouched for `idle_ms` and already delivered `deliveries` times.
+async fn leave_pending_to(
+    conn: &mut redis::aio::MultiplexedConnection,
+    consumer: &str,
+    idle_ms: u64,
+    deliveries: i64,
+) -> String {
+    let read: redis::Value = redis::cmd("XREADGROUP")
+        .arg("GROUP")
+        .arg(GROUP_NAME)
+        .arg(consumer)
+        .arg("COUNT")
+        .arg(1)
+        .arg("STREAMS")
+        .arg(STREAM_KEY)
+        .arg(">")
+        .query_async(conn)
+        .await
+        .expect("XREADGROUP");
+    let msg_id = first_message_id(&read).expect("a message to leave pending");
+    let _: redis::Value = redis::cmd("XCLAIM")
+        .arg(STREAM_KEY)
+        .arg(GROUP_NAME)
+        .arg(consumer)
+        .arg(0)
+        .arg(&msg_id)
+        .arg("IDLE")
+        .arg(idle_ms)
+        .arg("RETRYCOUNT")
+        .arg(deliveries)
+        .arg("JUSTID")
+        .query_async(conn)
+        .await
+        .expect("XCLAIM");
+    msg_id
+}
+
+/// The id of the first message in an XREADGROUP reply.
+fn first_message_id(reply: &redis::Value) -> Option<String> {
+    let redis::Value::Array(streams) = reply else {
+        return None;
+    };
+    let redis::Value::Array(stream) = streams.first()? else {
+        return None;
+    };
+    let redis::Value::Array(messages) = stream.get(1)? else {
+        return None;
+    };
+    let redis::Value::Array(message) = messages.first()? else {
+        return None;
+    };
+    match message.first()? {
+        redis::Value::BulkString(id) => Some(String::from_utf8_lossy(id).into_owned()),
+        _ => None,
+    }
+}
+
+/// Waits up to `within` for `done` to hold.
+async fn wait_until(within: Duration, mut done: impl AsyncFnMut() -> bool) -> bool {
+    let deadline = tokio::time::Instant::now() + within;
+    while tokio::time::Instant::now() < deadline {
+        if done().await {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    false
 }
 
 /// Waits until every execution has finished successfully.
@@ -357,5 +502,184 @@ async fn a_resume_runs_while_the_row_still_says_awaiting_human() {
 
     assert_eq!(executor.resumes.load(Ordering::SeqCst), 1);
     assert_eq!(status_of(&server.db, execution_id).await, "success");
+    server.cleanup().await;
+}
+
+// ─── Heartbeat and recovery ────────────────────────────────────────────────
+
+#[tokio::test]
+#[serial]
+async fn a_run_longer_than_the_takeover_threshold_keeps_its_message_and_runs_once() {
+    let server = common::TestServer::start().await;
+    let redis = redis::Client::open(test_redis_url()).expect("redis url");
+    let mut conn = fresh_stream(&redis).await;
+    let ids = queue_executions(&server.db, &mut conn, 1).await;
+
+    // 13 s of work against a 6 s takeover threshold, with this worker's own recovery
+    // passing every 3 s (checked between 2 s reads): without the heartbeat a pass would
+    // find the message idle past the threshold and start the run a second time.
+    let executor = start_with(
+        &server.db,
+        redis,
+        2,
+        CountingExecutor::taking(Duration::from_secs(13)),
+    );
+    let finished = wait_until(Duration::from_secs(20), async || {
+        status_of(&server.db, ids[0]).await == "success"
+    })
+    .await;
+
+    assert!(finished, "the long run finished");
+    assert_eq!(
+        executor.runs.load(Ordering::SeqCst),
+        1,
+        "it ran exactly once"
+    );
+    assert_eq!(executor.stopped.load(Ordering::SeqCst), 0);
+    assert_eq!(pending_count(&mut conn).await, 0);
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_run_whose_message_is_taken_over_stops_without_recording_its_outcome() {
+    let server = common::TestServer::start().await;
+    let redis = redis::Client::open(test_redis_url()).expect("redis url");
+    let mut conn = fresh_stream(&redis).await;
+    let ids = queue_executions(&server.db, &mut conn, 1).await;
+    let executor = start_with(
+        &server.db,
+        redis,
+        1,
+        CountingExecutor::taking(Duration::from_secs(5)),
+    );
+    let started = wait_until(Duration::from_secs(5), async || {
+        executor.runs.load(Ordering::SeqCst) == 1
+    })
+    .await;
+    assert!(started, "the run started");
+
+    // Another worker's recovery takes the message over while the run is still working.
+    let msg_id = {
+        let read: redis::Value = redis::cmd("XRANGE")
+            .arg(STREAM_KEY)
+            .arg("-")
+            .arg("+")
+            .query_async(&mut conn)
+            .await
+            .expect("XRANGE");
+        let redis::Value::Array(messages) = read else {
+            panic!("no messages")
+        };
+        let redis::Value::Array(message) = &messages[0] else {
+            panic!("bad message")
+        };
+        let redis::Value::BulkString(id) = &message[0] else {
+            panic!("bad id")
+        };
+        String::from_utf8_lossy(id).into_owned()
+    };
+    let _: redis::Value = redis::cmd("XCLAIM")
+        .arg(STREAM_KEY)
+        .arg(GROUP_NAME)
+        .arg("maf-worker-intruder")
+        .arg(0)
+        .arg(&msg_id)
+        .arg("JUSTID")
+        .query_async(&mut conn)
+        .await
+        .expect("XCLAIM");
+
+    let stopped = wait_until(Duration::from_secs(3), async || {
+        executor.stopped.load(Ordering::SeqCst) == 1
+    })
+    .await;
+    assert!(
+        stopped,
+        "the next heartbeat saw the takeover and stopped the run"
+    );
+    assert_eq!(executor.finished.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        status_of(&server.db, ids[0]).await,
+        "running",
+        "no outcome was recorded over the new owner's run"
+    );
+    assert_eq!(
+        pending_entry(&mut conn, &msg_id)
+            .await
+            .map(|(owner, _)| owner)
+            .as_deref(),
+        Some("maf-worker-intruder"),
+        "the message was left for its new owner, not acknowledged"
+    );
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_message_left_by_a_stopped_worker_is_recovered_without_a_restart() {
+    let server = common::TestServer::start().await;
+    let redis = redis::Client::open(test_redis_url()).expect("redis url");
+    let mut conn = fresh_stream(&redis).await;
+    let ids = queue_executions(&server.db, &mut conn, 1).await;
+    // Untouched for 4 s when the worker starts: under the 6 s threshold, so its startup
+    // pass leaves it, and only a later periodic pass can take it over.
+    leave_pending_to(&mut conn, "maf-worker-stopped", 4_000, 1).await;
+
+    let executor = start(&server.db, redis, 1);
+    let recovered = wait_until(Duration::from_secs(12), async || {
+        status_of(&server.db, ids[0]).await == "success"
+    })
+    .await;
+
+    assert!(
+        recovered,
+        "a periodic recovery pass took the message over and ran it"
+    );
+    assert_eq!(executor.runs.load(Ordering::SeqCst), 1);
+    assert_eq!(pending_count(&mut conn).await, 0);
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_message_whose_worker_kept_stopping_fails_its_execution_instead_of_running() {
+    let server = common::TestServer::start().await;
+    let redis = redis::Client::open(test_redis_url()).expect("redis url");
+    let mut conn = fresh_stream(&redis).await;
+    let ids = queue_executions(&server.db, &mut conn, 1).await;
+    // Delivered three times already, and abandoned again: the startup pass takes it over
+    // as its fourth delivery.
+    leave_pending_to(&mut conn, "maf-worker-stopped", 60_000, 3).await;
+
+    let executor = start(&server.db, redis, 1);
+    let given_up = wait_until(Duration::from_secs(5), async || {
+        status_of(&server.db, ids[0]).await == "failed"
+    })
+    .await;
+
+    assert!(given_up, "the execution was failed");
+    assert_eq!(
+        executor.runs.load(Ordering::SeqCst),
+        0,
+        "it was not run again"
+    );
+    let error: Option<String> =
+        sqlx::query_scalar("SELECT error FROM maf_executions WHERE id = $1")
+            .bind(ids[0])
+            .fetch_one(&server.db)
+            .await
+            .expect("read error");
+    assert!(
+        error
+            .as_deref()
+            .is_some_and(|e| e.contains("stopped 3 times")),
+        "the failure says why: {error:?}"
+    );
+    assert_eq!(
+        pending_count(&mut conn).await,
+        0,
+        "the message is acknowledged"
+    );
     server.cleanup().await;
 }

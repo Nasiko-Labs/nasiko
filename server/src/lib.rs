@@ -168,6 +168,7 @@ where
                 model: state.config.openai_model.clone(),
             },
             concurrency: state.config.maf_worker_concurrency,
+            heartbeat: std::time::Duration::from_secs(state.config.maf_heartbeat_secs),
         };
         // The MAF worker's client makes nothing but agent A2A calls, so it
         // carries the agent-call budget at the client level rather than

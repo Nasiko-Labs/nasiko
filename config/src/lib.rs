@@ -379,6 +379,12 @@ pub struct Config {
     /// the platform's LLM key, so raise this with that key's rate limit in mind.
     /// Set 1 to restore the old strictly-serial behavior.
     pub maf_worker_concurrency: usize,
+    /// How often a MAF worker refreshes the stream messages of the runs it is
+    /// executing, in seconds. MAF_HEARTBEAT_SECS, default 20, clamped 5..=120. A
+    /// message is taken over by another worker's recovery once its worker has missed
+    /// six refreshes in a row (2 min at the default), and recovery passes run every
+    /// three (1 min) — both derived from this, never set on their own.
+    pub maf_heartbeat_secs: u64,
     /// Default memory limit for every agent container, Kubernetes notation
     /// (`"512Mi"`, `"1Gi"`) — see `nasiko_runtime::ResourceLimits::memory`.
     /// AGENT_DEFAULT_MEMORY, default `"1Gi"`. `nasiko_runtime::ResourceLimits`
@@ -705,6 +711,7 @@ impl Config {
             agent_max_replicas: env_parse("AGENT_MAX_REPLICAS", 1),
             build_concurrency: env_parse("BUILD_CONCURRENCY", 4).clamp(1, 16),
             maf_worker_concurrency: env_parse("MAF_WORKER_CONCURRENCY", 4).clamp(1, 32),
+            maf_heartbeat_secs: env_parse("MAF_HEARTBEAT_SECS", 20).clamp(5, 120),
             agent_default_memory: env_or("AGENT_DEFAULT_MEMORY", "1Gi"),
             agent_memory_volume: env_or("AGENT_MEMORY_VOLUME", "nasiko-agent-memory"),
             agent_memory_init_image: env_or("AGENT_MEMORY_INIT_IMAGE", "alpine:3.21"),

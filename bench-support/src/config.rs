@@ -99,6 +99,7 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         build_concurrency: 1,
         // Same reasoning: no MAF runs compete with the benchmarked request path.
         maf_worker_concurrency: 1,
+        maf_heartbeat_secs: 20,
         agent_default_memory: "512Mi".into(),
         agent_memory_volume: "nasiko-agent-memory".into(),
         agent_memory_init_image: "alpine:3.21".into(),

@@ -532,6 +532,7 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         build_concurrency: 1,
         // Serial MAF runs in tests, for the same reason as build_concurrency above.
         maf_worker_concurrency: 1,
+        maf_heartbeat_secs: 20,
         agent_default_memory: "512Mi".to_string(),
         agent_memory_volume: "nasiko-agent-memory".to_string(),
         agent_memory_init_image: "alpine:3.21".to_string(),

@@ -1,4 +1,5 @@
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
+use std::time::{Duration, Instant};
 
 use futures::FutureExt;
 use nasiko_flow::FlowGuard;
@@ -21,8 +22,108 @@ use super::{
 /// error (found in review).
 pub const STREAM_KEY: &str = "nasiko:maf:execute";
 const GROUP_NAME: &str = "maf-workers";
-// Messages idle for longer than this are reclaimed on restart (10 minutes in ms)
-const RECLAIM_IDLE_MS: u64 = 600_000;
+
+/// Recovery takes a message over once the worker running it has missed this many
+/// heartbeats in a row: a live run refreshes its message every heartbeat, so a message
+/// idle this long belongs to a worker that stopped.
+const MISSED_HEARTBEATS: u32 = 6;
+/// A recovery pass starts this many heartbeats after the previous one ended.
+const HEARTBEATS_BETWEEN_PASSES: u32 = 3;
+/// At most this many XAUTOCLAIM calls per recovery pass, so a long pending list can't
+/// keep the loop from reading new work. A pass that runs out stops where it is, and the
+/// next pass continues from there.
+const CLAIM_CALLS_PER_PASS: u32 = 10;
+/// Deliveries after which recovery gives a message up: one first read plus two
+/// recoveries. A message delivered more often was being run by a worker that stopped
+/// each time (out of memory, killed), so running it again would stop the next worker
+/// too; its execution is failed instead.
+const MAX_DELIVERIES: i64 = 3;
+
+/// Atomically: if message `ARGV[2]` is still pending to consumer `ARGV[3]`, reset its
+/// idle time and return 1; otherwise (another worker took it over, or it is gone)
+/// return 0. `JUSTID` keeps the refresh out of the message's delivery count, so only
+/// real deliveries count towards `MAX_DELIVERIES`.
+static REFRESH_OWNERSHIP: LazyLock<redis::Script> = LazyLock::new(|| {
+    redis::Script::new(
+        r"
+        local pending = redis.call('XPENDING', KEYS[1], ARGV[1], ARGV[2], ARGV[2], 1)
+        if pending[1] and pending[1][2] == ARGV[3] then
+            redis.call('XCLAIM', KEYS[1], ARGV[1], ARGV[3], 0, ARGV[2], 'JUSTID')
+            return 1
+        end
+        return 0
+        ",
+    )
+});
+
+/// How this worker keeps hold of the messages it is running, shared by every job.
+struct Lease {
+    consumer: String,
+    heartbeat: Duration,
+}
+
+impl Lease {
+    /// How long a message must sit untouched before recovery takes it over.
+    fn abandoned_after(&self) -> Duration {
+        self.heartbeat * MISSED_HEARTBEATS
+    }
+
+    /// How long after one recovery pass ends the next one starts.
+    fn pass_every(&self) -> Duration {
+        self.heartbeat * HEARTBEATS_BETWEEN_PASSES
+    }
+}
+
+/// The recovery of messages whose worker stopped: a pass at startup, then one every
+/// `Lease::pass_every`, each at most `CLAIM_CALLS_PER_PASS` XAUTOCLAIM calls long.
+struct Recovery {
+    /// Where the running pass continues from; `None` between passes.
+    cursor: Option<String>,
+    /// Where the next pass starts: the beginning, or where a pass that ran out of
+    /// calls stopped.
+    next_start: String,
+    calls_left: u32,
+    last_pass_ended: Instant,
+}
+
+impl Recovery {
+    /// The startup pass is already running.
+    fn at_startup() -> Self {
+        Self {
+            cursor: Some("0-0".to_string()),
+            next_start: "0-0".to_string(),
+            calls_left: CLAIM_CALLS_PER_PASS,
+            last_pass_ended: Instant::now(),
+        }
+    }
+
+    /// The cursor to claim from now: the running pass's, or a new pass's once one is due.
+    /// `None` when no pass is running or due.
+    fn take_call(&mut self, pass_every: Duration) -> Option<String> {
+        if self.cursor.is_none() && self.last_pass_ended.elapsed() >= pass_every {
+            self.cursor = Some(std::mem::replace(&mut self.next_start, "0-0".to_string()));
+            self.calls_left = CLAIM_CALLS_PER_PASS;
+        }
+        let cursor = self.cursor.take()?;
+        self.calls_left = self.calls_left.saturating_sub(1);
+        Some(cursor)
+    }
+
+    /// Records where a claim left off: `None` at the end of the pending list, or the
+    /// cursor to continue from — in this pass while it has calls left, else the next.
+    fn finish_call(&mut self, next: Option<String>) {
+        match next {
+            None => self.end_pass("0-0".to_string()),
+            Some(cursor) if self.calls_left == 0 => self.end_pass(cursor),
+            Some(cursor) => self.cursor = Some(cursor),
+        }
+    }
+
+    fn end_pass(&mut self, next_start: String) {
+        self.next_start = next_start;
+        self.last_pass_ended = Instant::now();
+    }
+}
 
 /// Unique per process: pod name (HOSTNAME in k8s/docker) + OS PID.
 /// Two pods or two local processes will never share the same name, so Redis
@@ -55,11 +156,27 @@ pub(super) struct JobDeps {
 ///
 /// A message is only read when a slot is free to start it, so a busy worker leaves
 /// the rest of the stream to workers that can start it now.
-pub(super) async fn run(deps: JobDeps, redis: redis::Client, concurrency: usize) {
-    let consumer = consumer_name();
-    // `Config` clamps this, but a 0 would make the drain unreachable and park the
-    // worker forever, the same guard as `build_worker::run`.
+///
+/// A run stays pending in the stream until it finishes, and refreshes its message every
+/// `heartbeat` while it works (`hold_message`). Recovery passes (`Recovery`) take over
+/// only messages that have gone `MISSED_HEARTBEATS` heartbeats without one, so a run is
+/// never taken from a live worker however long it takes, and one whose worker stopped
+/// is picked up by any live worker within minutes, not at the next restart.
+pub(super) async fn run(
+    deps: JobDeps,
+    redis: redis::Client,
+    concurrency: usize,
+    heartbeat: Duration,
+) {
+    // `Config` clamps both, but a 0 concurrency would make the drain unreachable and park
+    // the worker forever (the same guard as `build_worker::run`), and a zero heartbeat
+    // would make every interval built from it panic.
     let concurrency = concurrency.max(1);
+    let lease = Arc::new(Lease {
+        consumer: consumer_name(),
+        heartbeat: heartbeat.max(Duration::from_secs(1)),
+    });
+    let consumer = lease.consumer.as_str();
 
     // Two connections, never one: Redis serves a connection's commands in order, so
     // while the reader's XREADGROUP blocks (up to 2 s) nothing else sent on that
@@ -87,15 +204,15 @@ pub(super) async fn run(deps: JobDeps, redis: redis::Client, concurrency: usize)
         .query_async(&mut reader)
         .await;
 
-    // Messages left in flight by a crashed worker are reclaimed in batches the free
-    // slots can take, through the same drain as new work, instead of all of them
-    // running one after another before any new job is read. `Some` while the
-    // startup pass over the pending list isn't finished.
-    let mut reclaim_cursor = Some("0-0".to_string());
+    // Messages whose worker stopped are reclaimed in batches the free slots can take,
+    // through the same drain as new work, instead of all of them running one after
+    // another before any new job is read.
+    let mut recovery = Recovery::at_startup();
     let mut jobs: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
 
     info!(
         concurrency,
+        heartbeat_secs = lease.heartbeat.as_secs(),
         "MAF worker started, consumer={consumer}, stream={STREAM_KEY}"
     );
 
@@ -116,15 +233,14 @@ pub(super) async fn run(deps: JobDeps, redis: redis::Client, concurrency: usize)
             continue;
         }
 
-        let reclaiming = reclaim_cursor.is_some();
-        let messages = match reclaim_cursor.take() {
+        let (messages, reclaiming) = match recovery.take_call(lease.pass_every()) {
             Some(cursor) => {
-                let (next, messages) = claim_abandoned(&mut reader, &consumer, &cursor, free).await;
-                reclaim_cursor = next;
-                messages
+                let (next, messages) = claim_abandoned(&mut reader, &lease, &cursor, free).await;
+                recovery.finish_call(next);
+                (messages, true)
             }
-            None => match read_new(&mut reader, &consumer, free).await {
-                Ok(messages) => messages,
+            None => match read_new(&mut reader, consumer, free).await {
+                Ok(messages) => (messages, false),
                 Err(e) => {
                     error!("MAF worker XREADGROUP error: {e}");
                     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
@@ -134,30 +250,104 @@ pub(super) async fn run(deps: JobDeps, redis: redis::Client, concurrency: usize)
         };
 
         for (msg_id, fields) in messages {
-            let Some(job) = parse_job(&fields) else {
+            let Some(mut job) = parse_job(&fields) else {
                 // Malformed message — ACK to remove from PEL so it doesn't retry forever
                 warn!("MAF worker: could not parse job from message {msg_id}, discarding");
                 ack(&mut reader, &msg_id).await;
                 continue;
             };
             if reclaiming {
-                info!("Reclaiming crashed MAF execution {}", job.execution_id);
+                // Counted only for a recovered message: a fresh read is its first delivery.
+                // Unreadable counts as within the cap, so a Redis hiccup never fails a run.
+                job.deliveries = deliveries(&mut reader, &msg_id).await.unwrap_or(1);
+                info!(
+                    deliveries = job.deliveries,
+                    "Reclaiming MAF execution {} from a stopped worker", job.execution_id
+                );
             }
             let deps = deps.clone();
+            let lease = lease.clone();
             let mut conn = jobs_conn.clone();
-            jobs.spawn(async move { process_job(job, &msg_id, &deps, &mut conn).await });
+            jobs.spawn(async move { process_job(job, &msg_id, &deps, &mut conn, &lease).await });
         }
     }
 }
 
-/// A job task that panicked never acknowledged its message, so it stays pending until
-/// the next startup reclaims it. `process_job` already turns an executor panic into a
-/// recorded failure; this only catches one from the bookkeeping around it.
+/// A job task that panicked never acknowledged its message, and its heartbeat stopped with
+/// it, so recovery takes the message over. `process_job` already turns an executor panic
+/// into a recorded failure; this only catches one from the bookkeeping around it.
 fn log_if_panicked(result: Result<(), tokio::task::JoinError>) {
     if let Err(e) = result
         && e.is_panic()
     {
-        error!("MAF worker: job task panicked; its message stays pending until reclaimed");
+        error!("MAF worker: job task panicked; recovery will take its message over");
+    }
+}
+
+/// How many times `msg_id` has been delivered: once when first read, plus once for each
+/// recovery that took it over. The heartbeat's refresh doesn't count (`REFRESH_OWNERSHIP`).
+async fn deliveries(
+    conn: &mut redis::aio::MultiplexedConnection,
+    msg_id: &str,
+) -> redis::RedisResult<i64> {
+    let reply: redis::Value = redis::cmd("XPENDING")
+        .arg(STREAM_KEY)
+        .arg(GROUP_NAME)
+        .arg(msg_id)
+        .arg(msg_id)
+        .arg(1)
+        .query_async(conn)
+        .await?;
+    Ok(parse_delivery_count(&reply).unwrap_or(1))
+}
+
+/// The delivery count in an extended XPENDING reply: `[[id, consumer, idle_ms, count]]`.
+fn parse_delivery_count(reply: &redis::Value) -> Option<i64> {
+    let redis::Value::Array(entries) = reply else {
+        return None;
+    };
+    let redis::Value::Array(entry) = entries.first()? else {
+        return None;
+    };
+    match entry.get(3)? {
+        redis::Value::Int(count) => Some(*count),
+        _ => None,
+    }
+}
+
+/// Whether this worker still holds `msg_id`, refreshing its idle time if so.
+async fn refresh_ownership(
+    conn: &mut redis::aio::MultiplexedConnection,
+    msg_id: &str,
+    consumer: &str,
+) -> redis::RedisResult<bool> {
+    let still_held: i64 = REFRESH_OWNERSHIP
+        .key(STREAM_KEY)
+        .arg(GROUP_NAME)
+        .arg(msg_id)
+        .arg(consumer)
+        .invoke_async(conn)
+        .await?;
+    Ok(still_held == 1)
+}
+
+/// Refreshes `msg_id` every heartbeat while its run works, so recovery never takes it from
+/// this live worker. Returns only once another worker has taken it over: this worker was
+/// cut off long enough (`Lease::abandoned_after`) that recovery decided it had stopped.
+async fn hold_message(mut conn: redis::aio::MultiplexedConnection, msg_id: &str, lease: &Lease) {
+    let mut beat = tokio::time::interval(lease.heartbeat);
+    beat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // The first tick is immediate, and the message was only just delivered.
+    beat.tick().await;
+    loop {
+        beat.tick().await;
+        match refresh_ownership(&mut conn, msg_id, &lease.consumer).await {
+            Ok(true) => {}
+            Ok(false) => return,
+            // An unreachable Redis is no sign that another worker has the message: keep
+            // running and try again next beat.
+            Err(e) => warn!("MAF worker: could not refresh message {msg_id}: {e}"),
+        }
     }
 }
 
@@ -194,6 +384,9 @@ struct Job {
     /// Present only on a continuation job, `oss/server/src/hitl/mod.rs::deliver_maf`'s `XADD` —
     /// a fresh run always omits these three.
     resume: Option<ResumeFields>,
+    /// How many times the stream has delivered this message (see `deliveries`): 1 for a
+    /// fresh read, more for one recovery took over from a stopped worker.
+    deliveries: i64,
 }
 
 struct ResumeFields {
@@ -266,6 +459,7 @@ fn parse_job(fields: &[redis::Value]) -> Option<Job> {
         user_id: user_id?,
         content,
         resume,
+        deliveries: 1,
     })
 }
 
@@ -319,6 +513,7 @@ async fn process_job(
     msg_id: &str,
     deps: &JobDeps,
     conn: &mut redis::aio::MultiplexedConnection,
+    lease: &Lease,
 ) {
     let JobDeps {
         db,
@@ -350,6 +545,16 @@ async fn process_job(
         }
     };
 
+    if job.deliveries > MAX_DELIVERIES {
+        let stops = job.deliveries - 1;
+        let reason =
+            format!("the worker running it stopped {stops} times while running it; not retrying");
+        mark_failed(db, execution_id, &reason).await;
+        ack(conn, msg_id).await;
+        warn!("MAF execution {execution_id}: {reason}");
+        return;
+    }
+
     let maf_def: MafDefinition = match serde_json::from_str(&maf_json_str) {
         Ok(d) => d,
         Err(e) => {
@@ -377,7 +582,7 @@ async fn process_job(
         execution_id,
         user_id,
     };
-    let outcome = std::panic::AssertUnwindSafe(async {
+    let run = std::panic::AssertUnwindSafe(async {
         match job.resume {
             None => maf_executor.run(&ctx, &maf_def, content.as_deref()).await,
             Some(resume) => match fetch_resume_state(db, execution_id).await {
@@ -398,12 +603,30 @@ async fn process_job(
             },
         }
     })
-    .catch_unwind()
-    .await
-    .unwrap_or_else(|_| {
-        error!("MAF execution {execution_id}: executor panicked");
-        Err("MAF executor panicked".to_string())
-    });
+    .catch_unwind();
+    // The run and its heartbeat together. `hold_message` returns only when another worker
+    // has taken the message over, and the run is then dropped where it is (an agent or LLM
+    // call in flight is cancelled with it): the new owner runs it, and this worker writes
+    // nothing more and acknowledges nothing.
+    let outcome = tokio::select! {
+        outcome = run => outcome.unwrap_or_else(|_| {
+            error!("MAF execution {execution_id}: executor panicked");
+            Err("MAF executor panicked".to_string())
+        }),
+        () = hold_message(conn.clone(), msg_id, lease) => {
+            warn!("MAF execution {execution_id}: another worker took over message {msg_id}; stopping this run");
+            return;
+        }
+    };
+    // The takeover can also land between the last heartbeat and here. Recording this run's
+    // outcome then would overwrite the new owner's run, so check once more. A Redis error
+    // can't tell, and the outcome is recorded as before.
+    if let Ok(false) = refresh_ownership(conn, msg_id, &lease.consumer).await {
+        warn!(
+            "MAF execution {execution_id}: another worker took over message {msg_id}; not recording this run's outcome"
+        );
+        return;
+    }
 
     finish_job(
         outcome,
@@ -734,20 +957,22 @@ async fn re_enqueue(
     let _: redis::RedisResult<String> = xadd.query_async(conn).await;
 }
 
-/// One batch of up to `count` messages left pending longer than `RECLAIM_IDLE_MS` (a worker
-/// that crashed mid-run), claimed for this consumer, and the cursor the next batch continues
-/// from: `None` once the scan has reached the end of the pending list.
+/// One batch of up to `count` messages left untouched longer than `Lease::abandoned_after`
+/// (their worker stopped mid-run), claimed for this consumer, and the cursor the next batch
+/// continues from: `None` once the scan has reached the end of the pending list. Each
+/// claim adds one to the message's delivery count.
 async fn claim_abandoned(
     reader: &mut redis::aio::MultiplexedConnection,
-    consumer: &str,
+    lease: &Lease,
     cursor: &str,
     count: usize,
 ) -> (Option<String>, Vec<(String, Vec<redis::Value>)>) {
+    let min_idle_ms = u64::try_from(lease.abandoned_after().as_millis()).unwrap_or(u64::MAX);
     let result: redis::RedisResult<redis::Value> = redis::cmd("XAUTOCLAIM")
         .arg(STREAM_KEY)
         .arg(GROUP_NAME)
-        .arg(consumer)
-        .arg(RECLAIM_IDLE_MS)
+        .arg(&lease.consumer)
+        .arg(min_idle_ms)
         .arg(cursor)
         .arg("COUNT")
         .arg(count)
@@ -831,6 +1056,74 @@ mod tests {
     #[test]
     fn a_read_that_timed_out_has_no_messages() {
         assert!(extract_messages(Value::Nil).is_empty());
+    }
+
+    /// A pass that is never due again on its own, so a test decides when the next starts.
+    const NOT_YET: Duration = Duration::from_secs(3600);
+
+    #[test]
+    fn the_startup_pass_runs_first_and_ends_at_the_end_of_the_list() {
+        let mut recovery = Recovery::at_startup();
+        assert_eq!(recovery.take_call(NOT_YET).as_deref(), Some("0-0"));
+        recovery.finish_call(Some("5-0".into()));
+        assert_eq!(
+            recovery.take_call(NOT_YET).as_deref(),
+            Some("5-0"),
+            "a pass continues from where its last call stopped"
+        );
+        recovery.finish_call(None);
+        assert_eq!(
+            recovery.take_call(NOT_YET),
+            None,
+            "the pass is over and the next isn't due"
+        );
+    }
+
+    #[test]
+    fn a_new_pass_starts_from_the_beginning_once_due() {
+        let mut recovery = Recovery::at_startup();
+        recovery.take_call(NOT_YET);
+        recovery.finish_call(None);
+        assert_eq!(recovery.take_call(Duration::ZERO).as_deref(), Some("0-0"));
+    }
+
+    #[test]
+    fn a_pass_out_of_calls_stops_and_the_next_continues_where_it_stopped() {
+        let mut recovery = Recovery::at_startup();
+        for call in 0..CLAIM_CALLS_PER_PASS {
+            assert!(
+                recovery.take_call(NOT_YET).is_some(),
+                "call {call} is within the budget"
+            );
+            recovery.finish_call(Some(format!("{call}-1")));
+        }
+        assert_eq!(
+            recovery.take_call(NOT_YET),
+            None,
+            "the budget is spent: new work is read until the next pass"
+        );
+        let resumed = recovery.take_call(Duration::ZERO);
+        assert_eq!(
+            resumed.as_deref(),
+            Some(format!("{}-1", CLAIM_CALLS_PER_PASS - 1).as_str()),
+            "the next pass continues from the saved cursor, not the beginning"
+        );
+    }
+
+    #[test]
+    fn the_delivery_count_is_read_from_an_xpending_entry() {
+        let reply = Value::Array(vec![Value::Array(vec![
+            text("1-0"),
+            text("maf-worker-a"),
+            Value::Int(130_000),
+            Value::Int(4),
+        ])]);
+        assert_eq!(parse_delivery_count(&reply), Some(4));
+        assert_eq!(
+            parse_delivery_count(&Value::Array(vec![])),
+            None,
+            "no longer pending"
+        );
     }
 
     #[test]

@@ -29,11 +29,13 @@ pub struct LlmConfig {
     pub model: String,
 }
 
-/// How the MAF worker runs: the LLM its executor uses, and how many executions
-/// it keeps in flight at once (`Config::maf_worker_concurrency`).
+/// How the MAF worker runs: the LLM its executor uses, how many executions it keeps
+/// in flight at once (`Config::maf_worker_concurrency`), and how often each running
+/// execution refreshes its stream message (`Config::maf_heartbeat_secs`).
 pub struct WorkerConfig {
     pub llm: LlmConfig,
     pub concurrency: usize,
+    pub heartbeat: std::time::Duration,
 }
 
 /// Spawn the MAF background worker as a detached tokio task.
@@ -66,5 +68,10 @@ pub fn start_worker(
         hitl_store,
         maf_executor,
     };
-    tokio::spawn(worker::run(deps, redis, config.concurrency));
+    tokio::spawn(worker::run(
+        deps,
+        redis,
+        config.concurrency,
+        config.heartbeat,
+    ));
 }
