@@ -123,7 +123,10 @@ pub enum StepOutcome {
 /// resume exactly this step via `executor::run_maf_from`.
 pub struct PausedStep {
     pub step_index: i32,
-    /// The agent's own `taskId` — the A2A continuation must target this, never a synthetic one.
+    /// The `taskId` the pause was raised under. For a pause the step's agent raised, the agent's
+    /// own: the A2A continuation must target it, never one made up for it. An executor that
+    /// raises a question of its own uses an id of its own, which no agent ever receives, and
+    /// handles the answer itself in `MafExecutor::resume`.
     pub task_id: String,
     /// The MAF execution id (stringified) — doubles as the A2A `contextId` for every step, per
     /// `executor.rs::call_agent`'s existing convention.
