@@ -66,7 +66,7 @@ impl CapabilityGenerator {
         description: Option<&str>,
     ) -> Result<(GeneratedCard, CompletionResult), GeneratorError> {
         let system_prompt = self.build_system_prompt();
-        let user_prompt = self.build_user_prompt(source_code, agent_name, description);
+        let user_prompt = Self::build_user_prompt(source_code, agent_name, description);
 
         let request = self.build_request(
             system_prompt.clone(),
@@ -198,12 +198,7 @@ Guidelines for transport detection:
 - "unknown": cannot determine from available source"#.to_string()
     }
 
-    fn build_user_prompt(
-        &self,
-        source_code: &str,
-        agent_name: &str,
-        description: Option<&str>,
-    ) -> String {
+    fn build_user_prompt(source_code: &str, agent_name: &str, description: Option<&str>) -> String {
         // Byte budget, not char budget — named accurately to avoid future confusion.
         const MAX_SOURCE_BYTES: usize = 60_000;
 
@@ -238,7 +233,7 @@ Guidelines for transport detection:
             // Cap manifests at 4KB — they're dense with signal but rarely need more.
             let manifest_cap = 4_000;
             if manifests.len() > manifest_cap {
-                prompt.push_str(&manifests[..manifest_cap]);
+                prompt.push_str(&manifests[..manifests.floor_char_boundary(manifest_cap)]);
                 prompt.push_str("\n[... truncated]\n");
             } else {
                 prompt.push_str(&manifests);
@@ -406,9 +401,22 @@ pub enum GeneratorError {
 
 #[cfg(test)]
 mod tests {
+    use super::CapabilityGenerator;
     use super::is_response_format_rejection;
     use super::normalize_mime;
     use nasiko_orchestrator::providers::ProviderError;
+
+    #[test]
+    fn manifest_truncation_does_not_split_a_multi_byte_char() {
+        // `split_manifests` re-emits the header as "--- requirements.txt ---\n",
+        // an odd 25 bytes, so every `é` boundary after it lands on an odd offset
+        // and the even 4000-byte cap always falls mid-codepoint.
+        let source = format!("--- requirements.txt ---\n{}", "é".repeat(3_000));
+
+        let prompt = CapabilityGenerator::build_user_prompt(&source, "agent", None);
+
+        assert!(prompt.contains("[... truncated]"));
+    }
 
     #[test]
     fn response_format_400_is_retryable() {
