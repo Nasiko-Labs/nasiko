@@ -334,47 +334,21 @@ async fn process_job(
     let maf_json_str = job.maf_json;
     let is_resume = job.resume.is_some();
 
-    // Fetch current attempt counters
-    #[derive(sqlx::FromRow)]
-    struct AttemptRow {
-        attempt_count: i32,
-        max_attempts: i32,
-    }
-
-    let row = sqlx::query_as::<_, AttemptRow>(
-        "SELECT attempt_count, max_attempts FROM maf_executions WHERE id = $1",
-    )
-    .bind(execution_id)
-    .fetch_optional(db)
-    .await;
-
-    let (attempt_count, max_attempts) = match row {
-        Ok(Some(r)) => (r.attempt_count, r.max_attempts),
-        Ok(None) => {
-            warn!("MAF execution {execution_id} not found, discarding");
+    let (new_attempt, max_attempts) = match claim(db, execution_id, is_resume).await {
+        Ok(Claim::Run {
+            attempt,
+            max_attempts,
+        }) => (attempt, max_attempts),
+        Ok(Claim::Stale(why)) => {
+            warn!("MAF execution {execution_id}: message {msg_id} is stale ({why}), discarding");
             ack(conn, msg_id).await;
             return;
         }
         Err(e) => {
-            error!("MAF worker: DB error for execution {execution_id}: {e}");
+            error!("MAF worker: DB error claiming execution {execution_id}: {e}");
             return;
         }
     };
-
-    let new_attempt = attempt_count + 1;
-
-    // Mark as running and increment attempt counter before work begins
-    if let Err(e) = sqlx::query(
-        "UPDATE maf_executions SET attempt_count = $1, status = 'running', started_at = now(), error = NULL WHERE id = $2",
-    )
-    .bind(new_attempt)
-    .bind(execution_id)
-    .execute(db)
-    .await
-    {
-        error!("MAF worker: failed to mark execution {execution_id} running: {e}");
-        return;
-    }
 
     let maf_def: MafDefinition = match serde_json::from_str(&maf_json_str) {
         Ok(d) => d,
@@ -447,6 +421,63 @@ async fn process_job(
         is_resume,
     )
     .await;
+}
+
+/// What an execution's row says about running a message for it now.
+enum Claim {
+    /// Marked `running` with this attempt counted: run it.
+    Run { attempt: i32, max_attempts: i32 },
+    /// Nothing to run: no such execution, or one already past where this message
+    /// could take it. Acknowledge and drop the message.
+    Stale(String),
+}
+
+/// The statuses a message may start or continue its execution from. A fresh run or a
+/// retry starts from `pending`, or from `running` when the worker that had it stopped. A
+/// resume also from `awaiting_human`: `oss/server/src/hitl/mod.rs::deliver_maf` queues
+/// the resume before it moves the row to `pending`, so the job can arrive first.
+///
+/// Any other status means the run moved on after this message was queued: a worker
+/// stopped between writing the outcome and acknowledging, or a fresh-run message
+/// arrived for a run that has since paused. Running it again would redo agent calls
+/// for a run that already finished.
+fn claimable_statuses(is_resume: bool) -> &'static [&'static str] {
+    if is_resume {
+        &["pending", "running", nasiko_types::maf::AWAITING_HUMAN]
+    } else {
+        &["pending", "running"]
+    }
+}
+
+/// Marks the execution `running` and counts the attempt, if its status allows this
+/// message to run it (`claimable_statuses`).
+async fn claim(db: &PgPool, execution_id: Uuid, is_resume: bool) -> Result<Claim, sqlx::Error> {
+    let claimed: Option<(i32, i32)> = sqlx::query_as(
+        "UPDATE maf_executions \
+         SET attempt_count = attempt_count + 1, status = 'running', started_at = now(), error = NULL \
+         WHERE id = $1 AND status = ANY($2) \
+         RETURNING attempt_count, max_attempts",
+    )
+    .bind(execution_id)
+    .bind(claimable_statuses(is_resume))
+    .fetch_optional(db)
+    .await?;
+    if let Some((attempt, max_attempts)) = claimed {
+        return Ok(Claim::Run {
+            attempt,
+            max_attempts,
+        });
+    }
+
+    let status: Option<String> =
+        sqlx::query_scalar("SELECT status FROM maf_executions WHERE id = $1")
+            .bind(execution_id)
+            .fetch_optional(db)
+            .await?;
+    Ok(Claim::Stale(match status {
+        Some(status) => format!("the execution is already {status}"),
+        None => "the execution was not found".to_string(),
+    }))
 }
 
 /// Loads the durable state a resume needs from `maf_executions`: `step_results` (every step's
