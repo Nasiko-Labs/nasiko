@@ -29,9 +29,16 @@ pub struct LlmConfig {
     pub model: String,
 }
 
+/// How the MAF worker runs: the LLM its executor uses, and how many executions
+/// it keeps in flight at once (`Config::maf_worker_concurrency`).
+pub struct WorkerConfig {
+    pub llm: LlmConfig,
+    pub concurrency: usize,
+}
+
 /// Spawn the MAF background worker as a detached tokio task.
 /// Call once at server startup — the worker reads from the Redis stream
-/// `nasiko:maf:execute` and drives execution of queued MAF jobs.
+/// `nasiko:maf:execute` and drives up to `config.concurrency` queued MAF jobs at once.
 pub fn start_worker(
     db: PgPool,
     redis: redis::Client,
@@ -40,24 +47,24 @@ pub fn start_worker(
     // composition root rather than constructed here, so MAF shares the very
     // same guard instance the A2A dispatch and proxy paths use.
     flow_guard: Arc<FlowGuard>,
-    llm_config: LlmConfig,
+    config: WorkerConfig,
     hitl_store: Arc<dyn nasiko_hitl::HitlStore>,
     // What each job runs through — received from the composition root, like the guard.
     maf_executor: Arc<dyn MafExecutor>,
 ) {
     let llm = LlmClient::new(
         http_client.clone(),
-        llm_config.api_key,
-        llm_config.base_url,
-        llm_config.model,
+        config.llm.api_key,
+        config.llm.base_url,
+        config.llm.model,
     );
-    tokio::spawn(worker::run(
+    let deps = worker::JobDeps {
         db,
-        redis,
         http_client,
         flow_guard,
         llm,
         hitl_store,
         maf_executor,
-    ));
+    };
+    tokio::spawn(worker::run(deps, redis, config.concurrency));
 }

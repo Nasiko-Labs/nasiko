@@ -32,20 +32,46 @@ fn consumer_name() -> String {
     format!("maf-worker-{hostname}-{}", std::process::id())
 }
 
-pub async fn run(
-    db: PgPool,
-    redis: redis::Client,
-    http_client: reqwest::Client,
-    flow_guard: Arc<FlowGuard>,
-    llm: LlmClient,
-    hitl_store: Arc<dyn HitlStore>,
-    maf_executor: Arc<dyn MafExecutor>,
-) {
-    let consumer = consumer_name();
+/// What every job needs, shared by all the jobs a worker runs at once. Cloning it copies
+/// handles (the pool, the clients, `Arc`s), never the resources behind them.
+#[derive(Clone)]
+pub(super) struct JobDeps {
+    pub(super) db: PgPool,
+    pub(super) http_client: reqwest::Client,
+    pub(super) flow_guard: Arc<FlowGuard>,
+    pub(super) llm: LlmClient,
+    pub(super) hitl_store: Arc<dyn HitlStore>,
+    pub(super) maf_executor: Arc<dyn MafExecutor>,
+}
 
-    let mut conn = match redis.get_multiplexed_async_connection().await {
-        Ok(c) => c,
-        Err(e) => {
+/// Main MAF worker loop. Spawned once at server startup.
+///
+/// Keeps up to `concurrency` executions in flight, the same claim/spawn shape as
+/// `build_worker::run` (`oss/server/src/agents/build_worker.rs`): the loop only takes
+/// messages from the stream, and each execution runs in its own task tracked by a
+/// `JoinSet`. An execution spends nearly all its time waiting on agents and LLMs, so
+/// awaiting each one before reading the next — as this loop used to — left every
+/// other queued run, resumes included, waiting behind the slowest one.
+///
+/// A message is only read when a slot is free to start it, so a busy worker leaves
+/// the rest of the stream to workers that can start it now.
+pub(super) async fn run(deps: JobDeps, redis: redis::Client, concurrency: usize) {
+    let consumer = consumer_name();
+    // `Config` clamps this, but a 0 would make the drain unreachable and park the
+    // worker forever, the same guard as `build_worker::run`.
+    let concurrency = concurrency.max(1);
+
+    // Two connections, never one: Redis serves a connection's commands in order, so
+    // while the reader's XREADGROUP blocks (up to 2 s) nothing else sent on that
+    // connection is processed. Jobs send their XACK / XADD on their own connection
+    // so they never queue behind the read.
+    let connections = (
+        redis.get_multiplexed_async_connection().await,
+        redis.get_multiplexed_async_connection().await,
+    );
+    let (mut reader, jobs_conn) = match connections {
+        (Ok(reader), Ok(jobs_conn)) => (reader, jobs_conn),
+        (Err(e), _) | (_, Err(e)) => {
             error!("MAF worker: failed to connect to Redis: {e}");
             return;
         }
@@ -58,71 +84,104 @@ pub async fn run(
         .arg(GROUP_NAME)
         .arg("$")
         .arg("MKSTREAM")
-        .query_async(&mut conn)
+        .query_async(&mut reader)
         .await;
 
-    // Reclaim messages that were in-flight when the server last crashed
-    reclaim_pending(
-        &mut conn,
-        &db,
-        &http_client,
-        &flow_guard,
-        &llm,
-        &hitl_store,
-        &maf_executor,
-        &consumer,
-    )
-    .await;
+    // Messages left in flight by a crashed worker are reclaimed in batches the free
+    // slots can take, through the same drain as new work, instead of all of them
+    // running one after another before any new job is read. `Some` while the
+    // startup pass over the pending list isn't finished.
+    let mut reclaim_cursor = Some("0-0".to_string());
+    let mut jobs: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
 
-    info!("MAF worker started, consumer={consumer}, stream={STREAM_KEY}");
+    info!(
+        concurrency,
+        "MAF worker started, consumer={consumer}, stream={STREAM_KEY}"
+    );
 
     loop {
-        let result: redis::RedisResult<redis::Value> = redis::cmd("XREADGROUP")
-            .arg("GROUP")
-            .arg(GROUP_NAME)
-            .arg(&consumer)
-            .arg("BLOCK")
-            .arg(2000u64)
-            .arg("COUNT")
-            .arg(1u64)
-            .arg("STREAMS")
-            .arg(STREAM_KEY)
-            .arg(">")
-            .query_async(&mut conn)
-            .await;
+        // A finished task still counts in `jobs.len()` until it is joined.
+        while let Some(result) = jobs.try_join_next() {
+            log_if_panicked(result);
+        }
+        let free = concurrency.saturating_sub(jobs.len());
+        if free == 0 {
+            // Every slot is busy: wait for one to free instead of reading. Not a
+            // `select!` against the read below: dropping an XREADGROUP mid-flight
+            // would still deliver its messages to this consumer, and nothing would
+            // ever run them.
+            if let Some(result) = jobs.join_next().await {
+                log_if_panicked(result);
+            }
+            continue;
+        }
 
-        match result {
-            Ok(redis::Value::Nil) => {
-                // Block timeout — no messages, loop back
+        let reclaiming = reclaim_cursor.is_some();
+        let messages = match reclaim_cursor.take() {
+            Some(cursor) => {
+                let (next, messages) = claim_abandoned(&mut reader, &consumer, &cursor, free).await;
+                reclaim_cursor = next;
+                messages
             }
-            Ok(val) => {
-                for (msg_id, fields) in extract_messages(val) {
-                    if let Some(job) = parse_job(&fields) {
-                        process_job(
-                            job,
-                            &msg_id,
-                            &mut conn,
-                            &db,
-                            &http_client,
-                            &flow_guard,
-                            &llm,
-                            &hitl_store,
-                            &maf_executor,
-                        )
-                        .await;
-                    } else {
-                        // Malformed message — ACK to remove from PEL so it doesn't retry forever
-                        warn!("MAF worker: could not parse job from message {msg_id}, discarding");
-                        ack(&mut conn, &msg_id).await;
-                    }
+            None => match read_new(&mut reader, &consumer, free).await {
+                Ok(messages) => messages,
+                Err(e) => {
+                    error!("MAF worker XREADGROUP error: {e}");
+                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                    continue;
                 }
+            },
+        };
+
+        for (msg_id, fields) in messages {
+            let Some(job) = parse_job(&fields) else {
+                // Malformed message — ACK to remove from PEL so it doesn't retry forever
+                warn!("MAF worker: could not parse job from message {msg_id}, discarding");
+                ack(&mut reader, &msg_id).await;
+                continue;
+            };
+            if reclaiming {
+                info!("Reclaiming crashed MAF execution {}", job.execution_id);
             }
-            Err(e) => {
-                error!("MAF worker XREADGROUP error: {e}");
-                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-            }
+            let deps = deps.clone();
+            let mut conn = jobs_conn.clone();
+            jobs.spawn(async move { process_job(job, &msg_id, &deps, &mut conn).await });
         }
     }
+}
+
+/// A job task that panicked never acknowledged its message, so it stays pending until
+/// the next startup reclaims it. `process_job` already turns an executor panic into a
+/// recorded failure; this only catches one from the bookkeeping around it.
+fn log_if_panicked(result: Result<(), tokio::task::JoinError>) {
+    if let Err(e) = result
+        && e.is_panic()
+    {
+        error!("MAF worker: job task panicked; its message stays pending until reclaimed");
+    }
+}
+
+/// Up to `count` new messages for this consumer, waiting at most 2 s for one to arrive.
+async fn read_new(
+    reader: &mut redis::aio::MultiplexedConnection,
+    consumer: &str,
+    count: usize,
+) -> redis::RedisResult<Vec<(String, Vec<redis::Value>)>> {
+    let result: redis::Value = redis::cmd("XREADGROUP")
+        .arg("GROUP")
+        .arg(GROUP_NAME)
+        .arg(consumer)
+        .arg("BLOCK")
+        .arg(2000u64)
+        .arg("COUNT")
+        .arg(count)
+        .arg("STREAMS")
+        .arg(STREAM_KEY)
+        .arg(">")
+        .query_async(reader)
+        .await?;
+    // Nil = block timeout, no messages.
+    Ok(extract_messages(result))
 }
 
 struct Job {
@@ -228,13 +287,16 @@ fn extract_messages(val: redis::Value) -> Vec<(String, Vec<redis::Value>)> {
         Some(redis::Value::Array(v)) => v,
         _ => return vec![],
     };
-    let messages = match stream_entry.into_iter().nth(1) {
-        Some(redis::Value::Array(v)) => v,
-        _ => return vec![],
-    };
+    match stream_entry.into_iter().nth(1) {
+        Some(redis::Value::Array(entries)) => parse_entries(entries),
+        _ => vec![],
+    }
+}
 
+/// Stream entries as `(msg_id, fields)`, skipping any that are malformed.
+fn parse_entries(entries: Vec<redis::Value>) -> Vec<(String, Vec<redis::Value>)> {
     let mut result = vec![];
-    for msg in messages {
+    for msg in entries {
         let mut parts = match msg {
             redis::Value::Array(p) if p.len() == 2 => p.into_iter(),
             _ => continue,
@@ -252,18 +314,20 @@ fn extract_messages(val: redis::Value) -> Vec<(String, Vec<redis::Value>)> {
     result
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn process_job(
     job: Job,
     msg_id: &str,
+    deps: &JobDeps,
     conn: &mut redis::aio::MultiplexedConnection,
-    db: &PgPool,
-    http_client: &reqwest::Client,
-    flow_guard: &Arc<FlowGuard>,
-    llm: &LlmClient,
-    hitl_store: &Arc<dyn HitlStore>,
-    maf_executor: &Arc<dyn MafExecutor>,
 ) {
+    let JobDeps {
+        db,
+        http_client,
+        flow_guard,
+        llm,
+        hitl_store,
+        maf_executor,
+    } = deps;
     let execution_id = job.execution_id;
     let user_id = job.user_id;
     let content = job.content.clone();
@@ -322,14 +386,15 @@ async fn process_job(
         }
     };
 
-    // Caught rather than left to unwind past `process_job`: this call is awaited inline in
-    // `run()`'s own loop, not in a spawned task, so an uncaught panic here (an out-of-bounds
-    // index reached some other way, a future bug) would take the whole MAF worker down with it —
-    // every execution stuck until the process restarts, not just this one. `AssertUnwindSafe` is
-    // safe here: nothing on this stack is shared mutable state another task could observe
+    // Caught rather than left to unwind past `process_job`. The job runs in its own task, so a
+    // panic here (an out-of-bounds index reached some other way, a future bug) can no longer take
+    // the worker down — but uncaught it would end the task before `finish_job`, leaving the
+    // execution `running` and its message pending until the next restart. Caught, it becomes an
+    // ordinary failure: retried or marked failed, and acknowledged. `AssertUnwindSafe` is safe
+    // here: nothing on this stack is shared mutable state another task could observe
     // half-updated after a panic — everything panic could interrupt is either `Copy` (`db`,
     // `execution_id`, `user_id`), a fresh owned value about to be dropped and replaced with an
-    // `Err`, or (`&mut conn`, held by the caller) untouched by the executor itself.
+    // `Err`, or (`&mut conn`, this task's own) untouched by the executor itself.
     let ctx = MafRunContext {
         client: http_client,
         db,
@@ -638,69 +703,112 @@ async fn re_enqueue(
     let _: redis::RedisResult<String> = xadd.query_async(conn).await;
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn reclaim_pending(
-    conn: &mut redis::aio::MultiplexedConnection,
-    db: &PgPool,
-    http_client: &reqwest::Client,
-    flow_guard: &Arc<FlowGuard>,
-    llm: &LlmClient,
-    hitl_store: &Arc<dyn HitlStore>,
-    maf_executor: &Arc<dyn MafExecutor>,
+/// One batch of up to `count` messages left pending longer than `RECLAIM_IDLE_MS` (a worker
+/// that crashed mid-run), claimed for this consumer, and the cursor the next batch continues
+/// from: `None` once the scan has reached the end of the pending list.
+async fn claim_abandoned(
+    reader: &mut redis::aio::MultiplexedConnection,
     consumer: &str,
-) {
+    cursor: &str,
+    count: usize,
+) -> (Option<String>, Vec<(String, Vec<redis::Value>)>) {
     let result: redis::RedisResult<redis::Value> = redis::cmd("XAUTOCLAIM")
         .arg(STREAM_KEY)
         .arg(GROUP_NAME)
         .arg(consumer)
         .arg(RECLAIM_IDLE_MS)
-        .arg("0-0")
+        .arg(cursor)
         .arg("COUNT")
-        .arg(100u64)
-        .query_async(conn)
+        .arg(count)
+        .query_async(reader)
         .await;
-
-    // XAUTOCLAIM returns [next_id, [[msg_id, fields], ...], [deleted_ids]]
-    let messages = match result {
-        Ok(redis::Value::Array(parts)) if parts.len() >= 2 => match parts.into_iter().nth(1) {
-            Some(redis::Value::Array(msgs)) => msgs,
-            _ => return,
-        },
+    match result {
+        Ok(reply) => parse_autoclaim(reply),
         Err(e) => {
             // Stream or group may not exist yet on first boot — not an error
             warn!("MAF worker XAUTOCLAIM skipped (stream may be new): {e}");
-            return;
+            (None, Vec::new())
         }
-        _ => return,
-    };
+    }
+}
 
-    for msg in messages {
-        let mut parts = match msg {
-            redis::Value::Array(p) if p.len() == 2 => p.into_iter(),
-            _ => continue,
-        };
-        let msg_id = match parts.next().and_then(|v| bulk_str(&v)) {
-            Some(id) => id,
-            None => continue,
-        };
-        let fields = match parts.next() {
-            Some(redis::Value::Array(f)) => f,
-            _ => continue,
-        };
-        if let Some(job) = parse_job(&fields) {
-            info!("Reclaiming crashed MAF execution {}", job.execution_id);
-            process_job(
-                job,
-                &msg_id,
-                conn,
-                db,
-                http_client,
-                flow_guard,
-                llm,
-                hitl_store,
-                maf_executor,
-            )
-            .await;
-        }
+/// XAUTOCLAIM returns `[next_cursor, [[msg_id, fields], ...], [deleted_ids]]`; a next cursor of
+/// `0-0` means the scan is complete.
+fn parse_autoclaim(reply: redis::Value) -> (Option<String>, Vec<(String, Vec<redis::Value>)>) {
+    let redis::Value::Array(parts) = reply else {
+        return (None, Vec::new());
+    };
+    let mut parts = parts.into_iter();
+    let next = parts
+        .next()
+        .and_then(|v| bulk_str(&v))
+        .filter(|cursor| cursor != "0-0");
+    match parts.next() {
+        Some(redis::Value::Array(entries)) => (next, parse_entries(entries)),
+        _ => (None, Vec::new()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use redis::Value;
+
+    fn text(s: &str) -> Value {
+        Value::BulkString(s.as_bytes().to_vec())
+    }
+
+    fn entry(id: &str) -> Value {
+        Value::Array(vec![
+            text(id),
+            Value::Array(vec![text("execution_id"), text("e")]),
+        ])
+    }
+
+    #[test]
+    fn an_autoclaim_batch_carries_its_entries_and_the_next_cursor() {
+        let reply = Value::Array(vec![
+            text("1700000000000-3"),
+            Value::Array(vec![entry("1-0"), entry("2-0")]),
+            Value::Array(vec![]),
+        ]);
+        let (next, messages) = parse_autoclaim(reply);
+        assert_eq!(next.as_deref(), Some("1700000000000-3"));
+        let ids: Vec<&str> = messages.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(ids, ["1-0", "2-0"]);
+    }
+
+    #[test]
+    fn an_autoclaim_cursor_of_zero_ends_the_scan() {
+        let reply = Value::Array(vec![
+            text("0-0"),
+            Value::Array(vec![entry("1-0")]),
+            Value::Array(vec![]),
+        ]);
+        let (next, messages) = parse_autoclaim(reply);
+        assert_eq!(next, None, "the pending list has been scanned to its end");
+        assert_eq!(messages.len(), 1, "the last batch is still returned");
+    }
+
+    #[test]
+    fn a_malformed_autoclaim_reply_ends_the_scan_with_nothing() {
+        let (next, messages) = parse_autoclaim(Value::Nil);
+        assert_eq!(next, None);
+        assert!(messages.is_empty());
+    }
+
+    #[test]
+    fn a_read_that_timed_out_has_no_messages() {
+        assert!(extract_messages(Value::Nil).is_empty());
+    }
+
+    #[test]
+    fn malformed_entries_are_skipped() {
+        let entries = vec![entry("1-0"), Value::Array(vec![text("2-0")]), text("junk")];
+        let ids: Vec<String> = parse_entries(entries)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(ids, ["1-0"]);
     }
 }

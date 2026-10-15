@@ -369,6 +369,7 @@ impl TestServer {
         self.admin_pool.close().await;
     }
 
+    #[allow(dead_code)]
     pub fn url(&self, path: &str) -> String {
         format!("{}{}", self.base_url, path)
     }
