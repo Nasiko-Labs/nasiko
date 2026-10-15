@@ -22,3 +22,8 @@ tracing = { workspace = true }
 nasiko-types = { workspace = true }
 chrono = { workspace = true }
 serde_json = { workspace = true }
+
+[dev-dependencies]
+# Bridge tokio's AsyncRead/AsyncWrite to the futures-io the SDK's ByteStreams
+# transport wants, so hermetic tests can drive the client over an in-memory pipe.
+tokio-util = { workspace = true }

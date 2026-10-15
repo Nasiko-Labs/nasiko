@@ -13,6 +13,7 @@
 //! are funneled through one channel and filtered by session id.
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use agent_client_protocol::component::ConnectTo;
 use agent_client_protocol::schema::v1::{
@@ -34,12 +35,31 @@ use crate::turn::{NewSessionParams, TurnEvent, TurnStream};
 type ReadySlot = Arc<Mutex<Option<oneshot::Sender<Result<NegotiatedCapabilities, AcpError>>>>>;
 
 /// Configuration for opening a connection.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct AcpConnectConfig {
     /// What we require of the agent at `initialize`.
     pub required: RequiredCapabilities,
     /// How to answer the agent's permission requests.
     pub permission_policy: PermissionPolicy,
+    /// Budget for the `initialize` handshake. If the agent doesn't respond within
+    /// this window, [`connect`](AcpConnection::connect) fails with
+    /// [`AcpError::Timeout`] instead of blocking forever — so a wedged agent
+    /// still lets the caller fall back to the hook path.
+    pub handshake_timeout: Duration,
+    /// Budget for a single post-handshake request (`session/new`, `session/load`).
+    /// A turn's own wall-clock is governed separately by the caller.
+    pub request_timeout: Duration,
+}
+
+impl Default for AcpConnectConfig {
+    fn default() -> Self {
+        Self {
+            required: RequiredCapabilities::default(),
+            permission_policy: PermissionPolicy::default(),
+            handshake_timeout: Duration::from_secs(30),
+            request_timeout: Duration::from_secs(60),
+        }
+    }
 }
 
 /// A handle to a live ACP agent connection.
@@ -97,6 +117,8 @@ impl AcpConnection {
 
         let required = config.required;
         let policy = config.permission_policy;
+        let handshake_timeout = config.handshake_timeout;
+        let request_timeout = config.request_timeout;
 
         let task = tokio::spawn(async move {
             let result = Client
@@ -134,7 +156,16 @@ impl AcpConnection {
                     agent_client_protocol::on_receive_request!(),
                 )
                 .connect_with(transport, async move |conn: ConnectionTo<Agent>| {
-                    run_connection(conn, required, ready_for_run, cmd_rx, update_rx).await;
+                    run_connection(
+                        conn,
+                        required,
+                        handshake_timeout,
+                        request_timeout,
+                        ready_for_run,
+                        cmd_rx,
+                        update_rx,
+                    )
+                    .await;
                     Ok(())
                 })
                 .await;
@@ -258,6 +289,8 @@ pub async fn connect_local(
 async fn run_connection(
     conn: ConnectionTo<Agent>,
     required: RequiredCapabilities,
+    handshake_timeout: Duration,
+    request_timeout: Duration,
     ready_slot: ReadySlot,
     mut cmd_rx: mpsc::UnboundedReceiver<Command>,
     mut update_rx: mpsc::UnboundedReceiver<SessionNotification>,
@@ -266,16 +299,26 @@ async fn run_connection(
     // transport-error arm in `connect` finds the slot empty.
     let ready = ready_slot.lock().unwrap().take();
 
-    // Handshake.
-    let init = match conn
+    // Handshake, bounded so an agent that never answers `initialize` can't wedge
+    // `connect()` forever (the caller needs the failure to fall back to the hook
+    // path).
+    let init_request = conn
         .send_request(InitializeRequest::new(required.protocol_version))
-        .block_task()
-        .await
-    {
-        Ok(init) => init,
-        Err(e) => {
+        .block_task();
+    let init = match tokio::time::timeout(handshake_timeout, init_request).await {
+        Ok(Ok(init)) => init,
+        Ok(Err(e)) => {
             if let Some(tx) = ready {
                 let _ = tx.send(Err(AcpError::from(e)));
+            }
+            return;
+        }
+        Err(_) => {
+            if let Some(tx) = ready {
+                let _ = tx.send(Err(AcpError::Timeout(format!(
+                    "initialize did not complete within {}s",
+                    handshake_timeout.as_secs()
+                ))));
             }
             return;
         }
@@ -303,12 +346,14 @@ async fn run_connection(
         match cmd {
             Command::NewSession { params, reply } => {
                 let request = NewSessionRequest::new(params.cwd).mcp_servers(params.mcp_servers);
-                let result = conn
-                    .send_request(request)
-                    .block_task()
-                    .await
-                    .map(|resp| resp.session_id)
-                    .map_err(AcpError::from);
+                let call = conn.send_request(request).block_task();
+                let result = match tokio::time::timeout(request_timeout, call).await {
+                    Ok(inner) => inner.map(|resp| resp.session_id).map_err(AcpError::from),
+                    Err(_) => Err(AcpError::Timeout(format!(
+                        "session/new did not complete within {}s",
+                        request_timeout.as_secs()
+                    ))),
+                };
                 let _ = reply.send(result);
             }
             Command::LoadSession {
@@ -322,12 +367,14 @@ async fn run_connection(
                 // transparent to the caller.
                 let request =
                     LoadSessionRequest::new(session_id, params.cwd).mcp_servers(params.mcp_servers);
-                let result = conn
-                    .send_request(request)
-                    .block_task()
-                    .await
-                    .map(|_| ())
-                    .map_err(AcpError::from);
+                let call = conn.send_request(request).block_task();
+                let result = match tokio::time::timeout(request_timeout, call).await {
+                    Ok(inner) => inner.map(|_| ()).map_err(AcpError::from),
+                    Err(_) => Err(AcpError::Timeout(format!(
+                        "session/load did not complete within {}s",
+                        request_timeout.as_secs()
+                    ))),
+                };
                 let _ = reply.send(result);
             }
             Command::Prompt {

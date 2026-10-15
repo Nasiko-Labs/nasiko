@@ -19,8 +19,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use nasiko_acp_client::{
-    PermissionDelegate, PermissionOptionKind, RequestPermissionOutcome, RequestPermissionRequest,
-    RequestPermissionResponse, SelectedPermissionOutcome,
+    PermissionDelegate, RequestPermissionRequest, RequestPermissionResponse, select_allow_option,
+    select_reject_option,
 };
 use nasiko_hitl::{HitlError, HitlStatus, HitlStore, NewHitlRequest};
 use tokio::sync::mpsc;
@@ -104,13 +104,13 @@ impl HitlPermissionDelegate {
                 Some(HitlStatus::Resolved) => return Ok(approve(request)),
                 // Any other terminal status (rejected/expired/canceled) is a denial.
                 Some(HitlStatus::Rejected | HitlStatus::Expired | HitlStatus::Canceled) => {
-                    return Ok(cancelled());
+                    return Ok(deny(request));
                 }
                 // Still pending, or not yet readable: keep waiting until the cap.
                 Some(HitlStatus::Pending) | None => {}
             }
             if tokio::time::Instant::now() >= deadline {
-                return Ok(cancelled());
+                return Ok(deny(request));
             }
             tokio::time::sleep(POLL_INTERVAL).await;
         }
@@ -123,7 +123,7 @@ impl PermissionDelegate for HitlPermissionDelegate {
         // Fail closed: any error recording or reading the request denies the tool.
         self.decide_inner(request).await.unwrap_or_else(|e| {
             tracing::warn!(error = %e, agent_id = %self.agent_id, "coding HITL: denying (delegate error)");
-            cancelled()
+            deny(request)
         })
     }
 }
@@ -150,31 +150,24 @@ fn permission_question(request: &RequestPermissionRequest) -> serde_json::Value 
     })
 }
 
-/// Approve by selecting an allow option — prefer an explicit "allow once", else
-/// the first offered option; `cancelled` if the agent offered none.
+/// Approve by selecting an allow option (prefer "allow once"). Shared with the
+/// auto-approve policy via the ACP client, so the two paths can't diverge.
 fn approve(request: &RequestPermissionRequest) -> RequestPermissionResponse {
-    let option = request
-        .options
-        .iter()
-        .find(|o| matches!(o.kind, PermissionOptionKind::AllowOnce))
-        .or_else(|| request.options.first());
-    match option {
-        Some(option) => RequestPermissionResponse::new(RequestPermissionOutcome::Selected(
-            SelectedPermissionOutcome::new(option.option_id.clone()),
-        )),
-        None => cancelled(),
-    }
+    select_allow_option(request)
 }
 
-fn cancelled() -> RequestPermissionResponse {
-    RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled)
+/// Deny by selecting a reject option (prefer "reject once"), falling back to a
+/// whole-turn `Cancelled` only when the agent offers no reject option — refusing
+/// one tool should not abort the turn.
+fn deny(request: &RequestPermissionRequest) -> RequestPermissionResponse {
+    select_reject_option(request)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nasiko_acp_client::PermissionOption;
     use nasiko_acp_client::sdk::schema::v1::{ToolCallUpdate, ToolCallUpdateFields};
+    use nasiko_acp_client::{PermissionOption, PermissionOptionKind, RequestPermissionOutcome};
 
     fn request(title: Option<&str>, options: Vec<PermissionOption>) -> RequestPermissionRequest {
         // `ToolCallUpdateFields` is #[non_exhaustive]: build via Default + field set.
@@ -225,6 +218,32 @@ mod tests {
         let req = request(None, vec![]);
         assert!(matches!(
             approve(&req).outcome,
+            RequestPermissionOutcome::Cancelled
+        ));
+    }
+
+    #[test]
+    fn deny_selects_a_reject_option_rather_than_cancelling_the_turn() {
+        let req = request(
+            None,
+            vec![
+                opt("allow", PermissionOptionKind::AllowOnce),
+                opt("reject", PermissionOptionKind::RejectOnce),
+            ],
+        );
+        match deny(&req).outcome {
+            RequestPermissionOutcome::Selected(sel) => {
+                assert_eq!(sel.option_id.to_string(), "reject")
+            }
+            other => panic!("expected the reject option, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deny_with_no_reject_option_cancels_the_turn() {
+        let req = request(None, vec![opt("allow", PermissionOptionKind::AllowOnce)]);
+        assert!(matches!(
+            deny(&req).outcome,
             RequestPermissionOutcome::Cancelled
         ));
     }

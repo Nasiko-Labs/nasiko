@@ -27,6 +27,12 @@ pub enum AcpError {
     /// (TRD §3.4, ACP-9).
     #[error("acp turn cancelled: {0}")]
     Cancelled(String),
+
+    /// A request did not complete within its configured budget — e.g. the agent
+    /// hung during `initialize`/`session/new`. Bounds the handshake so a wedged
+    /// agent can't block `connect()` forever and the caller can fall back.
+    #[error("acp request timed out: {0}")]
+    Timeout(String),
 }
 
 impl AcpError {

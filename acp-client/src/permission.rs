@@ -14,8 +14,8 @@ use std::fmt;
 use std::sync::Arc;
 
 use agent_client_protocol::schema::v1::{
-    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SelectedPermissionOutcome,
+    PermissionOption, PermissionOptionKind, RequestPermissionOutcome, RequestPermissionRequest,
+    RequestPermissionResponse, SelectedPermissionOutcome,
 };
 use async_trait::async_trait;
 
@@ -81,23 +81,148 @@ impl PermissionPolicy {
         request: &RequestPermissionRequest,
     ) -> RequestPermissionResponse {
         match self {
-            PermissionPolicy::ApproveAll => approve_first_option(request),
+            PermissionPolicy::ApproveAll => select_allow_option(request),
             PermissionPolicy::RejectAll | PermissionPolicy::Delegate(_) => {
-                RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled)
+                select_reject_option(request)
             }
         }
     }
 }
 
-/// Approve a request by selecting its first offered option (or `cancelled` if it
-/// offers none).
-pub(crate) fn approve_first_option(
+/// Approve a request by selecting an **allow** option.
+///
+/// Prefers "allow once" over "allow always" (the least-privilege choice), and
+/// only falls back to the first offered option if the agent labeled none by kind.
+/// The ACP options list is ordered but a reject choice may come first, so picking
+/// `options.first()` blindly can *deny* a tool under an approve-all policy — this
+/// selects by [`PermissionOptionKind`] instead. `cancelled` if the agent offered
+/// no options at all.
+pub fn select_allow_option(request: &RequestPermissionRequest) -> RequestPermissionResponse {
+    let chosen = find_kind(request, PermissionOptionKind::AllowOnce)
+        .or_else(|| find_kind(request, PermissionOptionKind::AllowAlways))
+        .or_else(|| request.options.first());
+    selected_or_cancelled(chosen)
+}
+
+/// Deny a request by selecting a **reject** option when the agent offers one.
+///
+/// Prefers "reject once" over "reject always". Falls back to
+/// [`RequestPermissionOutcome::Cancelled`] only when the agent offers no reject
+/// option — in ACP `Cancelled` cancels the whole turn, so it is a last resort,
+/// not the way to refuse a single tool.
+pub fn select_reject_option(request: &RequestPermissionRequest) -> RequestPermissionResponse {
+    let chosen = find_kind(request, PermissionOptionKind::RejectOnce)
+        .or_else(|| find_kind(request, PermissionOptionKind::RejectAlways));
+    selected_or_cancelled(chosen)
+}
+
+/// The first option of the given kind, if any.
+fn find_kind(
     request: &RequestPermissionRequest,
-) -> RequestPermissionResponse {
-    match request.options.first() {
+    kind: PermissionOptionKind,
+) -> Option<&PermissionOption> {
+    request.options.iter().find(|o| o.kind == kind)
+}
+
+/// Select the given option, or `cancelled` when there is none.
+fn selected_or_cancelled(option: Option<&PermissionOption>) -> RequestPermissionResponse {
+    match option {
         Some(option) => RequestPermissionResponse::new(RequestPermissionOutcome::Selected(
             SelectedPermissionOutcome::new(option.option_id.clone()),
         )),
         None => RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use agent_client_protocol::schema::v1::{ToolCallUpdate, ToolCallUpdateFields};
+
+    fn request(options: Vec<PermissionOption>) -> RequestPermissionRequest {
+        // `ToolCallUpdateFields` is #[non_exhaustive]: build via Default + set.
+        let fields = ToolCallUpdateFields::default();
+        RequestPermissionRequest::new(
+            "ses_1".to_owned(),
+            ToolCallUpdate::new("call_1".to_owned(), fields),
+            options,
+        )
+    }
+
+    fn opt(id: &str, kind: PermissionOptionKind) -> PermissionOption {
+        PermissionOption::new(id.to_owned(), id.to_owned(), kind)
+    }
+
+    fn selected_id(resp: RequestPermissionResponse) -> Option<String> {
+        match resp.outcome {
+            RequestPermissionOutcome::Selected(sel) => Some(sel.option_id.to_string()),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn approve_prefers_allow_once_over_allow_always_and_ignores_reject_order() {
+        // A reject option comes first; approve must still pick the allow-once one,
+        // never `options.first()`.
+        let req = request(vec![
+            opt("reject", PermissionOptionKind::RejectOnce),
+            opt("always", PermissionOptionKind::AllowAlways),
+            opt("once", PermissionOptionKind::AllowOnce),
+        ]);
+        assert_eq!(
+            selected_id(select_allow_option(&req)).as_deref(),
+            Some("once")
+        );
+    }
+
+    #[test]
+    fn approve_falls_back_to_allow_always_then_first_option() {
+        let req = request(vec![
+            opt("reject", PermissionOptionKind::RejectOnce),
+            opt("always", PermissionOptionKind::AllowAlways),
+        ]);
+        assert_eq!(
+            selected_id(select_allow_option(&req)).as_deref(),
+            Some("always")
+        );
+
+        // No option carries an allow kind — fall back to the first offered.
+        let other = request(vec![opt("other", PermissionOptionKind::RejectAlways)]);
+        assert_eq!(
+            selected_id(select_allow_option(&other)).as_deref(),
+            Some("other")
+        );
+    }
+
+    #[test]
+    fn approve_with_no_options_is_cancelled() {
+        assert!(matches!(
+            select_allow_option(&request(vec![])).outcome,
+            RequestPermissionOutcome::Cancelled
+        ));
+    }
+
+    #[test]
+    fn reject_prefers_reject_once_over_reject_always() {
+        let req = request(vec![
+            opt("allow", PermissionOptionKind::AllowOnce),
+            opt("always", PermissionOptionKind::RejectAlways),
+            opt("once", PermissionOptionKind::RejectOnce),
+        ]);
+        assert_eq!(
+            selected_id(select_reject_option(&req)).as_deref(),
+            Some("once")
+        );
+    }
+
+    #[test]
+    fn reject_with_no_reject_option_cancels_the_turn() {
+        // Only allow options offered: the single-tool refusal degrades to a
+        // whole-turn `Cancelled` as a last resort.
+        let req = request(vec![opt("allow", PermissionOptionKind::AllowOnce)]);
+        assert!(matches!(
+            select_reject_option(&req).outcome,
+            RequestPermissionOutcome::Cancelled
+        ));
     }
 }

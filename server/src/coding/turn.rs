@@ -97,6 +97,12 @@ pub enum CodingTurnError {
     /// The agent container never reached a serving state in time.
     #[error("agent container did not become ready in time")]
     NotReady,
+    /// The turn needs the Nasiko MCP gateway (a session token + gateway URL are
+    /// configured) but the agent did not advertise HTTP MCP support at
+    /// `initialize`. We refuse rather than hand the agent a transport it would
+    /// silently ignore, leaving it toolless with no clear cause.
+    #[error("agent does not support HTTP MCP, required to attach the Nasiko gateway")]
+    McpGatewayUnsupported,
     #[error(transparent)]
     Runtime(#[from] nasiko_runtime::RuntimeError),
     #[error(transparent)]
@@ -218,16 +224,36 @@ async fn start_turn(
     // Cold-path restore: if this session already has an agent-side id from an
     // earlier turn *and* the agent advertised `session/load`, load it so the
     // agent resumes its conversation state instead of starting fresh. Otherwise
-    // open a new session and record its id for next time. Loading reuses the id
-    // already on the row, so there's nothing new to record.
+    // open a new session and record its id for next time.
     let cwd = std::path::PathBuf::from(DeploymentSpec::DEFAULT_WRITABLE_PATH);
-    let params = session_params(state, &req.session_token, cwd);
+    // Only attach the gateway over a transport the agent advertised — otherwise
+    // fail loud instead of leaving the agent silently toolless.
+    let params = session_params(state, &req.session_token, cwd, conn.capabilities().mcp_http)?;
     let prior = lifecycle::acp_session_id(&state.db, &req.session_id).await?;
     let acp_session = match prior {
         Some(prior_id) if conn.capabilities().load_session => {
             let session = SessionId::new(prior_id);
-            conn.load_session(session.clone(), params).await?;
-            session
+            // A saved id can become unloadable — e.g. the container was recreated
+            // and the agent no longer holds that session. Letting `session/load`
+            // fail here would wedge the conversation at a permanent 502, because
+            // the (unchanged) id is retried on every turn. Fall back to a fresh
+            // session instead: the `/workspace` files survive, so only the agent's
+            // in-memory chat history is lost, and we re-record the new id so later
+            // turns stop retrying the dead one.
+            match conn.load_session(session.clone(), params.clone()).await {
+                Ok(()) => session,
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        session_id = %req.session_id,
+                        acp_session_id = %session.0,
+                        "coding-agent: session/load failed; starting a fresh agent session"
+                    );
+                    let session = conn.new_session(params).await?;
+                    lifecycle::record_acp_session(&state.db, &req.session_id, &session.0).await?;
+                    session
+                }
+            }
         }
         _ => {
             let session = conn.new_session(params).await?;
@@ -466,23 +492,54 @@ async fn wait_for_running(state: &AppState, id: &ContainerId) -> Result<(), Codi
 /// MCP server, so the session token rides `Authorization: Bearer …` there — the
 /// gateway verifies it exactly as it does for the agent's model calls (NAS-839).
 /// With no token or no gateway URL the session simply has no MCP servers.
+///
+/// We only inject over a transport the agent advertised at `initialize`: if the
+/// gateway is required but the agent didn't negotiate HTTP MCP
+/// (`agent_supports_http_mcp`), we return [`CodingTurnError::McpGatewayUnsupported`]
+/// rather than hand it a server it will ignore (the agent would then run with no
+/// tools and no clear reason why). SSE fallback is future work (NAS-838).
 fn session_params(
     state: &AppState,
     session_token: &Option<String>,
     cwd: std::path::PathBuf,
-) -> NewSessionParams {
-    let params = NewSessionParams::new(cwd);
-    match (
-        session_token,
+    agent_supports_http_mcp: bool,
+) -> Result<NewSessionParams, CodingTurnError> {
+    let servers = gateway_mcp_servers(
+        session_token.as_deref(),
         state.config.mcp_gateway_public_url.as_deref(),
-    ) {
-        (Some(token), Some(gateway_url)) => params.with_mcp_servers(vec![McpServer::Http(
-            McpServerHttp::new("nasiko-gateway", gateway_url).headers(vec![HttpHeader::new(
-                "Authorization",
-                format!("Bearer {token}"),
-            )]),
-        )]),
-        _ => params,
+        agent_supports_http_mcp,
+    )?;
+    Ok(NewSessionParams::new(cwd).with_mcp_servers(servers))
+}
+
+/// Decide which MCP servers to attach to `session/new`: the Nasiko gateway over
+/// HTTP when a session token and gateway URL are both present, otherwise none.
+///
+/// Returns [`CodingTurnError::McpGatewayUnsupported`] when the gateway is required
+/// but the agent didn't advertise HTTP MCP — failing loud beats handing it a
+/// transport it will silently ignore. Pure (no `AppState`) so it is unit-testable.
+fn gateway_mcp_servers(
+    session_token: Option<&str>,
+    gateway_url: Option<&str>,
+    agent_supports_http_mcp: bool,
+) -> Result<Vec<McpServer>, CodingTurnError> {
+    match (session_token, gateway_url) {
+        (Some(token), Some(gateway_url)) => {
+            if !agent_supports_http_mcp {
+                tracing::warn!(
+                    "coding-agent: MCP gateway configured but agent did not advertise \
+                     HTTP MCP support; refusing to start a toolless turn"
+                );
+                return Err(CodingTurnError::McpGatewayUnsupported);
+            }
+            Ok(vec![McpServer::Http(
+                McpServerHttp::new("nasiko-gateway", gateway_url).headers(vec![HttpHeader::new(
+                    "Authorization",
+                    format!("Bearer {token}"),
+                )]),
+            )])
+        }
+        _ => Ok(Vec::new()),
     }
 }
 
@@ -562,7 +619,42 @@ fn replica_id() -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::safe_session_label;
+    use super::{CodingTurnError, gateway_mcp_servers, safe_session_label};
+
+    #[test]
+    fn gateway_attached_only_when_token_and_url_present() {
+        // Both present and the agent speaks HTTP MCP: attach exactly the gateway.
+        let servers = gateway_mcp_servers(Some("tok"), Some("https://gw"), true).unwrap();
+        assert_eq!(servers.len(), 1);
+
+        // Missing either half: no MCP servers, no error.
+        assert!(
+            gateway_mcp_servers(None, Some("https://gw"), true)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            gateway_mcp_servers(Some("tok"), None, true)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn gateway_required_but_no_http_mcp_is_an_error() {
+        // Token + URL mean the gateway is required; an agent without HTTP MCP must
+        // fail loud rather than be handed a transport it will ignore.
+        assert!(matches!(
+            gateway_mcp_servers(Some("tok"), Some("https://gw"), false),
+            Err(CodingTurnError::McpGatewayUnsupported)
+        ));
+    }
+
+    #[test]
+    fn no_gateway_configured_tolerates_a_non_http_mcp_agent() {
+        // With nothing to inject, the agent's MCP support is irrelevant — no error.
+        assert!(gateway_mcp_servers(None, None, false).unwrap().is_empty());
+    }
 
     #[test]
     fn safe_session_ids_pass_through_unchanged() {

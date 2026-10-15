@@ -41,7 +41,9 @@ mod turn;
 pub use capability::{NegotiatedCapabilities, RequiredCapabilities};
 pub use connection::{AcpConnectConfig, AcpConnection, connect_local};
 pub use error::AcpError;
-pub use permission::{PermissionDelegate, PermissionPolicy};
+pub use permission::{
+    PermissionDelegate, PermissionPolicy, select_allow_option, select_reject_option,
+};
 pub use telemetry::{TelemetryError, TurnTelemetry};
 pub use turn::{NewSessionParams, TurnEvent, TurnStream};
 
