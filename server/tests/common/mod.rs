@@ -369,6 +369,7 @@ impl TestServer {
         self.admin_pool.close().await;
     }
 
+    #[allow(dead_code)]
     pub fn url(&self, path: &str) -> String {
         format!("{}{}", self.base_url, path)
     }
@@ -408,6 +409,9 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         agent_image_registry: String::new(),
         agent_registry_username: None,
         agent_registry_password: None,
+        agent_registry_host: None,
+        seed_image_platform: "linux/amd64".into(),
+        agent_image_registry_placeholder: None,
         build_push_token: String::new(),
         injection_proxy_token: String::new(),
         seed_agents: None,

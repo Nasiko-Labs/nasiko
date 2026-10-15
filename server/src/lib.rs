@@ -39,6 +39,8 @@ pub mod router;
 pub mod runtime;
 pub mod secrets;
 pub mod seed;
+pub mod seed_mirror;
+pub mod seed_registry_ready;
 pub mod settings;
 pub mod spa;
 pub mod state;

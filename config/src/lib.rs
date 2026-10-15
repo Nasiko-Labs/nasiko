@@ -28,6 +28,12 @@ pub struct Config {
     /// Empty string → no prefix (Docker local mode).
     /// TODO: this needs to be removed.
     pub agent_image_registry: String,
+    /// An `agent_image_registry` value that means "the registry address is
+    /// not known yet" — set by installers that discover the address after
+    /// the server first starts (the server is restarted once it is real).
+    /// Work that bakes the address into deployed agents, such as seeding,
+    /// waits while the two are equal.
+    pub agent_image_registry_placeholder: Option<String>,
     /// Username for authenticating agent-image pulls from a private registry
     /// (e.g. a private Docker Hub repo). `None` (default) means anonymous
     /// pulls only — unchanged behavior for public images. Only meaningful
@@ -37,6 +43,14 @@ pub struct Config {
     /// Password or access token paired with `agent_registry_username`. Never
     /// logged, never returned in any API response.
     pub agent_registry_password: Option<String>,
+    /// Bare host of the registry the credential above belongs to (e.g.
+    /// `ghcr.io`, `us-central1-docker.pkg.dev`). `None` means Docker Hub. The
+    /// credential is only ever sent to this host.
+    pub agent_registry_host: Option<String>,
+    /// `os/arch` copied when a seed image is mirrored from a multi-platform
+    /// index into the built-in registry — the platform the agent nodes run.
+    /// Default `linux/amd64`.
+    pub seed_image_platform: String,
     /// Shared credential the in-cluster BuildKit build Job presents (HTTP
     /// Basic auth, username `"build-service"`) to push freshly-built agent
     /// images into the built-in OCI registry — see
@@ -465,12 +479,21 @@ impl Config {
             secrets_encryption_key: required_env("SECRETS_ENCRYPTION_KEY")?,
             oci_storage_bucket: env_or("OCI_STORAGE_BUCKET", "nasiko-artifacts"),
             agent_image_registry: env_or("AGENT_IMAGE_REGISTRY", ""),
+            agent_image_registry_placeholder: std::env::var("AGENT_IMAGE_REGISTRY_PLACEHOLDER")
+                .ok()
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty()),
             agent_registry_username: std::env::var("AGENT_REGISTRY_USERNAME")
                 .ok()
                 .filter(|s| !s.is_empty()),
             agent_registry_password: std::env::var("AGENT_REGISTRY_PASSWORD")
                 .ok()
                 .filter(|s| !s.is_empty()),
+            agent_registry_host: std::env::var("AGENT_REGISTRY_HOST")
+                .ok()
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty()),
+            seed_image_platform: env_or("SEED_IMAGE_PLATFORM", "linux/amd64"),
             build_push_token: env_or("BUILD_PUSH_TOKEN", ""),
             injection_proxy_token: env_or("INJECTION_PROXY_TOKEN", ""),
             seed_agents: std::env::var("SEED_AGENTS").ok(),

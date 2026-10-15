@@ -160,14 +160,6 @@ pub async fn seed_agents_if_configured(state: &AppState) {
             },
         };
 
-        let scaling = state.agent_scaling.begin_deploy(agent.id).await;
-        let replica_bounds = match scaling.bounds().await {
-            Ok(bounds) => bounds,
-            Err(e) => {
-                warn!(agent = %agent_name, error = %e, "failed to read the seed agent's replica bounds");
-                continue;
-            }
-        };
         let mut env = HashMap::new();
         env.insert("PORT".into(), AGENT_PORT.to_string());
         if !openai_key.is_empty() {
@@ -186,16 +178,17 @@ pub async fn seed_agents_if_configured(state: &AppState) {
             .unwrap_or_else(|_| "http://host.docker.internal:8080".into());
         env.insert("A2A_DISCOVERY_URL".into(), discovery_url);
 
-        // The LLM router replaces the direct OPENAI_API_KEY/BASE_URL set above when
-        // configured; the gateway and state credentials rotate on every re-seed.
-        crate::agents::deploy_env::apply_platform_env(
-            state,
+        // Route the seed agent's LLM SDK through the configured LLM router when set;
+        // otherwise the direct OPENAI_API_KEY/BASE_URL set above remain (best-effort).
+        crate::llm_router::wiring::inject_agent_llm_env(
+            &state.db,
             &mut env,
             agent.id,
-            owner_id,
-            crate::agents::deploy_env::StateModeOnDeploy::Reset,
+            Some(owner_id),
         )
         .await;
+        // Per-agent MCP gateway credential (rotates on every re-seed).
+        crate::mcp::wiring::inject_agent_gateway_token(&state.db, &mut env, agent.id).await;
 
         // UUID-keyed (see agents::build_agent_spec) so a re-seed re-targets the same
         // workload rather than leaving a name-keyed orphan.
@@ -206,7 +199,7 @@ pub async fn seed_agents_if_configured(state: &AppState) {
             vec![AGENT_PORT],
             env,
             &state.config.agent_default_memory,
-            replica_bounds,
+            state.config.agent_max_replicas,
             // SEED_AGENTS has no --writable equivalent yet.
             false,
             None,
@@ -229,7 +222,7 @@ pub async fn seed_agents_if_configured(state: &AppState) {
         )
         .await;
 
-        match scaling.deploy(&spec).await {
+        match state.runtime.deploy(&spec).await {
             Ok(status) => {
                 info!(agent = %agent_name, ?status, "seed agent deployed");
                 let agent_url =
@@ -381,10 +374,9 @@ pub struct InternalAgentSeed {
     /// one tag across builds instead of bumping it, the single-agent
     /// equivalent of `SEED_FORCE_PULL`.
     pub force_pull: bool,
-    /// The agent's own settings, stored as its `secrets_env` so every later
-    /// redeploy (restart, reconcile) gives the container the same environment.
+    /// Container environment, on top of the two this function sets itself:
+    /// `PORT`, and the per-agent MCP gateway credential.
     pub env: HashMap<String, String>,
-    pub public: bool,
 }
 
 /// Deploys one internal agent the same way `seed_agents_if_configured` deploys
@@ -398,7 +390,6 @@ pub async fn seed_internal_agent(state: &AppState, seed: InternalAgentSeed) {
         image,
         force_pull,
         env: extra_env,
-        public,
     } = seed;
 
     let owner_id: Uuid = match sqlx::query_scalar(
@@ -424,17 +415,7 @@ pub async fn seed_internal_agent(state: &AppState, seed: InternalAgentSeed) {
         None => true,
         Some(agent) => {
             let image_changed = agent.image.as_deref() != Some(image.as_str());
-            let settings_changed =
-                crate::catalog::agent_secrets::resolve_agent_env(&state.db, agent.id).await
-                    != extra_env;
-            let _ = sqlx::query(
-                "UPDATE agents SET is_public = $2 WHERE id = $1 AND is_public IS DISTINCT FROM $2",
-            )
-            .bind(agent.id)
-            .bind(public)
-            .execute(&state.db)
-            .await;
-            if image_changed || settings_changed || force_pull {
+            if image_changed || force_pull {
                 true
             } else {
                 let container_id = ContainerId::from_uuid(agent.id);
@@ -455,11 +436,10 @@ pub async fn seed_internal_agent(state: &AppState, seed: InternalAgentSeed) {
     let agent = match &existing {
         Some(a) => {
             let _ = sqlx::query(
-                "UPDATE agents SET image = $2, is_public = $3, status = 'deploying', updated_at = now() WHERE id = $1",
+                "UPDATE agents SET image = $2, status = 'deploying', updated_at = now() WHERE id = $1",
             )
             .bind(a.id)
             .bind(&image)
-            .bind(public)
             .execute(&state.db)
             .await;
             a.clone()
@@ -467,13 +447,12 @@ pub async fn seed_internal_agent(state: &AppState, seed: InternalAgentSeed) {
         None => {
             let inserted = sqlx::query_as::<_, Agent>(
                 r#"INSERT INTO agents (name, owner_id, image, status, is_public, is_internal, metadata)
-                   VALUES ($1, $2, $3, 'deploying', $4, true, '{"seed": true}')
+                   VALUES ($1, $2, $3, 'deploying', false, true, '{"seed": true}')
                    RETURNING *"#,
             )
             .bind(&agent_name)
             .bind(owner_id)
             .bind(&image)
-            .bind(public)
             .fetch_one(&state.db)
             .await;
             match inserted {
@@ -486,137 +465,69 @@ pub async fn seed_internal_agent(state: &AppState, seed: InternalAgentSeed) {
         }
     };
 
-    if let Err(e) =
-        crate::catalog::agent_secrets::replace_agent_env(&state.db, agent.id, &extra_env).await
-    {
-        warn!(agent = %agent_name, error = %e, "failed to store internal agent settings");
-        return;
-    }
-    if let Err(e) =
-        deploy_internal_agent(state, &agent_name, agent.id, owner_id, &image, force_pull).await
-    {
-        warn!(agent = %agent_name, error = %e, "failed to deploy internal agent");
-        let _ =
-            sqlx::query("UPDATE agents SET status = 'failed', updated_at = now() WHERE id = $1")
-                .bind(agent.id)
-                .execute(&state.db)
-                .await;
-    }
-}
-
-async fn deploy_internal_agent(
-    state: &AppState,
-    agent_name: &str,
-    agent_id: Uuid,
-    owner_id: Uuid,
-    image: &str,
-    force_pull: bool,
-) -> Result<(), String> {
-    let scaling = state.agent_scaling.begin_deploy(agent_id).await;
-    let replica_bounds = scaling
-        .bounds()
-        .await
-        .map_err(|e| format!("failed to read the replica bounds: {e}"))?;
-    let mut env = state.agent_env(agent_id).await;
+    let mut env = HashMap::new();
     env.insert("PORT".into(), AGENT_PORT.to_string());
-    // Without the gateway credential, McpInjector still sets MCP_GATEWAY_URL but has
-    // no MCP_GATEWAY_TOKEN to complete MCP_GATEWAY_CONNECT_URL with, leaving the
-    // gateway unreachable from inside the container. Credentials only: an internal agent's
-    // model access comes from its own `extra_env`, never the LLM router.
-    crate::agents::deploy_env::apply_credentials(
-        state,
-        &mut env,
-        agent_id,
-        crate::agents::deploy_env::StateModeOnDeploy::Reset,
-    )
-    .await;
+    env.extend(extra_env);
+    // Per-agent MCP gateway credential (rotates on every re-seed) — without
+    // this, McpInjector still sets MCP_GATEWAY_URL unconditionally but has no
+    // MCP_GATEWAY_TOKEN to complete MCP_GATEWAY_CONNECT_URL with, leaving the
+    // gateway unreachable from inside the container.
+    crate::mcp::wiring::inject_agent_gateway_token(&state.db, &mut env, agent.id).await;
 
     let mut spec = crate::agents::build_agent_spec(
-        agent_id,
-        agent_name,
-        image.to_string(),
+        agent.id,
+        &agent_name,
+        image.clone(),
         vec![AGENT_PORT],
         env,
         &state.config.agent_default_memory,
-        replica_bounds,
+        state.config.agent_max_replicas,
         false,
         None,
         owner_id,
     );
+    // Only takes effect when `deploy()` actually recreates the container (no
+    // existing container, or its image/env changed) — see this function's
+    // sibling `seed_agents_if_configured` for the same caveat in full, and
+    // DeploymentSpec::force_pull.
     spec.force_pull = force_pull;
     crate::agents::attach_pull_credential(
         &state.db,
         &state.config.agent_runtime,
         &state.config.agent_image_registry,
         &mut spec,
-        agent_id,
+        agent.id,
     )
     .await;
 
-    let status = scaling.deploy(&spec).await.map_err(|e| e.to_string())?;
-    info!(agent = %agent_name, ?status, "internal agent deployed");
-    let agent_url =
-        crate::agents::resolve_agent_url(&state.runtime, &status, &spec.container_id).await;
-    let _ = sqlx::query(
-        "UPDATE agents SET status = 'running', url = $2, transport_path = '/jsonrpc', updated_at = now() WHERE id = $1",
-    )
-    .bind(agent_id)
-    .bind(&agent_url)
-    .execute(&state.db)
-    .await;
-    crate::agents::utils::ensure_deployment_tracked(&state.db, agent_id, Some(owner_id), image)
-        .await;
-    tokio::spawn(crate::agents::utils::fetch_agent_card_with_retry(
-        state.db.clone(),
-        state.http_client.clone(),
-        agent_id,
-        agent_url,
-    ));
-    Ok(())
-}
-
-const INTERNAL_AGENT_WATCH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
-
-pub fn spawn_internal_agent_watch(state: AppState) {
-    tokio::spawn(async move {
-        let mut tick = tokio::time::interval_at(
-            tokio::time::Instant::now() + INTERNAL_AGENT_WATCH_INTERVAL,
-            INTERNAL_AGENT_WATCH_INTERVAL,
-        );
-        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        loop {
-            tick.tick().await;
-            redeploy_dead_internal_agents(&state).await;
+    match state.runtime.deploy(&spec).await {
+        Ok(status) => {
+            info!(agent = %agent_name, ?status, "internal agent deployed");
+            let agent_url =
+                crate::agents::resolve_agent_url(&state.runtime, &status, &spec.container_id).await;
+            let _ = sqlx::query(
+                "UPDATE agents SET status = 'running', url = $2, transport_path = '/jsonrpc', updated_at = now() WHERE id = $1",
+            )
+            .bind(agent.id)
+            .bind(&agent_url)
+            .execute(&state.db)
+            .await;
+            crate::agents::utils::ensure_deployment_tracked(
+                &state.db,
+                agent.id,
+                Some(owner_id),
+                &image,
+            )
+            .await;
         }
-    });
-}
-
-async fn redeploy_dead_internal_agents(state: &AppState) {
-    let agents: Vec<(Uuid, String, Uuid, String)> = match sqlx::query_as(
-        "SELECT id, name, owner_id, image FROM agents
-         WHERE is_internal AND status = 'running' AND image IS NOT NULL AND deleted_at IS NULL",
-    )
-    .fetch_all(&state.db)
-    .await
-    {
-        Ok(rows) => rows,
         Err(e) => {
-            warn!(error = %e, "internal agent watch: lookup failed");
-            return;
-        }
-    };
-    for (agent_id, name, owner_id, image) in agents {
-        let alive = matches!(
-            state.runtime.status(&ContainerId::from_uuid(agent_id)).await,
-            Ok(status) if matches!(status.state, RuntimeState::Running | RuntimeState::Pending)
-        );
-        if alive {
-            continue;
-        }
-        warn!(agent = %name, "internal agent is not running, redeploying");
-        if let Err(e) = deploy_internal_agent(state, &name, agent_id, owner_id, &image, false).await
-        {
-            warn!(agent = %name, error = %e, "internal agent redeploy failed, retrying next round");
+            warn!(agent = %agent_name, error = %e, "failed to deploy internal agent");
+            let _ = sqlx::query(
+                "UPDATE agents SET status = 'failed', updated_at = now() WHERE id = $1",
+            )
+            .bind(agent.id)
+            .execute(&state.db)
+            .await;
         }
     }
 }
