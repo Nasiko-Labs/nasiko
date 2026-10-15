@@ -168,6 +168,12 @@ pub fn protected_router(state: AppState) -> Router<AppState> {
         .route("/trace/{trace_id}", get(handler::get_trace_details))
         .route("/span/{trace_id}/{span_id}", get(handler::get_span_details))
         .route("/agent/{agent_id}/stats", get(handler::get_agent_stats))
+        // Coding-harness usage (H-1). Any signed-in caller, narrowed inside the
+        // handler: OSS answers only the caller's own level.
+        .route(
+            "/coding-agents/usage",
+            get(super::coding_agents::get_coding_agent_usage),
+        )
         .merge(finops_routes)
         // Owner-scoped: authenticated, then narrowed by the agent ACL inside the
         // handler. Deliberately NOT admin-gated — an agent's owner may see their

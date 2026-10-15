@@ -224,8 +224,8 @@ pub(crate) async fn upsert_row(
                    input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
                    tool_call_count,
                    cost_usd, prompt_cost_usd, completion_cost_usd,
-                   latency_ms, started_at, materialized_at
-               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, now())
+                   latency_ms, started_at, error_count, materialized_at
+               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, now())
                ON CONFLICT (trace_id, agent_name) DO UPDATE SET
                    session_id = COALESCE(EXCLUDED.session_id, trace_usage.session_id),
                    agent_id = COALESCE(EXCLUDED.agent_id, trace_usage.agent_id),
@@ -242,6 +242,7 @@ pub(crate) async fn upsert_row(
                    completion_cost_usd = EXCLUDED.completion_cost_usd,
                    latency_ms = EXCLUDED.latency_ms,
                    started_at = EXCLUDED.started_at,
+                   error_count = EXCLUDED.error_count,
                    materialized_at = now()"#,
         )
         .bind(&row.trace_id)
@@ -261,6 +262,7 @@ pub(crate) async fn upsert_row(
         .bind(row.completion_cost_usd)
         .bind(row.latency_ms)
         .bind(row.started_at)
+        .bind(row.error_count as i32)
         .execute(&mut *tx)
         .await;
 

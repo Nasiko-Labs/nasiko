@@ -16,30 +16,9 @@
 //! | `status`, `failed_flows` | `flows` | `agent_proxy`, `router::a2a_dispatch` |
 //! | `error_count` | `trace_usage.error_count` | `trace_materializer` |
 //!
-//! A **coding-agent session** (one with `coding_agent_telemetry_events`
-//! receipts) is the exception for turns, tokens, duration and status. Its
-//! turns never cross the proxy, so it has no `session_traces` or `flows` rows,
-//! and its `trace_usage` arrives only as `receipt_materializer` works through
-//! a Tempo backlog. The receipts are exact and immediate, so for those
-//! sessions:
-//!
-//! | Field | Source |
-//! |---|---|
-//! | `num_traces` | receipt count — one per turn |
-//! | tokens, window | `coding_agent_telemetry_events.turn_*` (written at ingest) |
-//! | cost | `chat_messages.cost_usd` of the imported turns, else `trace_usage` |
-//! | `status` | `failed` if any turn had an erroring tool call, else `ok` |
-//!
 //! `session_traces` is the authoritative session-to-trace index rather than
 //! `trace_usage`, which only has rows for token-bearing traces: counting from
 //! it would hide every session whose agent never made an LLM call.
-//!
-//! **Subagents.** A coding-agent session another one spawned names its parent
-//! (`chat_sessions.parent_session_id`). The list defaults to top-level
-//! sessions — plus any child whose parent is not (or no longer) there, so no
-//! spend drops out of sight — and totals each row's children separately
-//! (`subagent_count`, `subagents`); a row's own figures stay its own. `parent=`
-//! lists one session's children instead. See `super::subagents_sql`.
 //!
 //! The shape is page-first: one CTE applies the caller's scope, window, status
 //! filter and keyset cursor and takes `limit + 1` rows, and the aggregates hang
@@ -55,7 +34,6 @@ use super::service::{
     CostEntry, Pagination, SessionListData, SessionListResponse, SessionSummary, SimpleCostSummary,
     TokenUsageSummary,
 };
-use super::subagents_sql::{SubagentTotals, subagent_totals_lateral};
 
 /// Ceiling on the unfiltered `matching_count`. An exact count over a window
 /// holding 100,000 sessions is the one query in this design that would not stay
@@ -87,42 +65,6 @@ impl StatusFilter {
     }
 }
 
-/// Which sessions a list holds: the top level, or one session's subagents.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ListLevel {
-    /// Sessions nothing spawned, plus children whose parent is missing.
-    TopLevel,
-    /// The children of this session id, whenever they ran: the window does not
-    /// apply, since a parent's subagents are wanted whole.
-    ChildrenOf(String),
-}
-
-impl ListLevel {
-    /// The bind for `$4`: the parent id, or `NULL` for the top level.
-    pub(crate) fn parent(&self) -> Option<&str> {
-        match self {
-            Self::TopLevel => None,
-            Self::ChildrenOf(parent) => Some(parent),
-        }
-    }
-
-    /// The predicate on `chat_sessions s` for this level, with the parent id
-    /// bound at `$4`. Shared with the legacy offset path so it pages the same set.
-    pub(crate) fn predicate(&self) -> &'static str {
-        match self {
-            // A child whose parent row is absent or deleted stays listed: it
-            // would otherwise be reachable from nowhere.
-            Self::TopLevel => {
-                "(s.parent_session_id IS NULL \
-                  OR NOT EXISTS (SELECT 1 FROM chat_sessions ps \
-                                  WHERE ps.session_id = s.parent_session_id \
-                                    AND ps.deleted_at IS NULL))"
-            }
-            Self::ChildrenOf(_) => "s.parent_session_id = $4",
-        }
-    }
-}
-
 /// Everything `session/list` needs, already validated.
 #[derive(Debug, Clone)]
 pub struct SessionListQuery {
@@ -130,7 +72,6 @@ pub struct SessionListQuery {
     pub start: DateTime<Utc>,
     pub end: Option<DateTime<Utc>>,
     pub status: Option<StatusFilter>,
-    pub level: ListLevel,
     pub limit: i64,
     pub cursor: Option<(DateTime<Utc>, String)>,
 }
@@ -172,21 +113,6 @@ struct Row {
     flow_count: Option<i64>,
     failed_flow_count: Option<i64>,
     running_flow_count: Option<i64>,
-    /// Coding-agent receipts, one per turn; 0 for every other session.
-    turn_count: Option<i64>,
-    failed_turn_count: Option<i64>,
-    turn_tokens: Option<i64>,
-    turn_cost: Option<f64>,
-    turn_started: Option<DateTime<Utc>>,
-    turn_ended: Option<DateTime<Utc>>,
-    parent_session_id: Option<String>,
-    spawn_tool_call_id: Option<String>,
-    subagent_type: Option<String>,
-    /// Children of this session and their totals, apart from its own.
-    subagent_count: Option<i64>,
-    subagent_turns: Option<i64>,
-    subagent_tokens: Option<i64>,
-    subagent_cost: Option<f64>,
 }
 
 /// The derived session status. Request outcome, not span errors: a flow row is
@@ -194,15 +120,10 @@ struct Row {
 /// immediate, where span errors depend on the agent being instrumented and on
 /// the materializer having caught up. The span-error count is reported
 /// separately as `error_count`, and the two are never mixed.
-///
-/// A coding-agent turn is the same kind of record — written at ingest, exact —
-/// so its outcome counts too: a turn with an erroring tool call fails the
-/// session, and any recorded turn makes it known. Mirrored by
-/// [`status_predicate`].
 fn derive_status(row: &Row) -> Option<&'static str> {
-    let failed = row.failed_flow_count.unwrap_or(0) + row.failed_turn_count.unwrap_or(0);
+    let failed = row.failed_flow_count.unwrap_or(0);
     let running = row.running_flow_count.unwrap_or(0);
-    let total = row.flow_count.unwrap_or(0) + row.turn_count.unwrap_or(0);
+    let total = row.flow_count.unwrap_or(0);
     if failed > 0 {
         Some("failed")
     } else if running > 0 {
@@ -215,32 +136,15 @@ fn derive_status(row: &Row) -> Option<&'static str> {
     }
 }
 
-/// A coding-agent session's receipt-derived value, falling back to the traced
-/// one while a receipt lacks it; every other session keeps the traced value.
-fn prefer_receipt<T>(is_coding: bool, receipt: Option<T>, traced: Option<T>) -> Option<T> {
-    if is_coding {
-        receipt.or(traced)
-    } else {
-        traced
-    }
-}
-
 impl Row {
     fn into_summary(self) -> SessionSummary {
         let status = derive_status(&self);
-        let is_coding = self.turn_count.unwrap_or(0) > 0;
-        let started = prefer_receipt(is_coding, self.turn_started, self.first_started)
-            .unwrap_or(self.created_at);
-        let ended = prefer_receipt(is_coding, self.turn_ended, self.last_ended).unwrap_or(started);
+        let started = self.first_started.unwrap_or(self.created_at);
+        let ended = self.last_ended.unwrap_or(started);
         let duration_ms = (ended - started).num_milliseconds().max(0) as u64;
-        let total_tokens = prefer_receipt(is_coding, self.turn_tokens, self.total_tokens);
-        let total_cost = prefer_receipt(is_coding, self.turn_cost, self.total_cost);
         // `num_traces` doubles as "this session has trace data"; keep it absent
         // rather than 0 so existing clients read it the way they always have.
-        // A coding-agent turn is one trace (`coding_agent_otlp::trace_id_for_event`).
-        let num_traces = prefer_receipt(is_coding, self.turn_count, self.trace_count)
-            .filter(|&c| c > 0)
-            .map(|c| c as u32);
+        let num_traces = self.trace_count.filter(|&c| c > 0).map(|c| c as u32);
         SessionSummary {
             id: self.session_id.clone(),
             session_id: self.session_id,
@@ -252,13 +156,13 @@ impl Row {
             first_input: self.first_input,
             last_output: self.last_output,
             token_usage: TokenUsageSummary {
-                total: total_tokens.filter(|&t| t > 0).map(|t| t as u64),
+                total: self.total_tokens.filter(|&t| t > 0).map(|t| t as u64),
             },
             trace_latency_ms_p50: self.p50,
             trace_latency_ms_p99: self.p99,
             cost_summary: SimpleCostSummary {
                 total: CostEntry {
-                    cost: total_cost.filter(|&c| c > 0.0),
+                    cost: self.total_cost.filter(|&c| c > 0.0),
                 },
             },
             status: status.map(str::to_owned),
@@ -267,16 +171,6 @@ impl Row {
             // "not yet known", never "zero errors". A materialized trace with no
             // unrecovered error span reports 0.
             error_count: self.error_count.map(|c| c.max(0) as u32),
-            parent_session_id: self.parent_session_id,
-            spawn_tool_call_id: self.spawn_tool_call_id,
-            subagent_type: self.subagent_type,
-            subagent_count: u32::try_from(self.subagent_count.unwrap_or(0).max(0))
-                .unwrap_or(u32::MAX),
-            subagents: SubagentTotals::from_sums(
-                self.subagent_turns,
-                self.subagent_tokens,
-                self.subagent_cost,
-            ),
             session_annotations: vec![],
             session_annotation_summaries: vec![],
         }
@@ -290,53 +184,41 @@ impl Row {
 /// It has to be a predicate rather than a filter over the joined result: the
 /// cursor and `LIMIT` are applied in the same step, so filtering afterwards
 /// would return short pages and skip rows.
-fn status_predicate(status: Option<StatusFilter>) -> String {
-    // What makes a session failed, in either source. Kept as one fragment so
-    // every filter below negates exactly what `derive_status` counts.
-    const FAILED: &str = "(EXISTS (SELECT 1 FROM flows f \
-                      WHERE f.session_id = s.session_id AND f.status = 'failed') \
-             OR EXISTS (SELECT 1 FROM coding_agent_telemetry_events e \
-                      WHERE e.session_id = s.session_id AND e.turn_tool_errors > 0))";
+fn status_predicate(status: Option<StatusFilter>) -> &'static str {
     match status {
-        None => "TRUE".into(),
-        Some(StatusFilter::Failed) => FAILED.into(),
+        None => "TRUE",
+        Some(StatusFilter::Failed) => {
+            "EXISTS (SELECT 1 FROM flows f \
+                      WHERE f.session_id = s.session_id AND f.status = 'failed')"
+        }
         // 'failed' wins over 'running' in `derive_status`, so the filter has to
         // exclude it — otherwise a `status=running` page lists rows whose own
         // badge reads "failed".
-        Some(StatusFilter::Running) => format!(
+        Some(StatusFilter::Running) => {
             "EXISTS (SELECT 1 FROM flows f \
                       WHERE f.session_id = s.session_id AND f.status IN ('running','paused')) \
-             AND NOT {FAILED}"
-        ),
-        // "ok" is "has a flow or a coding-agent turn, and nothing unfinished
-        // or failed".
-        Some(StatusFilter::Ok) => format!(
-            "(EXISTS (SELECT 1 FROM flows f WHERE f.session_id = s.session_id) \
-              OR EXISTS (SELECT 1 FROM coding_agent_telemetry_events e \
-                          WHERE e.session_id = s.session_id)) \
              AND NOT EXISTS (SELECT 1 FROM flows f \
-                      WHERE f.session_id = s.session_id AND f.status IN ('running','paused')) \
-             AND NOT {FAILED}"
-        ),
+                      WHERE f.session_id = s.session_id AND f.status = 'failed')"
+        }
+        // "ok" is "has flows, none of them unfinished or failed".
+        Some(StatusFilter::Ok) => {
+            "EXISTS (SELECT 1 FROM flows f WHERE f.session_id = s.session_id) \
+             AND NOT EXISTS (SELECT 1 FROM flows f \
+                      WHERE f.session_id = s.session_id \
+                        AND f.status IN ('failed','running','paused'))"
+        }
     }
 }
 
 /// Shared WHERE clause for the page and for `matching_count`, so the two can
-/// never drift apart. Binds: `$1` caller, `$2`/`$3` window, `$4` parent.
-fn scope_clause(status: Option<StatusFilter>, level: &ListLevel) -> String {
-    let window = match level {
-        ListLevel::TopLevel => {
-            "AND s.created_at >= $2 AND ($3::timestamptz IS NULL OR s.created_at < $3)"
-        }
-        ListLevel::ChildrenOf(_) => "",
-    };
+/// never drift apart.
+fn scope_clause(status: Option<StatusFilter>) -> String {
     format!(
         "s.deleted_at IS NULL \
          AND ($1::uuid IS NULL OR s.user_id = $1) \
-         {window} \
-         AND {} \
+         AND s.created_at >= $2 \
+         AND ($3::timestamptz IS NULL OR s.created_at < $3) \
          AND {}",
-        level.predicate(),
         status_predicate(status)
     )
 }
@@ -345,21 +227,19 @@ pub async fn list_sessions(
     db: &PgPool,
     q: &SessionListQuery,
 ) -> Result<SessionListResponse, ObservabilityError> {
-    let scope = scope_clause(q.status, &q.level);
-    let subagents = subagent_totals_lateral("p");
+    let scope = scope_clause(q.status);
     // One extra row answers "is there a next page?" without a second query.
     let fetch = q.limit + 1;
 
     let sql = format!(
         r#"
 WITH page AS (
-    SELECT s.session_id, s.agent_id, s.user_id, s.created_at,
-           s.parent_session_id, s.spawn_tool_call_id, s.subagent_type
+    SELECT s.session_id, s.agent_id, s.created_at
       FROM chat_sessions s
      WHERE {scope}
-       AND ($5::timestamptz IS NULL OR (s.created_at, s.session_id) < ($5, $6))
+       AND ($4::timestamptz IS NULL OR (s.created_at, s.session_id) < ($4, $5))
      ORDER BY s.created_at DESC, s.session_id DESC
-     LIMIT $7
+     LIMIT $6
 )
 SELECT p.session_id,
        a.name AS agent_name,
@@ -376,20 +256,7 @@ SELECT p.session_id,
        lo.content AS last_output,
        fl.flow_count,
        fl.failed_flow_count,
-       fl.running_flow_count,
-       ct.turn_count,
-       ct.failed_turn_count,
-       ct.turn_tokens,
-       ct.turn_started,
-       ct.turn_ended,
-       cc.turn_cost,
-       p.parent_session_id,
-       p.spawn_tool_call_id,
-       p.subagent_type,
-       sa.subagent_count,
-       sa.subagent_turns,
-       sa.subagent_tokens,
-       sa.subagent_cost
+       fl.running_flow_count
   FROM page p
   LEFT JOIN agents a ON a.id = p.agent_id
   LEFT JOIN LATERAL (
@@ -444,38 +311,6 @@ SELECT p.session_id,
           FROM flows f
          WHERE f.session_id = p.session_id
   ) fl ON TRUE
-  LEFT JOIN LATERAL (
-        -- Coding-agent turns, from the typed columns ingest writes beside the
-        -- receipt (never `payload`, which holds every prompt and tool output).
-        -- One row per turn: event ids are derived from the turn, but a client
-        -- that minted two for one turn must not count it twice.
-        SELECT count(*)::bigint AS turn_count,
-               count(*) FILTER (WHERE r.turn_tool_errors > 0)::bigint AS failed_turn_count,
-               -- LEAST ignores NULL, so an all-NULL sum (receipts the backfill has not
-               -- reached) would read as the cap; keep it NULL instead.
-               CASE WHEN count(r.turn_tokens) = 0 THEN NULL
-                    ELSE LEAST(sum(r.turn_tokens), 9223372036854775807) END::bigint AS turn_tokens,
-               min(r.turn_started_at) AS turn_started,
-               max(r.turn_ended_at) AS turn_ended
-          FROM (
-                SELECT DISTINCT ON (e.turn_id)
-                       e.turn_tokens, e.turn_tool_errors, e.turn_started_at, e.turn_ended_at
-                  FROM coding_agent_telemetry_events e
-                 WHERE e.session_id = p.session_id
-                 ORDER BY e.turn_id, e.received_at DESC
-          ) r
-  ) ct ON TRUE
-  LEFT JOIN LATERAL (
-        -- Priced at ingest for content-captured turns. Skipped outright for a
-        -- session without receipts, so ordinary chat sessions pay nothing.
-        SELECT sum(m.cost_usd)::float8 AS turn_cost
-          FROM chat_messages m
-         WHERE ct.turn_count > 0
-           AND m.session_id = p.session_id
-           AND m.role = 'assistant'
-           AND m.external_turn_id IS NOT NULL
-  ) cc ON TRUE
-  {subagents}
  ORDER BY p.created_at DESC, p.session_id DESC
 "#
     );
@@ -489,7 +324,6 @@ SELECT p.session_id,
         .bind(q.caller)
         .bind(q.start)
         .bind(q.end)
-        .bind(q.level.parent())
         .bind(cursor_ts)
         .bind(cursor_sid)
         .bind(fetch)
@@ -551,7 +385,6 @@ async fn matching_count(
         .bind(q.caller)
         .bind(q.start)
         .bind(q.end)
-        .bind(q.level.parent())
         .fetch_one(db)
         .await
         .map_err(|e| ObservabilityError::Internal(e.to_string()))
@@ -588,80 +421,7 @@ mod tests {
             flow_count: Some(flow),
             failed_flow_count: Some(failed),
             running_flow_count: Some(running),
-            turn_count: Some(0),
-            failed_turn_count: Some(0),
-            turn_tokens: None,
-            turn_cost: None,
-            turn_started: None,
-            turn_ended: None,
-            parent_session_id: None,
-            spawn_tool_call_id: None,
-            subagent_type: None,
-            subagent_count: Some(0),
-            subagent_turns: None,
-            subagent_tokens: None,
-            subagent_cost: None,
         }
-    }
-
-    fn coding_row(turns: i64, failed_turns: i64) -> Row {
-        Row {
-            turn_count: Some(turns),
-            failed_turn_count: Some(failed_turns),
-            ..row(0, 0, 0)
-        }
-    }
-
-    #[test]
-    fn coding_session_status_comes_from_its_turns() {
-        assert_eq!(derive_status(&coding_row(3, 0)), Some("ok"));
-        assert_eq!(derive_status(&coding_row(3, 1)), Some("failed"));
-    }
-
-    #[test]
-    fn coding_session_totals_come_from_receipts_not_partial_traces() {
-        let start = Utc::now();
-        let end = start + chrono::Duration::seconds(90);
-        let summary = Row {
-            trace_count: Some(1),
-            total_tokens: Some(10),
-            total_cost: Some(0.01),
-            first_started: Some(start),
-            last_ended: Some(start + chrono::Duration::seconds(5)),
-            turn_tokens: Some(3000),
-            turn_cost: Some(1.25),
-            turn_started: Some(start),
-            turn_ended: Some(end),
-            ..coding_row(4, 0)
-        }
-        .into_summary();
-        assert_eq!(summary.num_traces, Some(4));
-        assert_eq!(summary.token_usage.total, Some(3000));
-        assert_eq!(summary.cost_summary.total.cost, Some(1.25));
-        assert_eq!(summary.duration_ms, Some(90_000));
-    }
-
-    #[test]
-    fn coding_session_falls_back_to_traced_cost_when_turns_are_unpriced() {
-        let summary = Row {
-            total_cost: Some(0.5),
-            ..coding_row(2, 0)
-        }
-        .into_summary();
-        assert_eq!(summary.cost_summary.total.cost, Some(0.5));
-    }
-
-    #[test]
-    fn non_coding_session_ignores_receipt_columns() {
-        let summary = Row {
-            trace_count: Some(2),
-            total_tokens: Some(10),
-            turn_tokens: Some(999),
-            ..row(1, 0, 0)
-        }
-        .into_summary();
-        assert_eq!(summary.num_traces, Some(2));
-        assert_eq!(summary.token_usage.total, Some(10));
     }
 
     #[test]
@@ -719,67 +479,18 @@ mod tests {
         // would list rows whose own badge reads "failed".
         let p = status_predicate(Some(StatusFilter::Ok));
         assert!(p.contains("NOT EXISTS"));
-        assert!(p.contains("f.status IN ('running','paused')"));
-        assert!(p.contains("AND NOT (EXISTS"));
-        assert!(p.contains("turn_tool_errors > 0"));
+        assert!(p.contains("'failed','running','paused'"));
     }
 
     #[test]
     fn running_filter_excludes_failed() {
         let p = status_predicate(Some(StatusFilter::Running));
-        assert!(p.contains("AND NOT (EXISTS"));
+        assert!(p.contains("NOT EXISTS"));
         assert!(p.contains("AND f.status = 'failed'"));
-        assert!(p.contains("turn_tool_errors > 0"));
     }
 
     #[test]
     fn unfiltered_scope_has_no_flow_predicate() {
-        assert!(!scope_clause(None, &ListLevel::TopLevel).contains("flows"));
-    }
-
-    #[test]
-    fn top_level_scope_keeps_orphans_and_applies_the_window() {
-        let scope = scope_clause(None, &ListLevel::TopLevel);
-        assert!(scope.contains("s.parent_session_id IS NULL"));
-        assert!(scope.contains("NOT EXISTS (SELECT 1 FROM chat_sessions ps"));
-        assert!(scope.contains("s.created_at >= $2"));
-        assert_eq!(ListLevel::TopLevel.parent(), None);
-    }
-
-    #[test]
-    fn children_scope_matches_the_parent_whenever_they_ran() {
-        let level = ListLevel::ChildrenOf("parent".into());
-        let scope = scope_clause(Some(StatusFilter::Ok), &level);
-        assert!(scope.contains("s.parent_session_id = $4"));
-        assert!(scope.contains("$1::uuid IS NULL OR s.user_id = $1"));
-        assert!(!scope.contains("s.created_at >= $2"));
-        assert_eq!(level.parent(), Some("parent"));
-    }
-
-    #[test]
-    fn subagent_totals_stay_apart_from_the_rows_own() {
-        let summary = Row {
-            turn_tokens: Some(100),
-            turn_cost: Some(1.0),
-            parent_session_id: Some("p".into()),
-            subagent_count: Some(2),
-            subagent_turns: Some(5),
-            subagent_tokens: Some(700),
-            subagent_cost: Some(3.5),
-            ..coding_row(1, 0)
-        }
-        .into_summary();
-        assert_eq!(summary.token_usage.total, Some(100));
-        assert_eq!(summary.cost_summary.total.cost, Some(1.0));
-        assert_eq!(summary.parent_session_id.as_deref(), Some("p"));
-        assert_eq!(summary.subagent_count, 2);
-        assert_eq!(
-            summary.subagents,
-            SubagentTotals {
-                turns: 5,
-                tokens: Some(700),
-                cost: Some(3.5)
-            }
-        );
+        assert!(!scope_clause(None).contains("flows"));
     }
 }

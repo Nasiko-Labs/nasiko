@@ -97,9 +97,6 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         // The bench never builds images; keep the worker serial so it can't
         // compete with the benchmarked request path for runtime threads.
         build_concurrency: 1,
-        // Same reasoning: no MAF runs compete with the benchmarked request path.
-        maf_worker_concurrency: 1,
-        maf_heartbeat_secs: 20,
         agent_default_memory: "512Mi".into(),
         agent_memory_volume: "nasiko-agent-memory".into(),
         agent_memory_init_image: "alpine:3.21".into(),
@@ -116,6 +113,9 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         agent_image_registry: String::new(),
         agent_registry_username: None,
         agent_registry_password: None,
+        agent_registry_host: None,
+        seed_image_platform: "linux/amd64".into(),
+        agent_image_registry_placeholder: None,
         build_push_token: String::new(),
         seed_agents: None,
         // Dummy but non-empty — ee build_ee_app requires Some(), and a
@@ -162,6 +162,7 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         savings_factor_refresh_secs: 86_400,
         savings_factor_min_samples: 1_600,
         savings_factor_window_days: 30,
+        minimal_code_holdout_pct: 5,
         react_compress_enabled: false,
         react_compress_min_bytes: 2048,
         history_compress_enabled: false,

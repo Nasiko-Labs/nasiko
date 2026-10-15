@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
+use futures::stream::{self, StreamExt};
 
 use crate::error::ObservabilityError;
 use crate::loki::{LokiClient, parse_trace_logs};
@@ -297,9 +298,19 @@ pub fn chunk_tempo_range(
 pub trait SessionIdResolver: Send + Sync {
     async fn session_for_trace(&self, trace_id: &str) -> Option<String>;
 
-    /// Reverse lookup: all trace_ids recorded for a session, oldest first.
-    /// Default: none — only resolvers backed by a real index override this.
-    async fn traces_for_session(&self, _session_id: &str) -> Vec<String> {
+    /// Reverse lookup: all trace_ids recorded for a session in a window, oldest
+    /// first. Default: none — only resolvers backed by a real index override it.
+    ///
+    /// The window is a parameter rather than a post-filter because the index has
+    /// no TTL: an unbounded lookup returns every trace a long-lived session ever
+    /// had, and the caller then downloads each one in full before discarding the
+    /// ones outside the window.
+    async fn traces_for_session(
+        &self,
+        _session_id: &str,
+        _start: DateTime<Utc>,
+        _end: DateTime<Utc>,
+    ) -> Vec<String> {
         Vec::new()
     }
 
@@ -338,6 +349,15 @@ pub struct TempoLokiProvider {
 const TOKEN_AGGREGATION_TRACE_CAP: usize = 100;
 const SESSION_TRACE_PAGE_SIZE: usize = 100;
 const SESSION_TRACE_SAFETY_CAP: usize = 2_000;
+/// Trace fetches in flight while building one session drill-down. Each one is a
+/// Tempo trace download plus a Loki content query, so walking them serially made
+/// a 20-trace session twenty sequential round-trips.
+const SESSION_TRACE_FETCH_CONCURRENCY: usize = 8;
+/// How far back the WAL-merge search looks. Tempo's ingester flushes every
+/// `max_block_duration` (30s in `oss/observability/config/tempo.yaml`); this is
+/// that with a wide margin for a slow flush or a clock skew between us and the
+/// ingester, and it keeps the search prunable.
+const WAL_LOOKBACK: Duration = Duration::minutes(15);
 
 impl TempoLokiProvider {
     pub fn new(tempo_url: String, loki_url: String, pricing: Arc<PricingEngine>) -> Self {
@@ -407,9 +427,18 @@ impl TempoLokiProvider {
             if first_page {
                 // Merge traces still in Tempo's WAL even when the bounded search
                 // already found some indexed traces.
+                //
+                // Bounded to the recent past rather than unbounded. The WAL only
+                // holds what the ingester has not flushed (`max_block_duration`,
+                // 30s in our Tempo config), so a window of `WAL_LOOKBACK` covers
+                // it with room to spare — while an unbounded search is the most
+                // expensive shape Tempo can be handed, because it cannot prune a
+                // single block by time. The result is still intersected with the
+                // caller's window below, so this only changes cost, not output.
+                let wal_start = (end - WAL_LOOKBACK).max(start);
                 let wal = self
                     .tempo
-                    .search(query, None, None, SESSION_TRACE_PAGE_SIZE)
+                    .search(query, Some(wal_start), Some(end), SESSION_TRACE_PAGE_SIZE)
                     .await?;
                 page.extend(
                     wal.into_iter()
@@ -965,23 +994,30 @@ impl ObservabilityProvider for TempoLokiProvider {
         start: DateTime<Utc>,
         end: DateTime<Utc>,
     ) -> Result<SessionDetails, ObservabilityError> {
-        let query = session_query(session_id);
-        let (mut trace_results, mut has_more_traces) =
-            self.search_session_traces(&query, start, end).await?;
-        let mut resolver_sourced = false;
+        // SQL first, TraceQL only to fill a gap. `session_traces` is the proxy's
+        // own record — it sees both the A2A contextId and the trace id it minted
+        // — so it is the authority, and it covers agents that never set
+        // `session.id` on their spans. Searching first meant two Tempo searches
+        // on every call (one of them unbounded, see `search_session_traces`) to
+        // rediscover what Postgres already knew.
+        let mut resolver_sourced = true;
+        let mut has_more_traces = false;
+        let mut trace_results: Vec<TraceSearchResult> = self
+            .session_resolver
+            .traces_for_session(session_id, start, end)
+            .await
+            .into_iter()
+            .map(|id| (id, None, None))
+            .collect();
 
-        // Agents that never set session.id on spans (anything not running the
-        // Python auto-instrumentation patch): fall back to the proxy-recorded
-        // session ↔ trace index.
+        // Nothing indexed: either an older session predating the index, or one
+        // whose traces only Tempo knows about.
         if trace_results.is_empty() {
-            resolver_sourced = true;
-            trace_results = self
-                .session_resolver
-                .traces_for_session(session_id)
-                .await
-                .into_iter()
-                .map(|id| (id, None, None))
-                .collect();
+            resolver_sourced = false;
+            let query = session_query(session_id);
+            let (found, more) = self.search_session_traces(&query, start, end).await?;
+            trace_results = found;
+            has_more_traces = more;
         }
 
         let mut unique = Vec::new();
@@ -1009,51 +1045,69 @@ impl ObservabilityProvider for TempoLokiProvider {
         let trace_count = trace_results.len();
         let mut trace_fetch_failed = false;
 
-        for (trace_id, _, _) in &trace_results {
-            let trace = match self.tempo.get_trace(trace_id).await {
+        // One fetch task per trace, bounded. This was a serial loop, so a
+        // session with N traces paid N sequential round-trips -- each of them a
+        // Tempo trace download plus a Loki content query. Order is preserved by
+        // `buffered`, so `traces` stays oldest-first as callers expect.
+        struct Fetched {
+            summary: Option<TraceSummary>,
+            tokens: TokenUsage,
+            cost: CostBreakdown,
+            model: Option<String>,
+            failed: bool,
+        }
+
+        impl Fetched {
+            /// A trace that could not be read, did not belong to this session, or
+            /// fell outside the window. It contributes nothing to the totals but
+            /// does clear `metrics_complete`, exactly as the serial loop did.
+            fn failed() -> Self {
+                Self {
+                    summary: None,
+                    tokens: TokenUsage::default(),
+                    cost: CostBreakdown::default(),
+                    model: None,
+                    failed: true,
+                }
+            }
+        }
+
+        // Owned ids: a borrow of `trace_results` here makes the async block
+        // higher-ranked over the borrow's lifetime, which `buffered` can't name.
+        let trace_ids: Vec<String> = trace_results.iter().map(|(id, _, _)| id.clone()).collect();
+        let fetches = trace_ids.into_iter().map(|trace_id| async move {
+            let trace = match self.tempo.get_trace(&trace_id).await {
                 Ok(trace) => trace,
                 Err(error) => {
-                    trace_fetch_failed = true;
-                    tracing::warn!(trace_id, %error, "session trace fetch failed");
-                    continue;
+                    tracing::warn!(%trace_id, %error, "session trace fetch failed");
+                    return Fetched::failed();
                 }
             };
             if !trace_matches_session(&trace, session_id, resolver_sourced) {
-                trace_fetch_failed = true;
                 tracing::warn!(
-                    trace_id,
+                    %trace_id,
                     session_id,
                     resolver_sourced,
                     "session trace did not match requested session"
                 );
-                continue;
+                return Fetched::failed();
             }
-            // Resolver-sourced trace ids aren't bounded by the caller's time
-            // window (the index has no TTL), so enforce it here.
+            // The index is bounded in SQL now, but a trace can still start
+            // outside the window when the search path supplied it.
             if trace.started_at.is_some_and(|s| s < start || s > end) {
-                trace_fetch_failed = true;
-                continue;
+                return Fetched::failed();
             }
-            let Some(root_span) = find_root_span(&trace.spans) else {
-                trace_fetch_failed = true;
-                continue;
+            let Some(root_span) = find_root_span(&trace.spans).cloned() else {
+                return Fetched::failed();
             };
-            let root_span = root_span.clone();
 
-            let (trace_usage, trace_model) = trace.usage_totals();
-            total_input += trace_usage.input_tokens;
-            total_output += trace_usage.output_tokens;
-            total_cache_read += trace_usage.cache_read_tokens;
-            total_cache_creation += trace_usage.cache_creation_tokens;
-            if model_used.is_none() {
-                model_used = trace_model.clone();
-            }
+            let (tokens, model) = trace.usage_totals();
 
-            // Fetch Loki prompt/completion content for the root span, best-effort.
+            // Loki prompt/completion content for the root span, best-effort.
             let content = match trace.spans.first().map(|s| s.service_name.clone()) {
                 Some(svc) if !svc.is_empty() => self
                     .loki
-                    .get_trace_logs(&svc, trace_id, trace.started_at, trace.ended_at)
+                    .get_trace_logs(&svc, &trace_id, trace.started_at, trace.ended_at)
                     .await
                     .map(parse_trace_logs)
                     .unwrap_or_default()
@@ -1061,13 +1115,7 @@ impl ObservabilityProvider for TempoLokiProvider {
                 _ => None,
             };
 
-            let duration_ms = root_span.duration_ms;
-            if let Some(d) = duration_ms.filter(|&d| d > 0) {
-                latencies.push(d);
-            }
-
             let cost = self.trace_cost(&trace).await;
-            total_cost.add_assign(cost);
 
             // Content precedence: Loki events, then GenAI semconv span attributes
             // recorded directly on the root span (gen_ai.input/output.messages).
@@ -1086,19 +1134,47 @@ impl ObservabilityProvider for TempoLokiProvider {
                 .and_then(|c| c.output)
                 .or_else(|| attr_content("gen_ai.output.messages"));
 
-            traces.push(TraceSummary {
-                trace_id: trace_id.clone(),
-                root_span,
-                input_tokens: trace_usage.input_tokens,
-                output_tokens: trace_usage.output_tokens,
-                cache_read_tokens: trace_usage.cache_read_tokens,
-                cache_creation_tokens: trace_usage.cache_creation_tokens,
-                model_used: trace_model,
-                duration_ms,
+            Fetched {
+                summary: Some(TraceSummary {
+                    trace_id,
+                    duration_ms: root_span.duration_ms,
+                    root_span,
+                    input_tokens: tokens.input_tokens,
+                    output_tokens: tokens.output_tokens,
+                    cache_read_tokens: tokens.cache_read_tokens,
+                    cache_creation_tokens: tokens.cache_creation_tokens,
+                    model_used: model.clone(),
+                    cost,
+                    input_content,
+                    output_content,
+                }),
+                tokens,
                 cost,
-                input_content,
-                output_content,
-            });
+                model,
+                failed: false,
+            }
+        });
+
+        let fetched: Vec<Fetched> = stream::iter(fetches)
+            .buffered(SESSION_TRACE_FETCH_CONCURRENCY)
+            .collect()
+            .await;
+
+        for f in fetched {
+            trace_fetch_failed |= f.failed;
+            let Some(summary) = f.summary else { continue };
+            total_input += f.tokens.input_tokens;
+            total_output += f.tokens.output_tokens;
+            total_cache_read += f.tokens.cache_read_tokens;
+            total_cache_creation += f.tokens.cache_creation_tokens;
+            if model_used.is_none() {
+                model_used = f.model;
+            }
+            if let Some(d) = summary.duration_ms.filter(|&d| d > 0) {
+                latencies.push(d);
+            }
+            total_cost.add_assign(f.cost);
+            traces.push(summary);
         }
 
         let avg = (!latencies.is_empty())
@@ -1418,9 +1494,38 @@ impl ObservabilityProvider for TempoLokiProvider {
             }
         }
 
+        // Unrecovered error spans (SE-3), attributed to the agent that emitted
+        // them. Computed here because the span tree is already in hand — the
+        // materializer otherwise throws it away after pulling tokens and cost.
+        //
+        // Only agents that already have a row are annotated. An agent whose
+        // spans are *all* errors — it failed before making any LLM or tool call
+        // — contributes no row and so no count. Creating a zero-token row for it
+        // would put a synthetic agent into `trace_usage`, which every FinOps
+        // figure aggregates, to carry a secondary signal; the session's own
+        // status comes from `flows` and is exact regardless.
+        let mut errors_by_agent: HashMap<&str, u32> = HashMap::new();
+        for span_id in crate::types::unrecovered_error_spans(&spans) {
+            if let Some(span) = spans.iter().find(|s| s.span_id == span_id) {
+                let name = if is_router_llm_span(span) {
+                    match attributed.get(span.span_id.as_str()) {
+                        Some(agent) => *agent,
+                        None => continue,
+                    }
+                } else {
+                    span.service_name.as_str()
+                };
+                *errors_by_agent.entry(name).or_insert(0) += 1;
+            }
+        }
+
         let mut rows = Vec::with_capacity(by_agent.len());
         for (agent_name, acc) in by_agent {
             let cost = acc.cost;
+            let error_count = errors_by_agent
+                .get(agent_name.as_str())
+                .copied()
+                .unwrap_or(0);
             rows.push(crate::types::TraceUsageRow {
                 trace_id: trace_id.to_string(),
                 agent_name,
@@ -1442,6 +1547,7 @@ impl ObservabilityProvider for TempoLokiProvider {
                 completion_cost_usd: cost.completion_usd,
                 latency_ms,
                 started_at,
+                error_count,
             });
         }
         Ok(rows)

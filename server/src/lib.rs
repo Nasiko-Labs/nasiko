@@ -18,13 +18,13 @@ pub mod chat;
 pub mod coding_agent_otlp;
 pub mod coding_agent_telemetry;
 pub mod context_selection;
+pub mod embedding_change;
 pub mod flows;
 pub mod github;
 pub mod hitl;
 pub mod llm_configs;
 pub mod llm_router;
 pub mod maf;
-pub mod maf_policy;
 pub mod mcp;
 pub mod multipart_util;
 pub mod observability;
@@ -39,6 +39,8 @@ pub mod router;
 pub mod runtime;
 pub mod secrets;
 pub mod seed;
+pub mod seed_mirror;
+pub mod seed_registry_ready;
 pub mod settings;
 pub mod spa;
 pub mod state;
@@ -161,14 +163,10 @@ where
     // panicking: MAF routes still work (create/list/run) without a key, jobs
     // just queue in Redis unprocessed until one is configured.
     if let Some(api_key) = state.config.openai_api_key.clone() {
-        let worker_config = nasiko_orchestrator::maf::WorkerConfig {
-            llm: nasiko_orchestrator::maf::LlmConfig {
-                api_key,
-                base_url: state.config.openai_base_url.clone(),
-                model: state.config.openai_model.clone(),
-            },
-            concurrency: state.config.maf_worker_concurrency,
-            heartbeat: std::time::Duration::from_secs(state.config.maf_heartbeat_secs),
+        let llm_config = nasiko_orchestrator::maf::LlmConfig {
+            api_key,
+            base_url: state.config.openai_base_url.clone(),
+            model: state.config.openai_model.clone(),
         };
         // The MAF worker's client makes nothing but agent A2A calls, so it
         // carries the agent-call budget at the client level rather than
@@ -189,9 +187,8 @@ where
             // MAF step's agent call is bounded by exactly the cascade limits
             // every other inter-agent call already is.
             std::sync::Arc::new(state.flow_guard.clone()),
-            worker_config,
+            llm_config,
             state.hitl_store.clone(),
-            state.maf_executor.clone(),
         );
     } else {
         tracing::warn!(

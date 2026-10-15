@@ -76,11 +76,23 @@ fn observability_unconfigured() -> Response {
 pub struct SessionListParams {
     /// ISO-8601 window start (default: 7 days ago).
     pub start_time: Option<String>,
-    /// Page size (default 25, max 100). Each row costs one trace-store lookup,
-    /// so this bounds the request's real work — it is not just a display limit.
+    /// ISO-8601 window end (default: open-ended).
+    pub end_time: Option<String>,
+    /// Page size (default 25, max 100).
     pub limit: Option<i64>,
-    /// Rows to skip, for offset paging (default 0).
+    /// Rows to skip, for offset paging (default 0). Superseded by `cursor`,
+    /// which pages on the sort key instead; kept because the Sessions page
+    /// still sends it. `cursor` wins when both are given.
     pub offset: Option<i64>,
+    /// Keyset cursor on `(created_at, session_id)` — the `end_cursor` of the
+    /// previous page.
+    pub cursor: Option<String>,
+    /// `failed` | `ok` | `running`. Filtered in SQL, so `matching_count` counts
+    /// every match in the window rather than the rows on this page.
+    pub status: Option<String>,
+    /// Sort order. Only `created_at` (the default) is supported; see the
+    /// handler for why `cost` is rejected rather than approximated.
+    pub sort: Option<String>,
 }
 
 #[derive(Debug, Deserialize, IntoParams)]
@@ -118,6 +130,17 @@ pub struct FinopsFilterParams {
     /// Ignored when `agent_id` is also set (already scoped to one agent).
     #[serde(default)]
     pub my_agent: bool,
+    /// `previous` adds the preceding window of the same length to the same
+    /// response, so a caller comparing two windows needs one request, not two.
+    /// Anything else is ignored.
+    pub compare: Option<String>,
+    /// `agent` (spend-timeseries only) adds a per-agent series for the top
+    /// spenders plus an `other` aggregate, replacing one filtered request per
+    /// driver. Any other value is a 400.
+    pub group_by: Option<String>,
+    /// How many agents get their own series under `group_by=agent`
+    /// (default 5, clamped 1-20). The rest fold into `other`.
+    pub top: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, IntoParams)]
@@ -221,7 +244,7 @@ pub struct AgentHoursParams {
 
 // ─── 1. GET /v1/observability/session/list ────────────────────────────────────
 
-/// List chat sessions (DB-authoritative, enriched from Tempo when available).
+/// List chat sessions. Served entirely from Postgres — no trace-store reads.
 #[utoipa::path(
     get,
     path = "/api/observability/session/list",
@@ -229,6 +252,7 @@ pub struct AgentHoursParams {
     params(SessionListParams),
     responses(
         (status = 200, description = "Sessions in the window", body = crate::observability::service::SessionListResponse),
+        (status = 400, description = "Unknown status, sort or cursor value"),
         (status = 401, description = "Missing or invalid session"),
     ),
 )]
@@ -238,6 +262,20 @@ pub async fn get_all_sessions(
     claims: Claims,
     Query(params): Query<SessionListParams>,
 ) -> impl IntoResponse {
+    // `sort=cost` would have to aggregate `trace_usage` for every session in the
+    // window before it could page, which is exactly the "cost grows with the
+    // data" property this endpoint was rewritten to lose. Rejected rather than
+    // approximated by sorting within the page, which would look like it worked.
+    if let Some(sort) = params.sort.as_deref()
+        && sort != "created_at"
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!("sort '{sort}' is not supported; only 'created_at'"),
+        )
+            .into_response();
+    }
+
     match svc(&state)
         .get_all_sessions(
             &claims.sub,
@@ -248,6 +286,9 @@ pub async fn get_all_sessions(
             claims.is_superuser,
             params.limit,
             params.offset,
+            params.end_time.as_deref(),
+            params.status.as_deref(),
+            params.cursor.as_deref(),
         )
         .await
     {
@@ -355,6 +396,7 @@ pub async fn get_session_details(
     ),
     responses(
         (status = 200, description = "Trace detail with span tree", body = crate::observability::service::TraceDetailResponse),
+        (status = 304, description = "Not modified (settled trace, matching If-None-Match)"),
         (status = 404, description = "Trace not found"),
     ),
 )]
@@ -362,15 +404,91 @@ pub async fn get_session_details(
 pub async fn get_trace_details(
     State(state): State<AppState>,
     claims: Claims,
+    headers: axum::http::HeaderMap,
     Path(trace_id): Path<String>,
 ) -> impl IntoResponse {
-    match svc(&state)
+    let resp = match svc(&state)
         .get_trace_details(&trace_id, &claims.sub, claims.is_superuser)
         .await
     {
-        Ok(resp) => Json(resp).into_response(),
-        Err(e) => obs_err(e),
+        Ok(resp) => resp,
+        Err(e) => return obs_err(e),
+    };
+
+    // A settled trace never changes again, so let the browser keep it instead of
+    // re-downloading the whole span tree on every revisit. The UI already treats
+    // it that way (`staleTime: Infinity`); this makes it true across tabs,
+    // reloads and devices, and it is the one cache that removes a Tempo read
+    // rather than memoising one.
+    //
+    // `private`, never `public`: the response is authorized per caller, so a
+    // shared cache must not store it.
+    let settled = trace_is_settled(&resp);
+    let etag = format!(r#""{:016x}""#, trace_response_digest(&resp));
+    if headers
+        .get(axum::http::header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.split(',').any(|c| c.trim() == etag))
+    {
+        return (StatusCode::NOT_MODIFIED, [("etag", etag)]).into_response();
     }
+
+    let cache_control = if settled {
+        "private, max-age=31536000, immutable"
+    } else {
+        // Still receiving spans: revalidate every time, but the ETag still saves
+        // the transfer when nothing changed.
+        "private, no-cache"
+    };
+    (
+        [("cache-control", cache_control.to_string()), ("etag", etag)],
+        Json(resp),
+    )
+        .into_response()
+}
+
+/// Spans can keep arriving after a trace looks finished (the exporter batches,
+/// and a long tool call reports late). A trace counts as settled only when every
+/// span has an end time and the latest one is further back than this.
+const TRACE_SETTLE_GRACE: chrono::Duration = chrono::Duration::minutes(5);
+
+/// True when no further spans can reasonably be expected for this trace.
+fn trace_is_settled(resp: &crate::observability::service::TraceDetailResponse) -> bool {
+    let spans = &resp.data.trace.span_lookup;
+    if spans.is_empty() {
+        return false;
+    }
+    let mut latest_end: Option<DateTime<Utc>> = None;
+    for span in spans.values() {
+        let Some(end) = span
+            .end_time
+            .as_deref()
+            .and_then(|t| DateTime::parse_from_rfc3339(t).ok())
+            .map(|t| t.with_timezone(&Utc))
+        else {
+            // An unfinished span means the trace is still running.
+            return false;
+        };
+        latest_end = Some(latest_end.map_or(end, |cur: DateTime<Utc>| cur.max(end)));
+    }
+    latest_end.is_some_and(|end| Utc::now() - end > TRACE_SETTLE_GRACE)
+}
+
+/// Content digest for the ETag. Hashes the serialized body, so the tag changes
+/// if anything in the trace does — including late spans and a re-priced cost.
+fn trace_response_digest(resp: &crate::observability::service::TraceDetailResponse) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    match serde_json::to_vec(resp) {
+        Ok(bytes) => bytes.hash(&mut hasher),
+        // Unreachable in practice; a per-call salt is still better than a
+        // constant, which would hand every trace the same ETag.
+        Err(_) => Utc::now()
+            .timestamp_nanos_opt()
+            .unwrap_or_default()
+            .hash(&mut hasher),
+    }
+    hasher.finish()
 }
 
 // ─── 4. GET /v1/observability/span/{trace_id}/{span_id} ──────────────────────
@@ -512,6 +630,7 @@ pub async fn get_finops_dashboard(
             accessible_agent_ids.as_deref(),
             owner_id,
             view,
+            params.compare.as_deref() == Some("previous"),
         )
         .await
     {
@@ -582,6 +701,20 @@ pub async fn get_finops_spend_timeseries(
         Ok(n) => n,
         Err(r) => return r,
     };
+    // Only `agent` is a grouping; anything else is a caller error rather than
+    // something to silently drop, which would return a fleet-wide chart under a
+    // per-agent legend.
+    let group_by_agent = match params.group_by.as_deref() {
+        None => false,
+        Some("agent") => true,
+        Some(other) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("invalid group_by '{other}' — expected 'agent'"),
+            )
+                .into_response();
+        }
+    };
     match svc(&state)
         .get_finops_spend_timeseries(
             params.start_time.as_deref(),
@@ -590,6 +723,9 @@ pub async fn get_finops_spend_timeseries(
             agent_name.as_deref(),
             params.model.as_deref(),
             params.provider.as_deref(),
+            group_by_agent,
+            params.top.unwrap_or(5),
+            params.compare.as_deref() == Some("previous"),
         )
         .await
     {
