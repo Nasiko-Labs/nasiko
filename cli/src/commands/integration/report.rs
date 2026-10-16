@@ -13,6 +13,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use super::agents::Agent;
+use super::budget::{self, EventFit};
 use super::model::Turn;
 use super::queue::{self, QueueDestination, QueueRecord};
 use super::state::{self, IntegrationState, SessionLock};
@@ -78,6 +79,30 @@ pub fn run(agent: Agent) -> Result<()> {
             ));
             continue;
         }
+        let record = match budget::fit(&record.event) {
+            EventFit::Fits => record,
+            EventFit::Reduced(event) => {
+                log(&format!(
+                    "session {} turn {} — content reduced to fit the upload size limit",
+                    snapshot.session_id, record.event.turn.id
+                ));
+                QueueRecord {
+                    event: *event,
+                    ..record
+                }
+            }
+            EventFit::Oversized { request_bytes } => {
+                let error = budget::oversized_error(request_bytes);
+                queue::reject_invalid(&record, &error)?;
+                lock.mark_captured(std::slice::from_ref(&record.event.turn.id))?;
+                rejected += 1;
+                log(&format!(
+                    "session {} turn {} — quarantined oversized event: {error}",
+                    snapshot.session_id, record.event.turn.id
+                ));
+                continue;
+            }
+        };
         queue_then_mark(&record, &lock)?;
         queued += 1;
     }
