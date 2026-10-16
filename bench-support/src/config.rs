@@ -54,8 +54,6 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
     Config {
         bind: "127.0.0.1:0".into(),
         domain: None,
-        delegation_audience: "nasiko-cp-test".to_string(),
-        delegation_enabled: true,
         database_url,
         redis_url: redis_url(),
         agent_runtime: "simulated".into(),
@@ -117,6 +115,8 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         seed_image_platform: "linux/amd64".into(),
         agent_image_registry_placeholder: None,
         build_push_token: String::new(),
+        agent_jwt_secret: String::new(),
+        agent_jwt_algorithm: "HS256".into(),
         seed_agents: None,
         // Dummy but non-empty — ee build_ee_app requires Some(), and a
         // non-empty api_key is also what lets Stage 1 (VectorStore) attempt
@@ -154,6 +154,9 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         hitl_resume_lease_minutes: 2,
         hitl_resume_max_attempts: 3,
         hitl_resume_retry_delay_secs: 2,
+        coding_agent_idle_ttl_secs: 0,
+        coding_agent_turn_lease_secs: 60,
+        coding_agent_lease_heartbeat_secs: 20,
         github_client_id: None,
         github_client_secret: None,
         router_shortlist_threshold: 15,

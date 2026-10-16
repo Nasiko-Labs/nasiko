@@ -365,7 +365,26 @@ pub fn link_router_spans(spans: &[Span]) -> RouterSpanLinks<'_> {
                 }
             }
             None => {
-                excluded.insert(span.span_id.as_str());
+                // No agent span to link to — e.g. an ACP coding agent (OpenCode)
+                // that emits no OTel spans of its own, so the router's span is the
+                // only token-bearing one in the trace. Rather than drop the call,
+                // attribute it to the agent id the router stamped on the span
+                // (`gen_ai.agent.id`); downstream resolves that id to the agent.
+                // Self-instrumenting agents still take the `Some(agent)` path above,
+                // so their attribution is unchanged.
+                match span
+                    .attributes
+                    .get("gen_ai.agent.id")
+                    .and_then(|v| v.as_str())
+                    .filter(|id| !id.is_empty())
+                {
+                    Some(agent_id) => {
+                        attributed.insert(span.span_id.as_str(), agent_id);
+                    }
+                    None => {
+                        excluded.insert(span.span_id.as_str());
+                    }
+                }
             }
         }
     }
@@ -621,6 +640,69 @@ pub fn latency_percentiles(mut durations: Vec<u64>) -> (Option<f64>, Option<f64>
     let p50 = nearest_rank(50);
     let p99 = nearest_rank(99);
     (p50, p99)
+}
+
+#[cfg(test)]
+mod link_router_spans_tests {
+    use super::*;
+
+    fn span(id: &str, parent: Option<&str>, service: &str, attrs: &[(&str, &str)]) -> Span {
+        Span {
+            span_id: id.to_string(),
+            parent_span_id: parent.map(str::to_string),
+            name: "s".into(),
+            started_at: chrono::Utc::now(),
+            ended_at: None,
+            duration_ms: None,
+            service_name: service.to_string(),
+            kind: 3,
+            status_code: 0,
+            status_message: String::new(),
+            attributes: attrs
+                .iter()
+                .map(|(k, v)| (k.to_string(), serde_json::Value::String(v.to_string())))
+                .collect(),
+            events: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn unlinkable_router_span_is_attributed_by_gen_ai_agent_id() {
+        // A coding agent (e.g. OpenCode) emits no spans of its own, so the router's
+        // span is the only token-bearing one and has no agent-span ancestor. It must
+        // be attributed off `gen_ai.agent.id`, not dropped — otherwise its tokens
+        // never reach `trace_usage`/FinOps.
+        let spans = vec![span(
+            "r1",
+            None,
+            "nasiko-cp",
+            &[
+                ("gen_ai.agent.id", "agent-uuid"),
+                ("gen_ai.usage.total_tokens", "100"),
+            ],
+        )];
+        let links = link_router_spans(&spans);
+        assert_eq!(links.attributed.get("r1"), Some(&"agent-uuid"));
+        assert!(!links.excluded.contains("r1"), "must not be dropped");
+    }
+
+    #[test]
+    fn router_span_with_agent_ancestor_still_attributes_by_service_name() {
+        // Regression guard: a self-instrumenting agent's own span is the ancestor,
+        // so the router span is still attributed to the agent's service name (the
+        // common path is unchanged).
+        let spans = vec![
+            span("a1", None, "my-agent", &[]),
+            span(
+                "r1",
+                Some("a1"),
+                "nasiko-cp",
+                &[("gen_ai.agent.id", "agent-uuid")],
+            ),
+        ];
+        let links = link_router_spans(&spans);
+        assert_eq!(links.attributed.get("r1"), Some(&"my-agent"));
+    }
 }
 
 #[cfg(test)]

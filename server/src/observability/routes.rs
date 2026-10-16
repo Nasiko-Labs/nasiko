@@ -165,6 +165,10 @@ pub fn protected_router(state: AppState) -> Router<AppState> {
         .route("/session/list", get(handler::get_all_sessions))
         .route("/session/ensure", post(handler::ensure_session))
         .route("/session/{session_id}", get(handler::get_session_details))
+        .route(
+            "/session/{session_id}/turns",
+            get(handler::get_session_turns),
+        )
         .route("/trace/{trace_id}", get(handler::get_trace_details))
         .route("/span/{trace_id}/{span_id}", get(handler::get_span_details))
         .route("/agent/{agent_id}/stats", get(handler::get_agent_stats))
