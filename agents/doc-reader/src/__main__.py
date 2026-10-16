@@ -3,6 +3,23 @@ import base64
 import logging
 import os
 
+from dotenv import load_dotenv
+
+load_dotenv()
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Instrumentation must initialize before a2a-sdk (and anything it imports,
+# e.g. Starlette) is imported below: OTel's Starlette instrumentor patches by
+# rebinding `starlette.applications.Starlette` to an instrumented subclass, so
+# any module that already did `from starlette.applications import Starlette`
+# keeps its original, un-instrumented reference forever — no incoming
+# traceparent gets extracted, and every request starts an orphan root trace
+# instead of joining the platform's session trace.
+from telemetry import TraceparentMiddleware, init_telemetry, request_otel_context
+
+init_telemetry(os.environ.get("OTEL_SERVICE_NAME", "doc-reader-agent"))
+
 import click
 import uvicorn
 from a2a.helpers import (
@@ -25,12 +42,6 @@ from a2a.types import (
 from openai import AsyncOpenAI
 from opentelemetry import context as otel_context, trace
 from starlette.applications import Starlette
-
-from telemetry import TraceparentMiddleware, init_telemetry, request_otel_context
-
-logging.basicConfig(level=logging.INFO)
-init_telemetry(os.environ.get("OTEL_SERVICE_NAME", "doc-reader-agent"))
-logger = logging.getLogger(__name__)
 
 
 def extract_files_from_message(message) -> list[dict]:
@@ -191,17 +202,22 @@ class DocReaderExecutor(AgentExecutor):
 @click.option("--host", default="0.0.0.0")
 @click.option("--port", default=int(os.environ.get("PORT", "8000")), type=int)
 def main(host, port):
+    if not os.getenv("OPENAI_API_KEY"):
+        logger.error("OPENAI_API_KEY is not set")
+        raise SystemExit(1)
+
     llm = AsyncOpenAI(
         api_key=os.environ.get("OPENAI_API_KEY"),
-        base_url=os.environ.get("OPENAI_BASE_URL"),
+        base_url=os.environ.get("OPENAI_BASE_URL") or None,
     )
     model = os.environ.get("MODEL", os.environ.get("OPENAI_MODEL", "gpt-4o-mini"))
+    agent_url = os.getenv("HOST_OVERRIDE", f"http://{host}:{port}/")
 
     agent_card = AgentCard(
-        name="Doc Reader",
+        name="doc-reader",
         description="Reads uploaded documents (text, CSV, JSON, code, logs) and answers questions about them.",
         supported_interfaces=[
-            AgentInterface(protocol_binding="JSONRPC", url=f"http://{host}:{port}/"),
+            AgentInterface(protocol_binding="JSONRPC", url=agent_url),
         ],
         version="1.0.0",
         default_input_modes=["text/plain", "application/octet-stream"],
@@ -235,6 +251,7 @@ def main(host, port):
 
     app = Starlette(routes=routes)
     app = TraceparentMiddleware(app)
+    logger.info("Doc Reader listening on %s:%s", host, port)
     uvicorn.run(app, host=host, port=port)
 
 

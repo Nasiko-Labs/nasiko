@@ -1,7 +1,7 @@
 [project]
 name = "synthesizer-agent"
-version = "1.0.0"
-description = "Synthesizer agent — takes research from other agents and produces polished reports (Anthropic SDK → DeepSeek)"
+version = "1.0.1"
+description = "Nasiko synthesizer agent powered by the Anthropic SDK and Claude"
 requires-python = ">=3.12"
 dependencies = [
     "opentelemetry-api>=1.25.0",
@@ -14,7 +14,7 @@ dependencies = [
     "opentelemetry-instrumentation-anthropic>=0.35.0b0",
     "anthropic>=0.40.0",
     "httpx>=0.27.0",
-    "a2a-sdk[http-server]>=0.3.0,<1.0.0",
+    "a2a-sdk[http-server]==1.1.2",
     "python-dotenv>=1.0.0",
     "uvicorn>=0.30.0",
     "click>=8.0.0",

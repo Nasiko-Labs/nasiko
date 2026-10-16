@@ -1,15 +1,22 @@
 {
-  "protocolVersion": "0.2.9",
-  "name": "claude-sdk-research-agent",
-  "description": "Answers questions by searching Wikipedia, built with the Anthropic Python SDK.",
-  "url": "http://localhost:10002/",
+  "protocolVersion": "1.0",
+  "name": "synthesizer-agent",
+  "description": "Transforms raw research, notes, and analysis into polished reports with summaries, key findings, and conclusions using Claude.",
+  "supportedInterfaces": [
+    {
+      "url": "http://localhost:8000/",
+      "protocolBinding": "JSONRPC",
+      "protocolVersion": "1.0"
+    }
+  ],
+  "url": "http://localhost:8000/",
   "agentFramework": "claude-sdk",
   "preferredTransport": "JSONRPC",
   "provider": {
     "organization": "Nasiko",
     "url": "https://nasiko.com"
   },
-  "version": "1.0.0",
+  "version": "1.0.1",
   "capabilities": {
     "streaming": true,
     "pushNotifications": false,
@@ -25,17 +32,20 @@
   ],
   "skills": [
     {
-      "id": "wikipedia_research",
-      "name": "Wikipedia Research",
-      "description": "Answers questions by searching Wikipedia for relevant information.",
+      "id": "synthesize",
+      "name": "Synthesize & Report",
+      "description": "Synthesizes research and data from multiple sources into polished, well-structured reports.",
       "tags": [
-        "research",
-        "wikipedia",
-        "qa"
+        "synthesis",
+        "writing",
+        "reports",
+        "analysis",
+        "claude"
       ],
       "examples": [
-        "What is quantum computing?",
-        "Tell me about the Eiffel Tower"
+        "Synthesize these research findings into a report",
+        "Write an executive summary from this data",
+        "Compare these sources and identify the strongest conclusions"
       ],
       "inputModes": [
         "text/plain"
