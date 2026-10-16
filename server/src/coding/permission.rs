@@ -140,14 +140,79 @@ fn tool_label(request: &RequestPermissionRequest) -> String {
         .unwrap_or_else(|| "coding-agent tool".to_owned())
 }
 
-/// The human-facing question payload: the full tool-call details and the options
-/// the agent offered, so the approver sees exactly what will run.
+/// The human-facing question payload. Carries three things the chat UI reads to
+/// render an approval card the approver can actually judge: `tool_name` (the
+/// heading), `action` (a normalized summary of *what it will do* — the file diff,
+/// the shell command, or the raw input), and the full `tool_call` + `options` for
+/// anything that wants the untouched ACP detail. Normalizing server-side keeps the
+/// UI from having to know each agent's tool shapes.
 fn permission_question(request: &RequestPermissionRequest) -> serde_json::Value {
+    let tool_call = serde_json::to_value(&request.tool_call).unwrap_or(serde_json::Value::Null);
     serde_json::json!({
         "kind": "acp_tool_permission",
+        "tool_name": tool_display_name(&tool_call),
+        "action": permission_action(&tool_call),
         "tool_call": request.tool_call,
         "options": request.options,
     })
+}
+
+/// The tool's display name for the card heading: its ACP `title` (e.g. the file
+/// path being edited, or the shell command), else a generic label.
+fn tool_display_name(tool_call: &serde_json::Value) -> String {
+    tool_call
+        .get("title")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("coding-agent tool")
+        .to_owned()
+}
+
+/// Normalize a tool call into *what it will do*, so the approver sees the effect
+/// before approving: a file diff (`type` `"diff"`/`"edit"`), a shell command
+/// (`"command"`), or the raw input (`"raw"`). Keyed off the fields OpenCode and
+/// Codex actually send — a ready-made unified diff, a structured content diff, or
+/// a shell command carried in the tool-call title.
+fn permission_action(tool_call: &serde_json::Value) -> serde_json::Value {
+    let raw = tool_call.get("rawInput");
+    // 1. A ready-made unified diff (OpenCode edits carry `rawInput.diff`).
+    if let Some(diff) = raw.and_then(|r| r.get("diff")).and_then(|d| d.as_str()) {
+        let path = raw
+            .and_then(|r| r.get("filepath"))
+            .and_then(|p| p.as_str())
+            .or_else(|| tool_call.get("title").and_then(|t| t.as_str()));
+        return serde_json::json!({ "type": "diff", "path": path, "diff": diff });
+    }
+    // 2. A structured content diff (path + old/new text).
+    if let Some(entry) = tool_call
+        .get("content")
+        .and_then(|c| c.as_array())
+        .and_then(|a| {
+            a.iter()
+                .find(|e| e.get("type").and_then(|t| t.as_str()) == Some("diff"))
+        })
+    {
+        return serde_json::json!({
+            "type": "edit",
+            "path": entry.get("path"),
+            "oldText": entry.get("oldText"),
+            "newText": entry.get("newText"),
+        });
+    }
+    // 3. A shell command (Codex `execute`): the title is the human-readable form.
+    let kind = tool_call.get("kind").and_then(|k| k.as_str()).unwrap_or("");
+    if (kind == "execute" || raw.and_then(|r| r.get("command")).is_some())
+        && let Some(cmd) = tool_call
+            .get("title")
+            .and_then(|t| t.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    {
+        return serde_json::json!({ "type": "command", "command": cmd });
+    }
+    // 4. Fallback: the raw input (or the whole tool call) as-is.
+    serde_json::json!({ "type": "raw", "value": raw.cloned().unwrap_or_else(|| tool_call.clone()) })
 }
 
 /// Approve by selecting an allow option (prefer "allow once"). Shared with the
@@ -256,5 +321,70 @@ mod tests {
             tool_label(&request(Some("  "), vec![])),
             "coding-agent tool"
         );
+    }
+
+    #[test]
+    fn tool_display_name_uses_title_then_a_fallback() {
+        assert_eq!(
+            tool_display_name(&serde_json::json!({ "title": "Edit /x" })),
+            "Edit /x"
+        );
+        assert_eq!(
+            tool_display_name(&serde_json::json!({ "title": "  " })),
+            "coding-agent tool"
+        );
+        assert_eq!(
+            tool_display_name(&serde_json::json!({})),
+            "coding-agent tool"
+        );
+    }
+
+    #[test]
+    fn action_summarizes_an_opencode_edit_as_a_diff() {
+        // OpenCode edits carry a ready-made unified diff in `rawInput`.
+        let tc = serde_json::json!({
+            "kind": "edit",
+            "title": "/workspace/ganesh.txt",
+            "rawInput": { "filepath": "/workspace/ganesh.txt", "diff": "@@ -0,0 +1 @@\n+hi\n" },
+        });
+        let action = permission_action(&tc);
+        assert_eq!(action["type"], "diff");
+        assert_eq!(action["path"], "/workspace/ganesh.txt");
+        assert!(action["diff"].as_str().unwrap().contains("+hi"));
+    }
+
+    #[test]
+    fn action_summarizes_a_content_diff_edit() {
+        // Some agents send the diff as structured content (old/new text) instead.
+        let tc = serde_json::json!({
+            "kind": "edit",
+            "title": "/f.txt",
+            "content": [{ "type": "diff", "path": "/f.txt", "oldText": "a", "newText": "b" }],
+        });
+        let action = permission_action(&tc);
+        assert_eq!(action["type"], "edit");
+        assert_eq!(action["oldText"], "a");
+        assert_eq!(action["newText"], "b");
+    }
+
+    #[test]
+    fn action_summarizes_a_codex_execute_as_a_command() {
+        // Codex `execute` carries the human-readable command as the title.
+        let tc = serde_json::json!({
+            "kind": "execute",
+            "title": "echo 'hi' > f.txt",
+            "rawInput": { "command": ["/bin/bash", "-lc", "echo 'hi' > f.txt"] },
+        });
+        let action = permission_action(&tc);
+        assert_eq!(action["type"], "command");
+        assert_eq!(action["command"], "echo 'hi' > f.txt");
+    }
+
+    #[test]
+    fn action_falls_back_to_raw_for_an_unknown_tool() {
+        let tc = serde_json::json!({ "kind": "other", "rawInput": { "foo": "bar" } });
+        let action = permission_action(&tc);
+        assert_eq!(action["type"], "raw");
+        assert_eq!(action["value"]["foo"], "bar");
     }
 }
