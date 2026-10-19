@@ -1,0 +1,18 @@
+{"timestamp": "2026-03-01T10:00:00Z", "type": "session_meta", "payload": {"id": "current", "timestamp": "2026-03-01T10:00:00Z", "source": "cli"}}
+{"timestamp": "2026-03-01T10:00:00Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "# AGENTS.md instructions\nSynthetic instructions"}]}}
+{"timestamp": "2026-03-01T10:00:00Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "<environment_context><cwd>/synthetic</cwd></environment_context>"}]}}
+{"timestamp": "2026-03-01T10:00:00Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "<user_instructions>Be brief</user_instructions>"}]}}
+{"timestamp": "2026-03-01T10:00:00Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "<in-app-browser-context>Tab</in-app-browser-context>"}]}}
+{"timestamp": "2026-03-01T10:00:01Z", "type": "event_msg", "payload": {"type": "task_started", "turn_id": "t1"}}
+{"timestamp": "2026-03-01T10:00:01Z", "type": "turn_context", "payload": {"turn_id": "t1", "model": "gpt-test"}}
+{"timestamp": "2026-03-01T10:00:01Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "<request>Fix the build</request>"}], "internal_chat_message_metadata_passthrough": {"turn_id": "t1"}}}
+{"timestamp": "2026-03-01T10:00:02Z", "type": "event_msg", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 100, "cached_input_tokens": 70, "output_tokens": 10}, "last_token_usage": {"input_tokens": 999, "cached_input_tokens": 999, "output_tokens": 999}}}}
+{"timestamp": "2026-03-01T10:00:03Z", "type": "event_msg", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 180, "cached_input_tokens": 120, "output_tokens": 20}, "last_token_usage": {"input_tokens": 999, "cached_input_tokens": 999, "output_tokens": 999}}}}
+{"timestamp": "2026-03-01T10:00:04Z", "type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "<environment_context>Tagged answer</environment_context>"}], "internal_chat_message_metadata_passthrough": {"turn_id": "t1"}}}
+{"timestamp": "2026-03-01T10:00:05Z", "type": "event_msg", "payload": {"type": "task_complete", "turn_id": "wrong", "last_agent_message": "Wrong answer"}}
+{"timestamp": "2026-03-01T10:00:06Z", "type": "event_msg", "payload": {"type": "task_complete", "turn_id": "t1", "last_agent_message": null}}
+{"timestamp": "2026-03-01T10:00:10Z", "type": "event_msg", "payload": {"type": "task_started", "turn_id": "t2"}}
+{"timestamp": "2026-03-01T10:00:10Z", "type": "turn_context", "payload": {"turn_id": "t2", "model": "gpt-test"}}
+{"timestamp": "2026-03-01T10:00:10Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Test the build"}], "internal_chat_message_metadata_passthrough": {"turn_id": "t2"}}}
+{"timestamp": "2026-03-01T10:00:11Z", "type": "event_msg", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 230, "cached_input_tokens": 150, "output_tokens": 30}, "last_token_usage": {"input_tokens": 999, "cached_input_tokens": 999, "output_tokens": 999}}}}
+{"timestamp": "2026-03-01T10:00:12Z", "type": "event_msg", "payload": {"type": "task_complete", "turn_id": "t2", "last_agent_message": "Tested"}}

@@ -682,6 +682,17 @@ pub enum AgentsCommands {
         /// Agent to uninstall (e.g. claude or opencode)
         agent: String,
     },
+    /// Report past sessions from local transcripts: claude, codex, or all
+    Import {
+        /// Agent to import (claude, codex, or all installed agents)
+        agent: String,
+        /// Only turns started on or after this date (YYYY-MM-DD) or RFC 3339 time
+        #[arg(long)]
+        since: Option<String>,
+        /// Preview local history without queuing or sending anything (no install required)
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Validate and deliver queued coding-agent events
     Sync,
     /// Export one session's new turns. Invoked by installed hooks.
@@ -1202,6 +1213,15 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
                 })
             }
             AgentsCommands::Uninstall { agent } => commands::integration::uninstall(&agent),
+            AgentsCommands::Import {
+                agent,
+                since,
+                dry_run,
+            } => commands::integration::import_history(commands::integration::ImportOptions {
+                agent_id: &agent,
+                since: since.as_deref(),
+                dry_run,
+            }),
             AgentsCommands::Sync => commands::integration::sync(),
             AgentsCommands::Report { agent } => commands::integration::report(&agent),
             AgentsCommands::Ls => commands::agents::cmd_ls(),

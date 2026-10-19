@@ -111,7 +111,14 @@ nasiko agents install <agent>    # claude, codex, opencode, or cursor
 nasiko agents install <agent> --no-content  # omit prompt and response text
 nasiko agents uninstall <agent>
 nasiko agents sync               # flush queued session-turn events to the control plane
+nasiko agents import <agent>     # report sessions from before install: claude, codex, or all
 ```
+
+Preview past Claude and Codex sessions with `nasiko agents import all --dry-run`, then
+omit `--dry-run` to queue and sync history for installed agents. Use `--since YYYY-MM-DD`
+to limit turns by their original start time. Re-running skips turns already reported;
+Codex fork replays count once. Import respects the installed content setting: metadata-only
+capture does not produce TokenOps costs because the server prices Content events only.
 
 Auto-install also fires on `nasiko connect <control-plane-url>`, `nasiko use`, and
 `nasiko auth login`, but only when authenticated and only for agents with **no existing install

@@ -13,7 +13,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use super::agents::Agent;
-use super::model::Turn;
+use super::model::{SessionSnapshot, Turn};
 use super::queue::{self, QueueDestination, QueueRecord};
 use super::state::{self, IntegrationState, SessionLock};
 
@@ -23,6 +23,34 @@ pub fn run(agent: Agent) -> Result<()> {
     let deadline = Instant::now() + REPORT_BUDGET;
     let raw = read_payload()?;
     let snapshot = agent.snapshot(&raw, deadline)?;
+    let counts = queue_snapshot(agent, &snapshot, deadline)?;
+    if counts.queued > 0 {
+        spawn_sync()?;
+    }
+    log(&format!(
+        "session {} — queued {} completed turn(s); already reported {}; failed {}",
+        snapshot.session_id, counts.queued, counts.already_reported, counts.failed
+    ));
+    if let Some(error) = counts.error {
+        return Err(error);
+    }
+    Ok(())
+}
+
+#[derive(Debug, Default)]
+pub(super) struct CaptureCounts {
+    pub queued: usize,
+    pub already_reported: usize,
+    pub failed: usize,
+    pub error: Option<anyhow::Error>,
+}
+
+/// Share the hook's watermark and durable queue without starting delivery.
+pub(super) fn queue_snapshot(
+    agent: Agent,
+    snapshot: &SessionSnapshot,
+    deadline: Instant,
+) -> Result<CaptureCounts> {
     let spec = agent.spec();
     let settings = IntegrationState::load()?;
     let Some(agent_state) = settings.get(spec.id) else {
@@ -40,59 +68,62 @@ pub fn run(agent: Agent) -> Result<()> {
     )?;
     let completed = complete_turns(&snapshot.turns);
     if completed.is_empty() {
-        log(&format!(
-            "session {} — no completed turns; deferred",
-            snapshot.session_id
-        ));
-        return Ok(());
+        return Ok(CaptureCounts::default());
     }
     let progress = lock.progress()?;
-    if progress.migrated_legacy_counts {
-        log(&format!(
-            "session {} — migrated legacy progress; replaying complete turns once",
-            snapshot.session_id
-        ));
-    }
-    let pending = pending_turns(&completed, &progress.captured_turn_ids);
-    let mut queued = 0;
-    let mut rejected = 0;
-    for turn in &pending {
-        let record = QueueRecord::new(
-            destination.clone(),
-            canonical_event(
-                spec.id,
-                &agent_state.agent_name,
-                &snapshot.session_id,
-                snapshot.title.as_deref(),
-                turn,
-                agent_state.capture_content,
-            ),
-        );
-        if let Err(error) = record.event.validate() {
-            queue::reject_invalid(&record, &error)?;
-            lock.mark_captured(std::slice::from_ref(&record.event.turn.id))?;
-            rejected += 1;
-            log(&format!(
-                "session {} turn {} — quarantined invalid event: {error}",
-                snapshot.session_id, record.event.turn.id
-            ));
-            continue;
-        }
-        queue_then_mark(&record, &lock)?;
-        queued += 1;
-    }
-    drop(lock);
+    Ok(capture_turns(
+        &completed,
+        &progress.captured_turn_ids,
+        deadline,
+        |turn| {
+            let record = QueueRecord::new(
+                destination.clone(),
+                canonical_event(
+                    spec.id,
+                    &agent_state.agent_name,
+                    &snapshot.session_id,
+                    snapshot.title.as_deref(),
+                    turn,
+                    agent_state.capture_content,
+                ),
+            );
+            if let Err(error) = record.event.validate() {
+                queue::reject_invalid(&record, &error)?;
+                bail!("invalid event: {error}");
+            }
+            queue_then_mark(&record, &lock)
+        },
+    ))
+}
 
-    if queued > 0 {
-        spawn_sync()?;
+fn capture_turns(
+    turns: &[Turn],
+    captured: &HashSet<String>,
+    deadline: Instant,
+    mut capture: impl FnMut(&Turn) -> Result<()>,
+) -> CaptureCounts {
+    let pending = pending_turns(turns, captured);
+    let mut counts = CaptureCounts {
+        already_reported: turns.len() - pending.len(),
+        ..CaptureCounts::default()
+    };
+    for (index, turn) in pending.iter().enumerate() {
+        if Instant::now() >= deadline {
+            counts.failed += pending.len() - index;
+            counts.error.get_or_insert_with(|| {
+                anyhow::anyhow!("session capture timed out; re-run import to retry remaining turns")
+            });
+            break;
+        }
+        match capture(turn) {
+            Ok(()) => counts.queued += 1,
+            Err(error) => {
+                counts.failed += 1;
+                counts.error.get_or_insert(error);
+            }
+        }
     }
-    if !pending.is_empty() {
-        log(&format!(
-            "session {} — queued {queued} completed turn(s) for {}; quarantined {rejected}",
-            snapshot.session_id, destination.cluster_name
-        ));
-    }
-    Ok(())
+    counts
 }
 
 fn destination_from_state(agent_state: &super::state::AgentState) -> Result<QueueDestination> {
@@ -335,6 +366,40 @@ mod tests {
         );
         assert!(result.is_err());
         assert!(!marked.get());
+    }
+
+    #[test]
+    fn capture_counts_distinguish_partial_failure_from_already_reported() {
+        let turns = [turn("a", true), turn("b", true), turn("c", true)];
+        let counts = capture_turns(
+            &turns,
+            &HashSet::from(["a".into()]),
+            Instant::now() + REPORT_BUDGET,
+            |turn| {
+                if turn.uuid == "b" {
+                    bail!("disk full");
+                }
+                Ok(())
+            },
+        );
+        assert_eq!(
+            (counts.queued, counts.already_reported, counts.failed),
+            (1, 1, 1)
+        );
+        assert!(counts.error.is_some());
+    }
+
+    #[test]
+    fn capture_deadline_counts_unprocessed_turns_as_failed() {
+        let turns = [turn("a", true), turn("b", true)];
+        let counts = capture_turns(&turns, &HashSet::new(), Instant::now(), |_| {
+            panic!("capture after deadline")
+        });
+        assert_eq!(
+            (counts.queued, counts.already_reported, counts.failed),
+            (0, 0, 2)
+        );
+        assert!(counts.error.is_some());
     }
 
     #[test]

@@ -18,6 +18,8 @@ use super::super::launcher;
 use super::super::model::{LlmCall, SessionSnapshot, ToolCall, Turn};
 use super::super::state;
 
+pub mod history;
+
 pub const INSTALL_VERSION: u32 = 2;
 pub const SPEC: AgentSpec = AgentSpec {
     id: "codex",
@@ -395,6 +397,14 @@ fn apply_event(
         _ => return None,
     }
 
+    completed_turn(pending, &payload.session_id, &payload.turn_id).map(|turn| SessionSnapshot {
+        session_id: payload.session_id.clone(),
+        title: None,
+        turns: vec![turn],
+    })
+}
+
+fn completed_turn(pending: &PendingTurn, session_id: &str, turn_id: &str) -> Option<Turn> {
     let (prompt, response, model, started_at, ended_at) = (
         pending.prompt.clone()?,
         pending.response.clone()?,
@@ -411,7 +421,7 @@ fn apply_event(
         return None;
     }
     let usage = usage_delta(pending.usage_at_start, pending.usage_at_end);
-    let call_id = format!("{}:{}:llm", payload.session_id, payload.turn_id);
+    let call_id = format!("{session_id}:{turn_id}:llm");
     let tool_calls = pending
         .tool_calls
         .iter()
@@ -435,29 +445,25 @@ fn apply_event(
             timestamp_quality: CodingAgentTimestampQuality::Receipt,
         })
         .collect();
-    Some(SessionSnapshot {
-        session_id: payload.session_id.clone(),
-        title: None,
-        turns: vec![Turn {
-            uuid: payload.turn_id.clone(),
-            prompt,
-            response: Some(response),
+    Some(Turn {
+        uuid: turn_id.to_string(),
+        prompt,
+        response: Some(response),
+        started_at,
+        ended_at,
+        calls: vec![LlmCall {
+            uuid: call_id,
+            provider: provider_for(&model).to_string(),
+            model,
+            input_tokens: usage.input,
+            output_tokens: usage.output,
+            cache_read_tokens: usage.cache_read,
+            cache_creation_tokens: 0,
+            accounting: None,
             started_at,
             ended_at,
-            calls: vec![LlmCall {
-                uuid: call_id,
-                provider: provider_for(&model).to_string(),
-                model,
-                input_tokens: usage.input,
-                output_tokens: usage.output,
-                cache_read_tokens: usage.cache_read,
-                cache_creation_tokens: 0,
-                accounting: None,
-                started_at,
-                ended_at,
-            }],
-            tool_calls,
         }],
+        tool_calls,
     })
 }
 
@@ -576,7 +582,10 @@ fn parse_token_usage_lines(content: &str) -> Option<TokenUsage> {
 }
 
 fn token_usage_line(line: &str) -> Option<TokenUsage> {
-    let entry: Value = serde_json::from_str(line).ok()?;
+    token_usage(&serde_json::from_str(line).ok()?)
+}
+
+fn token_usage(entry: &Value) -> Option<TokenUsage> {
     if entry["type"] != "event_msg" || entry["payload"]["type"] != "token_count" {
         return None;
     }
