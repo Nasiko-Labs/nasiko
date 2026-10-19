@@ -191,12 +191,22 @@ pub fn snapshot(raw: &str, report_deadline: Instant) -> Result<SessionSnapshot> 
                 payload.transcript_path.display()
             )
         })?;
-        let turns = turns_from_lines(&content);
+        let mut turns = turns_from_lines(&content);
         if turns
             .last()
             .is_some_and(|turn| !turn.is_empty() && turn.response.is_some())
             || Instant::now() >= wait_deadline
         {
+            for path in subagent_transcripts(&payload.transcript_path)? {
+                let content = std::fs::read_to_string(&path)
+                    .with_context(|| format!("failed to read transcript {}", path.display()))?;
+                let agent_id = path.file_stem().unwrap().to_string_lossy();
+                for mut turn in transcript_turns(&content, true) {
+                    // A resumed subagent can add turns; keep each native turn's identity.
+                    turn.uuid = format!("subagent:{agent_id}:{}", turn.uuid);
+                    turns.push(turn);
+                }
+            }
             return Ok(SessionSnapshot {
                 title: session_title(&content, &payload.session_id),
                 session_id: payload.session_id,
@@ -205,6 +215,30 @@ pub fn snapshot(raw: &str, report_deadline: Instant) -> Result<SessionSnapshot> 
         }
         std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+fn subagent_transcripts(transcript: &Path) -> Result<Vec<PathBuf>> {
+    let dir = transcript.with_extension("").join("subagents");
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to read {}", dir.display()));
+        }
+    };
+    let mut paths = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        if entry.file_type()?.is_file()
+            && path.extension().is_some_and(|ext| ext == "jsonl")
+            && entry.file_name().to_string_lossy().starts_with("agent-")
+        {
+            paths.push(path);
+        }
+    }
+    paths.sort();
+    Ok(paths)
 }
 
 fn preview(raw: &str) -> String {
@@ -234,6 +268,10 @@ fn session_title(content: &str, session_id: &str) -> Option<String> {
 }
 
 fn turns_from_lines(content: &str) -> Vec<Turn> {
+    transcript_turns(content, false)
+}
+
+fn transcript_turns(content: &str, subagent: bool) -> Vec<Turn> {
     let mut turns: Vec<Turn> = Vec::new();
     let mut owners: HashMap<String, usize> = HashMap::new();
     let mut seen: HashSet<String> = HashSet::new();
@@ -246,9 +284,13 @@ fn turns_from_lines(content: &str) -> Vec<Turn> {
     let mut pending_assistants: Vec<PendingAssistant> = Vec::new();
 
     for (line_index, line) in content.lines().enumerate() {
-        let Some(entry) = parse_entry(line) else {
+        let Some(mut entry) = parse_entry(line) else {
             continue;
         };
+        if subagent {
+            // Sidechain responses finish the child turn, not the parent's turn.
+            entry.is_sidechain = false;
+        }
         if matches!(entry.kind.as_str(), "ai-title" | "custom-title") {
             continue;
         }
@@ -960,6 +1002,75 @@ mod tests {
         assert_eq!(snapshot.turns.len(), 1);
         assert_eq!(snapshot.turns[0].uuid, "u");
         assert_eq!(snapshot.turns[0].response.as_deref(), Some("done"));
+    }
+
+    #[test]
+    fn parent_snapshot_includes_subagent_models_and_usage_once() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src/commands/integration/agents/claude/fixtures/parent.jsonl");
+        let raw = json!({"session_id": "parent", "transcript_path": path}).to_string();
+        let first = snapshot(&raw, Instant::now()).unwrap();
+        let second = snapshot(&raw, Instant::now()).unwrap();
+        assert_eq!(first.session_id, "parent");
+        assert_eq!(first.title.as_deref(), Some("Synthetic parent"));
+        assert_eq!(first.turns.len(), 3);
+        assert_eq!(
+            first
+                .turns
+                .iter()
+                .map(|turn| &turn.uuid)
+                .collect::<Vec<_>>(),
+            second
+                .turns
+                .iter()
+                .map(|turn| &turn.uuid)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(first.turns[0].uuid, "u1");
+        assert_eq!(first.turns[1].uuid, "subagent:agent-one:u1");
+        assert_eq!(first.turns[2].uuid, "subagent:agent-two:u1");
+        let calls: Vec<_> = first.turns.iter().flat_map(|turn| &turn.calls).collect();
+        assert_eq!(calls.len(), 4);
+        assert_eq!(calls[1].model, "claude-opus-4-6");
+        assert_eq!(calls[2].model, "claude-opus-4-6");
+        assert_eq!(calls[3].model, "claude-haiku-4-5");
+        assert_eq!(usage_signature(calls[1]), (100, 200, 300, 400));
+        assert_eq!(usage_signature(calls[2]), (105, 205, 305, 405));
+        assert_eq!(usage_signature(calls[3]), (7, 8, 9, 10));
+        assert!(first.turns.iter().all(|turn| turn.response.is_some()));
+    }
+
+    #[test]
+    fn resumed_subagent_keeps_old_turn_ids_and_defers_unfinished_turns() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("parent.jsonl");
+        std::fs::write(&path, include_str!("claude/fixtures/parent.jsonl")).unwrap();
+        let subagents = dir.path().join("parent/subagents");
+        std::fs::create_dir_all(&subagents).unwrap();
+        let child = subagents.join("agent-one.jsonl");
+        let original = include_str!("claude/fixtures/parent/subagents/agent-one.jsonl");
+        let resumed = format!(
+            "{original}{}\n",
+            r#"{"type":"user","uuid":"resumed","sessionId":"parent","agentId":"one","isSidechain":true,"timestamp":"2026-01-02T00:00:00Z","message":{"content":"Synthetic follow-up"}}"#
+        );
+        std::fs::write(&child, &resumed).unwrap();
+        let raw = json!({"session_id": "parent", "transcript_path": path}).to_string();
+        let pending = snapshot(&raw, Instant::now()).unwrap();
+        assert_eq!(pending.turns.len(), 3);
+        assert_eq!(pending.turns[1].uuid, "subagent:agent-one:u1");
+        assert!(pending.turns[1].response.is_some());
+        assert!(pending.turns[2].response.is_none());
+
+        let finished = format!(
+            "{resumed}{}\n",
+            r#"{"type":"assistant","uuid":"resumed-call","parentUuid":"resumed","agentId":"one","isSidechain":true,"timestamp":"2026-01-02T00:00:01Z","message":{"model":"claude-opus-4-6","stop_reason":"end_turn","content":"Synthetic completion","usage":{"input_tokens":1,"output_tokens":2}}}"#
+        );
+        std::fs::write(&child, finished).unwrap();
+        let completed = snapshot(&raw, Instant::now()).unwrap();
+        assert_eq!(completed.turns[1].uuid, pending.turns[1].uuid);
+        assert_eq!(completed.turns[2].uuid, "subagent:agent-one:resumed");
+        assert!(completed.turns[2].response.is_some());
+        assert_eq!(completed.turns[2].calls.len(), 1);
     }
 
     #[test]

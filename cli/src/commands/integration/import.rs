@@ -25,6 +25,7 @@ struct Summary {
     unsupported: usize,
     failed_files: usize,
     replayed: usize,
+    subagents: usize,
     queued: usize,
     already_reported: usize,
     failed_turns: usize,
@@ -54,6 +55,9 @@ pub fn run(options: ImportOptions<'_>) -> Result<()> {
         );
         if summary.replayed > 0 {
             println!("  {} fork replay turn(s) counted once", summary.replayed);
+        }
+        if summary.subagents > 0 {
+            println!("  {} subagent transcript(s) included", summary.subagents);
         }
         if !options.dry_run {
             println!(
@@ -136,23 +140,23 @@ fn import_files(agent: Agent, files: Vec<PathBuf>, options: &ImportOptions<'_>) 
         }
         summary.sessions += 1;
         summary.turns += snapshot.turns.len();
+        if agent == Agent::Claude {
+            summary.subagents += snapshot
+                .turns
+                .iter()
+                .filter_map(|turn| turn.uuid.strip_prefix("subagent:")?.split_once(':'))
+                .map(|(agent_id, _)| agent_id)
+                .collect::<std::collections::HashSet<_>>()
+                .len();
+        }
         if !options.dry_run {
-            let count = snapshot.turns.len();
-            match report::queue_snapshot(agent, &snapshot, Instant::now() + SESSION_BUDGET) {
-                Ok(counts) => {
-                    summary.queued += counts.queued;
-                    summary.already_reported += counts.already_reported;
-                    summary.failed_turns += counts.failed;
-                    if let Some(error) = counts.error {
-                        summary.failed_files += 1;
-                        eprintln!("warning: {}: {error:#}", path.display());
-                    }
-                }
-                Err(error) => {
-                    summary.failed_files += 1;
-                    summary.failed_turns += count;
-                    eprintln!("warning: {}: {error:#}", path.display());
-                }
+            let counts = report::queue_snapshot_chunks(agent, &snapshot, SESSION_BUDGET);
+            summary.queued += counts.queued;
+            summary.already_reported += counts.already_reported;
+            summary.failed_turns += counts.failed;
+            if let Some(error) = counts.error {
+                summary.failed_files += 1;
+                eprintln!("warning: {}: {error:#}", path.display());
             }
         }
     }
@@ -274,7 +278,7 @@ mod tests {
     }
 
     #[test]
-    fn claude_subagent_directories_are_not_walked() {
+    fn claude_discovery_leaves_subagents_to_the_parent_snapshot() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("project/session/subagents")).unwrap();
         for file in [
@@ -289,6 +293,27 @@ mod tests {
         assert_eq!(files, [dir.path().join("project/a.jsonl")]);
         jsonl_files(&dir.path().join("missing"), 1, &mut files).unwrap();
         assert_eq!(files.len(), 1);
+    }
+
+    #[test]
+    fn claude_dry_run_counts_subagents_under_the_parent() {
+        let projects =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/integration/agents/claude");
+        let summary = import_files(
+            Agent::Claude,
+            claude_transcripts(&projects).unwrap(),
+            &ImportOptions {
+                agent_id: "claude",
+                since: None,
+                dry_run: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            (summary.sessions, summary.turns, summary.subagents),
+            (1, 3, 2)
+        );
+        assert_eq!((summary.queued, summary.failed_files), (0, 0));
     }
 
     #[test]
