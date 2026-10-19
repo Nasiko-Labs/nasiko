@@ -302,10 +302,10 @@ mod tests {
     use super::*;
     use crate::config::ClusterEntry;
     use chrono::{TimeZone, Utc};
-    use nasiko_types::CODING_AGENT_BATCH_MAX_BYTES;
     use nasiko_types::{
-        CODING_AGENT_EVENT_VERSION, CapturePolicy, CodingAgentEventV1, CodingAgentSession,
-        CodingAgentSource, CodingAgentTurn, coding_agent_event_id, coding_agent_session_id,
+        CODING_AGENT_BATCH_MAX_BYTES, CODING_AGENT_EVENT_VERSION, CapturePolicy,
+        CodingAgentEventV1, CodingAgentSession, CodingAgentSource, CodingAgentTurn,
+        coding_agent_event_id, coding_agent_session_id,
     };
     use std::collections::HashMap;
 
@@ -580,15 +580,27 @@ mod tests {
         )
     }
 
-    fn accepted_body(event_id: &str) -> String {
-        format!(
-            r#"{{"data":{{"results":[{{"event_id":"{event_id}","status":"accepted"}}]}},"status_code":200,"message":"ok"}}"#
-        )
+    fn accepted_body<'a>(event_ids: impl IntoIterator<Item = &'a String>) -> String {
+        let results: Vec<_> = event_ids
+            .into_iter()
+            .map(|event_id| serde_json::json!({"event_id": event_id, "status": "accepted"}))
+            .collect();
+        serde_json::json!({"data": {"results": results}, "status_code": 200, "message": "ok"})
+            .to_string()
     }
 
     fn sent_event(request: &mockito::Request) -> serde_json::Value {
         let body: serde_json::Value = serde_json::from_slice(request.body().unwrap()).unwrap();
         body["events"][0].clone()
+    }
+
+    fn sent_event_ids(request: &mockito::Request) -> Vec<String> {
+        let body: CodingAgentEventBatchRequest =
+            serde_json::from_slice(request.body().unwrap()).unwrap();
+        body.events
+            .into_iter()
+            .map(|event| event.event_id)
+            .collect()
     }
 
     #[test]
@@ -611,7 +623,7 @@ mod tests {
             })
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(accepted_body(&original.event_id))
+            .with_body(accepted_body([&original.event_id]))
             .expect(1)
             .create();
 
@@ -648,7 +660,7 @@ mod tests {
             .match_request(move |request| !has_tool_content(request))
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(accepted_body(&event_id))
+            .with_body(accepted_body([&event_id]))
             .expect(1)
             .create();
 
@@ -696,6 +708,64 @@ mod tests {
         let rejected = queue::load(&rejected_path).unwrap();
         assert_eq!(rejected.attempts, 0);
         assert!(rejected.last_error.unwrap().contains("HTTP 413"));
+    }
+
+    #[test]
+    fn payload_too_large_splits_the_batch_and_settles_each_half_on_its_own() {
+        let mut server = mockito::Server::new();
+        let dir = tempfile::tempdir().unwrap();
+        let queued: Vec<_> = ["one", "two", "three", "four"]
+            .into_iter()
+            .map(|turn| queued(&dir, record("bound", &server.url(), "s", turn)))
+            .collect();
+        let ids: Vec<_> = queued
+            .iter()
+            .map(|(_, record)| record.event.event_id.clone())
+            .collect();
+        let (left, right) = ids.split_at(2);
+        let sends = |expected: &[String]| {
+            let expected = expected.to_vec();
+            move |request: &mockito::Request| sent_event_ids(request) == expected
+        };
+        let combined = server
+            .mock("POST", "/api/telemetry/coding-agent/events/batch")
+            .match_request(sends(&ids))
+            .with_status(413)
+            .expect(1)
+            .create();
+        let accepted = server
+            .mock("POST", "/api/telemetry/coding-agent/events/batch")
+            .match_request(sends(left))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(accepted_body(left))
+            .expect(1)
+            .create();
+        let unavailable = server
+            .mock("POST", "/api/telemetry/coding-agent/events/batch")
+            .match_request(sends(right))
+            .with_status(503)
+            .expect(1)
+            .create();
+
+        let retry = sync_records(
+            &config("bound", &server.url(), Some(&token(Uuid::nil()))),
+            queued.clone(),
+        )
+        .unwrap();
+        combined.assert();
+        accepted.assert();
+        unavailable.assert();
+        assert!(retry, "the half that failed is retried");
+        assert!(queued[..2].iter().all(|(path, _)| !path.exists()));
+        for (path, _) in &queued[2..] {
+            let retained = queue::load(path).unwrap();
+            assert_eq!(retained.delivery_state, DeliveryState::Deferred);
+            assert_eq!(retained.attempts, 1);
+            assert!(retained.next_attempt_at.is_some());
+            assert!(retained.last_error.unwrap().contains("HTTP 503"));
+        }
+        assert!(!dir.path().join("rejected").exists());
     }
 
     #[test]
