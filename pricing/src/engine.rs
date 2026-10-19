@@ -69,11 +69,13 @@ pub struct PricingEngine {
 }
 
 impl PricingEngine {
-    /// The production engine: the synced price book first, list prices behind it.
+    /// The production engine: the synced price book first, then its newest
+    /// rates for calls older than its history, then list prices.
     pub fn new(db: PgPool) -> Self {
         Self {
             books: vec![
                 Box::new(DbPriceBook::new(db.clone())),
+                Box::new(DbPriceBook::backdated(db.clone())),
                 Box::new(StaticPriceBook),
             ],
             ratios: RwLock::new(None),

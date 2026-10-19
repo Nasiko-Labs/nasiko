@@ -32,6 +32,9 @@ impl PriceRow {
 pub enum BookTier {
     /// Kept current by the pricing sync — a looked-up rate.
     Synced,
+    /// The synced book's newest rate, for a call older than its history — a
+    /// looked-up rate, but not the one recorded for that time.
+    Backdated,
     /// Compiled-in list prices — a reasonable rate, but not a looked-up one.
     Offline,
 }
