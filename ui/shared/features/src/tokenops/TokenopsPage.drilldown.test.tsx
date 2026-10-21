@@ -3,11 +3,13 @@
 // `location()` (search, href, index, length) and `router.navigate({ to, search })` -> `router.navigate(search)`;
 // `recordRequests` from `@/test/pinned-seed`; the drawer-close test waits for the dialog to go (Base UI unmounts
 // it after its exit transition; the lab's synchronous check raced it under load); Prettier formatting.
+// The redesign of TokenOps, Optimization, Overview and Harnesses (legacy ui/ on development, 3aac84f66: 8bf09bf29),
+// merged into this port.
 
 /**
  * TokenOps drill-downs: the month calendar, the day panel (open, close, focus, legend filter) and the traces drawer
- * (day-scoped traces, row names, focus on close), plus closing without a duplicate history entry and the Spend over
- * time disclosure that ?day= forces open.
+ * (day-scoped traces, row names, focus on close), plus closing without a duplicate history entry and a ?day= deep
+ * link.
  */
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -47,54 +49,16 @@ describe("calendar", () => {
   });
 });
 
-describe("TokenOps disclosures forced open by URL state", () => {
-  it("?day= opens Spend over time, a click still collapses it (keeping ?day), and a second click reopens it", async () => {
-    const user = userEvent.setup();
+describe("a day in the URL", () => {
+  it("?day= shows that day under the spend chart with nothing to expand, and every section stays on the page", async () => {
     renderTokenops(`/tokenops?day=${seed.spikeDate}`);
-    const spend = await screen.findByRole("button", { name: /^Spend over time/ });
-    expect(spend).toHaveAttribute("aria-expanded", "true");
-
-    await user.click(spend);
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: /^Spend over time/ })).toHaveAttribute(
-        "aria-expanded",
-        "false",
-      ),
-    );
-    expect(location().search).toMatchObject({ day: seed.spikeDate });
-    expect(location().search).not.toHaveProperty("open");
-
-    await user.click(screen.getByRole("button", { name: /^Spend over time/ }));
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: /^Spend over time/ })).toHaveAttribute(
-        "aria-expanded",
-        "true",
-      ),
-    );
-  });
-
-  // Regression from the /ship adversarial review (2026-09-26): a collapsed disclosure reopens for a new drill-down.
-  it("collapsing Spend over time for one day does not keep it closed for the next day", async () => {
-    const user = userEvent.setup();
-    const other = new Date(Date.parse(`${seed.spikeDate}T00:00:00Z`) - 86_400_000)
-      .toISOString()
-      .slice(0, 10);
-    const { router } = renderTokenops(`/tokenops?day=${seed.spikeDate}`);
-    const spend = await screen.findByRole("button", { name: /^Spend over time/ });
-    await user.click(spend);
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: /^Spend over time/ })).toHaveAttribute(
-        "aria-expanded",
-        "false",
-      ),
-    );
-    router.navigate((prev) => ({ ...prev, day: other }));
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: /^Spend over time/ })).toHaveAttribute(
-        "aria-expanded",
-        "true",
-      ),
-    );
+    const spend = await section(/^Spend over time/);
+    const day = await section(/hour by hour/);
+    // The day panel follows the chart it drills into.
+    expect(spend.compareDocumentPosition(day) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^Spend over time/, expanded: false })).toBeNull();
+    for (const heading of ["Who is driving cost", "This month", "Token optimisation savings"])
+      expect(await screen.findByRole("heading", { name: new RegExp(`^${heading}`) })).toBeVisible();
   });
 });
 

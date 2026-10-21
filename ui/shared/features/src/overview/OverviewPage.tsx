@@ -8,6 +8,8 @@
 // with GenUI's overview view); Prettier formatting.
 // The product tour (legacy ui/ on development, 3aac84f66: dd9fe0f64): the range and summary are tour targets, and
 // the header has its own tour button (no top bar on desktop).
+// The redesign (legacy ui/ on development, 3aac84f66: 8bf09bf29): the summary bento (./components/SummaryCard.tsx)
+// and the twelve-column grid without budgets; the budgets placement is unchanged (budgets are hidden here).
 "use client";
 
 /**
@@ -19,10 +21,10 @@
  * windows and the cards refresh together (design review 8A). Pending requests aren't refetched here: they already
  * refetch on focus (eng review correction).
  * The grids follow the page area's width, not the viewport, because the sidebar changes it (design review 1A). The summary
- * card holds the headline and the KPI tiles: side by side from 1100 px of content (tiles 2×2), stacked below (tiles 2
- * across from 560 px). Below it, from 1100 px, four columns: Spend then Recent
- * sessions on the left three, Needs you, Budgets and Quick actions down the right, then Recent chats beside Fleet health;
- * 2 columns from 700 px, 1 below. DOM order stays the priority order (Needs you first); wide layouts place cards
+ * is a bento: the headline in a lead card beside the KPI tiles (2×2) from 1100 px of content, stacked below (tiles 2
+ * across from 560 px). Below it, from 1100 px, twelve columns: Needs you and Spend each span the row, then Fleet health
+ * beside Recent sessions and Recent chats beside Quick actions; 2 columns from 700 px, 1 below. DOM order stays the
+ * priority order (Needs you first); wide layouts place cards
  * explicitly, so nothing leaves a hole with or without budgets.
  */
 import { TourButton } from "@nasiko/app-core/shell/TopBar";
@@ -150,22 +152,17 @@ const PLACE = {
       "@[1100px]/overview:col-span-2 @[1100px]/overview:col-start-1 @[1100px]/overview:row-start-4",
     actions: "@[1100px]/overview:col-start-4 @[1100px]/overview:row-start-3",
   },
-  // Quick actions takes the budget's place beside Spend, and Recent sessions spans the row.
+  // Redesign 2026-10-13: twelve columns from 1100 px. Needs you and Spend span the row; then Fleet health beside Recent
+  // sessions and Recent chats beside Quick actions, alternating widths. Heights match within a row, so no card
+  // stretches far past its content.
   none: {
-    needs:
-      "@[700px]/overview:col-span-2 @[1100px]/overview:col-span-1 @[1100px]/overview:col-start-4 @[1100px]/overview:row-start-1",
-    spend:
-      "@[700px]/overview:col-span-2 @[1100px]/overview:col-span-3 @[1100px]/overview:col-start-1 @[1100px]/overview:row-start-1 @[1100px]/overview:row-span-2",
+    needs: "@[700px]/overview:col-span-2 @[1100px]/overview:col-span-12",
+    spend: "@[700px]/overview:col-span-2 @[1100px]/overview:col-span-12",
     budget: "",
-    health:
-      "@[700px]/overview:col-span-2 @[1100px]/overview:col-start-3 @[1100px]/overview:row-start-4",
-    sessions:
-      "@[700px]/overview:col-span-2 @[1100px]/overview:col-span-4 @[1100px]/overview:col-start-1 @[1100px]/overview:row-start-3",
-    chats:
-      "@[700px]/overview:col-span-2 @[1100px]/overview:col-start-1 @[1100px]/overview:row-start-4",
-    // Full width at 2 columns, so it doesn't sit alone at half width on the last row.
-    actions:
-      "@[700px]/overview:col-span-2 @[1100px]/overview:col-span-1 @[1100px]/overview:col-start-4 @[1100px]/overview:row-start-2",
+    health: "@[700px]/overview:col-span-2 @[1100px]/overview:col-span-5",
+    sessions: "@[700px]/overview:col-span-2 @[1100px]/overview:col-span-7",
+    chats: "@[700px]/overview:col-span-2 @[1100px]/overview:col-span-7",
+    actions: "@[700px]/overview:col-span-2 @[1100px]/overview:col-span-5",
   },
 } as const;
 
@@ -321,7 +318,7 @@ function Overview({
         fleet={fleet}
         harnesses={harnesses}
       />
-      <div className="grid grid-cols-1 items-stretch gap-3 @[700px]/overview:grid-cols-2 @[1100px]/overview:grid-cols-4">
+      <div className="grid grid-cols-1 items-stretch gap-3 @[700px]/overview:grid-cols-2 @[1100px]/overview:grid-cols-12">
         <NeedsYou
           data={needsYou}
           now={now.getTime()}

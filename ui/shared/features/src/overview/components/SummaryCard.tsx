@@ -3,8 +3,10 @@
 // the React OverviewPage's card as it was (`Card render={<section …/>}`); `FleetHealth` comes from ../fleet.ts;
 // Prettier formatting.
 // The product tour (legacy ui/ on development, 3aac84f66: dd9fe0f64): the summary is a tour target.
+// The bento (legacy ui/ on development, 3aac84f66: 8bf09bf29, then in OverviewPage): the headline in a
+// `SpotlightCard` beside the four tiles, each its own card; `Reveal` is `RevealGroup`.
 import { Badge } from "@nasiko/ui/primitives";
-import { Card } from "@nasiko/ui/primitives";
+import { RevealGroup, RevealItem, SpotlightCard } from "@nasiko/ui/composites";
 import type { OverviewNarrative } from "../../narrative/overview";
 import type { OptimisationView } from "../../tokenops/optimisation";
 import type { HarnessSummary, Spend } from "../api";
@@ -34,29 +36,43 @@ export function SummaryCard({
   harnesses: HarnessSummary;
 }) {
   return (
-    // The summary as one card like TokenOps' SummaryHero: the headline on the left, the KPI tiles 2×2 on the right.
-    <Card
-      render={<section data-tour="overview-summary" aria-labelledby="overview-summary-title" />}
-      className="gap-0 overflow-hidden p-0 @[1100px]/overview:grid @[1100px]/overview:grid-cols-[minmax(0,1fr)_minmax(0,1.25fr)]"
-    >
+    // The summary as a bento, as on TokenOps and Optimization: the headline in the lead card (the page's one effect
+    // area), the four KPI tiles beside it, 2×2.
+    <section data-tour="overview-summary" aria-labelledby="overview-summary-title">
       <h2 id="overview-summary-title" className="sr-only">
         {copy.summary}
       </h2>
-      <div className="flex flex-col justify-center gap-4 p-5">
-        <Badge variant="outline" className="border-primary/30 bg-primary/10 text-primary-text">
-          {copy.range.item(days)}
-        </Badge>
-        <Headline narrative={narrative} nothing={nothing} />
-        <MonthBar spend={spend} />
-        <Savings view={savings.view} isPending={savings.isPending} />
-      </div>
-      {/* The tiles drop their own card chrome here: the hairlines between them are the grid's gap. */}
-      <div className="grid grid-cols-1 gap-px border-t border-border bg-border *:rounded-none *:border-0 @[560px]/overview:grid-cols-2 @[1100px]/overview:border-t-0 @[1100px]/overview:border-l">
-        <SpendTile spend={spend} />
-        <RunsTile spend={spend} />
-        <AgentsTile fleet={fleet} />
-        <Harnesses data={harnesses} days={days} />
-      </div>
-    </Card>
+      <RevealGroup className="grid gap-3 @[1100px]/overview:grid-cols-12">
+        <RevealItem className="@[1100px]/overview:col-span-6">
+          <SpotlightCard className="h-full">
+            <div className="relative flex flex-1 flex-col justify-center gap-4 p-5">
+              <Badge
+                variant="outline"
+                className="border-primary/30 bg-primary/10 text-primary-text"
+              >
+                {copy.range.item(days)}
+              </Badge>
+              <Headline narrative={narrative} nothing={nothing} />
+              <MonthBar spend={spend} />
+              <Savings view={savings.view} isPending={savings.isPending} />
+            </div>
+          </SpotlightCard>
+        </RevealItem>
+        <div className="grid grid-cols-1 gap-3 @[560px]/overview:grid-cols-2 @[1100px]/overview:col-span-6">
+          <RevealItem className="flex *:flex-1">
+            <SpendTile spend={spend} />
+          </RevealItem>
+          <RevealItem className="flex *:flex-1">
+            <RunsTile spend={spend} />
+          </RevealItem>
+          <RevealItem className="flex *:flex-1">
+            <AgentsTile fleet={fleet} />
+          </RevealItem>
+          <RevealItem className="flex *:flex-1">
+            <Harnesses data={harnesses} days={days} />
+          </RevealItem>
+        </div>
+      </RevealGroup>
+    </section>
   );
 }

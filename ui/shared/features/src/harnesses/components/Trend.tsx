@@ -1,6 +1,8 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/harnesses/components/Trend.tsx. Local edits: the ToggleGroup
 // is value-array based (`value={[mode]}`, an emptied pick ignored as the lab's `v &&`); the lab's shared `EmptyState`
 // is `LabEmptyState`; optional props typed `| undefined`; Prettier formatting.
+// The redesign of TokenOps, Optimization, Overview and Harnesses (legacy ui/ on development, 3aac84f66: 8bf09bf29),
+// merged into this port.
 /**
  * Trend (plan §6): active developers per harness per day, with an Est. cost toggle. On the visx
  * chart kit (src/components/charts): lines sweep in, at rest under reduced motion.
@@ -91,6 +93,8 @@ export function Trend({
       title={mode === "active" ? "Active developers per harness" : "Estimated cost per harness"}
       subtitle={partialHidden ? "Daily (UTC), through yesterday" : "Daily (UTC)"}
       labelledBy="trend-title"
+      // Fills its grid cell: beside a taller list the chart grows, so the two cards end on one line.
+      className="h-full"
       actions={
         <ToggleGroup
           variant="outline"
@@ -126,7 +130,7 @@ export function Trend({
           <p className="sr-only">
             {harnesses.map((h) => `${harnessStyle(h).name}: ${last(h)}`).join(". ")}.
           </p>
-          <div className="h-60 w-full" aria-hidden>
+          <div className="min-h-60 w-full flex-1" aria-hidden>
             <ChartDateFormat value={utcDay}>
               <LineChart
                 data={data}

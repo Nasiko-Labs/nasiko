@@ -3,6 +3,8 @@
 // `@/lib/api/schema.gen` `ProviderCatalog` + `ModelEntry`, as shared/mocks/src/types.ts does), since the generated
 // OpenAPI types are not an export of the private Weave transport; `WireSubset`-typed optional fields admit `undefined`
 // (exactOptionalPropertyTypes); Prettier formatting.
+// The redesign of TokenOps, Optimization, Overview and Harnesses (legacy ui/ on development, 3aac84f66: 8bf09bf29),
+// merged into this port.
 /**
  * Finops wire types, hand-written from the Rust structs in
  * nasiko-cloud-rs @ cb3aaf0c, `oss/server/src/observability/service.rs`
@@ -298,6 +300,13 @@ const workflowRow = z.looseObject({
 export const finopsDashboardSchema = z.looseObject({
   summary: z.looseObject({ total_cost: num, total_agents: num, unpriced_calls: num }),
   agents: z.array(agentRow),
+  token_usage: z.looseObject({
+    prompt_tokens: num,
+    completion_tokens: num,
+    cache_read_tokens: num,
+    cache_creation_tokens: num,
+    avg_tokens_per_operation: num,
+  }),
   kpis: z.looseObject({
     total_spend: kpi,
     total_tokens: kpi,

@@ -1,6 +1,7 @@
 // Ported from the legacy ui/ on development (3aac84f66) common/src/features/tour/tours.ts (dd9fe0f64). Local edits:
 // `TourStep` from @nasiko/app-core/tour; Prettier formatting; the app tour follows this sidebar (no TokenOps group);
 // the overview tour is development's for the Overview page (no Home rows or scope).
+// The TokenOps tour follows its one-page redesign (8bf09bf29).
 /**
  * Every tour's steps. A step with a `target` points at `[data-tour~="<target>"]` and is shown only while that element
  * is on screen when the tour opens, so one tour serves a page's states (empty, member, phone) by dropping the steps
@@ -446,7 +447,7 @@ export const TOURS: Record<TourId, readonly TourStep[]> = {
       target: "tokenops-sections",
       side: "top",
       title: "Dig in",
-      body: "Open a section: spend over time, savings, who drives cost, this month, or every metric.",
+      body: "Every section is on the page: spend and this month, who drives cost, and savings. The bar above jumps between them.",
     },
   ],
 

@@ -1,6 +1,8 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/overview/components/RecentSessions.tsx. Local edits: the lab's `EmptyState` (shared/state-card) is `LabEmptyState`; `"use
 // client"`; TanStack `Link` -> the navigation port's `Link` (`@nasiko/app-core/navigation`) (`/sessions/<id>?preset=7d` through `pageHref`); `Button asChild` + `Link`
 // -> `ButtonLink`; the lab's `ApiError` is `ProductApiError`; optional props admit `undefined`; Prettier formatting.
+// The redesign of TokenOps, Optimization, Overview and Harnesses (legacy ui/ on development, 3aac84f66: 8bf09bf29),
+// merged into this port.
 "use client";
 
 /**
@@ -123,7 +125,7 @@ export function RecentSessions({
               const cost = sessionCost(s);
               return (
                 <TableRow key={s.session_id} data-testid="recent-session">
-                  <TableCell className="h-8 px-0 pointer-coarse:h-11">
+                  <TableCell className="h-11 px-0">
                     <mark.Icon
                       className={`size-4 ${mark.tone}`}
                       role="img"

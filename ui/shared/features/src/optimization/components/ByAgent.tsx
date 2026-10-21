@@ -1,5 +1,7 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/optimization/components/ByAgent.tsx. Local edits: none
 // beyond imports and Prettier.
+// The redesign of TokenOps, Optimization, Overview and Harnesses (legacy ui/ on development, 3aac84f66: 8bf09bf29),
+// merged into this port.
 /**
  * By agent (plans/feat-optimization-page.md R1C, R4A, R6A, R7A, R7B; eng E1): each agent's history tokens over the
  * window, history volume first, top 6 with "Show all N". Column headers re-sort (`?sort=`, replacing history). The
@@ -24,6 +26,7 @@ import {
   TableRow,
 } from "@nasiko/ui/primitives";
 import { AgentLink } from "../../agents/components/AgentLink";
+import { seriesAt } from "@nasiko/ui/lib";
 import { cn } from "@nasiko/ui/cn";
 import type { Proposed } from "../api";
 import { sortAgents, TOP_AGENTS } from "../breakdown";
@@ -33,6 +36,9 @@ import { pctOf, savedOf, savedShare, tokensShort } from "../lead";
 import type { SavingsAgent } from "../types";
 import { Outline } from "./Outline";
 import { Without } from "./Without";
+
+/** The trend chart's Saved colour, so the share reads as the same thing. */
+const SAVED = seriesAt(1);
 
 const ROW =
   "text-sm hover:bg-transparent @max-3xl:grid @max-3xl:gap-0.5 @max-3xl:px-4 @max-3xl:py-2.5";
@@ -157,7 +163,14 @@ export function ByAgent({
                   <TableCell
                     className={cn(CELL, NUM, "@max-3xl:text-xs @max-3xl:text-muted-foreground")}
                   >
-                    <span className="@max-3xl:hidden">
+                    <span className="inline-flex items-center justify-end gap-2 @max-3xl:hidden">
+                      {/* The saved share as a bar too; the figure beside it carries the value. */}
+                      <span aria-hidden className="h-1.5 w-14 rounded-full bg-muted">
+                        <span
+                          className="block h-full rounded-full"
+                          style={{ width: `${saved > 0 ? pct : 0}%`, backgroundColor: SAVED.edge }}
+                        />
+                      </span>
                       {saved > 0 ? `~${tokensShort(saved)} · ${pct}%` : "0"}
                     </span>
                     <span className="@3xl:hidden">

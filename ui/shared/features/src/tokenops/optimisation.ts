@@ -1,4 +1,6 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/tokenops/optimisation.ts. Local edits: an unnecessary type assertion dropped (lint); Prettier formatting.
+// The redesign of TokenOps, Optimization, Overview and Harnesses (legacy ui/ on development, 3aac84f66: 8bf09bf29),
+// merged into this port.
 /**
  * Token optimisation section: a pure summary of the savings payload.
  *
@@ -98,7 +100,10 @@ export function summarizeOptimisation(s: SavingsData) {
     sessions: sessionRows(s),
     categories: categoryRows(s),
     tokensBefore: s.total.baseline_tokens,
+    tokensActual: s.total.actual_tokens,
     tokensSaved: s.total.saved_tokens,
+    costBefore: s.total.baseline_cost_usd,
+    costActual: s.total.actual_cost_usd,
     /** Server-computed. Null when nothing was billed in the window. */
     savedPct: s.total.token_reduction_pct,
     costSaved: s.total.saved_cost_usd,

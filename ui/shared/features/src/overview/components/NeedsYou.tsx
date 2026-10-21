@@ -3,6 +3,8 @@
 // `chatHref(id)`, `/agents/<id>`, and `pageHref` for the router's budgets hash and the Sessions filter); the request
 // row's `state={{ waitingRequest }}` (the navigation port's links carry no state) is chat/waitingNav.ts `openFromWaiting(sessionId,
 // requestId)` on click, as Chat's own Waiting rows do; optional props admit `undefined`; Prettier formatting.
+// The redesign of TokenOps, Optimization, Overview and Harnesses (legacy ui/ on development, 3aac84f66: 8bf09bf29),
+// merged into this port.
 "use client";
 
 /**
@@ -149,9 +151,17 @@ export function NeedsYou({
             // Five rows show; the list scrolls inside the card after that (design review 2A).
             // Taller on touch, where row actions are 44 px (/ship review): five rows still fit without clipping.
             <ScrollArea className="[&>[data-slot=scroll-area-viewport]]:max-h-70 pointer-coarse:[&>[data-slot=scroll-area-viewport]]:max-h-84 [&>[data-slot=scroll-area-viewport]>div]:block!">
-              <ul className="divide-y divide-border pr-2.5" aria-label={copy.needs.title}>
+              {/* Full width on the Overview: from 900 px of card the rows are tiles three across, so a short list never
+                  leaves the card's lower half empty. Narrower they are hairline rows. */}
+              <ul
+                className="grid grid-cols-1 gap-x-3 pr-2.5 @[900px]/card:grid-cols-3 @[900px]/card:gap-y-3"
+                aria-label={copy.needs.title}
+              >
                 {needs.rows.map((r) => (
-                  <li key={r.key}>
+                  <li
+                    key={r.key}
+                    className="border-t border-border first:border-t-0 @[900px]/card:rounded-lg @[900px]/card:border @[900px]/card:bg-muted/20 @[900px]/card:px-3 @[900px]/card:first:border-t"
+                  >
                     <Row
                       row={r}
                       now={now}

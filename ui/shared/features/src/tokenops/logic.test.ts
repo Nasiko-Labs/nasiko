@@ -2,9 +2,18 @@
 // `@/lib/format` -> `@nasiko/ui/lib`, `safeRedirect` from `@nasiko/data-access/product`; the `readEnv` cases read
 // the `VITE_*` names of the ported lib/env.ts, and the one about Vite's selective mocks is dropped (noted in
 // place); Prettier formatting.
+// The redesign of TokenOps, Optimization, Overview and Harnesses (legacy ui/ on development, 3aac84f66: 8bf09bf29),
+// merged into this port.
 /* eslint-disable @typescript-eslint/unbound-method -- the lab's test code: the seed's shape and the DOM it asserts on are what the test checks */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { buildAttribution, searchRows, sortRows, type AttributionRow } from "./attribution";
+import {
+  buildAttribution,
+  cacheShare,
+  concentrationSlices,
+  searchRows,
+  sortRows,
+  type AttributionRow,
+} from "./attribution";
 import { dedupeCatalog } from "./catalog";
 import { buildConcentration, OTHERS_KEY, segmentAt } from "./concentration";
 import { csvCell, downloadCsv, toCsv } from "./csv";
@@ -957,5 +966,41 @@ describe("summarizeOptimisation", () => {
     });
     expect(isUnconfigured(summarizeOptimisation(empty))).toBe(true);
     expect(isUnconfigured(summarizeOptimisation(savings()))).toBe(false);
+  });
+});
+
+describe("redesign rules (cache share, concentration, big deltas)", () => {
+  it("cache share never exceeds 100%: cached input counted apart from prompt is added back", () => {
+    // OpenAI style: prompt includes the cached tokens.
+    expect(cacheShare(1000, 250)).toBe(25);
+    // Anthropic style: 2 uncached + 1.31M cached printed 6550732.8% before.
+    expect(cacheShare(20, 1_310_000)).toBeCloseTo(99.998, 2);
+    expect(cacheShare(0, 0)).toBeNull();
+  });
+
+  it("concentration: top five by spend, the rest as one Other slice, shares summing to 100", () => {
+    const row = (id: string, cost: number) => ({ id, name: id, cost }) as AttributionRow;
+    const slices = concentrationSlices([
+      row("a", 50),
+      row("b", 20),
+      row("c", 10),
+      row("d", 8),
+      row("e", 6),
+      row("f", 4),
+      row("g", 2),
+      row("z", 0),
+    ]);
+    expect(slices.map((s) => s.name)).toEqual(["a", "b", "c", "d", "e", "Other (2)"]);
+    expect(slices.reduce((t, s) => t + s.pct, 0)).toBeCloseTo(100);
+    expect(concentrationSlices([row("a", 0)])).toEqual([]);
+  });
+
+  it("a change of 1000% or more reads as a multiple, not a seven-digit percentage", () => {
+    expect(describeDelta(676918.2, POLARITY.spend)).toMatchObject({
+      text: "6,770×",
+      arrow: "▲",
+      tone: "bad",
+    });
+    expect(describeDelta(999, POLARITY.spend).text).toBe("+999.0%");
   });
 });

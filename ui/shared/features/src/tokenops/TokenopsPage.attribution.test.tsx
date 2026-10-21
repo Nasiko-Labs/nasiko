@@ -1,6 +1,8 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/tokenops/TokenopsPage.attribution.test.tsx. Local edits: `renderApp` -> `renderTokenops`,
 // `router.state.location` -> `location()`; `server` from `@/test/pinned-seed`;
 // Prettier formatting.
+// The redesign of TokenOps, Optimization, Overview and Harnesses (legacy ui/ on development, 3aac84f66: 8bf09bf29),
+// merged into this port.
 /* eslint-disable @typescript-eslint/unbound-method -- the lab's test code: the seed's shape and the DOM it asserts on are what the test checks */
 /**
  * TokenOps attribution (F3) and cost vs performance (F5): search, CSV export, sort and the Workflows toggle, row and
@@ -65,6 +67,10 @@ describe("attribution", () => {
       await user.click(within(attribution).getByRole("button", { name: /CSV/ }));
       const lines = (await blob!.text()).split("\r\n");
       expect(lines[0]).toMatch(/^"Agent","Spend \(USD\)","Share \(%\)",.*"Container hours"$/);
+      // The table shows the top 10 until Show all; the CSV always has every visible row.
+      const capped = within(within(attribution).getByRole("table")).getAllByRole("row");
+      expect(capped).toHaveLength(11);
+      await user.click(within(attribution).getByRole("button", { name: /^Show all \d+$/ }));
       const rows = within(within(attribution).getByRole("table")).getAllByRole("row");
       expect(lines).toHaveLength(rows.length);
 

@@ -7,6 +7,10 @@
 // reads to decide Back-vs-replace on close — the lab's `__TSR_index`; `location()` is the lab's
 // `router.state.location` (search parsed like the lab's router: `true`/`false` and numbers as values);
 // `MotionConfig`/`LazyMotion`/`LayoutGroup` dropped (the motion runtime is foundation-only); Prettier formatting.
+// The redesign (legacy ui/ on development, 3aac84f66: 8bf09bf29): the page renders under the app's `MotionProvider`
+// again (its sections enter through `m` variants).
+// It also draws the shell's top bar (`ShellTopBar` under a `SidebarProvider`), where the page now puts its presets
+// and drill path.
 import type { QueryClient } from "@tanstack/react-query";
 import { createProductQueryClient, ProductQueryProvider } from "@nasiko/data-access/product";
 import { NavigationContext } from "@nasiko/app-core/navigation";
@@ -15,6 +19,9 @@ import { vi, type Mock } from "vitest";
 import { TokenopsRoutePage } from "./TokenopsRoute";
 import { HISTORY_INDEX_KEY } from "@nasiko/app-core/url-state";
 import { renderWithRouter, routerState } from "@nasiko/testing/router";
+import { MotionProvider } from "@nasiko/ui/motion";
+import { SidebarProvider } from "@nasiko/ui/primitives";
+import { ShellTopBar } from "@nasiko/app-core/shell/TopBar";
 
 /** The mock principal's scope (server/identity/mock-delegation.ts: workspace `local`, epoch 0). */
 export const MOCK_SCOPE = { workspaceId: "local", epoch: 0 } as const;
@@ -112,6 +119,9 @@ function Stamping({ children, expose }: { children: ReactNode; expose: (r: TestR
   );
 }
 
+/** The sidebar item the shell's breadcrumb names (app-core/shell/nav.ts). */
+const TOKENOPS_ITEM = { to: "/tokenops", label: "TokenOps", group: "observe" };
+
 export interface RenderedTokenops {
   router: TestRouter;
   queryClient: QueryClient;
@@ -130,9 +140,18 @@ export function renderTokenops(url: string): RenderedTokenops {
   };
   renderWithRouter(
     <Stamping expose={expose}>
-      <ProductQueryProvider scope={MOCK_SCOPE} queryClient={queryClient}>
-        <TokenopsRoutePage />
-      </ProductQueryProvider>
+      {/* The page's entrance (8bf09bf29) is `m` variants: without the app's LazyMotion they would stay at their
+          hidden start (animations are instant in tests, ../../../testing/src/setup.ts). */}
+      <MotionProvider scope="app" features="max">
+        {/* The shell's top bar: the page puts its time presets and drill path there (e8379db5a, c721a11a8). */}
+        <SidebarProvider>
+          <ShellTopBar item={TOKENOPS_ITEM} pathname="/tokenops">
+            <ProductQueryProvider scope={MOCK_SCOPE} queryClient={queryClient}>
+              <TokenopsRoutePage />
+            </ProductQueryProvider>
+          </ShellTopBar>
+        </SidebarProvider>
+      </MotionProvider>
     </Stamping>,
     { url },
   );

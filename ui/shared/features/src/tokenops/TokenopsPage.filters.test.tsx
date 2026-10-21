@@ -1,9 +1,12 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/tokenops/TokenopsPage.filters.test.tsx. Local edits: `renderApp` -> `renderTokenops`, `router.state.location` /
 // `router.history.length` -> `location()`; the chips are the Base UI Select (same roles; its
 // options appear a tick after the click, so `optionNames` awaits them and the chosen value is read in `waitFor`); Prettier formatting.
+// The redesign of TokenOps, Optimization, Overview and Harnesses (legacy ui/ on development, 3aac84f66: 8bf09bf29),
+// merged into this port.
+// The top bar (e8379db5a, c721a11a8): the drill path is the shell's Breadcrumb, cleared from its TokenOps level.
 
 /**
- * TokenOps filters: the provider, model and agent chips (Radix Select), the KPI "More metrics" toggle, and the
+ * TokenOps filters: the provider, model and agent chips (Radix Select), the always-visible metrics, and the
  * breadcrumb and chips that clear a drill-down. (jsdom's missing pointer-capture and scrolling APIs, which Radix
  * Select calls, are stubbed in src/test/setup.ts.)
  */
@@ -94,37 +97,34 @@ describe("filter chips (Radix Select)", () => {
 });
 
 describe("drill-down chips and metrics", () => {
-  it('KPI "More metrics" toggles (replace), breadcrumb and filter chips clear the drill-down', async () => {
+  it("every metric is on the page at once; breadcrumb and filter chips clear the drill-down", async () => {
     const user = userEvent.setup();
     renderTokenops(`/tokenops?open=all&day=${seed.spikeDate}&agent=${liveAgent.id}`);
     const kpis = await screen.findByLabelText(/^Key metrics/);
-    const depth = location().length;
-    await user.click(within(kpis).getByRole("button", { name: /More metrics/ }));
-    expect(within(kpis).getByText("Active agents")).toBeInTheDocument();
-    await waitFor(() => {
-      expect(location().search).toMatchObject({ more: true });
-    });
-    expect(location().length).toBe(depth);
-    await user.click(within(kpis).getByRole("button", { name: /Fewer metrics/ }));
-    expect(within(kpis).queryByText("Active agents")).toBeNull();
+    // No "More metrics" expander any more: the six tiles and the four secondary figures always show.
+    for (const label of ["Total spend", "Operations", "p95 latency", "Active agents"])
+      expect(within(kpis).getByText(label)).toBeInTheDocument();
+    const more = screen.getByLabelText(/^More metrics/);
+    for (const label of ["Tokens", "Tool calls", "p50 latency", "p99 latency"])
+      expect(within(more).getByText(label)).toBeInTheDocument();
 
-    const crumbs = screen.getByRole("navigation", { name: "Drill-down" });
-    expect(within(crumbs).getByText(liveAgent.display_name)).toHaveAttribute(
+    // The drill path is the top bar's breadcrumb: TokenOps › day › agent.
+    const crumbs = () => screen.getByRole("navigation", { name: "Breadcrumb" });
+    expect(within(crumbs()).getByText(liveAgent.display_name)).toHaveAttribute(
       "aria-current",
-      "location",
+      "page",
     );
     await user.click(screen.getByRole("button", { name: "Remove agent filter" }));
     await waitFor(() => {
       expect(location().search).not.toHaveProperty("agent");
     });
-    await user.click(
-      within(screen.getByRole("navigation", { name: "Drill-down" })).getByRole("button", {
-        name: "Last 30 days",
-      }),
-    );
+    await user.click(within(crumbs()).getByRole("button", { name: "TokenOps" }));
     await waitFor(() => {
       expect(location().search).not.toHaveProperty("day");
     });
-    expect(screen.queryByRole("navigation", { name: "Drill-down" })).toBeNull();
+    // Undrilled, the shell's breadcrumb is back: TokenOps is the current page, not a button.
+    expect(within(crumbs()).queryByRole("button", { name: "TokenOps" })).toBeNull();
+    // The window stays (30 days, the default, which `useSearchState` leaves out of the URL).
+    expect(location().search).not.toHaveProperty("preset");
   });
 });

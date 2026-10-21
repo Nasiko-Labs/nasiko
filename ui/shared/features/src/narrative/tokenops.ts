@@ -1,4 +1,6 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/narrative/tokenops.ts. Local edits: `@/lib/format` -> `@nasiko/ui/lib`; the optional input fields admit `undefined` (exactOptionalPropertyTypes); Prettier formatting.
+// The redesign of TokenOps, Optimization, Overview and Harnesses (legacy ui/ on development, 3aac84f66: 8bf09bf29),
+// merged into this port.
 /**
  * TokenOps executive summary: at most 3 sentences (plan: design P6 + DX precedence).
  *   1. Spend and change ("at least" when calls are unpriced; the change clause is left
@@ -51,8 +53,13 @@ export function findSpike(days: { date: string; spend: number }[]): Spike | null
   return factor > SPIKE_FACTOR ? { date: peak.date, spend: peak.spend, factor } : null;
 }
 
+/** "4.2×", "37×", or "over 100×": past that the multiple says nothing a reader can use. */
+export function fmtFactor(f: number): string {
+  return f >= 100 ? "over 100×" : f >= 10 ? `${Math.round(f)}×` : `${f.toFixed(1)}×`;
+}
+
 export function spikeSentence(s: Spike): string {
-  return `Spend peaked on ${fmtShortDay(s.date)} at ${fmtMoney(s.spend)} (${s.factor.toFixed(1)}× a typical day)`;
+  return `Spend peaked on ${fmtShortDay(s.date)} at ${fmtMoney(s.spend)} (${fmtFactor(s.factor)} a typical day)`;
 }
 
 export function tokenopsNarrative(i: TokenopsNarrativeInput): TokenopsNarrative {
@@ -66,10 +73,13 @@ export function tokenopsNarrative(i: TokenopsNarrativeInput): TokenopsNarrative 
     if (i.previous === 0) change = i.total > 0 ? ", all of it new this period" : "";
     else {
       const pct = Math.round(((i.total - i.previous) / i.previous) * 100);
+      // Past +1000% a percentage stops reading as a quantity ("4242% more"); a multiple doesn't.
       change =
         pct === 0
           ? ", about the same as the period before"
-          : `, ${Math.abs(pct)}% ${pct > 0 ? "more" : "less"} than the period before`;
+          : pct >= 1000
+            ? `, ${Math.round(i.total / i.previous).toLocaleString("en-US")}× as much as the period before`
+            : `, ${Math.abs(pct)}% ${pct > 0 ? "more" : "less"} than the period before`;
     }
   }
   const sentences = [`${when} ${who} ${amount}${change}.`];

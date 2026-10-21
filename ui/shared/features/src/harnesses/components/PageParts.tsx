@@ -1,6 +1,8 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/harnesses/components/PageParts.tsx. Local edits: optional
 // props typed `| undefined`; the split sentence's `@eslint-react/no-array-index-key` disable is a plain comment (no
 // such rule here); Prettier formatting.
+// The bento (legacy ui/ on development, 3aac84f66: 8bf09bf29): `Reveal` is `RevealGroup` (@nasiko/ui/composites),
+// `Card asChild` -> `render`.
 /**
  * The Harnesses page's building blocks (plan §6), shared by the OSS page and the EE layer's org page: the header, the
  * summary, the Individual level in its full form (usage endpoint) and its degraded form (live fallback).
@@ -18,6 +20,7 @@ import { PageHeader } from "@nasiko/ui/composites";
 import { PageLoader } from "@nasiko/ui/composites";
 import { StateCard } from "@nasiko/ui/composites";
 import { TimeControl } from "@nasiko/ui/composites";
+import { RevealGroup, RevealItem, SpotlightCard } from "@nasiko/ui/composites";
 import { copy } from "../copy";
 import { LIVE_SESSION_LIMIT, RECENT_SESSIONS_SHOWN } from "../constants";
 import { panelItems, preview, serverOrigin, type SetSearch } from "../level";
@@ -67,8 +70,8 @@ function Summary({ sentences, callout }: { sentences: string[]; callout: string 
   );
 }
 
-/** The summary as one card like TokenOps' SummaryHero: the window badge and narrative on the left, daily activity
- *  and top models on the right. Every full-form level uses it (Individual here, the EE org levels). */
+/** The summary as a bento: the window badge and narrative in the lead card on the left, daily activity and top
+ *  models in a card on the right. Every full-form level uses it (Individual here, the EE org levels). */
 export function SummaryCard({
   windowLabel,
   compare,
@@ -85,32 +88,37 @@ export function SummaryCard({
   days: string[];
 }) {
   return (
-    <Card
-      data-tour="harnesses-summary"
-      className="gap-0 overflow-hidden p-0 lg:grid lg:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)]"
-    >
-      <div className="flex flex-col gap-4 p-5">
-        <Badge variant="outline" className="border-primary/30 bg-primary/10 text-primary-text">
-          <span>{windowLabel}</span>
-          <span aria-hidden>·</span>
-          <span>{compare ? "vs the period before" : "Compare is off"}</span>
-        </Badge>
-        <Summary sentences={sentences} callout={callout} />
-      </div>
-      <section
-        aria-labelledby="activity-title"
-        className="flex min-w-0 flex-col gap-3 border-t border-border p-5 lg:border-t-0 lg:border-l"
-      >
-        <div>
-          <h2 id="activity-title" className="text-sm font-semibold">
-            Daily activity
-          </h2>
-          <p className="text-xs text-muted-foreground">Active days (UTC), shaded by est. cost</p>
-        </div>
-        <ActivityStrip series={res.series} days={days} />
-        <TopModels byHarness={res.by_harness} />
-      </section>
-    </Card>
+    // A bento, as on TokenOps, Optimization and the Overview: the narrative in the lead card (the page's one effect
+    // area), daily activity and top models in their own card beside it.
+    <RevealGroup data-tour="harnesses-summary" className="grid gap-3 lg:grid-cols-12">
+      <RevealItem className="lg:col-span-7">
+        <SpotlightCard className="h-full">
+          <div className="relative flex flex-1 flex-col gap-4 p-5">
+            <Badge variant="outline" className="border-primary/30 bg-primary/10 text-primary-text">
+              <span>{windowLabel}</span>
+              <span aria-hidden>·</span>
+              <span>{compare ? "vs the period before" : "Compare is off"}</span>
+            </Badge>
+            <Summary sentences={sentences} callout={callout} />
+          </div>
+        </SpotlightCard>
+      </RevealItem>
+      <RevealItem className="lg:col-span-5">
+        <Card
+          render={<section aria-labelledby="activity-title" />}
+          className="h-full min-w-0 gap-3 p-5"
+        >
+          <div>
+            <h2 id="activity-title" className="text-sm font-semibold">
+              Daily activity
+            </h2>
+            <p className="text-xs text-muted-foreground">Active days (UTC), shaded by est. cost</p>
+          </div>
+          <ActivityStrip series={res.series} days={days} />
+          <TopModels byHarness={res.by_harness} />
+        </Card>
+      </RevealItem>
+    </RevealGroup>
   );
 }
 
@@ -361,7 +369,7 @@ export function LiveFallbackLevel({
   );
 }
 
-/** The Individual level in full (usage endpoint): a summary card (narrative, daily strip + top models), cards, recent sessions, trend, connect help. */
+/** The Individual level in full (usage endpoint): the summary bento (narrative, daily strip + top models), cards, recent sessions beside the trend, connect help. */
 export function UserLevel({
   res,
   self,
@@ -417,22 +425,25 @@ export function UserLevel({
         prevUnavailable={stale}
       />
       {/* Mocked usage carries seed session ids the real Sessions page doesn't have. */}
-      <SessionsList
-        title="Recent sessions"
-        note={self || viewerIsSuperuser ? undefined : copy.sessionsOwnOnly}
-        linkable={!preview && (self || viewerIsSuperuser)}
-        items={res.recent_sessions ?? []}
-        initial={RECENT_SESSIONS_SHOWN}
-      />
-      <Trend
-        series={res.series}
-        harnesses={harnesses}
-        days={days}
-        today={today}
-        windowLabel={win.label}
-        onWiden={onWiden}
-        defaultMode="cost"
-      />
+      {/* Side by side from xl, as the EE org levels pair Units with the trend: the list, then the chart. */}
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.25fr)]">
+        <SessionsList
+          title="Recent sessions"
+          note={self || viewerIsSuperuser ? undefined : copy.sessionsOwnOnly}
+          linkable={!preview && (self || viewerIsSuperuser)}
+          items={res.recent_sessions ?? []}
+          initial={RECENT_SESSIONS_SHOWN}
+        />
+        <Trend
+          series={res.series}
+          harnesses={harnesses}
+          days={days}
+          today={today}
+          windowLabel={win.label}
+          onWiden={onWiden}
+          defaultMode="cost"
+        />
+      </div>
       <ConnectPanel
         unconnected={unconnected}
         self={self}

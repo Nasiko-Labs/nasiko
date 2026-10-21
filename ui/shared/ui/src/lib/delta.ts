@@ -1,4 +1,6 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/lib/delta.ts. Local edits: none.
+// The redesign of TokenOps, Optimization, Overview and Harnesses (legacy ui/ on development, 3aac84f66: 8bf09bf29),
+// merged into this port.
 /**
  * Delta polarity per metric (plan A7). Colour is never the only signal: every delta
  * also carries an arrow and a sign.
@@ -60,8 +62,18 @@ export function describeDelta(
   const up = changePct > 0;
   const tone: Tone =
     polarity === "neutral" ? "neutral" : (polarity === "down-good") === up ? "bad" : "good";
-  const text = `${up ? "+" : "−"}${Math.abs(changePct).toFixed(1)}%`;
   const verdict = tone === "good" ? ", better" : tone === "bad" ? ", worse" : "";
+  // Past +1000% a percentage stops reading as a quantity ("+676918.2%"); the multiple of the previous value does.
+  if (changePct >= 1000) {
+    const times = Math.round(1 + changePct / 100).toLocaleString("en-US");
+    return {
+      tone,
+      arrow: "▲",
+      text: `${times}×`,
+      label: `up to ${times} times the previous period${verdict}`,
+    };
+  }
+  const text = `${up ? "+" : "−"}${Math.abs(changePct).toFixed(1)}%`;
   return {
     tone,
     arrow: up ? "▲" : "▼",

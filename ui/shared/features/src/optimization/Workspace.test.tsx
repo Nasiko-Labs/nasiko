@@ -1,5 +1,7 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/optimization/Workspace.test.tsx. Local edits: none beyond
 // imports and Prettier.
+// The redesign of TokenOps, Optimization, Overview and Harnesses (legacy ui/ on development, 3aac84f66: 8bf09bf29),
+// merged into this port.
 /**
  * /optimization's Workspace footer in the OSS build (plans/feat-optimization-page.md T7: R3A, R5B; §7 Workspace row).
  */
@@ -22,13 +24,13 @@ const footer = async () =>
   ) as HTMLElement;
 
 describe("Workspace footer", () => {
-  it("a superuser sees the tiers in one line with Edit tiers; the OSS build says nothing about other editions", async () => {
+  it("a superuser sees the tiers with Edit tiers; the OSS build says nothing about other editions", async () => {
     renderApp("/optimization");
     const f = await footer();
     expect(
       await within(f).findByText(copy.workspace.tierValues(500, 1000, 5000), {}, T),
     ).toBeInTheDocument();
-    expect(within(f).getByText(`${copy.workspace.tiers}:`)).toBeInTheDocument();
+    expect(within(f).getByText(copy.workspace.tiers)).toBeInTheDocument();
     expect(within(f).getByRole("link", { name: copy.workspace.editTiers })).toHaveAttribute(
       "href",
       "/settings/optimization-tiers",
@@ -41,7 +43,7 @@ describe("Workspace footer", () => {
     configureMocks({ variant: "optimization-classic" });
     renderApp("/optimization");
     const f = await footer();
-    expect(await within(f).findByText(`${copy.workspace.defaults}:`, {}, T)).toBeInTheDocument();
+    expect(await within(f).findByText(copy.workspace.defaults, {}, T)).toBeInTheDocument();
     expect(within(f).getByText(copy.workspace.tierValues(500, 1000, 5000))).toBeInTheDocument();
   });
 

@@ -5,6 +5,8 @@
 // `group-has-[[data-checked]]`, the budget ToggleGroup is value-array based (`value={[level]}`, an emptied pick
 // ignored as the lab's `v &&`) with `loopFocus={false}` for Radix's `loop={false}`, and `TooltipTrigger asChild` ->
 // `render={<span …/>}`; a named eslint-disable on the lab's defensive data check; Prettier formatting.
+// The redesign of TokenOps, Optimization, Overview and Harnesses (legacy ui/ on development, 3aac84f66: 8bf09bf29),
+// merged into this port.
 /**
  * Your settings on /optimization (plans/feat-context-optimization.md §3; plans/feat-optimization-page.md P2, P10, R2D,
  * R2G, E4, C8): how much past conversation each new message carries, for every signed-in user, OSS and EE. The page's
@@ -191,13 +193,16 @@ function PreferencesForm({
           control={form.control}
           name="enabled"
           render={({ field }) => (
-            <Switch
-              id={`${id}-enabled`}
-              checked={field.value}
-              onCheckedChange={field.onChange}
-              aria-describedby={`${id}-enabled-hint`}
-              aria-invalid={!!errorFor("enabled")}
-            />
+            // The row's control column is 20rem (sized for inputs); a switch sits at its far edge, by the card's.
+            <div className="flex @[640px]:justify-end">
+              <Switch
+                id={`${id}-enabled`}
+                checked={field.value}
+                onCheckedChange={field.onChange}
+                aria-describedby={`${id}-enabled-hint`}
+                aria-invalid={!!errorFor("enabled")}
+              />
+            </div>
           )}
         />
       </SettingRow>
@@ -228,22 +233,25 @@ function PreferencesForm({
             >
               {STRATEGIES.map((s) => (
                 <Label key={s} className={cn(TILE, off && "cursor-not-allowed opacity-60")}>
-                  {/* The tile's words describe the choice; its name is the caption (6B). */}
+                  {/* The name heads the tile and is the radio's name; the words under it describe the choice. */}
                   <span
-                    id={`${id}-${s}-desc`}
-                    aria-hidden
-                    className={cn(PICTURE, "block min-h-21 bg-card p-3 pr-8 text-muted-foreground")}
+                    className={cn(
+                      PICTURE,
+                      "flex flex-col gap-1 bg-card p-3 pr-8 @[640px]:min-h-24",
+                    )}
                   >
-                    {copy.strategies[s].hint}
+                    <span className="font-medium text-foreground">
+                      <RadioGroupItem
+                        value={s}
+                        className="sr-only"
+                        aria-describedby={`${id}-${s}-desc`}
+                      />
+                      {copy.strategies[s].label}
+                    </span>
+                    <span id={`${id}-${s}-desc`} aria-hidden className="text-muted-foreground">
+                      {copy.strategies[s].hint}
+                    </span>
                     <Chosen />
-                  </span>
-                  <span className="px-0.5 text-muted-foreground group-has-[[data-checked]]:font-medium group-has-[[data-checked]]:text-foreground">
-                    <RadioGroupItem
-                      value={s}
-                      className="sr-only"
-                      aria-describedby={`${id}-${s}-desc`}
-                    />
-                    {copy.strategies[s].label}
                   </span>
                 </Label>
               ))}

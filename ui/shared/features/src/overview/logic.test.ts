@@ -1,6 +1,8 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/overview/logic.test.ts. Local edits: none beyond imports and
 // Prettier.
 // @vitest-environment node
+// The redesign of TokenOps, Optimization, Overview and Harnesses (legacy ui/ on development, 3aac84f66: 8bf09bf29),
+// merged into this port.
 /** Overview pure logic (plans/feat-overview.md §5, §6, §10; eng review R3, R4, R8). */
 import { describe, expect, it } from "vitest";
 import { overviewNarrative } from "../narrative/overview";
@@ -350,7 +352,9 @@ describe("stackSpend", () => {
     label: date,
     spend,
     operations: 0,
+    p50: null,
     p95: null,
+    p99: null,
     topAgent: null,
     topAgentSpend: null,
   });

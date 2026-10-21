@@ -9,6 +9,8 @@
 // unnecessary assertions dropped); on development (3aac84f66, 49950eb1e and d2e0d4bcf, for GenUI) the table takes an
 // optional `pageSize` (a `Pager` under it) and `onSelect` (a focus toggle per row; `aria-pressed:` for Base UI's
 // Toggle); Prettier formatting.
+// The redesign (legacy ui/ on development, 3aac84f66: 8bf09bf29): the top 10 rows behind Show all (not with a
+// `pageSize`), and Group by as `Segmented`.
 "use client";
 
 /**
@@ -31,8 +33,6 @@ import {
   SelectTrigger,
   SelectValue,
   Toggle,
-  ToggleGroup,
-  ToggleGroupItem,
 } from "@nasiko/ui/primitives";
 import { AgentLink } from "../../agents/components/AgentLink";
 import { cn } from "@nasiko/ui/cn";
@@ -66,6 +66,13 @@ import {
   type VirtualDataTableColumn as DataTableColumn,
 } from "@nasiko/ui/table";
 
+import { Segmented } from "./Segmented";
+
+const VIEWS = [
+  { value: "agent", label: "Agents" },
+  { value: "workflow", label: "Workflows" },
+] as const;
+
 const SORT_LABELS: Record<SortKey, string> = {
   cost: "Highest spend",
   tokens: "Most tokens",
@@ -74,6 +81,9 @@ const SORT_LABELS: Record<SortKey, string> = {
   hours: "Most container hours",
   name: "Name",
 };
+
+/** Rows shown before Show all. */
+const ROW_CAP = 10;
 
 const HIGHLIGHT = "bg-primary/10 ring-1 ring-primary/40";
 
@@ -118,6 +128,12 @@ export function AttributionTable({
   pageSize?: number | undefined;
 }) {
   const visible = useMemo(() => sortRows(searchRows(rows ?? [], q), sort), [rows, q, sort]);
+  // The top rows answer "who"; the long tail waits behind Show all, so the section stays one screen. A search or a
+  // highlight from the scatter below the fold shows everything (CSV always exports every visible row).
+  const [expanded, setExpanded] = useState(false);
+  const highlightBelow =
+    !!highlightId && visible.slice(0, ROW_CAP).every((r) => r.id !== highlightId);
+  const all = expanded || !!q || highlightBelow || visible.length <= ROW_CAP + 2;
   const firstPage = () => {
     const at = highlightId ? visible.findIndex((r) => r.id === highlightId) : -1;
     return pageSize && at >= 0 ? Math.floor(at / pageSize) : 0;
@@ -130,7 +146,12 @@ export function AttributionTable({
   }
   const pages = pageSize ? pageCount(visible.length, pageSize) : 1;
   const current = Math.min(page, pages - 1);
-  const shown = pageSize ? pageOf(visible, current, pageSize) : visible;
+  // A page size (GenUI's views) pages the rows; without one, the top rows and Show all.
+  const shown = pageSize
+    ? pageOf(visible, current, pageSize)
+    : all
+      ? visible
+      : visible.slice(0, ROW_CAP);
   const noun = view === "agent" ? "Agent" : "Workflow";
   const sortOptions = (Object.keys(SORT_LABELS) as SortKey[]).filter(
     (s) => view === "agent" || s !== "hours",
@@ -164,22 +185,7 @@ export function AttributionTable({
       labelledBy="attribution-title"
       actions={
         <>
-          <ToggleGroup
-            variant="outline"
-            size="sm"
-            value={[view]}
-            onValueChange={(v: unknown[]) => {
-              if (typeof v[0] === "string" && v[0]) onView(v[0] as "agent" | "workflow");
-            }}
-            aria-label="Group by"
-          >
-            <ToggleGroupItem value="agent" className="px-2.5 text-xs">
-              Agents
-            </ToggleGroupItem>
-            <ToggleGroupItem value="workflow" className="px-2.5 text-xs">
-              Workflows
-            </ToggleGroupItem>
-          </ToggleGroup>
+          <Segmented label="Group by" value={view} options={VIEWS} onChange={onView} />
           <Select
             value={sort}
             onValueChange={(v: string | null) => {
@@ -261,6 +267,19 @@ export function AttributionTable({
             onViewTraces={onViewTraces}
             onSelect={onSelect}
           />
+          {!pageSize && visible.length > ROW_CAP + 2 && !q && !highlightBelow ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="w-fit text-xs"
+              aria-expanded={expanded}
+              onClick={() => {
+                setExpanded((v) => !v);
+              }}
+            >
+              {expanded ? `Show top ${ROW_CAP}` : `Show all ${visible.length}`}
+            </Button>
+          ) : null}
           <Pager page={current} pages={pages} onPage={setPage} />
         </>
       )}

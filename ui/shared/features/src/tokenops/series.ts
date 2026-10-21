@@ -1,4 +1,6 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/tokenops/series.ts. Local edits: `@/lib/format` -> `@nasiko/ui/lib`; Prettier formatting.
+// The redesign of TokenOps, Optimization, Overview and Harnesses (legacy ui/ on development, 3aac84f66: 8bf09bf29),
+// merged into this port.
 import { fmtShortDay, fmtUtcHour } from "@nasiko/ui/lib";
 import type { SpendTimeseriesPoint } from "./types";
 
@@ -12,7 +14,9 @@ export interface TimelinePoint {
   label: string;
   spend: number;
   operations: number;
+  p50: number | null;
   p95: number | null;
+  p99: number | null;
   topAgent: string | null;
   topAgentSpend: number | null;
 }
@@ -42,7 +46,9 @@ function toPoint(d: Date, bucket: "hour" | "day", p: TimelineSource | undefined)
     label: bucketLabel(d, bucket),
     spend: p?.spend_usd ?? 0,
     operations: p?.operations ?? 0,
+    p50: p?.p50_latency_ms ?? null,
     p95: p?.p95_latency_ms ?? null,
+    p99: p?.p99_latency_ms ?? null,
     topAgent: p?.top_agent_name ?? null,
     topAgentSpend: p?.top_agent_spend_usd ?? null,
   };

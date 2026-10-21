@@ -3,6 +3,8 @@
 // `@/test/pinned-seed`; the three sign-in cases are not ported (the /login page and the guard are the shell's)
 // and the two 401 cases assert the query client's `onUnauthorized` and the cleared cache (the shell turns that
 // into the redirect); Prettier formatting.
+// The redesign of TokenOps, Optimization, Overview and Harnesses (legacy ui/ on development, 3aac84f66: 8bf09bf29),
+// merged into this port.
 
 /**
  * Page-level tests: the real router + page + app QueryClient against the seed-backed MSW
@@ -49,9 +51,17 @@ describe("TokenOps page", () => {
 
     // Both percentages, always together: the gap between them is real (savings are input-side,
     // input is the cheap side) and showing only one invites the reader to assume they match.
-    // Each appears twice — once in the hero, once on the category row that produced it.
-    expect(within(panel).getAllByText("19.7%")).toHaveLength(2);
-    expect(within(panel).getAllByText("11.0%")).toHaveLength(2);
+    // Each appears twice — once in the headline figures, once on the category row that produced it.
+    expect(
+      within(panel).getByText(/^19\.7% of [\d.]+[KMB]? you would have sent$/),
+    ).toBeInTheDocument();
+    expect(within(panel).getByText(/^11\.0% of \$[\d,.]+, in this window$/)).toBeInTheDocument();
+    expect(within(panel).getByRole("cell", { name: "19.7%" })).toBeInTheDocument();
+    expect(within(panel).getByRole("cell", { name: "11.0%" })).toBeInTheDocument();
+    // The two differ, and the panel says which way rather than assuming.
+    expect(
+      within(panel).getByText(/^The cost cut is smaller than the token cut/),
+    ).toBeInTheDocument();
 
     // The category split — "what did Caveman save vs Ponytail" — answered directly.
     expect(within(panel).getByText("Smaller prompts (Caveman)")).toBeInTheDocument();
@@ -70,9 +80,11 @@ describe("TokenOps page", () => {
   it("lists the sessions the optimiser helped most", async () => {
     // Savings recur per turn, so a long session compounds them in a way the per-call view
     // understates. This table is where that shows, and it links back to the conversation.
+    const user = userEvent.setup();
     renderTokenops("/tokenops?open=optimise");
     const panel = await section("Token optimisation savings");
-    const link = within(panel).getByRole("link", { name: /ctx-9f3ad21b/ });
+    await user.click(within(panel).getByRole("tab", { name: "By session" }));
+    const link = await within(panel).findByRole("link", { name: /ctx-9f3ad21b/ });
     expect(link).toHaveAttribute("href", "/sessions/ctx-9f3ad21b0c74");
     expect(within(panel).getByText("22.4%")).toBeInTheDocument();
   });
@@ -219,7 +231,8 @@ describe("TokenOps page", () => {
     renderTokenops("/tokenops?open=all");
     expect(await screen.findByTestId("mtd-spend")).toBeInTheDocument();
     const alerts = await screen.findAllByRole("alert");
-    expect(alerts.some((a) => /Couldn't load KPIs/.test(a.textContent ?? ""))).toBe(true);
+    // The summary and its KPI tiles come from the dashboard, so they fail together, in one panel.
+    expect(alerts.some((a) => /Couldn't load the summary/.test(a.textContent ?? ""))).toBe(true);
     expect(screen.getAllByRole("button", { name: /Retry/ }).length).toBeGreaterThan(0);
   });
 

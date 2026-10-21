@@ -1,5 +1,8 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/tokenops/attribution.ts. Local edits: none (Prettier formatting only).
+// The redesign of TokenOps, Optimization, Overview and Harnesses (legacy ui/ on development, 3aac84f66: 8bf09bf29),
+// merged into this port.
 import type { AgentFinopsRow, FinopsAttributions, WorkflowFinopsRow } from "./types";
+import { OTHER_SERIES, seriesAt, type Series } from "@nasiko/ui/lib";
 import type { SortKey } from "./search";
 
 /**
@@ -28,7 +31,7 @@ export interface AttributionRow {
    */
   latency: number | null;
   p95: number | null;
-  /** Cache-read tokens as a share of prompt tokens, 0–100. */
+  /** Cache-read tokens as a share of input tokens, 0–100. */
   cacheRatioPct: number | null;
   containerHours: number | null;
   capped: boolean;
@@ -87,6 +90,18 @@ function normalize(a: FinopsAttributions): Normalized[] {
   return a.view === "agent" ? a.rows.map(fromAgent) : a.rows.map(fromWorkflow);
 }
 
+/**
+ * Cache-read tokens as a share of input, 0–100. Providers count differently: OpenAI's `prompt_tokens` include the
+ * cached ones, Anthropic's `input_tokens` exclude them (so cached can be many times "prompt", which printed
+ * 6550732.8%). More cached than prompt can only mean they were counted apart, so add them back.
+ * ponytail: per-row heuristic; an Anthropic row with fewer cached than uncached tokens still overstates. Exact once
+ * the dashboard row says whether prompt_tokens include cache reads (server recommendation).
+ */
+export function cacheShare(prompt: number, cacheRead: number): number | null {
+  const input = cacheRead > prompt ? prompt + cacheRead : prompt;
+  return input > 0 ? (cacheRead / input) * 100 : null;
+}
+
 /** `previous` is undefined while loading or when its query failed → Δ "unavailable". */
 export function buildAttribution(
   current: FinopsAttributions,
@@ -127,7 +142,7 @@ export function buildAttribution(
       costPerOp: r.costPerOp,
       latency: r.latency,
       p95: r.p95,
-      cacheRatioPct: r.prompt > 0 ? (r.cacheRead / r.prompt) * 100 : null,
+      cacheRatioPct: cacheShare(r.prompt, r.cacheRead),
       containerHours: r.hours,
       capped: r.capped,
     };
@@ -152,4 +167,39 @@ export function sortRows(rows: AttributionRow[], sort: SortKey): AttributionRow[
 export function searchRows(rows: AttributionRow[], q: string | undefined): AttributionRow[] {
   const needle = q?.trim().toLowerCase();
   return needle ? rows.filter((r) => r.name.toLowerCase().includes(needle)) : rows;
+}
+
+/** Spend concentration: how many named slices before the rest fold into Other. */
+export const TOP = 5;
+
+interface Slice {
+  key: string;
+  name: string;
+  cost: number;
+  pct: number;
+  series: Series;
+}
+
+/** Top five by spend, then everything else as one Other slice. */
+export function concentrationSlices(rows: AttributionRow[]): Slice[] {
+  const total = rows.reduce((s, r) => s + r.cost, 0);
+  if (total <= 0) return [];
+  const sorted = [...rows].filter((r) => r.cost > 0).sort((a, b) => b.cost - a.cost);
+  const slices: Slice[] = sorted.slice(0, TOP).map((r, i) => ({
+    key: r.id,
+    name: r.name,
+    cost: r.cost,
+    pct: (r.cost / total) * 100,
+    series: seriesAt(i),
+  }));
+  const rest = sorted.slice(TOP).reduce((s, r) => s + r.cost, 0);
+  if (rest > 0)
+    slices.push({
+      key: "__other",
+      name: `Other (${sorted.length - TOP})`,
+      cost: rest,
+      pct: (rest / total) * 100,
+      series: OTHER_SERIES,
+    });
+  return slices;
 }

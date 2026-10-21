@@ -4,6 +4,8 @@
 // `role="button"` on the anchor; the lab's Slot kept it a link), `TooltipTrigger asChild` -> `render`; primitives from `@nasiko/ui/primitives`, composites from
 // `@nasiko/ui/composites`, `cn`/formatters from `@nasiko/ui/cn` and `@nasiko/ui/lib`; `AgentLink` from the ported
 // agents feature; optional props typed `| undefined`; Prettier formatting.
+// The bento (legacy ui/ on development, 3aac84f66: 8bf09bf29): Base UI `Tabs` (`onValueChange` gets `unknown`); `m`
+// and `transitions` from @nasiko/ui/motion.
 "use client";
 
 /**
@@ -24,7 +26,7 @@
  */
 import Link from "@nasiko/app-core/navigation";
 import { Info } from "lucide-react";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import {
   Badge,
   buttonVariants,
@@ -33,13 +35,18 @@ import {
   TableHead,
   TableHeader,
   TableRow,
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@nasiko/ui/primitives";
-import { BetaBadge, Panel } from "@nasiko/ui/composites";
+import { BetaBadge, Panel, Swatch } from "@nasiko/ui/composites";
+import { m, transitions } from "@nasiko/ui/motion";
 import { AgentLink } from "../../agents/components/AgentLink";
-import { fmtInt, fmtMoney, fmtPct, fmtTokens } from "@nasiko/ui/lib";
+import { fmtInt, fmtMoney, fmtPct, fmtTokens, seriesAt } from "@nasiko/ui/lib";
 import { cn } from "@nasiko/ui/cn";
 import type { OptimisationView } from "../optimisation";
 import { isUnconfigured } from "../optimisation";
@@ -66,7 +73,21 @@ const LAYER_LABEL: Record<string, string> = {
 /** `null` percentages mean "no baseline to compare against", not zero. */
 const showPct = (v: number | null | undefined) => (v == null ? "—" : fmtPct(v));
 
-export function OptimisationPanel({ data }: { data: OptimisationView }) {
+export function OptimisationPanel({
+  data,
+  history,
+}: {
+  data: OptimisationView;
+  /** The chat-history tile (CX-V3), beside the coverage figures; null when there is none. */
+  history?: ReactNode;
+}) {
+  const [tab, setTab] = useState("category");
+  const tabs = [
+    { value: "category", label: "By category", show: true },
+    { value: "agent", label: "By agent", show: data.rows.length > 0 },
+    { value: "session", label: "By session", show: data.sessions.length > 0 },
+  ].filter((t) => t.show);
+  const current = tabs.some((t) => t.value === tab) ? tab : "category";
   return (
     <Panel
       title="Token optimisation savings"
@@ -83,32 +104,44 @@ export function OptimisationPanel({ data }: { data: OptimisationView }) {
         <EmptyState total={data.totalAgents} />
       ) : (
         <>
-          <dl className="grid gap-px overflow-hidden rounded-md border bg-border sm:grid-cols-4">
-            <Figure label="Tokens saved" value={fmtTokens(data.tokensSaved)}>
-              you would have sent {fmtTokens(data.tokensBefore)} without this
-            </Figure>
-            <Figure label="Token reduction" value={showPct(data.savedPct)}>
-              of everything these agents would have sent
-            </Figure>
-            <Figure label="Cost saved" value={fmtMoney(data.costSaved)}>
-              on this month&apos;s bill
-            </Figure>
-            <Figure label="Cost reduction" value={showPct(data.costSavedPct)}>
-              smaller than the token figure — what we trim is the cheaper half of a bill
-            </Figure>
-          </dl>
+          <div className="grid gap-3 lg:grid-cols-12">
+            <Saved data={data} />
+            <Coverage data={data} />
+          </div>
+          {history}
 
-          {/* Which switch is under-used. A category reading zero because nobody enabled it and one
-              reading zero because it did nothing look identical without this. */}
-          <p className="text-xs text-muted-foreground">
-            Turned on for: {data.adoption.map((a) => `${a.label} ${fmtInt(a.on)}`).join(" · ")} —
-            out of {fmtInt(data.totalAgents)} agents. {fmtInt(data.callsOptimised)} of{" "}
-            {fmtInt(data.callsInWindow)} calls went through it.
-          </p>
-
-          <CategoryTable data={data} />
-          <AgentTable data={data} />
-          <SessionTable data={data} />
+          <Tabs
+            value={current}
+            onValueChange={(v: unknown) => {
+              setTab(String(v));
+            }}
+            className="gap-3"
+          >
+            <TabsList variant="line" aria-label="Savings breakdown">
+              {tabs.map((t) => (
+                <TabsTrigger key={t.value} value={t.value} className="relative px-3 after:hidden">
+                  {t.label}
+                  {t.value === current ? (
+                    <m.span
+                      layoutId="optimisation-tab"
+                      transition={transitions.morph}
+                      aria-hidden
+                      className="absolute inset-x-1 -bottom-1.5 h-0.5 rounded-full bg-foreground"
+                    />
+                  ) : null}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+            <TabsContent value="category">
+              <CategoryTable data={data} />
+            </TabsContent>
+            <TabsContent value="agent">
+              <AgentTable data={data} />
+            </TabsContent>
+            <TabsContent value="session">
+              <SessionTable data={data} />
+            </TabsContent>
+          </Tabs>
         </>
       )}
 
@@ -132,6 +165,147 @@ export function OptimisationPanel({ data }: { data: OptimisationView }) {
         </div>
       ) : null}
     </Panel>
+  );
+}
+
+/**
+ * What was sent against what would have been, for tokens and for cost: two bars on one scale each, the saved part
+ * in the second colour. Both reductions are shown together because they differ (savings are mostly input, the cheap
+ * side), and the sentence under them says which way, never assuming.
+ */
+function Saved({ data }: { data: OptimisationView }) {
+  const tokenPct = data.savedPct;
+  const costPct = data.costSavedPct;
+  const gap =
+    tokenPct == null || costPct == null || Math.abs(tokenPct - costPct) < 0.5
+      ? null
+      : costPct < tokenPct
+        ? "The cost cut is smaller than the token cut: what we trim is mostly input, the cheaper half of a bill."
+        : "The cost cut is bigger than the token cut: what we trim is mostly output or expensive-model traffic.";
+  return (
+    <div className="flex flex-col gap-4 rounded-lg border bg-muted/30 p-4 lg:col-span-7">
+      <dl className="grid grid-cols-2 gap-4">
+        <div>
+          <dt className="text-xs text-muted-foreground">Tokens saved</dt>
+          <dd className="text-3xl font-semibold tracking-tight tabular-nums">
+            {fmtTokens(data.tokensSaved)}
+          </dd>
+          <dd className="text-xs text-muted-foreground">
+            {showPct(tokenPct)} of {fmtTokens(data.tokensBefore)} you would have sent
+          </dd>
+        </div>
+        <div>
+          <dt className="text-xs text-muted-foreground">Cost saved</dt>
+          <dd className="text-3xl font-semibold tracking-tight tabular-nums">
+            {fmtMoney(data.costSaved)}
+          </dd>
+          <dd className="text-xs text-muted-foreground">
+            {showPct(costPct)} of {fmtMoney(data.costBefore)}, in this window
+          </dd>
+        </div>
+      </dl>
+      <div className="flex flex-col gap-2.5">
+        <CompareBar
+          label="Tokens"
+          sent={data.tokensActual}
+          saved={data.tokensSaved}
+          fmt={fmtTokens}
+        />
+        <CompareBar label="Cost" sent={data.costActual} saved={data.costSaved} fmt={fmtMoney} />
+        <p className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+          <span className="inline-flex items-center gap-1.5">
+            <Swatch series={SENT} /> Sent
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <Swatch series={SAVED} /> Saved (not sent)
+          </span>
+        </p>
+      </div>
+      {gap ? <p className="text-xs text-muted-foreground">{gap}</p> : null}
+    </div>
+  );
+}
+
+const SENT = seriesAt(0);
+const SAVED = seriesAt(3);
+
+function CompareBar({
+  label,
+  sent,
+  saved,
+  fmt,
+}: {
+  label: string;
+  sent: number;
+  saved: number;
+  fmt: (v: number) => string;
+}) {
+  const total = sent + Math.max(0, saved);
+  const savedPct = total > 0 ? (Math.max(0, saved) / total) * 100 : 0;
+  return (
+    <div className="grid grid-cols-[3.5rem_1fr] items-center gap-3 text-xs">
+      <span className="text-muted-foreground">{label}</span>
+      <div className="flex flex-col gap-1">
+        <div
+          className="flex h-2.5 w-full gap-0.5 overflow-hidden rounded-full"
+          role="img"
+          aria-label={`${label}: ${fmt(sent)} sent, ${fmt(saved)} saved`}
+        >
+          <div className="h-full flex-1 rounded-l-full" style={{ backgroundColor: SENT.fill }} />
+          <m.div
+            className="h-full rounded-r-full"
+            style={{ backgroundColor: SAVED.fill }}
+            initial={{ width: 0 }}
+            animate={{ width: `max(${savedPct}%, 2px)` }}
+            transition={transitions.disclosure}
+          />
+        </div>
+        <span className="font-mono text-muted-foreground tabular-nums">
+          {fmt(sent)} sent · {fmt(saved)} saved
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Which switch is under-used. A category reading zero because nobody enabled it and one reading zero because it did
+ * nothing look identical without this.
+ */
+function Coverage({ data }: { data: OptimisationView }) {
+  const meters = [
+    {
+      label: "Agents optimised",
+      on: data.optimisedCount,
+      of: data.totalAgents,
+    },
+    { label: "Calls through it", on: data.callsOptimised, of: data.callsInWindow },
+    ...data.adoption.map((a) => ({ label: a.label, on: a.on, of: data.totalAgents })),
+  ];
+  return (
+    <ul
+      className="flex flex-col justify-center gap-2.5 rounded-lg border p-4 lg:col-span-5"
+      aria-label="Coverage"
+    >
+      {meters.map((x) => (
+        <li key={x.label} className="flex flex-col gap-1 text-xs">
+          <span className="flex justify-between gap-2">
+            <span className="truncate">{x.label}</span>
+            <span className="shrink-0 font-mono text-muted-foreground tabular-nums">
+              {fmtInt(x.on)} of {fmtInt(x.of)}
+            </span>
+          </span>
+          <span className="h-1.5 w-full rounded-full bg-muted" aria-hidden>
+            <m.span
+              className="block h-full rounded-full bg-chart-1-edge"
+              initial={{ width: 0 }}
+              animate={{ width: `${x.of > 0 ? Math.min(100, (x.on / x.of) * 100) : 0}%` }}
+              transition={transitions.disclosure}
+            />
+          </span>
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -396,26 +570,6 @@ function EmptyState({ total }: { total: number }) {
       >
         Choose an agent <span aria-hidden>→</span>
       </Link>
-    </div>
-  );
-}
-
-function Figure({
-  label,
-  value,
-  children,
-}: {
-  label: string;
-  value: ReactNode;
-  children: ReactNode;
-}) {
-  return (
-    <div className="flex min-w-0 flex-col gap-1 bg-card p-4">
-      <dt className="text-xs text-muted-foreground">{label}</dt>
-      <dd className="flex flex-col gap-1.5">
-        <span className="text-2xl font-semibold tabular-nums sm:text-3xl">{value}</span>
-        <span className="text-xs text-muted-foreground">{children}</span>
-      </dd>
     </div>
   );
 }

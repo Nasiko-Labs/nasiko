@@ -1,5 +1,7 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/optimization/copy.ts. Local edits: the full module replaces
 // the pilot's `savings` subset; Prettier formatting.
+// The redesign of TokenOps, Optimization, Overview and Harnesses (legacy ui/ on development, 3aac84f66: 8bf09bf29),
+// merged into this port.
 /**
  * Every user-facing string for context optimization (plans/feat-context-optimization.md §3, decision ledger §11).
  * The page is "Optimization", never "Context" (N1); savings are "fewer tokens", never "better answers" (§5).
@@ -185,6 +187,12 @@ export const copy = {
     ) => {
       const extra = [cost ? `≈ ${cost}` : null, pct !== null ? `${pct}%` : null].filter(Boolean);
       return `${superuser ? "All agents" : "Agents you can access"} sent ~${sent} tokens where they would have sent ~${without}: ~${saved} fewer${extra.length ? ` (${extra.join(", ")})` : ""}.`;
+    },
+    /** The lead's four figures (redesign 2026-10-13); the baseline label is `preview.without`. */
+    figures: {
+      notBilled: "Input not billed",
+      fewer: (pct: number) => `${pct}% fewer tokens`,
+      reported: (pct: number) => `${pct}% of requests reported`,
     },
     /** C2. */
     basedOn: (reports: number, eligible: number, pct: number) =>

@@ -3,6 +3,7 @@
 // `@nasiko/ui/primitives`, composites from `@nasiko/ui/composites`, `cn`/formatters from `@nasiko/ui/cn` and
 // `@nasiko/ui/lib`; optional props typed `| undefined`; lint-driven mechanical edits (void arrow bodies braced,
 // unnecessary assertions dropped); Prettier formatting.
+// The Spend / Latency switch (legacy ui/ on development, 3aac84f66: 8bf09bf29).
 "use client";
 
 /**
@@ -12,7 +13,8 @@
  * (src/components/charts): bars grow and the line sweeps in, at rest under reduced motion.
  * The tooltip names the bucket's top agent. Clicking a bucket opens that UTC day's hourly
  * breakdown; clicks resolve by index to the raw ISO bucket start, never to the formatted label.
- * A Table toggle gives a keyboard/screen-reader alternative with the same actions.
+ * A Table toggle gives a keyboard/screen-reader alternative with the same actions. The Spend · Latency switch
+ * (`Segmented`, a gliding pill) redraws the same buckets as p50 / p95 / p99 lines; a click still opens the day.
  */
 import { Table2, BarChart3 } from "lucide-react";
 import { useCallback, useRef, useState } from "react";
@@ -39,12 +41,24 @@ import {
 } from "@nasiko/ui/primitives";
 import { fmtInt, fmtLatency, fmtMoney, fmtMoneyAxis, fmtPct, fmtShortDay } from "@nasiko/ui/lib";
 import { cn } from "@nasiko/ui/cn";
+import { Segmented } from "./Segmented";
 import { bucketLabel, type TimelinePoint } from "../series";
 import { Panel, PanelEmpty, PanelError, PanelSkeleton, Swatch } from "@nasiko/ui/composites";
 import { CELL, ChartTable, HEAD, ROW_HEAD, STICKY_HEAD } from "./ChartTable";
 
 const SPEND = seriesAt(0);
 const OPS = seriesAt(1);
+/** Latency percentiles: three hues, and the legend names each, so no line relies on colour alone. */
+const LATENCY = [
+  { key: "p50", label: "p50", series: seriesAt(3) },
+  { key: "p95", label: "p95", series: seriesAt(1) },
+  { key: "p99", label: "p99", series: seriesAt(2) },
+] as const;
+const METRICS = [
+  { value: "spend", label: "Spend" },
+  { value: "latency", label: "Latency" },
+] as const;
+type Metric = (typeof METRICS)[number]["value"];
 
 export function SpendTimeline({
   points,
@@ -67,6 +81,7 @@ export function SpendTimeline({
   windowLabel: string;
 }) {
   const [asTable, setAsTable] = useState(false);
+  const [metric, setMetric] = useState<Metric>("spend");
   const hovered = useRef<TooltipData | null>(null);
   const pressed = useRef<TooltipData | null>(null);
   const onHover = useCallback((h: TooltipData | null) => {
@@ -90,20 +105,25 @@ export function SpendTimeline({
       subtitle={`${bucket === "hour" ? "Hourly" : "Daily"} buckets (UTC) · click a bar, or use the Table view by keyboard, to see that day hour by hour`}
       labelledBy="spend-timeline-title"
       actions={
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => {
-            setAsTable((v) => !v);
-          }}
-        >
-          {asTable ? (
-            <BarChart3 className="size-4" aria-hidden />
-          ) : (
-            <Table2 className="size-4" aria-hidden />
+        <>
+          {asTable ? null : (
+            <Segmented label="Chart shows" value={metric} options={METRICS} onChange={setMetric} />
           )}
-          {asTable ? "Chart" : "Table"}
-        </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setAsTable((v) => !v);
+            }}
+          >
+            {asTable ? (
+              <BarChart3 className="size-4" aria-hidden />
+            ) : (
+              <Table2 className="size-4" aria-hidden />
+            )}
+            {asTable ? "Chart" : "Table"}
+          </Button>
+        </>
       }
     >
       {loading && !points.length ? (
@@ -139,6 +159,7 @@ export function SpendTimeline({
           >
             <ChartDateFormat value={fmtX}>
               <ComposedChart
+                key={metric}
                 data={points as unknown as Record<string, unknown>[]}
                 xDataKey="iso"
                 aspectRatio="auto"
@@ -147,26 +168,46 @@ export function SpendTimeline({
                 barGap={2}
               >
                 <Grid />
-                <SeriesBar
-                  dataKey="spend"
-                  fill={SPEND.fill}
-                  edge={SPEND.edge}
-                  stroke={SPEND.edge}
-                />
-                <Line
-                  dataKey="operations"
-                  yAxisId="ops"
-                  stroke={OPS.edge}
-                  strokeWidth={2}
-                  fadeEdges={false}
-                />
-                <YAxis formatValue={fmtMoneyAxis} numTicks={4} />
-                <YAxis
-                  yAxisId="ops"
-                  orientation="right"
-                  formatValue={(v) => fmtInt(v)}
-                  numTicks={4}
-                />
+                {/* Arrays, not fragments: ComposedChart reads its direct children (Children.forEach) to find
+                    series and axes, and a fragment hides them. */}
+                {metric === "spend"
+                  ? [
+                      <SeriesBar
+                        key="spend"
+                        dataKey="spend"
+                        fill={SPEND.fill}
+                        edge={SPEND.edge}
+                        stroke={SPEND.edge}
+                      />,
+                      <Line
+                        key="ops"
+                        dataKey="operations"
+                        yAxisId="ops"
+                        stroke={OPS.edge}
+                        strokeWidth={2}
+                        fadeEdges={false}
+                      />,
+                      <YAxis key="y" formatValue={fmtMoneyAxis} numTicks={4} />,
+                      <YAxis
+                        key="y-ops"
+                        yAxisId="ops"
+                        orientation="right"
+                        formatValue={(v) => fmtInt(v)}
+                        numTicks={4}
+                      />,
+                    ]
+                  : [
+                      ...LATENCY.map((l) => (
+                        <Line
+                          key={l.key}
+                          dataKey={l.key}
+                          stroke={l.series.edge}
+                          strokeWidth={2}
+                          fadeEdges={false}
+                        />
+                      )),
+                      <YAxis key="y" formatValue={(v) => fmtLatency(v)} numTicks={4} />,
+                    ]}
                 <XAxis numTicks={6} />
                 <ChartTooltip
                   showDatePill={false}
@@ -177,12 +218,22 @@ export function SpendTimeline({
             </ChartDateFormat>
           </div>
           <figcaption className="mt-2 flex flex-wrap gap-4 text-xs text-muted-foreground">
-            <span className="inline-flex items-center gap-1.5">
-              <Swatch series={SPEND} /> Spend (left)
-            </span>
-            <span className="inline-flex items-center gap-1.5">
-              <Swatch series={OPS} line /> Operations (right)
-            </span>
+            {metric === "spend" ? (
+              <>
+                <span className="inline-flex items-center gap-1.5">
+                  <Swatch series={SPEND} /> Spend (left)
+                </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <Swatch series={OPS} line /> Operations (right)
+                </span>
+              </>
+            ) : (
+              LATENCY.map((l) => (
+                <span key={l.key} className="inline-flex items-center gap-1.5">
+                  <Swatch series={l.series} line /> {l.label} latency
+                </span>
+              ))
+            )}
             <span className="sr-only">{summary}</span>
           </figcaption>
         </figure>
@@ -201,8 +252,10 @@ function TimelineTooltip({ p }: { p: TimelinePoint }) {
         <span>{fmtMoney(p.spend)}</span>
         <span className="text-muted-foreground">Operations</span>
         <span>{fmtInt(p.operations)}</span>
-        <span className="text-muted-foreground">p95</span>
-        <span>{fmtLatency(p.p95)}</span>
+        <span className="text-muted-foreground">p50 / p95 / p99</span>
+        <span>
+          {fmtLatency(p.p50)} / {fmtLatency(p.p95)} / {fmtLatency(p.p99)}
+        </span>
       </div>
       {p.topAgent ? (
         <div className="mt-1 border-t border-border pt-1">

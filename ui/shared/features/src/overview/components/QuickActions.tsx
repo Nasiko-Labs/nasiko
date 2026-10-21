@@ -1,6 +1,8 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/overview/components/QuickActions.tsx. Local edits: `Button
 // asChild` + TanStack `Link` -> `ButtonLink` (`/chat`, `/chat?auto=1`, the router's budgets hash through `pageHref`);
 // optional props admit `undefined`; Prettier formatting.
+// The redesign of TokenOps, Optimization, Overview and Harnesses (legacy ui/ on development, 3aac84f66: 8bf09bf29),
+// merged into this port.
 "use client";
 
 /**
@@ -45,7 +47,8 @@ export function QuickActions({
   return (
     <Card id="overview-actions" title={copy.actions.title} className={className}>
       <div className="flex flex-col gap-2">
-        <div className="grid grid-cols-[repeat(auto-fit,minmax(12rem,1fr))] gap-2">
+        {/* Stacked beside Recent chats (from 1100 px), side by side when the card spans the row. */}
+        <div className="grid grid-cols-[repeat(auto-fit,minmax(12rem,1fr))] gap-2 @[1100px]/overview:grid-cols-1">
           <ButtonLink className={`justify-start ${TOUCH}`} href="/chat">
             <MessageSquare aria-hidden /> {copy.actions.newChat}
           </ButtonLink>

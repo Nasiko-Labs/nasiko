@@ -28,3 +28,6 @@ export { seriesAt, OTHER_SERIES, type Series } from "./lib/series";
 export * from "./lib/format";
 // TokenOps' cost × p95 scatter on raw visx (ported from the lab's features/tokenops/components/CostScatter.tsx).
 export { CostScatter, type CostScatterProps, type ScatterPoint } from "./cost-scatter";
+// TokenOps' hero spend curve (legacy ui/ on development, 3aac84f66: 8bf09bf29) draws with d3-shape directly; the
+// UI package owns that dependency, so features take its helpers from here.
+export { area, curveMonotoneX, line } from "d3-shape";

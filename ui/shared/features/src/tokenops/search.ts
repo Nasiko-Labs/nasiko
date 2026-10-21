@@ -1,4 +1,6 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/tokenops/search.ts. Local edits: none (`@/app/shell/context` and `@/lib/search` are the ported modules at the same paths); Prettier formatting.
+// The redesign of TokenOps, Optimization, Overview and Harnesses (legacy ui/ on development, 3aac84f66: 8bf09bf29),
+// merged into this port.
 import * as z from "zod/mini";
 import { sharedSearchSchema } from "@nasiko/app-core/shell/context";
 import { fallback, flag, isoDate, opt } from "@nasiko/app-core/search";
@@ -11,7 +13,10 @@ import { fallback, flag, isoDate, opt } from "@nasiko/app-core/search";
 const SORTS = ["cost", "tokens", "operations", "latency", "hours", "name"] as const;
 export type SortKey = (typeof SORTS)[number];
 
-/** TokenOps disclosure ids (the `open` param). */
+/**
+ * Section ids the `open` param names (links from other pages: the page scrolls to that section on arrival). The page
+ * has no expanders any more; `perf`, `month` and `metrics` are kept so older links still parse.
+ */
 export const DISCLOSURES = ["spend", "optimise", "drivers", "perf", "month", "metrics"] as const;
 export type Disclosure = (typeof DISCLOSURES)[number];
 
@@ -32,14 +37,6 @@ export function openSet(open: string | undefined): Set<Disclosure> {
   );
 }
 
-/** `open` with one disclosure toggled (undefined when none are left). */
-export function toggleOpen(open: string | undefined, id: Disclosure): string | undefined {
-  const set = openSet(open);
-  if (set.has(id)) set.delete(id);
-  else set.add(id);
-  return set.size ? DISCLOSURES.filter((d) => set.has(d)).join(",") : undefined;
-}
-
 /** The shared context (app/shell/context.ts) plus TokenOps' own keys. */
 export const tokenopsSearchSchema = z.extend(sharedSearchSchema, {
   view: fallback(z.enum(["agent", "workflow"]), "agent"),
@@ -54,8 +51,7 @@ export const tokenopsSearchSchema = z.extend(sharedSearchSchema, {
   /** Selected day for the day panel (UTC date). */
   day: opt(isoDate),
   traces: opt(flag),
-  more: opt(flag),
-  /** Open disclosures: CSV of DISCLOSURES, or `all`. Unknown ids are dropped. */
+  /** Sections to land on: CSV of DISCLOSURES, or `all`. Unknown ids are dropped. */
   open: opt(z.pipe(z.string(), z.transform(parseOpen))),
 });
 

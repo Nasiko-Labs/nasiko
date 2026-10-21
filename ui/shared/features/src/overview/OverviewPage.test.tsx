@@ -1,6 +1,8 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/overview/OverviewPage.test.tsx. Local edits: Prettier
 // formatting.
 // The top bar (legacy ui/ on development, e8379db5a): the breadcrumb's list items are skipped.
+// The redesign (legacy ui/ on development, 3aac84f66: 8bf09bf29): the twelve-column placement and the open TokenOps
+// page.
 /**
  * The Overview page (plans/feat-overview.md §14): each card renders from the pinned seed and fails on its own, the
  * spend is said as fleet spend (eng R2), and the Fleet health counts match the Agents catalog filter (eng R1).
@@ -436,14 +438,14 @@ describe("Budgets", () => {
     ).toHaveAttribute("href", "/router#router-budgets");
   });
 
-  it("hides both on a server without budgets (a bare 404), and Recent sessions takes the row", async () => {
+  it("hides both on a server without budgets (a bare 404); Recent sessions sits beside Fleet health", async () => {
     server.use(http.get("*/api/budgets", () => new HttpResponse(null, { status: 404 })));
     renderApp("/");
     await loaded();
     await waitFor(() => expect(card("overview-budget")).toBeNull());
     const actions = card("overview-actions");
     expect(within(actions).queryByRole("link", { name: copy.actions.adjustBudget })).toBeNull();
-    expect(card("overview-sessions").className).toContain("@[1100px]/overview:col-span-4");
+    expect(card("overview-sessions").className).toContain("@[1100px]/overview:col-span-7");
   });
 });
 
@@ -516,8 +518,11 @@ describe("Savings", () => {
     const row = await screen.findByTestId("overview-savings");
     await user.click(within(row).getByRole("link", { name: /See the breakdown/ }));
     await waitFor(() => expect(router.state.location.pathname).toBe("/tokenops"));
-    const section = await screen.findByRole("button", { name: /^Token optimisation/ });
-    expect(section).toHaveAttribute("aria-expanded", "true");
+    // TokenOps has no expanders: `open=optimise` scrolls to the section, which is always on the page.
+    expect(router.state.location.search).toMatchObject({ open: "optimise" });
+    expect(
+      await screen.findByRole("heading", { name: "Token optimisation savings" }),
+    ).toBeInTheDocument();
   });
 
   it("keeps the tile grid to the four like-for-like counters", async () => {

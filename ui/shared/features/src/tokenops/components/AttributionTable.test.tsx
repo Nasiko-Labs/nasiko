@@ -1,7 +1,7 @@
 // Ported from the legacy ui/ on development (3aac84f66) common/src/features/tokenops/components/AttributionTable.test.tsx: the table's
-// paging (development 49950eb1e). Local edits: the React TokenOps table has no top-rows cap or Show all, so the no-page-size case expects
-// every row; the client is provided with a scope
+// paging (development 49950eb1e). Local edits: the client is provided with a scope
 // (`ProductQueryProvider`: the table's agent directory keys by it); Prettier formatting.
+// With the top-rows cap and Show all (8bf09bf29), the no-page-size case is development's again.
 import { QueryClient } from "@tanstack/react-query";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -82,8 +82,11 @@ const names = () =>
 const pager = () => screen.queryByRole("navigation", { name: /pagination/i });
 
 describe("AttributionTable paging", () => {
-  it("shows every row, never a pager, without a page size (the TokenOps page)", () => {
+  it("shows the top rows and Show all, never a pager, without a page size (the TokenOps page)", async () => {
     show();
+    expect(names()).toHaveLength(10);
+    expect(pager()).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Show all 23" }));
     expect(names()).toHaveLength(23);
     expect(pager()).not.toBeInTheDocument();
   });

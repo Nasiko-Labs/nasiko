@@ -2,6 +2,7 @@
 // the chart-mode `ToggleGroup type="single"` is Base UI's value array (`value={[mode]}`, an emptied pick ignored as
 // Radix's `v &&` did); the spike's `Button asChild` + TanStack `Link` -> `ButtonLink` to `pageHref`
 // (`/sessions?day=…&sort=cost`, `/tokenops?day=…`); optional props admit `undefined`; Prettier formatting.
+// The redesign (legacy ui/ on development, 3aac84f66: 8bf09bf29): the chart beside its drivers in one wide card.
 "use client";
 
 /**
@@ -90,152 +91,158 @@ export function Spend({
       ) : !totals ? (
         <CardError what={copy.spend.rangeWhat} onRetry={spend.retry} titleRef={titleRef} />
       ) : (
-        <div className="flex flex-col gap-3">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <p className="flex flex-wrap items-center gap-x-3 gap-y-1">
-              <span className="text-3xl font-semibold tracking-tight tabular-nums">
-                {fmtMoneyFloor(totals.spend, spend.unpriced)}
-              </span>
-              {totals.previous ? (
-                <span className="inline-flex items-center gap-2 text-xs text-muted-foreground">
-                  <Delta changePct={change} polarity={POLARITY.spend} current={totals.spend} />
-                  {copy.spend.vsPrevious(rangeDays)}
+        // From 1000 px of card (full width on the Overview): the total and chart on the left, the drivers on the right.
+        <div className="grid gap-x-8 gap-y-3 @[1000px]/card:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)]">
+          <div className="flex min-w-0 flex-col gap-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <p className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                <span className="text-3xl font-semibold tracking-tight tabular-nums">
+                  {fmtMoneyFloor(totals.spend, spend.unpriced)}
                 </span>
+                {totals.previous ? (
+                  <span className="inline-flex items-center gap-2 text-xs text-muted-foreground">
+                    <Delta changePct={change} polarity={POLARITY.spend} current={totals.spend} />
+                    {copy.spend.vsPrevious(rangeDays)}
+                  </span>
+                ) : null}
+              </p>
+              {anySpend ? (
+                <ToggleGroup
+                  variant="outline"
+                  size="sm"
+                  value={[mode]}
+                  onValueChange={(vs) => {
+                    const v = vs[0] as ChartMode | undefined;
+                    if (v) setMode(v);
+                  }}
+                  aria-label={copy.spend.chartMode}
+                >
+                  <ToggleGroupItem value="bars" aria-label={copy.spend.bars} className={TOUCH}>
+                    <BarChart3 aria-hidden />
+                  </ToggleGroupItem>
+                  <ToggleGroupItem value="lines" aria-label={copy.spend.lines} className={TOUCH}>
+                    <LineChart aria-hidden />
+                  </ToggleGroupItem>
+                </ToggleGroup>
               ) : null}
-            </p>
+            </div>
             {anySpend ? (
-              <ToggleGroup
-                variant="outline"
-                size="sm"
-                value={[mode]}
-                onValueChange={(vs) => {
-                  const v = vs[0] as ChartMode | undefined;
-                  if (v) setMode(v);
-                }}
-                aria-label={copy.spend.chartMode}
-              >
-                <ToggleGroupItem value="bars" aria-label={copy.spend.bars} className={TOUCH}>
-                  <BarChart3 aria-hidden />
-                </ToggleGroupItem>
-                <ToggleGroupItem value="lines" aria-label={copy.spend.lines} className={TOUCH}>
-                  <LineChart aria-hidden />
-                </ToggleGroupItem>
-              </ToggleGroup>
+              <SpendChart
+                days={spend.days}
+                stack={stack}
+                pending={spend.stackPending}
+                rangeDays={rangeDays}
+                mode={mode}
+                hidden={hidden}
+              />
+            ) : null}
+            {spend.spike ? (
+              <p className="text-xs">
+                {spikeSentence(spend.spike)}.{" "}
+                {/* Sessions searches the trace store from the day to now, which fails past 7 days: older spikes open
+                  TokenOps' day panel instead (/ship review). */}
+                {now - Date.parse(`${spend.spike.date}T00:00:00Z`) < TEMPO_MAX_SEARCH_MS ? (
+                  <ButtonLink
+                    variant="link"
+                    size="sm"
+                    className={`h-auto px-0 text-xs ${TOUCH}`}
+                    href={pageHref("/sessions", { day: spend.spike.date, sort: "cost" })}
+                  >
+                    {copy.spend.seeSessions} <span aria-hidden>→</span>
+                  </ButtonLink>
+                ) : (
+                  <ButtonLink
+                    variant="link"
+                    size="sm"
+                    className={`h-auto px-0 text-xs ${TOUCH}`}
+                    href={pageHref("/tokenops", { day: spend.spike.date })}
+                  >
+                    {copy.spend.seeDay} <span aria-hidden>→</span>
+                  </ButtonLink>
+                )}
+              </p>
             ) : null}
           </div>
-          {anySpend ? (
-            <SpendChart
-              days={spend.days}
-              stack={stack}
-              pending={spend.stackPending}
-              rangeDays={rangeDays}
-              mode={mode}
-              hidden={hidden}
-            />
-          ) : null}
-          {spend.spike ? (
-            <p className="text-xs">
-              {spikeSentence(spend.spike)}.{" "}
-              {/* Sessions searches the trace store from the day to now, which fails past 7 days: older spikes open
-                  TokenOps' day panel instead (/ship review). */}
-              {now - Date.parse(`${spend.spike.date}T00:00:00Z`) < TEMPO_MAX_SEARCH_MS ? (
-                <ButtonLink
-                  variant="link"
-                  size="sm"
-                  className={`h-auto px-0 text-xs ${TOUCH}`}
-                  href={pageHref("/sessions", { day: spend.spike.date, sort: "cost" })}
-                >
-                  {copy.spend.seeSessions} <span aria-hidden>→</span>
-                </ButtonLink>
-              ) : (
-                <ButtonLink
-                  variant="link"
-                  size="sm"
-                  className={`h-auto px-0 text-xs ${TOUCH}`}
-                  href={pageHref("/tokenops", { day: spend.spike.date })}
-                >
-                  {copy.spend.seeDay} <span aria-hidden>→</span>
-                </ButtonLink>
-              )}
-            </p>
-          ) : null}
-          {spend.driversError && !spend.drivers.length ? (
-            <SourceFailed what={copy.spend.driversWhat} onRetry={spend.retry} />
-          ) : spend.drivers.length ? (
-            <Table className="text-sm" aria-label={copy.spend.drivers(rangeDays)}>
-              <TableHeader>
-                <TableRow className="hover:bg-transparent">
-                  <TableHead className="h-9 px-2 text-xs font-normal text-muted-foreground">
-                    {copy.spend.colAgent}
-                  </TableHead>
-                  {/* Columns drop out as the card narrows (its own width, not the page's). */}
-                  <TableHead className="hidden h-9 w-[30%] px-2 text-xs font-normal text-muted-foreground @[640px]/card:table-cell">
-                    {copy.spend.colShare}
-                  </TableHead>
-                  <TableHead className="h-9 px-2 text-right text-xs font-normal text-muted-foreground">
-                    {copy.spend.colSpend}
-                  </TableHead>
-                  <TableHead className="hidden h-9 px-2 text-right text-xs font-normal text-muted-foreground @[480px]/card:table-cell">
-                    {copy.spend.colAvg}
-                  </TableHead>
-                  <TableHead className="h-9 px-2 text-right text-xs font-normal text-muted-foreground">
-                    {copy.spend.colChange}
-                  </TableHead>
-                  {stack ? (
-                    <TableHead className="h-9 w-10 px-0">
-                      <span className="sr-only">{copy.spend.colShow}</span>
+          <div className="flex min-w-0 flex-col gap-3">
+            {spend.driversError && !spend.drivers.length ? (
+              <SourceFailed what={copy.spend.driversWhat} onRetry={spend.retry} />
+            ) : spend.drivers.length ? (
+              <Table className="text-sm" aria-label={copy.spend.drivers(rangeDays)}>
+                <TableHeader>
+                  <TableRow className="hover:bg-transparent">
+                    <TableHead className="h-9 px-2 text-xs font-normal text-muted-foreground">
+                      {copy.spend.colAgent}
                     </TableHead>
+                    {/* Columns drop out as the card narrows (its own width, not the page's), and Avg / day when the table shares a
+                      wide card with the chart. */}
+                    <TableHead className="hidden h-9 w-[30%] px-2 text-xs font-normal text-muted-foreground @[640px]/card:table-cell">
+                      {copy.spend.colShare}
+                    </TableHead>
+                    <TableHead className="h-9 px-2 text-right text-xs font-normal text-muted-foreground">
+                      {copy.spend.colSpend}
+                    </TableHead>
+                    <TableHead className="hidden h-9 px-2 text-right text-xs font-normal text-muted-foreground @[480px]/card:table-cell @[1000px]/card:hidden">
+                      {copy.spend.colAvg}
+                    </TableHead>
+                    <TableHead className="h-9 px-2 text-right text-xs font-normal text-muted-foreground">
+                      {copy.spend.colChange}
+                    </TableHead>
+                    {stack ? (
+                      <TableHead className="h-9 w-10 px-0">
+                        <span className="sr-only">{copy.spend.colShow}</span>
+                      </TableHead>
+                    ) : null}
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {spend.drivers.map((r) => (
+                    <DriverRow
+                      key={r.id}
+                      id={r.id}
+                      name={r.name}
+                      series={keyed.get(r.id)?.series}
+                      sharePct={r.sharePct}
+                      cost={r.cost}
+                      perDay={r.cost / rangeDays}
+                      delta={
+                        <Delta
+                          changePct={r.deltaPct}
+                          polarity={POLARITY.spend}
+                          unavailable={r.deltaKind === "unavailable"}
+                          current={r.cost}
+                        />
+                      }
+                      eye={stack ? { hidden: hiddenIds.has(r.id), last: visible <= 1 } : null}
+                      onToggle={toggle}
+                    />
+                  ))}
+                  {spend.other ? (
+                    <DriverRow
+                      id={OTHER}
+                      name={copy.spend.otherAgents(spend.other.count)}
+                      series={stack ? OTHER_SERIES : undefined}
+                      sharePct={spend.other.sharePct}
+                      cost={spend.other.cost}
+                      perDay={spend.other.cost / rangeDays}
+                      delta={
+                        <Delta
+                          changePct={spend.other.deltaPct}
+                          polarity={POLARITY.spend}
+                          unavailable={spend.other.unavailable}
+                          current={spend.other.cost}
+                        />
+                      }
+                      eye={stack ? { hidden: hiddenIds.has(OTHER), last: visible <= 1 } : null}
+                      onToggle={toggle}
+                    />
                   ) : null}
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {spend.drivers.map((r) => (
-                  <DriverRow
-                    key={r.id}
-                    id={r.id}
-                    name={r.name}
-                    series={keyed.get(r.id)?.series}
-                    sharePct={r.sharePct}
-                    cost={r.cost}
-                    perDay={r.cost / rangeDays}
-                    delta={
-                      <Delta
-                        changePct={r.deltaPct}
-                        polarity={POLARITY.spend}
-                        unavailable={r.deltaKind === "unavailable"}
-                        current={r.cost}
-                      />
-                    }
-                    eye={stack ? { hidden: hiddenIds.has(r.id), last: visible <= 1 } : null}
-                    onToggle={toggle}
-                  />
-                ))}
-                {spend.other ? (
-                  <DriverRow
-                    id={OTHER}
-                    name={copy.spend.otherAgents(spend.other.count)}
-                    series={stack ? OTHER_SERIES : undefined}
-                    sharePct={spend.other.sharePct}
-                    cost={spend.other.cost}
-                    perDay={spend.other.cost / rangeDays}
-                    delta={
-                      <Delta
-                        changePct={spend.other.deltaPct}
-                        polarity={POLARITY.spend}
-                        unavailable={spend.other.unavailable}
-                        current={spend.other.cost}
-                      />
-                    }
-                    eye={stack ? { hidden: hiddenIds.has(OTHER), last: visible <= 1 } : null}
-                    onToggle={toggle}
-                  />
-                ) : null}
-              </TableBody>
-            </Table>
-          ) : (
-            <EmptyState title={copy.spend.noDrivers(rangeDays)} className="py-6 md:py-6" />
-          )}
-          <p className="text-xs text-muted-foreground">{copy.spend.scopeNote}</p>
+                </TableBody>
+              </Table>
+            ) : (
+              <EmptyState title={copy.spend.noDrivers(rangeDays)} className="py-6 md:py-6" />
+            )}
+            <p className="text-xs text-muted-foreground">{copy.spend.scopeNote}</p>
+          </div>
         </div>
       )}
     </Card>
@@ -295,7 +302,7 @@ function DriverRow({
       <TableCell className="px-2 text-right font-mono text-xs tabular-nums">
         {fmtMoney(cost)}
       </TableCell>
-      <TableCell className="hidden px-2 text-right font-mono text-xs text-muted-foreground tabular-nums @[480px]/card:table-cell">
+      <TableCell className="hidden px-2 text-right font-mono text-xs text-muted-foreground tabular-nums @[480px]/card:table-cell @[1000px]/card:hidden">
         {fmtMoney(perDay)}
       </TableCell>
       <TableCell className="px-2 text-right">{delta}</TableCell>

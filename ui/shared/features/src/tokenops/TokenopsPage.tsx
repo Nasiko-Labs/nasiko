@@ -1,54 +1,44 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/tokenops/TokenopsPage.tsx. Local edits: the router seam —
-// `search`/`setSearch` still come in as props, plus `history` (`back()` and `index()`, the lab's
-// `router.history.back()` and `location.state.__TSR_index`, from lib/url-state.ts); `Link` is the navigation port's `Link` (`@nasiko/app-core/navigation`) with the
-// lab's search objects serialised by `hrefFor`; `meQuery` is `meQueryOptions(scope)` and the return-tick refresh
-// matches the scoped product keys (`isProductKey`, feature "tokenops", part "calendar"/"day"); the lab's `ApiError`
-// is `ProductApiError`; Base UI: `BreadcrumbLink asChild` -> `render`, the ToggleGroup is value-array based, the
-// Select's `onValueChange` is `(value, eventDetails)` and it takes `items` so its closed Value shows labels; the server-down card names this app's commands
-// (`pnpm --filter @nasiko/web dev:mock`, `NASIKO_API_UPSTREAM`, `pnpm dev`) in place of the lab's Vite ones; primitives
-// from `@nasiko/ui/primitives`, composites from `@nasiko/ui/composites` (`LabEmptyState` as `EmptyState`), formatters
-// and media queries from `@nasiko/ui/lib`; optional props typed `| undefined`,
-// `compareOn` is handed `{ compare }` only when set (its lab signature has no `| undefined`) and the display-name
-// lookup reads `matches[0]?.id` (noUncheckedIndexedAccess); lint-driven mechanical edits (void arrow bodies braced,
-// `otherMonth` reads `q.data.days` since `isPlaceholderData` narrows the result, `&apos;` in JSX text); Prettier formatting.
-// The top bar (legacy ui/ on development, 3aac84f66: e8379db5a): the sticky bar sits under the shell's top bar
-// (`top-(--topbar-h)`).
+// Ported from the legacy ui/ on development (3aac84f66) common/src/features/tokenops/TokenopsPage.tsx (the one-page
+// redesign, 8bf09bf29, on the top bar of e8379db5a and c721a11a8 and the tour targets of dd9fe0f64). Local edits, as
+// in this page's earlier port: `search`/`setSearch` come in as props, plus `history` (`back()` and `index()`, the
+// legacy `router.history.back()` and `location.state.__TSR_index`, from url-state.ts); `Link` is the navigation
+// port's `Link` with search objects serialised by `hrefFor`; `meQuery` is `meQueryOptions(scope)` and the
+// return-tick refresh matches the scoped product keys (`isProductKey`, feature "tokenops", part "calendar"/"day");
+// `ApiError` is `ProductApiError`; the Select's `onValueChange` is `(value, eventDetails)` and it takes `items` so its
+// closed Value shows labels; the server-down card names this app's commands; `Reveal` is `RevealGroup`
+// (@nasiko/ui/composites); optional props admit `undefined`, `compareOn` is handed `{ compare }` only when set, the
+// display-name lookup reads `matches[0]?.id` (noUncheckedIndexedAccess); lint-driven mechanical edits (void arrow
+// bodies braced, `otherMonth` reads `q.data.days`, `&apos;` in JSX text); Prettier formatting.
 "use client";
 
 /**
- * TokenOps, question-led (plans/feat-tokenops-page.md).
+ * TokenOps, question-led (plans/feat-tokenops-page.md), as one open page: nothing hides behind an expander.
  *
- *   F1 hero "This month" (always MTD) ─ click day ─▶ ?day=
- *   ── Window divider ──
- *   KPI strip (4 + More)
- *   F2 timeline ─ click bucket ─▶ ?day=  ─▶ DayPanel ─ agent ─▶ ?agent=  │ View traces ─▶ ?traces=true
- *   F3 attribution  |  F5 cost × p95          F3 row "Traces" ─▶ ?agent=<id>&traces=true
+ *   Hero bento: narrative + spend curve │ six KPI tiles │ more metrics │ savings strip
+ *   ── sticky section nav (Spend · Drivers · Optimisation) ──
+ *   Spend: F2 timeline (Spend · Latency) ─ click bucket ─▶ ?day= ─▶ DayPanel ─ agent ─▶ ?agent= │ View traces ─▶ ?traces=true
+ *          F1 This month (calendar + forecast) ─ click day ─▶ ?day=
+ *   Drivers: concentration + token mix │ F3 attribution | F5 cost × p95   F3 row "Traces" ─▶ ?agent=<id>&traces=true
+ *   Optimisation: /finops/savings bento + chat history (CX-V3)
  *   F4 traces drawer (sheet)
  *
- * All state lives in the URL. Drill-downs push history (Back unwinds them); sort,
- * search and the KPI expander replace it (A5).
+ * The shell's top bar carries the time presets and the drill path (TokenOps › day › agent › Traces); the page header
+ * keeps the title, freshness and filters. All state lives in the URL. Drill-downs push history (Back unwinds them);
+ * sort and search replace it (A5). `?open=` (links from other pages) scrolls to its section on arrival.
  */
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "@nasiko/app-core/navigation";
 import { AlertTriangle, DollarSign, Info, X } from "lucide-react";
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { AnimatePresence, m, transitions } from "@nasiko/ui/motion";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Alert, AlertDescription } from "@nasiko/ui/primitives";
+import { Button } from "@nasiko/ui/primitives";
 import {
-  Alert,
-  AlertDescription,
-  Breadcrumb,
-  BreadcrumbItem,
-  BreadcrumbLink,
-  BreadcrumbList,
-  BreadcrumbPage,
-  BreadcrumbSeparator,
-  Button,
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-  ToggleGroup,
-  ToggleGroupItem,
 } from "@nasiko/ui/primitives";
 import {
   isProductKey,
@@ -57,13 +47,8 @@ import {
   useProductScope,
 } from "@nasiko/data-access/product";
 import { env } from "@nasiko/app-core/env";
-import {
-  fmtLocalTime,
-  fmtPct,
-  fmtShortDay,
-  prefersReducedMotion,
-  useMediaQuery,
-} from "@nasiko/ui/lib";
+import { fmtLocalTime, fmtPct, fmtShortDay } from "@nasiko/ui/lib";
+import { useMediaQuery } from "@nasiko/ui/lib";
 import { useFrozenNow, useReturnTick } from "@nasiko/app-core/useReturnTick";
 import { hrefFor } from "@nasiko/app-core/url-state";
 import {
@@ -75,42 +60,39 @@ import {
   useTimeseries,
   useTopTraces,
   type Filters,
+  TOKENOPS_FEATURE,
 } from "./api";
 import { compareOn, withoutWindow } from "@nasiko/app-core/shell/context";
+import { TopBar } from "@nasiko/app-core/shell/TopBar";
 import { tokenopsNarrative } from "../narrative/tokenops";
 import { buildAttribution } from "./attribution";
 import { summarizeMonth } from "./forecast";
-import {
-  DISCLOSURES,
-  openSet,
-  toggleOpen,
-  type Disclosure as DisclosureId,
-  type TokenopsSearch,
-} from "./search";
+import { openSet, type Disclosure as DisclosureId, type TokenopsSearch } from "./search";
 import { toTimeline, zeroFillTimeline } from "./series";
 import { DAY_MS, dayWindow, monthKey, resolveWindow, utcMonthStart } from "./window";
 import { AttributionTable } from "./components/AttributionTable";
 import { CostPerformance } from "./components/CostPerformance";
 import { DayPanel } from "./components/DayPanel";
-import { KpiStrip } from "./components/KpiStrip";
+import { DriversOverview } from "./components/DriversOverview";
+import { ChatHistory } from "./components/ChatHistory";
+import { RevealGroup, RevealItem } from "@nasiko/ui/composites";
+import { Segmented } from "./components/Segmented";
+import { SectionNav } from "./components/SectionNav";
+import { scrollToSection, sectionDomId } from "./sections";
+import { useSavingsTrend } from "../optimization/api";
 import { MonthHero } from "./components/MonthHero";
 import { copy as optimizationCopy } from "../optimization/copy";
 import { OptimisationPanel } from "./components/OptimisationPanel";
 import { SavingsHighlight } from "./components/SavingsHighlight";
 import { summarizeOptimisation } from "./optimisation";
-import {
-  Disclosure,
-  LabEmptyState as EmptyState,
-  PageHeader,
-  PageLoader,
-  PanelError,
-  StateCard,
-  TimeControl,
-} from "@nasiko/ui/composites";
+import { PageHeader } from "@nasiko/ui/composites";
+import { PanelError } from "@nasiko/ui/composites";
+import { PageLoader } from "@nasiko/ui/composites";
+import { LabEmptyState as EmptyState, StateCard } from "@nasiko/ui/composites";
 import { SpendTimeline } from "./components/SpendTimeline";
 import { SummaryHero } from "./components/SummaryHero";
+import { CustomRange, InvalidRangeNote, TimePresets } from "@nasiko/ui/composites";
 import { TracesDrawer } from "./components/TracesDrawer";
-import { TOKENOPS_FEATURE } from "./api";
 
 export type SetSearch = (
   patch: Partial<TokenopsSearch>,
@@ -131,7 +113,7 @@ const showOptPct = (v: number | null) => (v == null ? "—" : fmtPct(v));
 export function TokenopsPage({
   search,
   setSearch,
-  history,
+  history: pageHistory,
 }: {
   search: TokenopsSearch;
   setSearch: SetSearch;
@@ -187,6 +169,8 @@ export function TokenopsPage({
   const calLast = useCalendar(monthKey(lastMonth), filters, ready);
   const day = useDay(search.day, filters, ready);
   const providers = useProviders(ready);
+  // CX-V3 (proposed): history selection's savings, the /optimization lead's read under the same key.
+  const history = useSavingsTrend(win, ready);
   const traces = useTopTraces(tracesWin, filters, ready && !!search.traces);
 
   // Agent filter options: the unfiltered dashboard (same cache entry when no filter is set).
@@ -288,113 +272,26 @@ export function TokenopsPage({
     attrRows,
   ]);
 
-  // Disclosures, one open at a time: Spend over time starts open, the rest collapsed; a drill-down
-  // or table state in the URL opens its own. This month keeps Spend over time open beside it,
-  // because its calendar opens the day panel there.
-  // A disclosure forced open by URL state can still be collapsed: `closed` remembers that locally.
-  const open = openSet(search.open);
-  // The collapse is remembered against the URL state that forced it open, so a new drill-down
-  // (another day, a new search) opens the disclosure again. Closing the day panel doesn't.
-  const forcedBy = (id: DisclosureId) =>
-    id === "spend"
-      ? (search.day ?? "")
-      : id === "drivers"
-        ? `${search.q ?? ""}|${search.sort}|${search.view}|${open.has("perf")}`
-        : id === "metrics"
-          ? String(search.more ?? "")
-          : "";
-  const [closed, setClosed] = useState<ReadonlyMap<DisclosureId, string>>(new Map());
-  // Opening This month also opens Spend over time above it, which pushes This month down:
-  // bring its header back to just under the sticky bar.
-  const stickyBar = useRef<HTMLDivElement>(null);
-  const scrollToMonth = useRef(false);
+  // Arriving with `?open=` (the Overview's "See the breakdown", a trace's "Open in TokenOps") should land on that
+  // section, not the top of the page. No dependency array on purpose: the sections sit behind the page loader, so on a
+  // cold load the element does not exist yet and no single piece of state marks the moment it appears. Retry each
+  // render until it is there, then latch, so a later scroll of the user's own is never yanked back.
+  const arrivedAt = useRef(false);
   useEffect(() => {
-    const header = document.getElementById("disclosure-month-title");
-    if (!scrollToMonth.current || !header || !openSet(search.open).has("month")) return;
-    scrollToMonth.current = false;
-    header.style.scrollMarginTop = `${(stickyBar.current?.offsetHeight ?? 0) + 8}px`;
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- jsdom has no scrollIntoView (the lab's optional call)
-    header.scrollIntoView?.({
-      block: "start",
-      behavior: prefersReducedMotion() ? "auto" : "smooth",
-    });
-  }, [search.open, showLoader]);
-  /**
-   * Put the optimisation section under the sticky bar.
-   *
-   * One function for both ways in — the in-page button and the Overview's link — because they are
-   * the same request and must land in the same place. They did not: the button scrolled without the
-   * sticky-bar offset, so it stopped with the heading hidden behind the bar.
-   */
-  const scrollToOptimise = () => {
-    const header = document.getElementById("disclosure-optimise-title");
-    if (!header) return false;
-    header.style.scrollMarginTop = `${(stickyBar.current?.offsetHeight ?? 0) + 8}px`;
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- jsdom has no scrollIntoView (the lab's optional call)
-    header.scrollIntoView?.({
-      block: "start",
-      behavior: prefersReducedMotion() ? "auto" : "smooth",
-    });
-    return true;
-  };
-
-  // Arriving from the Overview's "See the breakdown" should land on the section, not the top of a
-  // page with four other panels above it.
-  //
-  // No dependency array on purpose. The disclosures sit behind the page loader, so on a cold load
-  // the element does not exist yet, and there is no single piece of state whose change reliably
-  // marks the moment it appears — `painted` is set during render, so it is already settled by the
-  // time effects run. Retrying each render until the element is there, then latching on the ref,
-  // is both simpler and correct; the cost is one `getElementById` per render, and only until it
-  // succeeds. The ref also stops a later toggle of the same section from yanking the viewport.
-  const scrolledToOpened = useRef(false);
-  useEffect(() => {
-    if (scrolledToOpened.current || !openSet(search.open).has("optimise")) return;
-    if (scrollToOptimise()) scrolledToOpened.current = true;
-  });
-  const collapsed = (id: DisclosureId) =>
-    closed.has(id) && (closed.get(id) === forcedBy(id) || (id === "spend" && !search.day));
-  const isOpen = (id: DisclosureId) =>
-    !collapsed(id) &&
-    (open.has(id) ||
-      id === "spend" ||
-      // Open by default: savings are the one piece of good news on this page, and burying them
-      // behind an expand made them invisible to anyone who did not already know to look.
-      id === "optimise" ||
-      (id === "drivers" &&
-        (!!search.q || search.sort !== "cost" || search.view !== "agent" || open.has("perf"))) ||
-      (id === "metrics" && !!search.more));
-  const toggle = (id: DisclosureId) => {
-    if (isOpen(id)) {
-      setClosed((prev) => new Map(prev).set(id, forcedBy(id)));
-      if (open.has(id)) setSearch({ open: toggleOpen(search.open, id) }, { replace: true });
+    if (arrivedAt.current) return;
+    const target = arrivalSection(openSet(search.open));
+    if (!target) {
+      arrivedAt.current = true;
       return;
     }
-    const keep: DisclosureId[] = id === "month" ? ["spend", "month"] : [id];
-    if (id === "month") scrollToMonth.current = true;
-    setClosed((prev) => {
-      const n = new Map(prev);
-      for (const d of DISCLOSURES) {
-        if (keep.includes(d)) n.delete(d);
-        else if (isOpen(d)) n.set(d, forcedBy(d));
-      }
-      return n;
-    });
-    setSearch(
-      {
-        open: keep.join(","),
-        // This month opens on today's hour-by-hour breakdown unless a day is already picked.
-        ...(id === "month" && !search.day ? { day: now.toISOString().slice(0, 10) } : {}),
-      },
-      { replace: true },
-    );
-  };
+    if (scrollToSection(target)) arrivedAt.current = true;
+  });
 
   // Opening the day panel or the drawer pushes history. Closing goes Back only when the
   // current entry is still the one that open created (history index = pre-open + 1), so a
   // close leaves no duplicate entry but never undoes a filter, preset or other navigation
   // made while the panel was open. Anything else (deep links, later pushes) closes by replacing.
-  const historyIndex = () => history.index();
+  const historyIndex = () => pageHistory.index();
   const openedAt = useRef<{ day?: number | undefined; traces?: number | undefined }>({});
   const [announceDay, setAnnounceDay] = useState(false);
   const openDay = (d: string) => {
@@ -414,7 +311,7 @@ export function TokenopsPage({
     if (!search[which]) return; // already closing (double click, repeated Escape)
     const pre = openedAt.current[which];
     openedAt.current[which] = undefined;
-    if (pre !== undefined && historyIndex() === pre + 1) history.back();
+    if (pre !== undefined && historyIndex() === pre + 1) pageHistory.back();
     else setSearch({ [which]: undefined }, { replace: true });
   };
 
@@ -470,84 +367,117 @@ export function TokenopsPage({
     const matches = agentOptions.filter((a) => a.name === name);
     return matches.length === 1 ? matches[0]?.id : undefined;
   };
-  // MTD's KPI Δ compares with the same-length window before the month, not "same days last month" (the hero's comparison).
+  // MTD's KPI Δ compares with the same-length window before the month, not "same days last month" (the month's comparison).
   const mtdDays = Math.max(1, Math.round((win.end.getTime() - win.start.getTime()) / DAY_MS));
   const kpiCompareLabel =
     win.preset === "mtd" ? `the previous ${mtdDays === 1 ? "day" : `${mtdDays} days`}` : undefined;
+  const historyData =
+    history.data?.kind === "ready"
+      ? history.data.data
+      : history.isError || history.data
+        ? null
+        : undefined;
+  const optimiseHint = optimisation
+    ? `${optimisation.optimisedCount} of ${optimisation.totalAgents} agents · ${showOptPct(optimisation.savedPct)} tokens saved`
+    : "savings per layer and per agent";
+  const sections = [
+    { id: "spend", label: "Spend", hint: win.label },
+    { id: "drivers", label: "Drivers" },
+    { id: "optimise", label: "Optimisation", hint: optimisation ? optimiseHint : undefined },
+  ];
+
+  const time = {
+    preset: search.preset,
+    invalid: search.preset === "custom" && win.preset !== "custom",
+    from: search.from,
+    to: search.to,
+    today,
+    onChange: (n: Pick<TokenopsSearch, "preset" | "from" | "to">) => {
+      setSearch(
+        { preset: n.preset, from: n.from, to: n.to },
+        { replace: search.preset === "custom" && n.preset === "custom" },
+      );
+    },
+  };
+
+  const filterControls = (
+    <>
+      <FilterSelect
+        label="Agent"
+        value={search.agent}
+        options={agentOptions.map((a) => ({ value: a.id, label: a.name }))}
+        onChange={(v) => {
+          setSearch({ agent: v, traces: undefined });
+        }}
+        extraLabel={agentLabel}
+      />
+      <FilterSelect
+        label="Provider"
+        value={search.provider}
+        options={(providers.data ?? []).map((p) => ({ value: p.provider, label: p.provider }))}
+        onChange={(v) => {
+          setSearch({ provider: v, model: undefined });
+        }}
+      />
+      <FilterSelect
+        label="Model"
+        value={search.model}
+        options={uniqueModels.map((m) => ({ value: m, label: m }))}
+        onChange={(v) => {
+          setSearch({ model: v });
+        }}
+      />
+    </>
+  );
 
   if (firstRun) return <FirstRun />;
 
   return (
-    // The page's first load is the one page loader below the sticky bar (plan §8 Phase 9: one busy region).
+    // The page's first load is the one page loader below the header (plan §8 Phase 9: one busy region).
     <div className="flex flex-col gap-4">
-      {/* Sticky bar: title, time control, filters, breadcrumb, freshness (A1). */}
-      <div
-        ref={stickyBar}
-        className="sticky top-(--topbar-h) z-20 -mx-4 flex flex-col gap-2 border-b border-border bg-background/95 px-4 py-3 backdrop-blur"
-      >
-        <PageHeader
-          title="TokenOps"
-          actions={
-            <TimeControl
-              preset={search.preset}
-              invalid={search.preset === "custom" && win.preset !== "custom"}
-              from={search.from}
-              to={search.to}
-              today={today}
-              onChange={(n) => {
-                setSearch(
-                  { preset: n.preset, from: n.from, to: n.to },
-                  { replace: search.preset === "custom" && n.preset === "custom" },
-                );
-              }}
-            />
-          }
-        />
-        {/* Chips scroll horizontally on narrow screens instead of growing the sticky bar (A1b). */}
+      {/* The top bar is the page's one sticky row: the presets and the drill path stay in view (A1). */}
+      <TopBar
+        {...drillTrail(search, agentLabel, setSearch)}
+        actions={
+          <>
+            <TimePresets {...time} />
+            {/* Custom dates sit beside the presets; a phone's bar has no room, so there they join the filters. */}
+            {isMd ? <CustomRange {...time} noteElsewhere /> : null}
+          </>
+        }
+        pinActions
+      />
+      {/* Left: what you are looking at and how fresh it is. Right: what narrows it, under the time presets. */}
+      <PageHeader
+        title="TokenOps"
+        description={
+          dash.dataUpdatedAt ? (
+            <span title="When this data was fetched">
+              Data as of {fmtLocalTime(dash.dataUpdatedAt, true)}
+            </span>
+          ) : null
+        }
+        actions={
+          isMd ? (
+            // A column, so the invalid-range note sits under the filters and both keep the right edge.
+            <div data-tour="tokenops-filters" className="flex flex-col items-end gap-1">
+              <div className="flex flex-wrap items-center justify-end gap-2">{filterControls}</div>
+              {time.invalid ? <InvalidRangeNote /> : null}
+            </div>
+          ) : null
+        }
+        className="mb-2"
+      />
+      {/* Phones: the custom dates and the filters scroll sideways in one row instead of wrapping (A1b). */}
+      {isMd ? null : (
         <div
           data-tour="tokenops-filters"
-          className="-mx-4 flex flex-nowrap items-center gap-2 overflow-x-auto px-4 md:mx-0 md:flex-wrap md:overflow-visible md:px-0 [&>*]:shrink-0"
+          className="-mx-4 mb-2 flex flex-nowrap items-center gap-2 overflow-x-auto px-4 [&>*]:shrink-0"
         >
-          <FilterSelect
-            label="Agent"
-            value={search.agent}
-            options={agentOptions.map((a) => ({ value: a.id, label: a.name }))}
-            onChange={(v) => {
-              setSearch({ agent: v, traces: undefined });
-            }}
-            extraLabel={agentLabel}
-          />
-          <FilterSelect
-            label="Provider"
-            value={search.provider}
-            options={(providers.data ?? []).map((p) => ({ value: p.provider, label: p.provider }))}
-            onChange={(v) => {
-              setSearch({ provider: v, model: undefined });
-            }}
-          />
-          <FilterSelect
-            label="Model"
-            value={search.model}
-            options={uniqueModels.map((m) => ({ value: m, label: m }))}
-            onChange={(v) => {
-              setSearch({ model: v });
-            }}
-          />
-          <DrillCrumbs
-            win={win.label}
-            day={search.day}
-            agent={agentLabel}
-            traces={!!search.traces}
-            setSearch={setSearch}
-          />
-          <span
-            className="ml-auto text-xs text-muted-foreground"
-            title="When this data was fetched"
-          >
-            {dash.dataUpdatedAt ? `Data as of ${fmtLocalTime(dash.dataUpdatedAt, true)}` : null}
-          </span>
+          <CustomRange {...time} />
+          {filterControls}
         </div>
-      </div>
+      )}
 
       {showLoader ? <PageLoader label="Loading TokenOps" /> : null}
       {showLoader ? null : unknownAgent ? (
@@ -596,34 +526,23 @@ export function TokenopsPage({
               ) : null
             }
             windowLabel={win.label}
-            kpis={dash.data?.kpis}
-            totalAgents={dash.data?.summary.total_agents}
+            compareLabel={kpiCompareLabel}
+            data={dash.data}
+            points={summaryStale ? [] : timeline}
             compare={compare && !prevUnavailable}
             unpriced={unpriced > 0}
             month={summary}
             loading={dash.isPending || summaryStale}
             error={dash.error}
             onRetry={() => void dash.refetch()}
-          />
+          >
+            <SavingsHighlight data={optimisation} onSeeDetail={() => scrollToSection("optimise")} />
+          </SummaryHero>
 
-          <SavingsHighlight
-            data={optimisation}
-            onSeeDetail={() => {
-              if (!isOpen("optimise")) toggle("optimise");
-              scrollToOptimise();
-            }}
-          />
+          <SectionNav sections={sections} />
 
-          <div data-tour="tokenops-sections" className="flex flex-col">
-            <Disclosure
-              id="spend"
-              title="Spend over time"
-              hint={win.label}
-              open={isOpen("spend")}
-              onToggle={() => {
-                toggle("spend");
-              }}
-            >
+          <RevealGroup data-tour="tokenops-sections" className="flex flex-col gap-10">
+            <PageSection id="spend" title="Spend" hint={win.label}>
               <SpendTimeline
                 points={timeline}
                 bucket={timeseries.data?.bucket ?? "day"}
@@ -635,121 +554,97 @@ export function TokenopsPage({
                 windowLabel={win.label.toLowerCase()}
               />
 
-              {search.day ? (
-                <DayPanel
-                  date={search.day}
-                  data={day.data}
-                  loading={day.isPending}
-                  error={day.error}
-                  onRetry={() => void day.refetch()}
-                  onClose={() => {
-                    close("day");
-                  }}
-                  announce={announceDay}
-                  onAnnounced={() => {
-                    setAnnounceDay(false);
-                  }}
-                  canFilterAgent={(name) => agentIdForDisplayName(name) !== undefined}
-                  onFilterAgent={(name) => {
-                    const id = agentIdForDisplayName(name);
-                    if (id) setSearch({ agent: id, view: "agent" });
-                  }}
-                  onViewTraces={() => {
-                    openTraces({});
-                  }}
-                  morph={narrative?.spike?.date !== search.day}
-                  sessionsLink={
-                    <Link
-                      href={hrefFor("/sessions", {
-                        ...withoutWindow(search),
-                        day: search.day,
-                        sort: "cost",
-                      })}
-                      className="text-sm font-medium text-primary-text underline-offset-4 hover:underline"
-                    >
-                      See sessions <span aria-hidden>→</span>
-                    </Link>
+              <AnimatePresence initial={false}>
+                {search.day ? (
+                  <m.div
+                    key="day"
+                    initial={{ opacity: 0, y: -8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -8 }}
+                    transition={transitions.disclosure}
+                  >
+                    <DayPanel
+                      date={search.day}
+                      data={day.data}
+                      loading={day.isPending}
+                      error={day.error}
+                      onRetry={() => void day.refetch()}
+                      onClose={() => {
+                        close("day");
+                      }}
+                      announce={announceDay}
+                      onAnnounced={() => {
+                        setAnnounceDay(false);
+                      }}
+                      canFilterAgent={(name) => agentIdForDisplayName(name) !== undefined}
+                      onFilterAgent={(name) => {
+                        const id = agentIdForDisplayName(name);
+                        if (id) setSearch({ agent: id, view: "agent" });
+                      }}
+                      onViewTraces={() => {
+                        openTraces({});
+                      }}
+                      morph={narrative?.spike?.date !== search.day}
+                      sessionsLink={
+                        <Link
+                          href={hrefFor("/sessions", {
+                            ...withoutWindow(search),
+                            day: search.day,
+                            sort: "cost",
+                          })}
+                          className="text-sm font-medium text-primary-text underline-offset-4 hover:underline"
+                        >
+                          See sessions <span aria-hidden>→</span>
+                        </Link>
+                      }
+                    />
+                  </m.div>
+                ) : null}
+              </AnimatePresence>
+
+              {/* `layout`: when the day panel opens above, the month glides down instead of jumping. */}
+              <m.div layout="position" transition={transitions.disclosure}>
+                <MonthHero
+                  summary={summary}
+                  unpricedCalls={
+                    win.preset === "mtd" && noFilters && dash.data && !dash.isPlaceholderData
+                      ? unpriced
+                      : null
                   }
+                  days={calPending ? undefined : calThis.data?.days}
+                  monthStart={thisMonth}
+                  today={today}
+                  selectedDay={search.day}
+                  onSelectDay={openDay}
+                  loading={calPending}
+                  error={calThis.error ?? calLast.error}
+                  onRetry={() => {
+                    void calThis.refetch();
+                    void calLast.refetch();
+                  }}
                 />
-              ) : null}
-            </Disclosure>
+              </m.div>
+            </PageSection>
 
-            <Disclosure
-              id="optimise"
-              title="Token optimisation"
-              hint={
-                optimisation
-                  ? `${optimisation.optimisedCount} of ${optimisation.totalAgents} agents · ${showOptPct(optimisation.savedPct)} tokens saved`
-                  : "savings per layer and per agent"
-              }
-              open={isOpen("optimise")}
-              onToggle={() => {
-                toggle("optimise");
-              }}
-            >
-              {savings.isError ? (
-                <StateCard
-                  tone="warning"
-                  title="Savings could not be loaded"
-                  fix="Retry, or check the control plane logs for the finops savings query."
-                  action={
-                    <Button variant="outline" size="sm" onClick={() => void savings.refetch()}>
-                      Retry
-                    </Button>
-                  }
-                >
-                  {savings.error instanceof Error ? savings.error.message : "Request failed."}
-                </StateCard>
-              ) : optimisation ? (
-                <>
-                  <OptimisationPanel data={optimisation} />
-                  {/* P3 (plans/feat-optimization-page.md): the trend, the agents and the fixes live on Optimization,
-                      opened on this window (R7A: the two pages share the window keys). */}
-                  <Link
-                    href={hrefFor("/optimization", {
-                      preset: search.preset,
-                      from: search.from,
-                      to: search.to,
-                    })}
-                    className="mt-3 inline-block text-xs underline underline-offset-4 hover:text-primary-text pointer-coarse:py-3"
-                  >
-                    {optimizationCopy.savings.more}
-                  </Link>
-                </>
-              ) : (
-                <div className="h-48 animate-pulse rounded-md bg-muted" aria-busy />
-              )}
-            </Disclosure>
-
-            <Disclosure
+            <PageSection
               id="drivers"
-              title="Who is driving cost"
-              hint="agents, workflows, cost vs performance"
-              open={isOpen("drivers")}
-              onToggle={() => {
-                toggle("drivers");
-              }}
+              title="Drivers"
+              hint={search.view === "agent" ? "agents, tokens, cost vs performance" : "workflows"}
             >
-              {search.view === "agent" ? (
-                <div className="md:hidden">
-                  <ToggleGroup
-                    variant="outline"
-                    size="sm"
-                    value={[mobilePanel]}
-                    onValueChange={(v: unknown[]) => {
-                      if (typeof v[0] === "string" && v[0])
-                        setMobilePanel(v[0] as "attribution" | "performance");
-                    }}
-                    aria-label="Panel"
-                  >
-                    <ToggleGroupItem value="attribution" className="px-3 text-xs">
-                      Who drives cost
-                    </ToggleGroupItem>
-                    <ToggleGroupItem value="performance" className="px-3 text-xs">
-                      Cost vs performance
-                    </ToggleGroupItem>
-                  </ToggleGroup>
-                </div>
+              <DriversOverview
+                rows={attrRows}
+                tokens={dash.data?.token_usage}
+                view={search.view}
+                loading={dash.isPending}
+              />
+              {search.view === "agent" && !isMd ? (
+                <Segmented
+                  label="Panel"
+                  value={mobilePanel}
+                  options={MOBILE_PANELS}
+                  onChange={setMobilePanel}
+                  className="w-fit"
+                />
               ) : null}
               <div className="grid gap-4 xl:grid-cols-12">
                 {showAttribution ? (
@@ -800,62 +695,53 @@ export function TokenopsPage({
                   </div>
                 ) : null}
               </div>
-            </Disclosure>
+            </PageSection>
 
-            <Disclosure
-              id="month"
-              title="This month"
-              hint="calendar and forecast method"
-              open={isOpen("month")}
-              onToggle={() => {
-                toggle("month");
-              }}
-            >
-              <MonthHero
-                summary={summary}
-                unpricedCalls={
-                  win.preset === "mtd" && noFilters && dash.data && !dash.isPlaceholderData
-                    ? unpriced
-                    : null
-                }
-                days={calPending ? undefined : calThis.data?.days}
-                monthStart={thisMonth}
-                today={today}
-                selectedDay={search.day}
-                onSelectDay={openDay}
-                loading={calPending}
-                error={calThis.error ?? calLast.error}
-                onRetry={() => {
-                  void calThis.refetch();
-                  void calLast.refetch();
-                }}
-              />
-            </Disclosure>
-
-            <Disclosure
-              id="metrics"
-              title="All metrics"
-              hint={`operations, cost per operation, latency · ${win.label}`}
-              open={isOpen("metrics")}
-              onToggle={() => {
-                toggle("metrics");
-              }}
-            >
-              <KpiStrip
-                data={dash.data}
-                loading={dash.isPending}
-                error={dash.error}
-                onRetry={() => void dash.refetch()}
-                more={!!search.more}
-                onToggleMore={() => {
-                  setSearch({ more: search.more ? undefined : true }, { replace: true });
-                }}
-                windowLabel={win.label}
-                compareLabel={kpiCompareLabel}
-                hideDeltas={!compare}
-              />
-            </Disclosure>
-          </div>
+            <PageSection id="optimise" title="Optimisation" hint={optimiseHint}>
+              {savings.isError ? (
+                <StateCard
+                  tone="warning"
+                  title="Savings could not be loaded"
+                  fix="Retry, or check the control plane logs for the finops savings query."
+                  action={
+                    <Button variant="outline" size="sm" onClick={() => void savings.refetch()}>
+                      Retry
+                    </Button>
+                  }
+                >
+                  {savings.error instanceof Error ? savings.error.message : "Request failed."}
+                </StateCard>
+              ) : optimisation ? (
+                <>
+                  <OptimisationPanel
+                    data={optimisation}
+                    history={
+                      <ChatHistory
+                        data={historyData}
+                        loading={history.isPending}
+                        filtered={!noFilters}
+                        search={search}
+                      />
+                    }
+                  />
+                  {/* P3 (plans/feat-optimization-page.md): the trend, the agents and the fixes live on Optimization,
+                      opened on this window (R7A: the two pages share the window keys). */}
+                  <Link
+                    href={hrefFor("/optimization", {
+                      preset: search.preset,
+                      from: search.from,
+                      to: search.to,
+                    })}
+                    className="inline-block w-fit text-xs underline underline-offset-4 hover:text-primary-text pointer-coarse:py-3"
+                  >
+                    {optimizationCopy.savings.more}
+                  </Link>
+                </>
+              ) : (
+                <div className="h-48 animate-pulse rounded-md bg-muted" aria-busy />
+              )}
+            </PageSection>
+          </RevealGroup>
 
           <TracesDrawer
             open={!!search.traces}
@@ -874,6 +760,51 @@ export function TokenopsPage({
         </>
       )}
     </div>
+  );
+}
+
+const MOBILE_PANELS = [
+  { value: "attribution", label: "Who drives cost" },
+  { value: "performance", label: "Cost vs performance" },
+] as const;
+
+/** Which section an `?open=` link means; the retired ids map onto the section that now holds them. */
+function arrivalSection(open: Set<DisclosureId>): string | undefined {
+  if (open.has("optimise")) return "optimise";
+  if (open.has("drivers") || open.has("perf")) return "drivers";
+  if (open.has("month") || open.has("spend")) return "spend";
+  return undefined;
+}
+
+/** One part of the page: a quiet header the section nav jumps to, then its panels. */
+function PageSection({
+  id,
+  title,
+  hint,
+  children,
+}: {
+  id: string;
+  title: string;
+  hint?: string | undefined;
+  children: ReactNode;
+}) {
+  return (
+    <RevealItem>
+      {/* scroll-mt clears the sticky section nav (the root's scroll-padding already clears the top bar). */}
+      <section
+        id={sectionDomId(id)}
+        aria-labelledby={`${sectionDomId(id)}-title`}
+        className="flex scroll-mt-14 flex-col gap-4"
+      >
+        <header className="flex items-baseline gap-2">
+          <h2 id={`${sectionDomId(id)}-title`} className="text-base font-semibold tracking-tight">
+            {title}
+          </h2>
+          {hint ? <span className="text-sm text-muted-foreground">{hint}</span> : null}
+        </header>
+        {children}
+      </section>
+    </RevealItem>
   );
 }
 
@@ -898,8 +829,8 @@ function FilterSelect({
         onValueChange={(v: string | null) => {
           onChange(v === ALL || v === null ? undefined : v);
         }}
-        // Base UI's Value shows a label (not the raw value) only for items it knows: the lab's Radix Value read it
-        // from the rendered item.
+        // Base UI's Value shows a label (not the raw value) only for items it knows: Radix's Value read it from the
+        // rendered item.
         items={{
           [ALL]: "All",
           ...(!known && value ? { [value]: extraLabel ?? value } : {}),
@@ -940,67 +871,43 @@ function FilterSelect({
   );
 }
 
-function DrillCrumbs({
-  win,
-  day,
-  agent,
-  traces,
-  setSearch,
-}: {
-  win: string;
-  day?: string | undefined;
-  agent?: string | undefined;
-  traces: boolean;
-  setSearch: SetSearch;
-}) {
-  if (!day && !agent && !traces) return null;
-  const crumbs: { level: string; label: string; clear: Partial<TokenopsSearch> }[] = [
-    { level: "window", label: win, clear: { day: undefined, agent: undefined, traces: undefined } },
+/**
+ * The drill path as the top bar's breadcrumb: TokenOps › day › agent › Traces. Each level above the current one is a
+ * button that clears what sits below it; TokenOps clears the whole drill but keeps the window and the other filters.
+ * With nothing drilled the shell's own breadcrumb stays.
+ */
+function drillTrail(
+  search: TokenopsSearch,
+  agentLabel: string | undefined,
+  setSearch: SetSearch,
+): { root?: ReactNode; trail?: ReactNode[] } {
+  const { day, traces } = search;
+  if (!day && !agentLabel && !traces) return {};
+  const levels: { label: string; clear: Partial<TokenopsSearch> }[] = [
+    { label: "TokenOps", clear: { day: undefined, agent: undefined, traces: undefined } },
   ];
-  if (day)
-    crumbs.push({
-      level: "day",
-      label: fmtShortDay(day),
-      clear: { agent: undefined, traces: undefined },
-    });
-  if (agent) crumbs.push({ level: "agent", label: agent, clear: { traces: undefined } });
-  if (traces) crumbs.push({ level: "traces", label: "Traces", clear: {} });
-  return (
-    <Breadcrumb aria-label="Drill-down">
-      <BreadcrumbList className="gap-1 text-xs sm:gap-1">
-        {crumbs.map((c, i) => (
-          <Fragment key={c.level}>
-            {i > 0 ? <BreadcrumbSeparator className="[&>svg]:size-3" /> : null}
-            <BreadcrumbItem className="gap-1">
-              {i === crumbs.length - 1 ? (
-                <BreadcrumbPage aria-current="location" className="font-medium">
-                  {c.label}
-                </BreadcrumbPage>
-              ) : (
-                <BreadcrumbLink
-                  render={
-                    <Button
-                      variant="link"
-                      size="sm"
-                      className="h-auto p-0 text-xs font-normal text-muted-foreground underline-offset-2 hover:text-foreground"
-                      onClick={() => {
-                        setSearch(c.clear);
-                      }}
-                    />
-                  }
-                >
-                  {c.label}
-                </BreadcrumbLink>
-              )}
-            </BreadcrumbItem>
-          </Fragment>
-        ))}
-      </BreadcrumbList>
-    </Breadcrumb>
+  if (day) levels.push({ label: fmtShortDay(day), clear: { agent: undefined, traces: undefined } });
+  if (agentLabel) levels.push({ label: agentLabel, clear: { traces: undefined } });
+  if (traces) levels.push({ label: "Traces", clear: {} });
+  const [root, ...trail] = levels.map((l, i) =>
+    i === levels.length - 1 ? (
+      l.label
+    ) : (
+      <Button
+        variant="link"
+        className="h-auto p-0 text-sm font-normal text-muted-foreground hover:text-foreground"
+        onClick={() => {
+          setSearch(l.clear);
+        }}
+      >
+        {l.label}
+      </Button>
+    ),
   );
+  return { root, trail };
 }
 
-function Notice({ tone, children }: { tone: "info" | "warning"; children: React.ReactNode }) {
+function Notice({ tone, children }: { tone: "info" | "warning"; children: ReactNode }) {
   const Icon = tone === "info" ? Info : AlertTriangle;
   return (
     <Alert

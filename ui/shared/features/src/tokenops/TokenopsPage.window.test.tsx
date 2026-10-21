@@ -2,6 +2,8 @@
 // `location()`, `router.history.back()` -> `router.back()`; `recordRequests` from `@/test/pinned-seed`; the Time
 // window Select is the Base UI one (same roles);
 // Prettier formatting.
+// The redesign of TokenOps, Optimization, Overview and Harnesses (legacy ui/ on development, 3aac84f66: 8bf09bf29),
+// merged into this port.
 
 /**
  * The TokenOps time window: presets and Custom dates (an invalid range keeps the inputs and shows 30 d meanwhile,
@@ -121,8 +123,9 @@ describe("time control", () => {
 
   it("This month labels what the KPI Δ compares against", async () => {
     renderTokenops("/tokenops?open=all&preset=mtd");
-    const kpis = await screen.findByLabelText("Key metrics, This month");
-    expect(within(kpis).getByText(/^Δ vs the previous (day|\d+ days)$/)).toBeInTheDocument();
+    await screen.findByLabelText("Key metrics, This month");
+    const summary = screen.getByRole("region", { name: "Summary" });
+    expect(within(summary).getByText(/^vs the previous (day|\d+ days)$/)).toBeInTheDocument();
   });
 });
 

@@ -1,6 +1,8 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/overview/components.coverage.test.tsx. Local edits: the
 // TanStack memory router around the cards is the navigation-port test harness (`renderWithRouter` from @nasiko/testing/router);
 // Prettier formatting.
+// The redesign of TokenOps, Optimization, Overview and Harnesses (legacy ui/ on development, 3aac84f66: 8bf09bf29),
+// merged into this port.
 /**
  * Overview cards rendered on their own with hand-built data (ship coverage audit): the states and links the page tests
  * can't reach deterministically from the seed (plans/feat-overview.md §6-§10).
@@ -170,7 +172,9 @@ const day = (date: string, spend: number) => ({
   label: date.slice(5),
   spend,
   operations: 0,
+  p50: null,
   p95: null,
+  p99: null,
   topAgent: null,
   topAgentSpend: null,
 });
