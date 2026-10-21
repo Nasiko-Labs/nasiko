@@ -1203,6 +1203,27 @@ pub enum EnsureSessionOutcome {
     Conflict,
 }
 
+/// One turn's token/cost usage within a chat session, from the authoritative
+/// billing ledger (`token_usage` joined to `flows` — one flow == one turn).
+/// Independent of Tempo/the materializer.
+#[derive(Debug, serde::Serialize, sqlx::FromRow)]
+pub struct TurnUsage {
+    /// The user's message for this turn (`flows.title`), when known.
+    pub title: Option<String>,
+    /// The turn's flow id — what `token_usage.session_id` actually stores.
+    pub flow_id: String,
+    /// LLM model calls the agent made in this turn.
+    pub calls: i64,
+    pub tokens: i64,
+    pub cost_usd: f64,
+    pub turn_start: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct SessionTurnsResponse {
+    pub turns: Vec<TurnUsage>,
+}
+
 #[derive(Clone, Copy, Default)]
 pub struct FinopsAccess<'a> {
     pub user_ids: Option<&'a [uuid::Uuid]>,
@@ -1217,6 +1238,39 @@ struct ScopeBinds {
 }
 
 impl ObservabilityService {
+    /// Per-turn tokens + cost for a chat session (its A2A contextId), read from
+    /// the `token_usage` ledger joined to `flows`, grouped by flow (one row per
+    /// turn). Scoped to `user_id` unless `is_superuser`. This is the authoritative
+    /// per-turn view and does not depend on the Tempo materializer.
+    pub async fn get_session_turns(
+        &self,
+        context_id: &str,
+        user_id: &str,
+        is_superuser: bool,
+    ) -> Result<SessionTurnsResponse, ObservabilityError> {
+        let turns = sqlx::query_as::<_, TurnUsage>(
+            r#"SELECT f.title                         AS title,
+                      t.session_id                    AS flow_id,
+                      count(*)::bigint                AS calls,
+                      sum(t.total_tokens)::bigint     AS tokens,
+                      round(sum(t.cost_usd), 6)::float8 AS cost_usd,
+                      min(t.created_at)               AS turn_start
+               FROM token_usage t
+               JOIN flows f ON f.flow_id = t.session_id
+               WHERE f.metadata->>'context_id' = $1
+                 AND ($3 OR f.user_id = $2::uuid)
+               GROUP BY f.flow_id, f.title, t.session_id
+               ORDER BY turn_start"#,
+        )
+        .bind(context_id)
+        .bind(user_id)
+        .bind(is_superuser)
+        .fetch_all(&self.db)
+        .await
+        .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
+        Ok(SessionTurnsResponse { turns })
+    }
+
     pub fn from_state(state: &crate::state::AppState) -> Self {
         Self {
             provider: state.observability.clone(),
