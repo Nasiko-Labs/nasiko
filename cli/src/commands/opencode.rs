@@ -118,10 +118,7 @@ pub fn connect(options: &RoutingOptions<'_>) -> Result<coding_agent_router::Conf
                 crate::commands::local_agents::cli_name()
             );
         }
-        return match coding_agent_router::put_back_config(&prepared) {
-            Ok(()) => Err(error),
-            Err(put_back) => Err(put_back.context(format!("local install failed: {error:#}"))),
-        };
+        return coding_agent_router::fail_after_prepare(&prepared, "local install failed", error);
     }
 
     // The new plugin is now live. If this was a reconnect and the previous binding's credential

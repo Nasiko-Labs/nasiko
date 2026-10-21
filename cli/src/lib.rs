@@ -1533,10 +1533,15 @@ pub fn dispatch_registry(cmd: RegistrySubCommands) -> Result<()> {
 // ─── Coding-agent integrations ──────────────────────────────────────────────
 
 /// `agents install` / `integration install`, now `connect <agent> --no-routing --reporting`:
-/// runs exactly that command, so installed reporting keeps its saved content setting.
+/// runs exactly the command the note names. The old command reported prompt and response text
+/// unless `--no-content`, so the new one says which explicitly.
 /// `old` is the group the caller used (`agents` or `integration`), for the note.
 pub fn install_reporting_renamed(old: &str, agent: &str, no_content: bool) -> Result<()> {
-    let content = if no_content { " --no-content" } else { "" };
+    let content = if no_content {
+        " --no-content"
+    } else {
+        " --content"
+    };
     commands::local_agents::note_renamed(
         &format!("{old} install"),
         &format!("connect {agent} --no-routing --reporting{content} -y"),
@@ -1547,6 +1552,7 @@ pub fn install_reporting_renamed(old: &str, agent: &str, no_content: bool) -> Re
         &commands::local_agents::ConnectOptions {
             no_routing: true,
             reporting: true,
+            content: !no_content,
             no_content,
             yes: true,
             ..Default::default()

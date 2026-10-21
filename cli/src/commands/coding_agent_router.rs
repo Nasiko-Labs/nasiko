@@ -68,6 +68,42 @@ pub fn put_back_config(prepared: &PreparedConnection) -> Result<()> {
     prepared.config_change().undo()
 }
 
+/// What an agent's LLM settings were before `connect` changed its config: the attached config
+/// and the model pinned in it. The server clears the pin whenever the config changes, so putting
+/// the config back must put the pin back too.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PreviousConfig {
+    llm_config_id: Option<String>,
+    pinned_model: Option<String>,
+}
+
+/// Attaches `previous` to the agent again: the config, then (a separate request, since the server
+/// ignores a pin sent with a config change) its pinned model. Fails with [`ConfigNotRestored`].
+fn put_back(client: &Client, agent_id: &str, previous: &PreviousConfig) -> Result<()> {
+    let path = format!("/agents/{agent_id}/llm-config");
+    let put_back = || -> Result<()> {
+        client.patch_json::<Value, _>(&path, &json!({"llm_config_id": previous.llm_config_id}))?;
+        if let Some(model) = &previous.pinned_model {
+            client.patch_json::<Value, _>(&path, &json!({"pinned_model": model}))?;
+        }
+        Ok(())
+    };
+    put_back().map_err(|error| anyhow::Error::new(ConfigNotRestored(format!("{error:#}"))))
+}
+
+/// Ends a connect that failed after [`prepare`] changed the agent's LLM config: puts the config
+/// back and returns `error`, or — when that fails too — both, marked [`ConfigNotRestored`].
+pub fn fail_after_prepare<T>(
+    prepared: &PreparedConnection,
+    what_failed: &str,
+    error: anyhow::Error,
+) -> Result<T> {
+    match put_back_config(prepared) {
+        Ok(()) => Err(error),
+        Err(put_back) => Err(put_back.context(format!("{what_failed}: {error:#}"))),
+    }
+}
+
 /// The LLM config change a `connect` made to its routing agent — kept so that undoing the
 /// connection right after (when a later step fails) undoes the change too.
 #[derive(Debug, Clone)]
@@ -75,11 +111,12 @@ pub struct ConfigChange {
     entry: ClusterEntry,
     agent_id: String,
     /// `Some(previous)` when the config was changed; `None` when it was left as it was.
-    previous_llm_config_id: Option<Option<String>>,
+    previous: Option<PreviousConfig>,
 }
 
 impl ConfigChange {
     /// A connect that left the agent's LLM config as it was.
+    #[cfg(test)]
     pub fn unchanged() -> Self {
         Self {
             entry: ClusterEntry {
@@ -88,22 +125,18 @@ impl ConfigChange {
                 token: None,
             },
             agent_id: String::new(),
-            previous_llm_config_id: None,
+            previous: None,
         }
     }
 
-    /// Puts the previous LLM config back; a no-op when nothing was changed. Fails with
-    /// [`ConfigNotRestored`].
+    /// Puts the previous LLM config (and its pinned model) back; a no-op when nothing was
+    /// changed. Fails with [`ConfigNotRestored`].
     pub fn undo(&self) -> Result<()> {
-        let Some(previous) = &self.previous_llm_config_id else {
+        let Some(previous) = &self.previous else {
             return Ok(());
         };
         let client = Client::from_cluster_entry_with_timeout(&self.entry, Some(CP_CALL_TIMEOUT));
-        let path = format!("/agents/{}/llm-config", self.agent_id);
-        client
-            .patch_json::<Value, _>(&path, &json!({"llm_config_id": previous}))
-            .map(|_| ())
-            .map_err(|error| anyhow::Error::new(ConfigNotRestored(format!("{error:#}"))))
+        put_back(&client, &self.agent_id, previous)
     }
 }
 
@@ -163,7 +196,7 @@ pub struct PreparedConnection {
     pub binding: ConnectionBinding,
     pub resolved_config: Value,
     pub entry: ClusterEntry,
-    previous_llm_config_id: Option<Option<String>>,
+    previous: Option<PreviousConfig>,
 }
 
 impl PreparedConnection {
@@ -172,7 +205,7 @@ impl PreparedConnection {
         ConfigChange {
             entry: self.entry.clone(),
             agent_id: self.binding.agent_id.clone(),
-            previous_llm_config_id: self.previous_llm_config_id.clone(),
+            previous: self.previous.clone(),
         }
     }
 }
@@ -441,8 +474,7 @@ pub fn prepare(
         Some(reference) => resolve_owned_agent(&client, reference, &principal_id, spec.id)?,
         None => ensure_local_agent(&client, &spec, &principal_id)?,
     };
-    let (resolved_config, previous_llm_config_id) =
-        configure_agent_for_install(&client, &agent_id, llm_config)?;
+    let (resolved_config, previous) = configure_agent_for_install(&client, &agent_id, llm_config)?;
     Ok(PreparedConnection {
         binding: ConnectionBinding {
             version: STATE_VERSION,
@@ -456,7 +488,7 @@ pub fn prepare(
         },
         resolved_config,
         entry,
-        previous_llm_config_id,
+        previous,
     })
 }
 
@@ -667,14 +699,18 @@ fn configure_agent_for_install(
     client: &Client,
     agent_id: &str,
     llm_config: Option<&str>,
-) -> Result<(Value, Option<Option<String>>)> {
+) -> Result<(Value, Option<PreviousConfig>)> {
     let path = format!("/agents/{agent_id}/llm-config");
     let current: Value = client.get_json(&path)?;
-    let current_id = current
-        .get("data")
-        .and_then(|data| data.get("llm_config_id"))
-        .and_then(Value::as_str)
-        .map(str::to_string);
+    let current_field = |field: &str| {
+        current
+            .get("data")
+            .and_then(|data| data.get(field))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
+    let current_id = current_field("llm_config_id");
+    let current_pin = current_field("pinned_model");
     let (response, previous) = if let Some(reference) = llm_config {
         let config = fetch_config_by_ref(client, reference)?;
         let config_id = config
@@ -684,9 +720,13 @@ fn configure_agent_for_install(
         if current_id.as_deref() == Some(config_id) {
             (current, None)
         } else {
+            let previous = PreviousConfig {
+                llm_config_id: current_id,
+                pinned_model: current_pin,
+            };
             (
                 client.patch_json(&path, &json!({"llm_config_id": config_id}))?,
-                Some(current_id),
+                Some(previous),
             )
         }
     } else {
@@ -704,13 +744,9 @@ fn configure_agent_for_install(
         // The config was changed above but can't be used: put the previous one back, so a
         // failed connect never leaves the agent on it — and say so when that fails too.
         if let Some(previous) = &previous
-            && let Err(put_back) =
-                client.patch_json::<Value, _>(&path, &json!({"llm_config_id": previous}))
+            && let Err(put_back) = put_back(client, agent_id, previous)
         {
-            return Err(
-                anyhow::Error::new(ConfigNotRestored(format!("{put_back:#}")))
-                    .context(format!("{error:#}")),
-            );
+            return Err(put_back.context(format!("{error:#}")));
         }
         return Err(error);
     };
@@ -823,7 +859,7 @@ fn credential_from_config(binding: &ConnectionBinding, cfg: &Config) -> Result<R
     if binding
         .principal_id
         .as_deref()
-        .is_some_and(|expected| expected != principal)
+        .is_some_and(|expected| !config::same_principal(expected, &principal))
     {
         bail!("Nasiko login changed since connect; reconnect this coding agent");
     }
@@ -851,7 +887,7 @@ pub fn auth_status(binding: &ConnectionBinding) -> Result<&'static str> {
     if binding
         .principal_id
         .as_deref()
-        .is_some_and(|expected| expected != principal)
+        .is_some_and(|expected| !config::same_principal(expected, &principal))
     {
         return Ok("different user");
     }
@@ -1361,7 +1397,7 @@ mod tests {
             )
             .create();
         let client = Client::for_test(&server.url(), None);
-        let (resolved, previous_llm_config_id) =
+        let (resolved, previous) =
             configure_agent_for_install(&client, "agent", Some("new-config")).unwrap();
         assert_eq!(resolved["model"], "new-model");
         let prepared = PreparedConnection {
@@ -1381,12 +1417,81 @@ mod tests {
                 username: None,
                 token: None,
             },
-            previous_llm_config_id,
+            previous,
         };
         put_back_config(&prepared).unwrap();
         current.assert();
         configs.assert();
         attach.assert();
         restore.assert();
+    }
+
+    #[test]
+    fn putting_a_config_back_puts_its_pinned_model_back_too() {
+        let mut server = mockito::Server::new();
+        server
+            .mock("GET", "/api/agents/agent/llm-config")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"data":{"llm_config_id":"old","pinned_model":"pinned","llm_config":{"id":"old"}}}"#,
+            )
+            .create();
+        server
+            .mock("GET", "/api/llm-configs")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"data":[{"id":"new","name":"new-config"}]}"#)
+            .create();
+        let ok = r#"{"data":{"llm_config_id":"new","llm_config":{"id":"new"}}}"#;
+        server
+            .mock("PATCH", "/api/agents/agent/llm-config")
+            .match_body(mockito::Matcher::Json(json!({"llm_config_id": "new"})))
+            .with_status(200)
+            .with_body(ok)
+            .create();
+        // The server clears the pin when the config changes, so it must come back separately.
+        let config_back = server
+            .mock("PATCH", "/api/agents/agent/llm-config")
+            .match_body(mockito::Matcher::Json(json!({"llm_config_id": "old"})))
+            .with_status(200)
+            .with_body(ok)
+            .create();
+        let pin_back = server
+            .mock("PATCH", "/api/agents/agent/llm-config")
+            .match_body(mockito::Matcher::Json(json!({"pinned_model": "pinned"})))
+            .with_status(200)
+            .with_body(ok)
+            .create();
+        let client = Client::for_test(&server.url(), None);
+        let (_, previous) =
+            configure_agent_for_install(&client, "agent", Some("new-config")).unwrap();
+        let previous = previous.expect("the config was changed");
+        put_back(&client, "agent", &previous).unwrap();
+        config_back.assert();
+        pin_back.assert();
+    }
+
+    #[test]
+    fn a_pin_that_cannot_be_put_back_is_reported_as_not_restored() {
+        let mut server = mockito::Server::new();
+        server
+            .mock("PATCH", "/api/agents/agent/llm-config")
+            .match_body(mockito::Matcher::Json(json!({"llm_config_id": "old"})))
+            .with_status(200)
+            .with_body("{}")
+            .create();
+        server
+            .mock("PATCH", "/api/agents/agent/llm-config")
+            .match_body(mockito::Matcher::Json(json!({"pinned_model": "pinned"})))
+            .with_status(500)
+            .create();
+        let client = Client::for_test(&server.url(), None);
+        let previous = PreviousConfig {
+            llm_config_id: Some("old".into()),
+            pinned_model: Some("pinned".into()),
+        };
+        let error = put_back(&client, "agent", &previous).unwrap_err();
+        assert!(error.chain().any(|cause| cause.is::<ConfigNotRestored>()));
     }
 }

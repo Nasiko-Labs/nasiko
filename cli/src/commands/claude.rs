@@ -74,10 +74,12 @@ fn local_requirements() -> Result<(PathBuf, Map<String, Value>, String)> {
     Ok((claude, settings, helper_command))
 }
 
-/// Checks everything `connect` would — what it needs on this machine, then the routing agent
-/// and the LLM config with the control plane, undoing the config change — while changing
-/// nothing here. A reconnect runs it before removing the working connection, so anything that
-/// would fail changes nothing.
+/// Checks everything `connect` would — what it needs on this machine, then the routing agent and
+/// the LLM config with the control plane. A reconnect runs it before removing the working
+/// connection, so anything that would fail leaves the connection as it is.
+/// Changes nothing on this machine. With the control plane it is not entirely side-effect free:
+/// a new LLM config is attached to the routing agent for the length of the check and then put
+/// back (with its pinned model), and asking for the default agent creates it if it doesn't exist.
 pub fn check(options: &RoutingOptions<'_>) -> Result<()> {
     local_requirements()?;
     let executable = std::env::current_exe().context("cannot locate the nasiko executable")?;
@@ -188,10 +190,7 @@ pub fn connect(options: &RoutingOptions<'_>) -> Result<coding_agent_router::Conf
                 &prepared.binding.agent_id,
             );
         }
-        return match coding_agent_router::put_back_config(&prepared) {
-            Ok(()) => Err(error),
-            Err(put_back) => Err(put_back.context(format!("local install failed: {error:#}"))),
-        };
+        return coding_agent_router::fail_after_prepare(&prepared, "local install failed", error);
     }
 
     let provider = prepared
@@ -221,7 +220,7 @@ pub fn connect(options: &RoutingOptions<'_>) -> Result<coding_agent_router::Conf
         }
         McpOutcome::RegistrationFailed(reason) => {
             eprintln!(
-                "warning: could not register the Nasiko MCP server with Claude Code ({reason}); LLM routing is connected, MCP tools are not. To retry: claude mcp remove --scope user nasiko && {cli} disconnect claude && {cli} connect claude",
+                "warning: could not register the Nasiko MCP server with Claude Code ({reason}); LLM routing is connected, MCP tools are not. To retry: claude mcp remove --scope user nasiko && {cli} disconnect claude --routing && {cli} connect claude",
                 cli = crate::commands::local_agents::cli_name()
             );
         }

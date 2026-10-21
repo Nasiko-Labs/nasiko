@@ -63,10 +63,13 @@ fn codex_binary() -> Result<PathBuf> {
     which::which("codex").context("Codex is not installed or 'codex' is not on PATH")
 }
 
-/// Checks everything `connect` would — the `codex` binary and a readable `config.toml` here,
-/// then the routing agent, the LLM config and whether the router accepts that config for Codex,
-/// undoing the config change — while changing nothing on this machine. A reconnect runs it
-/// before removing the working connection, so anything that would fail changes nothing.
+/// Checks everything `connect` would — the `codex` binary and a readable `config.toml` here, then
+/// the routing agent, the LLM config and whether the router accepts that config for Codex. A
+/// reconnect runs it before removing the working connection, so anything that would fail leaves
+/// the connection as it is.
+/// Changes nothing on this machine. With the control plane it is not entirely side-effect free:
+/// a new LLM config is attached to the routing agent for the length of the check and then put
+/// back (with its pinned model), and asking for the default agent creates it if it doesn't exist.
 pub fn check(options: &RoutingOptions<'_>) -> Result<()> {
     codex_binary()?;
     read_config(&config_path())?;
@@ -315,16 +318,12 @@ fn verify_routing(prepared: &coding_agent_router::PreparedConnection, model: &st
     }
 }
 
-/// Restores the agent's previous LLM config after a failed connect, keeping both failures
-/// when the restore itself fails.
+/// Puts the agent's previous LLM config back after a failed connect.
 fn rollback_after<T>(
     prepared: &coding_agent_router::PreparedConnection,
     error: anyhow::Error,
 ) -> Result<T> {
-    match coding_agent_router::put_back_config(prepared) {
-        Ok(()) => Err(error),
-        Err(put_back) => Err(put_back.context(format!("Codex connect failed: {error:#}"))),
-    }
+    coding_agent_router::fail_after_prepare(prepared, "Codex connect failed", error)
 }
 
 pub fn disconnect(force: bool) -> Result<()> {

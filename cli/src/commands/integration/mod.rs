@@ -3,7 +3,7 @@
 //! [`local_agents`](super::local_agents) answers "what coding agents are on this machine" and
 //! drives setup. [`install`] registers an agent in the control plane (or reuses the one LLM
 //! routing already uses) and installs a hook that durably queues completed turns for delivery
-//! to the cluster active when they were captured.
+//! to the cluster and account reporting was installed for — not whichever is active later.
 
 mod agents;
 mod catalog;
@@ -40,8 +40,10 @@ pub struct LocalAgent {
     pub detected: bool,
     /// Whether session reporting is implemented for this agent.
     pub reporting_supported: bool,
-    /// Whether the user said no when reporting was offered after logging in.
+    /// Whether the user said no when reporting was offered after logging in, or removed it.
     pub reporting_declined: bool,
+    /// The control-plane agent reporting is installed under, when installed.
+    pub reporting_agent_name: Option<String>,
     pub reporting_active: bool,
     pub reporting_installed: bool,
     pub reporting_status: String,
@@ -112,6 +114,7 @@ pub fn local_agents() -> Result<Vec<LocalAgent>> {
                 detected: detect(agent).is_present(),
                 reporting_supported: spec.support == Support::Instrumented,
                 reporting_declined: settings.declined.contains(spec.id),
+                reporting_agent_name: state.map(|state| state.agent_name.clone()),
                 reporting_active: reporting.connected,
                 reporting_installed: state.is_some(),
                 reporting_status: reporting.status,
@@ -222,6 +225,8 @@ pub fn uninstall(agent_id: &str) -> Result<()> {
         .agents
         .remove(spec.id)
         .map_or_else(|| spec.agent_name.to_string(), |state| state.agent_name);
+    // Removing reporting is a no: it isn't offered again after the next login.
+    settings.declined.insert(spec.id.to_string());
     settings.save()?;
 
     println!("Removed the {} hook.", spec.display_name);

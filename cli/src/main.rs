@@ -89,8 +89,8 @@ Config: ~/.nasiko/config.json
 Coding agents get up to three things: LLM routing through the Nasiko LLM router, your MCP
 connectors through the Nasiko gateway, and session reporting to Nasiko observability.
 On a terminal, connect asks about each; flags answer the same questions in scripts.
-Without a terminal, routing and MCP are set up and reporting is off unless --reporting,
---content or --no-content is given.
+Without a terminal, new routing gets MCP and reporting is off unless --reporting, --content
+or --no-content is given; scripts report prompt and response text only with --content.
 
 Examples:
   nasiko connect                       pick from the coding agents on this machine
