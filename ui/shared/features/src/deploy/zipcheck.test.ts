@@ -1,6 +1,8 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/deploy/zipcheck.test.ts. Local edits: none beyond imports
 // and Prettier formatting.
 // @vitest-environment node
+// Language-agnostic zip validation (legacy ui/ on development, 3aac84f66: 05f0bb2a6, 982901006): a Dockerfile
+// CMD/ENTRYPOINT or a Python entrypoint passes.
 /* eslint-disable @typescript-eslint/no-unused-vars -- the lab's test code: the seed's shape and the DOM it asserts on are what the test checks */
 import { strToU8, zipSync } from "fflate";
 import { describe, expect, it } from "vitest";
@@ -101,6 +103,39 @@ describe("checkZip (eng review R5: tail read, capped entries)", () => {
     ).toBe("pass");
     expect(
       (await checkZip(zip({ ...GOOD, Dockerfile: "FROMpython\n" }))).items.dockerfile.state,
+    ).toBe("fail");
+  });
+
+  it("accepts a non-Python agent whose Dockerfile declares CMD/ENTRYPOINT (language-agnostic)", async () => {
+    const { "main.py": _m, ...rest } = GOOD;
+    // Node agent: no Python entrypoint file, but the Dockerfile declares CMD.
+    expect(
+      (
+        await checkZip(
+          zip({
+            ...rest,
+            Dockerfile: 'FROM node:20\nCMD ["node", "server.js"]\n',
+            "server.js": "",
+          }),
+        )
+      ).items.entrypoint.state,
+    ).toBe("pass");
+    // ENTRYPOINT (exec form) also counts.
+    expect(
+      (
+        await checkZip(
+          zip({
+            ...rest,
+            Dockerfile: 'FROM rust:1\nENTRYPOINT ["/app/agent"]\n',
+            "Cargo.toml": "",
+          }),
+        )
+      ).items.entrypoint.state,
+    ).toBe("pass");
+    // No startup command and no entrypoint file → fail.
+    expect(
+      (await checkZip(zip({ ...rest, Dockerfile: "FROM alpine:3.20\nRUN echo build\n" }))).items
+        .entrypoint.state,
     ).toBe("fail");
   });
 

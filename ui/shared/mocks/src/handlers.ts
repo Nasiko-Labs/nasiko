@@ -9,6 +9,8 @@
 // redundant casts and `String()` calls dropped); development (3aac84f66, 49950eb1e and f851fdca8): `mockCtx` gives the
 // seeds, the chat context and `addChatOnlyAgent` (the chat mock's internal agents) to an edition's mocks; Prettier
 // formatting.
+// Language-agnostic zip validation (legacy ui/ on development, 3aac84f66: 05f0bb2a6, 982901006): a Dockerfile
+// CMD/ENTRYPOINT or a Python entrypoint passes.
 /* eslint-disable @typescript-eslint/no-non-null-assertion -- ported verbatim; the seeded lookups always hit */
 /**
  * MSW handlers — every mocked endpoint derives from one seed (plan D4, A19).
@@ -2130,7 +2132,7 @@ function deployHandlers(): HttpHandler[] {
       }
       if (check.items.entrypoint.state === "fail")
         return text(
-          "no Python entrypoint found (main.py, src/main.py, __main__.py, or src/__main__.py)",
+          "no startup command found — add a CMD or ENTRYPOINT to your Dockerfile, or include a Python entrypoint (main.py, src/main.py, __main__.py, or src/__main__.py)",
           400,
         );
       // eslint-disable-next-line @typescript-eslint/no-base-to-string -- a multipart field, coerced as the server does

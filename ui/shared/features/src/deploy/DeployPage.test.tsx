@@ -1,6 +1,8 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/deploy/DeployPage.test.tsx. Local edits: none beyond
 // imports and Prettier formatting (`renderApp` is @nasiko/app-shell/testing/render-app; the pinned seed and msw
 // server are @nasiko/testing/pinned-seed).
+// Language-agnostic zip validation (legacy ui/ on development, 3aac84f66: 05f0bb2a6, 982901006): a Dockerfile
+// CMD/ENTRYPOINT or a Python entrypoint passes.
 /* eslint-disable @typescript-eslint/no-unused-vars -- the lab's test code: the seed's shape and the DOM it asserts on are what the test checks */
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -153,7 +155,7 @@ describe("Deploy: upload a zip (plans/feat-deploy.md §4.1)", () => {
         "*/api/agents/upload",
         () =>
           new HttpResponse(
-            "no Python entrypoint found (main.py, src/main.py, __main__.py, or src/__main__.py)",
+            "no startup command found — add a CMD or ENTRYPOINT to your Dockerfile, or include a Python entrypoint (main.py, src/main.py, __main__.py, or src/__main__.py)",
             { status: 400 },
           ),
       ),
@@ -176,7 +178,7 @@ describe("Deploy: upload a zip (plans/feat-deploy.md §4.1)", () => {
         "*/api/agents/upload",
         () =>
           new HttpResponse(
-            "no Python entrypoint found (main.py, src/main.py, __main__.py, or src/__main__.py)",
+            "no startup command found — add a CMD or ENTRYPOINT to your Dockerfile, or include a Python entrypoint (main.py, src/main.py, __main__.py, or src/__main__.py)",
             { status: 400 },
           ),
       ),

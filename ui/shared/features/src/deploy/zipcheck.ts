@@ -1,5 +1,7 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/deploy/zipcheck.ts. Local edits: none beyond imports and
 // Prettier.
+// Language-agnostic zip validation (legacy ui/ on development, 3aac84f66: 05f0bb2a6, 982901006): a Dockerfile
+// CMD/ENTRYPOINT or a Python entrypoint passes.
 /**
  * The in-browser zip check (plans/feat-deploy.md §4.1; design review 5, eng review R5 / D6, recorded explicitly).
  *
@@ -193,10 +195,12 @@ export async function checkZip(file: Blob): Promise<ZipCheck> {
     size = { state: "fail", detail: checkCopy.overUnzipped(MAX_UNZIPPED_BYTES / 2 ** 20) };
 
   let dockerfile: ItemResult;
+  let dockerfileText: string | null = null;
   const df = byName.get("Dockerfile");
   if (!df) dockerfile = { state: "fail", detail: checkCopy.noDockerfile };
   else {
     const text = await readText(file, df);
+    dockerfileText = text;
     if (text === null) dockerfile = { state: "unknown" };
     else
       dockerfile = text.split(/\r?\n/).some((l) => l.trimStart().startsWith("FROM "))
@@ -204,9 +208,28 @@ export async function checkZip(file: Blob): Promise<ZipCheck> {
         : { state: "fail", detail: checkCopy.noFrom };
   }
 
-  const entrypoint: ItemResult = ENTRYPOINTS.some((p) => byName.has(p))
-    ? { state: "pass" }
-    : { state: "fail", detail: checkCopy.noEntrypoint };
+  // Language-agnostic, mirroring validate_agent_zip (oss/server/src/agents/upload.rs): the agent is
+  // runnable if its Dockerfile declares a CMD/ENTRYPOINT (any runtime — Node, Rust, Go, a prebuilt
+  // binary) or it ships a Python entrypoint file. When the Dockerfile couldn't be read here, fall
+  // back to the entrypoint-file signal and leave the item unknown rather than wrongly failing it
+  // (the server stays the judge).
+  const declaresStart = (t: string) =>
+    t.split(/\r?\n/).some((l) => {
+      const u = l.trimStart().toUpperCase();
+      return (
+        u.startsWith("CMD ") ||
+        u.startsWith("CMD[") ||
+        u.startsWith("ENTRYPOINT ") ||
+        u.startsWith("ENTRYPOINT[")
+      );
+    });
+  const runnable =
+    ENTRYPOINTS.some((p) => byName.has(p)) ||
+    (dockerfileText !== null && declaresStart(dockerfileText));
+  let entrypoint: ItemResult;
+  if (runnable) entrypoint = { state: "pass" };
+  else if (dockerfileText === null) entrypoint = { state: "unknown" };
+  else entrypoint = { state: "fail", detail: checkCopy.noEntrypoint };
 
   let version: string | null = null;
   let cardName: string | null = null;

@@ -1,5 +1,7 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/deploy/errors.ts. Local edits: none beyond imports and
 // Prettier.
+// Language-agnostic zip validation (legacy ui/ on development, 3aac84f66: 05f0bb2a6, 982901006): a Dockerfile
+// CMD/ENTRYPOINT or a Python entrypoint passes.
 /**
  * Server error text → what went wrong and how to fix it (plans/feat-deploy.md §4.1, §5). Pure; tested in logic.test.ts.
  *
@@ -33,7 +35,9 @@ const RULES: readonly { test: RegExp; error: Omit<BuildError, "suggested" | "ver
     error: { ...copy.errors.noFrom, item: "dockerfile" },
   },
   {
-    test: /no Python entrypoint found/i,
+    // The current server says "no startup command found …"; the older "no Python
+    // entrypoint found …" is kept so a newer UI still maps an older server's error.
+    test: /no startup command found|no Python entrypoint found/i,
     error: { ...copy.errors.noEntrypoint, item: "entrypoint" },
   },
   {
