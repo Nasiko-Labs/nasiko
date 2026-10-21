@@ -1,9 +1,9 @@
 //! Detect local coding agents and report their sessions to Nasiko.
 //!
-//! `nasiko agents discover` answers "what coding agents are on this machine".
-//! `nasiko agents install <id>` goes further: it registers that agent in
-//! the control plane and installs a hook that durably queues completed turns
-//! for delivery to the cluster active when they were captured.
+//! [`local_agents`](super::local_agents) answers "what coding agents are on this machine" and
+//! drives setup. [`install`] registers an agent in the control plane (or reuses the one LLM
+//! routing already uses) and installs a hook that durably queues completed turns for delivery
+//! to the cluster active when they were captured.
 
 mod agents;
 mod catalog;
@@ -27,40 +27,102 @@ pub struct InstallOptions<'a> {
     pub agent_id: &'a str,
     /// Keep prompt and response text out of exported spans.
     pub no_content: bool,
+    /// Report under this already-registered agent (the one LLM routing uses) instead of
+    /// registering the account's default integration agent.
+    pub agent_name: Option<&'a str>,
+}
+
+/// One catalogued coding agent as `nasiko connect`/`nasiko status` present it.
+#[derive(Debug, Clone)]
+pub struct LocalAgent {
+    pub id: &'static str,
+    pub display_name: &'static str,
+    pub detected: bool,
+    pub reporting_active: bool,
+    pub reporting_installed: bool,
+    pub reporting_status: String,
+    pub capture_content: bool,
+    pub hook_location: String,
+    /// Where installed reporting delivers events; `None` when not installed, or for legacy
+    /// state recorded before installs were bound to a cluster (which must be reinstalled).
+    pub reporting_destination: Option<ReportingDestination>,
+}
+
+/// The cluster and user an installed reporting hook delivers events for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReportingDestination {
+    pub cluster_name: String,
+    pub cluster_url: String,
+    pub principal_id: String,
+}
+
+impl ReportingDestination {
+    /// Where reporting would be bound if installed now: the active cluster and its login.
+    pub fn current() -> Result<Self> {
+        let binding = control_plane::installation_binding()?;
+        Ok(Self::from(&binding))
+    }
+
+    pub fn same_as(&self, other: &Self) -> bool {
+        self.cluster_name == other.cluster_name
+            && self.cluster_url.trim_end_matches('/') == other.cluster_url.trim_end_matches('/')
+            && self.principal_id == other.principal_id
+    }
+}
+
+impl From<&InstallationBinding> for ReportingDestination {
+    fn from(binding: &InstallationBinding) -> Self {
+        Self {
+            cluster_name: binding.cluster_name.clone(),
+            cluster_url: binding.cluster_url.clone(),
+            principal_id: binding.principal_id.to_string(),
+        }
+    }
+}
+
+/// Every catalogued coding agent with its detection and reporting state.
+pub fn local_agents() -> Result<Vec<LocalAgent>> {
+    let settings = IntegrationState::load()?;
+    Ok(Agent::ALL
+        .iter()
+        .copied()
+        .map(|agent| {
+            let spec = agent.spec();
+            let reporting = reporting_details(agent, &settings);
+            let state = settings.get(spec.id);
+            LocalAgent {
+                id: spec.id,
+                display_name: spec.display_name,
+                detected: detect(agent).is_present(),
+                reporting_active: reporting.connected,
+                reporting_installed: state.is_some(),
+                reporting_status: reporting.status,
+                capture_content: state.is_none_or(|state| state.capture_content),
+                hook_location: tildify(&agent.config_path()),
+                reporting_destination: state
+                    .and_then(|state| state.binding.as_ref())
+                    .map(ReportingDestination::from),
+            }
+        })
+        .collect())
+}
+
+/// Whether `id` names a catalogued coding agent.
+pub fn is_known_agent(id: &str) -> bool {
+    catalog::find(id).is_some()
+}
+
+/// Comma-separated ids of every catalogued coding agent.
+pub fn known_agent_ids() -> String {
+    catalog::known_ids()
+}
+
+/// Queued coding-agent events not yet delivered to any cluster.
+pub fn pending_event_count() -> Result<usize> {
+    Ok(queue::records()?.len())
 }
 
 // ─── Commands ────────────────────────────────────────────────────────────────
-
-/// Print every catalogued agent, whether it is on this machine, and whether
-/// session reporting is installed.
-pub fn status() -> Result<()> {
-    let settings = IntegrationState::load()?;
-
-    println!(
-        "{:<10} {:<10} {:<11} {:<20} CONFIG",
-        "AGENT", "DETECTED", "CONNECTED", "VERSION"
-    );
-    println!("{}", "-".repeat(88));
-    for agent in Agent::ALL.iter().copied() {
-        let spec = agent.spec();
-        let reporting = reporting_details(agent, &settings);
-        println!(
-            "{:<10} {:<10} {:<11} {:<20} {}",
-            spec.id,
-            if detect(agent).is_present() {
-                "yes"
-            } else {
-                "-"
-            },
-            if reporting.connected { "yes" } else { "no" },
-            reporting.version,
-            tildify(&agent.config_path()),
-        );
-    }
-
-    println!("\nInstall session reporting:  nasiko agents install <agent>");
-    Ok(())
-}
 
 /// Register a coding agent with the control plane and install its hook.
 pub fn install(options: InstallOptions<'_>) -> Result<()> {
@@ -69,16 +131,33 @@ pub fn install(options: InstallOptions<'_>) -> Result<()> {
     require_present(agent)?;
 
     let spec = agent.spec();
-    let registration = control_plane::register_agent(agent)?;
-    println!(
-        "{} agent '{}' in the control plane",
-        if registration.created {
-            "Registered"
-        } else {
-            "Found"
-        },
-        registration.agent_name
-    );
+    let registration = match options.agent_name {
+        Some(agent_name) => {
+            let registration = control_plane::Registration {
+                created: false,
+                agent_name: agent_name.to_string(),
+                binding: control_plane::installation_binding()?,
+            };
+            println!(
+                "Reporting under agent '{}' (the same agent LLM routing uses)",
+                registration.agent_name
+            );
+            registration
+        }
+        None => {
+            let registration = control_plane::register_agent(agent)?;
+            println!(
+                "{} agent '{}' in the control plane",
+                if registration.created {
+                    "Registered"
+                } else {
+                    "Found"
+                },
+                registration.agent_name
+            );
+            registration
+        }
+    };
 
     let artifacts = agent.install()?;
     let (script, registration) = persist_installed_artifacts(
@@ -100,7 +179,12 @@ pub fn install(options: InstallOptions<'_>) -> Result<()> {
         "\nStart a new {} session, then: nasiko observe sessions",
         spec.display_name
     );
-    print_restart_hint(agent);
+    if agent.restart_required() {
+        println!("Restart OpenCode first so it loads the new plugin.");
+    }
+    if agent == Agent::Codex {
+        println!("In Codex, run /hooks and trust the new Nasiko command hooks.");
+    }
     Ok(())
 }
 
@@ -151,36 +235,15 @@ pub fn auto_install_detected() -> Result<()> {
     let mut installed = 0usize;
     for agent in agents {
         let spec = agent.spec();
-        let state = settings.get(spec.id);
-        let expected = agent.install_version().expect("instrumented adapter");
-        match auto_setup_action(state, agent.installed_version(), expected) {
-            AutoSetup::Install => {}
-            AutoSetup::Keep => {
-                println!(
-                    "{} reporting is already installed; keeping its existing cluster binding. Rebind explicitly with: nasiko agents install {}",
-                    spec.display_name, spec.id
-                );
-                installed += 1;
-                continue;
-            }
-            AutoSetup::Refresh(binding) => {
-                let state = state.expect("refresh implies installed state");
-                match refresh_hook(agent, state, binding) {
-                    Ok(()) => {
-                        println!(
-                            "{} reporting hook updated to v{expected}; still reporting to {}.",
-                            spec.display_name, binding.cluster_name
-                        );
-                        print_restart_hint(agent);
-                        installed += 1;
-                    }
-                    Err(error) => eprintln!(
-                        "warning: updating the {} hook failed: {error:#}\n  Retry with: nasiko agents install {}",
-                        spec.display_name, spec.id
-                    ),
-                }
-                continue;
-            }
+        if settings.get(spec.id).is_some() {
+            println!(
+                "{} reporting is already installed; keeping its existing cluster binding. Rebind explicitly with: {} connect {} --no-routing --reporting",
+                spec.display_name,
+                crate::commands::local_agents::cli_name(),
+                spec.id
+            );
+            installed += 1;
+            continue;
         }
         let no_content = settings
             .get(spec.id)
@@ -188,67 +251,19 @@ pub fn auto_install_detected() -> Result<()> {
         match install(InstallOptions {
             agent_id: spec.id,
             no_content,
+            agent_name: None,
         }) {
             Ok(()) => installed += 1,
             Err(error) => eprintln!(
-                "warning: automatic {} setup failed: {error:#}\n  Retry with: nasiko agents install {}",
-                spec.display_name, spec.id
+                "warning: automatic {} setup failed: {error:#}\n  Retry with: {} connect {} --no-routing --reporting",
+                spec.display_name,
+                crate::commands::local_agents::cli_name(),
+                spec.id
             ),
         }
     }
     println!("Automatic coding-agent setup completed for {installed} agent(s).");
     Ok(())
-}
-
-/// What automatic setup does with one detected agent.
-#[derive(Debug, PartialEq, Eq)]
-enum AutoSetup<'a> {
-    /// Nothing installed yet: register and bind to the active cluster.
-    Install,
-    /// Installed and current: leave it, binding included.
-    Keep,
-    /// Installed but its hook is outdated: rewrite the hook, keep this binding.
-    Refresh(&'a InstallationBinding),
-}
-
-/// An outdated hook is rewritten in place so a fix reaches existing installs,
-/// but the binding is never moved — switching clusters stays an explicit
-/// `nasiko agents install`. Legacy state without a binding is left for that
-/// explicit install too, since there is no destination to preserve.
-fn auto_setup_action(
-    state: Option<&AgentState>,
-    installed_version: Option<u32>,
-    expected: u32,
-) -> AutoSetup<'_> {
-    let Some(state) = state else {
-        return AutoSetup::Install;
-    };
-    let is_current = installed_version == Some(expected) && state.hook_version == expected;
-    match &state.binding {
-        Some(binding) if !is_current => AutoSetup::Refresh(binding),
-        _ => AutoSetup::Keep,
-    }
-}
-
-/// Rewrite an agent's hook at the current version without touching its
-/// control-plane registration, content setting, or cluster binding.
-fn refresh_hook(agent: Agent, state: &AgentState, binding: &InstallationBinding) -> Result<()> {
-    let artifacts = agent.install()?;
-    persist_installed_artifacts(
-        artifacts,
-        || save_agent_state(agent, &state.agent_name, state.capture_content, binding),
-        || agent.uninstall(),
-    )?;
-    Ok(())
-}
-
-fn print_restart_hint(agent: Agent) {
-    if agent.restart_required() {
-        println!("Restart OpenCode first so it loads the new plugin.");
-    }
-    if agent == Agent::Codex {
-        println!("In Codex, run /hooks and trust the new Nasiko command hooks.");
-    }
 }
 
 /// Run automatic setup only when the active cluster has a usable login.
@@ -270,7 +285,8 @@ pub fn auto_install_if_authenticated() {
     }
     if let Err(error) = auto_install_detected() {
         eprintln!(
-            "warning: automatic coding-agent discovery failed: {error:#}\n  Retry with: nasiko agents discover"
+            "warning: automatic coding-agent discovery failed: {error:#}\n  Retry with: {} status",
+            crate::commands::local_agents::cli_name()
         );
     }
 }
@@ -302,7 +318,6 @@ fn detect(agent: Agent) -> Detection {
 
 struct ReportingDetails {
     connected: bool,
-    version: String,
     status: String,
 }
 
@@ -311,7 +326,6 @@ fn reporting_details(agent: Agent, settings: &IntegrationState) -> ReportingDeta
     if spec.support == Support::DetectOnly {
         return ReportingDetails {
             connected: false,
-            version: "-".into(),
             status: Support::DetectOnly.label().to_string(),
         };
     }
@@ -321,7 +335,6 @@ fn reporting_details(agent: Agent, settings: &IntegrationState) -> ReportingDeta
     let Some(state) = settings.get(spec.id) else {
         return ReportingDetails {
             connected: false,
-            version: "-".into(),
             status: "not installed".into(),
         };
     };
@@ -329,24 +342,20 @@ fn reporting_details(agent: Agent, settings: &IntegrationState) -> ReportingDeta
         Some(version) if version == expected => match state.hook_version {
             version if version == expected => ReportingDetails {
                 connected: true,
-                version: format!("v{version}"),
                 status: format!("active (v{version})"),
             },
             // Script and saved state are from different install versions.
             _ => ReportingDetails {
                 connected: false,
-                version: format!("v{version} (state v{})", state.hook_version),
                 status: "needs reinstall".into(),
             },
         },
         Some(version) => ReportingDetails {
             connected: false,
-            version: format!("v{version} -> v{expected}"),
             status: format!("stale (v{version}; current v{expected})"),
         },
         None => ReportingDetails {
             connected: false,
-            version: "-".into(),
             status: "not installed".into(),
         },
     }
@@ -540,58 +549,5 @@ mod tests {
             binding: None,
         };
         assert_ne!(state.hook_version, expected);
-    }
-
-    fn bound_state(hook_version: u32) -> AgentState {
-        AgentState {
-            agent_name: "user-opencode".into(),
-            capture_content: true,
-            hook_version,
-            binding: Some(InstallationBinding {
-                cluster_name: "cp".into(),
-                cluster_url: "https://cp.example".into(),
-                principal_id: uuid::Uuid::nil(),
-            }),
-        }
-    }
-
-    #[test]
-    fn auto_setup_installs_an_agent_with_no_state() {
-        assert_eq!(auto_setup_action(None, None, 7), AutoSetup::Install);
-    }
-
-    #[test]
-    fn auto_setup_keeps_a_current_install_and_its_binding() {
-        let state = bound_state(7);
-
-        assert_eq!(auto_setup_action(Some(&state), Some(7), 7), AutoSetup::Keep);
-    }
-
-    #[test]
-    fn auto_setup_refreshes_an_outdated_hook_on_its_existing_binding() {
-        let state = bound_state(6);
-
-        let action = auto_setup_action(Some(&state), Some(6), 7);
-
-        assert_eq!(action, AutoSetup::Refresh(state.binding.as_ref().unwrap()));
-    }
-
-    #[test]
-    fn auto_setup_refreshes_when_hook_files_are_missing_or_unrecognised() {
-        let state = bound_state(7);
-
-        let action = auto_setup_action(Some(&state), None, 7);
-
-        assert_eq!(action, AutoSetup::Refresh(state.binding.as_ref().unwrap()));
-    }
-
-    #[test]
-    fn auto_setup_leaves_legacy_unbound_state_for_an_explicit_install() {
-        let state = AgentState {
-            binding: None,
-            ..bound_state(6)
-        };
-
-        assert_eq!(auto_setup_action(Some(&state), Some(6), 7), AutoSetup::Keep);
     }
 }

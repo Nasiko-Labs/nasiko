@@ -13,78 +13,23 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use super::agents::Agent;
-use super::model::{SessionSnapshot, Turn};
+use super::model::Turn;
 use super::queue::{self, QueueDestination, QueueRecord};
-use super::sanitize::sanitized;
-use super::state::{self, AgentState, IntegrationState, SessionLock};
+use super::state::{self, IntegrationState, SessionLock};
 
-pub(super) const REPORT_BUDGET: Duration = Duration::from_secs(9);
+const REPORT_BUDGET: Duration = Duration::from_secs(9);
 
-/// What a hook runs: capture the session the payload names, then start delivery.
 pub fn run(agent: Agent) -> Result<()> {
     let deadline = Instant::now() + REPORT_BUDGET;
     let raw = read_payload()?;
-    let mut queued_any = false;
-    let mut first_error = None;
-    for snapshot in agent.hook_snapshots(&raw, deadline)? {
-        match snapshot
-            .and_then(|snapshot| capture_snapshot(agent, snapshot, deadline, CaptureMode::Hook))
-        {
-            Ok(captured) => queued_any |= !captured.queued.is_empty(),
-            Err(error) => {
-                log(&format!("capture failed: {error:#}"));
-                first_error.get_or_insert(error);
-            }
-        }
-    }
-    if queued_any {
-        spawn_sync()?;
-    }
-    first_error.map_or(Ok(()), Err)
-}
-
-/// Who is capturing, which decides what is logged.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CaptureMode {
-    /// A hook: each capture is logged, since the hook's output is all there is to go on.
-    Hook,
-    /// An import: its own progress says what happened, so a line per session would only be noise.
-    Import,
-}
-
-impl CaptureMode {
-    fn log(self, message: &str) {
-        if self == Self::Hook {
-            log(message);
-        }
-    }
-}
-
-/// What one capture did.
-#[derive(Debug, Default, PartialEq)]
-pub struct Captured {
-    /// Complete turns not captured before.
-    pub pending: usize,
-    /// Event ids of the turns queued for delivery.
-    pub queued: Vec<String>,
-    /// Turns quarantined before they reached the queue because they could not be made valid.
-    pub rejected: usize,
-}
-
-/// Queues the completed turns of `snapshot` that aren't captured yet. Delivery is the caller's: the hook
-/// starts `sync` per report, an import as each of its windows is read.
-pub fn capture_snapshot(
-    agent: Agent,
-    snapshot: SessionSnapshot,
-    deadline: Instant,
-    mode: CaptureMode,
-) -> Result<Captured> {
+    let snapshot = agent.snapshot(&raw, deadline)?;
     let spec = agent.spec();
     let settings = IntegrationState::load()?;
     let Some(agent_state) = settings.get(spec.id) else {
         bail!(
-            "{} is not installed — run: nasiko agents install {}",
+            "{} is not installed — run: {} connect {} --reporting",
             spec.display_name,
+            crate::commands::local_agents::cli_name(),
             spec.id
         );
     };
@@ -94,95 +39,68 @@ pub fn capture_snapshot(
         &snapshot.session_id,
         deadline.saturating_duration_since(Instant::now()),
     )?;
-    let captured = capture_locked(
-        spec.id,
-        agent_state,
-        &destination,
-        &snapshot,
-        &lock,
-        mode,
-        |record| queue::enqueue(record).map(|_| ()),
-    )?;
-    drop(lock);
-
-    if captured.pending > 0 {
-        mode.log(&format!(
-            "session {} — queued {} completed turn(s) for {}; quarantined {}",
-            snapshot.session_id,
-            captured.queued.len(),
-            destination.cluster_name,
-            captured.rejected
-        ));
-    }
-    Ok(captured)
-}
-
-/// The part of a capture that runs under the session lock: complete turns not yet in the watermark are
-/// cleaned of what the event contract refuses and queued through `enqueue` (those still invalid are
-/// quarantined), then marked captured.
-fn capture_locked(
-    agent_id: &str,
-    agent_state: &AgentState,
-    destination: &QueueDestination,
-    snapshot: &SessionSnapshot,
-    lock: &SessionLock,
-    mode: CaptureMode,
-    enqueue: impl Fn(&QueueRecord) -> Result<()>,
-) -> Result<Captured> {
     let completed = complete_turns(&snapshot.turns);
     if completed.is_empty() {
-        mode.log(&format!(
+        log(&format!(
             "session {} — no completed turns; deferred",
             snapshot.session_id
         ));
-        return Ok(Captured::default());
+        return Ok(());
     }
     let progress = lock.progress()?;
     if progress.migrated_legacy_counts {
-        mode.log(&format!(
+        log(&format!(
             "session {} — migrated legacy progress; replaying complete turns once",
             snapshot.session_id
         ));
     }
     let pending = pending_turns(&completed, &progress.captured_turn_ids);
-    let mut captured = Captured {
-        pending: pending.len(),
-        ..Captured::default()
-    };
+    let mut queued = 0;
+    let mut rejected = 0;
     for turn in &pending {
         let record = QueueRecord::new(
             destination.clone(),
-            sanitized(canonical_event(
-                agent_id,
+            canonical_event(
+                spec.id,
                 &agent_state.agent_name,
-                snapshot,
+                &snapshot.session_id,
+                snapshot.title.as_deref(),
                 turn,
                 agent_state.capture_content,
-            )),
+            ),
         );
         if let Err(error) = record.event.validate() {
             queue::reject_invalid(&record, &error)?;
             lock.mark_captured(std::slice::from_ref(&record.event.turn.id))?;
-            captured.rejected += 1;
-            mode.log(&format!(
+            rejected += 1;
+            log(&format!(
                 "session {} turn {} — quarantined invalid event: {error}",
                 snapshot.session_id, record.event.turn.id
             ));
             continue;
         }
-        ordered_commit(
-            || enqueue(&record),
-            || lock.mark_captured(std::slice::from_ref(&record.event.turn.id)),
-        )?;
-        captured.queued.push(record.event.event_id.clone());
+        queue_then_mark(&record, &lock)?;
+        queued += 1;
     }
-    Ok(captured)
+    drop(lock);
+
+    if queued > 0 {
+        spawn_sync()?;
+    }
+    if !pending.is_empty() {
+        log(&format!(
+            "session {} — queued {queued} completed turn(s) for {}; quarantined {rejected}",
+            snapshot.session_id, destination.cluster_name
+        ));
+    }
+    Ok(())
 }
 
-fn destination_from_state(agent_state: &AgentState) -> Result<QueueDestination> {
+fn destination_from_state(agent_state: &super::state::AgentState) -> Result<QueueDestination> {
     let binding = agent_state.binding.as_ref().ok_or_else(|| {
         anyhow::anyhow!(
-            "installed integration has no cluster binding; reinstall it with: nasiko agents install <agent>"
+            "installed integration has no cluster binding; reinstall it with: {} connect <agent> --reporting",
+            crate::commands::local_agents::cli_name()
         )
     })?;
     Ok(QueueDestination {
@@ -195,12 +113,11 @@ fn destination_from_state(agent_state: &AgentState) -> Result<QueueDestination> 
 fn canonical_event(
     agent_id: &str,
     agent_name: &str,
-    snapshot: &SessionSnapshot,
+    source_session_id: &str,
+    title: Option<&str>,
     turn: &Turn,
     capture_content: bool,
 ) -> CodingAgentEventV1 {
-    let source_session_id = snapshot.session_id.as_str();
-    let title = snapshot.title.as_deref();
     CodingAgentEventV1 {
         version: CODING_AGENT_EVENT_VERSION,
         event_id: coding_agent_event_id(agent_id, source_session_id, &turn.uuid),
@@ -215,7 +132,6 @@ fn canonical_event(
             title: title.filter(|_| capture_content).map(|title| {
                 bounded_text_to(title, nasiko_types::CODING_AGENT_SESSION_TITLE_MAX_BYTES)
             }),
-            parent: snapshot.parent.clone(),
         },
         turn: CodingAgentTurn {
             id: turn.uuid.clone(),
@@ -276,15 +192,6 @@ fn canonical_event(
     }
 }
 
-/// The event a capture would queue for `turn`, with content, for tests elsewhere in the integration.
-#[cfg(test)]
-pub(super) fn canonical_event_for_test(
-    snapshot: &SessionSnapshot,
-    turn: &Turn,
-) -> CodingAgentEventV1 {
-    canonical_event("cursor", "cursor", snapshot, turn, true)
-}
-
 fn bounded_value(value: &serde_json::Value) -> serde_json::Value {
     let serialized = serde_json::to_string(value).unwrap_or_else(|_| "null".into());
     if serialized.len() <= CODING_AGENT_CONTENT_MAX_BYTES {
@@ -310,6 +217,13 @@ fn bounded_text_to(value: &str, max: usize) -> String {
         end -= 1;
     }
     format!("{}{suffix}", &value[..end])
+}
+
+fn queue_then_mark(record: &QueueRecord, lock: &SessionLock) -> Result<()> {
+    ordered_commit(
+        || queue::enqueue(record).map(|_| ()),
+        || lock.mark_captured(std::slice::from_ref(&record.event.turn.id)),
+    )
 }
 
 fn ordered_commit(
@@ -403,119 +317,6 @@ mod tests {
     }
 
     #[test]
-    fn a_turn_with_nul_characters_is_queued_clean_instead_of_quarantined() {
-        let dir = tempfile::tempdir().unwrap();
-        let lock =
-            SessionLock::acquire(&dir.path().join("s.lock"), dir.path().join("s.json")).unwrap();
-        let state = AgentState {
-            agent_name: "claude-code".into(),
-            capture_content: true,
-            hook_version: 3,
-            binding: None,
-        };
-        let destination = QueueDestination {
-            cluster_name: "cluster".into(),
-            cluster_url: "https://cluster.example".into(),
-            principal_id: uuid::Uuid::new_v4(),
-        };
-        let mut dirty = turn("a", true);
-        dirty.prompt = "read\0this".into();
-        let snapshot = SessionSnapshot {
-            session_id: "session".into(),
-            title: Some("t\0".into()),
-            turns: vec![dirty],
-            parent: None,
-        };
-        let queued = std::cell::RefCell::new(Vec::new());
-
-        let captured = capture_locked(
-            "claude",
-            &state,
-            &destination,
-            &snapshot,
-            &lock,
-            CaptureMode::Import,
-            |record| {
-                queued.borrow_mut().push(record.event.clone());
-                Ok(())
-            },
-        )
-        .unwrap();
-
-        assert_eq!((captured.queued.len(), captured.rejected), (1, 0));
-        let event = &queued.borrow()[0];
-        assert_eq!(event.turn.prompt.as_deref(), Some("readthis"));
-        assert_eq!(event.session.title.as_deref(), Some("t"));
-        assert_eq!(captured.queued[0], event.event_id);
-    }
-
-    #[test]
-    fn importing_a_session_again_queues_only_turns_not_captured_yet() {
-        let dir = tempfile::tempdir().unwrap();
-        let lock =
-            SessionLock::acquire(&dir.path().join("s.lock"), dir.path().join("s.json")).unwrap();
-        let state = AgentState {
-            agent_name: "codex".into(),
-            capture_content: true,
-            hook_version: 2,
-            binding: None,
-        };
-        let destination = QueueDestination {
-            cluster_name: "cluster".into(),
-            cluster_url: "https://cluster.example".into(),
-            principal_id: uuid::Uuid::new_v4(),
-        };
-        let snapshot = |ids: &[&str]| SessionSnapshot {
-            session_id: "session".into(),
-            title: None,
-            turns: ids.iter().map(|id| turn(id, true)).collect(),
-            parent: None,
-        };
-        let queued = std::cell::RefCell::new(Vec::new());
-        let enqueue = |record: &QueueRecord| {
-            queued.borrow_mut().push(record.event.turn.id.clone());
-            Ok(())
-        };
-
-        let first = capture_locked(
-            "codex",
-            &state,
-            &destination,
-            &snapshot(&["a", "b"]),
-            &lock,
-            CaptureMode::Hook,
-            enqueue,
-        )
-        .unwrap();
-        let again = capture_locked(
-            "codex",
-            &state,
-            &destination,
-            &snapshot(&["a", "b"]),
-            &lock,
-            CaptureMode::Hook,
-            enqueue,
-        )
-        .unwrap();
-        let grown = capture_locked(
-            "codex",
-            &state,
-            &destination,
-            &snapshot(&["a", "b", "c"]),
-            &lock,
-            CaptureMode::Hook,
-            enqueue,
-        )
-        .unwrap();
-
-        assert_eq!(
-            (first.queued.len(), again.queued.len(), grown.queued.len()),
-            (2, 0, 1)
-        );
-        assert_eq!(*queued.borrow(), ["a", "b", "c"]);
-    }
-
-    #[test]
     fn captured_progress_filters_completed_turns() {
         let turns = [turn("a", true), turn("b", true)];
         assert_eq!(
@@ -594,14 +395,22 @@ mod tests {
             association: nasiko_types::CodingAgentToolAssociation::Exact,
             timestamp_quality: nasiko_types::CodingAgentTimestampQuality::Exact,
         });
-        let session = SessionSnapshot {
-            session_id: "same".into(),
-            title: Some("Claude session title".into()),
-            turns: vec![turn.clone()],
-            parent: None,
-        };
-        let first = canonical_event("claude", "claude-code", &session, &turn, false);
-        let second = canonical_event("claude", "claude-code", &session, &turn, false);
+        let first = canonical_event(
+            "claude",
+            "claude-code",
+            "same",
+            Some("Claude session title"),
+            &turn,
+            false,
+        );
+        let second = canonical_event(
+            "claude",
+            "claude-code",
+            "same",
+            Some("Claude session title"),
+            &turn,
+            false,
+        );
         assert_eq!(first.event_id, second.event_id);
         assert_eq!(first, second);
         assert_eq!(first.session.id, "claude:same");
@@ -615,9 +424,24 @@ mod tests {
         assert!(first.validate().is_ok());
         assert_ne!(
             first.event_id,
-            canonical_event("opencode", "opencode", &session, &turn, false).event_id
+            canonical_event(
+                "opencode",
+                "opencode",
+                "same",
+                Some("Claude session title"),
+                &turn,
+                false
+            )
+            .event_id
         );
-        let content = canonical_event("claude", "claude-code", &session, &turn, true);
+        let content = canonical_event(
+            "claude",
+            "claude-code",
+            "same",
+            Some("Claude session title"),
+            &turn,
+            true,
+        );
         assert_eq!(
             content.turn.tool_calls[0].arguments,
             Some(serde_json::json!({"path": "secret"}))
@@ -627,36 +451,6 @@ mod tests {
             Some("Claude session title")
         );
         assert!(content.validate().is_ok());
-    }
-
-    #[test]
-    fn a_subagent_session_event_carries_its_parent_and_only_its_own_turn() {
-        let child = turn("child-turn", true);
-        let session = SessionSnapshot {
-            session_id: "parent:agent-a1".into(),
-            title: None,
-            turns: vec![child.clone()],
-            parent: super::super::model::subagent_parent(
-                "parent:agent-a1",
-                "parent",
-                Some("toolu_1"),
-                Some("Explore"),
-            ),
-        };
-
-        let event = canonical_event("claude", "claude-code", &session, &child, true);
-
-        let parent = event.session.parent.as_ref().unwrap();
-        assert_eq!(parent.source_id, "parent");
-        assert_eq!(parent.tool_call_id.as_deref(), Some("toolu_1"));
-        assert_eq!(parent.agent_type.as_deref(), Some("Explore"));
-        assert_eq!(event.session.source_id, "parent:agent-a1");
-        assert_eq!(event.turn.llm_calls.len(), 1);
-        assert_eq!(
-            sanitized(event.clone()).session.parent,
-            event.session.parent
-        );
-        assert_eq!(event.validate(), Ok(()));
     }
 
     #[test]
