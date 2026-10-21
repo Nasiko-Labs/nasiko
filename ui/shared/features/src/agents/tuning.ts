@@ -39,6 +39,12 @@ export const USERS_LIMIT = 200;
 /** Rows shown: recent sessions on Activity, error lines on the OSS crash card. */
 export const RECENT_SESSIONS_SHOWN = 10;
 export const CRASH_LINES_SHOWN = 5;
+/** Overview's What it does, until Show more: skills and examples per skill shown, and the lengths (characters) past
+ * which a description or a skill's description is clamped (4 and 2 lines). */
+export const SKILLS_SHOWN = 3;
+export const EXAMPLES_SHOWN = 2;
+export const CLAMP_DESCRIPTION_CHARS = 320;
+export const CLAMP_SKILL_CHARS = 160;
 /** Catalog: tag chips offered, skill chips per card. */
 export const TOP_TAGS = 8;
 export const CARD_SKILLS = 3;

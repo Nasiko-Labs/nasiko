@@ -2,11 +2,14 @@
 // the navigation port's `Link` (`@nasiko/app-core/navigation`) to `/mcp/<id>` (the lab's `Link to="/mcp/$connectorId"`); the chip `Toggle`'s pressed classes are
 // `aria-pressed:` (Base UI sets `aria-pressed`, not Radix's `data-state=on`); the lab's `EmptyState` is
 // `LabEmptyState`; on development (3aac84f66, d2e0d4bcf) the chip is the shared `FilterChip`; `React.ReactNode` is an imported `ReactNode`; Prettier formatting.
+// Legacy ui/ on development (3aac84f66, c721a11a8): the title and actions in the top bar, one toolbar (connection
+// tabs left, the source Select and search right).
 "use client";
 
 /**
  * The MCP catalog (plans/feat-mcp.md §2): custom servers ∪ platform toolkits in one grid, laid out like the Agents
- * catalog. Scope chips (`?view=`), connection tabs with counts (`?tab=`) and search (`?q=`) all replace history.
+ * catalog. One toolbar row: connection tabs with counts (`?tab=`), then a source select (`?view=`) and search (`?q=`),
+ * all replacing history. The page's actions sit in the shell's top bar.
  * A custom server's name links to its page; its Connect control sits beside the link, never inside it.
  */
 import Link from "@nasiko/app-core/navigation";
@@ -15,8 +18,17 @@ import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "reac
 import { Badge } from "@nasiko/ui/primitives";
 import { Button } from "@nasiko/ui/primitives";
 import { Card } from "@nasiko/ui/primitives";
-import { Tabs, TabsList, TabsTrigger } from "@nasiko/ui/primitives";
-import { FilterChip } from "@nasiko/ui/composites";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  Tabs,
+  TabsList,
+  TabsTrigger,
+} from "@nasiko/ui/primitives";
+import { TopBar } from "@nasiko/app-core/shell/TopBar";
 import { PageHeader } from "@nasiko/ui/composites";
 import { PageLoader } from "@nasiko/ui/composites";
 import { SearchInput } from "@nasiko/ui/composites";
@@ -38,7 +50,7 @@ import {
   type Service,
 } from "./logic";
 import { useOAuthPopup } from "./oauth";
-import { TABS, VIEWS, type CatalogSearch, type Tab } from "./search";
+import { TABS, VIEWS, type CatalogSearch, type Tab, type View } from "./search";
 
 export function CatalogPage({
   search,
@@ -121,12 +133,12 @@ export function CatalogPage({
         }}
       />
     ) : null;
+  // Extra space below: the header stands apart from the toolbar it introduces.
   const header = (
-    <PageHeader
-      title={copy.title}
-      description={servers.data ? `${copy.sub} · ${copy.count(all.length)}` : copy.sub}
-      actions={scopeEmpty ? null : actions}
-    />
+    <>
+      <TopBar actions={scopeEmpty ? null : actions} />
+      <PageHeader title={copy.title} description={copy.sub} className="mb-2" />
+    </>
   );
 
   if (servers.isPending)
@@ -158,45 +170,9 @@ export function CatalogPage({
   return (
     <div className="space-y-4">
       {header}
+      {/* One row, every control h-9: what to show (tabs) on the left, how to narrow it on the right. */}
       <div className="flex flex-wrap items-center gap-2">
-        <SearchInput
-          ref={inputRef}
-          aria-label={copy.searchLabel}
-          value={q}
-          onChange={(e) => {
-            setSearch({ q: e.target.value || undefined });
-          }}
-          placeholder={copy.searchPlaceholder}
-          aria-keyshortcuts="/"
-          className="w-full max-w-none sm:w-80"
-        />
-        {VIEWS.map((v) => (
-          <FilterChip
-            key={v}
-            active={search.view === v}
-            onClick={() => {
-              setSearch({ view: search.view === v ? undefined : v, tab: undefined });
-            }}
-          >
-            {copy.views[v]}
-          </FilterChip>
-        ))}
-      </div>
-      {toolkits.isError ? (
-        <StateCard
-          tone="warning"
-          title={copy.toolkitsFailed}
-          action={
-            <Button size="sm" variant="outline" onClick={() => void toolkits.refetch()}>
-              <RotateCw className="size-3.5" aria-hidden /> {copy.retry}
-            </Button>
-          }
-        />
-      ) : null}
-      {!scoped.length ? (
-        <ScopeEmpty view={search.view} actions={scopeEmpty ? actions : null} />
-      ) : (
-        <>
+        {scoped.length ? (
           <Tabs
             value={tab}
             onValueChange={(t) => {
@@ -212,55 +188,101 @@ export function CatalogPage({
               ))}
             </TabsList>
           </Tabs>
-          {shown.length ? (
-            <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              {shown.map((s) => (
-                <li key={s.id}>
-                  <ServiceCard service={s} openPopup={openPopup} />
-                </li>
+        ) : null}
+        <div className="flex w-full items-center gap-2 sm:ml-auto sm:w-auto">
+          <Select
+            value={search.view ?? "all"}
+            onValueChange={(v) => {
+              setSearch({ view: !v || v === "all" ? undefined : (v as View), tab: undefined });
+            }}
+            // Base UI's Value shows an item's label only for items it knows.
+            items={{ all: copy.allViews, ...copy.views }}
+          >
+            <SelectTrigger aria-label={copy.viewLabel} className="shrink-0">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">{copy.allViews}</SelectItem>
+              {VIEWS.map((v) => (
+                <SelectItem key={v} value={v}>
+                  {copy.views[v]}
+                </SelectItem>
               ))}
-            </ul>
-          ) : q.trim() ? (
-            <EmptyState
-              icon={SearchX}
-              title={copy.noResults(q.trim())}
-              action={
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => {
-                    setSearch({ q: undefined });
-                  }}
-                >
-                  {copy.clearSearch}
-                </Button>
-              }
+            </SelectContent>
+          </Select>
+          <SearchInput
+            ref={inputRef}
+            aria-label={copy.searchLabel}
+            value={q}
+            onChange={(e) => {
+              setSearch({ q: e.target.value || undefined });
+            }}
+            placeholder={copy.searchPlaceholder}
+            aria-keyshortcuts="/"
+            className="max-w-none min-w-0 flex-1 sm:w-72 sm:flex-none"
+          />
+        </div>
+      </div>
+      {toolkits.isError ? (
+        <StateCard
+          tone="warning"
+          title={copy.toolkitsFailed}
+          action={
+            <Button size="sm" variant="outline" onClick={() => void toolkits.refetch()}>
+              <RotateCw className="size-3.5" aria-hidden /> {copy.retry}
+            </Button>
+          }
+        />
+      ) : null}
+      {!scoped.length ? (
+        <ScopeEmpty view={search.view} actions={scopeEmpty ? actions : null} />
+      ) : shown.length ? (
+        <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {shown.map((s) => (
+            <li key={s.id}>
+              <ServiceCard service={s} openPopup={openPopup} />
+            </li>
+          ))}
+        </ul>
+      ) : q.trim() ? (
+        <EmptyState
+          icon={SearchX}
+          title={copy.noResults(q.trim())}
+          action={
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                setSearch({ q: undefined });
+              }}
             >
-              {copy.noResultsHint}
-            </EmptyState>
-          ) : tab === "connected" ? (
-            <EmptyState
-              icon={Plug}
-              title={copy.nothingConnected}
-              action={
-                <Button
-                  size="sm"
-                  onClick={() => {
-                    setSearch({ tab: "available" });
-                  }}
-                >
-                  {copy.browseAvailable}
-                </Button>
-              }
+              {copy.clearSearch}
+            </Button>
+          }
+        >
+          {copy.noResultsHint}
+        </EmptyState>
+      ) : tab === "connected" ? (
+        <EmptyState
+          icon={Plug}
+          title={copy.nothingConnected}
+          action={
+            <Button
+              size="sm"
+              onClick={() => {
+                setSearch({ tab: "available" });
+              }}
             >
-              {copy.nothingConnectedDesc}
-            </EmptyState>
-          ) : (
-            <EmptyState icon={CheckCircle2} title={copy.allConnected}>
-              {copy.allConnectedDesc}
-            </EmptyState>
-          )}
-        </>
+              {copy.browseAvailable}
+            </Button>
+          }
+        >
+          {copy.nothingConnectedDesc}
+        </EmptyState>
+      ) : (
+        <EmptyState icon={CheckCircle2} title={copy.allConnected}>
+          {copy.allConnectedDesc}
+        </EmptyState>
       )}
       {dialogs}
     </div>

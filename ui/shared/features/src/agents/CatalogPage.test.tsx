@@ -1,10 +1,11 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/agents/CatalogPage.test.tsx. Local edits: none beyond
 // imports and Prettier formatting (`renderApp` is @nasiko/app-shell/testing/render-app; the pinned seed and msw
 // server are @nasiko/testing/pinned-seed).
+// Legacy ui/ on development (3aac84f66, c721a11a8): the filters are Selects and a Switch.
 
 /**
- * Catalog and Your agents (plan §10, component): search, tags, `/`, the Yours chip, the
- * harness toggle, paging past 100, partial failure, the first-run steps; owner=sub, tabs and
+ * Catalog and Your agents (plan §10, component): search, the Tag and Owner filters, `/`, the
+ * harness switch, paging past 100, partial failure, the first-run steps; owner=sub, tabs and
  * counts, harnesses excluded, the pinned section, the deleted notice and the turn count wording.
  */
 import { screen, waitFor, within } from "@testing-library/react";
@@ -15,6 +16,7 @@ import { ADMIN_ID } from "@nasiko/mocks/seed-harness";
 import { seed, setupPinnedSeed } from "@nasiko/testing/pinned-seed";
 import { renderApp } from "@nasiko/app-shell/testing/render-app";
 import { recordRequests, server } from "@nasiko/testing/pinned-seed";
+import { copy } from "./copy";
 
 setupPinnedSeed();
 
@@ -49,7 +51,7 @@ describe("catalog", () => {
     expect(cards()).toHaveLength(live.length);
     expect(screen.getAllByText("Yours").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Available to you").length).toBeGreaterThan(0);
-    await userEvent.click(screen.getByRole("button", { name: /Show coding harnesses/ }));
+    await userEvent.click(screen.getByRole("switch", { name: /Coding harnesses/ }));
     await waitFor(() => {
       expect(cards().length).toBeGreaterThan(live.length);
     });
@@ -80,15 +82,19 @@ describe("catalog", () => {
     expect(screen.getByRole("searchbox", { name: "Search agents" })).toHaveFocus();
   });
 
-  it("the Yours chip keeps only the caller's agents; a tag chip keeps only that tag", async () => {
+  it("Owner: Yours keeps only the caller's agents; a tag keeps only that tag", async () => {
     renderApp("/agents");
     await firstCard();
-    await userEvent.click(screen.getByRole("button", { name: "Yours", pressed: false }));
+    const pick = async (filter: string, option: string) => {
+      await userEvent.click(screen.getByRole("combobox", { name: filter }));
+      await userEvent.click(await screen.findByRole("option", { name: option }));
+    };
+    await pick(copy.ownerFilter, copy.yours);
     await waitFor(() => {
       expect(screen.queryByText("Available to you")).toBeNull();
     });
-    await userEvent.click(screen.getByRole("button", { name: "Yours", pressed: true }));
-    await userEvent.click(screen.getByRole("button", { name: "ops" }));
+    await pick(copy.ownerFilter, copy.anyone);
+    await pick(copy.tagFilter, "ops");
     await waitFor(() => {
       expect(cards().length).toBeLessThan(live.length);
     });

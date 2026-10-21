@@ -36,10 +36,8 @@ export const copy = {
   statusCaption: (checked: number, total: number) => `Status checked for ${checked} of ${total}`,
   laneScope: (day?: string) => (day ? `p95 within ${day}` : "p95 over loaded sessions"),
   notEnoughToRank: "Not enough sessions to rank",
-  nothingNeedsAttention: "Nothing needs attention",
   failingTooltip: `Failing = an unrecovered span error in one of the session's ${STATUS_TRACES_PER_SESSION} largest traces (from span status; a retry that worked is not a failure).`,
 
-  viewingDay: (day: string) => `Viewing ${day}`,
   clearDay: "Clear day",
   scanning: (page: number, of: number) => `Scanning sessions… (page ${page} of ${of})`,
   scanCapped: (day: string, scanned: number) =>

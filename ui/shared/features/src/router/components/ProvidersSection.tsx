@@ -86,69 +86,84 @@ export function ProvidersSection({
     <section
       id="router-providers"
       aria-labelledby="router-providers-h"
-      className="scroll-mt-4 space-y-2"
+      className="scroll-mt-4 space-y-4"
     >
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 id="router-providers-h" tabIndex={-1} className="text-sm font-semibold">
-          {copy.providersTitle}
-        </h2>
-        {superuser ? (
-          <Button size="sm" variant="outline" onClick={onAdd} className="pointer-coarse:min-h-11">
-            {copy.addCustom}
-          </Button>
-        ) : null}
-      </div>
-      {catalog.isPending ? (
-        <Skeleton className="h-32" />
-      ) : catalog.isError && !catalog.data ? (
-        <SectionError
-          title={copy.catalogFailed}
-          error={catalog.error}
-          onRetry={() => void catalog.refetch()}
-        />
-      ) : (
-        <div className="rounded-lg border border-border bg-card">
-          <Table aria-label={copy.providersTitle} className="max-sm:block sm:table-fixed">
-            <TableHeader className="max-sm:hidden">
-              <TableRow className="hover:bg-transparent">
-                <TableHead className={cn(HEAD, "w-1/3")}>{copy.colProvider}</TableHead>
-                <TableHead className={HEAD}>
-                  {copy.colModels} · {copy.colPrice}
-                </TableHead>
-                <TableHead className={cn(HEAD, "w-14")}>
-                  <span className="sr-only">{copy.colActions}</span>
-                </TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody className="max-sm:block">
-              {groups.map((g) => (
-                <ProviderRow
-                  key={g.provider}
-                  group={g}
-                  custom={byLabel.get(g.provider)}
-                  routable={isRoutable(g.provider, labels)}
-                  superuser={superuser}
-                  onEdit={onEdit}
-                />
-              ))}
-            </TableBody>
-          </Table>
-          {superuser && !customs.length && custom.data ? (
-            <p className="border-t border-border px-4 py-2 text-xs text-muted-foreground">
-              {copy.noCustom}
-            </p>
-          ) : null}
-          {custom.isError ? (
-            <div className="border-t border-border p-2">
-              <SectionError
-                error={custom.error}
-                onRetry={() => void custom.refetch()}
-                title={copy.customProviders}
-              />
-            </div>
+      <h2 id="router-providers-h" tabIndex={-1} className="sr-only">
+        {copy.providersTitle}
+      </h2>
+      {/* The toolbar is the table's top edge: what is here on the left, what to do with it on the right. */}
+      <div className="rounded-lg border border-border bg-card">
+        <div className="flex min-h-12 flex-wrap items-center gap-2 border-b border-border p-2 pl-4">
+          <span className="text-sm text-muted-foreground">
+            {catalog.data ? copy.providersCount(groups.length) : null}
+          </span>
+          {superuser ? (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={onAdd}
+              className="ml-auto pointer-coarse:min-h-11"
+            >
+              {copy.addCustom}
+            </Button>
           ) : null}
         </div>
-      )}
+        {catalog.isPending ? (
+          <div className="p-2">
+            <Skeleton className="h-32" />
+          </div>
+        ) : catalog.isError && !catalog.data ? (
+          <div className="p-2">
+            <SectionError
+              title={copy.catalogFailed}
+              error={catalog.error}
+              onRetry={() => void catalog.refetch()}
+            />
+          </div>
+        ) : (
+          <>
+            <Table aria-label={copy.providersTitle} className="max-sm:block sm:table-fixed">
+              <TableHeader className="max-sm:hidden">
+                <TableRow className="hover:bg-transparent">
+                  <TableHead className={cn(HEAD, "w-1/3")}>{copy.colProvider}</TableHead>
+                  <TableHead className={HEAD}>
+                    {copy.colModels} · {copy.colPrice}
+                  </TableHead>
+                  <TableHead className={cn(HEAD, "w-14")}>
+                    <span className="sr-only">{copy.colActions}</span>
+                  </TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody className="max-sm:block">
+                {groups.map((g) => (
+                  <ProviderRow
+                    key={g.provider}
+                    group={g}
+                    custom={byLabel.get(g.provider)}
+                    routable={isRoutable(g.provider, labels)}
+                    superuser={superuser}
+                    onEdit={onEdit}
+                  />
+                ))}
+              </TableBody>
+            </Table>
+            {superuser && !customs.length && custom.data ? (
+              <p className="border-t border-border px-4 py-2 text-xs text-muted-foreground">
+                {copy.noCustom}
+              </p>
+            ) : null}
+            {custom.isError ? (
+              <div className="border-t border-border p-2">
+                <SectionError
+                  error={custom.error}
+                  onRetry={() => void custom.refetch()}
+                  title={copy.customProviders}
+                />
+              </div>
+            ) : null}
+          </>
+        )}
+      </div>
       <Registry registry={registry} />
     </section>
   );

@@ -11,14 +11,14 @@ export type ListMode = "deployed" | "drafts";
 
 export const SORT_LABEL = {
   deployed: {
-    recent: "All",
+    recent: "Most recent",
     success_rate: "Success rate",
     token_usage: "Token usage",
     execution_count: "Execution count",
     health: "Health",
   } satisfies Record<WorkflowSort, string>,
   drafts: {
-    all: "All",
+    all: "Default order",
     last_updated: "Last updated",
     token_usage: "Token usage",
   } satisfies Record<DraftSort, string>,
@@ -42,6 +42,11 @@ export const HEALTH_LABEL = { healthy: "Healthy", degraded: "Degraded", unhealth
 
 export const copy = {
   nav: { deployed: "Deployed", drafts: "Drafts", runs: "Runs", label: "Workflows" },
+  title: "Workflows",
+  sub: "Chain your agents into multi-step workflows, then run and follow them",
+  sortPrefix: "Sort",
+  statusPrefix: "Status",
+  agePrefix: "Started",
   list: {
     deployed: {
       title: "Deployed workflows",
@@ -200,7 +205,6 @@ export const copy = {
   loadRunFailed: "Couldn't load this run",
   loadingRun: "Loading run",
   loadingRuns: "Loading workflow runs",
-  runsTitle: "Workflow runs",
   runsSearch: "Search workflow runs",
   statusFilter: "Filter by status",
   ageFilter: "Filter by age",

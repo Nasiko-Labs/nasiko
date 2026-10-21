@@ -4,6 +4,8 @@
 // `Toggle` sets `aria-pressed`, not Radix's `data-state=on`); Base UI's `Tabs` passes its value untyped (narrowed as
 // in the lab); the budgets wiring stays commented out exactly as in the lab (no server serves `/api/budgets*`,
 // R-L10); Prettier formatting. Previous/Next in the routing sheet (legacy ui/ on development, b7d5ba691).
+// Legacy ui/ on development (3aac84f66, c721a11a8): the summary tiles became the Agents table's own filter tabs
+// (`SourceTabs`), and the section tabs are underlined.
 "use client";
 
 /**
@@ -14,15 +16,12 @@
  *   useConfigs · useSecrets · useCatalog · useCustomProviders ───────────┴─► sections and sheets
  */
 import { useQuery } from "@tanstack/react-query";
-import { Check } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PageLoader } from "@nasiko/ui/composites";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@nasiko/ui/primitives";
-import { Toggle } from "@nasiko/ui/primitives";
 import { useOwnedAgents } from "../agents/api";
 import { ErrorState } from "../observability/StateCard";
 import { meQueryOptions, useProductScope } from "@nasiko/data-access/product";
-import { cn } from "@nasiko/ui/cn";
 import { siblingsAround } from "@nasiko/app-core/siblings";
 import { useAnnounce } from "./announce";
 import {
@@ -326,64 +325,62 @@ function Page({
         <PageLoader label={copy.loading} />
       ) : (
         <>
-          <nav aria-label={copy.summaryLabel} className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-            <FilterTile
-              active={!source}
-              onClick={() => {
-                showAgents(undefined);
-              }}
-              name={copy.summaryAgents(String(summary.total))}
-              label={copy.kpiAgents}
-              value={String(summary.total)}
-              note={copy.kpiAgentsNote}
-            />
-            <FilterTile
-              active={source === "default"}
-              onClick={() => {
-                showAgents(source === "default" ? undefined : "default");
-              }}
-              name={copy.summaryDefault(countText(summary.onDefault), defaultDetail)}
-              label={copy.filterNames.default}
-              value={kpiCount(summary.onDefault)}
-              note={defaultDetail ?? copy.kpiNoDefault}
-            />
-            <FilterTile
-              active={source === "attached"}
-              onClick={() => {
-                showAgents(source === "attached" ? undefined : "attached");
-              }}
-              name={copy.summaryAttached(countText(summary.attached))}
-              label={copy.filterNames.attached}
-              value={kpiCount(summary.attached)}
-              note={copy.kpiAttachedNote}
-            />
-            <FilterTile
-              active={source === "none"}
-              onClick={() => {
-                showAgents(source === "none" ? undefined : "none");
-              }}
-              name={copy.summaryNone(countText(summary.none))}
-              label={copy.filterNames.none}
-              value={kpiCount(summary.none)}
-              note={copy.kpiNoneNote}
-            />
-          </nav>
-
           <Tabs
             value={tab}
             onValueChange={(t: unknown) => {
               setSearch({ tab: t === "configs" || t === "providers" ? t : undefined });
             }}
           >
-            <TabsList aria-label={copy.anchorsLabel}>
+            <TabsList
+              variant="line"
+              aria-label={copy.anchorsLabel}
+              className="w-full max-w-full justify-start overflow-x-auto border-b border-border"
+            >
               {ROUTER_TABS.map((t) => (
-                <TabsTrigger key={t} value={t} className="px-3 pointer-coarse:min-h-11">
+                <TabsTrigger key={t} value={t} className="min-h-10 flex-none px-3">
                   {copy.anchors[t]}
                 </TabsTrigger>
               ))}
             </TabsList>
-            <TabsContent value="agents" keepMounted hidden={tab !== "agents"} className="pt-3">
+            <TabsContent value="agents" keepMounted hidden={tab !== "agents"} className="pt-4">
               <AgentsSection
+                filters={
+                  <SourceTabs
+                    value={source}
+                    onChange={(v) => {
+                      showAgents(v);
+                    }}
+                    tabs={[
+                      {
+                        value: "all",
+                        label: copy.filterAll,
+                        count: String(summary.total),
+                        name: copy.summaryAgents(String(summary.total)),
+                      },
+                      {
+                        value: "default",
+                        label: copy.filterNames.default,
+                        count: kpiCount(summary.onDefault),
+                        name: copy.summaryDefault(countText(summary.onDefault), defaultDetail),
+                        title: defaultDetail ?? copy.kpiNoDefault,
+                      },
+                      {
+                        value: "attached",
+                        label: copy.filterNames.attached,
+                        count: kpiCount(summary.attached),
+                        name: copy.summaryAttached(countText(summary.attached)),
+                        title: copy.kpiAttachedNote,
+                      },
+                      {
+                        value: "none",
+                        label: copy.filterNames.none,
+                        count: kpiCount(summary.none),
+                        name: copy.summaryNone(countText(summary.none)),
+                        title: copy.kpiNoneNote,
+                      },
+                    ]}
+                  />
+                }
                 rows={filtered}
                 total={rows.length}
                 spend={spend}
@@ -399,12 +396,9 @@ function Page({
                   });
                 }}
                 filterLabel={filterLabel}
-                onClearFilter={() => {
-                  setSearch({ source: undefined });
-                }}
               />
             </TabsContent>
-            <TabsContent value="configs" keepMounted hidden={tab !== "configs"} className="pt-3">
+            <TabsContent value="configs" keepMounted hidden={tab !== "configs"} className="pt-4">
               <ConfigsSection
                 configs={configs}
                 reads={reads}
@@ -440,7 +434,7 @@ function Page({
               value="providers"
               keepMounted
               hidden={tab !== "providers"}
-              className="pt-3"
+              className="pt-4"
             >
               <ProvidersSection
                 catalog={catalog}
@@ -549,41 +543,51 @@ function Page({
   );
 }
 
-/** A summary figure that filters Your agents (`aria-pressed`); its name is the strip's sentence ("5 attached"). */
-function FilterTile({
-  active,
-  onClick,
-  name,
-  label,
+/**
+ * The routing summary as the Agents table's filter: one tab per source with its count, All clears it. Each tab's name
+ * is the summary's sentence ("5 attached", "at least 13 on your default"), so a screen reader hears the "at least".
+ */
+function SourceTabs({
   value,
-  note,
+  onChange,
+  tabs,
 }: {
-  active: boolean;
-  onClick: () => void;
-  name: string;
-  label: string;
-  value: string;
-  note: string;
+  value: SourceFilter | undefined;
+  onChange: (v: SourceFilter | undefined) => void;
+  tabs: {
+    value: SourceFilter | "all";
+    label: string;
+    count: string;
+    name: string;
+    title?: string | undefined;
+  }[];
 }) {
   return (
-    <Toggle
-      pressed={active}
-      onPressedChange={onClick}
-      aria-label={name}
-      className={cn(
-        "h-auto min-w-0 flex-col items-stretch justify-start gap-1 rounded-lg border bg-card p-3 text-left font-normal whitespace-normal text-foreground shadow-xs transition-[border-color,box-shadow] hover:border-ring/60 hover:bg-card hover:text-foreground motion-reduce:transition-none",
-        "aria-pressed:border-primary aria-pressed:bg-card aria-pressed:text-foreground aria-pressed:ring-1 aria-pressed:ring-primary",
-      )}
+    <Tabs
+      value={value ?? "all"}
+      onValueChange={(v: unknown) => {
+        onChange(v === "all" ? undefined : (v as SourceFilter));
+      }}
+      className="max-w-full min-w-0"
     >
-      <span className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
-        {label}
-        {active ? <Check className="size-3.5 text-primary-text" aria-hidden /> : null}
-      </span>
-      <span className="text-2xl font-semibold tabular-nums">{value}</span>
-      <span className="truncate text-xs text-muted-foreground">{note}</span>
-    </Toggle>
+      {/* Phones: the four tabs scroll sideways inside the card rather than overflow it. */}
+      <TabsList aria-label={copy.summaryLabel} className="max-w-full justify-start overflow-x-auto">
+        {tabs.map((t) => (
+          <TabsTrigger
+            key={t.value}
+            value={t.value}
+            aria-label={t.name}
+            title={t.title}
+            // No tab panels: every tab narrows the one agents table.
+            aria-controls="router-agents"
+          >
+            {t.label} <span className="text-xs text-muted-foreground tabular-nums">{t.count}</span>
+          </TabsTrigger>
+        ))}
+      </TabsList>
+    </Tabs>
   );
 }
 
-/** The tile's figure: "13+" while some rows are unread (the tile's name keeps "at least 13"). */
+/** The tab's count: "13+" while some rows are unread (the tab's name keeps "at least 13"). */
 const kpiCount = (c: { n: number; atLeast: boolean }) => `${c.n}${c.atLeast ? "+" : ""}`;

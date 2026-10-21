@@ -3,6 +3,7 @@
 // can pass while reads still arrive four at a time; the lab's run asserted after they had all landed by timing;
 // `querySelector`'s result is typed by its type argument
 // (lint); imports; Prettier formatting.
+// Legacy ui/ on development (3aac84f66, c721a11a8): the summary is the Agents table's filter tabs.
 /**
  * Your agents folding and search, and "How routing works" (plans/feat-llm-router.md §4.1-§4.2 amendment, 2026-09-28):
  * agents that follow your default fold into one row (remembered per viewer), filters and searches unfold, a row
@@ -85,7 +86,7 @@ describe("Your agents folding", () => {
     // It shows above the group, so the group says "more" and agrees with the strip's 15.
     expect(folded()).toHaveTextContent(copy.foldedTitleMore("14"));
     expect(
-      within(screen.getByRole("navigation", { name: copy.summaryLabel })).getByRole("button", {
+      within(screen.getByRole("tablist", { name: copy.summaryLabel })).getByRole("tab", {
         name: /^15 on your default/,
       }),
     ).toBeInTheDocument();
@@ -158,7 +159,7 @@ describe("Your agents folding", () => {
     await ready();
     await userEvent.click(toggle());
     await userEvent.click(
-      within(screen.getByRole("navigation", { name: copy.summaryLabel })).getByRole("button", {
+      within(screen.getByRole("tablist", { name: copy.summaryLabel })).getByRole("tab", {
         name: /on your default/,
       }),
     );

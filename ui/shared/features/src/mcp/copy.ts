@@ -50,12 +50,13 @@ export const copy = {
     View,
     string
   >,
+  allViews: "All sources",
+  viewLabel: "Source",
   tabs: { all: "All", available: "Available to connect", connected: "Connected" } satisfies Record<
     Tab,
     string
   >,
   tabsLabel: "Connection",
-  count: (n: number) => `${n} ${n === 1 ? "server" : "servers"}`,
   tools: (n: number) => `${n} ${n === 1 ? "tool" : "tools"}`,
   yours: "Yours",
   sharedBy: (owner: string | null) => `Shared by ${owner || "someone"}`,

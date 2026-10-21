@@ -37,7 +37,15 @@ export { PageLoader } from "./page-loader";
 export { MARK_BARS } from "./mark-bars";
 export { NasikoLockup, NasikoMark } from "./nasiko-mark";
 export { Disclosure } from "./disclosure";
-export { TimeControl, PRESETS, type Preset } from "./time-control";
+export {
+  TimeControl,
+  TimePresets,
+  CustomRange,
+  InvalidRangeNote,
+  PRESETS,
+  type Preset,
+  type TimeControlProps,
+} from "./time-control";
 export { KpiTile } from "./kpi-tile";
 export { Delta } from "./delta";
 export { SearchInput } from "./search-input";

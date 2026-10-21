@@ -7,8 +7,9 @@
 // day header's `layoutId` only when the morph has one (exactOptionalPropertyTypes); optional props and `setSearch`'s
 // `replace` admit `undefined`; Prettier formatting. Previous/Next (legacy ui/ on development, 2c7d51a5d): the rows carry
 // the shown list (`useSiblingState`).
-// The top bar (legacy ui/ on development, 3aac84f66: e8379db5a): the sticky bar sits under the shell's top bar
-// (`top-(--topbar-h)`).
+// The top bar (legacy ui/ on development, 3aac84f66: e8379db5a, c721a11a8): the window (or the day) is in the top bar,
+// the lanes are tabs on the list's toolbar beside its filters, and the list is one bordered object; `Tabs` passes its
+// value untyped.
 /**
  * Sessions: the fleet pulse (fleet mode) and "that day's sessions" (day mode, ?day=).
  *
@@ -27,7 +28,7 @@ import { PageLoader } from "@nasiko/ui/composites";
 import { LabEmptyState as EmptyState } from "@nasiko/ui/composites";
 import { Alert, AlertDescription } from "@nasiko/ui/primitives";
 import { Button } from "@nasiko/ui/primitives";
-import { Toggle } from "@nasiko/ui/primitives";
+import { Tabs, TabsList, TabsTrigger } from "@nasiko/ui/primitives";
 import {
   Select,
   SelectContent,
@@ -35,8 +36,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@nasiko/ui/primitives";
-import { useSiblingState } from "@nasiko/app-core/siblings";
 import { compareOn, pickShared } from "@nasiko/app-core/shell/context";
+import { useSiblingState } from "@nasiko/app-core/siblings";
 import { copy } from "../observability/copy";
 import {
   computeLanes,
@@ -56,7 +57,9 @@ import {
 } from "../observability/tuning";
 import type { SessionSummary } from "../observability/types";
 import { useDay } from "../tokenops/api";
-import { TimeControl } from "@nasiko/ui/composites";
+import { CustomRange, TimePresets } from "@nasiko/ui/composites";
+import { TopBar } from "@nasiko/app-core/shell/TopBar";
+import { useMediaQuery } from "@nasiko/ui/lib";
 import { fmtMoney, fmtShortDay } from "@nasiko/ui/lib";
 import { resolveWindow } from "../tokenops/window";
 import { meQueryOptions, useProductScope } from "@nasiko/data-access/product";
@@ -203,107 +206,133 @@ export function SessionsPage({
     setExpanded((e) => (e === id ? null : id));
   }, []);
 
+  const time = {
+    preset: search.preset,
+    from: search.from,
+    to: search.to,
+    today,
+    onChange: (n: Pick<SessionsSearch, "preset" | "from" | "to">) => {
+      setSearch({ preset: n.preset, from: n.from, to: n.to });
+    },
+  };
+  const clearDay = () => {
+    setSearch({ day: undefined, sort: undefined, lane: undefined });
+  };
+  // Below md the bar has room for the presets only: the custom dates sit under the title.
+  const isMd = useMediaQuery("(min-width: 48rem)");
+  // The list's own controls: they sit in the table's toolbar, beside the lane tabs.
+  const controls = (
+    <>
+      <AgentFilter
+        value={agentName}
+        options={[...new Set(base.map((r) => r.agent_id).filter(Boolean))]
+          .sort()
+          .map((n) => ({ value: n, label: agents.byName.get(n)?.display_name ?? n }))}
+        onChange={(v) => {
+          setSearch({ agent: v });
+        }}
+      />
+      {dayMode ? (
+        <Select
+          value={sort}
+          onValueChange={(v) => {
+            setSearch({ sort: v as "cost" | "time" }, { replace: true });
+          }}
+        >
+          <SelectTrigger size="sm" className="h-8 w-auto text-xs" aria-label="Sort sessions">
+            <span className="text-muted-foreground">Sorted by</span> <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="cost">cost</SelectItem>
+            <SelectItem value="time">time</SelectItem>
+          </SelectContent>
+        </Select>
+      ) : pastWindow ? (
+        <span className="text-xs text-muted-foreground">{copy.pastWindow}</span>
+      ) : (
+        <Button
+          variant={paused ? "default" : "outline"}
+          size="sm"
+          className="h-8 text-xs"
+          onClick={() => {
+            setPaused((p) => !p);
+          }}
+          aria-pressed={!paused}
+          aria-label={paused ? copy.resumeLive : copy.pauseLive}
+        >
+          {paused ? (
+            <Play className="size-3.5" aria-hidden />
+          ) : (
+            <Pause className="size-3.5" aria-hidden />
+          )}
+          {paused ? "Live paused" : "Live"}
+        </Button>
+      )}
+    </>
+  );
+
   return (
     <div className="flex flex-col gap-4">
-      <div className="sticky top-(--topbar-h) z-20 -mx-4 flex flex-col gap-2 border-b border-border bg-background/95 px-4 py-3 backdrop-blur">
-        <PageHeader
-          title={
-            dayMode ? (
-              <m.span {...layoutIdProp(morphId(`day-header-${day}`))} className="inline-block">
-                {fmtShortDay(day)} ·{" "}
-                {scan.scan
-                  ? `${filtered.length} session${filtered.length === 1 ? "" : "s"}`
-                  : "sessions"}
-                {scan.scan
-                  ? ` · ${fmtMoney(filtered.reduce((a, s) => a + (sessionCost(s) ?? 0), 0))}`
-                  : ""}
-              </m.span>
-            ) : (
-              "Sessions"
-            )
-          }
-          actions={
-            <>
-              {dayMode ? (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-7 gap-1 text-xs"
-                  onClick={() => {
-                    setSearch({ day: undefined, sort: undefined, lane: undefined });
-                  }}
-                >
-                  <X className="size-3" aria-hidden /> {copy.clearDay}
-                </Button>
-              ) : (
-                <TimeControl
-                  preset={search.preset}
-                  from={search.from}
-                  to={search.to}
-                  today={today}
-                  onChange={(n) => {
-                    setSearch({ preset: n.preset, from: n.from, to: n.to });
-                  }}
-                />
-              )}
-              {dayMode ? (
-                <span className="text-xs text-muted-foreground">
-                  {copy.viewingDay(fmtShortDay(day))}
-                </span>
-              ) : pastWindow ? (
-                <span className="text-xs text-muted-foreground">{copy.pastWindow}</span>
-              ) : (
-                <Button
-                  variant={paused ? "default" : "outline"}
-                  size="sm"
-                  onClick={() => {
-                    setPaused((p) => !p);
-                  }}
-                  aria-pressed={!paused}
-                  aria-label={paused ? copy.resumeLive : copy.pauseLive}
-                >
-                  {paused ? (
-                    <Play className="size-3.5" aria-hidden />
-                  ) : (
-                    <Pause className="size-3.5" aria-hidden />
-                  )}
-                  {paused ? "Live paused" : "Live"}
-                </Button>
-              )}
-            </>
-          }
-        />
-        <div className="flex flex-wrap items-center gap-2 text-sm">
-          <AgentFilter
-            value={agentName}
-            options={[...new Set(base.map((r) => r.agent_id).filter(Boolean))]
-              .sort()
-              .map((n) => ({ value: n, label: agents.byName.get(n)?.display_name ?? n }))}
-            onChange={(v) => {
-              setSearch({ agent: v });
-            }}
-          />
-          {dayMode ? (
-            <Select
-              value={sort}
-              onValueChange={(v) => {
-                setSearch({ sort: v as "cost" | "time" }, { replace: true });
-              }}
+      {/* The top bar is the page's one sticky row: the window, or in day mode the day (its level and Clear day). */}
+      <TopBar
+        root={
+          dayMode ? (
+            <Button
+              variant="link"
+              className="h-auto p-0 text-sm font-normal text-muted-foreground hover:text-foreground"
+              onClick={clearDay}
             >
-              <SelectTrigger size="sm" className="h-8 w-auto text-xs" aria-label="Sort sessions">
-                <span className="text-muted-foreground">Sorted by</span> <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="cost">cost</SelectItem>
-                <SelectItem value="time">time</SelectItem>
-              </SelectContent>
-            </Select>
-          ) : null}
-          {!compareOn(search.compare === undefined ? {} : { compare: search.compare }) ? (
-            <span className="text-xs text-muted-foreground">Compare off</span>
-          ) : null}
-        </div>
-      </div>
+              Sessions
+            </Button>
+          ) : undefined
+        }
+        trail={dayMode ? [fmtShortDay(day)] : []}
+        actions={
+          dayMode ? (
+            <Button variant="outline" size="sm" className="h-8 gap-1 text-xs" onClick={clearDay}>
+              <X className="size-3" aria-hidden /> {copy.clearDay}
+            </Button>
+          ) : (
+            <>
+              <TimePresets {...time} />
+              {isMd ? <CustomRange {...time} /> : null}
+            </>
+          )
+        }
+        pinActions
+      />
+      {/* Left: what the list is. Right: what narrows it, and whether it is live. */}
+      <PageHeader
+        title={
+          dayMode ? (
+            <m.span {...layoutIdProp(morphId(`day-header-${day}`))} className="inline-block">
+              {fmtShortDay(day)} ·{" "}
+              {scan.scan
+                ? `${filtered.length} session${filtered.length === 1 ? "" : "s"}`
+                : "sessions"}
+              {scan.scan
+                ? ` · ${fmtMoney(filtered.reduce((a, s) => a + (sessionCost(s) ?? 0), 0))}`
+                : ""}
+            </m.span>
+          ) : (
+            "Sessions"
+          )
+        }
+        description={
+          dayMode
+            ? compareOn(search.compare === undefined ? {} : { compare: search.compare })
+              ? undefined
+              : "Compare off"
+            : [win.label, sort === "cost" ? "costliest first" : "newest first"]
+                .concat(
+                  compareOn(search.compare === undefined ? {} : { compare: search.compare })
+                    ? []
+                    : ["Compare off"],
+                )
+                .join(" · ")
+        }
+      />
+      {isMd || dayMode ? null : <CustomRange {...time} />}
 
       {search.provider || search.model ? (
         <Notice>
@@ -397,16 +426,6 @@ export function SessionsPage({
               </Notice>
             )
           ) : null}
-          <Lanes
-            lanes={lanes}
-            lane={search.lane}
-            checkRows={checkRows.length}
-            day={day}
-            onLane={(l) => {
-              setSearch({ lane: search.lane === l ? undefined : l }, { replace: true });
-            }}
-          />
-
           {scanning ? (
             <p role="status" className="text-sm text-muted-foreground">
               {copy.scanning(scan.pages.length + 1, maxPages)}
@@ -452,7 +471,7 @@ export function SessionsPage({
             <Notice>{copy.fleetSeekCapped(fleet.data?.pages.length ?? 0)}</Notice>
           ) : null}
           {!dayMode && live.queued ? (
-            <div className="sticky top-[calc(var(--topbar-h)+7rem)] z-10 flex justify-center">
+            <div className="sticky top-[calc(var(--topbar-h)+0.5rem)] z-10 flex justify-center">
               <Button size="sm" className="rounded-full shadow-sm" onClick={live.flush}>
                 {copy.newSessions(live.queued)} ↑
               </Button>
@@ -462,56 +481,73 @@ export function SessionsPage({
             {!dayMode && live.fresh.size ? copy.newSessions(live.fresh.size) : ""}
           </span>
 
-          {shown.length ? (
-            <div className="@container rounded-lg border border-border">
-              <div className="hidden grid-cols-[5.5rem_10rem_minmax(0,1fr)_5rem_4.5rem_8.5rem_2.75rem] gap-x-3 border-b border-border px-2 py-2 text-xs text-muted-foreground @[672px]:grid">
-                <span>{dayMode ? "Time (UTC)" : "Started (UTC)"}</span>
-                <span>Agent</span>
-                <span>First input</span>
-                <span className="text-right">Cost</span>
-                <span className="text-right">Duration</span>
-                <span>Status</span>
-                <span />
-              </div>
-              <ul aria-label="Sessions" {...live.listProps}>
-                {shown.map((s) => (
-                  <SessionRow
-                    key={s.session_id}
-                    s={s}
-                    agentLabel={display(s)}
-                    rawName={s.agent_id}
-                    status={status(s)}
-                    slow={lanes.ranked && lanes.slow.has(s.session_id)}
-                    costly={lanes.ranked && lanes.costly.has(s.session_id)}
-                    withDay={!dayMode}
-                    expanded={expanded === s.session_id}
-                    onToggle={toggleRow}
-                    linkSearch={linkSearch}
-                    linkState={linkState}
-                    fresh={live.fresh.has(s.session_id)}
-                  />
-                ))}
-              </ul>
+          {/* One object: the toolbar is the list's top edge, so its filters read as the list's own. */}
+          <div id="sessions-list" className="@container rounded-lg border border-border">
+            <div className="flex flex-wrap items-center gap-2 border-b border-border p-2">
+              <Lanes
+                lanes={lanes}
+                lane={search.lane}
+                total={filtered.length}
+                checkRows={checkRows.length}
+                day={day}
+                onLane={(l) => {
+                  setSearch({ lane: l }, { replace: true });
+                }}
+              />
+              <div className="flex flex-wrap items-center gap-2 sm:ml-auto">{controls}</div>
             </div>
-          ) : (
-            <EmptyState
-              icon={SearchX}
-              title={copy.noMatchTitle}
-              action={
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => {
-                    setSearch({ agent: undefined, lane: undefined, status: undefined });
-                  }}
-                >
-                  {copy.clearFilters}
-                </Button>
-              }
-            >
-              {copy.noMatchBody}
-            </EmptyState>
-          )}
+            {shown.length ? (
+              <>
+                <div className="hidden grid-cols-[5.5rem_10rem_minmax(0,1fr)_5rem_4.5rem_8.5rem_2.75rem] gap-x-3 border-b border-border px-2 py-2 text-xs text-muted-foreground @[672px]:grid">
+                  <span>{dayMode ? "Time (UTC)" : "Started (UTC)"}</span>
+                  <span>Agent</span>
+                  <span>First input</span>
+                  <span className="text-right">Cost</span>
+                  <span className="text-right">Duration</span>
+                  <span>Status</span>
+                  <span />
+                </div>
+                <ul aria-label="Sessions" {...live.listProps}>
+                  {shown.map((s) => (
+                    <SessionRow
+                      key={s.session_id}
+                      s={s}
+                      agentLabel={display(s)}
+                      rawName={s.agent_id}
+                      status={status(s)}
+                      slow={lanes.ranked && lanes.slow.has(s.session_id)}
+                      costly={lanes.ranked && lanes.costly.has(s.session_id)}
+                      withDay={!dayMode}
+                      expanded={expanded === s.session_id}
+                      onToggle={toggleRow}
+                      linkSearch={linkSearch}
+                      linkState={linkState}
+                      fresh={live.fresh.has(s.session_id)}
+                    />
+                  ))}
+                </ul>
+              </>
+            ) : (
+              <EmptyState
+                icon={SearchX}
+                title={copy.noMatchTitle}
+                className="border-0"
+                action={
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      setSearch({ agent: undefined, lane: undefined, status: undefined });
+                    }}
+                  >
+                    {copy.clearFilters}
+                  </Button>
+                }
+              >
+                {copy.noMatchBody}
+              </EmptyState>
+            )}
+          </div>
           <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
             <span>{copy.statusCaption(lanes.checked, filtered.length)}</span>
             {!dayMode ? (
@@ -539,54 +575,69 @@ export function SessionsPage({
   );
 }
 
+/** The lanes as tabs with counts: one at a time, All clears it. Failing covers only the status-checked rows. */
 function Lanes({
   lanes,
   lane,
+  total,
   checkRows,
   day,
   onLane,
 }: {
   lanes: ReturnType<typeof computeLanes>;
   lane: SessionsSearch["lane"];
+  total: number;
   checkRows: number;
   day?: string | undefined;
-  onLane: (l: "failing" | "slow" | "costly") => void;
+  onLane: (l: SessionsSearch["lane"]) => void;
 }) {
-  if (!lanes.ranked) return <p className="text-sm text-muted-foreground">{copy.notEnoughToRank}</p>;
+  if (!lanes.ranked)
+    return <p className="px-1 text-sm text-muted-foreground">{copy.notEnoughToRank}</p>;
   const checking = lanes.settled < checkRows;
-  const none = !checking && !lanes.failing.size && !lanes.slow.size && !lanes.costly.size;
-  const chip = (id: "failing" | "slow" | "costly", label: string, tone: string, title?: string) => (
-    <Toggle
-      variant="outline"
-      pressed={lane === id}
-      onClick={() => {
-        onLane(id);
-      }}
-      title={title}
-      className="rounded-full px-3 font-normal aria-pressed:border-foreground aria-pressed:bg-foreground aria-pressed:text-background"
-    >
+  const scope = copy.laneScope(day ? fmtShortDay(day) : undefined);
+  const tab = (
+    id: "failing" | "slow" | "costly",
+    label: string,
+    n: string,
+    tone: string,
+    title: string,
+    srExtra?: string,
+  ) => (
+    // No tab panels: every lane narrows the one list (Radix would point at a panel that isn't there).
+    <TabsTrigger value={id} title={title} aria-controls="sessions-list">
       <span className={cn("size-2 rounded-full", tone)} aria-hidden />
-      {label}
-    </Toggle>
+      {label} <span className="text-xs text-muted-foreground tabular-nums">{n}</span>
+      {srExtra ? (
+        <>
+          {" "}
+          <span className="sr-only">{srExtra}</span>
+        </>
+      ) : null}
+    </TabsTrigger>
   );
   return (
-    <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Needs attention">
-      <span className="text-sm font-medium">Needs attention</span>
-      {none ? (
-        <span className="text-sm text-muted-foreground">{copy.nothingNeedsAttention}</span>
-      ) : null}
-      {chip(
-        "failing",
-        `${copy.failingChip(lanes.failing.size, lanes.checked)}${checking ? " …" : ""}`,
-        "bg-destructive",
-        copy.failingTooltip,
-      )}
-      {chip("slow", copy.slowChip(lanes.slow.size), "bg-warning")}
-      {chip("costly", copy.costlyChip(lanes.costly.size), "bg-chart-4-edge")}
-      <span className="text-xs text-muted-foreground">
-        {copy.laneScope(day ? fmtShortDay(day) : undefined)}
-      </span>
-    </div>
+    <Tabs
+      value={lane ?? "all"}
+      onValueChange={(v) => {
+        onLane(v === "all" ? undefined : (v as SessionsSearch["lane"]));
+      }}
+    >
+      <TabsList aria-label="Needs attention">
+        <TabsTrigger value="all" aria-controls="sessions-list">
+          All <span className="text-xs text-muted-foreground tabular-nums">{total}</span>
+        </TabsTrigger>
+        {tab(
+          "failing",
+          "Failing",
+          `${lanes.failing.size}${checking ? "…" : ""}`,
+          "bg-destructive",
+          `${copy.failingChip(lanes.failing.size, lanes.checked)}. ${copy.failingTooltip}`,
+          `of ${lanes.checked} checked`,
+        )}
+        {tab("slow", "Slow", String(lanes.slow.size), "bg-warning", scope)}
+        {tab("costly", "Costly", String(lanes.costly.size), "bg-chart-4-edge", scope)}
+      </TabsList>
+    </Tabs>
   );
 }
 

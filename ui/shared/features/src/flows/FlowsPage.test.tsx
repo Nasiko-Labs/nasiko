@@ -1,5 +1,6 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/flows/FlowsPage.test.tsx. Local edits: Prettier
 // formatting.
+// Legacy ui/ on development (3aac84f66, c721a11a8): the filters are Selects.
 /**
  * The Flows list (plans/feat-flows.md §3, §2a; T5) through the real router and the flows mock: the window, Kind and
  * Status filters, search, the sample-labelled charts and Duration table, the empty, filtered, older-server and error
@@ -50,7 +51,11 @@ describe("Flows list", () => {
     const rec = recordRequests();
     renderApp("/flows");
     await table();
-    await userEvent.click(screen.getByRole("radio", { name: copy.list.kinds.workflow }));
+    const pick = async (filter: string, option: string) => {
+      await userEvent.click(screen.getByRole("combobox", { name: filter }));
+      await userEvent.click(await screen.findByRole("option", { name: option }));
+    };
+    await pick(copy.list.kind, copy.list.kinds.workflow);
     await waitFor(async () => {
       expect(await titles()).toEqual(
         expect.arrayContaining(["Quarterly report: draft the revenue section"]),
@@ -59,7 +64,7 @@ describe("Flows list", () => {
     expect(await titles()).not.toContain(
       "Compare 2026 pricing for three vendors and draft a summary",
     );
-    await userEvent.click(screen.getByRole("radio", { name: copy.list.statuses.failed }));
+    await pick(copy.list.statusLabel, copy.list.statuses.failed);
     await waitFor(() => {
       expect(
         rec.urls.some(

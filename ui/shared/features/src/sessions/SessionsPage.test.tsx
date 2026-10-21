@@ -1,5 +1,6 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/sessions/SessionsPage.test.tsx. Local edits: `!` on indexed
 // reads of the seed and the DOM (noUncheckedIndexedAccess); Prettier formatting.
+// Legacy ui/ on development (3aac84f66, c721a11a8): the lanes are tabs.
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
@@ -51,15 +52,16 @@ describe("Sessions: fleet mode", () => {
   it("lanes filter the list; failing only counts checked rows", { timeout: 20_000 }, async () => {
     const user = userEvent.setup();
     renderApp(`/sessions?live=paused&day=${seed.spikeDate}`);
-    const chip = await screen.findByRole("button", { name: /^\d+ failing · \d+ checked/ });
-    // Wait for every status check to settle (no trailing "…").
-    await waitFor(() => expect(chip).toHaveAccessibleName(/^\d+ failing · \d+ checked$/), {
-      timeout: 8000,
-    });
-    const n = Number(chip.textContent.match(/(\d+) failing/)![1]);
+    // Wait for every status check to settle (no trailing "…"); re-query, as the list re-renders meanwhile.
+    const tab = await screen.findByRole(
+      "tab",
+      { name: /^Failing \d+ of \d+ checked$/ },
+      { timeout: 8000 },
+    );
+    const n = Number(/Failing (\d+)/.exec(tab.textContent)![1]);
     expect(n).toBeGreaterThanOrEqual(6); // the six PR-review retry storms, at least
-    await user.click(chip);
-    expect(chip).toHaveAttribute("aria-pressed", "true");
+    await user.click(tab);
+    expect(tab).toHaveAttribute("aria-selected", "true");
     const shown = await rows();
     expect(shown).toHaveLength(n);
     expect(shown.every((r) => / · ✕ failed · /.test(r.getAttribute("aria-label") ?? ""))).toBe(

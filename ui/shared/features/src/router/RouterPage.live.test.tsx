@@ -2,6 +2,7 @@
 // test waits for every row's routing read to settle (RoutingSheet.test.tsx's `ready()`): until then a settling read
 // can move Doc Writer's row into the folded "on your default" body, which remounts its button, and a click on the
 // detached one opens nothing (the lab's run won that race by timing); imports; Prettier formatting.
+// Legacy ui/ on development (3aac84f66, c721a11a8): the summary is the Agents table's filter tabs.
 /**
  * The router page in live mode with router, agents and providers partially mocked (VITE_NASIKO_MOCK): the live user
  * (a real `me.sub` no seed row uses) maps onto the seed admin (N19), so "Your agents" lists the seed agents, and
@@ -50,7 +51,7 @@ describe("partial mocks in live mode", () => {
       await screen.findByRole("table", { name: copy.agentsTitle });
       await waitFor(() =>
         expect(
-          within(screen.getByRole("navigation", { name: copy.summaryLabel })).getByRole("button", {
+          within(screen.getByRole("tablist", { name: copy.summaryLabel })).getByRole("tab", {
             name: "19 agents",
           }),
         ).toBeInTheDocument(),

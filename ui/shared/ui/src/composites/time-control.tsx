@@ -7,12 +7,16 @@
 // - the Select gets `items={LABELS}` so its Value shows "Custom", not the raw "custom" (fidelity compare,
 //   tokenops-custom--narrow: Base UI's Value reads labels from `items`, Radix read the rendered item);
 // - imports mapped to ../primitives/*; optional props typed `| undefined` (exactOptionalPropertyTypes).
+// Legacy ui/ on development (3aac84f66, c721a11a8): split into `TimePresets` and `CustomRange` (plus
+// `InvalidRangeNote`), so a page can put the presets in the top bar and the dates in the page.
 "use client";
 
 /**
  * Single time control (plan: replaces the old range-vs-month dual mode; A1b collapses
- * it to a select on narrow screens).
+ * it to a select on narrow screens). `TimePresets` and `CustomRange` are its two halves, for a page that puts the
+ * presets in the top bar (which is one fixed-height row) and the custom dates in the page.
  */
+import { cn } from "../lib/cn";
 import { Input } from "../primitives/input";
 import {
   Select,
@@ -35,14 +39,7 @@ const LABELS: Record<Preset, string> = {
   custom: "Custom",
 };
 
-export function TimeControl({
-  preset,
-  invalid,
-  from,
-  to,
-  today,
-  onChange,
-}: {
+export interface TimeControlProps {
   /** The preset in the URL, not the resolved one: an invalid custom range keeps its inputs. */
   preset: Preset;
   /** The custom range can't be used (inverted, impossible or in the future); the page shows 30d meanwhile. */
@@ -52,7 +49,19 @@ export function TimeControl({
   /** UTC date, the latest selectable custom end. */
   today: string;
   onChange: (next: { preset: Preset; from?: string | undefined; to?: string | undefined }) => void;
-}) {
+}
+
+export function TimeControl(props: TimeControlProps) {
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <TimePresets {...props} />
+      <CustomRange {...props} />
+    </div>
+  );
+}
+
+/** The presets: a segmented row, a select on narrow screens. */
+export function TimePresets({ preset, from, to, today, onChange }: TimeControlProps) {
   const pick = (p: string) => {
     if (!p) return;
     const next = p as Preset;
@@ -60,7 +69,7 @@ export function TimeControl({
     else onChange({ preset: next });
   };
   return (
-    <div className="flex flex-wrap items-center gap-2">
+    <>
       <div className="hidden md:block">
         <ToggleGroup
           variant="outline"
@@ -100,45 +109,65 @@ export function TimeControl({
           </SelectContent>
         </Select>
       </div>
-      {preset === "custom" ? (
-        <div className="flex flex-wrap items-center gap-1 text-xs">
-          <label className="sr-only" htmlFor="tw-from">
-            From (UTC)
-          </label>
-          <Input
-            id="tw-from"
-            type="date"
-            className="h-8 w-36"
-            value={from ?? ""}
-            max={to ?? today}
-            onChange={(e) => {
-              onChange({ preset: "custom", from: e.target.value, to });
-            }}
-          />
-          <span aria-hidden>–</span>
-          <label className="sr-only" htmlFor="tw-to">
-            To (UTC)
-          </label>
-          <Input
-            id="tw-to"
-            type="date"
-            className="h-8 w-36"
-            value={to ?? ""}
-            min={from}
-            max={today}
-            onChange={(e) => {
-              onChange({ preset: "custom", from, to: e.target.value });
-            }}
-            aria-invalid={invalid || undefined}
-            aria-describedby={invalid ? "tw-invalid" : undefined}
-          />
-          {invalid ? (
-            <span id="tw-invalid" role="status" className="basis-full text-sm text-warning">
-              Invalid range, showing the last 30 days
-            </span>
-          ) : null}
-        </div>
-      ) : null}
+    </>
+  );
+}
+
+/**
+ * The custom range's From and To dates; nothing unless the preset is Custom. `noteElsewhere` drops the invalid-range
+ * note for a one-line home (the top bar): the page renders `InvalidRangeNote` instead, which the To input still names.
+ */
+export function CustomRange({
+  preset,
+  invalid,
+  from,
+  to,
+  today,
+  onChange,
+  noteElsewhere = false,
+}: TimeControlProps & { noteElsewhere?: boolean | undefined }) {
+  return preset === "custom" ? (
+    <div className="flex flex-wrap items-center gap-1 text-xs">
+      <label className="sr-only" htmlFor="tw-from">
+        From (UTC)
+      </label>
+      <Input
+        id="tw-from"
+        type="date"
+        className="h-8 w-36"
+        value={from ?? ""}
+        max={to ?? today}
+        onChange={(e) => {
+          onChange({ preset: "custom", from: e.target.value, to });
+        }}
+      />
+      <span aria-hidden>–</span>
+      <label className="sr-only" htmlFor="tw-to">
+        To (UTC)
+      </label>
+      <Input
+        id="tw-to"
+        type="date"
+        className="h-8 w-36"
+        value={to ?? ""}
+        min={from}
+        max={today}
+        onChange={(e) => {
+          onChange({ preset: "custom", from, to: e.target.value });
+        }}
+        aria-invalid={invalid || undefined}
+        aria-describedby={invalid ? "tw-invalid" : undefined}
+      />
+      {invalid && !noteElsewhere ? <InvalidRangeNote className="basis-full" /> : null}
     </div>
+  ) : null;
+}
+
+/** Why the page shows 30d although the URL asks for a custom range. */
+export function InvalidRangeNote({ className }: { className?: string | undefined }) {
+  return (
+    <span id="tw-invalid" role="status" className={cn("text-sm text-warning", className)}>
+      Invalid range, showing the last 30 days
+    </span>
   );
 }

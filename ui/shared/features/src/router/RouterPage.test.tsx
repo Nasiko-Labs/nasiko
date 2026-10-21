@@ -1,5 +1,6 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/router/RouterPage.test.tsx. Local edits: the cross-tab refetch names the scoped
 // configs key (`routerKeys.configs(TEST_SCOPE)`; the lab's keys were unscoped); imports; Prettier formatting.
+// Legacy ui/ on development (3aac84f66, c721a11a8): the summary is the Agents table's filter tabs.
 /**
  * The LLM router page (plans/feat-llm-router.md §8, page tests): section order and states, the summary strip and its
  * filters, spend, configs (first config, edit, default, duplicate, delete), legacy warnings, the secrets rules and axe.
@@ -33,11 +34,11 @@ const ready = async () => {
 const agentRows = () =>
   within(screen.getByRole("table", { name: copy.agentsTitle })).getAllByRole("row");
 const rowFor = (name: string) => screen.getByRole("link", { name }).closest("tr") as HTMLElement;
-const strip = () => screen.getByRole("navigation", { name: copy.summaryLabel });
+const strip = () => screen.getByRole("tablist", { name: copy.summaryLabel });
 /** The summary tiles' names, which carry the strip's sentences ("5 attached"). */
 const stripText = () =>
   within(strip())
-    .getAllByRole("button")
+    .getAllByRole("tab")
     .map((b) => b.getAttribute("aria-label"))
     .join(" · ");
 /** The page shows one tab at a time (Agents first). */
@@ -59,14 +60,15 @@ const openMenu = async (name: string) => {
 };
 
 describe("layout", () => {
-  it("shows the tabs in order, with summary tiles that count the rows", async () => {
+  it("shows the tabs in order, with filter tabs that count the rows", async () => {
     renderApp("/router");
     await ready();
-    expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual([
-      copy.anchors.agents,
-      copy.anchors.configs,
-      copy.anchors.providers,
-    ]);
+    const sections = screen.getByRole("tablist", { name: copy.anchorsLabel });
+    expect(
+      within(sections)
+        .getAllByRole("tab")
+        .map((t) => t.textContent),
+    ).toEqual([copy.anchors.agents, copy.anchors.configs, copy.anchors.providers]);
     // One tab at a time: Your agents first.
     expect(screen.queryByRole("heading", { name: copy.configsTitle })).toBeNull();
     expect(stripText()).toContain("19 agents");
@@ -139,15 +141,15 @@ describe("agents section states", () => {
     });
   });
 
-  it("filter links narrow the rows and Show all clears them", async () => {
+  it("filter tabs narrow the rows and All clears them", async () => {
     const { router } = renderApp("/router");
     await ready();
-    await userEvent.click(within(strip()).getByRole("button", { name: /5 attached/ }));
+    await userEvent.click(within(strip()).getByRole("tab", { name: /5 attached/ }));
     expect(router.state.location.search).toEqual({ source: "attached" });
     expect(agentRows()).toHaveLength(1 + 5);
-    await userEvent.click(within(strip()).getByRole("button", { name: /no config/ }));
+    await userEvent.click(within(strip()).getByRole("tab", { name: /no config/ }));
     expect(await screen.findByText(copy.noneInFilter)).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: copy.clearFilter }));
+    await userEvent.click(within(strip()).getByRole("tab", { name: /^\d+ agents$/ }));
     await waitFor(() => {
       expect(router.state.location.search).toEqual({});
     });
@@ -243,6 +245,8 @@ describe("configs", () => {
       model: "claude-sonnet-4",
       is_default: true,
     });
+    // The counts are the Agents table's filter tabs.
+    await showTab(copy.anchors.agents);
     await waitFor(() => {
       expect(stripText()).toContain("19 on your default (anthropic, platform key)");
     });
@@ -302,6 +306,7 @@ describe("configs", () => {
     await waitFor(() =>
       expect(configItem("research-tiers")).not.toHaveTextContent(copy.defaultBadge),
     );
+    await showTab(copy.anchors.agents);
     await waitFor(() => {
       expect(stripText()).toContain("14 no config (platform key)");
     });

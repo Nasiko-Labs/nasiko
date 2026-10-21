@@ -2,6 +2,7 @@
 // navigates with `useRouter().push` from the navigation port (`@nasiko/app-core/navigation`) (`/builds/<id>` or `/agents/<id>`); `Button asChild` +
 // `Link` -> `ButtonLink` (../agents/components/ButtonLink.tsx); optional props admit `undefined`
 // (exactOptionalPropertyTypes); Prettier formatting.
+// Legacy ui/ on development (3aac84f66, c721a11a8): the import's one stage is a `StageList`.
 "use client";
 
 /**
@@ -28,7 +29,7 @@ import { useNow } from "@nasiko/app-core/useNow";
 import { ELAPSED_TICK_MS } from "./tuning";
 import { openRegistryView } from "./follower";
 import { dismissImport, importFor, startImport, subscribeUploads } from "./uploads";
-import { ProgressSegments } from "./components/ProgressSegments";
+import { StageList } from "./components/StageList";
 import type { DeployStarted } from "./UploadTab";
 
 export function RegistryTab({
@@ -150,12 +151,12 @@ export function RegistryTab({
             </Field>
             {importing ? (
               <div className="flex flex-col gap-2" data-testid="import-progress">
-                <ProgressSegments
+                <StageList
                   stages={stages}
                   sub={(s) =>
                     s.state === "current"
                       ? `${fmtElapsed(clock - state.startedAt)} · ${copy.registry.usual}`
-                      : copy.build.pending
+                      : null
                   }
                 />
                 <p className="text-xs text-muted-foreground">{copy.registry.keepUsing}</p>

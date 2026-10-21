@@ -7,6 +7,8 @@
 // lab's `EmptyState` is `LabEmptyState`; optional props admit `undefined` (exactOptionalPropertyTypes); Prettier
 // formatting. Previous/Next (legacy ui/ on development, 22c07f9a5): the rows' name links and "Open agent" carry the
 // shown list (`useSiblingState`).
+// Legacy ui/ on development (3aac84f66, c721a11a8): the Agents module header (`AgentsHeader`) and the status tabs as
+// the table's top edge.
 "use client";
 
 /**
@@ -48,7 +50,6 @@ import {
   TableRow,
 } from "@nasiko/ui/primitives";
 import { Tabs, TabsList, TabsTrigger } from "@nasiko/ui/primitives";
-import { PageHeader } from "@nasiko/ui/composites";
 import { PageLoader } from "@nasiko/ui/composites";
 import { LabEmptyState as EmptyState } from "@nasiko/ui/composites";
 import { DeployAgentButton } from "../deploy/components/DeployAgentButton";
@@ -67,7 +68,7 @@ import {
   // useUsers,
   useWatchesStep,
 } from "./api";
-import { AgentLinkTo, AgentsNav, FirstRunSteps, StatusBadge } from "./components/bits";
+import { AgentLinkTo, AgentsHeader, FirstRunSteps, StatusBadge } from "./components/bits";
 import { CopyMenuItem } from "@nasiko/ui/composites";
 import { LifecycleButtons, StopDialog } from "./components/lifecycle";
 import { relTime } from "./format";
@@ -144,65 +145,19 @@ export function MyAgentsPage({
 
   // const ownerId = useId()
   const header = (
-    <>
-      <PageHeader
-        title={
-          <>
-            {copy.mineTitle}
-            {q.data ? (
-              <span className="ml-2 text-base font-normal text-muted-foreground">
-                {agents.length}
-              </span>
-            ) : null}
-          </>
-        }
-        description={
-          <>
-            {copy.deployHint}{" "}
-            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[0.85em]">
-              nasiko deploy
-            </code>
-          </>
-        }
-        actions={
-          <>
-            <DeployAgentButton />
-            {/* Owner picker and Agents link hidden for now.
-            {superuser && users.data ? (
-              <Field orientation="horizontal" className="w-auto gap-2">
-                <FieldLabel htmlFor={ownerId} className="font-normal text-muted-foreground">
-                  {copy.owner}
-                </FieldLabel>
-                <Select
-                  value={owner ?? ''}
-                  onValueChange={(v) => setSearch({ owner: v === me?.sub ? undefined : v })}
-                >
-                  <SelectTrigger id={ownerId} size="sm">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {[...users.data.entries()].map(([id, name]) => (
-                      <SelectItem key={id} value={id}>
-                        {id === me?.sub ? `${name} (${copy.you})` : name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </Field>
-            ) : null}
-            <Link
-              to="/agents"
-              search={{}}
-              className="ml-1 text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
-            >
-              {copy.catalogTitle} →
-            </Link>
-            */}
-          </>
-        }
-      />
-      <AgentsNav current="/agents/mine" />
-    </>
+    <AgentsHeader
+      current="/agents/mine"
+      description={
+        <>
+          {copy.deployHint}{" "}
+          <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[0.85em]">
+            nasiko deploy
+          </code>
+        </>
+      }
+      // With no agents, the empty card offers Deploy itself.
+      action={q.data && rows.length === 0 ? null : <DeployAgentButton />}
+    />
   );
 
   const deleted = useDeletedNote("/agents/mine");
@@ -266,36 +221,39 @@ export function MyAgentsPage({
               </ul>
             </section>
           ) : null}
-          {/* Base UI tabs: arrow keys, Home/End and roving focus. The table below is the one panel. */}
-          <Tabs
-            value={tab}
-            onValueChange={(t: unknown) => {
-              setSearch({ tab: t === "all" ? undefined : (t as Tab) });
-            }}
-          >
-            <TabsList
-              variant="line"
-              aria-label={copy.colStatus}
-              className="w-full max-w-full justify-start overflow-x-auto border-b border-border"
-            >
-              {(["all", ...TAB_STATUSES, "harnesses"] as Tab[]).map((t) => (
-                <TabsTrigger key={t} value={t} className="min-h-10 flex-none px-3">
-                  {tabLabel(t)}
-                  <span className="rounded-full bg-muted px-1.5 text-xs">{count(t)}</span>
-                </TabsTrigger>
-              ))}
-            </TabsList>
-          </Tabs>
-          <div className="flex flex-wrap gap-x-4 text-xs text-muted-foreground">
-            {tab === "all" && harnesses.length ? (
-              <p>{copy.excludesHarnesses(harnesses.length)}</p>
-            ) : null}
-            {usage.isError ? <p>{copy.usageUnavailable}</p> : null}
-          </div>
-          {shown.length ? (
-            // shadcn Table, not DataTable: each row owns its lifecycle flow (hooks + Stop dialog), which
-            // DataTable's per-cell rendering can't share across a row's cells.
-            <div className="rounded-lg border border-border">
+          {/* One object: the status tabs are the table's top edge, a level below the section nav above. */}
+          <div id="your-agents-table" className="rounded-lg border border-border">
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-border p-2">
+              {/* Base UI tabs: arrow keys, Home/End and roving focus. The table below is the one panel. */}
+              <Tabs
+                value={tab}
+                onValueChange={(t: unknown) => {
+                  setSearch({ tab: t === "all" ? undefined : (t as Tab) });
+                }}
+                className="max-w-full min-w-0"
+              >
+                <TabsList
+                  aria-label={copy.colStatus}
+                  className="max-w-full justify-start overflow-x-auto"
+                >
+                  {(["all", ...TAB_STATUSES, "harnesses"] as Tab[]).map((t) => (
+                    <TabsTrigger key={t} value={t} aria-controls="your-agents-table">
+                      {tabLabel(t)}{" "}
+                      <span className="text-xs text-muted-foreground tabular-nums">{count(t)}</span>
+                    </TabsTrigger>
+                  ))}
+                </TabsList>
+              </Tabs>
+              <div className="flex flex-wrap gap-x-4 text-xs text-muted-foreground sm:ml-auto">
+                {tab === "all" && harnesses.length ? (
+                  <p>{copy.excludesHarnesses(harnesses.length)}</p>
+                ) : null}
+                {usage.isError ? <p>{copy.usageUnavailable}</p> : null}
+              </div>
+            </div>
+            {shown.length ? (
+              // shadcn Table, not DataTable: each row owns its lifecycle flow (hooks + Stop dialog), which
+              // DataTable's per-cell rendering can't share across a row's cells.
               <Table aria-label={copy.mineTitle}>
                 <TableHeader>
                   <TableRow className="text-xs hover:bg-transparent">
@@ -342,26 +300,27 @@ export function MyAgentsPage({
                   ))}
                 </TableBody>
               </Table>
-            </div>
-          ) : (
-            <EmptyState
-              icon={Bot}
-              title={copy.noAgentsInTab(tabLabel(tab))}
-              action={
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => {
-                    setSearch({ tab: undefined });
-                  }}
-                >
-                  {copy.showAllAgents}
-                </Button>
-              }
-            >
-              {copy.noAgentsInTabHint}
-            </EmptyState>
-          )}
+            ) : (
+              <EmptyState
+                icon={Bot}
+                title={copy.noAgentsInTab(tabLabel(tab))}
+                className="border-0"
+                action={
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      setSearch({ tab: undefined });
+                    }}
+                  >
+                    {copy.showAllAgents}
+                  </Button>
+                }
+              >
+                {copy.noAgentsInTabHint}
+              </EmptyState>
+            )}
+          </div>
         </>
       )}
       {logsFor ? (

@@ -1,11 +1,13 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/deploy/DeployPage.tsx. Local edits: `meQuery` is
 // `meQueryOptions(useProductScope())`; Base UI's `Tabs` passes its value untyped (`unknown`); Prettier formatting. The
 // top bar (legacy ui/ on development, e8379db5a): the page's breadcrumb level, and the method row sticks under it.
+// Legacy ui/ on development (3aac84f66, c721a11a8): the three methods are cards on the tabs (Radix
+// `data-[state=active]:` is Base UI's `data-active:`), no sticky row.
 "use client";
 
 /**
- * Deploy an agent (plans/feat-deploy.md §4; approved mockup: Deploy variant C). The method row is shadcn `Tabs` with
- * the method in the URL (`?method=`, replaced, not pushed): Upload, GitHub, Registry.
+ * Deploy an agent (plans/feat-deploy.md §4; approved mockup: Deploy variant C). The methods are three cards on shadcn
+ * `Tabs`, with the method in the URL (`?method=`, replaced, not pushed): Upload, GitHub, Registry.
  */
 import { useQuery } from "@tanstack/react-query";
 import { Container, FolderGit2, Upload } from "lucide-react";
@@ -42,28 +44,37 @@ export function DeployPage({
         }}
         className="gap-4"
       >
-        {/* The method row stays put while the form scrolls under it (Sessions' sticky bar). */}
-        <div className="sticky top-(--topbar-h) z-20 -mx-4 bg-background/95 px-4 py-2 backdrop-blur">
-          <TabsList
-            aria-label={copy.methods.label}
-            className="h-auto w-full justify-start @[768px]:w-fit"
-          >
-            {DEPLOY_METHODS.map((m) => {
-              const Icon = ICON[m];
-              return (
-                <TabsTrigger
-                  key={m}
-                  value={m}
-                  className="min-w-0 flex-1 gap-2 px-2 py-2 @[480px]:px-4 @[768px]:flex-none pointer-coarse:min-h-11"
-                >
-                  {/* Phones: words only, so the three tabs fit side by side without scrolling the page. */}
+        {/* The method is the page's first choice, so each is a card that says what it takes. Still Radix tabs: arrow
+            keys move between them, and the method stays in the URL. */}
+        <TabsList
+          aria-label={copy.methods.label}
+          className="grid w-full grid-cols-3 items-stretch gap-3 bg-transparent p-0 group-data-[orientation=horizontal]/tabs:h-auto @max-[640px]:gap-2"
+        >
+          {DEPLOY_METHODS.map((m) => {
+            const Icon = ICON[m];
+            return (
+              <TabsTrigger
+                key={m}
+                value={m}
+                aria-label={copy.methods[m]}
+                aria-describedby={`deploy-method-${m}`}
+                className="h-auto min-w-0 flex-col items-start justify-start gap-1 rounded-lg border-border bg-card p-3 text-left font-normal whitespace-normal text-foreground shadow-xs hover:border-ring/60 data-active:border-primary data-active:bg-card data-active:ring-1 data-active:ring-primary @max-[640px]:justify-center @max-[640px]:p-2 dark:data-active:border-primary dark:data-active:bg-card pointer-coarse:min-h-11"
+              >
+                <span className="flex items-center gap-2 text-sm font-medium">
+                  {/* Phones: words only, so the three cards fit side by side. */}
                   <Icon aria-hidden className="size-4 @max-[480px]:hidden" />
                   {copy.methods[m]}
-                </TabsTrigger>
-              );
-            })}
-          </TabsList>
-        </div>
+                </span>
+                <span
+                  id={`deploy-method-${m}`}
+                  className="text-xs text-muted-foreground @max-[640px]:sr-only"
+                >
+                  {copy.methodHints[m]}
+                </span>
+              </TabsTrigger>
+            );
+          })}
+        </TabsList>
         <TabsContent value="upload">
           {me.data ? (
             <UploadTab

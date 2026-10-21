@@ -4,6 +4,8 @@
 // lab's `EmptyState` is `LabEmptyState`; optional props admit `undefined` (exactOptionalPropertyTypes); Prettier
 // formatting. Previous/Next (legacy ui/ on development, b7d5ba691, 069811719): rows hand the sheet their order and
 // carry `data-agent-id` for the close focus.
+// Legacy ui/ on development (3aac84f66, c721a11a8): one bordered object, the filter tabs and search as the table's
+// toolbar.
 "use client";
 
 /**
@@ -14,11 +16,10 @@
  */
 import Link from "@nasiko/app-core/navigation";
 import { m } from "@nasiko/ui/motion";
-import { Bot, ChevronRight, RotateCw, Search, SearchX } from "lucide-react";
-import { useId, useState } from "react";
-import { LabEmptyState as EmptyState } from "@nasiko/ui/composites";
+import { Bot, ChevronRight, RotateCw, SearchX } from "lucide-react";
+import { useId, useState, type ReactNode } from "react";
+import { LabEmptyState as EmptyState, SearchInput } from "@nasiko/ui/composites";
 import { Button, buttonVariants } from "@nasiko/ui/primitives";
-import { Input } from "@nasiko/ui/primitives";
 import {
   Table,
   TableBody,
@@ -70,7 +71,7 @@ export function AgentsSection({
   onRetry,
   onShowConfig,
   filterLabel,
-  onClearFilter,
+  filters,
 }: {
   rows: readonly AgentRow[];
   /** All owned agents, before a filter: decides whether the search shows (so a filter never hides a typed query). */
@@ -83,7 +84,8 @@ export function AgentsSection({
   onChange: (a: Agent, order: readonly string[]) => void;
   onRetry: (id: string) => void;
   filterLabel: string | null;
-  onClearFilter: () => void;
+  /** The routing summary's filter tabs: the left of the table's toolbar. */
+  filters: ReactNode;
 }) {
   const ids = useId();
   const [query, setQuery] = useState("");
@@ -120,132 +122,118 @@ export function AgentsSection({
     />
   );
   return (
-    <section id="router-agents" aria-labelledby="router-agents-h" className="scroll-mt-4 space-y-2">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 id="router-agents-h" tabIndex={-1} className="text-sm font-semibold">
-          {copy.agentsTitle}
-        </h2>
-        {filterLabel ? (
-          <p className="flex items-center gap-2 text-xs text-muted-foreground">
-            {copy.filteredBy(filterLabel)}
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-7 pointer-coarse:min-h-11"
-              onClick={onClearFilter}
+    <section id="router-agents" aria-labelledby="router-agents-h" className="scroll-mt-4">
+      {/* The tab names the section; the heading stays for screen readers and as the focus target of "Show them". */}
+      <h2 id="router-agents-h" tabIndex={-1} className="sr-only">
+        {copy.agentsTitle}
+      </h2>
+      {/* One object: the toolbar is the table's top edge, so its filters read as the table's own. */}
+      <div className="rounded-lg border border-border bg-card">
+        <div className="flex flex-wrap items-center gap-2 border-b border-border p-2">
+          {filters}
+          {searchable ? (
+            <SearchInput
+              aria-label={copy.searchAgents}
+              placeholder={copy.searchAgents}
+              value={query}
+              onChange={(e) => {
+                setQuery(e.target.value);
+              }}
+              className="max-w-none sm:ml-auto sm:w-64"
+            />
+          ) : null}
+        </div>
+        {rows.length > 0 && visible.length === 0 ? (
+          <EmptyState icon={SearchX} title={copy.searchNone(query.trim())} className="border-0">
+            {copy.searchNoneText}
+          </EmptyState>
+        ) : rows.length === 0 ? (
+          filterLabel ? (
+            // The All tab above clears the filter.
+            <EmptyState icon={SearchX} title={copy.noneInFilter} className="border-0">
+              {copy.noneInFilterText}
+            </EmptyState>
+          ) : (
+            <EmptyState
+              icon={Bot}
+              title={copy.noAgents}
+              className="border-0"
+              action={
+                <Link
+                  href="/agents"
+                  data-slot="button"
+                  className={buttonVariants({
+                    size: "sm",
+                    variant: "outline",
+                    className: "pointer-coarse:min-h-11",
+                  })}
+                >
+                  {copy.toAgents}
+                </Link>
+              }
             >
-              {copy.clearFilter}
-            </Button>
-          </p>
-        ) : null}
-      </div>
-      {searchable ? (
-        <div className="relative max-w-xs">
-          <Search
-            className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
-            aria-hidden
-          />
-          <Input
-            type="search"
-            aria-label={copy.searchAgents}
-            placeholder={copy.searchAgents}
-            value={query}
-            onChange={(e) => {
-              setQuery(e.target.value);
-            }}
-            className="pl-8"
-          />
-        </div>
-      ) : null}
-      {rows.length > 0 && visible.length === 0 ? (
-        <EmptyState icon={SearchX} title={copy.searchNone(query.trim())}>
-          {copy.searchNoneText}
-        </EmptyState>
-      ) : rows.length === 0 ? (
-        filterLabel ? (
-          // The filter line above already offers Show all.
-          <EmptyState icon={SearchX} title={copy.noneInFilter}>
-            {copy.noneInFilterText}
-          </EmptyState>
+              {copy.noAgentsText}
+            </EmptyState>
+          )
         ) : (
-          <EmptyState
-            icon={Bot}
-            title={copy.noAgents}
-            action={
-              <Link
-                href="/agents"
-                data-slot="button"
-                className={buttonVariants({
-                  size: "sm",
-                  variant: "outline",
-                  className: "pointer-coarse:min-h-11",
-                })}
-              >
-                {copy.toAgents}
-              </Link>
-            }
-          >
-            {copy.noAgentsText}
-          </EmptyState>
-        )
-      ) : (
-        <div className="rounded-lg border border-border bg-card">
-          <Table aria-label={copy.agentsTitle} className="max-md:block md:table-fixed">
-            <TableHeader className="max-md:sr-only">
-              <TableRow className="hover:bg-transparent">
-                <TableHead className={HEAD}>{copy.colAgent}</TableHead>
-                <TableHead className={cn(HEAD, "w-28")}>{copy.colSource}</TableHead>
-                <TableHead className={cn(HEAD, "w-[32%]")}>{copy.colRouting}</TableHead>
-                <TableHead className={HEAD}>{copy.colKey}</TableHead>
-                <TableHead className={cn(HEAD, "w-34 text-right")}>
-                  <Tooltip>
-                    <TooltipTrigger
-                      render={
-                        <LinkButton className="font-medium text-inherit underline decoration-dotted" />
-                      }
-                    >
-                      {copy.colSpend}
-                    </TooltipTrigger>
-                    <TooltipContent className="max-w-xs">{copy.spendTip}</TooltipContent>
-                  </Tooltip>
-                </TableHead>
-                <TableHead className={cn(HEAD, "w-32")}>
-                  <span className="sr-only">{copy.colActions}</span>
-                </TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody className="max-md:block">
-              {shown.map(row)}
-              {folded.length ? (
-                <FoldedRow
-                  rows={folded}
-                  spend={spend}
-                  open={open}
-                  controls={`${ids}-defaults`}
-                  onToggle={toggle}
-                  more={shown.some(
-                    (r) => r.read.state === "ok" && r.read.routing.source === "owner-default",
-                  )}
-                />
+          <>
+            <Table aria-label={copy.agentsTitle} className="max-md:block md:table-fixed">
+              <TableHeader className="max-md:sr-only">
+                <TableRow className="hover:bg-transparent">
+                  <TableHead className={HEAD}>{copy.colAgent}</TableHead>
+                  <TableHead className={cn(HEAD, "w-28")}>{copy.colSource}</TableHead>
+                  <TableHead className={cn(HEAD, "w-[32%]")}>{copy.colRouting}</TableHead>
+                  <TableHead className={HEAD}>{copy.colKey}</TableHead>
+                  <TableHead className={cn(HEAD, "w-34 text-right")}>
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <LinkButton className="font-medium text-inherit underline decoration-dotted" />
+                        }
+                      >
+                        {copy.colSpend}
+                      </TooltipTrigger>
+                      <TooltipContent className="max-w-xs">{copy.spendTip}</TooltipContent>
+                    </Tooltip>
+                  </TableHead>
+                  <TableHead className={cn(HEAD, "w-32")}>
+                    <span className="sr-only">{copy.colActions}</span>
+                  </TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody className="max-md:block">
+                {shown.map(row)}
+                {folded.length ? (
+                  <FoldedRow
+                    rows={folded}
+                    spend={spend}
+                    open={open}
+                    controls={`${ids}-defaults`}
+                    onToggle={toggle}
+                    more={shown.some(
+                      (r) => r.read.state === "ok" && r.read.routing.source === "owner-default",
+                    )}
+                  />
+                ) : null}
+              </TableBody>
+              {/* Fades in only: an exit animation would keep the old rows on screen (and clickable) while the same agents
+                  already render above when a filter, search or save unfolds the group. */}
+              {folded.length && open ? (
+                <m.tbody
+                  id={`${ids}-defaults`}
+                  className="border-t border-border max-md:block [&_tr:last-child]:border-0"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  transition={transitions.disclosure}
+                >
+                  {folded.map(row)}
+                </m.tbody>
               ) : null}
-            </TableBody>
-            {/* Fades in only: an exit animation would keep the old rows on screen (and clickable) while the same agents
-                already render above when a filter, search or save unfolds the group. */}
-            {folded.length && open ? (
-              <m.tbody
-                id={`${ids}-defaults`}
-                className="border-t border-border max-md:block [&_tr:last-child]:border-0"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                transition={transitions.disclosure}
-              >
-                {folded.map(row)}
-              </m.tbody>
-            ) : null}
-          </Table>
-          <Footer spend={spend} />
-        </div>
-      )}
+            </Table>
+            <Footer spend={spend} />
+          </>
+        )}
+      </div>
     </section>
   );
 }

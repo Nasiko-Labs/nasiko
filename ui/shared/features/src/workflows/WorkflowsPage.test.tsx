@@ -1,5 +1,6 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/workflows/WorkflowsPage.test.tsx. Local edits: an open run
 // card is read by Base UI's `data-open` (Radix's `data-state="open"`; see the comment); Prettier formatting.
+// Legacy ui/ on development (3aac84f66, c721a11a8): the open section is the current section tab.
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vitest";
@@ -19,7 +20,9 @@ const card = async (name: string) =>
 describe("Workflow lists (plans/feat-workflows.md §2)", () => {
   it("shows deployed workflows with their metrics, health and last run", async () => {
     renderApp("/workflows");
-    expect(await screen.findByRole("heading", { name: copy.list.deployed.title }, T)).toBeVisible();
+    expect(
+      await screen.findByRole("link", { name: copy.nav.deployed, current: "page" }, T),
+    ).toBeVisible();
     const ticket = await card("Ticket resolution");
     expect(within(ticket).getByText("12 runs")).toBeInTheDocument();
     expect(within(ticket).getByText("91.7% success")).toBeInTheDocument();
@@ -65,7 +68,9 @@ describe("Workflow lists (plans/feat-workflows.md §2)", () => {
     renderApp("/workflows");
     await card("Ticket resolution");
     await userEvent.click(screen.getByRole("link", { name: copy.nav.drafts }));
-    expect(await screen.findByRole("heading", { name: copy.list.drafts.title }, T)).toBeVisible();
+    expect(
+      await screen.findByRole("link", { name: copy.nav.drafts, current: "page" }, T),
+    ).toBeVisible();
     const onboarding = await card("Onboarding checklist");
     expect(within(onboarding).getByText(/^Updated /)).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Ticket resolution" })).toBeNull();

@@ -5,6 +5,8 @@
 // `/sessions/<id>`); the filters' `Select` gets `items` (Base UI's trigger shows the label, not the value); the card's
 // chevron reads Base UI's trigger `data-panel-open` (`group-data-[state=closed]:-rotate-90` -> `-rotate-90
 // group-data-[panel-open]:rotate-0`); callbacks that returned a void expression are braced (lint); Prettier formatting.
+// Legacy ui/ on development (3aac84f66, c721a11a8): the module's title and Create in the top bar, prefixed filter
+// labels.
 "use client";
 
 /**
@@ -16,6 +18,7 @@ import { useMutation, useMutationState, useQuery, useQueryClient } from "@tansta
 import { ChevronDown, Info, Loader2, RotateCw, SearchX, Workflow } from "lucide-react";
 import { useDeferredValue, useEffect, useState } from "react";
 import { toast } from "@nasiko/ui/toast";
+import { TopBar } from "@nasiko/app-core/shell/TopBar";
 import { PageHeader } from "@nasiko/ui/composites";
 import { PageLoader } from "@nasiko/ui/composites";
 import { SearchInput } from "@nasiko/ui/composites";
@@ -50,7 +53,7 @@ import {
 } from "./logic";
 import { RUN_AGE_FILTERS, RUN_STATUS_FILTERS, type RunsSearch } from "./search";
 import type { ExecutionRow } from "./types";
-import { Chip, SectionNav, ToneBadge } from "./components/bits";
+import { Chip, CreateWorkflowLink, SectionNav, ToneBadge } from "./components/bits";
 import { RunSteps } from "./components/RunSteps";
 import { useRunsTabLanding } from "./run";
 
@@ -178,8 +181,10 @@ export function RunsPage({
 
   return (
     <div className="space-y-4">
-      <PageHeader title={copy.runsTitle} />
+      <TopBar actions={<CreateWorkflowLink />} />
+      <PageHeader title={copy.title} description={copy.sub} />
       <SectionNav current="/workflows/runs" />
+      {/* One row the width of the list: search on the left, the filters on the right. */}
       <div className="flex flex-wrap items-center gap-2">
         <SearchInput
           aria-label={copy.runsSearch}
@@ -189,7 +194,7 @@ export function RunsPage({
             setSearch({ q: e.target.value || undefined });
           }}
           disabled={none}
-          className="w-full max-w-none sm:w-80"
+          className="w-full max-w-none sm:w-72"
         />
         <Select
           value={status}
@@ -199,8 +204,8 @@ export function RunsPage({
           }}
           disabled={none}
         >
-          <SelectTrigger size="sm" aria-label={copy.statusFilter}>
-            <SelectValue />
+          <SelectTrigger size="sm" aria-label={copy.statusFilter} className="text-xs sm:ml-auto">
+            <span className="text-muted-foreground">{copy.statusPrefix}:</span> <SelectValue />
           </SelectTrigger>
           <SelectContent>
             {RUN_STATUS_FILTERS.map((v) => (
@@ -218,8 +223,8 @@ export function RunsPage({
           }}
           disabled={none}
         >
-          <SelectTrigger size="sm" aria-label={copy.ageFilter}>
-            <SelectValue />
+          <SelectTrigger size="sm" aria-label={copy.ageFilter} className="text-xs">
+            <span className="text-muted-foreground">{copy.agePrefix}:</span> <SelectValue />
           </SelectTrigger>
           <SelectContent>
             {RUN_AGE_FILTERS.map((v) => (

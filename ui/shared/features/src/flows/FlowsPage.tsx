@@ -4,9 +4,11 @@
 // UI's ToggleGroup is value-array based (`value={[value]}`, `onValueChange` reads `v[0]`, an empty array keeps the
 // value as the lab's `v &&` did); `setSearch`'s `replace` admits `undefined` (exactOptionalPropertyTypes); Prettier
 // formatting. Previous/Next (legacy ui/ on development, c033b0c52): the rows carry the drawn list (`useSiblingState`).
+// Legacy ui/ on development (3aac84f66, c721a11a8): the window's presets in the top bar (`TimePresets`,
+// `CustomRange`), the filters as prefixed Selects beside the search.
 /**
- * Your flows (plans/feat-flows.md §3, §2a; T5): a wide search row with the Kind and Status filters, the window in the
- * header, requests per day by status and the Duration panel over the table.
+ * Your flows (plans/feat-flows.md §3, §2a; T5): the window in the shell's top bar, search and the Kind and Status
+ * dropdowns at the right of the title, requests per day by status and the Duration panel over the table.
  *
  * The server filters only status and search (`q`), newest first, so the page reads pages back to the window start
  * (A2, cap 500) and applies the window and Kind itself; the charts and the table always share the same rows, and the
@@ -23,7 +25,8 @@ import { PageLoader } from "@nasiko/ui/composites";
 import { Panel, PanelError } from "@nasiko/ui/composites";
 import { SearchInput } from "@nasiko/ui/composites";
 import { LabEmptyState as EmptyState, StateCard } from "@nasiko/ui/composites";
-import { TimeControl } from "@nasiko/ui/composites";
+import { CustomRange, TimePresets } from "@nasiko/ui/composites";
+import { TopBar } from "@nasiko/app-core/shell/TopBar";
 import { Badge } from "@nasiko/ui/primitives";
 import { Button } from "@nasiko/ui/primitives";
 import {
@@ -41,11 +44,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@nasiko/ui/primitives";
-import { ToggleGroup, ToggleGroupItem } from "@nasiko/ui/primitives";
 import { ButtonLink } from "../agents/components/ButtonLink";
 import { relTime } from "../agents/format";
 import { resolveWindow } from "../tokenops/window";
 import { isEndpointAbsent, useProductScope } from "@nasiko/data-access/product";
+import { useMediaQuery } from "@nasiko/ui/lib";
 import { useFrozenNow, useReturnTick } from "@nasiko/app-core/useReturnTick";
 import { flowKeys, useFlowsList } from "./api";
 import { DurationPanel } from "./components/DurationPanel";
@@ -132,36 +135,31 @@ export function FlowsPage({
     };
   }, [draft, search.q, setSearch]);
 
-  const header = (
-    <PageHeader
-      title={copy.list.title}
-      description={copy.list.description}
-      actions={
-        <TimeControl
-          preset={search.preset}
-          from={search.from}
-          to={search.to}
-          today={today}
-          onChange={(n) => {
-            setSearch({ preset: n.preset, from: n.from, to: n.to });
-          }}
-        />
-      }
+  const time = {
+    preset: search.preset,
+    from: search.from,
+    to: search.to,
+    today,
+    onChange: (n: Pick<FlowsSearch, "preset" | "from" | "to">) => {
+      setSearch({ preset: n.preset, from: n.from, to: n.to });
+    },
+  };
+  // Below md the bar has room for the presets only: the custom dates, search and filters sit under the title.
+  const isMd = useMediaQuery("(min-width: 48rem)");
+  // The search and filters stay mounted while results load, so typing keeps its focus.
+  const searchBox = (
+    <SearchInput
+      className="max-w-none md:h-8 md:w-64"
+      aria-label={copy.list.search}
+      placeholder={copy.list.search}
+      value={draft}
+      onChange={(e) => {
+        setDraft(e.target.value);
+      }}
     />
   );
-
-  // The search and filters stay mounted while results load, so typing keeps its focus.
-  const controls = (
-    <div className="flex flex-wrap items-center gap-3">
-      <SearchInput
-        className="max-w-none min-w-60 flex-1"
-        aria-label={copy.list.search}
-        placeholder={copy.list.search}
-        value={draft}
-        onChange={(e) => {
-          setDraft(e.target.value);
-        }}
-      />
+  const filters = (
+    <>
       <Filter
         label={copy.list.kind}
         value={search.kind}
@@ -180,14 +178,47 @@ export function FlowsPage({
           setSearch({ status: s }, { replace: true });
         }}
       />
-    </div>
+    </>
+  );
+  // Left: what the page is. Right: what narrows it, under the window in the top bar.
+  const header = (
+    <>
+      <TopBar
+        actions={
+          <>
+            <TimePresets {...time} />
+            {isMd ? <CustomRange {...time} /> : null}
+          </>
+        }
+        pinActions
+      />
+      <PageHeader
+        title={copy.list.title}
+        description={copy.list.description}
+        actions={
+          isMd ? (
+            <>
+              {filters}
+              {searchBox}
+            </>
+          ) : null
+        }
+        className="mb-2"
+      />
+      {isMd ? null : (
+        <div className="flex flex-wrap items-center gap-2">
+          <CustomRange {...time} />
+          <div className="w-full">{searchBox}</div>
+          {filters}
+        </div>
+      )}
+    </>
   );
 
   if (list.isPending)
     return (
       <Frame>
         {header}
-        {controls}
         <PageLoader label={copy.list.loading} inline className="h-80" />
       </Frame>
     );
@@ -196,7 +227,6 @@ export function FlowsPage({
     return (
       <Frame>
         {header}
-        {controls}
         {isEndpointAbsent(list.error) ? (
           <StateCard tone="warning" title={copy.list.absent}>
             {copy.list.absentBody}
@@ -235,7 +265,6 @@ export function FlowsPage({
   return (
     <Frame>
       {header}
-      {controls}
 
       {list.isError ? (
         <StateCard
@@ -320,7 +349,7 @@ export function FlowsPage({
   );
 }
 
-/** A filter: a toggle group, or a Select on phones (F24). Only one is displayed, so only one is in the a11y tree. */
+/** A filter as a Select whose box names it ("Kind: All"): two boxes that both read "All" wouldn't say which is which. */
 function Filter<T extends string>({
   label,
   value,
@@ -335,43 +364,33 @@ function Filter<T extends string>({
   onChange: (v: T) => void;
 }) {
   return (
-    <>
-      <ToggleGroup
-        variant="outline"
+    <Select
+      value={value}
+      onValueChange={(v) => {
+        if (v) onChange(v);
+      }}
+      // Base UI's Value shows an item's label only for items it knows.
+      items={names}
+    >
+      <SelectTrigger
         size="sm"
         aria-label={label}
-        value={[value]}
-        // A click on the pressed item would clear it: keep a value.
-        onValueChange={(v: unknown[]) => {
-          if (typeof v[0] === "string" && v[0]) onChange(v[0] as T);
-        }}
-        className="max-sm:hidden"
+        className="h-8 text-xs max-md:flex-1 pointer-coarse:min-h-11"
       >
+        {/* One group, so a full-width box on phones keeps the value beside its label, not at the far end. */}
+        <span className="flex min-w-0 items-center gap-1">
+          <span className="text-muted-foreground">{label}:</span>
+          <SelectValue />
+        </span>
+      </SelectTrigger>
+      <SelectContent>
         {options.map((o) => (
-          <ToggleGroupItem key={o} value={o} className="pointer-coarse:min-h-11">
+          <SelectItem key={o} value={o}>
             {names[o]}
-          </ToggleGroupItem>
+          </SelectItem>
         ))}
-      </ToggleGroup>
-      <Select
-        value={value}
-        onValueChange={(v) => {
-          onChange(v as T);
-        }}
-      >
-        <SelectTrigger size="sm" aria-label={label} className="min-h-11 flex-1 sm:hidden">
-          {/* The label in the box too: two dropdowns that both read "All" wouldn't say which is which. */}
-          <SelectValue>{`${label}: ${names[value]}`}</SelectValue>
-        </SelectTrigger>
-        <SelectContent>
-          {options.map((o) => (
-            <SelectItem key={o} value={o}>
-              {names[o]}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-    </>
+      </SelectContent>
+    </Select>
   );
 }
 

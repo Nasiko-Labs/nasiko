@@ -1,5 +1,6 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/sessions/followTheMoney.test.tsx. Local edits: `!` on indexed
 // reads of the seed and the DOM (noUncheckedIndexedAccess); Prettier formatting.
+// Legacy ui/ on development (3aac84f66, c721a11a8): the day is the top bar's last breadcrumb level.
 /**
  * The demo path, end to end against the seed-backed MSW handlers: TokenOps spike clause →
  * that day's sessions (cost order) → the top session's trace. The same numbers at every
@@ -49,7 +50,10 @@ describe("follow the money", () => {
           name: new RegExp(`^Mar 11 · \\d+ sessions · ${fmtMoney(dayTotal).replace("$", "\\$")}$`),
         });
         expect(header).toBeInTheDocument();
-        expect(screen.getByText("Viewing Mar 11")).toBeInTheDocument();
+        // The day is the top bar's last breadcrumb level.
+        expect(
+          within(screen.getByRole("navigation", { name: "Breadcrumb" })).getByText("Mar 11"),
+        ).toHaveAttribute("aria-current", "page");
         const list = await screen.findByRole("list", { name: "Sessions" });
         const rows = within(list).getAllByRole("link");
         expect(rows[0]).toHaveAccessibleName(

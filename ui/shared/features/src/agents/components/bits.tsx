@@ -5,7 +5,7 @@
 // from ./AgentLink.tsx (ported earlier with the navigation port's `Link` (`@nasiko/app-core/navigation`)); `TryItLink` is a `ButtonLink` (./ButtonLink.tsx) to
 // `hrefFor('/chat', { agent })`; `AgentsNav` passes the navigation port's `Link` (`@nasiko/app-core/navigation`) to `SectionNav`; optional props admit `undefined`
 // (exactOptionalPropertyTypes); Prettier formatting. `SectionNav` is the app-core binding that also names the open
-// section in the top bar (legacy ui/ on development, e8379db5a).
+// section in the top bar (legacy ui/ on development, e8379db5a); `AgentsHeader` (c721a11a8) is the module's header.
 "use client";
 
 /**
@@ -22,6 +22,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@nasiko/ui/primitives";
 import { CopyButton } from "@nasiko/ui/composites";
 import { Panel } from "@nasiko/ui/composites";
 import { SectionNav } from "@nasiko/app-core/shell/SectionNav";
+import { TopBar } from "@nasiko/app-core/shell/TopBar";
+import { PageHeader } from "@nasiko/ui/composites";
 import { cn } from "@nasiko/ui/cn";
 import { hrefFor } from "@nasiko/app-core/url-state";
 import { ButtonLink } from "./ButtonLink";
@@ -257,7 +259,30 @@ const SECTIONS = [
   { to: "/builds", label: copy.sections.builds },
 ] as const;
 
-/** All agents · Your agents · Builds (the Builds page uses it too); "Deploy an agent" stays the header's action. */
+/**
+ * The Agents module's header, the same on All agents, Your agents and Builds: "Deploy an agent" in the top bar, the
+ * module's title, a line about the open section, then the sections. A page whose empty state already offers Deploy
+ * passes no `action`, so the button never shows twice.
+ */
+export function AgentsHeader({
+  current,
+  description,
+  action,
+}: {
+  current: (typeof SECTIONS)[number]["to"];
+  description?: ReactNode;
+  action: ReactNode;
+}) {
+  return (
+    <>
+      <TopBar actions={action} />
+      <PageHeader title={copy.catalogTitle} description={description} />
+      <AgentsNav current={current} />
+    </>
+  );
+}
+
+/** All agents · Your agents · Builds (the Builds page uses it too). */
 export function AgentsNav({ current }: { current: (typeof SECTIONS)[number]["to"] }) {
   return <SectionNav label={copy.sections.label} sections={SECTIONS} current={current} />;
 }

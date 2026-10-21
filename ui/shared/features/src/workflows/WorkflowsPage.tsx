@@ -4,6 +4,8 @@
 // `onClick`; the sort `Select` gets `items` (Base UI's trigger shows the label) and passes its value untyped (read as a
 // string); scoped `workflowListQuery`/`dropFromLists`; the list search's optional fields admit `undefined`; Prettier formatting.
 // Previous/Next (legacy ui/ on development, 2d2c113ab): the cards' link and open carry the shown list.
+// Legacy ui/ on development (3aac84f66, c721a11a8): the module's title, Create in the top bar
+// (`CreateWorkflowLink`), the prefixed sort label.
 "use client";
 
 /**
@@ -14,9 +16,10 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import Link, { type HistoryState } from "@nasiko/app-core/navigation";
 import { useSiblingState } from "@nasiko/app-core/siblings";
 import { useRouter } from "@nasiko/app-core/navigation";
-import { EllipsisVertical, Plus, RotateCw, SearchX, Workflow } from "lucide-react";
+import { EllipsisVertical, RotateCw, SearchX, Workflow } from "lucide-react";
 import { memo, useDeferredValue, useState } from "react";
 import { toast } from "@nasiko/ui/toast";
+import { TopBar } from "@nasiko/app-core/shell/TopBar";
 import { useProductScope } from "@nasiko/data-access/product";
 import { PageHeader } from "@nasiko/ui/composites";
 import { PageLoader } from "@nasiko/ui/composites";
@@ -61,7 +64,7 @@ import {
   type WorkflowSort,
 } from "./search";
 import type { WorkflowRow } from "./types";
-import { Chip, SectionNav, ToneBadge } from "./components/bits";
+import { Chip, CreateWorkflowLink, SectionNav, ToneBadge } from "./components/bits";
 import { DeleteWorkflowDialog } from "./components/DeleteWorkflowDialog";
 
 /** The last-run line's dot; the words beside it carry the meaning. */
@@ -114,11 +117,7 @@ export function WorkflowsPage({
   const sorts: readonly string[] = mode === "deployed" ? WORKFLOW_SORTS : DRAFT_SORTS;
   const sortLabel = SORT_LABEL[mode] as Record<string, string>;
 
-  const create = (
-    <ButtonLink size="sm" className="pointer-coarse:min-h-11" href="/workflows/new">
-      <Plus aria-hidden /> {copy.create}
-    </ButtonLink>
-  );
+  const create = <CreateWorkflowLink />;
 
   let body;
   if (absent)
@@ -207,9 +206,12 @@ export function WorkflowsPage({
 
   return (
     <div className="space-y-4">
-      <PageHeader title={text.title} actions={absent ? null : create} />
+      {/* Create is the module's action: the top bar's right, the same on every section. */}
+      <TopBar actions={absent ? null : create} />
+      <PageHeader title={copy.title} description={copy.sub} />
       <SectionNav current={mode === "deployed" ? "/workflows" : "/workflows/drafts"} />
       {absent ? null : (
+        // One row the width of the grid: search on the left, the sort on the right.
         <div className="flex flex-wrap items-center gap-2">
           <SearchInput
             aria-label={text.search}
@@ -219,7 +221,7 @@ export function WorkflowsPage({
               setSearch({ q: e.target.value || undefined });
             }}
             disabled={empty}
-            className="w-full max-w-none sm:w-80"
+            className="w-full max-w-none sm:w-72"
           />
           {/* `main` ignores `sort` (W-3): a menu that changes nothing is hidden. */}
           {metrics ? (
@@ -231,8 +233,8 @@ export function WorkflowsPage({
               }}
               disabled={empty}
             >
-              <SelectTrigger size="sm" aria-label={copy.sortLabel}>
-                <SelectValue />
+              <SelectTrigger size="sm" aria-label={copy.sortLabel} className="text-xs sm:ml-auto">
+                <span className="text-muted-foreground">{copy.sortPrefix}:</span> <SelectValue />
               </SelectTrigger>
               <SelectContent>
                 {sorts.map((v) => (

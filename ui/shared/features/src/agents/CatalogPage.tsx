@@ -6,6 +6,8 @@
 // and the card is ./components/AgentCard.tsx, which GenUI's agent cards reuse); the lab's `EmptyState` is `LabEmptyState`; optional props admit
 // `undefined` (exactOptionalPropertyTypes); Prettier formatting. Previous/Next (legacy ui/ on development, 22c07f9a5):
 // the cards carry the shown list (`useSiblingState`).
+// Legacy ui/ on development (3aac84f66, c721a11a8): the Agents module header (`AgentsHeader`), and the owner, tag
+// and harness filters as prefixed Selects and a Switch on the search row's right.
 "use client";
 
 /**
@@ -16,9 +18,16 @@
 import { useQuery } from "@tanstack/react-query";
 import { Bot, RotateCw, SearchX, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Button } from "@nasiko/ui/primitives";
-import { FilterChip } from "@nasiko/ui/composites";
-import { PageHeader } from "@nasiko/ui/composites";
+import {
+  Button,
+  Label,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  Switch,
+} from "@nasiko/ui/primitives";
 import { PageLoader } from "@nasiko/ui/composites";
 import { SearchInput } from "@nasiko/ui/composites";
 import { LabEmptyState as EmptyState } from "@nasiko/ui/composites";
@@ -31,11 +40,14 @@ import { meQueryOptions, useProductScope } from "@nasiko/data-access/product";
 import { useCatalogAgents, useCatalogTabs, useUsers } from "./api";
 import { AgentCard } from "./components/AgentCard";
 import { useSiblingState } from "@nasiko/app-core/siblings";
-import { AgentsNav, FirstRunSteps } from "./components/bits";
+import { AgentsHeader, FirstRunSteps } from "./components/bits";
 import { copy } from "./copy";
 import type { CatalogSearch } from "./search";
 import { isHarness } from "./status";
 import { TOP_TAGS } from "./tuning";
+
+/** The Tag filter's "no tag" value (a Select item can't be empty). */
+const ALL_TAGS = "__all";
 
 export function CatalogPage({
   search,
@@ -113,23 +125,19 @@ export function CatalogPage({
   const linkState = useSiblingState(shown.map((a) => a.id));
 
   const header = (
-    <>
-      <PageHeader
-        title={copy.catalogTitle}
-        description={
-          q.data ? (
-            <>
-              {copy.agentsCount(all.length - harnessCount)}
-              {(q.hasNextPage || q.isFetchingNextPage) && !q.isFetchNextPageError
-                ? ` · ${copy.loadingMore}`
-                : ""}
-            </>
-          ) : null
-        }
-        actions={<DeployAgentButton />}
-      />
-      <AgentsNav current="/agents" />
-    </>
+    <AgentsHeader
+      current="/agents"
+      description={
+        <>
+          {copy.catalogSub}
+          {(q.hasNextPage || q.isFetchingNextPage) && !q.isFetchNextPageError
+            ? ` · ${copy.loadingMore}`
+            : ""}
+        </>
+      }
+      // An empty catalog's card offers Deploy itself.
+      action={q.data && all.length === 0 ? null : <DeployAgentButton />}
+    />
   );
 
   // Wait for the ratings, not just the directory: until the dashboards land every agent rates Unknown (/ship review).
@@ -189,36 +197,66 @@ export function CatalogPage({
             <X className="size-3" aria-hidden />
           </Button>
         ) : null}
-        <FilterChip
-          active={!!search.yours}
-          onClick={() => {
-            setSearch({ yours: search.yours ? undefined : true });
-          }}
-        >
-          {copy.yours}
-        </FilterChip>
-        {tags.map((t) => (
-          <FilterChip
-            key={t}
-            active={search.tag === t}
-            onClick={() => {
-              setSearch({ tag: search.tag === t ? undefined : t });
+        {/* The filters keep to the right: search reads first, then what narrows it. */}
+        <div className="flex flex-wrap items-center gap-2 sm:ml-auto">
+          <Select
+            value={search.yours ? "yours" : "anyone"}
+            onValueChange={(v: string | null) => {
+              setSearch({ yours: v === "yours" ? true : undefined });
             }}
+            // Base UI's Value shows an item's label only for items it knows.
+            items={{ anyone: copy.anyone, yours: copy.yours }}
           >
-            {t}
-          </FilterChip>
-        ))}
-        {harnessCount ? (
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => {
-              setSearch({ harnesses: search.harnesses ? undefined : true });
-            }}
-          >
-            {search.harnesses ? copy.hideHarnesses : copy.showHarnesses(harnessCount)}
-          </Button>
-        ) : null}
+            <SelectTrigger size="sm" aria-label={copy.ownerFilter} className="text-xs">
+              <span className="text-muted-foreground">{copy.ownerLabel}:</span> <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="anyone">{copy.anyone}</SelectItem>
+              <SelectItem value="yours">{copy.yours}</SelectItem>
+            </SelectContent>
+          </Select>
+          {tags.length || search.tag ? (
+            <Select
+              value={search.tag ?? ALL_TAGS}
+              onValueChange={(v: string | null) => {
+                setSearch({ tag: !v || v === ALL_TAGS ? undefined : v });
+              }}
+              items={{
+                [ALL_TAGS]: copy.allTags,
+                ...Object.fromEntries(
+                  [...tags, ...(search.tag ? [search.tag] : [])].map((t) => [t, t]),
+                ),
+              }}
+            >
+              <SelectTrigger size="sm" aria-label={copy.tagFilter} className="max-w-56 text-xs">
+                <span className="text-muted-foreground">{copy.tagLabel}:</span> <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ALL_TAGS}>{copy.allTags}</SelectItem>
+                {/* A tag from a link that isn't among the top ones still shows what is applied. */}
+                {search.tag && !tags.includes(search.tag) ? (
+                  <SelectItem value={search.tag}>{search.tag}</SelectItem>
+                ) : null}
+                {tags.map((t) => (
+                  <SelectItem key={t} value={t}>
+                    {t}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : null}
+          {harnessCount ? (
+            <Label className="gap-2 text-xs font-normal text-muted-foreground">
+              <Switch
+                checked={!!search.harnesses}
+                onCheckedChange={(on: boolean) => {
+                  setSearch({ harnesses: on ? true : undefined });
+                }}
+              />
+              {copy.harnessesToggle(harnessCount)}
+            </Label>
+          ) : null}
+        </div>
       </div>
       {search.health && fleet.costFailed ? (
         <StateCard

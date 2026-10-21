@@ -2,6 +2,8 @@
 // the navigation port's `Link` (`@nasiko/app-core/navigation`) to `/builds/<id>`; the status `ToggleGroup` uses Base UI's value array (`value={[filter]}`, the first
 // value read back, an emptied group ignored as before); the lab's `EmptyState` is `LabEmptyState`; optional props
 // admit `undefined` (exactOptionalPropertyTypes); Prettier formatting.
+// Legacy ui/ on development (3aac84f66, c721a11a8): the Agents module header (`AgentsHeader`, Deploy in the top bar
+// unless the empty card offers it) and the list as one bordered table with its toolbar.
 "use client";
 
 /**
@@ -12,9 +14,8 @@
 import Link from "@nasiko/app-core/navigation";
 import { Hammer, SearchX } from "lucide-react";
 import { useDeferredValue } from "react";
-import { PageHeader } from "@nasiko/ui/composites";
 import { PageLoader } from "@nasiko/ui/composites";
-import { AgentsNav } from "../agents/components/bits";
+import { AgentsHeader } from "../agents/components/bits";
 import { PanelError } from "@nasiko/ui/composites";
 import { SearchInput } from "@nasiko/ui/composites";
 import { LabEmptyState as EmptyState, StateCard } from "@nasiko/ui/composites";
@@ -63,14 +64,25 @@ export function BuildsPage({
     return a ? a.display_name || a.name : copy.builds.unknownAgent;
   };
 
+  // No builds at all: the empty card offers Deploy, so the top bar doesn't repeat it.
+  const nothingYet =
+    !data.isPending &&
+    !data.error &&
+    !data.noRights &&
+    !all.length &&
+    filter === "all" &&
+    !search.q &&
+    page === 0;
   const header = (
-    <>
-      <PageHeader title={copy.builds.title} description={copy.builds.description} />
-      <AgentsNav current="/builds" />
-    </>
+    <AgentsHeader
+      current="/builds"
+      description={copy.builds.description}
+      action={nothingYet ? null : <DeployAgentButton />}
+    />
   );
+  // The table's toolbar: status on the left, search on the right.
   const filters = (
-    <div className="flex flex-wrap items-center gap-2">
+    <div className="flex flex-wrap items-center gap-2 border-b border-border p-2">
       <ToggleGroup
         variant="outline"
         size="sm"
@@ -99,17 +111,30 @@ export function BuildsPage({
           setSearch({ q: e.target.value || undefined, page: undefined }, { replace: true });
         }}
         placeholder={copy.builds.searchPlaceholder}
-        className="w-full sm:w-64"
+        className="w-full sm:ml-auto sm:w-64"
       />
     </div>
   );
 
   let body;
   if (data.error && isEndpointAbsent(data.error))
-    body = <StateCard title={copy.builds.newerServer} />;
-  else if (data.noRights) body = <StateCard title={copy.builds.noRights} />;
+    body = (
+      <div className="p-2">
+        <StateCard title={copy.builds.newerServer} />
+      </div>
+    );
+  else if (data.noRights)
+    body = (
+      <div className="p-2">
+        <StateCard title={copy.builds.noRights} />
+      </div>
+    );
   else if (data.error && !all.length)
-    body = <PanelError error={data.error} onRetry={data.retry} what={copy.builds.what} />;
+    body = (
+      <div className="p-2">
+        <PanelError error={data.error} onRetry={data.retry} what={copy.builds.what} />
+      </div>
+    );
   else if (data.isPending && !all.length) body = <PageLoader label={copy.builds.loading} />;
   else if (!all.length) {
     const filtered = filter !== "all" || !!search.q || page > 0;
@@ -117,6 +142,7 @@ export function BuildsPage({
       <EmptyState
         icon={SearchX}
         title={copy.builds.noMatch}
+        className="border-0"
         action={
           <Button
             size="sm"
@@ -133,7 +159,12 @@ export function BuildsPage({
         {copy.builds.noMatchHint}
       </EmptyState>
     ) : (
-      <EmptyState icon={Hammer} title={copy.builds.empty} action={<DeployAgentButton />}>
+      <EmptyState
+        icon={Hammer}
+        title={copy.builds.empty}
+        action={<DeployAgentButton />}
+        className="border-0"
+      >
         {copy.builds.emptyHint}
       </EmptyState>
     );
@@ -196,7 +227,7 @@ export function BuildsPage({
           </TableBody>
         </Table>
         {page > 0 || data.hasNext ? (
-          <div className="flex justify-end gap-2">
+          <div className="flex justify-end gap-2 border-t border-border p-2">
             <Button
               size="sm"
               variant="outline"
@@ -227,8 +258,10 @@ export function BuildsPage({
   return (
     <div className="mx-auto flex w-full max-w-page flex-col gap-4">
       {header}
-      {filters}
-      {body}
+      <div className="rounded-lg border border-border">
+        {filters}
+        {body}
+      </div>
     </div>
   );
 }

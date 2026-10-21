@@ -4,6 +4,7 @@
 // pilot's rule for toggle groups); the live recordings are read from shared/features/test/__live__; imports
 // (`renderApp` is @nasiko/app-shell/testing/render-app; the pinned seed and msw server are
 // @nasiko/testing/pinned-seed); Prettier formatting.
+// Legacy ui/ on development (3aac84f66, c721a11a8): one Try it.
 /* eslint-disable @typescript-eslint/no-misused-spread -- the lab's test code: the seed's shape and the DOM it asserts on are what the test checks */
 /**
  * Agent detail (plan §10, component + mutations + security): name redirect / chooser / 404,
@@ -675,12 +676,12 @@ describe("owner-controlled text", () => {
 });
 
 describe("Try it (chat plan §9)", () => {
-  it("a running agent links to Chat from the header and from Call this agent", async () => {
+  it("a running agent links to Chat from the header, once", async () => {
     renderApp(url(0));
     await title();
     const links = await screen.findAllByRole("link", { name: "Try it" });
-    expect(links).toHaveLength(2);
-    for (const l of links) expect(l).toHaveAttribute("href", `/chat?agent=${running.id}`);
+    expect(links).toHaveLength(1);
+    expect(links[0]).toHaveAttribute("href", `/chat?agent=${running.id}`);
   });
 
   it("a harness has no Try it", async () => {

@@ -6,7 +6,8 @@ import type { BuildStatus } from "./types";
 export const copy = {
   deploy: {
     title: "Deploy an agent",
-    description: "Upload your code and OpenRuntime builds and starts it.",
+    description:
+      "Bring your agent as a zip, a GitHub repo or a published image, and OpenRuntime gets it running.",
     drop: "Drop your agent's .zip here, or",
     choose: "Choose file",
     limit: "up to 100 MB",
@@ -63,6 +64,11 @@ export const copy = {
     upload: "Upload a zip",
     github: "From GitHub",
     registry: "From a registry",
+  },
+  methodHints: {
+    upload: "Your agent's folder as a .zip",
+    github: "Pick a repo; OpenRuntime clones and builds it",
+    registry: "Import a published agent image",
   },
   github: {
     notConfigured: "GitHub isn’t set up on this OpenRuntime server.",
@@ -191,13 +197,9 @@ export const copy = {
     started: (ago: string) => `started ${ago}`,
     finishedIn: (d: string) => `finished in ${d}`,
     uploaded: (file: string) => `Uploaded ${file}`,
-    leave: "You can leave this page — the build keeps going.",
-    details: "Details",
-    source: "Source",
+    leave: "You can leave this page. The build keeps going.",
     version: "Version",
-    agent: "Agent",
-    logs: "Build logs",
-    logsUnavailable: "need a newer OpenRuntime server",
+    logsUnavailable: "Build logs need a newer OpenRuntime server.",
     stepsLabel: "Build progress",
     running: (name: string) => `${name} is running`,
     notRunning: "Built, but not running",
@@ -210,7 +212,6 @@ export const copy = {
     slow: (timeout: string) => `Taking longer than usual · builds time out after ${timeout}`,
     usual: "usually 1–3 min",
     inProgress: "in progress",
-    stepOf: (n: number, total: number) => `step ${n} of ${total}`,
     pending: "pending",
     done: "done",
   },

@@ -1,9 +1,11 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/router/components/HowRouting.tsx. Local edits: optional props admit `undefined`
 // (exactOptionalPropertyTypes); Prettier formatting.
+// Legacy ui/ on development (3aac84f66, c721a11a8): the explainer's toggle is a top-bar action; the title gets its
+// line.
 "use client";
 
 /**
- * "How routing works" (plan §4.1): the page title's disclosure. Five numbered steps, left to right from lg on a line a
+ * "How routing works" (plan §4.1): the page's disclosure, toggled from the top bar. Five numbered steps, left to right from lg on a line a
  * beam travels along and stacked below with a connecting line, then a footer with this viewer's own numbers.
  * Opens by default on a first visit with no configs; an explicit choice is remembered (prefs.ts).
  */
@@ -23,6 +25,7 @@ import { PageHeader } from "@nasiko/ui/composites";
 import { Button } from "@nasiko/ui/primitives";
 import { enter, transitions } from "@nasiko/ui/motion";
 import { cn } from "@nasiko/ui/cn";
+import { TopBar } from "@nasiko/app-core/shell/TopBar";
 import { copy } from "../copy";
 import { PREF_HOW, readOpen, writeOpen } from "../prefs";
 import { LinkButton } from "./bits";
@@ -59,8 +62,8 @@ export function RouterTitle({
   const toggleRef = useRef<HTMLButtonElement>(null);
   return (
     <div className="space-y-3">
-      <PageHeader
-        title={copy.title}
+      {/* The explainer's toggle is a page action: the top bar's right, above the panel it opens. */}
+      <TopBar
         actions={
           <Button
             ref={toggleRef}
@@ -84,6 +87,7 @@ export function RouterTitle({
           </Button>
         }
       />
+      <PageHeader title={copy.title} description={copy.sub} />
       <AnimatePresence initial={false}>
         {shown ? (
           <m.section
