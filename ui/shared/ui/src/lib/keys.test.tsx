@@ -1,4 +1,4 @@
-// Ported from the legacy ui/ on development (3aac84f66) common/src/lib/keys.test.ts. Local edits: named .tsx so it runs in the jsdom project; Prettier formatting.
+// Ported from the legacy ui/ on development (3aac84f66) common/src/lib/keys.test.ts. Local edits: named .tsx so it runs in the jsdom project; a `$` helper for the fixtures' elements and braced handlers (this repo's lint rules); Prettier formatting.
 import { afterEach, describe, expect, it } from "vitest";
 import { isTypingTarget, stepFromKey } from "./keys";
 
@@ -16,6 +16,13 @@ function step(key: string, target: Element, control: Element | null, init: Keybo
   target.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, ...init }));
   document.removeEventListener("keydown", on);
   return out;
+}
+
+/** The element `sel` must find (a test fixture, so missing is a broken test). */
+function $(root: ParentNode, sel: string): Element {
+  const found = root.querySelector(sel);
+  if (!found) throw new Error(`missing ${sel}`);
+  return found;
 }
 
 function el(html: string) {
@@ -48,15 +55,14 @@ describe("stepFromKey", () => {
       '<div id="c"></div><input id="i" /><textarea id="t"></textarea><div role="menu"><div id="m" tabindex="0"></div></div><div role="listbox"><div id="l"></div></div>',
     );
     const control = body.querySelector("#c");
-    for (const id of ["#i", "#t", "#m", "#l"])
-      expect(step("j", body.querySelector(id)!, control)).toBe(0);
+    for (const id of ["#i", "#t", "#m", "#l"]) expect(step("j", $(body, id), control)).toBe(0);
   });
 
   it("works inside a dialog only when the control is in that dialog", () => {
     const body = el(
       '<div id="page"></div><div role="dialog"><button id="b"></button><div id="c"></div></div>',
     );
-    const inDialog = body.querySelector("#b")!;
+    const inDialog = $(body, "#b");
     expect(step("j", inDialog, body.querySelector("#page"))).toBe(0);
     expect(step("j", inDialog, body.querySelector("#c"))).toBe(1);
   });
@@ -76,7 +82,9 @@ describe("stepFromKey, more rules", () => {
     const control = body.querySelector("#c");
     expect(step("j", body, control, { isComposing: true })).toBe(0);
     let out: number | undefined;
-    const first = (e: KeyboardEvent) => e.preventDefault();
+    const first = (e: KeyboardEvent) => {
+      e.preventDefault();
+    };
     const on = (e: KeyboardEvent) => {
       out = stepFromKey(e, control);
     };
@@ -93,13 +101,12 @@ describe("stepFromKey, more rules", () => {
       '<div id="c"></div><div role="combobox"><span id="cb"></span></div><div role="menubar"><span id="mb"></span></div><div role="menu"><button id="mi"></button></div>',
     );
     const control = body.querySelector("#c");
-    for (const id of ["#cb", "#mb", "#mi"])
-      expect(step("j", body.querySelector(id)!, control)).toBe(0);
+    for (const id of ["#cb", "#mb", "#mi"]) expect(step("j", $(body, id), control)).toBe(0);
   });
 
   it("treats an alertdialog like a dialog, and no control as not inside one", () => {
     const body = el('<div id="page"></div><div role="alertdialog"><button id="b"></button></div>');
-    const b = body.querySelector("#b")!;
+    const b = $(body, "#b");
     expect(step("j", b, body.querySelector("#page"))).toBe(0);
     expect(step("j", b, null)).toBe(0);
   });

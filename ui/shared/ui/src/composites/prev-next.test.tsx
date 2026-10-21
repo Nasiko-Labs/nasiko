@@ -29,7 +29,9 @@ function setup(props: Props = {}, id = "a") {
   return {
     onPrev,
     onNext,
-    rerender: (k: string) => view.rerender(ui({}, k)),
+    rerender: (k: string) => {
+      view.rerender(ui({}, k));
+    },
   };
 }
 
