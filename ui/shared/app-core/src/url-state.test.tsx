@@ -75,4 +75,22 @@ describe("useSearchState", () => {
     expect(historyIndex()).toBe(before);
     expect(routerState().href).toBe("/tokenops");
   });
+
+  // Ported from the legacy ui/ on development (3aac84f66) common/src/lib/search.test.tsx.
+  it("keeps the sibling list across a search change and drops other state", () => {
+    renderWithRouter(<Probe />, { url: "/agents/a" });
+    act(() => {
+      window.history.replaceState(
+        { siblings: ["a", "b"], agentDeleted: { name: "x" } },
+        "",
+        "/agents/a",
+      );
+    });
+    act(() => {
+      probe.api?.setSearch({ day: "2026-10-05" });
+    });
+    expect(routerState().href).toBe("/agents/a?day=2026-10-05");
+    expect(window.history.state).toMatchObject({ siblings: ["a", "b"] });
+    expect(window.history.state).not.toHaveProperty("agentDeleted");
+  });
 });

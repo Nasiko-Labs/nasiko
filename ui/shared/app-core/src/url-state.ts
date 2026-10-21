@@ -13,7 +13,13 @@
  * push). The SPA runs on the same router, which stamps that index into every entry it writes, so `historyIndex()` reads
  * it back from `history.state`. The router is the only writer of the history; nothing here wraps the History API.
  */
-import { usePathname, useRouter, useSearchParams, useUrlHash } from "@nasiko/app-core/navigation";
+import {
+  useHistoryState,
+  usePathname,
+  useRouter,
+  useSearchParams,
+  useUrlHash,
+} from "@nasiko/app-core/navigation";
 import { useCallback, useMemo } from "react";
 
 /** The key the router stamps into `history.state` (TanStack Router's `__TSR_index`). Test harnesses stamp it too. */
@@ -89,6 +95,7 @@ export function useSearchState<S extends object>(schema: SearchSchema<S>): Searc
   const router = useRouter();
   const pathname = usePathname();
   const params = useSearchParams();
+  const { siblings } = useHistoryState();
   const raw = params.toString();
   const search = useMemo(
     () => schema.parse(Object.fromEntries(new URLSearchParams(raw).entries())),
@@ -100,11 +107,13 @@ export function useSearchState<S extends object>(schema: SearchSchema<S>): Searc
       const next = typeof opts.search === "function" ? opts.search(search) : opts.search;
       const qs = searchString(next, defaults);
       const href = qs ? `${pathname}?${qs}` : pathname;
+      // A search change on a detail page keeps the list it was opened from (siblings.ts), and nothing else.
+      const state = siblings ? { siblings } : undefined;
       // Through the router, so a leave guard can hold it and the router numbers the entry.
-      if (opts.replace) router.replace(href, { scroll: false });
-      else router.push(href, { scroll: false });
+      if (opts.replace) router.replace(href, { scroll: false, state });
+      else router.push(href, { scroll: false, state });
     },
-    [pathname, search, defaults, router],
+    [pathname, search, defaults, router, siblings],
   );
   const setSearch = useCallback(
     (patch: Partial<S>, opts?: { replace?: boolean | undefined }) => {

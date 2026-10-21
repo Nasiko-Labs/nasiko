@@ -13,6 +13,18 @@ export interface NavigateOptions {
   scroll?: boolean;
   /** Pass a leave guard (the lab's `ignoreBlocker: true`): a move a dirty form itself makes, e.g. after a save. */
   ignoreBlocker?: boolean;
+  /**
+   * The new entry's history state (the lab's TanStack `navigate({ state })`): survives a reload and Back/Forward, not a
+   * copied link. Without it the entry has none.
+   */
+  state?: HistoryState | undefined;
+}
+
+/** What a page may keep in a history entry. The router adds its own keys (`__TSR_index`); pages read their own. */
+export interface HistoryState {
+  /** The ordered ids of the list a detail view was opened from (siblings.ts, Previous/Next). */
+  siblings?: readonly string[] | undefined;
+  [key: string]: unknown;
 }
 
 export interface Navigation {
@@ -29,6 +41,8 @@ export interface NavigationState {
   search: string;
   /** The fragment without its `#` (the router's location; absent in a harness that has none). */
   hash?: string;
+  /** The current entry's history state (absent in a harness that has none). */
+  state?: HistoryState | undefined;
 }
 export const NavigationContext = createContext<NavigationState | null>(null);
 
@@ -70,6 +84,11 @@ export function usePathname(): string {
 export function useUrlHash(): string {
   return useNavigation().hash ?? "";
 }
+/** The current history entry's state (`HistoryState`); an empty object when it has none. */
+export function useHistoryState(): HistoryState {
+  return useNavigation().state ?? EMPTY_STATE;
+}
+const EMPTY_STATE: HistoryState = Object.freeze({});
 export function useSearchParams(): URLSearchParams {
   const { search } = useNavigation();
   return useMemo(() => new URLSearchParams(search), [search]);
@@ -89,6 +108,11 @@ export interface LinkProps extends ComponentPropsWithRef<"a"> {
   href: string;
   replace?: boolean;
   scroll?: boolean;
+  /**
+   * The entry's history state, or a function the click calls (the lab's TanStack `Link state`), so a list's rows can
+   * share one stable function that reads the list as it is at click time (siblings.ts `useSiblingState`).
+   */
+  state?: HistoryState | (() => HistoryState) | undefined;
   children?: ReactNode;
 }
 
@@ -109,6 +133,7 @@ export function Link({
   href,
   replace,
   scroll,
+  state,
   onClick,
   onPointerEnter,
   onPointerLeave,
@@ -168,9 +193,12 @@ export function Link({
         const target = appPath(href);
         if (!target) return;
         event.preventDefault();
+        const options: NavigateOptions = {};
+        if (scroll !== undefined) options.scroll = scroll;
+        if (state !== undefined) options.state = typeof state === "function" ? state() : state;
         navigation.router[replace ? "replace" : "push"](
           target,
-          scroll === undefined ? undefined : { scroll },
+          Object.keys(options).length ? options : undefined,
         );
       }}
     />

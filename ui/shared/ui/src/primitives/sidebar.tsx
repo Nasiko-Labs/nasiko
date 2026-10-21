@@ -7,6 +7,7 @@
 //   rendered no DOM for them either, so nothing on screen changes);
 // - `toggleSidebar` and the keydown cleanup use statements instead of returning void expressions (this repo's
 //   no-confusing-void-expression rule); same behaviour;
+// - `isTypingTarget` comes from ../lib/keys (shared with Previous/Next's J/K, as in the legacy ui/ on development);
 // - imports: `@/lib/utils` -> "cn", `@/lib/useMediaQuery` -> ../lib/useMediaQuery, `@/components/ui/*` -> ./*;
 // - the desktop root carries `suppressHydrationWarning`: the app shell's first-paint script sets its
 //   data-state/data-collapsible at 768-1279 px on a first visit, before React hydrates (server rendering; the lab
@@ -36,6 +37,7 @@ import { mergeProps } from "@base-ui/react/merge-props"
 import { useRender } from "@base-ui/react/use-render"
 import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "../lib/cn"
+import { isTypingTarget } from "../lib/keys"
 import { PanelLeftIcon } from "lucide-react"
 
 import { useMediaQuery } from "../lib/useMediaQuery"
@@ -65,10 +67,6 @@ const SIDEBAR_KEYBOARD_SHORTCUT = "b"
 
 /** The last SidebarTrigger pressed, so the phone sheet can hand focus back to it on close. */
 let lastOpener: HTMLElement | null = null
-
-function isTypingTarget(target: EventTarget | null): boolean {
-  return target instanceof HTMLElement && (target.isContentEditable || target.closest("input, textarea, select") !== null)
-}
 
 /** `data-*` attributes as React would render them from JSX (booleans stringified, so `data-[active=true]` matches). */
 function dataAttrs(attrs: Record<string, string | boolean | null | undefined>): Record<`data-${string}`, string> {

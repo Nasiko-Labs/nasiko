@@ -51,3 +51,4 @@ export { DotBackground } from "./dot-background";
 // Ported from the legacy ui/ on development (3aac84f66): the page control and the filter chip GenUI shares.
 export { Pager } from "./pager";
 export { FilterChip } from "./filter-chip";
+export { PrevNext, type PrevNextProps, type StepVia } from "./prev-next";

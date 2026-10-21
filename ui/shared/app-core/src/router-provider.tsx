@@ -1,4 +1,5 @@
 import {
+  type HistoryState as TanStackHistoryState,
   type Router,
   type AnyRoute,
   useBlocker,
@@ -11,6 +12,7 @@ import {
   LeaveBlockerContext,
   NavigationContext,
   PathParamsContext,
+  type HistoryState,
   type LeaveBlocker,
   type LeaveBlockerOptions,
   type Navigation,
@@ -52,6 +54,7 @@ export function RouterNavigation({ children }: { children: ReactNode }) {
           href,
           resetScroll: options?.scroll ?? true,
           ignoreBlocker: options?.ignoreBlocker ?? false,
+          ...(options?.state ? { state: options.state as TanStackHistoryState } : {}),
         });
       },
       replace: (href, options) => {
@@ -60,6 +63,7 @@ export function RouterNavigation({ children }: { children: ReactNode }) {
           replace: true,
           resetScroll: options?.scroll ?? true,
           ignoreBlocker: options?.ignoreBlocker ?? false,
+          ...(options?.state ? { state: options.state as TanStackHistoryState } : {}),
         });
       },
       back: () => {
@@ -90,6 +94,7 @@ export function RouterNavigation({ children }: { children: ReactNode }) {
         pathname: location.pathname,
         search: location.searchStr,
         hash: location.hash,
+        state: location.state as unknown as HistoryState,
       }}
     >
       <PathParamsContext value={params}>

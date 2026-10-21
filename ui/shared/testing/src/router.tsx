@@ -22,12 +22,14 @@
  * - `window.history` is the harness's too: `pushState` / `replaceState` (what `router.push`/`replace` call here) add
  *   or replace a harness entry and keep its `state`, numbered `__TSR_index` as the app's router numbers its entries
  *   (url-state.ts `historyIndex()` reads it); `history.state` reads the current entry's; `back`/`forward` move the
- *   index and fire `popstate` with that entry's state.
+ *   index and fire `popstate` with that entry's state. A navigation's `state` option is the new entry's state, and the
+ *   port's `state` (`useHistoryState`) reads the current entry's.
  * - The fragment reaches the page through the port (`hash`, url-state.ts `useHash`); jsdom's `location.hash` follows
  *   the current entry's too. jsdom's path is left alone: the port is the only thing a page should read.
  */
 import { render, type RenderOptions, type RenderResult } from "@testing-library/react";
 import {
+  type HistoryState,
   LeaveBlockerContext,
   NavigationContext,
   type LeaveBlocker,
@@ -207,7 +209,7 @@ const router: Navigation = {
   push: (href, options) => {
     installHistory();
     const go = () => {
-      window.history.pushState(null, "", href);
+      window.history.pushState(options?.state ?? null, "", href);
     };
     if (options?.ignoreBlocker) go();
     else guarded(href, go);
@@ -215,7 +217,7 @@ const router: Navigation = {
   replace: (href, options) => {
     installHistory();
     const go = () => {
-      window.history.replaceState(null, "", href);
+      window.history.replaceState(options?.state ?? null, "", href);
     };
     if (options?.ignoreBlocker) go();
     else guarded(href, go);
@@ -303,6 +305,7 @@ export function RouterHarness({ children }: { children: ReactNode }) {
         pathname: loc.pathname,
         search: loc.search.toString(),
         hash: parse(loc.href).hash.replace(/^#/, ""),
+        state: (history.states[loc.index] ?? undefined) as HistoryState | undefined,
       }}
     >
       <LeaveBlockerContext value={useHarnessLeaveBlocker}>{children}</LeaveBlockerContext>
