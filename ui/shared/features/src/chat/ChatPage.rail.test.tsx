@@ -1,5 +1,6 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/chat/ChatPage.rail.test.tsx. Local edits: `setupMockServer()`
 // starts the msw server for the file (the lab started it globally in its test setup); Prettier formatting.
+// The top bar (legacy ui/ on development, e8379db5a): the page column, not <main>, keeps the max width.
 /**
  * The chat rail and page layout: a failed list, a filter with no match, paging (Load more, an
  * open chat past the first page), the mobile sheet, and Chat's full-height layout.
@@ -168,7 +169,7 @@ describe("layout", () => {
     expect(document.querySelector("main")!.parentElement).toHaveClass("h-dvh");
     expect(screen.getByRole("link", { name: "Chat" })).toHaveAttribute("href", "/chat");
     await router.navigate({ to: "/agents" });
-    await waitFor(() => expect(document.querySelector("main")).toHaveClass("max-w-page"));
+    await waitFor(() => expect(document.querySelector("main .max-w-page")).toBeInTheDocument());
     expect(document.querySelector("main")!.parentElement).toHaveClass("min-h-screen");
   });
 });

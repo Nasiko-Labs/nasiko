@@ -4,7 +4,8 @@
 // `data-[state=closed]:hidden` -> `data-closed:hidden`, `forceMount` -> `keepMounted`); `AgentLinkTo` is re-exported
 // from ./AgentLink.tsx (ported earlier with the navigation port's `Link` (`@nasiko/app-core/navigation`)); `TryItLink` is a `ButtonLink` (./ButtonLink.tsx) to
 // `hrefFor('/chat', { agent })`; `AgentsNav` passes the navigation port's `Link` (`@nasiko/app-core/navigation`) to `SectionNav`; optional props admit `undefined`
-// (exactOptionalPropertyTypes); Prettier formatting.
+// (exactOptionalPropertyTypes); Prettier formatting. `SectionNav` is the app-core binding that also names the open
+// section in the top bar (legacy ui/ on development, e8379db5a).
 "use client";
 
 /**
@@ -12,7 +13,6 @@
  * components/shared/copy-button), error note, first-run steps, monogram, "Learn more" link,
  * and `Section` (the shared `Panel`, named by its heading).
  */
-import Link from "@nasiko/app-core/navigation";
 import { ChevronRight, ExternalLink, MessagesSquare, RotateCw } from "lucide-react";
 import { useId, useState, type ReactNode } from "react";
 import { Badge } from "@nasiko/ui/primitives";
@@ -21,7 +21,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@nasiko/ui/
 import { Tooltip, TooltipContent, TooltipTrigger } from "@nasiko/ui/primitives";
 import { CopyButton } from "@nasiko/ui/composites";
 import { Panel } from "@nasiko/ui/composites";
-import { SectionNav } from "@nasiko/ui/composites";
+import { SectionNav } from "@nasiko/app-core/shell/SectionNav";
 import { cn } from "@nasiko/ui/cn";
 import { hrefFor } from "@nasiko/app-core/url-state";
 import { ButtonLink } from "./ButtonLink";
@@ -259,7 +259,5 @@ const SECTIONS = [
 
 /** All agents · Your agents · Builds (the Builds page uses it too); "Deploy an agent" stays the header's action. */
 export function AgentsNav({ current }: { current: (typeof SECTIONS)[number]["to"] }) {
-  return (
-    <SectionNav label={copy.sections.label} sections={SECTIONS} current={current} link={Link} />
-  );
+  return <SectionNav label={copy.sections.label} sections={SECTIONS} current={current} />;
 }

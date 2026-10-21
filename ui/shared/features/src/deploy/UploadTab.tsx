@@ -3,6 +3,8 @@
 // scope (`useProductScope()`) for the follower's keys; the inbound-format `Select` narrows Base UI's nullable
 // `onValueChange` value and gets `items` (value → label), so the trigger shows "Server default" as the lab's Radix
 // value did; optional props admit `undefined` (exactOptionalPropertyTypes); Prettier formatting.
+// The top bar (legacy ui/ on development, 3aac84f66: e8379db5a): the requirements stay under the sticky method row
+// and the top bar.
 "use client";
 
 /**
@@ -575,7 +577,7 @@ export function UploadTab({
           )}
         </Card>
         {/* Stays in view under the Deploy page's sticky method row while the form scrolls. */}
-        <div className="sticky top-16 @max-[768px]/deploy:hidden">
+        <div className="sticky top-[calc(var(--topbar-h)+4rem)] @max-[768px]/deploy:hidden">
           <Requirements items={items} advisory={!!check && !check.readable} />
         </div>
       </form>

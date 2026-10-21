@@ -1,5 +1,6 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/overview/OverviewPage.test.tsx. Local edits: Prettier
 // formatting.
+// The top bar (legacy ui/ on development, e8379db5a): the breadcrumb's list items are skipped.
 /**
  * The Overview page (plans/feat-overview.md §14): each card renders from the pinned seed and fails on its own, the
  * spend is said as fleet spend (eng R2), and the Fleet health counts match the Agents catalog filter (eng R1).
@@ -117,7 +118,12 @@ describe("Fleet health", () => {
           name: `Remove the Health: ${copy.rating.watch} filter`,
         });
         await waitFor(() =>
-          expect(within(screen.getByRole("main")).queryAllByRole("listitem")).toHaveLength(n),
+          expect(
+            within(screen.getByRole("main"))
+              .queryAllByRole("listitem")
+              // The top bar's breadcrumb is a list too.
+              .filter((li) => !li.closest('[data-slot="breadcrumb"]')),
+          ).toHaveLength(n),
         );
       }
     }

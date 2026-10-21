@@ -6,7 +6,8 @@
 // `ProductApiError`; the turns' `handlers`, `routed` context, `endFor` and `stepsFor` are memoised by hand (a stable
 // handlers object calling the latest closures through a ref), which the lab left to the React Compiler (not used here),
 // so the page's clock still never re-renders a turn; Prettier formatting. A Previous/Next step's focus rule (legacy ui/
-// on development, fdd92df43) is the entry's `chatFocus` history state, read through the navigation port.
+// on development, fdd92df43) is the entry's `chatFocus` history state, read through the navigation port; a missing
+// chat's rail button sits in the top bar (e8379db5a).
 /**
  * `/chat/$sessionId` (plan §7, v1b §5, v1c): history plus the live turn, rendered as turns; every action goes to
  * the registry or a mutation. Reconciling a finished turn with history is `reconcile.ts`, dispatched by
@@ -41,6 +42,7 @@ import { readDraft } from "./drafts";
 import { announce } from "./announce";
 import { focusIfIdle } from "./focus";
 import { useHistoryState } from "@nasiko/app-core/navigation";
+import { TopBar } from "@nasiko/app-core/shell/TopBar";
 import { needsRunAgainConfirm } from "./errors";
 import { agentLabel, exportMarkdown } from "./format";
 import {
@@ -534,9 +536,7 @@ function SessionView({
     const missing = history.error instanceof ApiError && history.error.status === 404;
     return (
       <>
-        <header className="flex h-12 shrink-0 items-center border-b border-border">
-          <div className={cn(CHAT_COLUMN, "flex items-center gap-2")}>{railButton}</div>
-        </header>
+        {railButton ? <TopBar trail={[railButton]} /> : null}
         {/* The rail still announces (a list failure) while this screen shows. */}
         <StatusAnnouncer live={undefined} agentName={agentName} />
         <div className="mx-auto mt-12 w-full max-w-md px-4">

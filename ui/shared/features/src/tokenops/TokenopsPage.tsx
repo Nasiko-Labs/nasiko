@@ -11,6 +11,8 @@
 // `compareOn` is handed `{ compare }` only when set (its lab signature has no `| undefined`) and the display-name
 // lookup reads `matches[0]?.id` (noUncheckedIndexedAccess); lint-driven mechanical edits (void arrow bodies braced,
 // `otherMonth` reads `q.data.days` since `isPlaceholderData` narrows the result, `&apos;` in JSX text); Prettier formatting.
+// The top bar (legacy ui/ on development, 3aac84f66: e8379db5a): the sticky bar sits under the shell's top bar
+// (`top-(--topbar-h)`).
 "use client";
 
 /**
@@ -481,7 +483,7 @@ export function TokenopsPage({
       {/* Sticky bar: title, time control, filters, breadcrumb, freshness (A1). */}
       <div
         ref={stickyBar}
-        className="sticky top-0 z-20 -mx-4 flex flex-col gap-2 border-b border-border bg-background/95 px-4 py-3 backdrop-blur"
+        className="sticky top-(--topbar-h) z-20 -mx-4 flex flex-col gap-2 border-b border-border bg-background/95 px-4 py-3 backdrop-blur"
       >
         <PageHeader
           title="TokenOps"

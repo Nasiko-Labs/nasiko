@@ -6,6 +6,8 @@
 // `meQuery`/`strategyQuery`/`budgetQuery` take the scope and the return-tick refresh invalidates the scoped prefixes
 // (`productKey(scope, 'tokenops', 'context-savings' | 'savings')`, `productKey(scope, 'optimization', 'history')`);
 // Prettier formatting.
+// The top bar (legacy ui/ on development, 3aac84f66: e8379db5a): the sticky bar sits under the shell's top bar
+// (`top-(--topbar-h)`).
 /**
  * The /optimization page (plans/feat-optimization-page.md; main sidebar, Observe after TokenOps, P7): what context
  * optimization saves, where it isn't working, and your settings. Built in steps: T1 hosts your settings here (P2, moved
@@ -198,7 +200,7 @@ export function OptimizationHubPage({
     <Announcer>
       <div className="mx-auto flex w-full max-w-5xl flex-col gap-6">
         {/* TokenOps' sticky bar: title, the window, and the jump to your settings (R1D, R7A). */}
-        <div className="sticky top-0 z-20 -mx-4 border-b border-border bg-background/95 px-4 py-3 backdrop-blur">
+        <div className="sticky top-(--topbar-h) z-20 -mx-4 border-b border-border bg-background/95 px-4 py-3 backdrop-blur">
           <PageHeader
             title={copy.title}
             description={phone ? undefined : <SettingsLink />}

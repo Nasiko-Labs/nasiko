@@ -52,13 +52,11 @@ describe("session Previous/Next", () => {
     await userEvent.click(links[0]!);
     const nextSpan = await screen.findByRole("button", { name: "Next span" }, { timeout: 8000 });
     await userEvent.click(nextSpan);
-    await waitFor(() =>
-      expect((router.state.location.search).span).toBeDefined(),
-    );
+    await waitFor(() => expect(router.state.location.search.span).toBeDefined());
     expect(position(1, paths.length)).toBeInTheDocument();
     await userEvent.keyboard("j");
     await waitFor(() => expect(router.state.location.pathname).toBe(paths[1]));
-    expect((router.state.location.search).span).toBeUndefined();
+    expect(router.state.location.search.span).toBeUndefined();
     await waitFor(() => expect(position(2, paths.length)).toBeInTheDocument());
   });
 

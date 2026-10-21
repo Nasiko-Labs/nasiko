@@ -1,10 +1,15 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/workflows/components/RunView.tsx. Local edits: the lab's `EmptyState` (shared/state-card) is `LabEmptyState`; `"use client"`;
 // scoped `executionQuery`; the lab's `ApiError` is `ProductApiError`; Prettier formatting.
+// The top bar (legacy ui/ on development, 3aac84f66: e8379db5a): the workflow and the run as breadcrumb levels; the
+// workflow link keeps the list Previous/Next walks.
 "use client";
 
 /** One run of the workflow (plans/feat-workflows.md §6), live while it moves (a paused run included). */
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronLeft, RotateCw } from "lucide-react";
+import Link from "@nasiko/app-core/navigation";
+import { useKeepSiblings } from "@nasiko/app-core/siblings";
+import { TopBar } from "@nasiko/app-core/shell/TopBar";
 import { PageLoader } from "@nasiko/ui/composites";
 import { LabEmptyState as EmptyState, StateCard } from "@nasiko/ui/composites";
 import { Button } from "@nasiko/ui/primitives";
@@ -22,6 +27,7 @@ import { RunSteps } from "./RunSteps";
 export function RunView({ wf, exec, onBack }: { wf: Workflow; exec: string; onBack: () => void }) {
   const queryClient = useQueryClient();
   const scope = useProductScope();
+  const keep = useKeepSiblings();
   const run = useQuery(executionQuery(scope, exec));
   const e = run.data;
   // A deep link can pair a run with another workflow: then its titles are not ours to give.
@@ -104,6 +110,15 @@ export function RunView({ wf, exec, onBack }: { wf: Workflow; exec: string; onBa
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-col gap-6 [&>*]:min-w-0">
       <title>{`${title} · Nasiko`}</title>
+      <TopBar
+        trail={[
+          // Keeps the list this workflow was opened from (siblings.ts).
+          <Link key="workflow" href={`/workflows/${encodeURIComponent(wf.id)}`} state={keep}>
+            {wf.name}
+          </Link>,
+          copy.execution,
+        ]}
+      />
       <div className="flex items-center gap-2">
         <Button variant="ghost" size="icon-sm" aria-label={copy.backToWorkflow} onClick={onBack}>
           <ChevronLeft aria-hidden />

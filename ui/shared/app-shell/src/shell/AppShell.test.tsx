@@ -6,6 +6,7 @@
 // on `/` (the lab's `activeOptions`); the signed-out-visitor redirect is the server layout's here, so the browser
 // half tested is the local barrier (`openruntime.signedOut`); the account row's error cases reset the seeded `me`
 // first (the server's principal is seeded into the cache, the lab's guard loaded it before the shell); Prettier.
+// The top bar (legacy ui/ on development, e8379db5a): the page column, not #main, keeps the max width.
 /**
  * The app shell through the real query client (plans/feat-app-shell.md §8): sidebar items and active state,
  * shared context, collapse memory, the phone sheet, the footer rows (status, account, sign out), plus the Nasiko
@@ -231,7 +232,8 @@ describe("layout", () => {
       expect(wrapper()).toHaveClass("min-h-screen");
     });
     expect(wrapper()).not.toHaveClass("h-dvh");
-    expect(document.getElementById("main")).toHaveClass("max-w-page");
+    // The page column keeps the max width; the top bar spans the whole page area.
+    expect(document.querySelector("#main .max-w-page")).toBeInTheDocument();
   });
 
   it("the sign-in page keeps one <main> landmark", async () => {

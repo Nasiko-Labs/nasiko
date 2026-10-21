@@ -5,7 +5,8 @@
 // sets it, so Back replaces with the review there too); scoped `workflowQuery`/`dropFromLists`; the lab's `ApiError` is
 // `ProductApiError`; optional props admit `undefined`; Prettier formatting. Previous/Next (legacy ui/ on development,
 // 3aac84f66: 2d2c113ab, ef9a174b1): `WorkflowSiblings` steps with `router.replace` and the list as state; the run's
-// Back replace keeps the list (`useKeepSiblings`); Save & run passes the editor's leave guard (`ignoreBlocker`).
+// Back replace keeps the list (`useKeepSiblings`); Save & run passes the editor's leave guard (`ignoreBlocker`). The
+// top bar (e8379db5a) holds the breadcrumb (Drafts for a draft, then the workflow) and the arrows.
 "use client";
 
 /**
@@ -14,9 +15,10 @@
  * otherwise (a deep link, the runs page). A 404 or 403 is one dead end (the server never says which to a stranger).
  */
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useRouter } from "@nasiko/app-core/navigation";
+import Link, { useRouter } from "@nasiko/app-core/navigation";
+import { TopBar } from "@nasiko/app-core/shell/TopBar";
 import { useKeepSiblings, useSiblings } from "@nasiko/app-core/siblings";
-import { ChevronLeft, Pencil, Play, RotateCw, Workflow as WorkflowIcon } from "lucide-react";
+import { Pencil, Play, RotateCw, Workflow as WorkflowIcon } from "lucide-react";
 import { useState } from "react";
 import { PageLoader, PrevNext } from "@nasiko/ui/composites";
 import { LabEmptyState as EmptyState, StateCard } from "@nasiko/ui/composites";
@@ -51,7 +53,7 @@ export function WorkflowPage({ id, run }: { id: string; run?: string | undefined
 function DeadEnd({ id, title, text }: { id?: string | undefined; title: string; text: string }) {
   return (
     <div className={COLUMN}>
-      {id ? <WorkflowSiblings id={id} className="justify-end" /> : null}
+      {id ? <TopBar stepper={<WorkflowSiblings id={id} />} /> : null}
       <EmptyState
         icon={WorkflowIcon}
         title={<h1>{title}</h1>}
@@ -77,7 +79,7 @@ function Detail({ id, run }: { id: string; run?: string | undefined }) {
     ) : (
       <div className={COLUMN}>
         <h1 className="sr-only">{copy.loadOneFailed}</h1>
-        <WorkflowSiblings id={id} className="justify-end" />
+        <TopBar stepper={<WorkflowSiblings id={id} />} />
         <StateCard
           tone="error"
           title={copy.loadOneFailed}
@@ -125,17 +127,19 @@ function Loaded({ wf, run }: { wf: Workflow; run?: string | undefined }) {
   return (
     <div className={COLUMN}>
       <title>{`${wf.name} · Nasiko`}</title>
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <ButtonLink
-          variant="ghost"
-          size="sm"
-          className="-ml-2 text-muted-foreground"
-          href={live ? "/workflows" : "/workflows/drafts"}
-        >
-          <ChevronLeft aria-hidden /> {live ? copy.crumbDeployed : copy.crumbDrafts}
-        </ButtonLink>
-        <WorkflowSiblings id={wf.id} />
-      </div>
+      <TopBar
+        trail={
+          live
+            ? [wf.name]
+            : [
+                <Link key="drafts" href="/workflows/drafts">
+                  {copy.crumbDrafts}
+                </Link>,
+                wf.name,
+              ]
+        }
+        stepper={<WorkflowSiblings id={wf.id} />}
+      />
       {live && !editing ? (
         <ReadOnlyFace
           wf={wf}

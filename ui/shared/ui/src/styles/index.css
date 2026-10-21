@@ -18,3 +18,10 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* The app shell's top bar (app-core shell/TopBar.tsx; legacy ui/ on development, e8379db5a): a page's own sticky rows
+   sit under it (`top-(--topbar-h)`), and anchor jumps stop below it. */
+:root {
+  --topbar-h: 3.25rem;
+  scroll-padding-top: var(--topbar-h);
+}

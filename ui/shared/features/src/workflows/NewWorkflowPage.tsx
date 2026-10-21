@@ -5,6 +5,7 @@
 // three-choice dialog; /login always passes, as the lab's `shouldBlockFn` said); `Button asChild` + `Link` ->
 // `ButtonLink`; scoped `workflowListQuery`/`workflowKeys`; the lab's `ApiError` is `ProductApiError`; callbacks that
 // returned a void expression are braced (lint); Prettier formatting.
+// The top bar (legacy ui/ on development, 3aac84f66: e8379db5a): the page's breadcrumb level.
 "use client";
 
 /**
@@ -18,6 +19,7 @@ import { ChevronLeft, Loader2, TriangleAlert } from "lucide-react";
 import { useState } from "react";
 import { toast } from "@nasiko/ui/toast";
 import { PageHeader } from "@nasiko/ui/composites";
+import { TopBar } from "@nasiko/app-core/shell/TopBar";
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -186,6 +188,7 @@ export function NewWorkflowPage() {
         >
           <ChevronLeft aria-hidden />
         </ButtonLink>
+        <TopBar trail={[copy.newTitle]} />
         <PageHeader title={copy.newTitle} description={copy.newText} />
       </div>
       <div className="flex flex-col gap-2">

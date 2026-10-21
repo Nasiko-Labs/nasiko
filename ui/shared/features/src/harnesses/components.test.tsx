@@ -1,5 +1,6 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/harnesses/components.test.tsx. Local edits: the lab's
 // `ApiError` is `ProductApiError`; Prettier formatting.
+// The top bar (legacy ui/ on development, e8379db5a): the drill path is the "Levels" nav.
 /**
  * Harnesses components in isolation: Breakdown (CSV, empty/error, paging footer, cards),
  * Crumbs collapse, Trend's partial-day rule (QA ISSUE-004), panel states, Individual bits.
@@ -194,7 +195,7 @@ describe("Crumbs", () => {
   it("collapses the middle on narrow screens and expands on demand", async () => {
     narrow();
     render(<Crumbs items={items} onClearHarness={() => {}} />);
-    const nav = within(screen.getByRole("navigation", { name: "Breadcrumb" }));
+    const nav = within(screen.getByRole("navigation", { name: "Levels" }));
     expect(nav.queryByText("Eng")).toBeNull();
     await userEvent.click(nav.getByRole("button", { name: "Show full path" }));
     expect(nav.getByRole("button", { name: "Eng" })).toBeInTheDocument();

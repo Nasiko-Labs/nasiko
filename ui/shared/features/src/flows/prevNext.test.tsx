@@ -70,7 +70,7 @@ describe("flow Previous/Next", () => {
     // J/K aren't the swimlane's keys (arrows, Home, End, Enter, Esc), so J on a bar steps the flow.
     await userEvent.keyboard("j");
     await waitFor(() => expect(router.state.location.pathname).toBe(paths[i + 1]));
-    expect((router.state.location.search).step).toBeUndefined();
+    expect(router.state.location.search.step).toBeUndefined();
     await waitFor(() => expect(position(i + 2, paths.length)).toBeInTheDocument());
   });
 

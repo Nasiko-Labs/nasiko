@@ -4,6 +4,7 @@
 // (the lab emptied `document.body`, which left the tree mounted: Base UI then crashed on its next render); the Edit-and-send and request tests wait for the turn's
 // history refetch before clicking (the live block's controls are replaced by history's, and here that swap can land
 // between finding a button and clicking it); Prettier formatting.
+// The top bar (legacy ui/ on development, e8379db5a): the chat totals are read from the ⋯ menu.
 /**
  * Chat v1a flows end to end against the `chat` mock group (plan §12): choose (a shared name, a
  * stopped agent, an unknown ?mock=), direct send, streamed reply saved once, lost reply, read-only
@@ -225,7 +226,10 @@ describe("/chat/$sessionId", () => {
   it("View trace opens the waterfall in a sheet; header totals sum the loaded replies", async () => {
     renderApp(`/chat/${DONE}`);
     expect(await screen.findByText("Three incidents")).toBeInTheDocument();
-    expect(screen.getAllByTestId("chat-totals")[0]).toHaveTextContent("908 tokens · $0.0021");
+    // The totals are in the ⋯ menu (each reply shows its own in the conversation).
+    await userEvent.click(screen.getByRole("button", { name: "More chat actions" }));
+    expect(await screen.findByTestId("chat-totals")).toHaveTextContent("908 tokens · $0.0021");
+    await userEvent.keyboard("{Escape}");
     await userEvent.click(screen.getByRole("button", { name: "View trace" }));
     const sheet = await screen.findByRole("dialog", { name: "Trace for this reply" });
     expect(await within(sheet).findByRole("tree")).toBeInTheDocument();

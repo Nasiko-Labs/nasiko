@@ -1,5 +1,6 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/deploy/DeployPage.tsx. Local edits: `meQuery` is
-// `meQueryOptions(useProductScope())`; Base UI's `Tabs` passes its value untyped (`unknown`); Prettier formatting.
+// `meQueryOptions(useProductScope())`; Base UI's `Tabs` passes its value untyped (`unknown`); Prettier formatting. The
+// top bar (legacy ui/ on development, e8379db5a): the page's breadcrumb level, and the method row sticks under it.
 "use client";
 
 /**
@@ -8,6 +9,7 @@
  */
 import { useQuery } from "@tanstack/react-query";
 import { Container, FolderGit2, Upload } from "lucide-react";
+import { TopBar } from "@nasiko/app-core/shell/TopBar";
 import { PageHeader } from "@nasiko/ui/composites";
 import { Skeleton } from "@nasiko/ui/primitives";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@nasiko/ui/primitives";
@@ -31,6 +33,7 @@ export function DeployPage({
   const method: DeployMethod = search.method ?? "upload";
   return (
     <div className="@container mx-auto flex w-full max-w-page flex-col gap-4">
+      <TopBar trail={[copy.deploy.title]} />
       <PageHeader title={copy.deploy.title} description={copy.deploy.description} />
       <Tabs
         value={method}
@@ -40,7 +43,7 @@ export function DeployPage({
         className="gap-4"
       >
         {/* The method row stays put while the form scrolls under it (Sessions' sticky bar). */}
-        <div className="sticky top-0 z-20 -mx-4 bg-background/95 px-4 py-2 backdrop-blur">
+        <div className="sticky top-(--topbar-h) z-20 -mx-4 bg-background/95 px-4 py-2 backdrop-blur">
           <TabsList
             aria-label={copy.methods.label}
             className="h-auto w-full justify-start @[768px]:w-fit"

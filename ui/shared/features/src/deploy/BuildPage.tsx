@@ -22,13 +22,7 @@ import { PanelError } from "@nasiko/ui/composites";
 import { PageLoader } from "@nasiko/ui/composites";
 import { StateCard } from "@nasiko/ui/composites";
 import { Alert, AlertDescription, AlertTitle } from "@nasiko/ui/primitives";
-import {
-  Breadcrumb,
-  BreadcrumbItem,
-  BreadcrumbLink,
-  BreadcrumbList,
-  BreadcrumbSeparator,
-} from "@nasiko/ui/primitives";
+import { TopBar } from "@nasiko/app-core/shell/TopBar";
 import { Card } from "@nasiko/ui/primitives";
 import { relTime } from "../agents/format";
 import { useNow } from "@nasiko/app-core/useNow";
@@ -185,8 +179,8 @@ export function BuildPage({ buildId }: { buildId: string }) {
 
   return (
     <Frame>
+      <Crumbs title={title} />
       <PageHeader
-        breadcrumb={<Crumbs title={title} />}
         title={
           <span className="flex flex-wrap items-center gap-2">
             {title} <BuildBadge badge={view.badge} />
@@ -366,25 +360,16 @@ function Detail({ label, children }: { label: string; children: React.ReactNode 
   );
 }
 
+/** Agents › Builds › this build (the top bar's breadcrumb, legacy ui/ on development e8379db5a). */
 function Crumbs({ title }: { title: string }) {
   return (
-    <Breadcrumb aria-label="Breadcrumb">
-      <BreadcrumbList className="gap-1 sm:gap-1">
-        <BreadcrumbItem>
-          <BreadcrumbLink
-            render={<Link href="/builds" />}
-            className="underline-offset-2 hover:underline"
-          >
-            {copy.build.breadcrumb}
-          </BreadcrumbLink>
-        </BreadcrumbItem>
-        <BreadcrumbSeparator />
-        <BreadcrumbItem className="min-w-0">
-          <span aria-current="page" className="truncate text-foreground">
-            {title}
-          </span>
-        </BreadcrumbItem>
-      </BreadcrumbList>
-    </Breadcrumb>
+    <TopBar
+      trail={[
+        <Link key="builds" href="/builds">
+          {copy.build.breadcrumb}
+        </Link>,
+        title,
+      ]}
+    />
   );
 }

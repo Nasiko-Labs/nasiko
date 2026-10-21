@@ -8,7 +8,7 @@
 // class is `aria-pressed:` (Base UI's Toggle); optional props and `setSearch`'s `replace` admit `undefined`
 // (exactOptionalPropertyTypes); Prettier formatting. Previous/Next (legacy ui/ on development, 3aac84f66: 2c7d51a5d,
 // fb76eaecc, 78a5861a4): `SessionSiblings` steps with `router.replace` to the next row, the list's search and the list
-// as state.
+// as state. The top bar (e8379db5a) holds the breadcrumb (`crumbs`) and the arrows.
 /**
  * Session trace: why one run cost what it did.
  *
@@ -31,13 +31,6 @@ import { PageHeader } from "@nasiko/ui/composites";
 import { PageLoader, PrevNext } from "@nasiko/ui/composites";
 import { LabEmptyState as EmptyState } from "@nasiko/ui/composites";
 import { SearchInput } from "@nasiko/ui/composites";
-import {
-  Breadcrumb,
-  BreadcrumbItem,
-  BreadcrumbLink,
-  BreadcrumbList,
-  BreadcrumbSeparator,
-} from "@nasiko/ui/primitives";
 import { Button } from "@nasiko/ui/primitives";
 import { Toggle } from "@nasiko/ui/primitives";
 import { OpenChatLink } from "../chat/components/OpenChatLink";
@@ -51,6 +44,7 @@ import {
 } from "@nasiko/ui/primitives";
 import { Sheet, SheetContent, SheetTitle } from "@nasiko/ui/primitives";
 import { pickShared, withoutWindow } from "@nasiko/app-core/shell/context";
+import { TopBar } from "@nasiko/app-core/shell/TopBar";
 import {
   narrativeText,
   traceNarrative,
@@ -346,10 +340,10 @@ export function SessionTracePage({
     return (
       <div className="flex flex-col gap-4">
         {/* The arrows stay, so a session that fails to load isn't a dead end. */}
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <Crumbs back={back} day={search.day} title="Trace" />
-          <SessionSiblings sessionId={sessionId} back={back} />
-        </div>
+        <TopBar
+          {...crumbs(back, search.day, "Trace")}
+          stepper={<SessionSiblings sessionId={sessionId} back={back} />}
+        />
         <ErrorState
           error={session.error}
           onRetry={() => void session.refetch()}
@@ -363,15 +357,12 @@ export function SessionTracePage({
 
   return (
     <div className="flex flex-col gap-4">
+      <TopBar
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- the lab's defensive reads (the session has loaded here)
+        {...crumbs(back, search.day, session.data?.title ?? sessionId)}
+        stepper={<SessionSiblings sessionId={sessionId} back={back} />}
+      />
       <PageHeader
-        // The arrows sit at the right of the breadcrumb row: the long title pushes the actions onto their own line.
-        breadcrumb={
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            {/* eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- the lab's defensive reads (the session has loaded here) */}
-            <Crumbs back={back} day={search.day} title={session.data?.title ?? sessionId} />
-            <SessionSiblings sessionId={sessionId} back={back} />
-          </div>
-        }
         title={
           <span className="inline-block">
             {/* eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- the lab's defensive read */}
@@ -544,7 +535,7 @@ export function SessionTracePage({
                 </section>
                 {selected && traceId && !narrow ? (
                   // Sticky: on a long trace the panel (and its ↑/↓) stays in view while the tree scrolls.
-                  <div className="sticky top-4 max-h-[calc(100dvh-2rem)] self-start overflow-y-auto">
+                  <div className="sticky top-[calc(var(--topbar-h)+1rem)] max-h-[calc(100dvh-2rem-var(--topbar-h))] self-start overflow-y-auto">
                     <SpanPanel
                       traceId={traceId}
                       span={selected}
@@ -601,58 +592,27 @@ export function SessionTracePage({
   );
 }
 
-function Crumbs({
-  back,
-  day,
-  title,
-}: {
-  back: Partial<SessionsSearch>;
-  day?: string | undefined;
-  title: string;
-}) {
-  return (
-    <Breadcrumb aria-label="Breadcrumb">
-      <BreadcrumbList className="gap-1 sm:gap-1">
-        <BreadcrumbItem>
-          <BreadcrumbLink
-            className="underline-offset-2 hover:underline"
-            render={
-              <Link
-                href={hrefFor("/sessions", {
-                  ...back,
-                  day: undefined,
-                  sort: undefined,
-                  lane: undefined,
-                })}
-              />
-            }
-          >
-            Sessions
-          </BreadcrumbLink>
-        </BreadcrumbItem>
-        {day ? (
-          <>
-            <BreadcrumbSeparator />
-            <BreadcrumbItem>
-              <BreadcrumbLink
-                className="underline-offset-2 hover:underline"
-                render={<Link href={hrefFor("/sessions", back)} />}
-              >
-                {fmtShortDay(day)}
-              </BreadcrumbLink>
-            </BreadcrumbItem>
-          </>
-        ) : null}
-        <BreadcrumbSeparator />
-        <BreadcrumbItem className="min-w-0">
-          {/* Plain text, not shadcn's BreadcrumbPage (role="link" on a non-link). */}
-          <span aria-current="page" className="truncate text-foreground">
-            {title}
-          </span>
-        </BreadcrumbItem>
-      </BreadcrumbList>
-    </Breadcrumb>
-  );
+/** Sessions (the list as it was, its window and filters) › the day, when the list was one › this session. */
+function crumbs(back: Partial<SessionsSearch>, day: string | undefined, title: string) {
+  return {
+    root: (
+      <Link
+        href={hrefFor("/sessions", { ...back, day: undefined, sort: undefined, lane: undefined })}
+      >
+        Sessions
+      </Link>
+    ),
+    trail: [
+      ...(day
+        ? [
+            <Link key="day" href={hrefFor("/sessions", back)}>
+              {fmtShortDay(day)}
+            </Link>,
+          ]
+        : []),
+      title,
+    ],
+  };
 }
 
 function Narrative({

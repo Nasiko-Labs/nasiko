@@ -1,7 +1,8 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/workflows/components/bits.tsx. Local edits: none beyond
-// imports and Prettier.
+// imports and Prettier; `SectionNav` is the app-core binding (port links, the open section's top-bar level; legacy
+// ui/ on development, e8379db5a).
 import { Badge } from "@nasiko/ui/primitives";
-import { SectionNav as SharedSectionNav } from "@nasiko/ui/composites";
+import { SectionNav as SharedSectionNav } from "@nasiko/app-core/shell/SectionNav";
 import { copy } from "../copy";
 import type { Tone } from "../logic";
 

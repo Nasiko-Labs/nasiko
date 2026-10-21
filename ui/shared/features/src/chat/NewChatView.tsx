@@ -4,6 +4,7 @@
 // link is the navigation port's `Link` (`@nasiko/app-core/navigation`); the list and history writes are scoped (`upsertSessionRow(client, scope, row)`,
 // `removeSessionRow(client, scope, id)`, `chatKeys.history(scope, id)` with `useProductScope()`); the replace-draft
 // dialog's `onCloseAutoFocus` is Base UI's `finalFocus` (focus the composer, return false); Prettier formatting.
+// Legacy ui/ on development (3aac84f66, a6def13de): no header strip while the chat history is shown.
 /**
  * `/chat` (plan §7, v1b §5.1, v1c §5.2): a new chat, its target from `?agent=`, `?auto=1` or the remembered
  * choice. The first send creates the chat, then moves to it.
@@ -497,10 +498,16 @@ function NewChatView({ userId, registry, search, railButton, username }: ViewPro
   return (
     <>
       <title>{`${titlePrefix}${agent ? copy.askAgent(agentLabel(agent)) : routed ? copy.askOrchestrator : copy.chatsNav} · Nasiko`}</title>
-      <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-3">
-        {railButton}
-        <h2 className="truncate text-sm font-medium">{copy.newChat}</h2>
-      </header>
+      {/* No header strip on New chat (user, 2026-10-08): only the button that opens the chat history needs a row, and
+          only while the history isn't shown. The heading stays for screen readers. */}
+      {railButton ? (
+        <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-3">
+          {railButton}
+          <h2 className="truncate text-sm font-medium">{copy.newChat}</h2>
+        </header>
+      ) : (
+        <h2 className="sr-only">{copy.newChat}</h2>
+      )}
       <UnknownScenarioBanner mock={search.mock} />
       <div className="min-h-0 flex-1 overflow-y-auto">{body}</div>
       {search.debug ? <DebugFrames live={live} /> : null}

@@ -2,6 +2,7 @@
 // test refetches the scoped prefix `productPrefix(TEST_SCOPE, 'harnesses')` (the lab's `['harnesses']`); "Try 30
 // days" is checked by the 7-day preset leaving the URL (30 days is the default, which `useSearchState` leaves out;
 // the lab's router wrote `?preset=30d`); Prettier formatting.
+// The top bar (legacy ui/ on development, e8379db5a): the drill path is the "Levels" nav.
 /**
  * Harnesses page, OSS (plan §10): the viewer's own Individual level from the usage endpoint, the capability probe
  * (a bare 404 falls back to existing endpoints, a coded 404 is "not visible"), the forced mock variants, and the
@@ -44,7 +45,7 @@ describe("landing", () => {
     expect(screen.getByRole("heading", { name: "Recent sessions" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Daily activity" })).toBeInTheDocument();
     expect(screen.queryByRole("table")).toBeNull();
-    expect(screen.queryByRole("navigation", { name: "Breadcrumb" })).toBeNull();
+    expect(screen.queryByRole("navigation", { name: "Levels" })).toBeNull();
     expect(statusLines()).toHaveLength(0);
     expect(document.body).not.toHaveTextContent(/Enterprise|org and team/i);
     // Mock data is a preview; the persona switcher is the EE layer's.

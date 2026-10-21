@@ -4,6 +4,8 @@
 // workspace page) in place of TanStack's `to`/`search`, keeping `replace` and `aria-current`; `SidebarMenuButton
 // asChild` -> `render={<Link …/>}` (Base UI useRender; the label stays the button's child); `meQuery` is
 // `meQueryOptions(scope)`; optional props typed `| undefined`; Prettier formatting.
+// The top bar (legacy ui/ on development, 3aac84f66: e8379db5a): the open section is the breadcrumb's level, and
+// Account settings is its own first level.
 /**
  * The Settings module (plans/feat-settings.md §1), around each of its pages. Its sections are the sidebar's drill-in
  * panel (`SidebarPanel`: one sidebar, never two side by side); with the sidebar collapsed they fall back as Chat's
@@ -31,6 +33,7 @@ import { useSlots } from "@nasiko/app-core/edition/edition-context";
 import type { SettingsSection } from "@nasiko/app-core/edition/edition";
 import { ACTIVE_ROW, ROW } from "@nasiko/app-core/shell/rowStyles";
 import { SidebarPanel } from "@nasiko/app-core/shell/SidebarPanel";
+import { TopBar } from "@nasiko/app-core/shell/TopBar";
 import { Button } from "@nasiko/ui/primitives";
 import { Sheet, SheetContent, SheetTitle } from "@nasiko/ui/primitives";
 import {
@@ -160,51 +163,59 @@ export function SettingsLayout({
       title={account ? copy.accountTitle : copy.title}
     />
   );
+  const label = groups.flatMap((g) => g.rows).find((r) => r.key === current)?.label;
   return (
-    <SidebarPanel panel={nav()}>
-      {(inSidebar) => (
-        // The page keeps its place in the tree whichever way the sections show, so a collapse never remounts it.
-        <div className="flex h-full min-h-0">
-          {inSidebar ? null : wide ? (
-            <aside className="flex w-60 shrink-0 flex-col border-r border-border">
-              {nav(true)}
-            </aside>
-          ) : (
-            <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
-              <SheetContent side="left" className="w-[85vw] max-w-80 p-0">
-                <SheetTitle className="sr-only">{copy.nav.label}</SheetTitle>
-                {/* The sheet's close button sits top-right; start the list below it. */}
-                <div className="flex h-full min-h-0 flex-col pt-4">
-                  {nav(true, () => {
-                    setSheetOpen(false);
-                  })}
-                </div>
-              </SheetContent>
-            </Sheet>
-          )}
-          {/* `relative`: the scroll box is the positioning context, so an absolutely placed child (Radix's hidden form
-              input behind a Switch) scrolls inside it instead of stretching the document and moving the shell. */}
-          <div className="@container relative min-h-0 min-w-0 flex-1 overflow-y-auto px-4 py-4">
-            <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 @[768px]:pt-6">
-              {inSidebar || wide ? null : (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="-ml-2 self-start text-muted-foreground pointer-coarse:min-h-11"
-                  onClick={() => {
-                    setSheetOpen(true);
-                  }}
-                >
-                  <PanelLeft aria-hidden />
-                  {copy.nav.label}
-                </Button>
-              )}
-              <div className="min-w-0">{children}</div>
+    <>
+      {/* Settings › Secrets; Account settings has no nav item of its own, so it is the first level. */}
+      <TopBar
+        root={account ? <Link href="/account/appearance">{copy.accountTitle}</Link> : undefined}
+        trail={label ? [label] : []}
+      />
+      <SidebarPanel panel={nav()}>
+        {(inSidebar) => (
+          // The page keeps its place in the tree whichever way the sections show, so a collapse never remounts it.
+          <div className="flex h-full min-h-0">
+            {inSidebar ? null : wide ? (
+              <aside className="flex w-60 shrink-0 flex-col border-r border-border">
+                {nav(true)}
+              </aside>
+            ) : (
+              <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
+                <SheetContent side="left" className="w-[85vw] max-w-80 p-0">
+                  <SheetTitle className="sr-only">{copy.nav.label}</SheetTitle>
+                  {/* The sheet's close button sits top-right; start the list below it. */}
+                  <div className="flex h-full min-h-0 flex-col pt-4">
+                    {nav(true, () => {
+                      setSheetOpen(false);
+                    })}
+                  </div>
+                </SheetContent>
+              </Sheet>
+            )}
+            {/* `relative`: the scroll box is the positioning context, so an absolutely placed child (Radix's hidden form
+                input behind a Switch) scrolls inside it instead of stretching the document and moving the shell. */}
+            <div className="@container relative min-h-0 min-w-0 flex-1 overflow-y-auto px-4 py-4">
+              <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 @[768px]:pt-6">
+                {inSidebar || wide ? null : (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="-ml-2 self-start text-muted-foreground pointer-coarse:min-h-11"
+                    onClick={() => {
+                      setSheetOpen(true);
+                    }}
+                  >
+                    <PanelLeft aria-hidden />
+                    {copy.nav.label}
+                  </Button>
+                )}
+                <div className="min-w-0">{children}</div>
+              </div>
             </div>
           </div>
-        </div>
-      )}
-    </SidebarPanel>
+        )}
+      </SidebarPanel>
+    </>
   );
 }
 

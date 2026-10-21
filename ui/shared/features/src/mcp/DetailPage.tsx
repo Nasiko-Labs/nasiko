@@ -5,6 +5,7 @@
 // asChild` -> `render={<Button …/>}` (Base UI useRender) and the Delete item's Radix `onSelect` is Base UI's
 // `onClick`; `ApiError` is `ProductApiError`; optional props admit `undefined` (exactOptionalPropertyTypes); Prettier
 // formatting.
+// The top bar (legacy ui/ on development, 3aac84f66: e8379db5a): the server's breadcrumb level.
 "use client";
 
 /**
@@ -29,6 +30,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@nasiko/ui/primitives";
 import { CopyButton, CopyMenuItem } from "@nasiko/ui/composites";
 import { PageHeader } from "@nasiko/ui/composites";
+import { TopBar } from "@nasiko/app-core/shell/TopBar";
 import { PageLoader } from "@nasiko/ui/composites";
 import { StateCard } from "@nasiko/ui/composites";
 import { AgentMark } from "../agents/components/bits";
@@ -179,6 +181,7 @@ function Header({
   const owner = c.is_owner ? copy.you : (c.owner_username ?? meName ?? "—");
   return (
     <div className="flex items-start gap-3">
+      <TopBar trail={[label]} />
       <AgentMark name={label} iconUrl={c.logo_url} size={40} />
       <PageHeader
         className="min-w-0 flex-1"

@@ -7,6 +7,8 @@
 // day header's `layoutId` only when the morph has one (exactOptionalPropertyTypes); optional props and `setSearch`'s
 // `replace` admit `undefined`; Prettier formatting. Previous/Next (legacy ui/ on development, 2c7d51a5d): the rows carry
 // the shown list (`useSiblingState`).
+// The top bar (legacy ui/ on development, 3aac84f66: e8379db5a): the sticky bar sits under the shell's top bar
+// (`top-(--topbar-h)`).
 /**
  * Sessions: the fleet pulse (fleet mode) and "that day's sessions" (day mode, ?day=).
  *
@@ -203,7 +205,7 @@ export function SessionsPage({
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="sticky top-0 z-20 -mx-4 flex flex-col gap-2 border-b border-border bg-background/95 px-4 py-3 backdrop-blur">
+      <div className="sticky top-(--topbar-h) z-20 -mx-4 flex flex-col gap-2 border-b border-border bg-background/95 px-4 py-3 backdrop-blur">
         <PageHeader
           title={
             dayMode ? (
@@ -450,7 +452,7 @@ export function SessionsPage({
             <Notice>{copy.fleetSeekCapped(fleet.data?.pages.length ?? 0)}</Notice>
           ) : null}
           {!dayMode && live.queued ? (
-            <div className="sticky top-28 z-10 flex justify-center">
+            <div className="sticky top-[calc(var(--topbar-h)+7rem)] z-10 flex justify-center">
               <Button size="sm" className="rounded-full shadow-sm" onClick={live.flush}>
                 {copy.newSessions(live.queued)} ↑
               </Button>

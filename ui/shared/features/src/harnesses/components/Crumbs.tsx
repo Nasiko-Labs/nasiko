@@ -1,6 +1,8 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/harnesses/components/Crumbs.tsx. Local edits:
 // `BreadcrumbLink asChild` -> `render={<Button …/>}` (Base UI useRender; the label stays the link's child); optional
 // props typed `| undefined`; Prettier formatting.
+// The top bar (legacy ui/ on development, 3aac84f66: e8379db5a): the drill path is labelled "Levels", so the page
+// has one "Breadcrumb" nav.
 /**
  * Breadcrumb (plan §3, G8): follows the drill path; the root is "Org" (admins) or
  * "Your units" (multi-root managers); middle items collapse to "…" on narrow screens.
@@ -48,7 +50,7 @@ export function Crumbs({
     collapse && first && last ? [first, "ellipsis", last] : items;
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <Breadcrumb aria-label="Breadcrumb">
+      <Breadcrumb aria-label="Levels">
         <BreadcrumbList className="gap-1 sm:gap-1">
           {shown.map((c, i) => (
             // The path up to this crumb: unique even when two units share a name.

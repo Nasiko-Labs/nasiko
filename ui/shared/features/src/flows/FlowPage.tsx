@@ -4,7 +4,8 @@
 // search serialised without its defaults (`searchString`; TanStack wrote them all, the URL is shorter, the list the
 // same); Base UI's ToggleGroup is value-array based (`value={[shownView]}`, `onValueChange` reads `v[0]`); the lab's
 // `ApiError` is `ProductApiError`; Prettier formatting. Previous/Next (legacy ui/ on development, 3aac84f66: c033b0c52,
-// 1b7bfb943): `FlowSiblings` steps with `router.replace` and the list as state.
+// 1b7bfb943): `FlowSiblings` steps with `router.replace` and the list as state. The top bar (e8379db5a): "← Flows"
+// is the breadcrumb's first level (`FlowsLink`), then the flow, and the arrows.
 /**
  * One flow (plans/feat-flows.md §2, §2a; T3): header with its links, the narrative (F5), six KPI tiles (F6), the
  * swimlane panel (F2, T2) or the Call card for a lone call (F12), then Steps.
@@ -13,9 +14,9 @@
  * differ from the server's (A4, O5); when it does, a line says why. Open trace and Open chat need the flow's chat
  * session (O1). The page's clock ticks only while the flow moves.
  */
-import { ArrowLeft } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { useRouter } from "@nasiko/app-core/navigation";
+import Link, { useRouter } from "@nasiko/app-core/navigation";
+import { TopBar } from "@nasiko/app-core/shell/TopBar";
 import { useSiblings } from "@nasiko/app-core/siblings";
 import { Announcer } from "@nasiko/ui/composites";
 import { useAnnounce } from "@nasiko/ui/composites";
@@ -129,7 +130,7 @@ function FlowBody({
     return (
       <Frame>
         {/* The arrows stay, so a flow that's gone isn't a dead end. */}
-        <FlowSiblings flowId={flowId} className="justify-end" />
+        <TopBar root={<FlowsLink />} stepper={<FlowSiblings flowId={flowId} />} />
         {status === 404 ? (
           <StateCard title={copy.page.notFound}>{copy.page.notFoundHint}</StateCard>
         ) : status === 403 && query.data ? (
@@ -203,14 +204,12 @@ function FlowBody({
 
   return (
     <Frame>
+      <TopBar
+        root={<FlowsLink />}
+        trail={[title]}
+        stepper={<FlowSiblings flowId={flow.flow_id} />}
+      />
       <PageHeader
-        // The arrows sit at the right of the breadcrumb row, so the varying actions can't move them.
-        breadcrumb={
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <BackToFlows />
-            <FlowSiblings flowId={flow.flow_id} />
-          </div>
-        }
         title={title}
         description={
           <span className="inline-flex flex-wrap items-center gap-x-2">
@@ -421,20 +420,15 @@ function FlowBody({
 
 const LIST_DEFAULTS = flowsSearchSchema.parse({}) as Record<string, unknown>;
 
-/** "← Flows", back to the list as the user left it (F20), else to its defaults. */
-function BackToFlows() {
+/** Flows, back to the list as it was left (`listSearch.ts`, F20), else to its defaults: the breadcrumb's first level. */
+function FlowsLink(props: Record<string, unknown>) {
   const search = useListSearch((s) => s.search);
   const qs = search ? searchString(search, LIST_DEFAULTS) : "";
   return (
-    <ButtonLink
-      href={qs ? `/flows?${qs}` : "/flows"}
-      variant="link"
-      size="sm"
-      className="h-auto self-start p-0 text-muted-foreground"
-      aria-label={copy.backLabel}
-    >
-      <ArrowLeft aria-hidden /> {copy.back}
-    </ButtonLink>
+    // `props`: the breadcrumb's link styling, merged in by its `render`.
+    <Link {...props} href={qs ? `/flows?${qs}` : "/flows"} aria-label={copy.backLabel}>
+      {copy.back}
+    </Link>
   );
 }
 

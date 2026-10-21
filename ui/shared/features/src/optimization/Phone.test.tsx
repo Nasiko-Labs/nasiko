@@ -1,5 +1,6 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/optimization/Phone.test.tsx. Local edits: none beyond
 // imports and Prettier.
+// The top bar (legacy ui/ on development, e8379db5a): the page's own banner, not the top bar.
 /**
  * /optimization below 640 px (plans/feat-optimization-page.md T9: R6B; eng C5): the header is the title and the window,
  * the jump to your settings sits under the lead, the chart draws weeks and a weekly bar picks its week, while the
@@ -42,7 +43,11 @@ describe("/optimization on a phone", () => {
     );
     expect(link).toBeInTheDocument();
     expect(
-      within(screen.getByRole("banner")).queryByRole("link", { name: /^Your settings/ }),
+      // The page's own header, not the app's top bar.
+      within(screen.getAllByRole("banner").find((h) => h.dataset.slot !== "topbar")!).queryByRole(
+        "link",
+        { name: /^Your settings/ },
+      ),
     ).toBeNull();
     expect(within(lead).getByText(/Click a week to see its biggest senders\./)).toBeInTheDocument();
     await userEvent.click(within(lead).getByRole("button", { name: copy.lead.chart.table }));

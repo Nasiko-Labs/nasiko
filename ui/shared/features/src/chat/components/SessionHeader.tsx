@@ -6,11 +6,13 @@
 // needs one); the jsx-a11y disable became a comment (no such rule here); `ApiError` is `ProductApiError`; Prettier
 // formatting. Previous/Next (legacy ui/ on development, 3aac84f66: 858912f71, 12264f9b6, 1b7bfb943, fdd92df43):
 // `ChatSiblings` pushes `chatHref(id, { mock, debug })` with the step's focus rule as history state (`chatFocus`).
+// The header lives in the app's top bar (e8379db5a), its totals in the ⋯ menu.
 /** An open chat's header (§7.3, §6.10): identity, title (inline rename), totals, View session and the ⋯ menu. */
 import { Activity, MoreHorizontal } from "lucide-react";
 import Link, { useRouter, useSearchParams } from "@nasiko/app-core/navigation";
 import { siblingsAround } from "@nasiko/app-core/siblings";
 import { PrevNext, type StepVia } from "@nasiko/ui/composites";
+import { TopBar } from "@nasiko/app-core/shell/TopBar";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   Button,
@@ -38,8 +40,6 @@ import { useRailOrder } from "../railOrder";
 import type { ChatIdentity } from "../identity";
 import type { ChatMessage, ChatSessionRow } from "../types";
 import { IdentityChip, IdentityIcon } from "./ChatIdentity";
-import { CHAT_COLUMN } from "./turnStyles";
-import { cn } from "@nasiko/ui/cn";
 
 // quirk: §10.11 — the server caps nothing; this is the UI's own cap.
 const TITLE_MAX = 80;
@@ -79,39 +79,45 @@ export function SessionHeader({
   /** Set while Rename is chosen from the menu, so the closing menu doesn't pull focus off the input. */
   const renaming = useRef(false);
   return (
-    <header className="flex h-12 shrink-0 items-center border-b border-border">
-      <div className={cn(CHAT_COLUMN, "flex min-w-0 items-center gap-2")}>
-        {railButton}
-        {identity ? <IdentityIcon kind={identity.kind} name={identity.name} size={20} /> : null}
-        {editing && row ? (
-          <RenameTitle
-            sessionId={sessionId}
-            title={row.title}
-            onDone={() => {
-              setEditing(false);
-            }}
-          />
-        ) : (
-          <Button
-            type="button"
-            variant="ghost"
-            className="h-auto min-w-0 shrink justify-start px-0 py-0 text-left text-sm font-medium hover:bg-transparent hover:underline dark:hover:bg-transparent pointer-coarse:min-h-11"
-            title={copy.rename}
-            onClick={() => {
-              if (row && !readOnly) setEditing(true);
-            }}
-          >
-            <span className="truncate">
-              {row?.title ?? (loading ? copy.loadingChat : copy.chatsNav)}
-            </span>
-          </Button>
-        )}
-        {/* The chip hides below 480 px of pane width; the icon keeps the kind (DS5). */}
-        {identity ? (
-          <IdentityChip identity={identity} className="hidden @min-[480px]:inline-flex" />
-        ) : null}
-        <div className="ml-auto flex shrink-0 items-center gap-1">
-          <HeaderTotals replies={replies} partial={partial} className="hidden @min-[560px]:flex" />
+    // The app's top bar holds the chat's header: identity and title on the left, its actions, then Previous/Next.
+    <TopBar
+      pinActions
+      root={<Link href="/chat">{copy.chatsNav}</Link>}
+      trail={[
+        <div key="chat" className="flex min-w-0 items-center gap-2">
+          {railButton}
+          {identity ? <IdentityIcon kind={identity.kind} name={identity.name} size={20} /> : null}
+          {editing && row ? (
+            <RenameTitle
+              sessionId={sessionId}
+              title={row.title}
+              onDone={() => {
+                setEditing(false);
+              }}
+            />
+          ) : (
+            <Button
+              type="button"
+              variant="ghost"
+              className="h-auto min-w-0 shrink justify-start px-0 py-0 text-left text-sm font-medium hover:bg-transparent hover:underline dark:hover:bg-transparent pointer-coarse:min-h-11"
+              title={copy.rename}
+              onClick={() => {
+                if (row && !readOnly) setEditing(true);
+              }}
+            >
+              <span className="truncate">
+                {row?.title ?? (loading ? copy.loadingChat : copy.chatsNav)}
+              </span>
+            </Button>
+          )}
+          {/* The chip hides below 480 px of pane width; the icon keeps the kind (DS5). */}
+          {identity ? (
+            <IdentityChip identity={identity} className="hidden @min-[480px]:inline-flex" />
+          ) : null}
+        </div>,
+      ]}
+      actions={
+        <>
           <ButtonLink
             href={`/sessions/${encodeURIComponent(sessionId)}`}
             size="sm"
@@ -144,15 +150,16 @@ export function SessionHeader({
                 return false;
               }}
             >
+              {/* The totals live here, not in the bar: each reply shows its own (one cost readout per place). */}
               {replies.length ? (
                 <>
                   {/* Base UI's menu label belongs to a group (Radix's stood alone). */}
                   <DropdownMenuGroup>
-                    <DropdownMenuLabel className="font-normal @min-[560px]:hidden">
+                    <DropdownMenuLabel className="font-normal">
                       <HeaderTotals replies={replies} partial={partial} stacked />
                     </DropdownMenuLabel>
                   </DropdownMenuGroup>
-                  <DropdownMenuSeparator className="@min-[560px]:hidden" />
+                  <DropdownMenuSeparator />
                 </>
               ) : null}
               <DropdownMenuItem
@@ -194,11 +201,10 @@ export function SessionHeader({
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
-          {/* Rightmost, so the arrows stay put from chat to chat whatever the totals' width. */}
-          <ChatSiblings sessionId={sessionId} />
-        </div>
-      </div>
-    </header>
+        </>
+      }
+      stepper={<ChatSiblings sessionId={sessionId} />}
+    />
   );
 }
 
