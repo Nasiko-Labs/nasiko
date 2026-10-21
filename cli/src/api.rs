@@ -265,6 +265,25 @@ impl Client {
         Ok(Some(resp.body_mut().read_json()?))
     }
 
+    /// GET returning `Ok(None)` when the resource is gone (404) or isn't the caller's to see
+    /// (403), still bailing on every other failure — for asking "is this still mine?".
+    pub fn get_json_if_visible<T: for<'de> Deserialize<'de>>(
+        &self,
+        path: &str,
+    ) -> Result<Option<T>> {
+        let _spin = nasiko_utils::term::start_status(format!("GET {path}"));
+        let url = self.api_url(path);
+        let mut resp = self
+            .auth_get(&url)
+            .call()
+            .context("cannot reach control plane")?;
+        if matches!(resp.status().as_u16(), 403 | 404) {
+            return Ok(None);
+        }
+        check_status(&mut resp, &url)?;
+        Ok(Some(resp.body_mut().read_json()?))
+    }
+
     /// GET returning `Ok(None)` on 403 instead of erroring. For endpoints where
     /// a 403 means "not entitled yet" rather than a real error — e.g. GitHub
     /// repositories before the account is connected — so callers can show a
@@ -1514,6 +1533,27 @@ mod tests {
         let out: Option<serde_json::Value> = client.get_json_optional("/agents/ghost").unwrap();
         assert!(out.is_none());
         m.assert();
+    }
+
+    #[test]
+    fn get_json_if_visible_is_none_when_missing_or_forbidden_and_fails_otherwise() {
+        let mut srv = mockito::Server::new();
+        for (path, status) in [("/api/agents/gone", 404), ("/api/agents/theirs", 403)] {
+            srv.mock("GET", path).with_status(status).create();
+        }
+        srv.mock("GET", "/api/agents/broken")
+            .with_status(500)
+            .create();
+        let client = Client::for_test(&srv.url(), None);
+        for path in ["/agents/gone", "/agents/theirs"] {
+            let out: Option<serde_json::Value> = client.get_json_if_visible(path).unwrap();
+            assert!(out.is_none(), "{path}");
+        }
+        assert!(
+            client
+                .get_json_if_visible::<serde_json::Value>("/agents/broken")
+                .is_err()
+        );
     }
 
     #[test]

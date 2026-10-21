@@ -701,9 +701,11 @@ pub enum MafExecutionCommands {
 
 #[derive(Subcommand)]
 pub enum AgentsCommands {
-    /// Discover coding agents installed on this machine
+    /// Discover coding agents installed on this machine (now: `status`)
+    #[command(hide = true)]
     Discover,
-    /// Install session reporting for a local coding agent
+    /// Install session reporting for a local coding agent (now: `connect <agent> --reporting`)
+    #[command(hide = true)]
     Install {
         /// Agent to install (e.g. claude or opencode)
         agent: String,
@@ -711,12 +713,13 @@ pub enum AgentsCommands {
         #[arg(long)]
         no_content: bool,
     },
-    /// Remove session reporting for a local coding agent
+    /// Remove session reporting for a local coding agent (now: `disconnect <agent> --reporting`)
+    #[command(hide = true)]
     Uninstall {
         /// Agent to uninstall (e.g. claude or opencode)
         agent: String,
     },
-    /// Validate and deliver queued coding-agent events
+    /// Deliver queued coding-agent session events now
     Sync,
     /// Export one session's new turns. Invoked by installed hooks.
     #[command(hide = true)]
@@ -1228,14 +1231,14 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             }
         },
         AgentOpsCommands::Agents { command } => match command {
-            AgentsCommands::Discover => commands::integration::status(),
-            AgentsCommands::Install { agent, no_content } => {
-                commands::integration::install(commands::integration::InstallOptions {
-                    agent_id: &agent,
-                    no_content,
-                })
+            AgentsCommands::Discover => {
+                commands::local_agents::note_renamed("agents discover", "status");
+                commands::local_agents::print_overview()
             }
-            AgentsCommands::Uninstall { agent } => commands::integration::uninstall(&agent),
+            AgentsCommands::Install { agent, no_content } => {
+                install_reporting_renamed("agents", &agent, no_content)
+            }
+            AgentsCommands::Uninstall { agent } => uninstall_reporting_renamed("agents", &agent),
             AgentsCommands::Sync => commands::integration::sync(),
             AgentsCommands::Report { agent } => commands::integration::report(&agent),
             AgentsCommands::Ls => commands::agents::cmd_ls(),
@@ -1503,6 +1506,37 @@ pub fn dispatch_registry(cmd: RegistrySubCommands) -> Result<()> {
 
 // ─── Coding-agent integrations ──────────────────────────────────────────────
 
+/// `agents install` / `integration install`, now `connect <agent> --no-routing --reporting`:
+/// runs exactly that command, so installed reporting keeps its saved content setting.
+/// `old` is the group the caller used (`agents` or `integration`), for the note.
+pub fn install_reporting_renamed(old: &str, agent: &str, no_content: bool) -> Result<()> {
+    let content = if no_content { " --no-content" } else { "" };
+    commands::local_agents::note_renamed(
+        &format!("{old} install"),
+        &format!("connect {agent} --no-routing --reporting{content} -y"),
+    );
+    // Exactly the command the note names, so the two never behave differently.
+    commands::local_agents::connect(
+        Some(agent),
+        &commands::local_agents::ConnectOptions {
+            no_routing: true,
+            reporting: true,
+            no_content,
+            yes: true,
+            ..Default::default()
+        },
+    )
+}
+
+/// `agents uninstall` / `integration uninstall`, now `disconnect <agent> --reporting`.
+pub fn uninstall_reporting_renamed(old: &str, agent: &str) -> Result<()> {
+    commands::local_agents::note_renamed(
+        &format!("{old} uninstall"),
+        &format!("disconnect {agent} --reporting"),
+    );
+    commands::integration::uninstall(agent)
+}
+
 #[derive(Subcommand)]
 pub enum IntegrationSubCommands {
     /// Show which coding agents are on this machine and their reporting status
@@ -1532,14 +1566,16 @@ pub enum IntegrationSubCommands {
 
 pub fn dispatch_integration(cmd: IntegrationSubCommands) -> Result<()> {
     match cmd {
-        IntegrationSubCommands::Status => commands::integration::status(),
-        IntegrationSubCommands::Install { agent, no_content } => {
-            commands::integration::install(commands::integration::InstallOptions {
-                agent_id: &agent,
-                no_content,
-            })
+        IntegrationSubCommands::Status => {
+            commands::local_agents::note_renamed("integration status", "status");
+            commands::local_agents::print_overview()
         }
-        IntegrationSubCommands::Uninstall { agent } => commands::integration::uninstall(&agent),
+        IntegrationSubCommands::Install { agent, no_content } => {
+            install_reporting_renamed("integration", &agent, no_content)
+        }
+        IntegrationSubCommands::Uninstall { agent } => {
+            uninstall_reporting_renamed("integration", &agent)
+        }
         IntegrationSubCommands::Report { agent } => commands::integration::report(&agent),
         IntegrationSubCommands::Sync => commands::integration::sync(),
     }

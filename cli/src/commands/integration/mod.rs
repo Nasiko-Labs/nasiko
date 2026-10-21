@@ -76,15 +76,9 @@ impl ReportingDestination {
     pub fn is(&self, cluster_name: &str, cluster_url: &str, principal_id: Option<&str>) -> bool {
         self.cluster_name == cluster_name
             && self.cluster_url.trim_end_matches('/') == cluster_url.trim_end_matches('/')
-            && principal_id.is_none_or(|principal| same_principal(&self.principal_id, principal))
-    }
-}
-
-/// User ids are UUIDs, written as the token has them or in canonical form; compare the UUIDs.
-fn same_principal(left: &str, right: &str) -> bool {
-    match (uuid::Uuid::parse_str(left), uuid::Uuid::parse_str(right)) {
-        (Ok(left), Ok(right)) => left == right,
-        _ => left == right,
+            && principal_id.is_none_or(|principal| {
+                crate::config::same_principal(&self.principal_id, principal)
+            })
     }
 }
 
@@ -216,13 +210,17 @@ pub fn uninstall(agent_id: &str) -> Result<()> {
     agent.uninstall()?;
 
     let mut settings = IntegrationState::load()?;
-    settings.agents.remove(spec.id);
+    // The agent reporting was installed under — the routing agent or an account-scoped name —
+    // not the catalog default.
+    let agent_name = settings
+        .agents
+        .remove(spec.id)
+        .map_or_else(|| spec.agent_name.to_string(), |state| state.agent_name);
     settings.save()?;
 
     println!("Removed the {} hook.", spec.display_name);
     println!(
-        "Agent '{}' is still registered; its past sessions remain in observability.",
-        spec.agent_name
+        "Agent '{agent_name}' is still registered; its past sessions remain in observability."
     );
     Ok(())
 }
@@ -265,12 +263,11 @@ pub fn auto_install_detected() -> Result<()> {
             installed += 1;
             continue;
         }
-        let no_content = settings
-            .get(spec.id)
-            .is_some_and(|state| !state.capture_content);
+        // Only agents with no reporting installed get here, so there is no saved setting to
+        // keep: new reporting includes prompt and response text, as `connect --reporting` does.
         match install(InstallOptions {
             agent_id: spec.id,
-            no_content,
+            no_content: false,
             agent_name: None,
         }) {
             Ok(()) => installed += 1,

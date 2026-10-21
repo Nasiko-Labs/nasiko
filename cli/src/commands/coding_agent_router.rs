@@ -40,6 +40,33 @@ pub struct RoutingOptions<'a> {
     pub llm_config: Option<&'a str>,
     /// Whether to mint and register an MCP gateway credential alongside LLM routing.
     pub mcp: bool,
+    /// Set when the agent's `check` accepted these same options just before, so `connect`
+    /// can skip the router probe it would otherwise repeat.
+    pub checked: bool,
+}
+
+/// A check or a failed connect changed the agent's LLM config on the control plane and could not
+/// change it back: the agent may now route through the config being tried.
+#[derive(Debug)]
+pub struct ConfigNotRestored(pub String);
+
+impl std::fmt::Display for ConfigNotRestored {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the agent's previous LLM config could not be put back ({}); it may now route through the one being tried",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for ConfigNotRestored {}
+
+/// Puts back the agent's LLM config after a check or a failed connect changed it, failing with
+/// [`ConfigNotRestored`] so callers can say so.
+pub fn put_back_config(prepared: &PreparedConnection) -> Result<()> {
+    rollback_config(prepared)
+        .map_err(|error| anyhow::Error::new(ConfigNotRestored(format!("{error:#}"))))
 }
 
 /// A connected routing integration, as `nasiko status` summarizes it.
@@ -518,11 +545,16 @@ pub fn resolve_owned_agent(
 pub fn owned_agent_exists(reference: &str, integration_id: &str) -> Result<bool> {
     let (_, entry, principal_id) = require_current_login()?;
     let client = Client::from_cluster_entry_with_timeout(&entry, Some(CP_CALL_TIMEOUT));
-    let Some(agent) = client.get_agent(reference)? else {
+    // Gone (404) or someone else's (403) both mean "not yours to reuse".
+    let Some(raw) = client.get_json_if_visible::<Value>(&format!("/agents/{reference}"))? else {
         return Ok(false);
     };
+    let agent = raw.get("data").cloned().unwrap_or(raw);
     Ok(is_integration_agent(&agent, integration_id)
-        && agent.get("owner_id").and_then(Value::as_str) == Some(principal_id.as_str()))
+        && agent
+            .get("owner_id")
+            .and_then(Value::as_str)
+            .is_some_and(|owner| config::same_principal(owner, &principal_id)))
 }
 
 fn is_integration_agent(agent: &Value, integration_id: &str) -> bool {
@@ -538,7 +570,7 @@ fn owned_agent_fields(
     fallback_name: &str,
 ) -> Result<(String, String)> {
     let owner = agent.get("owner_id").and_then(Value::as_str);
-    if owner != Some(principal_id) {
+    if !owner.is_some_and(|owner| config::same_principal(owner, principal_id)) {
         bail!("agent '{fallback_name}' is not owned by the current Nasiko user");
     }
     let id = agent
@@ -601,12 +633,24 @@ fn configure_agent_for_install(
         .get("data")
         .and_then(|data| data.get("llm_config"))
         .filter(|value| !value.is_null())
-        .cloned()
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "no Nasiko LLM config is available; create a default config or pass --config <name>"
-            )
-        })?;
+        .cloned();
+    let Some(resolved) = resolved else {
+        let error = anyhow::anyhow!(
+            "no Nasiko LLM config is available; create a default config or pass --config <name>"
+        );
+        // The config was changed above but can't be used: put the previous one back, so a
+        // failed connect never leaves the agent on it — and say so when that fails too.
+        if let Some(previous) = &previous
+            && let Err(put_back) =
+                client.patch_json::<Value, _>(&path, &json!({"llm_config_id": previous}))
+        {
+            return Err(
+                anyhow::Error::new(ConfigNotRestored(format!("{put_back:#}")))
+                    .context(format!("{error:#}")),
+            );
+        }
+        return Err(error);
+    };
     Ok((resolved, previous))
 }
 

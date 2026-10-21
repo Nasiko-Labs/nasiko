@@ -75,7 +75,10 @@ fn authenticate() -> Result<(String, String)> {
 pub fn status() -> Result<()> {
     let (name, entry) = config::active_cluster()?;
     let Some(token) = &entry.token else {
-        println!("Not authenticated. Run: nasiko auth login");
+        println!(
+            "Not authenticated. Run: {}",
+            crate::commands::local_agents::login_hint()
+        );
         return Ok(());
     };
 
@@ -88,8 +91,10 @@ pub fn status() -> Result<()> {
     match config::token_expired(token) {
         Some(true) => {
             println!(
-                "Session expired for {}{} — run: nasiko auth login",
-                name, who
+                "Session expired for {}{} — run: {}",
+                name,
+                who,
+                crate::commands::local_agents::login_hint()
             );
         }
         Some(false) => {
@@ -134,10 +139,16 @@ pub fn logout() -> Result<()> {
 pub fn whoami() -> Result<()> {
     let (cluster_name, entry) = config::active_cluster()?;
     if entry.token.is_none() {
-        bail!("not logged in — run: nasiko auth login");
+        bail!(
+            "not logged in — run: {}",
+            crate::commands::local_agents::login_hint()
+        );
     }
     if config::token_expired(entry.token.as_deref().unwrap_or("")) == Some(true) {
-        bail!("session expired — run: nasiko auth login");
+        bail!(
+            "session expired — run: {}",
+            crate::commands::local_agents::login_hint()
+        );
     }
 
     let client = crate::api::Client::from_active_cluster()?;
