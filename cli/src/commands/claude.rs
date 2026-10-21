@@ -86,7 +86,8 @@ pub fn check(options: &RoutingOptions<'_>) -> Result<()> {
     coding_agent_router::put_back_config(&prepared)
 }
 
-pub fn connect(options: &RoutingOptions<'_>) -> Result<()> {
+/// Connects Claude Code, returning the LLM config change it made to its routing agent.
+pub fn connect(options: &RoutingOptions<'_>) -> Result<coding_agent_router::ConfigChange> {
     if state_path().exists() {
         bail!(
             "Claude Code is already connected; run `{cli} disconnect claude` before reconnecting",
@@ -229,7 +230,7 @@ pub fn connect(options: &RoutingOptions<'_>) -> Result<()> {
         "Run `claude` normally. Disconnect with: {} disconnect claude",
         crate::commands::local_agents::cli_name()
     );
-    Ok(())
+    Ok(prepared.config_change())
 }
 
 /// `claude mcp add-json --scope user <name> '<json>'` args: a single JSON argument carries

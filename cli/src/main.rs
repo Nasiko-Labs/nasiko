@@ -289,11 +289,18 @@ fn main() -> Result<()> {
                     "unknown status target '{other}' (expected a coding agent: claude, codex, opencode, cursor)"
                 ),
                 None => {
-                    // The control plane may be down or unset; the local agents are still worth showing.
+                    // The control plane may be down or unset; the local agents are still worth
+                    // showing — and neither failure may hide the other.
                     let cluster = commands::status::status();
                     println!();
-                    local_agents::print_overview()?;
-                    cluster
+                    let overview = local_agents::print_overview();
+                    match (cluster, overview) {
+                        (Err(cluster), Err(overview)) => {
+                            eprintln!("error: could not show the coding agents: {overview:#}");
+                            Err(cluster)
+                        }
+                        (cluster, overview) => cluster.and(overview),
+                    }
                 }
             },
             CpCommands::Auth { command } => match command {

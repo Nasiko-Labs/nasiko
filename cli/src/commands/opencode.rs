@@ -29,7 +29,8 @@ struct ConnectionState {
     mcp_installed: bool,
 }
 
-pub fn connect(options: &RoutingOptions<'_>) -> Result<()> {
+/// Connects OpenCode, returning the LLM config change it made to its routing agent.
+pub fn connect(options: &RoutingOptions<'_>) -> Result<coding_agent_router::ConfigChange> {
     let _opencode = which::which("opencode")
         .context("OpenCode is not installed or 'opencode' is not on PATH")?;
     let nasiko = std::env::current_exe().context("cannot locate the nasiko executable")?;
@@ -117,11 +118,9 @@ pub fn connect(options: &RoutingOptions<'_>) -> Result<()> {
                 crate::commands::local_agents::cli_name()
             );
         }
-        return match coding_agent_router::rollback_config(&prepared) {
+        return match coding_agent_router::put_back_config(&prepared) {
             Ok(()) => Err(error),
-            Err(rollback) => Err(error.context(format!(
-                "local install failed and the prior Nasiko LLM config could not be restored: {rollback:#}"
-            ))),
+            Err(put_back) => Err(put_back.context(format!("local install failed: {error:#}"))),
         };
     }
 
@@ -156,7 +155,7 @@ pub fn connect(options: &RoutingOptions<'_>) -> Result<()> {
     println!("Installed plugin: {}", plugin_path.display());
     coding_agent_router::print_mcp_outcome(mcp_mint.as_ref(), None);
     println!("Restart OpenCode so it loads the new router plugin.");
-    Ok(())
+    Ok(prepared.config_change())
 }
 
 /// The current connection, if any, for `nasiko status`'s overview.

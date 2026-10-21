@@ -21,7 +21,7 @@ use tabled::{Table, Tabled};
 
 use crate::api::{Client, unwrap_data};
 use crate::commands::coding_agent_router::{
-    self, ConfigNotRestored, RoutingOptions, RoutingSummary,
+    self, AgentLookup, ConfigChange, ConfigNotRestored, RoutingOptions, RoutingSummary,
 };
 use crate::commands::integration::{self, InstallOptions, LocalAgent, ReportingDestination};
 use crate::commands::{auth, claude, codex, opencode};
@@ -183,7 +183,8 @@ pub fn note_renamed(old: &str, new: &str) {
 /// The LLM-routing side of an agent. Cursor has none: it supports session reporting only.
 #[derive(Clone, Copy)]
 struct Router {
-    connect: fn(&RoutingOptions<'_>) -> Result<()>,
+    /// Connects routing, returning the LLM config change it made to the routing agent.
+    connect: fn(&RoutingOptions<'_>) -> Result<ConfigChange>,
     disconnect: fn(bool) -> Result<()>,
     status: fn() -> Result<()>,
     summary: fn() -> Result<Option<RoutingSummary>>,
@@ -569,7 +570,7 @@ pub fn connect(target: Option<&str>, options: &ConnectOptions) -> Result<()> {
         &mut plan,
         &Lookups {
             config: &check_llm_config,
-            owns_agent: &coding_agent_router::owned_agent_exists,
+            look_up_agent: &coding_agent_router::look_up_owned_agent,
         },
     )?;
     if !plan.agents.iter().any(AgentPlan::changes_anything) {
@@ -624,8 +625,8 @@ fn refuse_routing_flags_without_routing(
 struct Lookups<'a> {
     /// Fails, saying why, when an LLM config name or UUID doesn't resolve.
     config: &'a dyn Fn(&str) -> Result<()>,
-    /// Whether an agent (UUID) is still the user's routing agent for a coding agent id.
-    owns_agent: &'a dyn Fn(&str, &str) -> Result<bool>,
+    /// What the control plane says about an agent (UUID) as a coding agent id's routing agent.
+    look_up_agent: &'a dyn Fn(&str, &str) -> Result<AgentLookup>,
 }
 
 /// Checks the plan against the control plane before it is shown, so nothing is removed on a
@@ -654,13 +655,25 @@ fn verify_plan(plan: &mut Plan, lookups: &Lookups<'_>) -> Result<()> {
         if !uses_current_agent || !owned_by(current, plan.destination.as_ref()) {
             continue;
         }
-        agent.current_agent_usable = (lookups.owns_agent)(&current.agent_id, agent.view.local.id)
-            .with_context(|| {
-            format!(
-                "could not check {}'s routing agent; nothing was changed",
-                agent.view.local.display_name
-            )
-        })?;
+        let lookup =
+            (lookups.look_up_agent)(&current.agent_id, agent.view.local.id).with_context(|| {
+                format!(
+                    "could not check {}'s routing agent; nothing was changed",
+                    agent.view.local.display_name
+                )
+            })?;
+        // A refusal (403) only means "not yours" when the connection doesn't record whose it
+        // is. For a connection made as this user, it is a permission problem — not a deletion
+        // to give the agent up over.
+        if lookup == AgentLookup::Refused && current.principal_id.is_some() {
+            bail!(
+                "access to {}'s routing agent {} was refused; nothing was changed. If it is still \
+                 yours, check your access to it and run connect again",
+                agent.view.local.display_name,
+                current.agent_name
+            );
+        }
+        agent.current_agent_usable = lookup == AgentLookup::Usable;
         if !agent.current_agent_usable {
             let gone = format!(
                 "agent {} no longer exists or is no longer yours",
@@ -1272,7 +1285,9 @@ fn apply_agent(
     prompter: &dyn Prompter,
 ) -> Result<()> {
     let name = agent.view.local.display_name;
-    let mut newly_routed = false;
+    // Routing this run connected from nothing, with the LLM config change it made — undone
+    // together if reporting then fails.
+    let mut new_routing: Option<ConfigChange> = None;
     if let Some(request) = routing_request(agent, choices) {
         let router = request.router;
         let mut routing = RoutingOptions {
@@ -1303,14 +1318,19 @@ fn apply_agent(
             }
             (router.disconnect)(force).context("could not remove the current LLM routing")?;
         }
-        if let Err(error) = (router.connect)(&routing) {
-            return Err(if disconnect_first {
-                restore_previous_routing(agent, router, &routing, error)
-            } else {
-                error.context("LLM routing failed")
-            });
+        let change = match (router.connect)(&routing) {
+            Ok(change) => change,
+            Err(error) => {
+                return Err(if disconnect_first {
+                    restore_previous_routing(agent, router, &routing, error)
+                } else {
+                    error.context("LLM routing failed")
+                });
+            }
+        };
+        if !request.reconnect {
+            new_routing = Some(change);
         }
-        newly_routed = !request.reconnect;
     }
     if let ReportingStep::Install {
         capture_content, ..
@@ -1324,12 +1344,15 @@ fn apply_agent(
             })
         });
         if let Err(error) = result {
-            if let (true, Some(router)) = (newly_routed, agent.view.router) {
+            if let (Some(change), Some(router)) = (&new_routing, agent.view.router) {
                 eprintln!(
                     "Session reporting failed; removing the LLM routing set up a moment ago."
                 );
                 if let Err(rollback) = (router.disconnect)(true) {
                     eprintln!("warning: could not remove LLM routing: {rollback:#}");
+                }
+                if let Err(put_back) = change.undo() {
+                    eprintln!("warning: {put_back:#}");
                 }
                 return Err(error.context("session reporting failed"));
             }
@@ -1385,7 +1408,7 @@ fn restore_previous_routing(
     };
     let config_changed = error.chain().any(|cause| cause.is::<ConfigNotRestored>());
     let tried_previous_agent = tried.agent == Some(previous.agent_id.as_str());
-    match (router.connect)(&previous_setup) {
+    match (router.connect)(&previous_setup).map(|_| ()) {
         Ok(()) if config_changed && tried_previous_agent => error.context(
             "LLM routing failed; the previous connection was reconnected, but its agent keeps the \
              LLM config being tried, which could not be put back",
@@ -2360,11 +2383,14 @@ mod tests {
         panic!("LLM config '{config}' must not be checked here")
     }
 
-    fn agent_must_not_be_checked(agent: &str, _: &str) -> Result<bool> {
+    fn agent_must_not_be_checked(agent: &str, _: &str) -> Result<AgentLookup> {
         panic!("agent '{agent}' must not be checked here")
     }
 
-    fn verify(plan: &mut Plan, owns_agent: &dyn Fn(&str, &str) -> Result<bool>) -> Result<()> {
+    fn verify_with(
+        plan: &mut Plan,
+        look_up_agent: &dyn Fn(&str, &str) -> Result<AgentLookup>,
+    ) -> Result<()> {
         verify_plan(
             plan,
             &Lookups {
@@ -2372,9 +2398,50 @@ mod tests {
                     "typo" => bail!("no LLM config named 'typo' in your library"),
                     _ => Ok(()),
                 },
-                owns_agent,
+                look_up_agent,
             },
         )
+    }
+
+    /// `owns_agent` answers yes (usable) or no (gone).
+    fn verify(plan: &mut Plan, owns_agent: &dyn Fn(&str, &str) -> Result<bool>) -> Result<()> {
+        verify_with(plan, &|agent, integration| {
+            Ok(if owns_agent(agent, integration)? {
+                AgentLookup::Usable
+            } else {
+                AgentLookup::Gone
+            })
+        })
+    }
+
+    #[test]
+    fn a_refused_lookup_stops_unless_the_connection_records_no_user() {
+        let reconnect = RoutingStep::Connect { reconnect: true };
+        // Made as this user: a 403 is a permission problem, not a deletion.
+        let mut mine = plan_of(
+            vec![plan_with(
+                reconnect.clone(),
+                connected(Some("me"), true),
+                false,
+            )],
+            None,
+        );
+        let error = verify_with(&mut mine, &|_, _| Ok(AgentLookup::Refused))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("was refused; nothing was changed"),
+            "{error}"
+        );
+
+        // An older connection that doesn't record whose it is: treated as not yours.
+        let mut older = plan_of(
+            vec![plan_with(reconnect, connected(None, true), false)],
+            None,
+        );
+        verify_with(&mut older, &|_, _| Ok(AgentLookup::Refused)).unwrap();
+        assert!(!older.agents[0].current_agent_usable);
+        assert!(older.agents[0].note.is_some());
     }
 
     #[test]
@@ -2432,7 +2499,7 @@ mod tests {
             )],
             None,
         );
-        verify(&mut theirs, &agent_must_not_be_checked).unwrap();
+        verify_with(&mut theirs, &agent_must_not_be_checked).unwrap();
         assert!(!theirs.agents[0].current_agent_usable);
     }
 
@@ -2455,7 +2522,7 @@ mod tests {
     #[test]
     fn verify_rejects_an_unknown_llm_config_only_when_routing_connects() {
         let connect = plan_with(RoutingStep::Connect { reconnect: false }, None, false);
-        let error = verify(
+        let error = verify_with(
             &mut plan_of(vec![connect], Some("typo")),
             &agent_must_not_be_checked,
         )
@@ -2468,7 +2535,7 @@ mod tests {
             &mut plan_of(vec![kept], Some("typo")),
             &Lookups {
                 config: &config_must_not_be_checked,
-                owns_agent: &agent_must_not_be_checked,
+                look_up_agent: &agent_must_not_be_checked,
             },
         )
         .unwrap();
@@ -2732,7 +2799,7 @@ mod tests {
 
     /// Fails for the LLM config "late" (a failure only connecting itself meets, such as a local
     /// write) and for the agent "id-broken".
-    fn fake_connect(options: &RoutingOptions<'_>) -> Result<()> {
+    fn fake_connect(options: &RoutingOptions<'_>) -> Result<ConfigChange> {
         let agent = options.agent.unwrap_or("default");
         let config = options.llm_config.unwrap_or("-");
         CALLS.with(|calls| {
@@ -2744,7 +2811,7 @@ mod tests {
             ("late", _) | (_, "id-broken") => bail!("connect failed"),
             ("late-stuck", _) => Err(anyhow::Error::new(ConfigNotRestored("timeout".into()))
                 .context("local install failed")),
-            _ => Ok(()),
+            _ => Ok(ConfigChange::unchanged()),
         }
     }
 

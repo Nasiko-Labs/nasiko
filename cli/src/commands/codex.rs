@@ -82,7 +82,8 @@ pub fn check(options: &RoutingOptions<'_>) -> Result<()> {
     }
 }
 
-pub fn connect(options: &RoutingOptions<'_>) -> Result<()> {
+/// Connects Codex, returning the LLM config change it made to its routing agent.
+pub fn connect(options: &RoutingOptions<'_>) -> Result<coding_agent_router::ConfigChange> {
     let codex = codex_binary()?;
     if state_path().exists() {
         bail!(
@@ -158,7 +159,7 @@ pub fn connect(options: &RoutingOptions<'_>) -> Result<()> {
     println!("Config:                    {}", config_path.display());
     println!("Provider:                  nasiko ({})", routed.model);
     coding_agent_router::print_mcp_outcome(mcp_mint.as_ref(), embed_warning.as_deref());
-    Ok(())
+    Ok(prepared.config_change())
 }
 
 /// The current connection, if any, for `nasiko status`'s overview.
@@ -316,10 +317,10 @@ fn verify_routing(prepared: &coding_agent_router::PreparedConnection, model: &st
 
 /// Restores the agent's previous LLM config after a failed connect, keeping both failures
 /// when the restore itself fails.
-fn rollback_after(
+fn rollback_after<T>(
     prepared: &coding_agent_router::PreparedConnection,
     error: anyhow::Error,
-) -> Result<()> {
+) -> Result<T> {
     match coding_agent_router::put_back_config(prepared) {
         Ok(()) => Err(error),
         Err(put_back) => Err(put_back.context(format!("Codex connect failed: {error:#}"))),

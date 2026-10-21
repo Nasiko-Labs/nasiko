@@ -65,8 +65,46 @@ impl std::error::Error for ConfigNotRestored {}
 /// Puts back the agent's LLM config after a check or a failed connect changed it, failing with
 /// [`ConfigNotRestored`] so callers can say so.
 pub fn put_back_config(prepared: &PreparedConnection) -> Result<()> {
-    rollback_config(prepared)
-        .map_err(|error| anyhow::Error::new(ConfigNotRestored(format!("{error:#}"))))
+    prepared.config_change().undo()
+}
+
+/// The LLM config change a `connect` made to its routing agent — kept so that undoing the
+/// connection right after (when a later step fails) undoes the change too.
+#[derive(Debug, Clone)]
+pub struct ConfigChange {
+    entry: ClusterEntry,
+    agent_id: String,
+    /// `Some(previous)` when the config was changed; `None` when it was left as it was.
+    previous_llm_config_id: Option<Option<String>>,
+}
+
+impl ConfigChange {
+    /// A connect that left the agent's LLM config as it was.
+    pub fn unchanged() -> Self {
+        Self {
+            entry: ClusterEntry {
+                url: String::new(),
+                username: None,
+                token: None,
+            },
+            agent_id: String::new(),
+            previous_llm_config_id: None,
+        }
+    }
+
+    /// Puts the previous LLM config back; a no-op when nothing was changed. Fails with
+    /// [`ConfigNotRestored`].
+    pub fn undo(&self) -> Result<()> {
+        let Some(previous) = &self.previous_llm_config_id else {
+            return Ok(());
+        };
+        let client = Client::from_cluster_entry_with_timeout(&self.entry, Some(CP_CALL_TIMEOUT));
+        let path = format!("/agents/{}/llm-config", self.agent_id);
+        client
+            .patch_json::<Value, _>(&path, &json!({"llm_config_id": previous}))
+            .map(|_| ())
+            .map_err(|error| anyhow::Error::new(ConfigNotRestored(format!("{error:#}"))))
+    }
 }
 
 /// A connected routing integration, as `nasiko status` summarizes it.
@@ -126,6 +164,17 @@ pub struct PreparedConnection {
     pub resolved_config: Value,
     pub entry: ClusterEntry,
     previous_llm_config_id: Option<Option<String>>,
+}
+
+impl PreparedConnection {
+    /// The LLM config change `prepare` made, for undoing it later.
+    pub fn config_change(&self) -> ConfigChange {
+        ConfigChange {
+            entry: self.entry.clone(),
+            agent_id: self.binding.agent_id.clone(),
+            previous_llm_config_id: self.previous_llm_config_id.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -539,22 +588,36 @@ pub fn resolve_owned_agent(
     owned_agent_fields(&agent, principal_id, reference)
 }
 
-/// Whether `reference` still names the current user's `integration_id` agent — what
-/// [`resolve_owned_agent`] would accept — without failing when it doesn't. Errors only when
-/// the control plane can't be asked.
-pub fn owned_agent_exists(reference: &str, integration_id: &str) -> Result<bool> {
+/// What the control plane says about reusing an agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentLookup {
+    /// The current user's agent for this coding agent — what [`resolve_owned_agent`] accepts.
+    Usable,
+    /// No such agent (404).
+    Gone,
+    /// It exists, but isn't the current user's agent for this coding agent.
+    NotYours,
+    /// Access was refused (403): someone else's, or the user's own under a permission problem —
+    /// the response doesn't say which.
+    Refused,
+}
+
+/// Looks `reference` up the way [`resolve_owned_agent`] would, answering instead of failing.
+/// Errors only when the control plane can't be asked.
+pub fn look_up_owned_agent(reference: &str, integration_id: &str) -> Result<AgentLookup> {
     let (_, entry, principal_id) = require_current_login()?;
     let client = Client::from_cluster_entry_with_timeout(&entry, Some(CP_CALL_TIMEOUT));
-    // Gone (404) or someone else's (403) both mean "not yours to reuse".
-    let Some(raw) = client.get_json_if_visible::<Value>(&format!("/agents/{reference}"))? else {
-        return Ok(false);
-    };
-    let agent = raw.get("data").cloned().unwrap_or(raw);
-    Ok(is_integration_agent(&agent, integration_id)
-        && agent
-            .get("owner_id")
-            .and_then(Value::as_str)
-            .is_some_and(|owner| config::same_principal(owner, &principal_id)))
+    Ok(match client.get_agent_or_status(reference, &[403, 404])? {
+        Err(404) => AgentLookup::Gone,
+        Err(_) => AgentLookup::Refused,
+        Ok(agent)
+            if is_integration_agent(&agent, integration_id)
+                && owned_agent_fields(&agent, &principal_id, reference).is_ok() =>
+        {
+            AgentLookup::Usable
+        }
+        Ok(_) => AgentLookup::NotYours,
+    })
 }
 
 fn is_integration_agent(agent: &Value, integration_id: &str) -> bool {
@@ -652,16 +715,6 @@ fn configure_agent_for_install(
         return Err(error);
     };
     Ok((resolved, previous))
-}
-
-pub fn rollback_config(prepared: &PreparedConnection) -> Result<()> {
-    let Some(previous) = &prepared.previous_llm_config_id else {
-        return Ok(());
-    };
-    let client = Client::from_cluster_entry_with_timeout(&prepared.entry, Some(CP_CALL_TIMEOUT));
-    let path = format!("/agents/{}/llm-config", prepared.binding.agent_id);
-    let _: Value = client.patch_json(&path, &json!({"llm_config_id": previous}))?;
-    Ok(())
 }
 
 /// What [`preflight_routing`] established about an agent's LLM configuration.
@@ -1330,7 +1383,7 @@ mod tests {
             },
             previous_llm_config_id,
         };
-        rollback_config(&prepared).unwrap();
+        put_back_config(&prepared).unwrap();
         current.assert();
         configs.assert();
         attach.assert();
