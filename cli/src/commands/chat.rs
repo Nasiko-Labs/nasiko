@@ -4,7 +4,6 @@ use anyhow::{Context, Result, bail};
 
 use crate::commands::tui::session::{self as cp};
 use crate::config;
-use crate::session_store;
 use nasiko_utils::term as status;
 
 /// Client budget for one chat turn. Must stay above the server's own agent-call
@@ -127,24 +126,11 @@ fn print_history(history: &[cp::CpMessage]) {
 ///
 /// `target_label` is what the user typed (agent name/id, or "" for the
 /// orchestrator) — used verbatim in the resume hint so it can be copy-pasted.
-/// Human label for an agent's `workload_kind`, or `None` for a raw URL /
-/// orchestrator target (nothing to label).
-fn agent_kind_label(kind: Option<&str>) -> Option<&'static str> {
-    match kind {
-        Some("acp_coding_agent") => Some("ACP coding agent"),
-        Some("mcp_connector") => Some("MCP connector"),
-        Some("agent") => Some("agent"),
-        _ => None,
-    }
-}
-
 pub fn chat(
     url: &str,
     message: Option<&str>,
     session_id: Option<&str>,
-    new_session: bool,
     target_label: &str,
-    agent_kind: Option<&str>,
 ) -> Result<()> {
     use std::io::IsTerminal;
 
@@ -161,18 +147,9 @@ pub fn chat(
         let (_, rpc_path) = fetch_agent_card(&endpoint);
         format!("{endpoint}{rpc_path}")
     };
-    // Which conversation this chat belongs to:
-    //   --session-id X  → switch to that conversation,
-    //   --new           → start a fresh one (the server mints it),
-    //   neither         → continue the *current* conversation remembered for this
-    //                     endpoint, so successive `nasiko chat <agent> "..."` calls
-    //                     stay in one conversation without repeating --session-id.
-    // The chosen id is persisted below as the new current conversation.
-    let mut session: Option<String> = match session_id {
-        Some(sid) => Some(sid.to_string()),
-        None if is_cp && !new_session => session_store::current(&endpoint),
-        None => None,
-    };
+    // The session id, once known: passed in via --session-id, or adopted from
+    // the server's echo after the first turn (see `fetch_cp_history`'s doc).
+    let mut session: Option<String> = session_id.map(str::to_string);
     let history = match session.as_deref() {
         Some(sid) if is_cp => fetch_cp_history(&endpoint, sid),
         _ => Vec::new(),
@@ -183,18 +160,11 @@ pub fn chat(
     // invocations (non-TTY) stay strictly one-shot.
     let interactive = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
 
-    // Always surface the agent's kind so a coding agent is never mistaken for a
-    // normal one (and vice-versa). Printed once, above the reply/header.
-    if let Some(label) = agent_kind_label(agent_kind) {
-        println!("\x1b[2m{target_label} · {label}\x1b[0m");
-    }
-
     if let Some(msg) = message {
         print_history(&history);
         if let Some(sid) = send_message(&endpoint, msg, session.as_deref())? {
             session = Some(sid);
         }
-        remember_session(&endpoint, is_cp, session.as_deref());
         println!();
         if !interactive {
             print_resume_hint(is_cp, session.as_deref(), target_label);
@@ -225,7 +195,6 @@ pub fn chat(
                 if let Some(sid) = sid {
                     session = Some(sid);
                 }
-                remember_session(&endpoint, is_cp, session.as_deref());
                 println!("\n");
             }
             Err(e) => eprintln!("  \x1b[31merror:\x1b[0m {e}\n"),
@@ -233,15 +202,6 @@ pub fn chat(
     }
     print_resume_hint(is_cp, session.as_deref(), target_label);
     Ok(())
-}
-
-/// Persist `session` as the current conversation for `endpoint`, so the next
-/// `nasiko chat` for this agent continues it without `--session-id`. Only for CP
-/// endpoints (the server owns those sessions); best-effort (see [`session_store`]).
-fn remember_session(endpoint: &str, is_cp: bool, session: Option<&str>) {
-    if is_cp && let Some(sid) = session {
-        session_store::set_current(endpoint, sid);
-    }
 }
 
 /// Tell the user which session this chat belongs to and how to pick it back
@@ -1271,26 +1231,5 @@ mod linkify_tests {
         let out = linkify_markdown_links("see [here](https://example.com/x) for details", false);
         assert_eq!(out, "see here for details");
         assert!(!out.contains('\x1b'));
-    }
-}
-
-#[cfg(test)]
-mod agent_kind_tests {
-    use super::agent_kind_label;
-
-    #[test]
-    fn labels_each_known_kind_and_skips_url_or_orchestrator() {
-        assert_eq!(
-            agent_kind_label(Some("acp_coding_agent")),
-            Some("ACP coding agent")
-        );
-        assert_eq!(
-            agent_kind_label(Some("mcp_connector")),
-            Some("MCP connector")
-        );
-        assert_eq!(agent_kind_label(Some("agent")), Some("agent"));
-        // None (raw URL / orchestrator) and unknown kinds produce no label.
-        assert_eq!(agent_kind_label(None), None);
-        assert_eq!(agent_kind_label(Some("bogus")), None);
     }
 }

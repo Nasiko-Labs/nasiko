@@ -784,22 +784,17 @@ async fn deliver_maf(state: &AppState, row: HitlRequest) {
 
     match enqueue {
         Ok(_) => {
-            // Interim status while the continuation job is in flight, mirroring
-            // `worker.rs::re_enqueue`'s own `status='pending'` convention on a retryable
-            // failure. Flipped only now, after a confirmed `XADD`, not before it: doing it
-            // earlier meant a Redis outage (or any other pre-enqueue failure) left the execution
-            // stuck at `pending` — indistinguishable from "queued" to the API/CLI — with no job
-            // ever landing in the stream to move it forward. Only from `awaiting_human`: a
-            // worker can pick the job up before this runs (it accepts a resume while the row
-            // still says `awaiting_human`, `worker.rs::claimable_statuses`), and must not have
-            // its `running` turned back into `pending`.
-            let _ = sqlx::query(
-                "UPDATE maf_executions SET status = 'pending' WHERE id = $1 AND status = $2",
-            )
-            .bind(execution_id)
-            .bind(nasiko_types::maf::AWAITING_HUMAN)
-            .execute(&state.db)
-            .await;
+            // Interim status while the continuation job is in flight — `worker.rs::process_job`
+            // unconditionally sets `running` again on pickup, so this is cosmetic-but-correct,
+            // mirroring `worker.rs::re_enqueue`'s own `status='pending'` convention on a
+            // retryable failure. Flipped only now, after a confirmed `XADD`, not before it: doing
+            // it earlier meant a Redis outage (or any other pre-enqueue failure) left the
+            // execution stuck at `pending` — indistinguishable from "queued" to the API/CLI —
+            // with no job ever landing in the stream to move it forward.
+            let _ = sqlx::query("UPDATE maf_executions SET status = 'pending' WHERE id = $1")
+                .bind(execution_id)
+                .execute(&state.db)
+                .await;
             if let Err(e) = state.hitl_store.mark_resume_completed(row.id).await {
                 // The continuation job is already durably enqueued (XADD acked) — retrying this
                 // resume would XADD a *second* one for the same `taskId`, re-running every step
@@ -1235,6 +1230,9 @@ async fn trigger_new_orchestrator_turn(
             user_id: row.owner_user_id,
             is_superuser,
             client_owns_transcript: false,
+            // A resume reads history through the fixed-window path, which selects nothing — so it
+            // is not a request that ran selection and must not count as one.
+            context_report: None,
             // Not `"user"`: `continuation` is written by the platform, not typed by the human.
             // As a user-role row it drew a bubble in the transcript quoting the sub-agent back
             // at them ("The archive agent replied: …"). It still belongs in the session's own

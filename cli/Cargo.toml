@@ -1,9 +1,7 @@
 [package]
 name = "nasiko"
 edition.workspace = true
-# Its own version, not the workspace's: the CLI is released on its own (`just release-cli-oss`), and
-# `nasiko --version` must match the tag it was published under.
-version = "0.2.0"
+version.workspace = true
 
 [lib]
 name = "nasiko"
@@ -38,7 +36,6 @@ crossterm.workspace = true
 chrono.workspace = true
 tabled.workspace = true
 zip.workspace = true
-rusqlite.workspace = true
 # Not `[target.'cfg(unix)'.dependencies]`: scripts/gen-oss-cargo-toml only scans plain
 # dependency tables for `workspace = true` usage (see its `collect_used_workspace_deps`), so a
 # target-gated table here would always get pruned from oss/Cargo.toml, breaking the OSS

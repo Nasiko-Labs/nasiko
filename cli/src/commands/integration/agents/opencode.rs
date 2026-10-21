@@ -14,7 +14,7 @@ use super::super::catalog::{AgentSpec, Support};
 use super::super::launcher;
 use super::super::model::{LlmCall, SessionSnapshot, ToolCall, Turn};
 
-pub const INSTALL_VERSION: u32 = 7;
+pub const INSTALL_VERSION: u32 = 6;
 pub const SPEC: AgentSpec = AgentSpec {
     id: "opencode",
     display_name: "OpenCode",
@@ -169,30 +169,34 @@ fn plugin_body(script: &Path) -> String {
         r#"// Managed by nasiko - do not edit. nasiko-hook-version: {INSTALL_VERSION}
 export default {{
   id: "nasiko.session-report",
-  async server({{ client }}) {{
-    return {{
-      event: async ({{ event }}) => {{
-        if (event.type !== "session.idle") return
-        const sessionID = event.properties?.sessionID
-        if (!sessionID) return
-        try {{
-          const response = await client.session.messages({{ path: {{ id: sessionID }} }})
-          const messages = response?.data
-          if (!Array.isArray(messages)) return
-          const payload = JSON.stringify({{ session_id: sessionID, messages }})
-          const process = Bun.spawn([{script}], {{
-            stdin: new TextEncoder().encode(payload), stdout: "ignore", stderr: "ignore",
-          }})
-          const completed = await Promise.race([
-            process.exited.then(() => true),
-            Bun.sleep(8000).then(() => false),
-          ])
-          if (!completed) process.unref()
-        }} catch {{
-          // Telemetry must never interrupt the coding session.
+  setup(ctx) {{
+    const controller = new AbortController()
+    void (async () => {{
+      try {{
+        for await (const event of ctx.event.subscribe({{ signal: controller.signal }})) {{
+          if (event.type !== "session.idle" && event.type !== "session.step.ended") continue
+          const sessionID = event.data?.sessionID
+          if (!sessionID) continue
+          try {{
+            const messages = await ctx.session.context({{ sessionID }})
+            const payload = JSON.stringify({{ session_id: sessionID, messages }})
+            const process = Bun.spawn([{script}], {{
+              stdin: new TextEncoder().encode(payload), stdout: "ignore", stderr: "ignore",
+            }})
+            const completed = await Promise.race([
+              process.exited.then(() => true),
+              Bun.sleep(8000).then(() => false),
+            ])
+            if (!completed) process.unref()
+          }} catch {{
+            // Telemetry must never interrupt the coding session.
+          }}
         }}
-      }},
-    }}
+      }} catch {{
+        // Aborting the subscription during unload is expected.
+      }}
+    }})()
+    return () => controller.abort()
   }},
 }}
 "#
@@ -562,10 +566,10 @@ mod tests {
         let body = plugin_body(Path::new("/tmp/report script"));
         assert!(body.contains("export default"));
         assert!(body.contains("id: \"nasiko.session-report\""));
-        assert!(body.contains("async server({ client })"));
-        assert!(body.contains("event.properties?.sessionID"));
-        assert!(body.contains("client.session.messages({ path: { id: sessionID } })"));
-        assert!(!body.contains("setup(ctx)"));
+        assert!(body.contains("setup(ctx)"));
+        assert!(body.contains("session.idle"));
+        assert!(body.contains("session.step.ended"));
+        assert!(body.contains("ctx.session.context"));
         assert!(body.contains("process.exited.then"));
         assert_eq!(launcher::version_marker(&body), Some(INSTALL_VERSION));
         assert!(body.contains("Bun.sleep(8000)"));
@@ -575,54 +579,6 @@ mod tests {
             Path::new("/tmp/report script")
         ));
         assert!(!plugin_targets_script(&body, Path::new("/tmp/old script")));
-    }
-
-    /// Loads the plugin the way OpenCode does (default export with `server()`),
-    /// then drives one idle event through a fake client and a stubbed `Bun`.
-    #[test]
-    fn plugin_loads_and_reports_an_idle_session_when_node_is_available() {
-        let Ok(node) = which::which("node") else {
-            return;
-        };
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("plugin.mjs");
-        std::fs::write(&path, plugin_body(Path::new("/tmp/report script"))).unwrap();
-        let harness = r#"
-import { pathToFileURL } from "node:url"
-const spawned = []
-globalThis.Bun = {
-  spawn: (argv, options) => {
-    spawned.push({ argv, stdin: new TextDecoder().decode(options.stdin) })
-    return { exited: Promise.resolve(0), unref() {} }
-  },
-  sleep: () => new Promise(() => {}),
-}
-const plugin = (await import(pathToFileURL(process.argv[1]).href)).default
-if (typeof plugin?.server !== "function") throw new Error("default export lacks server()")
-const client = { session: { messages: async ({ path }) => ({ data: [{ info: { id: path.id } }] }) } }
-const hooks = await plugin.server({ client })
-await hooks.event({ event: { type: "message.updated", properties: { sessionID: "ignored" } } })
-await hooks.event({ event: { type: "session.idle", properties: { sessionID: "ses_1" } } })
-console.log(JSON.stringify({ id: plugin.id, spawned }))
-"#;
-        let output = std::process::Command::new(node)
-            .args(["--input-type=module", "-e", harness])
-            .arg(&path)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let result: Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(result["id"], "nasiko.session-report");
-        let spawned = result["spawned"].as_array().unwrap();
-        assert_eq!(spawned.len(), 1);
-        assert_eq!(spawned[0]["argv"][0], "/tmp/report script");
-        let payload: Value = serde_json::from_str(spawned[0]["stdin"].as_str().unwrap()).unwrap();
-        assert_eq!(payload["session_id"], "ses_1");
-        assert_eq!(payload["messages"][0]["info"]["id"], "ses_1");
     }
 
     #[test]

@@ -95,12 +95,6 @@ pub(crate) struct UploadAndDeployForm {
     /// Absolute path; implies `writable`. Omit to keep an existing agent's
     /// stored path (`/workspace` for a new agent).
     writable_path: Option<String>,
-    /// `agent` (default) | `mcp_connector` | `acp_coding_agent` — the workload
-    /// kind. `acp_coding_agent` registers an ACP coding agent, deployed port-less
-    /// and driven over a stdio turn. Tri-state like `writable`: omit to keep an
-    /// existing agent's stored kind (`agent` for a new agent) — the CLI only
-    /// sends it when `--coding-agent` (or an AgentCard `workloadKind`) applies.
-    workload_kind: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema, sqlx::FromRow)]
@@ -144,12 +138,6 @@ pub enum BuildJobPayload {
         /// job rows queued before this field existed still deserialize.
         #[serde(default)]
         writable_path: Option<String>,
-        /// The agent's workload kind as its `agents.workload_kind` token. Empty
-        /// (`#[serde(default)]`) for job rows queued before this field existed —
-        /// those deserialize to `""`, which the worker reads as the default
-        /// `agent` (an HTTP agent), preserving their behavior.
-        #[serde(default)]
-        workload_kind: String,
     },
     /// In-place agent update (PUT /api/agents/{id}/update).
     Update {
@@ -354,10 +342,6 @@ pub(crate) async fn upload_and_deploy(
     // Tri-state for the same reason: an unspecified path must not move an
     // existing agent's mount back to /workspace.
     let mut writable_path: Option<String> = None;
-    // Workload kind (`acp_coding_agent` for a coding agent). Tri-state like
-    // `writable`: None = keep the stored kind (`agent` for a new agent), so a
-    // plain re-upload never silently demotes a coding agent back to HTTP.
-    let mut workload_kind: Option<String> = None;
 
     while let Ok(Some(field)) = multipart.next_field().await {
         match field.name().unwrap_or("") {
@@ -375,9 +359,6 @@ pub(crate) async fn upload_and_deploy(
             }
             "writable_path" => {
                 writable_path = field.text().await.ok().filter(|s| !s.is_empty());
-            }
-            "workload_kind" => {
-                workload_kind = field.text().await.ok().filter(|s| !s.is_empty());
             }
             "source" | "file" => {
                 use crate::multipart_util::{StreamUploadError, stream_field_to_fresh_temp_file};
@@ -452,22 +433,6 @@ pub(crate) async fn upload_and_deploy(
         Some("anthropic") => "anthropic",
         Some("gemini") => "gemini",
         _ => "openai",
-    };
-
-    // Validate the workload kind at the edge (clean 400 vs a DB CHECK violation).
-    // `None` keeps the stored kind via the COALESCE upsert below.
-    let workload_kind: Option<String> = match workload_kind.as_deref() {
-        None => None,
-        Some(raw) => match nasiko_runtime::WorkloadKind::from_db_str(raw) {
-            Some(_) => Some(raw.to_owned()),
-            None => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    "workload_kind must be one of: agent, mcp_connector, acp_coding_agent",
-                )
-                    .into_response();
-            }
-        },
     };
 
     // Validate name charset (RUN-10): flows into the OCI image reference.
@@ -564,18 +529,17 @@ pub(crate) async fn upload_and_deploy(
     // back the effective values so the deploy uses the DB's truth. (There is
     // deliberately no way to clear a stored writable_path back to NULL here —
     // pass an explicit new path instead; clearing would move the mount.)
-    let (agent_id, writable, writable_path, workload_kind) = {
-        match sqlx::query_as::<_, (Uuid, bool, Option<String>, String)>(
-            "INSERT INTO agents (name, owner_id, version, image, status, inbound_format, writable, writable_path, workload_kind) \
-             VALUES ($1, $2, $3, $4, 'deploying', $5, COALESCE($6, false), $7, COALESCE($8, 'agent')) \
+    let (agent_id, writable, writable_path) = {
+        match sqlx::query_as::<_, (Uuid, bool, Option<String>)>(
+            "INSERT INTO agents (name, owner_id, version, image, status, inbound_format, writable, writable_path) \
+             VALUES ($1, $2, $3, $4, 'deploying', $5, COALESCE($6, false), $7) \
              ON CONFLICT (owner_id, name) WHERE deleted_at IS NULL \
              DO UPDATE SET version = EXCLUDED.version, image = EXCLUDED.image, \
                            inbound_format = EXCLUDED.inbound_format, \
                            writable = COALESCE($6, agents.writable), \
                            writable_path = COALESCE($7, agents.writable_path), \
-                           workload_kind = COALESCE($8, agents.workload_kind), \
                            status = 'deploying', updated_at = now() \
-             RETURNING id, writable, writable_path, workload_kind",
+             RETURNING id, writable, writable_path",
         )
         .bind(&name)
         .bind(owner_id)
@@ -584,7 +548,6 @@ pub(crate) async fn upload_and_deploy(
         .bind(inbound_format)
         .bind(writable)
         .bind(&writable_path)
-        .bind(&workload_kind)
         .fetch_one(&mut *tx)
         .await
         {
@@ -681,7 +644,6 @@ pub(crate) async fn upload_and_deploy(
         env,
         writable,
         writable_path: writable_path.clone(),
-        workload_kind: workload_kind.clone(),
     };
 
     let payload_value = match serde_json::to_value(&payload) {
@@ -964,7 +926,6 @@ pub async fn execute_upload_and_deploy(
     writable: bool,
     writable_path: Option<String>,
     default_memory: String,
-    workload_kind: nasiko_runtime::WorkloadKind,
     deletion_hook: std::sync::Arc<crate::agent_lifecycle::SwappableAgentDeletionHook>,
 ) {
     if let Some(key) = openai_api_key {
@@ -1032,16 +993,6 @@ pub async fn execute_upload_and_deploy(
             writable_path.clone(),
             owner_id,
         );
-        // An ACP coding agent is driven over a stdio turn, not reverse-proxied:
-        // tag the workload and strip the inbound port (and the PORT env
-        // `build_agent_spec` injects for it) so it deploys port-less, matching the
-        // spec the coding-turn path builds (`coding::proxy::build_spec`).
-        spec.workload_kind = workload_kind;
-        if workload_kind == nasiko_runtime::WorkloadKind::AcpCodingAgent {
-            spec.ports.clear();
-            spec.env_vars.remove("PORT");
-            spec.writable = true;
-        }
         crate::agents::attach_pull_credential(
             &db,
             &agent_runtime,

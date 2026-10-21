@@ -3,11 +3,8 @@ pub mod decomposer;
 pub mod executor;
 pub mod llm;
 pub mod planner;
-pub mod runner;
 pub mod types;
 mod worker;
-
-pub use runner::{LinearMafExecutor, MafExecutor, MafResume, MafRunContext};
 
 /// The Redis stream key this crate's worker consumes from — re-exported so every producer
 /// (`oss/server/src/maf.rs`, `oss/server/src/hitl/mod.rs`) binds to the same constant instead of
@@ -29,18 +26,9 @@ pub struct LlmConfig {
     pub model: String,
 }
 
-/// How the MAF worker runs: the LLM its executor uses, how many executions it keeps
-/// in flight at once (`Config::maf_worker_concurrency`), and how often each running
-/// execution refreshes its stream message (`Config::maf_heartbeat_secs`).
-pub struct WorkerConfig {
-    pub llm: LlmConfig,
-    pub concurrency: usize,
-    pub heartbeat: std::time::Duration,
-}
-
 /// Spawn the MAF background worker as a detached tokio task.
 /// Call once at server startup — the worker reads from the Redis stream
-/// `nasiko:maf:execute` and drives up to `config.concurrency` queued MAF jobs at once.
+/// `nasiko:maf:execute` and drives execution of queued MAF jobs.
 pub fn start_worker(
     db: PgPool,
     redis: redis::Client,
@@ -49,29 +37,21 @@ pub fn start_worker(
     // composition root rather than constructed here, so MAF shares the very
     // same guard instance the A2A dispatch and proxy paths use.
     flow_guard: Arc<FlowGuard>,
-    config: WorkerConfig,
+    llm_config: LlmConfig,
     hitl_store: Arc<dyn nasiko_hitl::HitlStore>,
-    // What each job runs through — received from the composition root, like the guard.
-    maf_executor: Arc<dyn MafExecutor>,
 ) {
     let llm = LlmClient::new(
         http_client.clone(),
-        config.llm.api_key,
-        config.llm.base_url,
-        config.llm.model,
+        llm_config.api_key,
+        llm_config.base_url,
+        llm_config.model,
     );
-    let deps = worker::JobDeps {
+    tokio::spawn(worker::run(
         db,
+        redis,
         http_client,
         flow_guard,
         llm,
         hitl_store,
-        maf_executor,
-    };
-    tokio::spawn(worker::run(
-        deps,
-        redis,
-        config.concurrency,
-        config.heartbeat,
     ));
 }

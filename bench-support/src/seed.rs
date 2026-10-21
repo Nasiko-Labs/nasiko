@@ -108,7 +108,6 @@ pub async fn seed(
             image: "bench/sim-agent:latest".into(),
             min_replicas: 1,
             max_replicas: 1,
-            replica_target: None,
             env_vars: HashMap::new(),
             ports: vec![8000],
             resources: None,

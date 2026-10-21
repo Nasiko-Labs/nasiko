@@ -14,7 +14,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use nasiko_runtime::{ContainerId, ContainerRuntime, ForwardTarget};
+use nasiko_runtime::{ContainerId, ContainerRuntime};
 use serde_json::Value;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -66,7 +66,7 @@ impl RuntimeResumeNotifier {
     /// fallback shape, simplified: this notifier only ever needs to *reach*
     /// the agent, not also flip `agents.status` — that bookkeeping belongs to
     /// the request-serving code path, not a background dispatcher.
-    async fn resolve_agent_endpoint(&self, agent_id: Uuid) -> Result<ForwardTarget, NotifyError> {
+    async fn resolve_agent_endpoint(&self, agent_id: Uuid) -> Result<String, NotifyError> {
         let row: Option<(Option<String>, Option<String>)> =
             sqlx::query_as("SELECT transport_path, url FROM agents WHERE id = $1")
                 .bind(agent_id)
@@ -93,29 +93,13 @@ impl RuntimeResumeNotifier {
             Some(p) => p,
         };
 
-        // `forwarding_endpoint()`, not `endpoint()` — this resolves where the resumed forward
-        // actually goes (the EE injection proxy when memory is enabled), matching
-        // `resolve_endpoint` in `router/a2a_dispatch.rs`.
         let container_id = ContainerId::from_uuid(agent_id);
-        if let Ok(target) = self.runtime.forwarding_endpoint(&container_id).await {
-            return Ok(ForwardTarget {
-                url: format!("{}{path}", target.url.trim_end_matches('/')),
-                headers: target.headers,
-            });
+        if let Ok(live) = self.runtime.endpoint(&container_id).await {
+            return Ok(format!("{}{path}", live.trim_end_matches('/')));
         }
 
         if let Some(url) = stored_url.filter(|u| !u.is_empty()) {
-            // Bypasses whatever `forwarding_endpoint()` would otherwise route through (the
-            // injection proxy, when memory is enabled), so this resume nudge gets no L1A.
-            tracing::warn!(
-                %agent_id,
-                "hitl notifier: live runtime lookup failed, falling back to stored agents.url \
-                 (bypasses the injection proxy — this forward gets no L1A)"
-            );
-            return Ok(ForwardTarget::from(format!(
-                "{}{path}",
-                url.trim_end_matches('/')
-            )));
+            return Ok(format!("{}{path}", url.trim_end_matches('/')));
         }
 
         Err(NotifyError::EndpointResolution {
@@ -323,7 +307,7 @@ impl ResumeNotifier for RuntimeResumeNotifier {
             .as_deref()
             .ok_or(NotifyError::MissingContextId(request.id))?;
 
-        let target = self.resolve_agent_endpoint(request.agent_id).await?;
+        let endpoint = self.resolve_agent_endpoint(request.agent_id).await?;
         let message = build_resume_message(request);
         let body = nasiko_types::a2a::build_send_request(&message, Some(context_id));
         let traceparent = self
@@ -337,19 +321,15 @@ impl ResumeNotifier for RuntimeResumeNotifier {
         // retries the nudge up to `max_attempts` times, and since `claim_resolved_tool_approval`
         // already consumed the row on the first (successful) delivery, the human ends up
         // re-prompted for an action that already executed.
-        let mut req = self
+        let response = self
             .http_client
-            .post(&target.url)
+            .post(&endpoint)
             .timeout(Duration::from_secs(RESUME_REQUEST_TIMEOUT_SECS))
             .header("A2A-Version", nasiko_types::a2a::A2A_VERSION_HEADER_VALUE)
             .header("traceparent", traceparent)
-            .json(&body);
-        // Whatever `forwarding_endpoint()` asked to have attached (the injection proxy's own
-        // `Authorization` credential when memory is enabled; empty otherwise).
-        for (name, value) in &target.headers {
-            req = req.header(name, value);
-        }
-        let response = req.send().await?;
+            .json(&body)
+            .send()
+            .await?;
 
         let status = response.status();
         let payload: Value = response.json().await.unwrap_or(Value::Null);

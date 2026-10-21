@@ -25,10 +25,6 @@ pub struct A2aTool {
     /// Operator policy, which may require extra arguments on this tool. `None`
     /// leaves the schema as the loop itself defines it.
     policy: Option<Arc<dyn DelegationPolicy>>,
-    /// Sent with every call as its own message part, after the LLM's own
-    /// message. `None` sends the LLM's own wording unchanged. See
-    /// `OrchestratorConfig::outbound_prefix`.
-    outbound_prefix: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -77,7 +73,6 @@ impl A2aTool {
             progress: None,
             file_parts: vec![],
             policy: None,
-            outbound_prefix: None,
         }
     }
 
@@ -88,16 +83,6 @@ impl A2aTool {
     /// passes `config.policy.clone()` unconditionally.
     pub fn with_policy(mut self, policy: Option<Arc<dyn DelegationPolicy>>) -> Self {
         self.policy = policy;
-        self
-    }
-
-    /// Text to send with every call this tool makes, as its own message part.
-    ///
-    /// Takes the `Option` the config already holds, for the same reason
-    /// [`Self::with_policy`] does: every caller passes it unconditionally, so
-    /// the unconfigured case is one call site fewer to get wrong.
-    pub fn with_outbound_prefix(mut self, prefix: Option<String>) -> Self {
-        self.outbound_prefix = prefix;
         self
     }
 
@@ -217,47 +202,16 @@ impl Tool for A2aTool {
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
         tracing::info!(agent = %self.agent.name, message = %args.message, "invoking A2A agent");
 
-        // Organization policy (L0), appended as its own message part — computed ONCE, here, rather
-        // than at each send site below, for the same reason the old prefix rebind was: a fix
-        // applied at only one of the two send sites is a bug the other path hides silently. Never
-        // spliced into `args.message`, which is the LLM's own fresh wording for this sub-task and
-        // is sent to the agent, persisted, and traced verbatim — same representation
-        // `a2a_dispatch.rs`/`agent_proxy.rs` use via `nasiko_agent_proxy::context_part`.
-        //
-        // Passed as `extra_text_parts`, a raw string, NOT pre-tagged into a `Value` the way
-        // `file_parts` are: this call retries under BOTH A2A dialects if the agent rejects the
-        // first one (`send_message_with_headers`/`call_streaming`'s own `-32601` fallback), and
-        // this platform's real `a2a-lf` agents (proto dialect) reject an unexpected `"kind"`
-        // field outright — confirmed live against a real deployed agent. `build_message_body`
-        // re-tags this text per attempt, exactly like the primary message part already is.
-        let extra_text_parts: Vec<String> = self.outbound_prefix.iter().cloned().collect();
-
         // No per-call user credential: the invoked agent authenticates to
         // /api/mcp with its own deploy-time MCP_GATEWAY_TOKEN; the user binding
         // rides the client-wide `traceparent` + the flow_participants record
         // the platform's CallGuard writes before this call.
 
-        // Whatever `endpoint` requires as a header to actually accept the call — e.g. the EE
-        // injection proxy's own credential, when `endpoint` is the proxy's address rather than
-        // the agent's real one. Not a caller credential: this is consumed by the hop `endpoint`
-        // points at, same as `agent_proxy.rs`'s and `a2a_dispatch.rs`'s own outbound calls.
-        let per_call_headers: Vec<(String, String)> =
-            self.agent.auth_header.iter().cloned().collect();
-
         // Streaming first when a progress channel is attached; the match below
         // decides per error whether falling back to non-streaming is safe.
         let streamed = match self.progress {
             Some(ref orch_tx) => {
-                match self
-                    .call_streaming(
-                        &args,
-                        orch_tx.clone(),
-                        &per_call_headers,
-                        &self.file_parts,
-                        &extra_text_parts,
-                    )
-                    .await
-                {
+                match self.call_streaming(&args, orch_tx.clone(), &[]).await {
                     Ok(SendOutcome::Text(text)) => Some(text),
                     Ok(SendOutcome::AwaitingHuman(pause)) => {
                         return Err(A2aToolError::AwaitingHuman {
@@ -294,9 +248,8 @@ impl Tool for A2aTool {
                         &self.agent.endpoint,
                         &args.message,
                         args.context_id.as_deref(),
-                        &per_call_headers,
+                        &[],
                         &self.file_parts,
-                        &extra_text_parts,
                     )
                     .await
                     .map_err(|e| A2aToolError::Failed {
@@ -373,8 +326,6 @@ impl A2aTool {
         args: &A2aToolArgs,
         orch_tx: tokio::sync::mpsc::Sender<OrchestratorEvent>,
         per_call_headers: &[(String, String)],
-        extra_parts: &[serde_json::Value],
-        extra_text_parts: &[String],
     ) -> Result<SendOutcome, A2aClientError> {
         let (tx, mut rx) = tokio::sync::mpsc::channel::<AgentStreamEvent>(64);
         let agent_name = self.agent.name.clone();
@@ -418,8 +369,7 @@ impl A2aTool {
                 args.context_id.as_deref(),
                 Some(tx),
                 per_call_headers,
-                extra_parts,
-                extra_text_parts,
+                &self.file_parts,
             )
             .await;
 
@@ -441,7 +391,6 @@ mod tests {
             description: "for tests".to_string(),
             endpoint: endpoint.to_string(),
             skills: vec![],
-            auth_header: None,
         }
     }
 
@@ -480,128 +429,6 @@ mod tests {
         mock.assert_async().await;
         assert!(result.is_ok());
     }
-
-    /// The prefix must reach the WIRE, not just the struct. This is the only proof that
-    /// organization policy actually gets to a minted sub-leg's agent: the orchestrator resolves
-    /// it once per turn and hands it to every tool, but if `call` failed to apply it the turn
-    /// still succeeds and the policy is simply, silently absent.
-    ///
-    /// Appended as a SEPARATE part, never spliced into the model's own wording — same
-    /// representation `a2a_dispatch.rs`/`agent_proxy.rs` use via
-    /// `nasiko_agent_proxy::context_part::append_context_part`. The content match pins that the
-    /// query stays untouched AND the policy lands as an additional part, not merged into it; the
-    /// part count pins that nothing else rode along (a partial JSON match alone would not).
-    #[tokio::test]
-    async fn an_outbound_prefix_is_appended_as_its_own_message_part() {
-        let mut server = mockito::Server::new_async().await;
-        let mock = server
-            .mock("POST", "/")
-            .match_body(mockito::Matcher::PartialJson(serde_json::json!({
-                "params": {"message": {"parts": [
-                    {"text": "hi"},
-                    {"kind": "text", "text": "POLICY"}
-                ]}}
-            })))
-            .match_request(|request| forwarded_part_count(request) == 2)
-            .with_status(200)
-            .with_body(a2a_response_body())
-            .create_async()
-            .await;
-
-        let tool = A2aTool::new(test_agent(&server.url()), Arc::new(A2aClient::new()))
-            .with_outbound_prefix(Some("POLICY".into()));
-        let result = tool
-            .call(A2aToolArgs {
-                message: "hi".into(),
-                context_id: None,
-            })
-            .await;
-
-        mock.assert_async().await;
-        assert!(result.is_ok());
-    }
-
-    /// Both a file part (set at construction, always present) and org policy (appended per-call)
-    /// must coexist without either clobbering the other — the shape a fan-out with both a file
-    /// upload and an active org policy actually produces.
-    #[tokio::test]
-    async fn a_file_part_and_an_outbound_prefix_coexist_without_clobbering() {
-        let mut server = mockito::Server::new_async().await;
-        let mock = server
-            .mock("POST", "/")
-            .match_body(mockito::Matcher::PartialJson(serde_json::json!({
-                "params": {"message": {"parts": [
-                    {"text": "hi"},
-                    {"kind": "file", "file": {"name": "report.csv"}},
-                    {"kind": "text", "text": "POLICY"}
-                ]}}
-            })))
-            .match_request(|request| forwarded_part_count(request) == 3)
-            .with_status(200)
-            .with_body(a2a_response_body())
-            .create_async()
-            .await;
-
-        let tool = A2aTool::new(test_agent(&server.url()), Arc::new(A2aClient::new()))
-            .with_outbound_prefix(Some("POLICY".into()))
-            .with_file_parts(vec![
-                serde_json::json!({"kind": "file", "file": {"name": "report.csv"}}),
-            ]);
-        let result = tool
-            .call(A2aToolArgs {
-                message: "hi".into(),
-                context_id: None,
-            })
-            .await;
-
-        mock.assert_async().await;
-        assert!(result.is_ok());
-    }
-
-    /// With no prefix configured the wire body must carry the model's own wording untouched —
-    /// the open-source path, and the one every existing deployment is on.
-    #[tokio::test]
-    async fn without_an_outbound_prefix_the_message_goes_out_verbatim() {
-        let mut server = mockito::Server::new_async().await;
-        let mock = server
-            .mock("POST", "/")
-            .match_body(mockito::Matcher::PartialJson(serde_json::json!({
-                "params": {"message": {"parts": [{"text": "hi"}]}}
-            })))
-            .match_request(|request| forwarded_part_count(request) == 1)
-            .with_status(200)
-            .with_body(a2a_response_body())
-            .create_async()
-            .await;
-
-        let tool = A2aTool::new(test_agent(&server.url()), Arc::new(A2aClient::new()));
-        let result = tool
-            .call(A2aToolArgs {
-                message: "hi".into(),
-                context_id: None,
-            })
-            .await;
-
-        mock.assert_async().await;
-        assert!(result.is_ok());
-    }
-
-    /// How many message parts a forwarded request carried. `mockito::Matcher::PartialJson` accepts
-    /// extra trailing array elements, so on its own it cannot say "and nothing else was sent"; a
-    /// test that claims an exact list pairs it with this.
-    fn forwarded_part_count(request: &mockito::Request) -> usize {
-        request
-            .body()
-            .ok()
-            .and_then(|raw| serde_json::from_slice::<serde_json::Value>(raw).ok())
-            .and_then(|body| {
-                body.pointer("/params/message/parts")
-                    .and_then(serde_json::Value::as_array)
-                    .map(Vec::len)
-            })
-            .unwrap_or(0)
-    }
-
     fn input_required_response_body() -> String {
         serde_json::json!({
             "jsonrpc": "2.0",

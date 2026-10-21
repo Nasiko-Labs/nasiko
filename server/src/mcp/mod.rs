@@ -6,7 +6,6 @@
 
 pub mod build;
 mod handlers;
-pub mod identity;
 pub mod openapi;
 mod service;
 pub mod wiring;

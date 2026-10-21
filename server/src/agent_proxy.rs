@@ -81,9 +81,6 @@ pub async fn agent_proxy(
         gen_ai.operation.name = "invoke_agent",
         agent.id = %agent_id,
         session.id = tracing::field::Empty,
-        // Recorded once `ensure_chat_session` below has decided; see `PersistInfo::org_applied`.
-        nasiko.prompt_context.org_applied = tracing::field::Empty,
-        nasiko.prompt_context.org_policy_chars = tracing::field::Empty,
         gen_ai.input.messages = tracing::field::Empty,
     );
     if let Some(cx) = traceparent
@@ -132,12 +129,12 @@ pub async fn agent_proxy(
             nasiko_agent_proxy::ResolveError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
         })?;
 
-    let (agent_base, forward_headers) = match state
+    let agent_base = match state
         .runtime
-        .forwarding_endpoint(&nasiko_runtime::ContainerId::from_uuid(agent_id))
+        .endpoint(&nasiko_runtime::ContainerId::from_uuid(agent_id))
         .await
     {
-        Ok(target) => (target.url.trim_end_matches('/').to_string(), target.headers),
+        Ok(live) => live.trim_end_matches('/').to_string(),
         Err(e) => {
             let Some(stored) = &agent.endpoint else {
                 tracing::error!(
@@ -146,24 +143,26 @@ pub async fn agent_proxy(
                 );
                 return Err(StatusCode::BAD_GATEWAY);
             };
-            // Falls back to the plain stored address, bypassing whatever `forwarding_endpoint()`
-            // would otherwise route through (the injection proxy, when memory is enabled) — so
-            // this forward gets no L1A. Rare (only on a transient runtime lookup failure) and
-            // fails toward availability rather than blocking the call entirely, but worth a line
-            // in the logs: a silent L1A skip looks identical to "L1A had nothing to say."
             tracing::warn!(
                 error = %e, %agent_id,
-                "agent proxy: live endpoint lookup failed, falling back to stored agents.url \
-                 (bypasses the injection proxy — this forward gets no L1A)"
+                "agent proxy: live endpoint lookup failed, falling back to stored agents.url"
             );
-            (
-                format!("http://{}:{}", stored.host, stored.port),
-                Vec::new(),
-            )
+            format!("http://{}:{}", stored.host, stored.port)
         }
     };
-    // The forwarded path. See `resolve_forwarded_path`'s doc comment for the root-mount case.
-    let forwarded_path = resolve_forwarded_path(&forwarded_path, agent.transport_path.as_deref());
+    // The forwarded path. A bare `/` (the chat call) must land on the agent's
+    // actual A2A mount, which the card advertises as `transport_path` — `/a2a`
+    // for the a2a-go agents, root for the a2a-server-lf ones. POSTing to `/`
+    // unconditionally 404s every agent mounted elsewhere. Sub-paths (e.g.
+    // `/.well-known/agent-card.json`) are forwarded verbatim.
+    let forwarded_path = if forwarded_path == "/" {
+        match agent.transport_path.as_deref() {
+            None | Some("") | Some("/") => "/".to_string(),
+            Some(p) => p.to_string(),
+        }
+    } else {
+        forwarded_path
+    };
     let target_url = format!("{agent_base}{forwarded_path}");
 
     // Forward the request
@@ -186,13 +185,6 @@ pub async fn agent_proxy(
     )
     .await?;
     let (body_bytes, persist_info) = (prepared.body, prepared.persist);
-    if let Some(info) = persist_info.as_ref() {
-        proxy_span.record("nasiko.prompt_context.org_applied", info.org_applied);
-        proxy_span.record(
-            "nasiko.prompt_context.org_policy_chars",
-            info.org_policy_chars,
-        );
-    }
 
     // What this request's history selection chose from, and what it kept. Recorded here rather
     // than where it was measured: `proxy_span` is the request span the trace page looks for, and
@@ -322,15 +314,21 @@ pub async fn agent_proxy(
         crate::flows::record_participant(&state.db, &flow_ctx.flow_id, agent_id).await;
     }
 
-    // Explicit allowlist, not a denylist: the agent container is unvetted, so anything not named
-    // here is dropped rather than forwarded by default. In particular this drops
-    // `authorization`/`cookie` (the caller's platform credentials — a hostile agent could
-    // otherwise replay them against `/api/*`) and any inbound identity headers (spoofed identity
-    // — reqwest's `.header()` below is `HeaderMap::append`, not replace, so a copied attacker
-    // value would sit ahead of the trusted one most header readers return the first occurrence
-    // of). See `nasiko_agent_proxy::headers`'s module doc for why this is shared with
-    // `injection_proxy.rs` rather than a second, independent list.
-    //
+    // Explicit allowlist, not a denylist: the agent container is unvetted, so
+    // anything not named here is dropped rather than forwarded by default.
+    // In particular this drops `authorization`/`cookie` (the caller's platform
+    // credentials — a hostile agent could otherwise replay them against
+    // `/api/*`) and any inbound `x-user-id`/`x-username`/`x-is-superuser`
+    // (spoofed identity — reqwest's `.header()` below is `HeaderMap::append`,
+    // not replace, so a copied attacker value would sit ahead of the trusted
+    // one most header readers return the first occurrence of).
+    const FORWARDED_HEADERS: &[&str] = &[
+        "content-type",
+        "accept",
+        "accept-encoding",
+        "accept-language",
+        "a2a-version",
+    ];
     // Agent turns outrun the shared client's short default (long tool calls,
     // multi-step orchestration), so this hop carries the agent-call budget.
     let mut forwarded =
@@ -341,34 +339,20 @@ pub async fn agent_proxy(
                 state.config.agent_call_timeout_secs,
             ));
     for (name, value) in headers.iter() {
-        if nasiko_agent_proxy::headers::CALLER_SAFE_HEADERS.contains(&name.as_str())
+        if FORWARDED_HEADERS.contains(&name.as_str())
             && let Ok(val_str) = value.to_str()
         {
             forwarded = forwarded.header(name.as_str(), val_str);
         }
     }
 
-    // Whatever `forwarding_endpoint()` asked to have attached (the injection proxy's own
-    // `Authorization` credential when memory is enabled; empty otherwise). This is consumed by
-    // that hop, not the real agent — `injection_proxy.rs`'s own relay explicitly drops
-    // `authorization` before continuing on, so it never reaches the agent container.
-    for (name, value) in &forward_headers {
-        forwarded = forwarded.header(name, value);
-    }
-
     // Propagate trace context and caller identity to the agent
     forwarded = forwarded
+        .header("traceparent", crate::telemetry::traceparent_for(&flow_ctx))
+        .header("x-user-id", &claims.sub)
+        .header("x-username", &claims.username)
         .header(
-            nasiko_agent_proxy::headers::HEADER_TRACEPARENT,
-            crate::telemetry::traceparent_for(&flow_ctx),
-        )
-        .header(nasiko_agent_proxy::headers::HEADER_X_USER_ID, &claims.sub)
-        .header(
-            nasiko_agent_proxy::headers::HEADER_X_USERNAME,
-            &claims.username,
-        )
-        .header(
-            nasiko_agent_proxy::headers::HEADER_X_IS_SUPERUSER,
+            "x-is-superuser",
             if claims.is_superuser { "true" } else { "false" },
         );
 
@@ -609,30 +593,6 @@ pub async fn agent_proxy(
     })
 }
 
-/// Resolves the path segment to append to `agent_base` for this forward. A bare `/` (the chat
-/// call, nothing after `/api/agents/{id}` in the request URI) must land on the agent's actual A2A
-/// mount, which the card advertises as `transport_path` — `/a2a` for the a2a-go agents, root for
-/// the a2a-server-lf ones. POSTing to `/` unconditionally 404s every agent mounted elsewhere.
-/// Sub-paths (e.g. `/.well-known/agent-card.json`) are forwarded verbatim.
-///
-/// A root mount resolves to an EMPTY path segment, not a literal `"/"`: `agent_base` (this
-/// function's caller trims it) has no trailing slash, and appending a bare `"/"` produces
-/// `{agent_base}/` — fine against a real agent directly (HTTP has no request line shorter than
-/// `/` anyway), but when memory is on and `agent_base` is the EE injection proxy's own address,
-/// that extra slash lands on a URL neither of the proxy's routes match (its exact route carries
-/// no trailing slash; its wildcard route requires a non-empty segment after it) — a 404 before
-/// the request ever reaches the agent. An empty path segment concatenates to plain `agent_base`
-/// either way, which is correct in both cases.
-fn resolve_forwarded_path(forwarded_path: &str, transport_path: Option<&str>) -> String {
-    if forwarded_path != "/" {
-        return forwarded_path.to_string();
-    }
-    match transport_path {
-        None | Some("") | Some("/") => String::new(),
-        Some(p) => p.to_string(),
-    }
-}
-
 /// Mark a direct-chat flow completed (fire-and-forget). `a2a_dispatch` marks
 /// its own flows; the proxy path never did, so they accumulated as 'running'.
 ///
@@ -697,13 +657,6 @@ async fn session_binding(
 struct PersistInfo {
     session_id: String,
     user_text: String,
-    /// Whether org-wide context was prepended to the forwarded text. Carried out so the caller
-    /// can record it on `a2a.proxy` — this function owns the decision, the caller owns the span.
-    org_applied: bool,
-    /// The rendered org-context block's length, when applied — 0 otherwise. `org_applied` alone
-    /// is a boolean, so a block that grew toward the provider's own size cap would otherwise be
-    /// invisible in observability.
-    org_policy_chars: usize,
 }
 
 /// Guarantee every agent chat happens inside a persisted `chat_sessions` row.
@@ -754,19 +707,13 @@ async fn ensure_chat_session(
     let Ok(mut rpc) = serde_json::from_slice::<serde_json::Value>(&body_bytes) else {
         return Ok(PreparedRequest::passthrough(body_bytes));
     };
-    // Owned, not borrowed: `rpc.pointer_mut(...)` below needs a mutable borrow, and this platform's
-    // real agents (a2a-lf-based) reject an unexpected `"kind"` field on a part — see
-    // `nasiko_agent_proxy::context_part`'s module doc — so the method name has to survive to the
-    // point org policy is actually appended, not just this early check.
-    let method = rpc
+    let is_send = rpc
         .get("method")
         .and_then(|m| m.as_str())
-        .unwrap_or("")
-        .to_string();
-    if !MESSAGE_SEND_METHODS.contains(&method.as_str()) {
+        .is_some_and(|m| MESSAGE_SEND_METHODS.contains(&m));
+    if !is_send {
         return Ok(PreparedRequest::passthrough(body_bytes));
     }
-    let tagging = nasiko_agent_proxy::context_part::tagging_for_method(&method);
     let user_id: Uuid = claims.sub.parse().map_err(|_| StatusCode::UNAUTHORIZED)?;
     if internal_agent && is_ephemeral(&rpc) {
         let context_id = rpc
@@ -872,12 +819,10 @@ async fn ensure_chat_session(
         true
     };
 
-    let mut persist_info = PersistInfo {
+    let persist_info = Some(PersistInfo {
         session_id: session_id.clone(),
         user_text: user_text.clone(),
-        org_applied: false,
-        org_policy_chars: 0,
-    };
+    });
 
     // Multi-turn continuity: unlike `a2a_dispatch.rs`'s orchestrator path, this
     // proxy forwards the caller's message byte-for-byte, so an agent that (like
@@ -888,38 +833,6 @@ async fn ensure_chat_session(
     // routing/orchestrator path, so direct `--agent`/`-u` chat gets the
     // continuity its own "resume with --session-id" hint implies.
     let mut rewrite_needed = injected;
-
-    // Organization policy rides on top of whatever is actually going out, history or not, and is
-    // resolved OUTSIDE the text handling below rather than within it. Two conditions it must not
-    // inherit:
-    //
-    // * `same_agent_session`, which gates the history glue — that is a continuity aid it would be
-    //   wrong to stitch across agents, whereas policy applies to every agent invocation.
-    // * a non-empty `user_text`. A message can legitimately carry no text at all (a file-only
-    //   send through `/api/agents/{id}`), and that is still an agent invocation: the agent reads
-    //   the file and answers, and a rule about what it may say back governs that turn exactly as
-    //   much as any other. Nesting this under the text check let precisely those requests through
-    //   unpoliced, and reported `org_applied=false` while every other path reported true.
-    //
-    // One case is deliberately excluded: a message carrying a `taskId` is a CONTINUATION of a
-    // task the agent is already holding — a human answering the question it paused on. That task
-    // was opened by a message which did carry the policy, and the agent must be stateful to have
-    // paused at all, so re-sending it buys nothing; meanwhile the payload here is the human's
-    // literal answer ("yes", "owner/repo"), and prepending a block to that risks the agent
-    // reading the block as the answer. The two server-side resume dispatchers
-    // (`hitl/mod.rs::deliver` and the MAF executor's `continue_paused_step`) already behave this
-    // way; without this the proxy was the odd one out, so the same deployment policed a resume or
-    // not depending on which route delivered it.
-    let is_task_continuation = message
-        .get("taskId")
-        .and_then(|v| v.as_str())
-        .is_some_and(|t| !t.is_empty());
-    let org_context = if is_task_continuation {
-        None
-    } else {
-        state.prompt_context.org_context().await
-    };
-
     let mut context_report = None;
     if stitch_history && !user_text.is_empty() && same_agent_session {
         // This agent receives the history, so its switch decides IP-4; unreadable reads as off.
@@ -942,9 +855,6 @@ async fn ensure_chat_session(
         )
         .await;
         context_report = Some(history.report.clone());
-        // History glue, independent of org policy below: only touch the text part when the glue
-        // actually changed it, so a deployment with no history re-serializes nothing — the
-        // pre-existing behaviour, byte for byte.
         if !history.is_empty()
             && let Some(part) = message
                 .get_mut("parts")
@@ -954,24 +864,6 @@ async fn ensure_chat_session(
             part["text"] = serde_json::Value::String(history.with_current_query(&user_text));
             rewrite_needed = true;
         }
-    }
-
-    // Organization policy, appended as its own part rather than spliced into the text part above:
-    // that part may carry the history glue's `"Current message: "` marker, and any agent that
-    // follows the platform's own documented convention for extracting just the current turn
-    // (`oss/llm-router::latest_user_query`) silently discards whatever was prepended ahead of that
-    // marker inside the same part. See `nasiko_agent_proxy::context_part`'s module doc.
-    // `org_context()` already returns a complete, self-headed block ("## Organization
-    // Policy\n\n...") — no extra heading to add here, and this covers the file-only case (empty
-    // `user_text`) too: there is nothing to find-and-replace, only a new part to append.
-    if let Some(org) = org_context.as_deref()
-        && nasiko_agent_proxy::context_part::append_context_part(message, org, tagging).is_some()
-    {
-        rewrite_needed = true;
-        // Set only once the append actually happened, so the span cannot claim policy was applied
-        // to a message that had no `parts` array to append to.
-        persist_info.org_applied = true;
-        persist_info.org_policy_chars = org.len();
     }
 
     if injected {
@@ -984,13 +876,13 @@ async fn ensure_chat_session(
         })?;
         return Ok(PreparedRequest {
             body: rewritten.into(),
-            persist: Some(persist_info),
+            persist: persist_info,
             context_report,
         });
     }
     Ok(PreparedRequest {
         body: body_bytes,
-        persist: Some(persist_info),
+        persist: persist_info,
         context_report,
     })
 }
@@ -1363,36 +1255,7 @@ impl Drop for SseReplyTap {
 
 #[cfg(test)]
 mod tests {
-    use super::{SseReplyText, resolve_forwarded_path};
-
-    #[test]
-    fn root_mounted_agent_resolves_to_an_empty_segment_not_a_literal_slash() {
-        // The regression this guards: `agent_base` (trimmed of its trailing slash by this
-        // function's caller) + a literal "/" produces a URL the EE injection proxy's own routes
-        // don't match once memory is on, 404ing before the request reaches the agent. An empty
-        // segment concatenates to plain `agent_base`, correct against both the injection proxy
-        // and a real agent directly.
-        assert_eq!(resolve_forwarded_path("/", None), "");
-        assert_eq!(resolve_forwarded_path("/", Some("")), "");
-        assert_eq!(resolve_forwarded_path("/", Some("/")), "");
-    }
-
-    #[test]
-    fn non_root_mounted_agent_resolves_to_its_transport_path() {
-        assert_eq!(resolve_forwarded_path("/", Some("/a2a")), "/a2a");
-    }
-
-    #[test]
-    fn sub_paths_are_forwarded_verbatim_regardless_of_transport_path() {
-        assert_eq!(
-            resolve_forwarded_path("/.well-known/agent-card.json", None),
-            "/.well-known/agent-card.json"
-        );
-        assert_eq!(
-            resolve_forwarded_path("/.well-known/agent-card.json", Some("/a2a")),
-            "/.well-known/agent-card.json"
-        );
-    }
+    use super::SseReplyText;
 
     #[test]
     fn collects_artifact_chunks_across_split_sse_frames() {

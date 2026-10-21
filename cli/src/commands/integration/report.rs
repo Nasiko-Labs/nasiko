@@ -27,9 +27,8 @@ pub fn run(agent: Agent) -> Result<()> {
     let settings = IntegrationState::load()?;
     let Some(agent_state) = settings.get(spec.id) else {
         bail!(
-            "{} is not installed — run: {} connect {} --reporting",
+            "{} is not installed — run: nasiko agents install {}",
             spec.display_name,
-            crate::commands::local_agents::cli_name(),
             spec.id
         );
     };
@@ -99,8 +98,7 @@ pub fn run(agent: Agent) -> Result<()> {
 fn destination_from_state(agent_state: &super::state::AgentState) -> Result<QueueDestination> {
     let binding = agent_state.binding.as_ref().ok_or_else(|| {
         anyhow::anyhow!(
-            "installed integration has no cluster binding; reinstall it with: {} connect <agent> --reporting",
-            crate::commands::local_agents::cli_name()
+            "installed integration has no cluster binding; reinstall it with: nasiko agents install <agent>"
         )
     })?;
     Ok(QueueDestination {

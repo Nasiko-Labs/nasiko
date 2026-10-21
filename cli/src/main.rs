@@ -1,7 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use nasiko::commands;
-use nasiko::commands::local_agents::{self, ConnectOptions, DisconnectOptions};
 use nasiko::{
     AgentDevCommands, AgentOpsCommands, IntegrationSubCommands, McpSubCommands, RegistrySubCommands,
 };
@@ -22,8 +21,8 @@ const HELP_TEXT: &str = "\
 \x1b[33mSetup:\x1b[0m
   up         Start local Nasiko cluster (agent devs)
   down       Stop local Nasiko cluster
-  connect    Register a CP by URL, or connect local coding agents
-  disconnect Disconnect local coding agents
+  connect    Register a CP by URL
+  disconnect Disconnect an integration
   use        Switch active cluster
   clusters   List configured control planes
   auth       Authentication (login/status/logout)
@@ -60,7 +59,7 @@ const HELP_TEXT: &str = "\
   rm         Terminate + deregister agent
   deployments  Deployment-level ops (list/get/restart)
   secrets    Manage encrypted secrets
-  status     Cluster health + local coding agents (status <agent> for one)
+  status     Cluster health + metrics
   observe    Observability (stats/traces/trace/finops)
   maf        Multi-agent flow workflows (create/run/inspect)
 
@@ -82,21 +81,6 @@ const HELP_TEXT: &str = "\
 
 Run \x1b[36mnasiko <command> --help\x1b[0m for details on any command.
 ";
-
-const CONNECT_HELP: &str = "\
-Config: ~/.nasiko/config.json
-
-Coding agents get up to three things: LLM routing through the Nasiko LLM router, your MCP
-connectors through the Nasiko gateway, and session reporting to Nasiko observability.
-On a terminal, connect asks about each; flags answer the same questions in scripts.
-Without a terminal, routing and MCP are set up and reporting is off unless --reporting.
-
-Examples:
-  nasiko connect                       pick from the coding agents on this machine
-  nasiko connect claude                set up Claude Code, asking about each part
-  nasiko connect codex --config team -y
-  nasiko connect cursor --reporting    Cursor supports session reporting only
-  nasiko connect https://cp.example.com --name prod";
 
 #[derive(Subcommand)]
 #[command(subcommand_help_heading = "Commands")]
@@ -137,37 +121,33 @@ enum CpCommands {
     Up,
     /// Stop local Nasiko cluster
     Down,
-    /// Register a CP by URL, or connect local coding agents
-    #[command(after_help = CONNECT_HELP)]
+    /// Register a CP by URL, or connect a supported coding agent
+    #[command(after_help = "Config: ~/.nasiko/config.json")]
     Connect {
-        /// Control-plane URL, or a coding agent: claude, codex, opencode, cursor.
-        /// Omit to pick from the coding agents installed on this machine
-        target: Option<String>,
-        /// Name for a control plane registered by URL
+        /// Control-plane URL, `claude`, `codex`, or `opencode`
+        target: String,
         #[arg(long)]
         name: Option<String>,
-        #[command(flatten)]
-        coding_agent: ConnectOptions,
+        /// Existing routing agent name or UUID (coding-agent targets only)
+        #[arg(long)]
+        agent: Option<String>,
+        /// Nasiko LLM config name or UUID (coding-agent targets only)
+        #[arg(long)]
+        config: Option<String>,
     },
-    /// Disconnect local coding agents
-    #[command(
-        after_help = "Without --routing/--reporting and without a terminal, removes LLM routing only."
-    )]
+    /// Disconnect a local integration
     Disconnect {
-        /// Coding agent: claude, codex, opencode, cursor. Omit to pick from connected ones
-        target: Option<String>,
-        #[command(flatten)]
-        options: DisconnectOptions,
+        target: String,
+        /// Disconnect even when the coding agent is still running
+        #[arg(long)]
+        force: bool,
     },
     /// Switch active control plane
     Use { name: String },
     /// List configured control planes
     Clusters,
-    /// Control plane health and local coding agents, or one coding agent in detail
-    Status {
-        /// Coding agent to show in detail: claude, codex, opencode, cursor
-        target: Option<String>,
-    },
+    /// Control plane health + metrics
+    Status { target: Option<String> },
     /// Authentication commands
     #[command(after_help = "Config: ~/.nasiko/config.json")]
     Auth {
@@ -258,42 +238,50 @@ fn main() -> Result<()> {
             CpCommands::Connect {
                 target,
                 name,
-                coding_agent,
-            } => match target.as_deref() {
-                Some(url) if !local_agents::is_coding_agent(url) => {
-                    if coding_agent.is_set() {
-                        anyhow::bail!(
-                            "coding-agent flags apply only to `nasiko connect [claude|codex|opencode|cursor]`"
-                        );
-                    }
-                    commands::cluster::connect(url, name.as_deref())
-                }
-                agent => {
+                agent,
+                config,
+            } => {
+                if matches!(target.as_str(), "claude" | "codex" | "opencode") {
                     if name.is_some() {
                         anyhow::bail!("--name applies only when connecting a control-plane URL");
                     }
-                    local_agents::connect(agent, &coding_agent)
+                    match target.as_str() {
+                        "claude" => commands::claude::connect(agent.as_deref(), config.as_deref()),
+                        "codex" => commands::codex::connect(agent.as_deref(), config.as_deref()),
+                        "opencode" => {
+                            commands::opencode::connect(agent.as_deref(), config.as_deref())
+                        }
+                        _ => unreachable!(),
+                    }
+                } else {
+                    if agent.is_some() || config.is_some() {
+                        anyhow::bail!(
+                            "--agent and --config apply only to `nasiko connect claude|codex|opencode`"
+                        );
+                    }
+                    commands::cluster::connect(&target, name.as_deref())
                 }
-            },
-            CpCommands::Disconnect { target, options } => {
-                local_agents::disconnect(target.as_deref(), &options)
             }
+            CpCommands::Disconnect { target, force } => match target.as_str() {
+                "claude" => commands::claude::disconnect(force),
+                "codex" => commands::codex::disconnect(force),
+                "opencode" => commands::opencode::disconnect(force),
+                _ => anyhow::bail!(
+                    "unknown integration '{target}' (expected: claude, codex, or opencode)"
+                ),
+            },
             CpCommands::Use { name } => commands::cluster::use_cluster(&name),
             CpCommands::Clusters => commands::cluster::list(),
             CpCommands::Status { target } => match target.as_deref() {
-                Some(agent) if local_agents::is_coding_agent(agent) => {
-                    local_agents::status(Some(agent))
+                Some("claude") => commands::claude::status(),
+                Some("codex") => commands::codex::status(),
+                Some("opencode") => commands::opencode::status(),
+                Some(other) => {
+                    anyhow::bail!(
+                        "unknown status target '{other}' (expected: claude, codex, or opencode)"
+                    )
                 }
-                Some(other) => anyhow::bail!(
-                    "unknown status target '{other}' (expected a coding agent: claude, codex, opencode, cursor)"
-                ),
-                None => {
-                    // The control plane may be down or unset; the local agents are still worth showing.
-                    let cluster = commands::status::status();
-                    println!();
-                    local_agents::print_overview()?;
-                    cluster
-                }
+                None => commands::status::status(),
             },
             CpCommands::Auth { command } => match command {
                 AuthCommands::Login => commands::auth::login(),
@@ -354,70 +342,16 @@ mod tests {
         .unwrap();
         let Commands::Cp(CpCommands::Connect {
             target,
-            coding_agent,
+            agent,
+            config,
             ..
         }) = cli.command
         else {
             panic!("expected connect command");
         };
-        assert_eq!(target.as_deref(), Some("opencode"));
-        assert_eq!(coding_agent.agent.as_deref(), Some("local-agent"));
-        assert_eq!(coding_agent.config.as_deref(), Some("production"));
-    }
-
-    #[test]
-    fn parses_every_connect_question_as_a_flag() {
-        let cli = Cli::try_parse_from([
-            "nasiko",
-            "connect",
-            "claude",
-            "--no-mcp",
-            "--reporting",
-            "--no-content",
-            "-y",
-        ])
-        .unwrap();
-        let Commands::Cp(CpCommands::Connect { coding_agent, .. }) = cli.command else {
-            panic!("expected connect command");
-        };
-        assert!(coding_agent.no_mcp && coding_agent.reporting && coding_agent.no_content);
-        assert!(coding_agent.yes);
-
-        assert!(
-            Cli::try_parse_from([
-                "nasiko",
-                "connect",
-                "claude",
-                "--reporting",
-                "--no-reporting"
-            ])
-            .is_err()
-        );
-        assert!(
-            Cli::try_parse_from([
-                "nasiko",
-                "connect",
-                "claude",
-                "--no-routing",
-                "--config",
-                "x"
-            ])
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn bare_connect_and_disconnect_pick_from_local_agents() {
-        let connect = Cli::try_parse_from(["nasiko", "connect"]).unwrap();
-        assert!(matches!(
-            connect.command,
-            Commands::Cp(CpCommands::Connect { target: None, .. })
-        ));
-        let disconnect = Cli::try_parse_from(["nasiko", "disconnect"]).unwrap();
-        assert!(matches!(
-            disconnect.command,
-            Commands::Cp(CpCommands::Disconnect { target: None, .. })
-        ));
+        assert_eq!(target, "opencode");
+        assert_eq!(agent.as_deref(), Some("local-agent"));
+        assert_eq!(config.as_deref(), Some("production"));
     }
 
     #[test]
@@ -428,7 +362,7 @@ mod tests {
         .unwrap();
         assert!(matches!(
             connect.command,
-            Commands::Cp(CpCommands::Connect { target, .. }) if target.as_deref() == Some("codex")
+            Commands::Cp(CpCommands::Connect { target, .. }) if target == "codex"
         ));
 
         let status = Cli::try_parse_from(["nasiko", "status", "codex"]).unwrap();
@@ -439,21 +373,12 @@ mod tests {
         let disconnect = Cli::try_parse_from(["nasiko", "disconnect", "codex"]).unwrap();
         assert!(matches!(
             disconnect.command,
-            Commands::Cp(CpCommands::Disconnect { target, options })
-                if target.as_deref() == Some("codex") && !options.force
+            Commands::Cp(CpCommands::Disconnect { target, force }) if target == "codex" && !force
         ));
         let forced = Cli::try_parse_from(["nasiko", "disconnect", "codex", "--force"]).unwrap();
         assert!(matches!(
             forced.command,
-            Commands::Cp(CpCommands::Disconnect { target, options })
-                if target.as_deref() == Some("codex") && options.force
-        ));
-        let reporting =
-            Cli::try_parse_from(["nasiko", "disconnect", "codex", "--reporting"]).unwrap();
-        assert!(matches!(
-            reporting.command,
-            Commands::Cp(CpCommands::Disconnect { options, .. })
-                if options.reporting && !options.routing
+            Commands::Cp(CpCommands::Disconnect { target, force }) if target == "codex" && force
         ));
         let helper = Cli::try_parse_from(["nasiko", "__coding-agent-token", "codex"]).unwrap();
         assert!(matches!(
@@ -486,8 +411,7 @@ mod tests {
         let disconnect = Cli::try_parse_from(["nasiko", "disconnect", "opencode"]).unwrap();
         assert!(matches!(
             disconnect.command,
-            Commands::Cp(CpCommands::Disconnect { target, options })
-                if target.as_deref() == Some("opencode") && !options.force
+            Commands::Cp(CpCommands::Disconnect { target, force }) if target == "opencode" && !force
         ));
     }
 

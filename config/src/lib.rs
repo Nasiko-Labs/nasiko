@@ -57,12 +57,6 @@ pub struct Config {
     /// `nasiko_oci::authz::Writer::BuildService`. Empty means not configured
     /// (fine for `AGENT_RUNTIME=local`, where no such build path exists).
     pub build_push_token: String,
-    /// Shared HMAC secret for the agent-identity / coding-agent session JWTs
-    /// (the same `AGENT_JWT_SECRET` the LLM router verifies with). Empty means
-    /// not configured; mint/verify fail closed in that case.
-    pub agent_jwt_secret: String,
-    /// Algorithm for the above (`HS256`/`HS384`/`HS512`); defaults to `HS256`.
-    pub agent_jwt_algorithm: String,
     pub seed_agents: Option<String>,
     pub openai_api_key: Option<String>,
     pub openai_base_url: Option<String>,
@@ -142,23 +136,6 @@ pub struct Config {
     pub hitl_resume_lease_minutes: i64,
     pub hitl_resume_max_attempts: u32,
     pub hitl_resume_retry_delay_secs: u64,
-    /// Coding-agent (ACP) session lifecycle tunables.
-    ///
-    /// `coding_agent_idle_ttl_secs` is how long a coding-agent container may sit
-    /// idle (no turn running) before it is torn down. **Default `0`** = stop
-    /// after every turn (no warm window) — the safe default until the cluster's
-    /// storage class and the agent's session-resume support are confirmed; a
-    /// positive value keeps the container warm for that many seconds so the next
-    /// turn skips cold start.
-    pub coding_agent_idle_ttl_secs: i64,
-    /// How long one turn's lock on a session is held before it lapses. A turn
-    /// that runs longer must renew it (heartbeat); this only bounds how long a
-    /// *dead* turn-owner can block the next turn.
-    pub coding_agent_turn_lease_secs: i64,
-    /// How often a running turn renews its lease. Must be well under
-    /// `coding_agent_turn_lease_secs` so a live turn never lets its own lock
-    /// lapse mid-turn.
-    pub coding_agent_lease_heartbeat_secs: u64,
     pub github_client_id: Option<String>,
     pub github_client_secret: Option<String>,
     /// Multi-tenant mode (per-CP): when on, this control plane runs behind the
@@ -468,25 +445,6 @@ fn derive_identity_signing_key(dedicated: Option<&str>, jwt_secret: &str) -> Str
     format!("{IDENTITY_KEY_PREFIX}{jwt_secret}")
 }
 
-/// Where to ship coding-agent OTLP (traces + logs) when `CODING_AGENT_OTLP_ENDPOINT`
-/// is not set — so a standard deployment needs no dedicated var.
-///
-/// The coding-agent exporter speaks OTLP/**HTTP** (it `POST`s `/v1/traces`), while
-/// the general `OTEL_EXPORTER_OTLP_ENDPOINT` is commonly gRPC on `:4317`. The OTel
-/// Collector serves HTTP on `:4318`, so a bare `:4317` endpoint is mapped to `:4318`
-/// here; an endpoint that is already HTTP (any other port, or none) is reused as-is.
-/// Set `CODING_AGENT_OTLP_ENDPOINT` explicitly to override for a non-standard setup.
-fn coding_agent_otlp_fallback() -> Option<String> {
-    let base = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
-        .or_else(|_| std::env::var("OTEL_COLLECTOR_ENDPOINT"))
-        .ok()?;
-    let base = base.trim();
-    if base.is_empty() {
-        return None;
-    }
-    Some(base.replace(":4317", ":4318"))
-}
-
 impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
         Ok(Self {
@@ -530,8 +488,6 @@ impl Config {
                 .filter(|s| !s.is_empty()),
             seed_image_platform: env_or("SEED_IMAGE_PLATFORM", "linux/amd64"),
             build_push_token: env_or("BUILD_PUSH_TOKEN", ""),
-            agent_jwt_secret: env_or("AGENT_JWT_SECRET", ""),
-            agent_jwt_algorithm: env_or("AGENT_JWT_ALGORITHM", "HS256"),
             seed_agents: std::env::var("SEED_AGENTS").ok(),
             openai_api_key: std::env::var("OPENAI_API_KEY").ok(),
             openai_base_url: std::env::var("OPENAI_BASE_URL").ok(),
@@ -563,9 +519,6 @@ impl Config {
             .unwrap_or(true),
             coding_agent_otlp_endpoint: std::env::var("CODING_AGENT_OTLP_ENDPOINT")
                 .ok()
-                // No dedicated var? Reuse the general OTLP endpoint (mapped to the
-                // collector's HTTP port), so coding-agent traces ship out of the box.
-                .or_else(coding_agent_otlp_fallback)
                 .map(|value| value.trim_end_matches('/').to_owned())
                 .filter(|value| !value.is_empty()),
             tempo_url: env_or("TEMPO_URL", ""),
@@ -602,9 +555,6 @@ impl Config {
             hitl_resume_lease_minutes: env_parse("HITL_RESUME_LEASE_MINUTES", 16),
             hitl_resume_max_attempts: env_parse("HITL_RESUME_MAX_ATTEMPTS", 3),
             hitl_resume_retry_delay_secs: env_parse("HITL_RESUME_RETRY_DELAY_SECS", 2),
-            coding_agent_idle_ttl_secs: env_parse("CODING_AGENT_IDLE_TTL_SECS", 0),
-            coding_agent_turn_lease_secs: env_parse("CODING_AGENT_TURN_LEASE_SECS", 60),
-            coding_agent_lease_heartbeat_secs: env_parse("CODING_AGENT_LEASE_HEARTBEAT_SECS", 20),
             github_client_id: std::env::var("GITHUB_CLIENT_ID").ok(),
             github_client_secret: std::env::var("GITHUB_CLIENT_SECRET").ok(),
             multi_tenant_mode: std::env::var("MULTI_TENANT_MODE")

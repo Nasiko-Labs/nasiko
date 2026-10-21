@@ -15,7 +15,6 @@ pub mod build;
 pub mod capabilities;
 pub mod catalog;
 pub mod chat;
-pub mod coding;
 pub mod coding_agent_otlp;
 pub mod coding_agent_telemetry;
 pub mod context_selection;

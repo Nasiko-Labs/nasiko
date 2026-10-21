@@ -1,0 +1,24 @@
+{
+  "files": [],
+  "references": [
+    {
+      "path": "./oss"
+    },
+    {
+      "path": "./tsconfig.node.json"
+    },
+    {
+      "path": "./e2e"
+    }
+  ],
+  "compilerOptions": {
+    "paths": {
+      "@/*": [
+        "./common/src/*"
+      ],
+      "@edition/*": [
+        "./oss/src/*"
+      ]
+    }
+  }
+}

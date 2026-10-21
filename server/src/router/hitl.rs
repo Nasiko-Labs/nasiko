@@ -863,7 +863,6 @@ fn is_terminal(row: &HitlRequest) -> bool {
                 | ResumeStatus::Failed
                 | ResumeStatus::DeliveryOutcomeUnknown
                 | ResumeStatus::Skipped
-                | ResumeStatus::AgentLostTask
         ),
         HitlStatus::Rejected | HitlStatus::Expired | HitlStatus::Canceled => true,
     }

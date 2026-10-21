@@ -5,7 +5,6 @@ use chrono::{DateTime, Utc};
 use nasiko_types::CodingAgentEventV1;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -14,11 +13,6 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 const MAX_SCAN_RECORDS: usize = 1_000;
-/// Under `rejected/`: records that couldn't be parsed at all, so belong to no destination.
-const MALFORMED_DIR: &str = "malformed";
-/// In a destination's queue folder: until when its server asked to be left alone (`429`/`503` with
-/// `Retry-After`), as RFC 3339. Not a `.json` file, so never taken for a record.
-const PAUSE_FILE: &str = ".paused_until";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QueueDestination {
@@ -105,7 +99,19 @@ pub fn reject_invalid(record: &QueueRecord, error: &str) -> Result<PathBuf> {
     reject_invalid_at(&super::state::integrations_dir(), record, error)
 }
 
-pub(super) fn enqueue_at(root: &Path, record: &QueueRecord) -> Result<PathBuf> {
+pub fn records() -> Result<Vec<(PathBuf, QueueRecord)>> {
+    records_at(&super::state::integrations_dir())
+}
+
+pub fn has_pending_records() -> Result<bool> {
+    has_pending_records_at(&super::state::integrations_dir())
+}
+
+pub fn acquire_sync_lock(timeout: Duration) -> Result<SyncLock> {
+    acquire_sync_lock_at(&super::state::integrations_dir(), timeout)
+}
+
+fn enqueue_at(root: &Path, record: &QueueRecord) -> Result<PathBuf> {
     validate_record(record)?;
     let path = record_path(root, &record.destination, &record.event.event_id);
     create_owner_dirs(&root.join("queue"))?;
@@ -138,81 +144,7 @@ fn record_path(root: &Path, destination: &QueueDestination, event_id: &str) -> P
         .join(format!("{event_id}.json"))
 }
 
-/// The record files in each destination's folder under `dir` (`queue/` or `rejected/`); folders that
-/// aren't a destination's (`rejected/malformed`) are left out.
-pub(super) fn record_files(dir: &Path) -> Result<Vec<PathBuf>> {
-    if !dir.exists() {
-        return Ok(Vec::new());
-    }
-    let mut files = Vec::new();
-    for cluster in std::fs::read_dir(dir)? {
-        let cluster = cluster?;
-        if !cluster.file_type()?.is_dir() || cluster.file_name() == MALFORMED_DIR {
-            continue;
-        }
-        for entry in std::fs::read_dir(cluster.path())? {
-            let path = entry?.path();
-            if path
-                .extension()
-                .is_some_and(|extension| extension == "json")
-            {
-                files.push(path);
-            }
-        }
-    }
-    Ok(files)
-}
-
-/// The ids of the events in the queue under `root`, from the file names alone: whether an event has
-/// left the queue (delivered, or set aside) is answered without reading any record.
-pub(super) fn queued_ids_at(root: &Path) -> Result<HashSet<String>> {
-    Ok(record_files(&root.join("queue"))?
-        .iter()
-        .filter_map(|path| Some(path.file_stem()?.to_str()?.to_string()))
-        .collect())
-}
-
-/// Holds back every turn queued in `destination_dir` (one destination's folder under `queue/`) until
-/// `until`: its server asked for no more requests before then.
-pub(super) fn pause(destination_dir: &Path, until: DateTime<Utc>) -> Result<()> {
-    atomic_owner_write(
-        &destination_dir.join(PAUSE_FILE),
-        until.to_rfc3339().as_bytes(),
-    )
-}
-
-/// Until when the turns in `destination_dir` are held back, if they are now.
-pub(super) fn paused_until(destination_dir: &Path, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
-    std::fs::read_to_string(destination_dir.join(PAUSE_FILE))
-        .ok()?
-        .trim()
-        .parse::<DateTime<Utc>>()
-        .ok()
-        .filter(|until| *until > now)
-}
-
-/// Whether a delivery waits out the retry delay this computer set itself after a failed attempt
-/// (`next_attempt_at`). A server's own pause ([`pause`]) holds either way: the server asked for it.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum Backoff {
-    /// A turn waiting on a retry waits (a hook's delivery, an import's).
-    #[default]
-    Honour,
-    /// A turn waiting on a retry is sent at once (the user asked for it: a `nasiko agents sync` by
-    /// hand, the app's Retry).
-    Ignore,
-}
-
-impl Backoff {
-    /// Whether `record` may be sent at `now`.
-    pub(super) fn lets_through(self, record: &QueueRecord, now: DateTime<Utc>) -> bool {
-        self == Backoff::Ignore || record.next_attempt_at.is_none_or(|at| at <= now)
-    }
-}
-
-/// The records a delivery may send now, oldest file name first: none of a paused destination's, and
-/// none waiting on a retry unless `backoff` says to ignore that.
-pub(super) fn records_at(root: &Path, backoff: Backoff) -> Result<Vec<(PathBuf, QueueRecord)>> {
+fn records_at(root: &Path) -> Result<Vec<(PathBuf, QueueRecord)>> {
     let queue = root.join("queue");
     if !queue.exists() {
         return Ok(Vec::new());
@@ -221,7 +153,7 @@ pub(super) fn records_at(root: &Path, backoff: Backoff) -> Result<Vec<(PathBuf, 
     let now = Utc::now();
     for cluster in std::fs::read_dir(&queue)? {
         let cluster = cluster?;
-        if !cluster.file_type()?.is_dir() || paused_until(&cluster.path(), now).is_some() {
+        if !cluster.file_type()?.is_dir() {
             continue;
         }
         for entry in std::fs::read_dir(cluster.path())? {
@@ -232,7 +164,11 @@ pub(super) fn records_at(root: &Path, backoff: Backoff) -> Result<Vec<(PathBuf, 
                 .is_some_and(|extension| extension == "json")
             {
                 match load(&path) {
-                    Ok(record) if backoff.lets_through(&record, now) => {
+                    Ok(record)
+                        if record
+                            .next_attempt_at
+                            .is_none_or(|next_attempt| next_attempt <= now) =>
+                    {
                         records.push((path, record));
                         if records.len() >= MAX_SCAN_RECORDS {
                             records.sort_by(|left, right| left.0.cmp(&right.0));
@@ -247,6 +183,30 @@ pub(super) fn records_at(root: &Path, backoff: Backoff) -> Result<Vec<(PathBuf, 
     }
     records.sort_by(|left, right| left.0.cmp(&right.0));
     Ok(records)
+}
+
+fn has_pending_records_at(root: &Path) -> Result<bool> {
+    let queue = root.join("queue");
+    if !queue.exists() {
+        return Ok(false);
+    }
+    for cluster in std::fs::read_dir(queue)? {
+        let cluster = cluster?;
+        if !cluster.file_type()?.is_dir() {
+            continue;
+        }
+        if std::fs::read_dir(cluster.path())?.any(|entry| {
+            entry.ok().is_some_and(|entry| {
+                entry
+                    .path()
+                    .extension()
+                    .is_some_and(|extension| extension == "json")
+            })
+        }) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn quarantine_at(root: &Path, path: &Path, record: &QueueRecord) -> Result<PathBuf> {
@@ -279,21 +239,17 @@ fn quarantine_invalid_at(root: &Path, path: &Path) -> Result<()> {
         .parent()
         .and_then(Path::file_name)
         .context("invalid queue record has no cluster directory")?;
-    let destination = root
-        .join("rejected")
-        .join(MALFORMED_DIR)
-        .join(cluster)
-        .join(
-            path.file_name()
-                .context("invalid queue record has no filename")?,
-        );
+    let destination = root.join("rejected").join("malformed").join(cluster).join(
+        path.file_name()
+            .context("invalid queue record has no filename")?,
+    );
     create_owner_dirs(destination.parent().expect("invalid quarantine has parent"))?;
     std::fs::rename(path, &destination)
         .with_context(|| format!("failed to quarantine malformed record {}", path.display()))?;
     Ok(())
 }
 
-pub(super) fn acquire_sync_lock_at(root: &Path, timeout: Duration) -> Result<SyncLock> {
+fn acquire_sync_lock_at(root: &Path, timeout: Duration) -> Result<SyncLock> {
     let path = root.join("queue").join(".sync.lock");
     create_owner_dirs(path.parent().expect("lock has parent"))?;
     let file = owner_open(&path, false)?;
@@ -341,7 +297,7 @@ fn owner_open(path: &Path, truncate: bool) -> Result<File> {
     Ok(file)
 }
 
-pub(super) fn atomic_owner_write(path: &Path, bytes: &[u8]) -> Result<()> {
+fn atomic_owner_write(path: &Path, bytes: &[u8]) -> Result<()> {
     static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
     let parent = path.parent().context("queue record has no parent")?;
     create_owner_dirs(parent)?;
@@ -405,7 +361,6 @@ mod tests {
                     id: "claude:session".into(),
                     source_id: "session".into(),
                     title: None,
-                    parent: None,
                 },
                 turn: CodingAgentTurn {
                     id: "turn".into(),
@@ -448,7 +403,7 @@ mod tests {
         let second = enqueue_at(dir.path(), &record).unwrap();
 
         assert_eq!(first, second);
-        assert_eq!(records_at(dir.path(), Backoff::Honour).unwrap().len(), 1);
+        assert_eq!(records_at(dir.path()).unwrap().len(), 1);
         assert_eq!(
             std::fs::read_dir(first.parent().unwrap()).unwrap().count(),
             1
@@ -524,7 +479,7 @@ mod tests {
         ready.event.event_id = coding_agent_event_id("claude", "session", "ready");
         let ready_path = enqueue_at(dir.path(), &ready).unwrap();
 
-        let records = records_at(dir.path(), Backoff::Honour).unwrap();
+        let records = records_at(dir.path()).unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].0, ready_path);
         assert!(!malformed.exists());
@@ -548,23 +503,6 @@ mod tests {
     }
 
     #[test]
-    fn queued_ids_are_the_event_ids_in_the_queue() {
-        let dir = tempfile::tempdir().unwrap();
-        let queued = record("one", "https://one.example");
-        enqueue_at(dir.path(), &queued).unwrap();
-
-        assert_eq!(
-            queued_ids_at(dir.path()).unwrap(),
-            HashSet::from([queued.event.event_id])
-        );
-        assert!(
-            queued_ids_at(&dir.path().join("missing"))
-                .unwrap()
-                .is_empty()
-        );
-    }
-
-    #[test]
     fn future_retry_does_not_hide_a_ready_record() {
         let dir = tempfile::tempdir().unwrap();
         let mut deferred = record("one", "https://one.example");
@@ -576,43 +514,9 @@ mod tests {
         ready.event.event_id = coding_agent_event_id("claude", "session", "ready");
         enqueue_at(dir.path(), &ready).unwrap();
 
-        let records = records_at(dir.path(), Backoff::Honour).unwrap();
+        let records = records_at(dir.path()).unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].1.event.turn.id, "ready");
-        assert_eq!(queued_ids_at(dir.path()).unwrap().len(), 2);
-    }
-
-    #[test]
-    fn ignoring_backoff_sends_a_turn_waiting_on_a_retry_but_not_into_a_server_pause() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut deferred = record("one", "https://one.example");
-        deferred.next_attempt_at = Some(Utc::now() + chrono::Duration::hours(1));
-        let path = enqueue_at(dir.path(), &deferred).unwrap();
-
-        assert_eq!(records_at(dir.path(), Backoff::Ignore).unwrap().len(), 1);
-
-        pause(
-            path.parent().unwrap(),
-            Utc::now() + chrono::Duration::minutes(2),
-        )
-        .unwrap();
-        assert!(records_at(dir.path(), Backoff::Ignore).unwrap().is_empty());
-    }
-
-    #[test]
-    fn a_paused_destination_holds_back_its_turns_until_the_pause_ends() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = enqueue_at(dir.path(), &record("one", "https://one.example")).unwrap();
-        let destination_dir = path.parent().unwrap();
-        let now = Utc::now();
-
-        pause(destination_dir, now + chrono::Duration::minutes(2)).unwrap();
-        assert!(records_at(dir.path(), Backoff::Honour).unwrap().is_empty());
-        assert!(paused_until(destination_dir, now).is_some());
-        assert_eq!(queued_ids_at(dir.path()).unwrap().len(), 1);
-
-        pause(destination_dir, now - chrono::Duration::seconds(1)).unwrap();
-        assert_eq!(paused_until(destination_dir, now), None);
-        assert_eq!(records_at(dir.path(), Backoff::Honour).unwrap().len(), 1);
+        assert!(has_pending_records_at(dir.path()).unwrap());
     }
 }

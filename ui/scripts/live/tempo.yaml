@@ -1,0 +1,29 @@
+# Private, throwaway Tempo for live-contract recordings (plans/feat-live-contract.md §5).
+# Same receivers as nasiko-cloud-rs oss/observability/config/tempo.yaml; storage is the container's
+# tmpfs, so every recording starts empty and nothing reaches the dev stack's Tempo.
+stream_over_http_enabled: true
+
+server:
+  http_listen_port: 3200
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        http:
+          endpoint: 0.0.0.0:4318
+
+ingester:
+  max_block_duration: 10s
+
+storage:
+  trace:
+    backend: local
+    wal:
+      path: /var/tempo/wal
+      ingestion_time_range_slack: 360h
+    local:
+      path: /var/tempo/blocks
+
+usage_report:
+  reporting_enabled: false

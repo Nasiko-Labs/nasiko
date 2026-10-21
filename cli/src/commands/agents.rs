@@ -284,25 +284,17 @@ fn unwrap_agents(raw: serde_json::Value) -> Result<Vec<AgentRecord>> {
 /// Used by `nasiko chat -a <target>` so callers can pass a name instead of a
 /// full proxy URL.
 pub fn resolve_chat_target(target: &str) -> Result<String> {
-    resolve_chat_target_with_kind(target).map(|(url, _)| url)
-}
-
-/// Like [`resolve_chat_target`], but also returns the resolved agent's
-/// `workload_kind` (e.g. `acp_coding_agent`) so `chat` can label it and the
-/// `--coding-agent` guardrail can assert on it. The kind is `None` for a raw URL
-/// or the orchestrator endpoint (neither resolves to a single catalog agent).
-pub fn resolve_chat_target_with_kind(target: &str) -> Result<(String, Option<String>)> {
     if target.starts_with("http://") || target.starts_with("https://") {
-        return Ok((target.to_string(), None));
+        return Ok(target.to_string());
     }
 
     // "orchestrator" is not a catalog agent — it's the CP's own routing
     // endpoint (same one `nasiko chat` with no target uses).
     if target.eq_ignore_ascii_case("orchestrator") {
         let base = crate::config::active_url()?;
-        return Ok((
-            format!("{}/api/orchestrator/a2a", base.trim_end_matches('/')),
-            None,
+        return Ok(format!(
+            "{}/api/orchestrator/a2a",
+            base.trim_end_matches('/')
         ));
     }
 
@@ -320,20 +312,8 @@ pub fn resolve_chat_target_with_kind(target: &str) -> Result<(String, Option<Str
         })?;
 
     let base = client.base_url().trim_end_matches('/');
-    // Append only a real transport path (e.g. `/a2a/jsonrpc` for an HTTP agent).
-    // A coding agent has no HTTP mount, so its card carries no transport path and
-    // this is NULL — the canonical proxy URL is then the bare `/api/agents/{id}`.
-    // A trailing-slash `/api/agents/{id}/` does NOT route (404); one-shot `chat`
-    // hides this by trimming the slash, but the TUI posts the URL verbatim, so an
-    // empty/`"/"` path must contribute no suffix here.
-    let path = match agent.transport_path.as_deref() {
-        Some(p) if !p.is_empty() && p != "/" => p,
-        _ => "",
-    };
-    Ok((
-        format!("{}/api/agents/{}{}", base, agent.id, path),
-        agent.workload_kind.clone(),
-    ))
+    let path = agent.transport_path.as_deref().unwrap_or("/");
+    Ok(format!("{}/api/agents/{}{}", base, agent.id, path))
 }
 
 /// Resolve a name or UUID into a deployed agent's UUID via the CP registry.
@@ -540,10 +520,9 @@ pub fn cmd_deploy(source: &str, agent_name: Option<&str>) -> Result<()> {
         "latest",
         &[8000],
         &std::collections::HashMap::new(),
-        // `nasiko agents deploy` has no --writable/--writable-path/--coding-agent
-        // flags of its own yet.
+        // `nasiko agents deploy` has no --writable/--writable-path flags of
+        // its own yet.
         false,
-        None,
         None,
     );
 

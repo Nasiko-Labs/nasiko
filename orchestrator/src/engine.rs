@@ -137,7 +137,7 @@ impl RoutingEngine for OssRoutingEngine {
         // join would not outlive it.
         let tiers = self.config.context_tiers.with_overrides(pool).await;
         let (agents, history) = tokio::join!(
-            agent_registry::get_agents_for_user(req.user_id, &req.org_granted_agent_ids, pool),
+            agent_registry::get_agents_for_user(req.user_id, pool),
             context_selection::fetch_for_user(
                 pool,
                 req.user_id,

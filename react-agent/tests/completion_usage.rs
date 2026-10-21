@@ -67,7 +67,6 @@ async fn buffered_and_streamed_calls_emit_one_cache_aware_usage_before_done() {
                 name: "helper".into(),
                 description: "test".into(),
                 endpoint: "http://unused.invalid".into(),
-                auth_header: None,
                 skills: vec![],
             }]),
         );
