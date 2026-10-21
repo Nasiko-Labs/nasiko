@@ -2,6 +2,8 @@
 // `"use client"`; agent links are the navigation port's `Link` (`@nasiko/app-core/navigation`) to `/agents/<id>` (encoded); `meQuery`/`tiersQuery` are
 // `meQueryOptions(scope)`/`tiersQuery(scope)`; the lab's `ApiError` is `ProductApiError`; the confirm's `onConfirm`
 // body braced (lint); Prettier formatting.
+// Legacy ui/ on development (3aac84f66, 268dda156): the confirm list's cap is on the scroll viewport, so a long list
+// stays in its box.
 /**
  * Needs attention (plans/feat-optimization-page.md P5, R1B, R1C, R2C, R2F, R6x; eng E2, C7): a ui/alert strip shown
  * only when something you can fix needs you. Line 1: your agents with Token optimization off (your chats' history
@@ -192,7 +194,7 @@ export function NeedsAttention() {
           if (confirm) run(confirm, pending);
         }}
       >
-        <ScrollArea className="max-h-48">
+        <ScrollArea className="[&>[data-slot=scroll-area-viewport]]:max-h-48">
           <ul className="m-0 flex list-none flex-col gap-1 p-0 text-sm">
             {pending.map((a) => (
               <li key={a.id}>
