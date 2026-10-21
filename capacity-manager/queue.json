@@ -1,0 +1,17 @@
+{
+  "totalRequests": 21,
+  "runningAgents": 16,
+  "queuedAgents": [],
+  "transferredAgents": [
+    {
+      "id": "agent-021",
+      "cpu": "250m",
+      "memory": "200Mi",
+      "status": "transferred-and-admitted",
+      "targetCluster": "nasiko-cluster-secondary",
+      "targetNamespace": "nasiko-overflow",
+      "transferredAt": "2026-09-20T12:14:11.482Z"
+    }
+  ],
+  "overflowCount": 1
+}
