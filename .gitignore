@@ -55,6 +55,9 @@ _to_delete/
 # out; `--compare` takes any directory of .dsl files.
 ui/tests/fixtures/runs/
 
+# Local frontend workspace; integrate pages before deciding what to track.
+/prototype/
+
 # Private React/Next migration workspace; do not force-add before release approval.
 /react/
 

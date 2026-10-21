@@ -3,7 +3,7 @@
 // The mock worker (MSW + seed) only loads in mock mode and is reported, not budgeted.
 // An edition may raise its own limits in `<app>/budgets.json` ({"shellJs": 205}, KB), next to its dist/.
 // Usage: node scripts/check-budgets.ts [dist…]   (default: every edition's dist/, scripts/editions.ts)
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { findEditions } from './editions.ts'
@@ -16,6 +16,10 @@ const KB = 1024
 export const BUDGET = { shellJs: 200 * KB, shellCss: 40 * KB, lazy: 120 * KB }
 /** Chunks that never load in a live build (mock mode only). */
 const MOCK_ONLY = /src\/mocks\/|node_modules\/msw\//
+const SINGLETONS = [
+  ['react', '__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE='],
+  ['react-dom', '__DOM_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE='],
+] as const
 
 export function check(dist: string, log: (line: string) => void = console.log): boolean {
   const manifest = JSON.parse(readFileSync(join(dist, '.vite/manifest.json'), 'utf8')) as Record<
@@ -25,11 +29,13 @@ export function check(dist: string, log: (line: string) => void = console.log): 
   const gz = (file: string) => gzipSync(readFileSync(join(dist, file))).length
   const own = join(dist, '../budgets.json')
   const budget = { ...BUDGET }
-  if (existsSync(own))
-    for (const [k, kb] of Object.entries(
-      JSON.parse(readFileSync(own, 'utf8')) as Record<string, number>,
-    ))
-      if (k in budget) budget[k as keyof typeof BUDGET] = kb * KB
+  const { builds = {}, ...limits } = existsSync(own)
+    ? (JSON.parse(readFileSync(own, 'utf8')) as Record<string, number> & {
+        builds?: Record<string, number>
+      })
+    : {}
+  for (const [k, kb] of Object.entries(limits))
+    if (k in budget) budget[k as keyof typeof BUDGET] = kb * KB
   let ok = true
   const report = (label: string, size: number, max: number | null) => {
     const over = max !== null && size > max
@@ -76,6 +82,32 @@ export function check(dist: string, log: (line: string) => void = console.log): 
   if (cycle) {
     ok = false
     log(`FAIL chunk import cycle: ${cycle.map((k) => manifest[k]?.file ?? k).join(' → ')}`)
+  }
+  const files = [...new Set(Object.values(manifest).map((c) => c.file))].filter((f) =>
+    f.endsWith('.js'),
+  )
+  for (const [name, marker] of SINGLETONS) {
+    const copies = files.filter((f) => readFileSync(join(dist, f), 'utf8').includes(marker)).length
+    if (copies > 1) {
+      ok = false
+      log(`FAIL ${copies} copies of ${name} in the bundle`)
+    }
+  }
+  for (const [dir, kb] of Object.entries(builds)) {
+    const files = existsSync(join(dist, dir))
+      ? readdirSync(join(dist, dir), { recursive: true, encoding: 'utf8' }).filter((f) =>
+          f.endsWith('.js'),
+        )
+      : []
+    if (!files.length) {
+      ok = false
+      log(`FAIL ${dir}: no JS build found`)
+    } else
+      report(
+        `${dir} JS`,
+        files.reduce((n, f) => n + gz(join(dir, f)), 0),
+        kb * KB,
+      )
   }
   return ok
 }

@@ -4,7 +4,7 @@ pub mod deployments;
 pub mod grants;
 pub mod hours_meter;
 pub mod llm_config;
-pub(crate) mod reconcile;
+pub mod reconcile;
 pub mod update;
 pub mod upload;
 pub(crate) mod utils;

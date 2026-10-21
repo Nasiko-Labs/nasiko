@@ -13,7 +13,7 @@ use tracing::instrument;
 use utoipa::IntoParams;
 
 use super::service::{
-    EnsureSessionOutcome, InsightsRequest, ObservabilityService, parse_iso_or_default,
+    EnsureSessionOutcome, FinopsAccess, InsightsRequest, ObservabilityService, parse_iso_or_default,
 };
 
 /// Request extension injected by EE middleware to scope FinOps queries to a
@@ -384,28 +384,6 @@ pub async fn get_session_details(
     }
 }
 
-/// Per-turn tokens + cost for a chat session, from the `token_usage` ledger
-/// (authoritative; no Tempo dependency). Scoped to the caller unless superuser.
-#[utoipa::path(
-    get,
-    path = "/api/observability/session/{session_id}/turns",
-    tag = "observability",
-    params(("session_id" = String, Path, description = "Chat session id (ses_...)")),
-)]
-pub async fn get_session_turns(
-    State(state): State<AppState>,
-    claims: Claims,
-    Path(session_id): Path<String>,
-) -> impl IntoResponse {
-    match svc(&state)
-        .get_session_turns(&session_id, &claims.sub, claims.is_superuser)
-        .await
-    {
-        Ok(resp) => Json(resp).into_response(),
-        Err(e) => obs_err(e),
-    }
-}
-
 // ─── 3. GET /v1/observability/trace/{trace_id} ───────────────────────────────
 
 /// Detail for one trace: full span tree with per-span token/cost attribution.
@@ -634,8 +612,7 @@ pub async fn get_finops_dashboard(
             Err(r) => return r,
         };
 
-    let user_ids = user_scope.map(|Extension(s)| s.0);
-    let accessible_agent_ids = accessible_agent_ids(&state, &claims).await;
+    let scope = finops_scope(&state, &claims, user_scope).await;
     let owner_id = (params.my_agent && agent_name.is_none()).then_some(claims.sub.as_str());
     match svc(&state)
         .get_finops_dashboard(
@@ -648,8 +625,7 @@ pub async fn get_finops_dashboard(
             agent_name.as_deref(),
             params.model.as_deref(),
             params.provider.as_deref(),
-            user_ids.as_deref(),
-            accessible_agent_ids.as_deref(),
+            scope.access(),
             owner_id,
             view,
             params.compare.as_deref() == Some("previous"),
@@ -710,10 +686,11 @@ fn resolve_range_params(
         (status = 400, description = "Malformed filter"),
     ),
 )]
-#[instrument(skip(state))]
+#[instrument(skip(state, user_scope))]
 pub async fn get_finops_spend_timeseries(
     State(state): State<AppState>,
-    _claims: Claims,
+    claims: Claims,
+    user_scope: Option<Extension<FinopsUserScope>>,
     Query(params): Query<FinopsFilterParams>,
 ) -> Response {
     if let Err(r) = validate_range(params.range.as_deref()) {
@@ -737,6 +714,8 @@ pub async fn get_finops_spend_timeseries(
                 .into_response();
         }
     };
+    let scope = finops_scope(&state, &claims, user_scope).await;
+    let access = scope.access();
     match svc(&state)
         .get_finops_spend_timeseries(
             params.start_time.as_deref(),
@@ -748,6 +727,7 @@ pub async fn get_finops_spend_timeseries(
             group_by_agent,
             params.top.unwrap_or(5),
             params.compare.as_deref() == Some("previous"),
+            access,
         )
         .await
     {
@@ -769,10 +749,11 @@ pub async fn get_finops_spend_timeseries(
         (status = 400, description = "Malformed month/filter"),
     ),
 )]
-#[instrument(skip(state))]
+#[instrument(skip(state, user_scope))]
 pub async fn get_finops_spend_calendar(
     State(state): State<AppState>,
-    _claims: Claims,
+    claims: Claims,
+    user_scope: Option<Extension<FinopsUserScope>>,
     Query(params): Query<FinopsSpendCalendarParams>,
 ) -> Response {
     if let Err(r) = validate_range(params.range.as_deref()) {
@@ -782,6 +763,8 @@ pub async fn get_finops_spend_calendar(
         Ok(n) => n,
         Err(r) => return r,
     };
+    let scope = finops_scope(&state, &claims, user_scope).await;
+    let access = scope.access();
     match svc(&state)
         .get_finops_spend_calendar(
             &params.month,
@@ -789,6 +772,7 @@ pub async fn get_finops_spend_calendar(
             agent_name.as_deref(),
             params.model.as_deref(),
             params.provider.as_deref(),
+            access,
         )
         .await
     {
@@ -810,22 +794,26 @@ pub async fn get_finops_spend_calendar(
         (status = 400, description = "Malformed date/filter"),
     ),
 )]
-#[instrument(skip(state))]
+#[instrument(skip(state, user_scope))]
 pub async fn get_finops_spend_calendar_day(
     State(state): State<AppState>,
-    _claims: Claims,
+    claims: Claims,
+    user_scope: Option<Extension<FinopsUserScope>>,
     Query(params): Query<FinopsDayDrilldownParams>,
 ) -> Response {
     let agent_name = match resolve_agent_filter(&state.db, params.agent_id.as_deref()).await {
         Ok(n) => n,
         Err(r) => return r,
     };
+    let scope = finops_scope(&state, &claims, user_scope).await;
+    let access = scope.access();
     match svc(&state)
         .get_finops_spend_calendar_day(
             &params.date,
             agent_name.as_deref(),
             params.model.as_deref(),
             params.provider.as_deref(),
+            access,
         )
         .await
     {
@@ -849,10 +837,11 @@ pub async fn get_finops_spend_calendar_day(
         (status = 400, description = "Malformed filter"),
     ),
 )]
-#[instrument(skip(state))]
+#[instrument(skip(state, user_scope))]
 pub async fn get_finops_attributions(
     State(state): State<AppState>,
-    _claims: Claims,
+    claims: Claims,
+    user_scope: Option<Extension<FinopsUserScope>>,
     Query(params): Query<FinopsAttributionsParams>,
 ) -> Response {
     if let Err(r) = validate_range(params.range.as_deref()) {
@@ -871,6 +860,8 @@ pub async fn get_finops_attributions(
             Ok(v) => v,
             Err(r) => return r,
         };
+    let scope = finops_scope(&state, &claims, user_scope).await;
+    let access = scope.access();
     match svc(&state)
         .get_finops_attributions(
             start_time.as_deref(),
@@ -883,6 +874,7 @@ pub async fn get_finops_attributions(
             params.sort_dir.as_deref(),
             params.limit,
             params.offset,
+            access,
         )
         .await
     {
@@ -954,6 +946,35 @@ pub async fn get_agent_hours(
     {
         Ok(resp) => Json(resp).into_response(),
         Err(e) => obs_err(e),
+    }
+}
+
+struct CallerScope {
+    user_ids: Option<Vec<uuid::Uuid>>,
+    accessible_agent_ids: Option<Vec<uuid::Uuid>>,
+    workflow_owner: Option<uuid::Uuid>,
+}
+
+impl CallerScope {
+    fn access(&self) -> FinopsAccess<'_> {
+        FinopsAccess {
+            user_ids: self.user_ids.as_deref(),
+            accessible_agent_ids: self.accessible_agent_ids.as_deref(),
+            workflow_owner: self.workflow_owner,
+        }
+    }
+}
+
+async fn finops_scope(
+    state: &AppState,
+    claims: &Claims,
+    user_scope: Option<Extension<FinopsUserScope>>,
+) -> CallerScope {
+    CallerScope {
+        user_ids: user_scope.map(|Extension(s)| s.0),
+        accessible_agent_ids: accessible_agent_ids(state, claims).await,
+        workflow_owner: (!claims.is_superuser)
+            .then(|| claims.sub.parse().unwrap_or(uuid::Uuid::nil())),
     }
 }
 

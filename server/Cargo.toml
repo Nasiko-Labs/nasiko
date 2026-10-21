@@ -10,6 +10,14 @@ path = "src/lib.rs"
 name = "nasiko-server"
 path = "src/main.rs"
 
+[[bin]]
+name = "seed-finops-demo"
+path = "src/bin/seed_finops_demo.rs"
+
+[[bin]]
+name = "seed-fleet-demo"
+path = "src/bin/seed_fleet_demo.rs"
+
 [dependencies]
 dotenvy.workspace = true
 nasiko-coding-policy.workspace = true

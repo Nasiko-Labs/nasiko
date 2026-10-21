@@ -19,13 +19,22 @@ use nasiko_runtime::{ContainerId, DeploymentStatus, RuntimeError, RuntimeState};
 /// The bounded slice of an `agents` row this pass actually needs — not the
 /// full `Agent` model (~30 columns), most of which are irrelevant here.
 #[derive(sqlx::FromRow)]
-struct ReconcilableAgent {
-    id: Uuid,
-    name: String,
+pub struct ReconcilableAgent {
+    pub id: Uuid,
+    pub name: String,
     image: Option<String>,
     owner_id: Uuid,
     writable: bool,
     writable_path: Option<String>,
+}
+
+pub async fn reconcilable_agents(db: &sqlx::PgPool) -> sqlx::Result<Vec<ReconcilableAgent>> {
+    sqlx::query_as::<_, ReconcilableAgent>(
+        "SELECT id, name, image, owner_id, writable, writable_path FROM agents \
+         WHERE status = 'running' AND deleted_at IS NULL AND image IS NOT NULL AND NOT is_internal",
+    )
+    .fetch_all(db)
+    .await
 }
 
 /// Runs once at startup (see `AppState::init`). Safe to call on every boot —
@@ -34,13 +43,7 @@ struct ReconcilableAgent {
 /// already pays the same per-agent cost for the (usually much smaller) seed
 /// list on every boot.
 pub async fn reconcile_agents_on_startup(state: &AppState) {
-    let agents = match sqlx::query_as::<_, ReconcilableAgent>(
-        "SELECT id, name, image, owner_id, writable, writable_path FROM agents \
-         WHERE status = 'running' AND deleted_at IS NULL AND image IS NOT NULL",
-    )
-    .fetch_all(&state.db)
-    .await
-    {
+    let agents = match reconcilable_agents(&state.db).await {
         Ok(rows) => rows,
         Err(e) => {
             warn!(error = %e, "agent reconciliation: failed to list running agents, skipping");

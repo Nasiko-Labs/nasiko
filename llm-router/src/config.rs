@@ -109,6 +109,28 @@ pub struct GatewayConfig {
     /// retuned. Default 0.80.
     pub salience_high_threshold: f64,
 
+    /// Request classifier backend: `regex` (default; no network, behaviour unchanged),
+    /// `local` (in-process linear model, embedded weights, no network) or `hosted`
+    /// (OpenAI-compatible endpoint, opt-in). Unknown values are treated as `regex`.
+    pub classifier_backend: String,
+    /// `local` only: weights JSON file to load instead of the embedded weights. Empty = embedded.
+    /// A file that cannot be loaded degrades to the regex classifier (logged), never an outage.
+    pub classifier_model_path: String,
+    /// `hosted` only: full chat-completions URL. Only this host receives the key.
+    pub classifier_endpoint: String,
+    /// `hosted` only: model id sent in the request.
+    pub classifier_model: String,
+    /// `hosted` only: bearer key for the endpoint. Never logged.
+    pub classifier_api_key: String,
+    /// Per-decision budget. Past it the router uses the regex answer and counts a fallback.
+    pub classifier_timeout_ms: u64,
+    /// Below this confidence the router uses the safe default (`general`). 0 disables.
+    pub classifier_min_confidence: f32,
+    /// Seed for Thompson tier sampling (`ROUTER_TIER_SEED`). Unset (default) = entropy, as
+    /// before. Set = the tier is a deterministic function of (seed, provider, query, request
+    /// type, learned cells), so identical inputs and state route identically.
+    pub router_tier_seed: Option<u64>,
+
     /// Fleet-wide kill switch for payload compression. Compression is opted into **per agent**
     /// (`agents.compress_enabled`); this only lets an operator stop all of it at once without
     /// editing every agent's row. Default on, so a UI toggle takes effect without a deploy.
@@ -153,6 +175,15 @@ pub struct GatewayConfig {
     /// byte-identical to a build without it.
     pub brevity_holdout_pct: u8,
 
+    /// Replace native tool definitions with compact signatures and decode the model's compact
+    /// calls back into `tool_calls` (`nasiko-tool-compact`; non-streaming requests only).
+    ///
+    /// Defaults **off**, unlike the layers above: it changes what the model is asked to write, so
+    /// an operator opts in, and this flag alone turns it on (the per-agent `compress_enabled`
+    /// switch is not consulted). Off, requests and responses are byte-identical to a build
+    /// without it.
+    pub compact_tools_enabled: bool,
+
     /// Persist pre-compression originals so an agent can recover what was elided (IP-5).
     /// Defaults **on**; only ever writes a row when compression actually elided something, which
     /// requires the agent's switch, so an opted-out fleet stores nothing.
@@ -194,6 +225,14 @@ impl Default for GatewayConfig {
             salience_weights_path: String::new(),
             salience_low_threshold: 0.20,
             salience_high_threshold: 0.80,
+            classifier_backend: "regex".into(),
+            classifier_model_path: String::new(),
+            classifier_endpoint: String::new(),
+            classifier_model: String::new(),
+            classifier_api_key: String::new(),
+            classifier_timeout_ms: 250,
+            classifier_min_confidence: 0.0,
+            router_tier_seed: None,
             compress_kill_switch: true,
             compress_min_bytes: 2048,
             compress_types: nasiko_compress::TypeMask::DEFAULT,
@@ -202,6 +241,7 @@ impl Default for GatewayConfig {
             brevity_enabled: true,
             brevity_min_bytes: 0,
             brevity_holdout_pct: 5,
+            compact_tools_enabled: false,
             compress_recovery_enabled: true,
             compress_recovery_min_bytes: 8192,
             compress_recovery_ttl_secs: 86_400,
@@ -275,6 +315,22 @@ impl GatewayConfig {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(d.salience_gate_enabled),
+            classifier_backend: env_or("CLASSIFIER_BACKEND", &d.classifier_backend),
+            classifier_model_path: env_or("CLASSIFIER_MODEL_PATH", &d.classifier_model_path),
+            classifier_endpoint: env_or("CLASSIFIER_ENDPOINT", &d.classifier_endpoint),
+            classifier_model: env_or("CLASSIFIER_MODEL", &d.classifier_model),
+            classifier_api_key: env_or("CLASSIFIER_API_KEY", &d.classifier_api_key),
+            classifier_timeout_ms: env_parse_first(
+                &["CLASSIFIER_TIMEOUT_MS"],
+                d.classifier_timeout_ms,
+            ),
+            classifier_min_confidence: env_parse_first(
+                &["CLASSIFIER_MIN_CONFIDENCE"],
+                d.classifier_min_confidence,
+            ),
+            router_tier_seed: std::env::var("ROUTER_TIER_SEED")
+                .ok()
+                .and_then(|v| v.parse().ok()),
             salience_weights_path: env_or("SALIENCE_WEIGHTS_PATH", &d.salience_weights_path),
             salience_low_threshold: std::env::var("SALIENCE_LOW_THRESHOLD")
                 .ok()
@@ -306,6 +362,7 @@ impl GatewayConfig {
                 d.brevity_holdout_pct as usize,
             )
             .min(100) as u8,
+            compact_tools_enabled: env_flag("TOKEN_COMPACT_TOOLS", d.compact_tools_enabled),
             compress_recovery_enabled: env_flag(
                 "TOKEN_COMPRESS_RECOVERY",
                 d.compress_recovery_enabled,

@@ -4,10 +4,11 @@ A React experiment for Nasiko's OpenRuntime frontend. It tests the stack from DO
 React 19 + Vite (static SPA), TanStack Router/Query, Tailwind v4 + shadcn/ui, Recharts, Motion.
 
 What's here:
-- **Overview** (`/`): the homepage. Needs you (waiting requests, agents that need action, budget warnings, failing
-  sessions), fleet Spend, Fleet health (each agent rated Healthy / Watch / Needs action / Unknown with the reason; each
-  count opens `/agents?health=<rating>`), coding harnesses, recent sessions and quick actions. A source that can't be
-  checked says so with Retry, so "Nothing needs you" only shows when every source answered. The backend status page
+- **Home** (`/`): the scoped home (Yours, Fleet and, in EE, an org unit). Needs you (waiting requests, agents that
+  need action, failing sessions), a totals strip (spend, saved tokens, agents needing attention) and one row per agent
+  or coding harness with its health (Healthy / Watch / Needs action / Unknown, linking to `/agents?health=<rating>`),
+  spend, budget use and last change, each opening the agent's hub (`docs/home.md`). A source that can't be checked
+  says so with Retry, so Needs you only says nothing needs you when every source answered. The backend status page
   is at `/status`.
 - **The observability demo**: follow the money from a spend spike to the span that caused it.
   - **TokenOps** (`/tokenops`): a plain-English summary first, details in disclosures.
