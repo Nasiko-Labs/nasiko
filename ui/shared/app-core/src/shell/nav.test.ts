@@ -1,6 +1,6 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/app/shell/nav.test.ts. Local edits: the route-tree check moved to
 // each composition root (oss/app/src/app/routes.test.ts and the EE workspace's), because the route files belong to
-// the app, not to this package; Prettier formatting.
+// the app, not to this package; the `views` group (development f851fdca8); Prettier formatting.
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import { activeItem, backIndex, NAV_GROUPS, NAV_ITEMS } from "./nav";
@@ -39,6 +39,7 @@ describe("nav items", () => {
       ["fleet", "Fleet"],
       ["connect", "Connect"],
       ["observe", "Observe"],
+      ["views", "Views"],
       ["org", "Organization"],
       ["lab", "Lab"],
     ]);
