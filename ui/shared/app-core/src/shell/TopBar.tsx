@@ -1,7 +1,8 @@
 // Ported from the legacy ui/ on development (3aac84f66) common/src/app/shell/TopBar.tsx. Local edits: links are the
 // navigation port's `Link` (`href` for TanStack's `to`); `BreadcrumbLink asChild` -> `render={…}` (Base UI
 // useRender); primitives and `useMediaQuery` come from `@nasiko/ui`; optional props admit `undefined`
-// (exactOptionalPropertyTypes); Prettier formatting.
+// (exactOptionalPropertyTypes); Prettier formatting. The product tour (dd9fe0f64): `TourButton` and the `data-tour`
+// targets on the menu button, the actions and the stepper.
 "use client";
 
 import {
@@ -14,6 +15,7 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
+import { CircleHelp } from "lucide-react";
 import { useMediaQuery } from "@nasiko/ui/lib";
 import { cn } from "@nasiko/ui/cn";
 import {
@@ -22,8 +24,10 @@ import {
   BreadcrumbLink,
   BreadcrumbList,
   BreadcrumbSeparator,
+  Button,
   SidebarTrigger,
 } from "@nasiko/ui/primitives";
+import { askForTour } from "../tour";
 import Link from "../navigation";
 import { copy } from "./copy";
 import { TopBarContext, type TopBarSlot } from "./topBarSlot";
@@ -60,7 +64,11 @@ export function ShellTopBar({
           bare && "md:hidden",
         )}
       >
-        <SidebarTrigger aria-label={copy.openMenu} className="size-11 md:hidden" />
+        <SidebarTrigger
+          data-tour="app-menu"
+          aria-label={copy.openMenu}
+          className="size-11 md:hidden"
+        />
         <div className="flex min-w-0 flex-1 items-center gap-2">
           {claims === 0 && item ? (
             <Crumbs
@@ -70,8 +78,14 @@ export function ShellTopBar({
           ) : null}
           <div ref={setCrumbs} className="contents" />
         </div>
-        <div ref={setActions} className="flex shrink-0 items-center gap-1.5 empty:hidden" />
         <div
+          data-tour="page-actions"
+          ref={setActions}
+          className="flex shrink-0 items-center gap-1.5 empty:hidden"
+        />
+        <TourButton />
+        <div
+          data-tour="page-stepper"
           ref={setStepper}
           className="flex shrink-0 items-center border-l border-border pl-2 empty:hidden"
         />
@@ -178,5 +192,26 @@ export function TopBar({
       ) : null}
       {stepper && slot.stepper ? createPortal(stepper, slot.stepper) : null}
     </>
+  );
+}
+
+/**
+ * Starts this page's tour (`?` does too): the tour feature answers `askForTour` (../tour.ts). In the bar, left of the
+ * Previous/Next arrows so they stay rightmost; Overview and New chat, which have no bar on desktop, show their own.
+ */
+export function TourButton({ className }: { className?: string | undefined }) {
+  return (
+    <Button
+      variant="ghost"
+      size="icon"
+      data-tour="tour-button"
+      title={`${copy.tour} (?)`}
+      aria-label={copy.tour}
+      aria-keyshortcuts="?"
+      onClick={askForTour}
+      className={cn("size-8 shrink-0 text-muted-foreground pointer-coarse:size-11", className)}
+    >
+      <CircleHelp aria-hidden />
+    </Button>
   );
 }

@@ -481,6 +481,7 @@ export function SessionTracePage({
 
               <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
                 <section
+                  data-tour="session-spans"
                   aria-labelledby="spans-title"
                   className="flex min-w-0 flex-col gap-2 rounded-lg border border-border p-3"
                 >
@@ -667,7 +668,11 @@ function Narrative({
       <span key={i}>{c.text}</span>
     );
   return (
-    <section aria-label="What happened" className="flex max-w-[70ch] flex-col gap-2">
+    <section
+      data-tour="session-narrative"
+      aria-label="What happened"
+      className="flex max-w-[70ch] flex-col gap-2"
+    >
       <p className="text-lead leading-7" aria-describedby="narrative-plain">
         {narrative.sentences.map((s) => (
           // A sentence's text is its identity: each comes from a different template.

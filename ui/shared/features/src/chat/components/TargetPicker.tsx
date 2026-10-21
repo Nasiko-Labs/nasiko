@@ -72,6 +72,7 @@ export function TargetPicker({
         render={
           <Button
             ref={chip}
+            data-tour="chat-target"
             type="button"
             size="sm"
             variant="outline"

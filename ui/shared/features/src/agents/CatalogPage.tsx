@@ -171,7 +171,7 @@ export function CatalogPage({
   return (
     <div className="space-y-4">
       {header}
-      <div className="flex flex-wrap items-center gap-2">
+      <div data-tour="agents-toolbar" className="flex flex-wrap items-center gap-2">
         <SearchInput
           ref={inputRef}
           aria-label={copy.searchLabel}
@@ -309,7 +309,7 @@ export function CatalogPage({
           {copy.noResultsHint}
         </EmptyState>
       ) : (
-        <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <ul data-tour="agents-grid" className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {shown.map((a) => (
             <li key={a.id}>
               <AgentCard

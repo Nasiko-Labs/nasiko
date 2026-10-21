@@ -171,7 +171,7 @@ export function CatalogPage({
     <div className="space-y-4">
       {header}
       {/* One row, every control h-9: what to show (tabs) on the left, how to narrow it on the right. */}
-      <div className="flex flex-wrap items-center gap-2">
+      <div data-tour="mcp-toolbar" className="flex flex-wrap items-center gap-2">
         {scoped.length ? (
           <Tabs
             value={tab}
@@ -237,7 +237,7 @@ export function CatalogPage({
       {!scoped.length ? (
         <ScopeEmpty view={search.view} actions={scopeEmpty ? actions : null} />
       ) : shown.length ? (
-        <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <ul data-tour="mcp-grid" className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {shown.map((s) => (
             <li key={s.id}>
               <ServiceCard service={s} openPopup={openPopup} />

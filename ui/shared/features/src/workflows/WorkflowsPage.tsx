@@ -184,7 +184,11 @@ export function WorkflowsPage({
     );
   else
     body = (
-      <ul aria-label={text.title} className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+      <ul
+        data-tour="workflows-list"
+        aria-label={text.title}
+        className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3"
+      >
         {shown.map((wf) => (
           <li key={wf.id} className="flex min-w-0 [&>*]:min-w-0 [&>*]:flex-1">
             <WorkflowCard
@@ -212,7 +216,7 @@ export function WorkflowsPage({
       <SectionNav current={mode === "deployed" ? "/workflows" : "/workflows/drafts"} />
       {absent ? null : (
         // One row the width of the grid: search on the left, the sort on the right.
-        <div className="flex flex-wrap items-center gap-2">
+        <div data-tour="workflows-toolbar" className="flex flex-wrap items-center gap-2">
           <SearchInput
             aria-label={text.search}
             placeholder={copy.searchPlaceholder}

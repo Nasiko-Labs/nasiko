@@ -222,7 +222,11 @@ export function MyAgentsPage({
             </section>
           ) : null}
           {/* One object: the status tabs are the table's top edge, a level below the section nav above. */}
-          <div id="your-agents-table" className="rounded-lg border border-border">
+          <div
+            data-tour="mine-table"
+            id="your-agents-table"
+            className="rounded-lg border border-border"
+          >
             <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-border p-2">
               {/* Base UI tabs: arrow keys, Home/End and roving focus. The table below is the one panel. */}
               <Tabs
@@ -233,6 +237,7 @@ export function MyAgentsPage({
                 className="max-w-full min-w-0"
               >
                 <TabsList
+                  data-tour="mine-status-tabs"
                   aria-label={copy.colStatus}
                   className="max-w-full justify-start overflow-x-auto"
                 >

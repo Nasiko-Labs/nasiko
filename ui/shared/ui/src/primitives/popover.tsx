@@ -1,4 +1,7 @@
 // fidelity: nasiko-ui-lab@1b99bdda: class strings are the lab's `popover` (`data-[state=…]` → `data-open:`/`data-closed:`, Radix origin var → `--transform-origin`); Base UI internals kept.
+// Local edits: `PopoverContent` also takes the Positioner's `anchor` and `collisionPadding` (Radix's `PopoverAnchor`
+// and `collisionPadding`, for the product tour's card on a gliding anchor; legacy ui/ on development, dd9fe0f64), and
+// `PopoverClose` is exported (a modal popover traps focus only while it renders one).
 "use client"
 
 import * as React from "react"
@@ -20,11 +23,13 @@ function PopoverContent({
   alignOffset = 0,
   side = "bottom",
   sideOffset = 4,
+  anchor,
+  collisionPadding,
   ...props
 }: PopoverPrimitive.Popup.Props &
   Pick<
     PopoverPrimitive.Positioner.Props,
-    "align" | "alignOffset" | "side" | "sideOffset"
+    "align" | "alignOffset" | "side" | "sideOffset" | "anchor" | "collisionPadding"
   >) {
   return (
     <PopoverPrimitive.Portal container={usePortalContainer()}>
@@ -33,6 +38,8 @@ function PopoverContent({
         alignOffset={alignOffset}
         side={side}
         sideOffset={sideOffset}
+        anchor={anchor}
+        collisionPadding={collisionPadding}
         className="isolate z-50"
       >
         <PopoverPrimitive.Popup
@@ -81,7 +88,12 @@ function PopoverDescription({
   )
 }
 
+function PopoverClose({ ...props }: PopoverPrimitive.Close.Props) {
+  return <PopoverPrimitive.Close data-slot="popover-close" {...props} />
+}
+
 export {
+  PopoverClose,
   Popover,
   PopoverContent,
   PopoverDescription,

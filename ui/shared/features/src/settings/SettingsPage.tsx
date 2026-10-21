@@ -244,7 +244,7 @@ function SettingsForm({
     );
   };
   return (
-    <form onSubmit={(e) => void onSubmit(e)} noValidate>
+    <form data-tour="settings-form" onSubmit={(e) => void onSubmit(e)} noValidate>
       <SettingRows
         footer={
           <>
@@ -252,6 +252,7 @@ function SettingsForm({
               <span className="mr-auto text-sm text-muted-foreground">{copy.unsaved}</span>
             ) : null}
             <Button
+              data-tour="settings-save"
               type="submit"
               size="sm"
               className="pointer-coarse:min-h-11"

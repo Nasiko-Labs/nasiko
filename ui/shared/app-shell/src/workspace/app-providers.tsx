@@ -1,4 +1,6 @@
 // Browser-owned session scope; seeded only after the authenticated /api/me bootstrap.
+// The product tour (legacy ui/ on development, 3aac84f66: dd9fe0f64): the tour host is mounted beside the build
+// toasts.
 "use client";
 
 import { skipToken, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
@@ -31,6 +33,7 @@ import { signOut } from "../shell/signOut";
 import { workspaceLoginUrl } from "./login-redirect";
 import { useGuideHiddenNav } from "@nasiko/features/onboarding/api";
 import { BuildToasts } from "@nasiko/features/deploy/components/BuildToasts";
+import { TourHost } from "@nasiko/features/tour/TourHost";
 import { copy as deployCopy } from "@nasiko/features/deploy/copy";
 import { followedCount, subscribeFollower } from "@nasiko/features/deploy/follower";
 
@@ -193,7 +196,12 @@ function Shell({
   return (
     <SignOutContext value={pageSignOut}>
       <AppShell
-        end={<BuildToasts />}
+        end={
+          <>
+            <BuildToasts />
+            <TourHost />
+          </>
+        }
         split={shellSplit}
         hidden={[...guideHidden, ...layerHidden]}
         badges={

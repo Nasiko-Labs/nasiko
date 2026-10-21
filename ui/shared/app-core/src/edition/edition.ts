@@ -1,4 +1,4 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/app/edition.ts. Local edits: `LayerNavItem`/`AnyNavItem` are declared in shell/nav.ts and re-exported here (the lab's two type-only imports formed a cycle the dependency checker rejects; same types, same name for callers); the `shellSplit` slot (development 66a4c64d0, 3794209ec: the EE assistant panel); the OSS defaults are the only edition here, the slot types stay so `useSlots()` keeps its shape.
+// Ported from nasiko-ui-lab@1b99bdda common/src/app/edition.ts. Local edits: `LayerNavItem`/`AnyNavItem` are declared in shell/nav.ts and re-exported here (the lab's two type-only imports formed a cycle the dependency checker rejects; same types, same name for callers); the `shellSplit` slot (development 66a4c64d0, 3794209ec: the EE assistant panel); the `tours` slot (dd9fe0f64); the OSS defaults are the only edition here, the slot types stay so `useSlots()` keeps its shape.
 /**
  * How an edition builds on the core (docs/lab-vs-react-migration-review.md §10.4). Pure TypeScript, no React:
  * the glue is edition-context.tsx.
@@ -13,6 +13,7 @@
  */
 import type { ComponentType, ReactNode } from "react";
 import type { AnyNavItem, LayerNavItem, NavGroupId } from "../shell/nav";
+import type { TourStep } from "../tour";
 
 export type { AnyNavItem } from "../shell/nav";
 
@@ -92,6 +93,8 @@ export interface Slots {
   optimizationWorkspace: ComponentType | null;
   /** Sidebar items to hide for this viewer (EE: Access control below `can_read_org`). */
   navHidden: NavHidden | null;
+  /** Tours of the layer's own pages (legacy ui/ on development, dd9fe0f64). */
+  tours: LayerTour[];
 }
 
 /**
@@ -110,6 +113,18 @@ export interface NavHidden<T = unknown> {
 
 export const navHidden = <T>(n: NavHidden<T>) => n as NavHidden;
 
+/**
+ * The product tour of a layer's own pages (EE: Access control). Matched after the core's pages; its steps load only
+ * when it opens, so a layer's tour text stays out of its shell.
+ */
+export interface LayerTour {
+  /** Remembered as seen under this id: unique across the core's tours (`features/tour/logic.ts`) and every layer's. */
+  id: string;
+  /** The pages it covers (pathname). */
+  match: RegExp;
+  steps: () => Promise<readonly TourStep[]>;
+}
+
 /** The core's answer for every slot: an OSS build renders exactly this. */
 export const OSS_SLOTS: Slots = {
   harnessOrgScope: null,
@@ -123,6 +138,7 @@ export const OSS_SLOTS: Slots = {
   shellSplit: null,
   optimizationWorkspace: null,
   navHidden: null,
+  tours: [],
 };
 
 type NavPatch =
@@ -150,6 +166,7 @@ export function resolveSlots(layers: readonly EditionLayer[]): Slots {
     granteeKinds: [],
     connectorGranteeKinds: [],
     settingsSections: [],
+    tours: [],
   };
   for (const layer of layers) {
     const s = layer.slots ?? {};
@@ -157,6 +174,7 @@ export function resolveSlots(layers: readonly EditionLayer[]): Slots {
     if (s.connectorGranteeKinds)
       out.connectorGranteeKinds = [...out.connectorGranteeKinds, ...s.connectorGranteeKinds];
     if (s.settingsSections) out.settingsSections = [...out.settingsSections, ...s.settingsSections];
+    if (s.tours) out.tours = [...out.tours, ...s.tours];
     if (s.harnessOrgScope !== undefined) out.harnessOrgScope = s.harnessOrgScope;
     if (s.loginMethods !== undefined) out.loginMethods = s.loginMethods;
     if (s.tokenopsOrgUnitFilter !== undefined) out.tokenopsOrgUnitFilter = s.tokenopsOrgUnitFilter;

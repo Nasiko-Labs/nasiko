@@ -60,3 +60,6 @@ export { DotBackground } from "./dot-background";
 export { Pager } from "./pager";
 export { FilterChip } from "./filter-chip";
 export { PrevNext, type PrevNextProps, type StepVia } from "./prev-next";
+// Ported from the legacy ui/ on development (3aac84f66): Aceternity's effects the product tour uses.
+export { TextGenerateEffect } from "./text-generate-effect";
+export { GlowingEffect } from "./glowing-effect";

@@ -504,7 +504,10 @@ export function TokenopsPage({
           }
         />
         {/* Chips scroll horizontally on narrow screens instead of growing the sticky bar (A1b). */}
-        <div className="-mx-4 flex flex-nowrap items-center gap-2 overflow-x-auto px-4 md:mx-0 md:flex-wrap md:overflow-visible md:px-0 [&>*]:shrink-0">
+        <div
+          data-tour="tokenops-filters"
+          className="-mx-4 flex flex-nowrap items-center gap-2 overflow-x-auto px-4 md:mx-0 md:flex-wrap md:overflow-visible md:px-0 [&>*]:shrink-0"
+        >
           <FilterSelect
             label="Agent"
             value={search.agent}
@@ -611,7 +614,7 @@ export function TokenopsPage({
             }}
           />
 
-          <div className="flex flex-col">
+          <div data-tour="tokenops-sections" className="flex flex-col">
             <Disclosure
               id="spend"
               title="Spend over time"

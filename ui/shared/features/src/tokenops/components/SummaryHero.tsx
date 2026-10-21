@@ -5,6 +5,7 @@
 // `@nasiko/ui/primitives`, composites from `@nasiko/ui/composites`, `cn`/formatters/delta helpers from `@nasiko/ui/cn`
 // and `@nasiko/ui/lib`; optional props typed `| undefined`; the lab's `@eslint-react` directives removed; Prettier
 // formatting.
+// The product tour (legacy ui/ on development, 3aac84f66: dd9fe0f64): the summary is a tour target.
 "use client";
 
 /**
@@ -66,7 +67,7 @@ export function SummaryHero({
   const changePct = kpis?.total_spend.change_pct;
   return (
     <Card
-      render={<section aria-labelledby="summary-title" />}
+      render={<section data-tour="tokenops-summary" aria-labelledby="summary-title" />}
       className="gap-0 overflow-hidden p-0 lg:grid lg:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)]"
     >
       <h2 id="summary-title" className="sr-only">

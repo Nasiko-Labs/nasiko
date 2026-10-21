@@ -101,6 +101,7 @@ export function SpanPanel({
 
   return (
     <section
+      data-tour="session-span-panel"
       aria-labelledby="span-panel-title"
       className="flex min-w-0 flex-col gap-3 rounded-lg border border-border bg-card p-4"
     >

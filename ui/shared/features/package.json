@@ -119,6 +119,7 @@
     "./tokenops/TokenopsRoute": "./src/tokenops/TokenopsRoute.tsx",
     "./tokenops/types": "./src/tokenops/types.ts",
     "./tokenops/window": "./src/tokenops/window.ts",
+    "./tour/TourHost": "./src/tour/TourHost.tsx",
     "./trace/SessionTraceRoute": "./src/trace/SessionTraceRoute.tsx",
     "./workflows/NewWorkflowRoute": "./src/workflows/NewWorkflowRoute.tsx",
     "./workflows/WorkflowRoute": "./src/workflows/WorkflowRoute.tsx",

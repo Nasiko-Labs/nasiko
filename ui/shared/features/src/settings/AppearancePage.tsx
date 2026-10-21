@@ -43,6 +43,7 @@ export function AppearancePage() {
           stacked
         >
           <RadioGroup
+            data-tour="appearance-mode"
             aria-label={copy.appearance.mode}
             aria-describedby={`${id}-mode`}
             value={prefs.theme}
@@ -82,6 +83,7 @@ export function AppearancePage() {
           stacked
         >
           <RadioGroup
+            data-tour="appearance-theme"
             aria-label={copy.appearance.theme}
             aria-describedby={`${id}-theme`}
             value={prefs.accent}

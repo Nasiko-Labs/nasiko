@@ -168,7 +168,7 @@ export function ChatRail({
   };
 
   return (
-    <nav aria-label={copy.chats} className="flex h-full min-h-0 flex-col">
+    <nav data-tour="chat-rail" aria-label={copy.chats} className="flex h-full min-h-0 flex-col">
       <div className="flex h-12 shrink-0 items-center gap-1 pr-2 pl-4">
         <h2 className="min-w-0 flex-1 truncate text-sm font-medium">{copy.chats}</h2>
         <Button

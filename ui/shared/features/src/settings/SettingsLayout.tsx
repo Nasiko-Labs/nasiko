@@ -243,7 +243,11 @@ interface NavProps {
  */
 function SectionsNav({ groups, current, linkProps, onNavigate, framed = false, title }: NavProps) {
   return (
-    <nav aria-label={copy.nav.label} className="flex min-h-0 flex-1 flex-col overflow-y-auto pb-2">
+    <nav
+      data-tour="settings-sections"
+      aria-label={copy.nav.label}
+      className="flex min-h-0 flex-1 flex-col overflow-y-auto pb-2"
+    >
       <p
         className={cn(
           "flex items-center gap-2 px-5 text-sm font-semibold",

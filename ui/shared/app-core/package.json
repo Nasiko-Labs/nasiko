@@ -34,6 +34,7 @@
     "./siblings": "./src/siblings.ts",
     "./sign-out": "./src/sign-out.ts",
     "./stale-build": "./src/stale-build.ts",
+    "./tour": "./src/tour.ts",
     "./url-state": "./src/url-state.ts",
     "./useNow": "./src/useNow.ts",
     "./useReturnTick": "./src/useReturnTick.ts",

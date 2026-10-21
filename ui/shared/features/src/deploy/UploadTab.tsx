@@ -295,7 +295,7 @@ export function UploadTab({
             openSignal={blockTick}
           />
         </div>
-        <Card className="gap-4 p-4">
+        <Card data-tour="deploy-upload-form" className="gap-4 p-4">
           <DropZone
             ref={chooseRef}
             file={file}
@@ -577,12 +577,18 @@ export function UploadTab({
           )}
         </Card>
         {/* Stays in view under the Deploy page's sticky method row while the form scrolls. */}
-        <div className="sticky top-[calc(var(--topbar-h)+4rem)] @max-[768px]/deploy:hidden">
+        <div
+          data-tour="deploy-requirements"
+          className="sticky top-[calc(var(--topbar-h)+4rem)] @max-[768px]/deploy:hidden"
+        >
           <Requirements items={items} advisory={!!check && !check.readable} />
         </div>
       </form>
       {/* The CLI equivalent for the name being deployed; hidden on phones (design review 15). */}
-      <Card className="flex-row flex-wrap items-center gap-3 p-4 @max-[768px]/deploy:hidden">
+      <Card
+        data-tour="deploy-cli"
+        className="flex-row flex-wrap items-center gap-3 p-4 @max-[768px]/deploy:hidden"
+      >
         <SquareTerminal aria-hidden className="size-5 shrink-0 text-muted-foreground" />
         <div className="min-w-0 flex-1">
           <p className="text-sm font-medium">{copy.deploy.terminal}</p>

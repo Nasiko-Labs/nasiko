@@ -66,6 +66,7 @@ export function RouterTitle({
       <TopBar
         actions={
           <Button
+            data-tour="router-how"
             ref={toggleRef}
             variant="ghost"
             size="sm"

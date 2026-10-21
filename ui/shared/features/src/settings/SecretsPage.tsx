@@ -137,7 +137,7 @@ export function SecretsPage() {
         />
       ) : (
         // One card: the secrets, then the add row on its muted footer strip.
-        <Card className="@container gap-0 overflow-hidden py-0">
+        <Card data-tour="secrets-list" className="@container gap-0 overflow-hidden py-0">
           {secrets.data.length === 0 ? (
             <EmptyState icon={KeyRound} title={copy.empty} className="rounded-none border-0">
               {copy.emptyText}
@@ -238,7 +238,7 @@ export function SecretsPage() {
               })}
             </ul>
           )}
-          <div className="border-t border-border bg-muted/40 px-4 py-4">
+          <div data-tour="secrets-add" className="border-t border-border bg-muted/40 px-4 py-4">
             <AddSecret />
           </div>
         </Card>

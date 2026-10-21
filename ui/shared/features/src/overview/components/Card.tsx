@@ -63,7 +63,7 @@ export function Card({
   return (
     // A container per card, so rows can adapt to the card's own width (/ship review).
     <UiCard
-      render={<section aria-labelledby={id} data-testid={id} />}
+      render={<section aria-labelledby={id} data-testid={id} data-tour={id} />}
       className={cn("@container/card min-w-0 gap-3 p-4", className)}
     >
       <CardHeader className="flex min-h-6 items-center justify-between gap-2 px-0">

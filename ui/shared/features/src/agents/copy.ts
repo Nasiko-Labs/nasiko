@@ -143,6 +143,7 @@ export const copy = {
   copyExample: (ex: string) => `Copy example: ${ex}`,
   copyCommand: (cmd: string) => `Copy: ${cmd}`,
 
+  summary: "Usage and resources",
   stats: "Last 24 hours",
   turns: "Turns",
   cost: "Est. cost",
@@ -153,6 +154,8 @@ export const copy = {
   obsOff:
     "Observability is not configured: set OTEL_EXPORTER_OTLP_ENDPOINT, TEMPO_URL and LOKI_URL.",
   recentSessions: "Recent sessions",
+  allSessions: "All sessions",
+  duration: "Duration",
   noSessions: (n: number) => `No sessions for this agent in the latest ${n} sessions.`,
   nameCollision:
     "Matched by name; may include sessions of another owner's agent, or a deleted one, with the same name.",
@@ -162,7 +165,7 @@ export const copy = {
   errorsDot: "Errors in the latest log lines",
   cpu: "CPU",
   memory: "Memory",
-  memoryLimit: "Memory limit",
+  memoryOfLimit: (pct: number) => `Memory: ${String(pct)}% of the limit`,
   level: "Level",
   allLevels: "All",
   searchLogs: "Search logs",

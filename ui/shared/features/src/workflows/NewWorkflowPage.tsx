@@ -191,7 +191,7 @@ export function NewWorkflowPage() {
         <TopBar trail={[copy.newTitle]} />
         <PageHeader title={copy.newTitle} description={copy.newText} />
       </div>
-      <div className="flex flex-col gap-2">
+      <div data-tour="wf-name" className="flex flex-col gap-2">
         <Label htmlFor="wf-name">
           {n ? copy.nameLabel : copy.nameRequired}
           {n ? null : (
@@ -227,7 +227,7 @@ export function NewWorkflowPage() {
       {gen.isPending ? null : (
         <StepEditor steps={steps} onChange={setSteps} agents={agentOptions(agents.data ?? [])} />
       )}
-      <div className="flex flex-wrap justify-end gap-2">
+      <div data-tour="wf-save" className="flex flex-wrap justify-end gap-2">
         {canDraft ? (
           <Button
             variant="outline"

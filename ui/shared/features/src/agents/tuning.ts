@@ -39,6 +39,8 @@ export const USERS_LIMIT = 200;
 /** Rows shown: recent sessions on Activity, error lines on the OSS crash card. */
 export const RECENT_SESSIONS_SHOWN = 10;
 export const CRASH_LINES_SHOWN = 5;
+/** Memory use (% of the container limit) from which the Activity meter turns warning. */
+export const MEMORY_WARN_PCT = 85;
 /** Overview's What it does, until Show more: skills and examples per skill shown, and the lengths (characters) past
  * which a description or a skill's description is clamped (4 and 2 lines). */
 export const SKILLS_SHOWN = 3;

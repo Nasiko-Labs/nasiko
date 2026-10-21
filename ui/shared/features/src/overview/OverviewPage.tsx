@@ -6,6 +6,8 @@
 // did); `Card asChild` + `<section>` -> `Card render={<section …/>}`; `Button asChild` + `Link` -> `ButtonLink`
 // (../agents/components/ButtonLink.tsx); the summary card is ./components/SummaryCard.tsx (development 49950eb1e, shared
 // with GenUI's overview view); Prettier formatting.
+// The product tour (legacy ui/ on development, 3aac84f66: dd9fe0f64): the range and summary are tour targets, and
+// the header has its own tour button (no top bar on desktop).
 "use client";
 
 /**
@@ -23,6 +25,7 @@
  * 2 columns from 700 px, 1 below. DOM order stays the priority order (Needs you first); wide layouts place cards
  * explicitly, so nothing leaves a hole with or without budgets.
  */
+import { TourButton } from "@nasiko/app-core/shell/TopBar";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ToggleGroup, ToggleGroupItem } from "@nasiko/ui/primitives";
 import { RotateCw } from "lucide-react";
@@ -97,6 +100,7 @@ function HeaderActions({
   return (
     <>
       <ToggleGroup
+        data-tour="overview-range"
         variant="outline"
         size="sm"
         value={[search.range ?? DEFAULT_RANGE]}
@@ -118,6 +122,8 @@ function HeaderActions({
         ))}
       </ToggleGroup>
       {setup ? <SetupGuide /> : null}
+      {/* No top bar here on desktop (phones keep it, with its own button). */}
+      <TourButton className="max-md:hidden" />
     </>
   );
 }

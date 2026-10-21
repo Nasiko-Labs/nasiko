@@ -2,6 +2,7 @@
 // the Overview's summary card, split out of OverviewPage so GenUI's overview view draws the same card. Local edits:
 // the React OverviewPage's card as it was (`Card render={<section …/>}`); `FleetHealth` comes from ../fleet.ts;
 // Prettier formatting.
+// The product tour (legacy ui/ on development, 3aac84f66: dd9fe0f64): the summary is a tour target.
 import { Badge } from "@nasiko/ui/primitives";
 import { Card } from "@nasiko/ui/primitives";
 import type { OverviewNarrative } from "../../narrative/overview";
@@ -35,7 +36,7 @@ export function SummaryCard({
   return (
     // The summary as one card like TokenOps' SummaryHero: the headline on the left, the KPI tiles 2×2 on the right.
     <Card
-      render={<section aria-labelledby="overview-summary-title" />}
+      render={<section data-tour="overview-summary" aria-labelledby="overview-summary-title" />}
       className="gap-0 overflow-hidden p-0 @[1100px]/overview:grid @[1100px]/overview:grid-cols-[minmax(0,1fr)_minmax(0,1.25fr)]"
     >
       <h2 id="overview-summary-title" className="sr-only">

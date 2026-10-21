@@ -260,7 +260,7 @@ function AgentDetail({ id, tab }: { id: string; tab?: string | undefined }) {
           setTab(String(t));
         }}
       >
-        <TabsList className="max-w-full justify-start overflow-x-auto">
+        <TabsList data-tour="agent-tabs" className="max-w-full justify-start overflow-x-auto">
           {allowed.map((t) => (
             <TabsTrigger key={t} value={t}>
               {labels[t]}
@@ -360,7 +360,7 @@ function Header({
   const busy = flow.m.isPending || flow.w.watching;
   return (
     <>
-      <div className="flex items-start gap-3">
+      <div data-tour="agent-header" className="flex items-start gap-3">
         <AgentMark name={agent.displayName} iconUrl={agent.iconUrl} size={40} />
         <PageHeader
           className="min-w-0 flex-1"
@@ -399,6 +399,7 @@ function Header({
               name={agent.displayName}
               display={display}
               harness={agent.isHarness}
+              variant="default"
             />
             {agent.canManage ? (
               <LifecycleButtons flow={flow} display={display} name={agent.displayName} collapse />

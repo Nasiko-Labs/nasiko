@@ -11,6 +11,8 @@ export const copy = {
   backToMenu: "Back to main menu",
   statusPage: "Status",
   skipToContent: "Skip to content",
+  /** The top bar's help button: starts the current page's tour. */
+  tour: "Tour this page",
   openMenu: "Open navigation",
   collapse: "Collapse",
   expand: "Expand",

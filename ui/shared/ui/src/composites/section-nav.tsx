@@ -1,7 +1,7 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/components/shared/section-nav.tsx.
 // Router-independent href/component port; anchors share the admitted button variant classes.
 // Navigation retains native link semantics, rather than rendering a Button with role="button". Legacy ui/ on
-// development (3aac84f66, c721a11a8): the sections are underlined tabs (the top-bar level is the app-core binding's).
+// development (3aac84f66, c721a11a8): the sections are underlined tabs (the top-bar level is the app-core binding's); dd9fe0f64: the tour's `section-nav` target.
 /**
  * A module's sub-pages as one row of links under its page header (Workflows: Deployed · Drafts · Runs; Agents: All
  * agents · Your agents · Builds), so a module never needs a second sidebar.
@@ -38,7 +38,11 @@ export function SectionNav({
   const Link = link ?? "a";
   return (
     // Underlined, full width: the module's sections read as the page's tabs, not as loose buttons.
-    <nav aria-label={label} className="flex gap-1 overflow-x-auto border-b border-border">
+    <nav
+      data-tour="section-nav"
+      aria-label={label}
+      className="flex gap-1 overflow-x-auto border-b border-border"
+    >
       {sections.map((s) => (
         <Link
           key={s.to}

@@ -332,6 +332,7 @@ function Page({
             }}
           >
             <TabsList
+              data-tour="router-tabs"
               variant="line"
               aria-label={copy.anchorsLabel}
               className="w-full max-w-full justify-start overflow-x-auto border-b border-border"

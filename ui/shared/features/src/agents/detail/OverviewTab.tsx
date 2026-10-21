@@ -130,7 +130,7 @@ export function OverviewTab({
           </Card>
         </div>
 
-        <div className="flex min-w-0 flex-col gap-4">
+        <div data-tour="agent-facts" className="flex min-w-0 flex-col gap-4">
           <RoutingCard
             agent={{
               id: agent.id,
@@ -268,7 +268,9 @@ function WhatItDoes({ agent }: { agent: AgentView }) {
           variant="link"
           size="sm"
           aria-expanded={expanded}
-          onClick={() => { setExpanded((e) => !e); }}
+          onClick={() => {
+            setExpanded((e) => !e);
+          }}
           className="h-auto self-start p-0 text-sm pointer-coarse:min-h-11"
         >
           {expanded

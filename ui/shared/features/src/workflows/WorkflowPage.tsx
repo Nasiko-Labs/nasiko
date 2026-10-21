@@ -218,7 +218,7 @@ function ReadOnlyFace({ wf, onEdit }: { wf: Workflow; onEdit: () => void }) {
           <p className="text-sm text-muted-foreground">{descriptionOf(wf)}</p>
         ) : null}
       </div>
-      <section aria-labelledby="steps-title" className="flex flex-col gap-3">
+      <section data-tour="wf-steps" aria-labelledby="steps-title" className="flex flex-col gap-3">
         <h2 id="steps-title" className="text-base font-medium">
           {copy.stepsTitle}
         </h2>
@@ -239,7 +239,7 @@ function ReadOnlyFace({ wf, onEdit }: { wf: Workflow; onEdit: () => void }) {
         )}
       </section>
       <OutputGuidelines wf={wf} />
-      <div className="flex flex-wrap justify-end gap-2">
+      <div data-tour="wf-run" className="flex flex-wrap justify-end gap-2">
         <Button variant="ghost" onClick={onEdit}>
           <Pencil aria-hidden /> {copy.edit}
         </Button>
@@ -264,6 +264,7 @@ function DangerZone({ wf }: { wf: Workflow }) {
   const live = isDeployed(wf);
   return (
     <section
+      data-tour="wf-danger"
       aria-labelledby="danger-zone"
       className="flex flex-col gap-3 rounded-xl border border-destructive/30 p-4"
     >

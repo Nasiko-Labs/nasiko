@@ -2,14 +2,17 @@
 // links are the navigation port's `Link` (`@nasiko/app-core/navigation`) to `/sessions/<id>`; the level `Select` narrows Base UI's nullable `onValueChange` value and
 // gets `items` (value → label) so the trigger shows "All levels" as the lab's Radix value did; `ApiError` is
 // `ProductApiError`; Prettier formatting.
+// Legacy ui/ on development (3aac84f66, dd9fe0f64): usage and resources are one strip (`StatGroup`), memory a meter
+// against the limit, recent sessions full rows with their duration and an All sessions link.
 "use client";
 
 /**
  * Activity (plan §7.3): 24 h stats, resources, recent sessions (name-matched from the first
  * 100 session/list rows, created after the agent), and logs (newest first) with a live tail.
  */
+import { hrefFor } from "@nasiko/app-core/url-state";
 import Link from "@nasiko/app-core/navigation";
-import { useId, useState } from "react";
+import { useId, useState, type ReactNode } from "react";
 import { Button } from "@nasiko/ui/primitives";
 import { Field, FieldLabel } from "@nasiko/ui/primitives";
 import {
@@ -19,10 +22,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@nasiko/ui/primitives";
+import { Progress } from "@nasiko/ui/primitives";
 import { Skeleton } from "@nasiko/ui/primitives";
 import { SearchInput } from "@nasiko/ui/composites";
 import { LogDrawer } from "../../sessions/LogDrawer";
-import { fmtInt, fmtLatency, fmtMoney } from "@nasiko/ui/lib";
+import { fmtDuration, fmtInt, fmtLatency, fmtMoney } from "@nasiko/ui/lib";
+import { cn } from "@nasiko/ui/cn";
 import { ProductApiError as ApiError } from "@nasiko/data-access/product";
 import {
   useAgentLogs,
@@ -35,7 +40,7 @@ import { ErrorNote, LearnMore, Section } from "../components/bits";
 import { relTime } from "../format";
 import { copy } from "../copy";
 import type { AgentView } from "../normalize";
-import { RECENT_SESSIONS_SHOWN, SESSIONS_SCAN } from "../tuning";
+import { MEMORY_WARN_PCT, RECENT_SESSIONS_SHOWN, SESSIONS_SCAN } from "../tuning";
 
 const LEVELS = ["", "ERROR", "WARN", "INFO"] as const;
 /** Radix Select items can't have an empty value: "all levels" travels as this key. */
@@ -66,76 +71,110 @@ export function ActivityTab({
 
   return (
     <div className="space-y-4">
-      <Section title={copy.stats}>
-        {stats.isPending ? (
-          <Skeleton className="h-14" />
-        ) : stats.isError ? (
-          obsOff(stats.error) ? (
-            <p className="text-sm text-muted-foreground">{copy.obsOff}</p>
+      {/* One strip, two readings: what the agent did (24 h) and what it holds now. */}
+      <section
+        aria-label={copy.summary}
+        className="grid rounded-xl border bg-card text-card-foreground lg:grid-cols-[minmax(0,4fr)_minmax(0,3fr)]"
+      >
+        <StatGroup title={copy.stats}>
+          {stats.isPending ? (
+            <Skeleton className="h-12" />
+          ) : stats.isError ? (
+            obsOff(stats.error) ? (
+              <p className="text-sm text-muted-foreground">{copy.obsOff}</p>
+            ) : (
+              <ErrorNote error={stats.error} onRetry={() => void stats.refetch()} />
+            )
           ) : (
-            <ErrorNote error={stats.error} onRetry={() => void stats.refetch()} />
-          )
-        ) : (
-          <dl className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
-            <Stat
-              label={copy.turns}
-              value={fmtInt(stats.data.trace_count ?? 0)}
-              title={copy.turnsTip}
-            />
-            <Stat label={copy.cost} value={fmtMoney(stats.data.cost_summary?.total?.cost ?? 0)} />
-            <Stat label={copy.latencyP50} value={fmtLatency(stats.data.latency_ms_p50)} />
-            <Stat label={copy.latencyP99} value={fmtLatency(stats.data.latency_ms_p99)} />
-          </dl>
-        )}
-      </Section>
-
-      <Section title={copy.resources}>
-        {resources.isPending ? (
-          <Skeleton className="h-10" />
-        ) : resources.isError ? (
-          obsOff(resources.error) ? (
-            <p className="text-sm text-muted-foreground">{copy.obsOff}</p>
+            <dl className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-4">
+              <Stat
+                label={copy.turns}
+                value={fmtInt(stats.data.trace_count ?? 0)}
+                title={copy.turnsTip}
+              />
+              <Stat label={copy.cost} value={fmtMoney(stats.data.cost_summary?.total?.cost ?? 0)} />
+              <Stat label={copy.latencyP50} value={fmtLatency(stats.data.latency_ms_p50)} />
+              <Stat label={copy.latencyP99} value={fmtLatency(stats.data.latency_ms_p99)} />
+            </dl>
+          )}
+        </StatGroup>
+        <StatGroup title={copy.resources} className="border-t lg:border-t-0 lg:border-l">
+          {resources.isPending ? (
+            <Skeleton className="h-12" />
+          ) : resources.isError ? (
+            obsOff(resources.error) ? (
+              <p className="text-sm text-muted-foreground">{copy.obsOff}</p>
+            ) : (
+              <ErrorNote error={resources.error} onRetry={() => void resources.refetch()} />
+            )
+          ) : !resources.data.usage ? (
+            <p className="text-sm text-muted-foreground">{copy.noResources}</p>
           ) : (
-            <ErrorNote error={resources.error} onRetry={() => void resources.refetch()} />
-          )
-        ) : !resources.data.usage ? (
-          <p className="text-sm text-muted-foreground">{copy.noResources}</p>
-        ) : (
-          <dl className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-3">
-            <Stat
-              label={copy.cpu}
-              value={
-                resources.data.usage.cpu_percent != null
-                  ? `${resources.data.usage.cpu_percent.toFixed(1)}%`
-                  : "—"
-              }
-            />
-            <Stat label={copy.memory} value={mb(resources.data.usage.memory_usage_bytes)} />
-            <Stat label={copy.memoryLimit} value={mb(resources.data.usage.memory_limit_bytes)} />
-          </dl>
-        )}
-      </Section>
+            <dl className="grid grid-cols-2 gap-x-6 gap-y-3">
+              <Stat
+                label={copy.cpu}
+                value={
+                  resources.data.usage.cpu_percent != null
+                    ? `${resources.data.usage.cpu_percent.toFixed(1)}%`
+                    : "—"
+                }
+              />
+              <MemoryStat
+                used={resources.data.usage.memory_usage_bytes}
+                limit={resources.data.usage.memory_limit_bytes}
+              />
+            </dl>
+          )}
+        </StatGroup>
+      </section>
 
-      <Section title={copy.recentSessions}>
+      <Section
+        title={copy.recentSessions}
+        action={
+          <Link
+            href={hrefFor("/sessions", { agent: agent.id })}
+            className="text-sm text-primary-text underline-offset-4 hover:underline"
+          >
+            {copy.allSessions}
+          </Link>
+        }
+      >
         {shared ? <p className="text-xs text-muted-foreground">{copy.nameCollision}</p> : null}
         {sessions.isPending ? (
           <Skeleton className="h-16" />
         ) : sessions.isError ? (
           <ErrorNote error={sessions.error} onRetry={() => void sessions.refetch()} />
         ) : sessions.data.length ? (
-          <ul className="divide-y divide-border text-sm">
+          <ul className="-mx-2 text-sm">
             {sessions.data.slice(0, RECENT_SESSIONS_SHOWN).map((s) => (
-              <li
-                key={s.session_id}
-                className="flex flex-wrap items-center justify-between gap-2 py-1.5"
-              >
+              <li key={s.session_id} className="border-b border-border last:border-b-0">
                 <Link
                   href={`/sessions/${encodeURIComponent(s.session_id)}`}
-                  className="font-mono text-xs underline-offset-4 hover:underline"
+                  className="grid grid-cols-[minmax(0,1fr)_auto] items-baseline gap-x-4 rounded-md px-2 py-2 outline-none hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring sm:grid-cols-[minmax(0,1fr)_5rem_4.5rem_7rem]"
                 >
-                  {s.session_id.slice(0, 8)}
+                  <span className="truncate">
+                    {s.first_input ? (
+                      `“${s.first_input}”`
+                    ) : (
+                      <span className="font-mono text-xs">{s.session_id}</span>
+                    )}
+                  </span>
+                  <span
+                    title={copy.duration}
+                    className="hidden text-right text-muted-foreground tabular-nums sm:block"
+                  >
+                    {fmtDuration(s.duration_ms)}
+                  </span>
+                  <span
+                    title={copy.cost}
+                    className="hidden text-right text-muted-foreground tabular-nums sm:block"
+                  >
+                    {fmtMoney(s.cost_summary.total.cost)}
+                  </span>
+                  <span className="text-right text-xs text-muted-foreground tabular-nums">
+                    {relTime(s.start_time)}
+                  </span>
                 </Link>
-                <span className="text-xs text-muted-foreground">{relTime(s.start_time)}</span>
               </li>
             ))}
           </ul>
@@ -206,25 +245,32 @@ export function ActivityTab({
         ) : lines.length ? (
           // Newest first, as the server sends them.
           <ol
-            className="max-h-96 overflow-auto rounded bg-muted p-2 font-mono text-xs"
+            className="max-h-[28rem] overflow-auto rounded-lg border bg-muted/40 py-1 font-mono text-xs leading-5"
             aria-label={copy.logLines}
           >
             {lines.map((l) => (
               <li
                 key={`${l.timestamp}|${l.message}`}
-                className={
-                  l.level === "ERROR"
-                    ? "text-destructive"
-                    : l.level === "WARN"
-                      ? "text-warning"
-                      : ""
-                }
+                className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 px-3 py-0.5 hover:bg-muted sm:grid-cols-[auto_3rem_minmax(0,1fr)] sm:py-0"
               >
-                <span className="text-muted-foreground">
+                <time
+                  dateTime={l.timestamp}
+                  title={l.timestamp}
+                  className="text-muted-foreground tabular-nums"
+                >
                   {l.timestamp.slice(0, 19).replace("T", " ")}
-                </span>{" "}
-                {l.level ? `[${l.level}] ` : ""}
-                {l.message}
+                </time>
+                <span className={LEVEL_TONE[l.level ?? ""] ?? "text-muted-foreground"}>
+                  {l.level ?? ""}
+                </span>
+                <span
+                  className={cn(
+                    "col-span-2 break-words whitespace-pre-wrap sm:col-span-1",
+                    l.level === "ERROR" && "text-destructive",
+                  )}
+                >
+                  {l.message}
+                </span>
               </li>
             ))}
           </ol>
@@ -239,13 +285,67 @@ export function ActivityTab({
   );
 }
 
-function Stat({ label, value, title }: { label: string; value: string; title?: string }) {
+function StatGroup({
+  title,
+  className,
+  children,
+}: {
+  title: string;
+  className?: string;
+  children: ReactNode;
+}) {
   return (
-    <div title={title}>
-      <dt className="text-xs text-muted-foreground">{label}</dt>
-      <dd className="text-base tabular-nums">{value}</dd>
+    <div className={cn("flex min-w-0 flex-col gap-3 p-4", className)}>
+      <h2 className="text-sm font-semibold">{title}</h2>
+      {children}
     </div>
   );
 }
+
+function Stat({ label, value, title }: { label: string; value: string; title?: string }) {
+  return (
+    <div title={title} className="min-w-0">
+      <dt className="text-xs text-muted-foreground">{label}</dt>
+      <dd className="mt-0.5 text-xl font-medium tabular-nums">{value}</dd>
+    </div>
+  );
+}
+
+/** Memory against its limit: the headroom is what an operator reads here. */
+function MemoryStat({
+  used,
+  limit,
+}: {
+  used?: number | null | undefined;
+  limit?: number | null | undefined;
+}) {
+  const pct = used != null && limit ? Math.min(100, (used / limit) * 100) : null;
+  return (
+    <div className="min-w-0">
+      <dt className="text-xs text-muted-foreground">{copy.memory}</dt>
+      <dd className="mt-0.5 text-xl font-medium tabular-nums">
+        {mb(used)}
+        {limit ? (
+          <span className="text-sm font-normal text-muted-foreground"> / {mb(limit)}</span>
+        ) : null}
+      </dd>
+      {pct != null ? (
+        <Progress
+          value={pct}
+          aria-label={copy.memoryOfLimit(Math.round(pct))}
+          className={cn(
+            "mt-2 h-1 bg-muted *:bg-muted-foreground",
+            pct >= MEMORY_WARN_PCT && "*:bg-warning",
+          )}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+const LEVEL_TONE: Record<string, string> = {
+  ERROR: "font-medium text-destructive",
+  WARN: "text-warning",
+};
 
 const mb = (v: number | null | undefined) => (v == null ? "—" : `${Math.round(v / 1_048_576)} MB`);

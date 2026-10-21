@@ -156,7 +156,7 @@ export function RunsPage({
     );
   else
     body = (
-      <ul aria-label={copy.runsList} className="flex flex-col gap-3">
+      <ul data-tour="runs-list" aria-label={copy.runsList} className="flex flex-col gap-3">
         {shown.map((r) => (
           <li key={r.id}>
             <RunCard
@@ -185,7 +185,7 @@ export function RunsPage({
       <PageHeader title={copy.title} description={copy.sub} />
       <SectionNav current="/workflows/runs" />
       {/* One row the width of the list: search on the left, the filters on the right. */}
-      <div className="flex flex-wrap items-center gap-2">
+      <div data-tour="runs-filters" className="flex flex-wrap items-center gap-2">
         <SearchInput
           aria-label={copy.runsSearch}
           placeholder={copy.searchPlaceholder}

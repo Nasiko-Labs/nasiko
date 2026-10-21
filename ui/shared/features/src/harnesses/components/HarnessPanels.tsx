@@ -54,6 +54,7 @@ export function HarnessPanels({
     // Columns follow the card count: five harnesses share one row on wide screens, one column on
     // phones, and one or two cards never stretch past a third of the row (QA ISSUE-001).
     <section
+      data-tour="harnesses-cards"
       aria-label="Harnesses"
       className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-[repeat(var(--lg-cols),minmax(0,1fr))] xl:grid-cols-[repeat(var(--xl-cols),minmax(0,1fr))]"
       style={

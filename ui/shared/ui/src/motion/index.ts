@@ -30,3 +30,12 @@ export { ReorderScope } from "./reorder-scope";
 // reduced-motion and the drag-to-reorder list. Features import them from here (one motion owner); the eager
 // `motion` component is not re-exported (it would load the full runtime under strict LazyMotion).
 export { m, AnimatePresence, Reorder, useDragControls, useReducedMotion } from "motion/react";
+// The product tour's spotlight (legacy ui/ on development, dd9fe0f64): it glides a box of motion values that the dim's
+// clip and the edge both read, and fades its card in by hand.
+export {
+  animate,
+  useMotionValue,
+  useTransform,
+  type MotionValue,
+  type Transition,
+} from "motion/react";

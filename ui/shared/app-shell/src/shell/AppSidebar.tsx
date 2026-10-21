@@ -13,6 +13,7 @@
 // arrow-typed (`unbound-method`); imports mapped to
 // `@nasiko/ui/*`; Prettier formatting. Every class string, attribute, timing and string is the lab's.
 // Legacy ui/ on development (3aac84f66, 51901c342): `IS_MAC` is shared from `@nasiko/ui/lib` (keys.ts).
+// The product tour (legacy ui/ on development, 3aac84f66: dd9fe0f64): each nav group is a `nav-<group>` target.
 "use client";
 
 /**
@@ -409,7 +410,7 @@ function NavGroups({
       >
         {/* A group with no items (Lab, in a production build) has no header either. */}
         {NAV_GROUPS.filter((g) => items.some((n) => n.group === g.id)).map((g) => (
-          <SidebarGroup key={g.id} className={cn(GROUP, "py-0")}>
+          <SidebarGroup key={g.id} data-tour={`nav-${g.id}`} className={cn(GROUP, "py-0")}>
             {/* In the rail a header becomes a short hairline: the icons stay one even column, the groups still apart. */}
             {g.label ? (
               <>

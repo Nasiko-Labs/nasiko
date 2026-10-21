@@ -228,6 +228,7 @@ export function BuildPage({ buildId }: { buildId: string }) {
         <Card
           className="flex-row flex-wrap items-center justify-between gap-3 p-4 motion-safe:animate-in motion-safe:duration-200 motion-safe:fade-in"
           data-testid="build-outcome"
+          data-tour="build-outcome"
           data-outcome="running"
         >
           <p className="flex items-center gap-2 font-medium">
@@ -256,6 +257,7 @@ export function BuildPage({ buildId }: { buildId: string }) {
         <Alert
           className="gap-y-2 border-warning/40 bg-warning/5 [&>svg]:text-warning"
           data-testid="build-outcome"
+          data-tour="build-outcome"
           data-outcome="notRunning"
         >
           <AlertTriangle aria-hidden />
@@ -278,6 +280,7 @@ export function BuildPage({ buildId }: { buildId: string }) {
         <Alert
           className="gap-y-2 border-destructive/30 bg-destructive/5 [&>svg]:text-destructive"
           data-testid="build-outcome"
+          data-tour="build-outcome"
           data-outcome="failed"
         >
           <AlertTriangle aria-hidden />
@@ -301,7 +304,7 @@ export function BuildPage({ buildId }: { buildId: string }) {
         </Alert>
       ) : null}
 
-      <Card className="gap-0 p-0">
+      <Card data-tour="build-stages" className="gap-0 p-0">
         <div className="p-4">
           <StageList stages={view.stages} sub={sub} />
         </div>

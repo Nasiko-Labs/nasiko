@@ -85,6 +85,7 @@ export function Lead({
 
   return (
     <section
+      data-tour="optimization-lead"
       aria-labelledby="optimization-lead-h"
       aria-busy={state.kind === "loading"}
       className="flex flex-col gap-3"

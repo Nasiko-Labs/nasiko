@@ -122,14 +122,22 @@ export function AgentsSection({
     />
   );
   return (
-    <section id="router-agents" aria-labelledby="router-agents-h" className="scroll-mt-4">
+    <section
+      data-tour="router-agents"
+      id="router-agents"
+      aria-labelledby="router-agents-h"
+      className="scroll-mt-4"
+    >
       {/* The tab names the section; the heading stays for screen readers and as the focus target of "Show them". */}
       <h2 id="router-agents-h" tabIndex={-1} className="sr-only">
         {copy.agentsTitle}
       </h2>
       {/* One object: the toolbar is the table's top edge, so its filters read as the table's own. */}
       <div className="rounded-lg border border-border bg-card">
-        <div className="flex flex-wrap items-center gap-2 border-b border-border p-2">
+        <div
+          data-tour="router-agent-filters"
+          className="flex flex-wrap items-center gap-2 border-b border-border p-2"
+        >
           {filters}
           {searchable ? (
             <SearchInput

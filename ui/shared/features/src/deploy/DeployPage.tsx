@@ -47,6 +47,7 @@ export function DeployPage({
         {/* The method is the page's first choice, so each is a card that says what it takes. Still Radix tabs: arrow
             keys move between them, and the method stays in the URL. */}
         <TabsList
+          data-tour="deploy-methods"
           aria-label={copy.methods.label}
           className="grid w-full grid-cols-3 items-stretch gap-3 bg-transparent p-0 group-data-[orientation=horizontal]/tabs:h-auto @max-[640px]:gap-2"
         >

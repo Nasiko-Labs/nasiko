@@ -482,8 +482,15 @@ export function SessionsPage({
           </span>
 
           {/* One object: the toolbar is the list's top edge, so its filters read as the list's own. */}
-          <div id="sessions-list" className="@container rounded-lg border border-border">
-            <div className="flex flex-wrap items-center gap-2 border-b border-border p-2">
+          <div
+            data-tour="sessions-list"
+            id="sessions-list"
+            className="@container rounded-lg border border-border"
+          >
+            <div
+              data-tour="sessions-toolbar"
+              className="flex flex-wrap items-center gap-2 border-b border-border p-2"
+            >
               <Lanes
                 lanes={lanes}
                 lane={search.lane}
