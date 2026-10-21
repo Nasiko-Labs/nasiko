@@ -10,6 +10,7 @@
 
 use std::io::IsTerminal;
 use std::path::Path;
+use std::sync::OnceLock;
 
 use anyhow::{Context, Result, bail};
 use clap::Args;
@@ -47,7 +48,10 @@ pub struct ConnectOptions {
     /// Don't report sessions
     #[arg(long, help_heading = HELP_HEADING)]
     pub no_reporting: bool,
-    /// Report tokens, latency and cost only — no prompt or response text
+    /// Report sessions including prompt and response text (implies --reporting)
+    #[arg(long, conflicts_with_all = ["no_reporting", "no_content"], help_heading = HELP_HEADING)]
+    pub content: bool,
+    /// Report tokens, latency and cost only — no prompt or response text (implies --reporting)
     #[arg(long, conflicts_with = "no_reporting", help_heading = HELP_HEADING)]
     pub no_content: bool,
     /// Reconnect even when the coding agent is still running
@@ -67,14 +71,32 @@ impl ConnectOptions {
             || self.no_mcp
             || self.reporting
             || self.no_reporting
+            || self.content
             || self.no_content
             || self.force
             || self.yes
     }
 
-    /// Whether the flags say something explicit about session reporting.
+    /// Whether the flags ask for session reporting: `--reporting`, or a content setting.
     fn mentions_reporting(&self) -> bool {
-        self.reporting || self.no_content
+        self.reporting || self.content || self.no_content
+    }
+
+    /// Whether the flags ask only about reporting, saying nothing about routing or MCP.
+    fn only_about_reporting(&self) -> bool {
+        self.mentions_reporting() && !self.no_mcp
+    }
+
+    /// The content setting the flags ask for, if any. `--reporting` alone has none, so reporting
+    /// that is already on keeps its own.
+    fn content_choice(&self) -> Option<bool> {
+        if self.no_content {
+            Some(false)
+        } else if self.content {
+            Some(true)
+        } else {
+            None
+        }
     }
 }
 
@@ -113,6 +135,37 @@ pub fn cli_name() -> String {
         .unwrap_or_else(|| "nasiko".to_string())
 }
 
+/// The commands hints point at where the two CLIs differ. `nasiko-ee` sets its own at startup
+/// through [`set_cli_hints`]; otherwise they are `nasiko`'s.
+pub struct CliHints {
+    /// How to log in to the active control plane again.
+    pub login: String,
+    /// How to list reported coding-agent sessions.
+    pub sessions: String,
+}
+
+static CLI_HINTS: OnceLock<CliHints> = OnceLock::new();
+
+/// Replaces `nasiko`'s hints; only the first call has an effect.
+pub fn set_cli_hints(hints: CliHints) {
+    let _ = CLI_HINTS.set(hints);
+}
+
+fn cli_hints() -> &'static CliHints {
+    CLI_HINTS.get_or_init(|| CliHints {
+        login: format!("{} auth login", cli_name()),
+        sessions: format!("{} observe sessions", cli_name()),
+    })
+}
+
+pub fn login_hint() -> &'static str {
+    &cli_hints().login
+}
+
+pub fn sessions_hint() -> &'static str {
+    &cli_hints().sessions
+}
+
 /// Points a caller of a renamed command at its replacement. The old command still runs.
 pub fn note_renamed(old: &str, new: &str) {
     let cli = cli_name();
@@ -140,6 +193,9 @@ struct Router {
     /// What routing writes, and where the MCP gateway is registered — shown before applying.
     routing_target: fn() -> String,
     mcp_target: &'static str,
+    /// Whether an agent (name or UUID) is still this user's routing agent for this coding agent;
+    /// asked before a reconnect reuses the current connection's agent.
+    agent_is_usable: fn(&str) -> Result<bool>,
 }
 
 fn router(id: &str) -> Option<Router> {
@@ -154,10 +210,11 @@ fn router(id: &str) -> Option<Router> {
             routing_target: || {
                 format!(
                     "{} (ANTHROPIC_BASE_URL, apiKeyHelper)",
-                    display_path(&claude::settings_path())
+                    integration::tildify(&claude::settings_path())
                 )
             },
             mcp_target: "`claude mcp add nasiko` (user scope)",
+            agent_is_usable: |agent| coding_agent_router::owned_agent_exists(agent, "claude"),
         }),
         "codex" => Some(Router {
             connect: codex::connect,
@@ -169,10 +226,11 @@ fn router(id: &str) -> Option<Router> {
             routing_target: || {
                 format!(
                     "{} (nasiko model provider)",
-                    display_path(&codex::config_path())
+                    integration::tildify(&codex::config_path())
                 )
             },
             mcp_target: "[mcp_servers.nasiko] in the same config.toml",
+            agent_is_usable: |agent| coding_agent_router::owned_agent_exists(agent, "codex"),
         }),
         "opencode" => Some(Router {
             connect: opencode::connect,
@@ -181,8 +239,9 @@ fn router(id: &str) -> Option<Router> {
             summary: opencode::summary,
             processes: &["opencode"],
             reconnects_in_place: true,
-            routing_target: || display_path(&opencode::plugin_path()),
+            routing_target: || integration::tildify(&opencode::plugin_path()),
             mcp_target: "inside the same plugin",
+            agent_is_usable: |agent| coding_agent_router::owned_agent_exists(agent, "opencode"),
         }),
         _ => None,
     }
@@ -324,7 +383,12 @@ enum RoutingStep {
     Unsupported,
     Skip,
     Keep,
-    Connect { reconnect: bool },
+    Connect {
+        reconnect: bool,
+    },
+    /// Re-apply the current connection in place, keeping its agent and MCP setting — what a
+    /// script running `connect` on an agent that updates in place (OpenCode) has always done.
+    Refresh,
 }
 
 /// What `connect` will do about one agent's session reporting.
@@ -343,10 +407,69 @@ enum ReportingStep {
 /// Answers shared by every agent connected in one run.
 #[derive(Debug, Clone, Default, PartialEq)]
 struct RoutingChoices {
+    /// `--agent`: the routing agent to use instead of the current or default one.
+    agent: Option<String>,
     /// Config name or UUID; `None` keeps each agent's current config (or the user's default).
     llm_config: Option<String>,
     llm_config_label: Option<String>,
     mcp: bool,
+}
+
+/// What one agent's routing `connect` is asked to do in this run.
+struct RoutingRequest<'a> {
+    router: Router,
+    reconnect: bool,
+    /// Routing agent name or UUID; `None` uses the account's default integration agent.
+    agent: Option<&'a str>,
+    /// The current connection's agent when it is kept, for the plan's wording.
+    reused_agent_name: Option<&'a str>,
+    llm_config: Option<&'a str>,
+    mcp: bool,
+}
+
+/// The routing request for `plan`, or `None` when its routing isn't being (re)connected.
+/// Replacing a connection keeps its agent unless `--agent` names another — but only when that
+/// connection belongs to the active cluster and login, never another user's agent. A refresh
+/// also keeps the connection's MCP setting rather than adding a gateway it was set up without.
+fn routing_request<'a>(
+    plan: &'a AgentPlan,
+    choices: &'a RoutingChoices,
+    destination: Option<&ReportingDestination>,
+) -> Option<RoutingRequest<'a>> {
+    let router = plan.view.router?;
+    let refresh = plan.routing == RoutingStep::Refresh;
+    let reconnect = match plan.routing {
+        RoutingStep::Connect { reconnect } => reconnect,
+        RoutingStep::Refresh => true,
+        _ => return None,
+    };
+    let current = plan.view.routing.as_ref();
+    let reused = current
+        .filter(|_| choices.agent.is_none())
+        .filter(|current| owned_by(current, destination));
+    Some(RoutingRequest {
+        router,
+        reconnect,
+        agent: choices
+            .agent
+            .as_deref()
+            .or(reused.map(|current| current.agent_id.as_str())),
+        reused_agent_name: reused.map(|current| current.agent_name.as_str()),
+        llm_config: choices.llm_config.as_deref().filter(|_| !refresh),
+        mcp: choices.mcp && (!refresh || current.is_some_and(|current| current.mcp_installed)),
+    })
+}
+
+/// Whether an existing routing connection belongs to `destination`'s cluster and login.
+/// A connection recorded without its login (older versions) matches on the cluster alone.
+fn owned_by(routing: &RoutingSummary, destination: Option<&ReportingDestination>) -> bool {
+    destination.is_some_and(|now| {
+        now.is(
+            &routing.cluster,
+            &routing.cluster_url,
+            routing.principal_id.as_deref(),
+        )
+    })
 }
 
 struct AgentPlan {
@@ -357,16 +480,19 @@ struct AgentPlan {
 
 impl AgentPlan {
     fn changes_anything(&self) -> bool {
-        matches!(self.routing, RoutingStep::Connect { .. })
-            || matches!(self.reporting, ReportingStep::Install { .. })
+        matches!(
+            self.routing,
+            RoutingStep::Connect { .. } | RoutingStep::Refresh
+        ) || matches!(self.reporting, ReportingStep::Install { .. })
     }
 }
 
 struct Plan {
     agents: Vec<AgentPlan>,
     choices: RoutingChoices,
-    /// The cluster reporting delivers to once installed now, for the plan's wording.
-    destination: Option<String>,
+    /// The active cluster and login: where reporting installed now delivers, and whose agents
+    /// an existing connection may be reused for.
+    destination: Option<ReportingDestination>,
 }
 
 /// `nasiko connect [agent]`: set up LLM routing, the MCP gateway and session reporting.
@@ -546,6 +672,7 @@ fn build_plan(
     }
 
     let mut choices = RoutingChoices {
+        agent: options.agent.clone(),
         mcp: !options.no_mcp,
         ..RoutingChoices::default()
     };
@@ -595,7 +722,7 @@ fn build_plan(
     if !unreported.is_empty() {
         let report = if options.no_reporting {
             false
-        } else if options.reporting {
+        } else if options.mentions_reporting() {
             true
         } else if prompter.interactive() {
             prompter.confirm(
@@ -609,15 +736,13 @@ fn build_plan(
             false
         };
         if report {
-            let capture_content = if options.no_content {
-                false
-            } else if prompter.interactive() {
-                prompter.confirm(
+            let capture_content = match options.content_choice() {
+                Some(choice) => choice,
+                None if prompter.interactive() => prompter.confirm(
                     "Include prompt and response text? (No sends only tokens, latency and cost)",
                     true,
-                )?
-            } else {
-                true
+                )?,
+                None => true,
             };
             for &i in &unreported {
                 agents[i].reporting = ReportingStep::Install {
@@ -630,13 +755,13 @@ fn build_plan(
     Ok(Plan {
         agents,
         choices,
-        destination: destination.map(|now| now.cluster_name.clone()),
+        destination: destination.cloned(),
     })
 }
 
 /// Reporting that is already on stays as it is, unless it delivers to another cluster than the
-/// active one (moved when asked, or when `--reporting` is given) or the flags ask for a
-/// different content setting (`--reporting` means with content, `--no-content` without).
+/// active one (moved when asked, or when the flags ask for reporting) or the flags ask for a
+/// different content setting (`--content` or `--no-content`; `--reporting` alone keeps it).
 fn existing_reporting_step(
     local: &LocalAgent,
     options: &ConnectOptions,
@@ -646,11 +771,7 @@ fn existing_reporting_step(
     if options.no_reporting {
         return Ok(ReportingStep::Keep);
     }
-    let capture_content = if options.mentions_reporting() {
-        !options.no_content
-    } else {
-        local.capture_content
-    };
+    let capture_content = options.content_choice().unwrap_or(local.capture_content);
     let elsewhere = match (destination, &local.reporting_destination) {
         (Some(now), Some(bound)) if !bound.same_as(now) => Some(bound.cluster_name.clone()),
         (Some(_), None) => Some("an older install with no cluster recorded".to_string()),
@@ -710,13 +831,16 @@ fn existing_routing_step(
         return Ok(RoutingStep::Connect { reconnect: true });
     }
     if !prompter.interactive() {
-        // Scripts only replace a connection they explicitly asked to change — except one that
-        // updates in place (OpenCode), where `connect` has always refreshed the setup.
-        return Ok(if router.reconnects_in_place {
-            RoutingStep::Connect { reconnect: true }
-        } else {
-            RoutingStep::Keep
-        });
+        // Scripts only replace a connection they explicitly asked to change. One that updates
+        // in place (OpenCode) is refreshed as `connect` always did — unless the flags are only
+        // about reporting, which leaves routing alone.
+        return Ok(
+            if router.reconnects_in_place && !options.only_about_reporting() {
+                RoutingStep::Refresh
+            } else {
+                RoutingStep::Keep
+            },
+        );
     }
     let items = vec![
         format!(
@@ -832,34 +956,40 @@ fn print_plan(plan: &Plan) {
     println!("\nPlan:");
     for agent in &plan.agents {
         println!("  {}", agent.view.local.display_name);
-        match (&agent.routing, agent.view.router) {
-            (RoutingStep::Connect { reconnect }, Some(router)) => {
+        match routing_request(agent, &plan.choices, plan.destination.as_ref()) {
+            Some(request) => {
+                let router = request.router;
                 let config = plan
                     .choices
                     .llm_config_label
                     .as_deref()
+                    .filter(|_| request.llm_config.is_some())
                     .map(|label| format!(" via LLM config {label}"))
                     .unwrap_or_default();
-                let verb = match (*reconnect, router.reconnects_in_place) {
+                let verb = match (request.reconnect, router.reconnects_in_place) {
                     (false, _) => "connect",
                     (true, true) => "update in place",
                     (true, false) => "reconnect",
                 };
+                let kept_agent = request
+                    .reused_agent_name
+                    .map(|name| format!(", keeping agent {name}"))
+                    .unwrap_or_default();
                 println!(
-                    "    • LLM routing: {verb}{config} → {}",
+                    "    • LLM routing: {verb}{config}{kept_agent} → {}",
                     (router.routing_target)()
                 );
-                if plan.choices.mcp {
+                if request.mcp {
                     println!("    • MCP gateway: {}", router.mcp_target);
                 } else {
                     println!("    • MCP gateway: not added");
                 }
             }
-            (RoutingStep::Keep, _) => println!("    • LLM routing: keep the current connection"),
-            (RoutingStep::Skip, _) => println!("    • LLM routing: not set up"),
-            (RoutingStep::Unsupported, _) | (RoutingStep::Connect { .. }, None) => {
-                println!("    • LLM routing: not supported")
-            }
+            None => match agent.routing {
+                RoutingStep::Keep => println!("    • LLM routing: keep the current connection"),
+                RoutingStep::Skip => println!("    • LLM routing: not set up"),
+                _ => println!("    • LLM routing: not supported"),
+            },
         }
         match &agent.reporting {
             ReportingStep::Install {
@@ -874,7 +1004,9 @@ fn print_plan(plan: &Plan) {
                 match moving_from {
                     Some(from) => println!(
                         "    • Session reporting: move from {from} to {} ({content})",
-                        plan.destination.as_deref().unwrap_or("the active cluster")
+                        plan.destination
+                            .as_ref()
+                            .map_or("the active cluster", |now| now.cluster_name.as_str())
                     ),
                     None if agent.view.local.reporting_active => {
                         println!("    • Session reporting: switch to {content}")
@@ -926,7 +1058,13 @@ fn apply_plan(
         }
         let name = agent.view.local.display_name;
         println!("\n── {name} ──");
-        if let Err(error) = apply_agent(agent, &plan.choices, options, prompter) {
+        if let Err(error) = apply_agent(
+            agent,
+            &plan.choices,
+            plan.destination.as_ref(),
+            options,
+            prompter,
+        ) {
             failures.push((name, format!("{error:#}")));
         }
     }
@@ -936,23 +1074,27 @@ fn apply_plan(
 fn apply_agent(
     agent: &AgentPlan,
     choices: &RoutingChoices,
+    destination: Option<&ReportingDestination>,
     options: &ConnectOptions,
     prompter: &dyn Prompter,
 ) -> Result<()> {
     let name = agent.view.local.display_name;
     let mut newly_routed = false;
-    if let (RoutingStep::Connect { reconnect }, Some(router)) = (&agent.routing, agent.view.router)
-    {
+    if let Some(request) = routing_request(agent, choices, destination) {
+        let router = request.router;
+        let reconnect = request.reconnect;
+        // Checked before anything is removed, so a reconnect never ends with no routing.
+        let routing_agent = usable_routing_agent(name, &request)?;
         // An in-place reconnect is the agent's own `connect`; others must be disconnected first.
-        let disconnect_first = *reconnect && !router.reconnects_in_place;
+        let disconnect_first = reconnect && !router.reconnects_in_place;
         if disconnect_first {
             let force = allowed_while_running(name, router, options.force, "Reconnect", prompter)?;
             (router.disconnect)(force).context("could not remove the current LLM routing")?;
         }
         let routing = RoutingOptions {
-            agent: options.agent.as_deref(),
-            llm_config: choices.llm_config.as_deref(),
-            mcp: choices.mcp,
+            agent: routing_agent,
+            llm_config: request.llm_config,
+            mcp: request.mcp,
         };
         (router.connect)(&routing).map_err(|error| {
             if disconnect_first {
@@ -963,13 +1105,13 @@ fn apply_agent(
                 error.context("LLM routing failed")
             }
         })?;
-        newly_routed = !*reconnect;
+        newly_routed = !reconnect;
     }
     if let ReportingStep::Install {
         capture_content, ..
     } = agent.reporting
     {
-        let result = reporting_agent_name(agent.view.router).and_then(|agent_name| {
+        let result = reporting_agent_name(agent.view.router, destination).and_then(|agent_name| {
             integration::install(InstallOptions {
                 agent_id: agent.view.local.id,
                 no_content: !capture_content,
@@ -986,7 +1128,10 @@ fn apply_agent(
                 }
                 return Err(error.context("session reporting failed"));
             }
-            let kept = if matches!(agent.routing, RoutingStep::Connect { .. }) {
+            let kept = if matches!(
+                agent.routing,
+                RoutingStep::Connect { .. } | RoutingStep::Refresh
+            ) {
                 "LLM routing was reconnected and kept; "
             } else {
                 ""
@@ -999,6 +1144,25 @@ fn apply_agent(
         }
     }
     Ok(())
+}
+
+/// The agent to connect to: the request's, unless it is the current connection's agent and that
+/// no longer exists or is no longer this user's integration agent — then the account's default,
+/// as `connect` used before it reused agents. Fails, before anything changes, only when the
+/// control plane can't be asked.
+fn usable_routing_agent<'a>(name: &str, request: &RoutingRequest<'a>) -> Result<Option<&'a str>> {
+    let (Some(agent), Some(previous)) = (request.agent, request.reused_agent_name) else {
+        return Ok(request.agent);
+    };
+    let usable = (request.router.agent_is_usable)(agent)
+        .context("could not check the current routing agent; nothing was changed")?;
+    if usable {
+        return Ok(Some(agent));
+    }
+    println!(
+        "{name}: agent {previous} no longer exists or is no longer yours; connecting your default agent instead."
+    );
+    Ok(None)
 }
 
 /// Whether an action that removes `name`'s routing may go ahead (`true` = force past a running
@@ -1029,20 +1193,20 @@ fn allowed_while_running(
     Ok(true)
 }
 
-/// The agent reporting should use: the routing agent when routing is connected to the active
-/// cluster, so one coding agent shows up as one agent; otherwise the account's default.
-fn reporting_agent_name(router: Option<Router>) -> Result<Option<String>> {
-    let Some(summary) = router
+/// The agent reporting should use: the routing agent when routing belongs to the active cluster
+/// and login, so one coding agent shows up as one agent; otherwise the account's default.
+/// Read after routing is applied, so it sees a connection made in the same run.
+fn reporting_agent_name(
+    router: Option<Router>,
+    destination: Option<&ReportingDestination>,
+) -> Result<Option<String>> {
+    let summary = router
         .map(|router| (router.summary)())
         .transpose()?
-        .flatten()
-    else {
-        return Ok(None);
-    };
-    let (cluster, entry) = crate::config::active_cluster()?;
-    let same_cluster = summary.cluster == cluster
-        && summary.cluster_url.trim_end_matches('/') == entry.url.trim_end_matches('/');
-    Ok(same_cluster.then_some(summary.agent_name))
+        .flatten();
+    Ok(summary
+        .filter(|summary| owned_by(summary, destination))
+        .map(|summary| summary.agent_name))
 }
 
 // ─── disconnect ──────────────────────────────────────────────────────────────
@@ -1348,14 +1512,6 @@ fn print_agent_table(views: &[AgentView]) {
     );
 }
 
-/// Shortens a path under `$HOME` to `~/…` for display.
-fn display_path(path: &Path) -> String {
-    match dirs::home_dir().and_then(|home| path.strip_prefix(home).ok().map(Path::to_path_buf)) {
-        Some(rest) => format!("~/{}", rest.display()),
-        None => path.display().to_string(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1425,6 +1581,8 @@ mod tests {
             routing: routed.then(|| RoutingSummary {
                 cluster: "prod".into(),
                 cluster_url: "https://cp.example".into(),
+                principal_id: Some("me".into()),
+                agent_id: format!("id-{id}"),
                 agent_name: format!("me-{id}"),
                 mcp_installed: true,
             }),
@@ -1765,9 +1923,9 @@ mod tests {
         let mut without_content = view("claude", false, true);
         without_content.local.capture_content = false;
         let with_content = plan_for(
-            vec![without_content],
+            vec![without_content.clone()],
             &ConnectOptions {
-                reporting: true,
+                content: true,
                 no_routing: true,
                 ..ConnectOptions::default()
             },
@@ -1782,6 +1940,55 @@ mod tests {
                 moving_from: None
             }
         );
+
+        // `--reporting` alone never turns prompt and response text back on.
+        let kept = plan_for(
+            vec![without_content],
+            &ConnectOptions {
+                reporting: true,
+                no_routing: true,
+                ..ConnectOptions::default()
+            },
+            &Unattended,
+            &no_configs_expected,
+        )
+        .unwrap();
+        assert_eq!(kept.agents[0].reporting, ReportingStep::Keep);
+    }
+
+    #[test]
+    fn a_content_flag_alone_turns_reporting_on() {
+        for (options, capture_content) in [
+            (
+                ConnectOptions {
+                    no_content: true,
+                    ..ConnectOptions::default()
+                },
+                false,
+            ),
+            (
+                ConnectOptions {
+                    content: true,
+                    ..ConnectOptions::default()
+                },
+                true,
+            ),
+        ] {
+            let plan = plan_for(
+                vec![view("claude", false, false)],
+                &options,
+                &Unattended,
+                &no_configs_expected,
+            )
+            .unwrap();
+            assert_eq!(
+                plan.agents[0].reporting,
+                ReportingStep::Install {
+                    capture_content,
+                    moving_from: None
+                }
+            );
+        }
     }
 
     #[test]
@@ -1812,10 +2019,126 @@ mod tests {
             &no_configs_expected,
         )
         .unwrap();
-        assert_eq!(
-            plan.agents[0].routing,
-            RoutingStep::Connect { reconnect: true }
-        );
+        assert_eq!(plan.agents[0].routing, RoutingStep::Refresh);
+
+        // Flags only about reporting leave its routing alone.
+        let reporting_only = plan_for(
+            vec![view("opencode", true, false)],
+            &ConnectOptions {
+                reporting: true,
+                ..ConnectOptions::default()
+            },
+            &Unattended,
+            &no_configs_expected,
+        )
+        .unwrap();
+        assert_eq!(reporting_only.agents[0].routing, RoutingStep::Keep);
+    }
+
+    fn plan_with(routing: RoutingStep, current: Option<RoutingSummary>) -> AgentPlan {
+        let mut view = view("opencode", true, false);
+        view.routing = current;
+        AgentPlan {
+            view,
+            routing,
+            reporting: ReportingStep::Skip,
+        }
+    }
+
+    fn connected(principal_id: Option<&str>, mcp_installed: bool) -> Option<RoutingSummary> {
+        Some(RoutingSummary {
+            cluster: "prod".into(),
+            cluster_url: "https://cp.example/".into(),
+            principal_id: principal_id.map(str::to_string),
+            agent_id: "id-mine".into(),
+            agent_name: "my-agent".into(),
+            mcp_installed,
+        })
+    }
+
+    #[test]
+    fn a_refresh_keeps_the_agent_and_the_mcp_setting() {
+        let choices = RoutingChoices {
+            mcp: true,
+            ..RoutingChoices::default()
+        };
+        let plan = plan_with(RoutingStep::Refresh, connected(Some("me"), false));
+        let request = routing_request(&plan, &choices, Some(&here())).unwrap();
+        assert_eq!(request.agent, Some("id-mine"));
+        assert_eq!(request.reused_agent_name, Some("my-agent"));
+        assert!(!request.mcp, "a refresh must not add an MCP gateway");
+        assert_eq!(request.llm_config, None);
+    }
+
+    #[test]
+    fn a_reconnect_keeps_only_an_agent_of_the_same_login() {
+        let choices = RoutingChoices {
+            mcp: true,
+            llm_config: Some("c2".into()),
+            ..RoutingChoices::default()
+        };
+        let reconnect = RoutingStep::Connect { reconnect: true };
+
+        let mine = plan_with(reconnect.clone(), connected(Some("me"), false));
+        let request = routing_request(&mine, &choices, Some(&here())).unwrap();
+        assert_eq!(request.agent, Some("id-mine"));
+        assert!(request.mcp, "a reconnect applies the MCP answer");
+        assert_eq!(request.llm_config, Some("c2"));
+
+        // Another user's connection: the default agent.
+        let other = plan_with(reconnect.clone(), connected(Some("someone-else"), true));
+        let request = routing_request(&other, &choices, Some(&here())).unwrap();
+        assert_eq!(request.agent, None);
+
+        // One recorded before the login was stored with it: matched on the cluster, as before.
+        let older = plan_with(reconnect.clone(), connected(None, true));
+        let request = routing_request(&older, &choices, Some(&here())).unwrap();
+        assert_eq!(request.agent, Some("id-mine"));
+
+        // --agent always wins.
+        let named = RoutingChoices {
+            agent: Some("picked".into()),
+            ..choices
+        };
+        let request = routing_request(&mine, &named, Some(&here())).unwrap();
+        assert_eq!(request.agent, Some("picked"));
+        assert_eq!(request.reused_agent_name, None);
+    }
+
+    #[test]
+    fn user_ids_match_whatever_case_the_token_writes_them_in() {
+        let now = ReportingDestination {
+            principal_id: "0f8fad5b-d9cb-469f-a165-70867728950e".into(),
+            ..here()
+        };
+        let routing = connected(Some("0F8FAD5B-D9CB-469F-A165-70867728950E"), true).unwrap();
+        assert!(owned_by(&routing, Some(&now)));
+    }
+
+    #[test]
+    fn mcp_flags_with_reporting_still_refresh_routing() {
+        let plan = plan_for(
+            vec![view("opencode", true, false)],
+            &ConnectOptions {
+                reporting: true,
+                no_mcp: true,
+                ..ConnectOptions::default()
+            },
+            &Unattended,
+            &no_configs_expected,
+        )
+        .unwrap();
+        assert_eq!(plan.agents[0].routing, RoutingStep::Refresh);
+    }
+
+    #[test]
+    fn routing_belongs_to_a_login_only_on_the_same_cluster_and_user() {
+        let mine = connected(Some("me"), true).unwrap();
+        assert!(owned_by(&mine, Some(&here())));
+        assert!(!owned_by(&mine, Some(&elsewhere())));
+        assert!(!owned_by(&mine, None));
+        let theirs = connected(Some("someone-else"), true).unwrap();
+        assert!(!owned_by(&theirs, Some(&here())));
     }
 
     // ── applying a plan, against a fake agent that records what it is asked to do ──
@@ -1828,8 +2151,9 @@ mod tests {
         CALLS.with(|calls| calls.borrow_mut().drain(..).collect())
     }
 
-    fn fake_connect(_: &RoutingOptions<'_>) -> Result<()> {
-        CALLS.with(|calls| calls.borrow_mut().push("connect".into()));
+    fn fake_connect(options: &RoutingOptions<'_>) -> Result<()> {
+        let agent = options.agent.unwrap_or("default");
+        CALLS.with(|calls| calls.borrow_mut().push(format!("connect agent={agent}")));
         Ok(())
     }
 
@@ -1848,13 +2172,23 @@ mod tests {
             reconnects_in_place,
             routing_target: String::new,
             mcp_target: "",
+            agent_is_usable: |agent| match agent {
+                "id-gone" => Ok(false),
+                "id-unreachable" => bail!("control plane unreachable"),
+                _ => Ok(true),
+            },
         }
     }
 
     /// An agent whose reporting install always fails (its id is unknown to `integration`),
     /// without touching the filesystem.
     fn fake_plan(in_place: bool, routing: RoutingStep, report: bool) -> AgentPlan {
-        let mut view = view("fake", true, false);
+        // A first connect has no current connection; a reconnect replaces this login's own.
+        let mut view = view(
+            "fake",
+            routing != RoutingStep::Connect { reconnect: false },
+            false,
+        );
         view.router = Some(fake_router(in_place));
         AgentPlan {
             view,
@@ -1871,21 +2205,27 @@ mod tests {
     }
 
     fn apply(agent: &AgentPlan, options: &ConnectOptions) -> Result<()> {
-        apply_agent(agent, &RoutingChoices::default(), options, &Unattended)
+        apply_agent(
+            agent,
+            &RoutingChoices::default(),
+            Some(&here()),
+            options,
+            &Unattended,
+        )
     }
 
     #[test]
     fn an_in_place_reconnect_never_disconnects_first() {
         let plan = fake_plan(true, RoutingStep::Connect { reconnect: true }, false);
         apply(&plan, &ConnectOptions::default()).unwrap();
-        assert_eq!(calls(), ["connect"]);
+        assert_eq!(calls(), ["connect agent=id-fake"]);
     }
 
     #[test]
     fn other_reconnects_disconnect_first_and_honour_force() {
         let plan = fake_plan(false, RoutingStep::Connect { reconnect: true }, false);
         apply(&plan, &ConnectOptions::default()).unwrap();
-        assert_eq!(calls(), ["disconnect force=false", "connect"]);
+        assert_eq!(calls(), ["disconnect force=false", "connect agent=id-fake"]);
         apply(
             &plan,
             &ConnectOptions {
@@ -1894,20 +2234,46 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(calls(), ["disconnect force=true", "connect"]);
+        assert_eq!(calls(), ["disconnect force=true", "connect agent=id-fake"]);
+    }
+
+    fn reconnecting_to(agent_id: &str) -> AgentPlan {
+        let mut plan = fake_plan(false, RoutingStep::Connect { reconnect: true }, false);
+        if let Some(routing) = plan.view.routing.as_mut() {
+            routing.agent_id = agent_id.into();
+        }
+        plan
+    }
+
+    #[test]
+    fn a_reconnect_whose_agent_is_gone_uses_the_default_agent() {
+        apply(&reconnecting_to("id-gone"), &ConnectOptions::default()).unwrap();
+        assert_eq!(calls(), ["disconnect force=false", "connect agent=default"]);
+    }
+
+    #[test]
+    fn a_reconnect_that_cannot_check_its_agent_changes_nothing() {
+        let error = apply(
+            &reconnecting_to("id-unreachable"),
+            &ConnectOptions::default(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(calls().is_empty(), "nothing may be removed");
+        assert!(error.contains("nothing was changed"), "{error}");
     }
 
     #[test]
     fn failed_reporting_rolls_back_only_routing_created_in_the_same_run() {
         let fresh = fake_plan(false, RoutingStep::Connect { reconnect: false }, true);
         assert!(apply(&fresh, &ConnectOptions::default()).is_err());
-        assert_eq!(calls(), ["connect", "disconnect force=true"]);
+        assert_eq!(calls(), ["connect agent=default", "disconnect force=true"]);
 
         let reconnected = fake_plan(false, RoutingStep::Connect { reconnect: true }, true);
         let error = apply(&reconnected, &ConnectOptions::default())
             .unwrap_err()
             .to_string();
-        assert_eq!(calls(), ["disconnect force=false", "connect"]);
+        assert_eq!(calls(), ["disconnect force=false", "connect agent=id-fake"]);
         assert!(error.contains("reconnected and kept"), "{error}");
 
         let kept = fake_plan(false, RoutingStep::Keep, true);

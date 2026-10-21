@@ -104,7 +104,12 @@ pub fn records() -> Result<Vec<(PathBuf, QueueRecord)>> {
 }
 
 pub fn has_pending_records() -> Result<bool> {
-    has_pending_records_at(&super::state::integrations_dir())
+    Ok(queued_count_at(&super::state::integrations_dir(), Some(1))? > 0)
+}
+
+/// Every queued record file, whatever its retry time — without reading, moving or rewriting any.
+pub fn queued_count() -> Result<usize> {
+    queued_count_at(&super::state::integrations_dir(), None)
 }
 
 pub fn acquire_sync_lock(timeout: Duration) -> Result<SyncLock> {
@@ -185,28 +190,35 @@ fn records_at(root: &Path) -> Result<Vec<(PathBuf, QueueRecord)>> {
     Ok(records)
 }
 
-fn has_pending_records_at(root: &Path) -> Result<bool> {
+/// Counts queued record files, stopping once `limit` are found (`None` counts them all).
+fn queued_count_at(root: &Path, limit: Option<usize>) -> Result<usize> {
     let queue = root.join("queue");
     if !queue.exists() {
-        return Ok(false);
+        return Ok(0);
     }
+    let limit = limit.unwrap_or(usize::MAX);
+    let mut count = 0;
     for cluster in std::fs::read_dir(queue)? {
         let cluster = cluster?;
         if !cluster.file_type()?.is_dir() {
             continue;
         }
-        if std::fs::read_dir(cluster.path())?.any(|entry| {
-            entry.ok().is_some_and(|entry| {
+        for entry in std::fs::read_dir(cluster.path())? {
+            let is_record = entry.is_ok_and(|entry| {
                 entry
                     .path()
                     .extension()
                     .is_some_and(|extension| extension == "json")
-            })
-        }) {
-            return Ok(true);
+            });
+            if is_record {
+                count += 1;
+                if count >= limit {
+                    return Ok(count);
+                }
+            }
         }
     }
-    Ok(false)
+    Ok(count)
 }
 
 fn quarantine_at(root: &Path, path: &Path, record: &QueueRecord) -> Result<PathBuf> {
@@ -517,6 +529,24 @@ mod tests {
         let records = records_at(dir.path()).unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].1.event.turn.id, "ready");
-        assert!(has_pending_records_at(dir.path()).unwrap());
+        assert_eq!(queued_count_at(dir.path(), None).unwrap(), 2);
+        assert_eq!(queued_count_at(dir.path(), Some(1)).unwrap(), 1);
+    }
+
+    #[test]
+    fn counting_the_queue_moves_nothing_and_includes_records_waiting_to_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut deferred = record("one", "https://one.example");
+        deferred.next_attempt_at = Some(Utc::now() + chrono::Duration::hours(1));
+        enqueue_at(dir.path(), &deferred).unwrap();
+        let mut malformed = record("two", "https://two.example");
+        malformed.event.turn.id = "malformed".into();
+        malformed.event.event_id = coding_agent_event_id("claude", "session", "malformed");
+        let malformed = enqueue_at(dir.path(), &malformed).unwrap();
+        std::fs::write(&malformed, b"not-json").unwrap();
+
+        assert_eq!(queued_count_at(dir.path(), None).unwrap(), 2);
+        assert!(malformed.exists());
+        assert!(!dir.path().join("rejected").exists());
     }
 }

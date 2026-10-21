@@ -120,6 +120,18 @@ pub fn token_expired(token: &str) -> Option<bool> {
     Some(exp <= chrono::Utc::now().timestamp())
 }
 
+/// The name `connect <url>` gives a control plane when none is passed: the URL's host up to
+/// its first dot (`cp` for `https://cp.example.com`). Shared with `nasiko-ee`, so both CLIs
+/// name the same control plane the same way.
+pub fn cluster_name_from_url(url: &str) -> String {
+    url.replace("https://", "")
+        .replace("http://", "")
+        .split('.')
+        .next()
+        .unwrap_or("cluster")
+        .to_string()
+}
+
 /// Add or update a cluster and set it as active.
 ///
 /// Preserves the existing username/token when reconnecting to the same name

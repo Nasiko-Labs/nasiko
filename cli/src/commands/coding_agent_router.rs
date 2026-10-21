@@ -31,6 +31,61 @@ pub struct ConnectionBinding {
     pub executable: Option<PathBuf>,
 }
 
+/// What a routing `connect` installs, chosen by `nasiko connect` (flags or prompts).
+#[derive(Debug, Clone, Copy)]
+pub struct RoutingOptions<'a> {
+    /// Existing routing agent name or UUID; `None` uses the account's default integration agent.
+    pub agent: Option<&'a str>,
+    /// LLM config name or UUID to attach; `None` keeps the agent's current (or default) config.
+    pub llm_config: Option<&'a str>,
+    /// Whether to mint and register an MCP gateway credential alongside LLM routing.
+    pub mcp: bool,
+}
+
+/// A connected routing integration, as `nasiko status` summarizes it.
+#[derive(Debug, Clone)]
+pub struct RoutingSummary {
+    pub cluster: String,
+    pub cluster_url: String,
+    /// The user the connection was made as; `None` for connections from older versions.
+    pub principal_id: Option<String>,
+    pub agent_id: String,
+    pub agent_name: String,
+    pub mcp_installed: bool,
+}
+
+impl RoutingSummary {
+    pub fn from_binding(binding: &ConnectionBinding, mcp_installed: bool) -> Self {
+        Self {
+            cluster: binding.cluster.clone(),
+            cluster_url: binding.cluster_url.clone(),
+            principal_id: binding.principal_id.clone(),
+            agent_id: binding.agent_id.clone(),
+            agent_name: binding.agent_name.clone(),
+            mcp_installed,
+        }
+    }
+}
+
+/// The MCP outcome every routing `connect` reports once its install has completed.
+pub fn print_mcp_outcome(mint: Option<&McpMint>, registration_warning: Option<&str>) {
+    match (mint, registration_warning) {
+        (None, _) => println!("MCP gateway: not requested"),
+        (Some(McpMint::Minted(_)), None) => {
+            println!("{}", mcp_connected_line());
+            println!("{}", mcp_multi_machine_note());
+        }
+        (Some(McpMint::Minted(_)), Some(reason)) => {
+            eprintln!("warning: {reason}; LLM routing is connected, MCP tools are not");
+        }
+        (Some(McpMint::Unavailable(message)), _) => {
+            eprintln!(
+                "warning: MCP gateway unavailable ({message}); LLM routing is connected, MCP tools are not"
+            );
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AgentSpec<'a> {
     pub id: &'a str,
@@ -332,8 +387,12 @@ pub fn prepare(
 pub fn require_current_login() -> Result<(String, ClusterEntry, String)> {
     let (cluster, entry) = config::active_cluster()?;
     let token = usable_login_token(&entry)?;
-    let principal = config::token_subject(token)
-        .ok_or_else(|| anyhow::anyhow!("invalid Nasiko login; run: nasiko auth login"))?;
+    let principal = config::token_subject(token).ok_or_else(|| {
+        anyhow::anyhow!(
+            "invalid Nasiko login; run: {}",
+            crate::commands::local_agents::login_hint()
+        )
+    })?;
     Ok((cluster, entry, principal))
 }
 
@@ -423,12 +482,17 @@ fn normalize_agent_name_part(value: &str) -> String {
 }
 
 fn usable_login_token(entry: &ClusterEntry) -> Result<&str> {
-    let token = entry
-        .token
-        .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("not logged in to Nasiko; run: nasiko auth login"))?;
+    let token = entry.token.as_deref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "not logged in to Nasiko; run: {}",
+            crate::commands::local_agents::login_hint()
+        )
+    })?;
     if config::token_expired(token) == Some(true) {
-        bail!("Nasiko session expired; run: nasiko auth login");
+        bail!(
+            "Nasiko session expired; run: {}",
+            crate::commands::local_agents::login_hint()
+        );
     }
     Ok(token)
 }
@@ -442,14 +506,30 @@ pub fn resolve_owned_agent(
     let agent = client
         .get_agent(reference)?
         .ok_or_else(|| anyhow::anyhow!("agent '{reference}' not found"))?;
-    if agent
-        .get("coding_agent_integration_id")
-        .and_then(Value::as_str)
-        != Some(integration_id)
-    {
+    if !is_integration_agent(&agent, integration_id) {
         bail!("agent '{reference}' is not the {integration_id} coding-agent integration");
     }
     owned_agent_fields(&agent, principal_id, reference)
+}
+
+/// Whether `reference` still names the current user's `integration_id` agent — what
+/// [`resolve_owned_agent`] would accept — without failing when it doesn't. Errors only when
+/// the control plane can't be asked.
+pub fn owned_agent_exists(reference: &str, integration_id: &str) -> Result<bool> {
+    let (_, entry, principal_id) = require_current_login()?;
+    let client = Client::from_cluster_entry_with_timeout(&entry, Some(CP_CALL_TIMEOUT));
+    let Some(agent) = client.get_agent(reference)? else {
+        return Ok(false);
+    };
+    Ok(is_integration_agent(&agent, integration_id)
+        && agent.get("owner_id").and_then(Value::as_str) == Some(principal_id.as_str()))
+}
+
+fn is_integration_agent(agent: &Value, integration_id: &str) -> bool {
+    agent
+        .get("coding_agent_integration_id")
+        .and_then(Value::as_str)
+        == Some(integration_id)
 }
 
 fn owned_agent_fields(
@@ -631,13 +711,18 @@ fn credential_from_config(binding: &ConnectionBinding, cfg: &Config) -> Result<R
         binding,
         cfg,
         &format!(
-            "run: nasiko connect {}",
+            "run: {} connect {}",
+            crate::commands::local_agents::cli_name(),
             binding.integration_id.as_deref().unwrap_or("claude")
         ),
     )?;
     let token = usable_login_token(entry)?;
-    let principal = config::token_subject(token)
-        .ok_or_else(|| anyhow::anyhow!("invalid Nasiko login; run: nasiko auth login"))?;
+    let principal = config::token_subject(token).ok_or_else(|| {
+        anyhow::anyhow!(
+            "invalid Nasiko login; run: {}",
+            crate::commands::local_agents::login_hint()
+        )
+    })?;
     if binding
         .principal_id
         .as_deref()
