@@ -11,7 +11,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -46,6 +46,10 @@ pub struct AgentState {
 pub struct IntegrationState {
     #[serde(default)]
     pub agents: HashMap<String, AgentState>,
+    /// Agents whose user said no when session reporting was offered after logging in, so it
+    /// isn't offered again. Installing reporting (always an explicit request) clears the entry.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub declined: BTreeSet<String>,
 }
 
 impl IntegrationState {

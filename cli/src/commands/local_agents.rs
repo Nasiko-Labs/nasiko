@@ -704,6 +704,106 @@ fn verify_plan(plan: &mut Plan, lookups: &Lookups<'_>) -> Result<()> {
     Ok(())
 }
 
+// ─── offered after logging in ────────────────────────────────────────────────
+
+/// What happened when session reporting was offered.
+enum Offer {
+    /// No terminal to ask on, so nothing was turned on.
+    NotAsked,
+    Declined,
+    /// The plan `connect --no-routing --reporting` would apply, built from the answers.
+    Accepted(Plan),
+}
+
+/// The flags the offer stands for: reporting only, leaving LLM routing as it is.
+fn offer_options() -> ConnectOptions {
+    ConnectOptions {
+        no_routing: true,
+        reporting: true,
+        ..ConnectOptions::default()
+    }
+}
+
+/// After `auth login`, `connect <url>` or `use`: offers session reporting for the detected
+/// agents that have none and weren't declined before. It is `connect --no-routing --reporting`
+/// for those agents — the same plan, agent choice and content question — but only once the
+/// user says yes: without a terminal it says how to turn reporting on, and a no is remembered
+/// so it isn't asked again.
+pub fn offer_reporting() -> Result<()> {
+    let offered: Vec<AgentView> = load_views()?
+        .into_iter()
+        .filter(|view| {
+            let local = &view.local;
+            local.detected
+                && local.reporting_supported
+                && !local.reporting_installed
+                && !local.reporting_declined
+        })
+        .collect();
+    if offered.is_empty() {
+        return Ok(());
+    }
+    let ids: Vec<&'static str> = offered.iter().map(|view| view.local.id).collect();
+    let turn_on = format!(
+        "{} connect <{}> --no-routing --reporting",
+        cli_name(),
+        ids.join("|")
+    );
+    let prompter = prompter(false);
+    let destination = ReportingDestination::current().ok();
+    match reporting_offer(offered, destination.as_ref(), prompter.as_ref())? {
+        Offer::NotAsked => println!("Session reporting is off. Turn it on with: {turn_on}"),
+        Offer::Declined => {
+            integration::record_declined(&ids)?;
+            println!(
+                "Session reporting left off; it won't be offered again. Turn it on any time with: {turn_on}"
+            );
+        }
+        Offer::Accepted(mut plan) => {
+            verify_plan(
+                &mut plan,
+                &Lookups {
+                    config: &check_llm_config,
+                    look_up_agent: &coding_agent_router::look_up_owned_agent,
+                },
+            )?;
+            print_plan(&plan);
+            for (name, error) in apply_plan(&plan, &offer_options(), prompter.as_ref()) {
+                eprintln!("warning: {name}: {error}");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Asks whether to report sessions from `targets` — defaulting to no, since nobody asked for
+/// it — and, on a yes, builds the reporting plan, which asks about prompt and response text.
+fn reporting_offer(
+    targets: Vec<AgentView>,
+    destination: Option<&ReportingDestination>,
+    prompter: &dyn Prompter,
+) -> Result<Offer> {
+    if !prompter.interactive() {
+        return Ok(Offer::NotAsked);
+    }
+    let names: Vec<&str> = targets.iter().map(|view| view.local.display_name).collect();
+    let question = format!(
+        "Report sessions from {} to Nasiko observability?",
+        readable_list(&names)
+    );
+    if !prompter.confirm(&question, false)? {
+        return Ok(Offer::Declined);
+    }
+    let plan = build_plan(
+        targets,
+        &offer_options(),
+        destination,
+        prompter,
+        &fetch_llm_configs,
+    )?;
+    Ok(Offer::Accepted(plan))
+}
+
 fn check_llm_config(reference: &str) -> Result<()> {
     let client = Client::from_active_cluster()?;
     crate::commands::llm_config::fetch_config_by_ref(&client, reference)
@@ -1121,7 +1221,12 @@ fn names(agents: &[AgentPlan], indexes: &[usize]) -> String {
         .iter()
         .map(|&i| agents[i].view.local.display_name)
         .collect();
-    match names.as_slice() {
+    readable_list(&names)
+}
+
+/// `a`, `a and b`, `a, b and c`.
+fn readable_list(items: &[&str]) -> String {
+    match items {
         [] => String::new(),
         [one] => (*one).to_string(),
         [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
@@ -1218,7 +1323,7 @@ fn print_plan(plan: &Plan) {
                 }
             }
             ReportingStep::Keep if !agent.view.local.reporting_active => println!(
-                "    • Session reporting: left as it is — the hook {}; reinstall with: {} connect {} --reporting",
+                "    • Session reporting: left as it is — the hook {}; reinstall with: {} connect {} --no-routing --reporting",
                 stale_reason(&agent.view.local),
                 cli_name(),
                 agent.view.local.id
@@ -1248,7 +1353,7 @@ fn print_nothing_to_do(plan: &Plan) {
         }
         if agent.reporting == ReportingStep::Keep && !agent.view.local.reporting_active {
             println!(
-                "{}'s session reporting hook {}; reinstall it with: {cli} connect {id} --reporting",
+                "{}'s session reporting hook {}; reinstall it with: {cli} connect {id} --no-routing --reporting",
                 agent.view.local.display_name,
                 stale_reason(&agent.view.local)
             );
@@ -1365,7 +1470,7 @@ fn apply_agent(
                 ""
             };
             return Err(error.context(format!(
-                "session reporting failed ({kept}retry with: {} connect {} --reporting)",
+                "session reporting failed ({kept}retry with: {} connect {} --no-routing --reporting)",
                 cli_name(),
                 agent.view.local.id
             )));
@@ -1704,7 +1809,7 @@ fn print_reporting_details(local: &LocalAgent) {
             }
         ),
         None => println!(
-            "Reporting to:      no cluster recorded; reinstall with: {} connect {} --reporting",
+            "Reporting to:      no cluster recorded; reinstall with: {} connect {} --no-routing --reporting",
             cli_name(),
             local.id
         ),
@@ -1831,6 +1936,8 @@ mod tests {
                 id,
                 display_name: id,
                 detected: true,
+                reporting_supported: true,
+                reporting_declined: false,
                 reporting_active: reporting,
                 reporting_installed: reporting,
                 reporting_status: if reporting {
@@ -3042,6 +3149,78 @@ mod tests {
         let kept = fake_plan(false, RoutingStep::Keep, true);
         assert!(apply(&kept, &ConnectOptions::default()).is_err());
         assert!(calls().is_empty());
+    }
+
+    // ── offered after logging in ──
+
+    #[test]
+    fn without_a_terminal_reporting_is_not_offered() {
+        let offer = reporting_offer(
+            vec![view("claude", false, false)],
+            Some(&here()),
+            &Unattended,
+        )
+        .unwrap();
+        assert!(matches!(offer, Offer::NotAsked));
+    }
+
+    #[test]
+    fn a_no_to_the_offer_turns_nothing_on() {
+        let offer = reporting_offer(
+            vec![view("claude", false, false)],
+            Some(&here()),
+            &Scripted::new(&[false], &[]),
+        )
+        .unwrap();
+        assert!(matches!(offer, Offer::Declined));
+    }
+
+    #[test]
+    fn a_yes_plans_reporting_only_with_the_chosen_content_setting() {
+        // report? yes · include text? no
+        let offer = reporting_offer(
+            vec![view("claude", true, false), view("codex", false, false)],
+            Some(&here()),
+            &Scripted::new(&[true, false], &[]),
+        )
+        .unwrap();
+        let Offer::Accepted(plan) = offer else {
+            panic!("expected a plan");
+        };
+        assert_eq!(
+            plan.agents[0].routing,
+            RoutingStep::Keep,
+            "routing is left as it is"
+        );
+        assert_eq!(
+            plan.agents[1].routing,
+            RoutingStep::Skip,
+            "no routing is added"
+        );
+        for agent in &plan.agents {
+            assert_eq!(
+                agent.reporting,
+                ReportingStep::Install {
+                    capture_content: false,
+                    moving_from: None
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn a_yes_reports_under_the_agent_routing_already_uses() {
+        let offer = reporting_offer(
+            vec![view("claude", true, false)],
+            Some(&here()),
+            &Scripted::new(&[true, true], &[]),
+        )
+        .unwrap();
+        let Offer::Accepted(mut plan) = offer else {
+            panic!("expected a plan");
+        };
+        verify(&mut plan, &|_, _| Ok(true)).unwrap();
+        assert!(plan.agents[0].reports_under_routing_agent());
     }
 
     #[test]

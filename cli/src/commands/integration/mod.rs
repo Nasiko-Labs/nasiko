@@ -38,6 +38,10 @@ pub struct LocalAgent {
     pub id: &'static str,
     pub display_name: &'static str,
     pub detected: bool,
+    /// Whether session reporting is implemented for this agent.
+    pub reporting_supported: bool,
+    /// Whether the user said no when reporting was offered after logging in.
+    pub reporting_declined: bool,
     pub reporting_active: bool,
     pub reporting_installed: bool,
     pub reporting_status: String,
@@ -106,6 +110,8 @@ pub fn local_agents() -> Result<Vec<LocalAgent>> {
                 id: spec.id,
                 display_name: spec.display_name,
                 detected: detect(agent).is_present(),
+                reporting_supported: spec.support == Support::Instrumented,
+                reporting_declined: settings.declined.contains(spec.id),
                 reporting_active: reporting.connected,
                 reporting_installed: state.is_some(),
                 reporting_status: reporting.status,
@@ -234,103 +240,18 @@ pub fn sync() -> Result<()> {
     sync::run()
 }
 
-/// After a successful account connection, offers session reporting for every detected coding
-/// agent that has none yet. Reporting sends what agents are asked, so it is only turned on when
-/// the user says so: on a terminal it asks (and whether to include prompt and response text);
-/// otherwise it only says how to turn it on. One broken adapter never blocks the others.
-pub fn auto_install_detected() -> Result<()> {
-    use std::io::IsTerminal;
-    let confirm = |question: &str, default: bool| -> Result<bool> {
-        Ok(
-            dialoguer::Confirm::with_theme(&dialoguer::theme::ColorfulTheme::default())
-                .with_prompt(question)
-                .default(default)
-                .interact()?,
-        )
-    };
-    let terminal = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
-    let ask: Option<Ask<'_>> = terminal.then_some(&confirm);
-
-    let settings = IntegrationState::load()?;
-    let detected: Vec<Agent> = Agent::ALL
-        .iter()
-        .copied()
-        .filter(|agent| agent.spec().support == Support::Instrumented)
-        .filter(|agent| detect(*agent).is_present())
-        .collect();
-    if detected.is_empty() {
-        println!("No supported local coding agents detected.");
-        return Ok(());
-    }
-    let cli = crate::commands::local_agents::cli_name();
-    let mut offered = Vec::new();
-    for agent in detected {
-        let spec = agent.spec();
-        if settings.get(spec.id).is_some() {
-            println!(
-                "{} reporting is already installed; keeping its existing cluster binding. Rebind explicitly with: {cli} connect {} --no-routing --reporting",
-                spec.display_name, spec.id
-            );
-        } else {
-            offered.push(agent);
-        }
-    }
-    if offered.is_empty() {
-        return Ok(());
-    }
-    let names: Vec<&str> = offered
-        .iter()
-        .map(|agent| agent.spec().display_name)
-        .collect();
-    let Some(capture_content) = reporting_consent(&names.join(", "), ask)? else {
-        println!(
-            "Session reporting is off for {}. Turn it on with: {cli} connect <agent> --reporting",
-            names.join(", ")
-        );
-        return Ok(());
-    };
-
-    let mut installed = 0usize;
-    for agent in &offered {
-        let spec = agent.spec();
-        match install(InstallOptions {
-            agent_id: spec.id,
-            no_content: !capture_content,
-            agent_name: None,
-        }) {
-            Ok(()) => installed += 1,
-            Err(error) => eprintln!(
-                "warning: {} reporting setup failed: {error:#}\n  Retry with: {cli} connect {} --no-routing --reporting",
-                spec.display_name, spec.id
-            ),
-        }
-    }
-    println!("Session reporting set up for {installed} coding agent(s).");
-    Ok(())
+/// Remembers that the user said no when reporting was offered for these agents after logging
+/// in, so it isn't offered again.
+pub fn record_declined(agent_ids: &[&str]) -> Result<()> {
+    let mut settings = IntegrationState::load()?;
+    settings
+        .declined
+        .extend(agent_ids.iter().map(|id| id.to_string()));
+    settings.save()
 }
 
-/// A yes/no question asked on the terminal, with its default answer.
-type Ask<'a> = &'a dyn Fn(&str, bool) -> Result<bool>;
-
-/// Whether to report sessions from `names`, and with prompt and response text: `None` when
-/// there is no terminal to ask (`ask` is `None`) or the user says no.
-fn reporting_consent(names: &str, ask: Option<Ask<'_>>) -> Result<Option<bool>> {
-    let Some(ask) = ask else {
-        return Ok(None);
-    };
-    if !ask(
-        &format!("Report sessions from {names} to Nasiko observability?"),
-        true,
-    )? {
-        return Ok(None);
-    }
-    Ok(Some(ask(
-        "Include prompt and response text? (No sends only tokens, latency and cost)",
-        true,
-    )?))
-}
-
-/// Run automatic setup only when the active cluster has a usable login.
+/// After logging in or switching control plane: offers session reporting, when the active
+/// cluster has a usable login.
 pub fn auto_install_if_authenticated() {
     let Ok((cluster, entry)) = crate::config::active_cluster() else {
         return;
@@ -349,9 +270,9 @@ pub fn auto_install_if_authenticated() {
         );
         return;
     }
-    if let Err(error) = auto_install_detected() {
+    if let Err(error) = crate::commands::local_agents::offer_reporting() {
         eprintln!(
-            "warning: automatic coding-agent discovery failed: {error:#}\n  Retry with: {} status",
+            "Session reporting was not set up ({error:#}). Turn it on with: {} connect <agent> --no-routing --reporting",
             crate::commands::local_agents::cli_name()
         );
     }
@@ -483,6 +404,7 @@ fn save_agent_state(
 ) -> Result<()> {
     let spec = agent.spec();
     let mut settings = IntegrationState::load()?;
+    settings.declined.remove(spec.id);
     settings.agents.insert(
         spec.id.to_string(),
         AgentState {
@@ -603,34 +525,6 @@ mod tests {
         );
         assert!(result.is_err());
         assert!(rolled_back.get());
-    }
-
-    #[test]
-    fn automatic_reporting_needs_a_yes_on_a_terminal() {
-        // No terminal: nothing is asked, nothing is turned on.
-        assert_eq!(reporting_consent("Claude Code", None).unwrap(), None);
-
-        let answers = |first: bool, second: bool| {
-            move |question: &str, _: bool| -> Result<bool> {
-                Ok(if question.starts_with("Report sessions") {
-                    first
-                } else {
-                    second
-                })
-            }
-        };
-        let no = answers(false, true);
-        assert_eq!(reporting_consent("Claude Code", Some(&no)).unwrap(), None);
-        let without_text = answers(true, false);
-        assert_eq!(
-            reporting_consent("Claude Code", Some(&without_text)).unwrap(),
-            Some(false)
-        );
-        let with_text = answers(true, true);
-        assert_eq!(
-            reporting_consent("Claude Code", Some(&with_text)).unwrap(),
-            Some(true)
-        );
     }
 
     #[test]
