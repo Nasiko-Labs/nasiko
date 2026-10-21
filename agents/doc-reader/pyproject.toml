@@ -9,7 +9,16 @@ dependencies = [
     "uvicorn==0.48.0",
     "click==8.4.1",
     "openai==1.82.0",
+    "python-dotenv>=1.0.0",
     "opentelemetry-sdk>=1.25.0",
     "opentelemetry-exporter-otlp-proto-grpc>=1.25.0",
     "opentelemetry-instrumentation-openai>=0.35.0b0",
 ]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+py-modules = ["telemetry"]
