@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use sqlx::PgPool;
 
+use crate::DelegatedIdentity;
 use crate::{AuthError, AuthService, Identity, LoginResult, TOKEN_EXPIRY_SECS};
 
 /// Lock account after this many consecutive failed login attempts.
@@ -67,6 +68,79 @@ impl AuthServiceImpl {
 impl AuthService for AuthServiceImpl {
     async fn validate_token(&self, token: &str) -> Result<Identity, AuthError> {
         crate::jwt::decode_jwt(&self.jwt_secret, token)
+    }
+
+    async fn issue_delegated_token(
+        &self,
+        identity: &Identity,
+        request: &crate::DelegationRequest,
+    ) -> Result<crate::IssuedDelegation, AuthError> {
+        let scopes = crate::check_delegation_scopes(&request.scopes)?;
+        let ttl = request.ttl_secs.clamp(1, crate::DELEGATION_MAX_TTL_SECS);
+        let (token, jti) = crate::jwt::encode_delegated_jwt(
+            &self.jwt_secret,
+            ttl,
+            identity,
+            &request.audience,
+            &scopes,
+            &request.parent_jti,
+        )?;
+        // Recorded with the user's id and its OWN short expiry, so
+        // revoke_tokens_for_user / revoke_token(jti) cover it and the row
+        // ages out quickly.
+        let user_uuid = identity
+            .user_id
+            .parse::<uuid::Uuid>()
+            .map_err(|_| AuthError::NotFound)?;
+        let expires = Utc::now() + chrono::Duration::seconds(ttl as i64);
+        sqlx::query(
+            "INSERT INTO auth_tokens (user_id, token_hash, expires_at)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (token_hash) DO NOTHING",
+        )
+        .bind(user_uuid)
+        .bind(crate::jwt::hash_jti(&jti))
+        .bind(expires)
+        .execute(&self.db)
+        .await
+        .map_err(AuthError::Database)?;
+        Ok(crate::IssuedDelegation {
+            token,
+            jti,
+            expires_in: ttl,
+            scopes,
+        })
+    }
+
+    async fn validate_delegated_token(
+        &self,
+        token: &str,
+        expected_audience: &str,
+    ) -> Result<DelegatedIdentity, AuthError> {
+        let d = crate::jwt::decode_delegated_jwt(&self.jwt_secret, token, expected_audience)?;
+        // Same revocation + caller-exists rule as a session (fail closed).
+        let caller_id = d.identity.user_id.parse::<uuid::Uuid>().ok();
+        let (revoked, caller_exists): (bool, bool) = sqlx::query_as(
+            "SELECT
+                 EXISTS(SELECT 1 FROM auth_tokens
+                         WHERE token_hash = $1 AND revoked_at IS NOT NULL),
+                 EXISTS(SELECT 1 FROM users
+                         WHERE id = $2 AND deleted_at IS NULL)",
+        )
+        .bind(crate::jwt::hash_jti(&d.jti))
+        .bind(caller_id)
+        .fetch_one(&self.db)
+        .await
+        .map_err(AuthError::Database)?;
+        if revoked {
+            return Err(AuthError::Revoked);
+        }
+        if caller_id.is_none() || !caller_exists {
+            return Err(AuthError::InvalidToken(
+                "delegated user no longer exists".into(),
+            ));
+        }
+        Ok(d)
     }
 
     async fn issue_token(&self, identity: &Identity) -> Result<String, AuthError> {

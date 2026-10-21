@@ -1,9 +1,55 @@
 use nasiko_utils::{env_bool, env_or, env_parse, required_env};
 
+/// The audience a control plane falls back to when nothing identifies its
+/// public origin. Fine for a standalone deployment; never unique across a
+/// fleet, which is why the assertion exchange refuses it.
+pub const DEFAULT_DELEGATION_AUDIENCE: &str = "nasiko-cp";
+
+fn nonempty_env(key: &str) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+/// `scheme://host[:port]` of a URL, or `None` when it has no scheme.
+fn origin_of(url: &str) -> Option<String> {
+    let (scheme, rest) = url.split_once("://")?;
+    let host = rest.split(['/', '?', '#']).next()?.trim();
+    if host.is_empty() {
+        return None;
+    }
+    Some(format!("{scheme}://{host}"))
+}
+
+/// See [`Config::delegation_audience`].
+fn delegation_audience_from_env() -> String {
+    if let Some(explicit) = nonempty_env("NASIKO_CP_AUDIENCE") {
+        return explicit.trim_end_matches('/').to_string();
+    }
+    if let Some(domain) = nonempty_env("CP_DOMAIN") {
+        return origin_of(&domain).unwrap_or_else(|| format!("https://{domain}"));
+    }
+    if let Some(origin) = nonempty_env("APP_BASE_URL").and_then(|u| origin_of(&u)) {
+        return origin;
+    }
+    DEFAULT_DELEGATION_AUDIENCE.to_string()
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub bind: String,
     pub domain: Option<String>,
+    /// Audience string this control plane stamps into, and requires on,
+    /// delegated tokens (ui/docs/adr/0001a). It is this deployment's public
+    /// origin: `NASIKO_CP_AUDIENCE`, else `https://<CP_DOMAIN>`, else the origin
+    /// of `APP_BASE_URL`, else [`DEFAULT_DELEGATION_AUDIENCE`]. Two workspaces
+    /// must never share one, so the cross-workspace (BFF assertion) path refuses
+    /// to run on the shared default — see `oss/server/src/auth/assertion.rs`.
+    pub delegation_audience: String,
+    /// Kill switch for `POST /api/auth/delegate` (default on). Existing
+    /// delegated tokens die within `DELEGATION_MAX_TTL_SECS` anyway.
+    pub delegation_enabled: bool,
     pub database_url: String,
     pub redis_url: String,
     pub agent_runtime: String,
@@ -450,6 +496,10 @@ impl Config {
         Ok(Self {
             bind: env_or("CP_BIND", "0.0.0.0:8080"),
             domain: std::env::var("CP_DOMAIN").ok(),
+            delegation_audience: delegation_audience_from_env(),
+            delegation_enabled: std::env::var("DELEGATION_ENABLED")
+                .map(|v| !matches!(v.trim(), "0" | "false" | "no" | "off"))
+                .unwrap_or(true),
             database_url: required_env("DATABASE_URL")?,
             redis_url: required_env("REDIS_URL")?,
             agent_runtime: env_or("AGENT_RUNTIME", "local"),
@@ -738,6 +788,16 @@ fn validate_secrets_key_format(key: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn origin_of_keeps_scheme_and_host_only() {
+        assert_eq!(
+            super::origin_of("https://acme.nasiko.dev/app?x=1"),
+            Some("https://acme.nasiko.dev".to_string())
+        );
+        assert_eq!(super::origin_of("acme.nasiko.dev"), None);
+        assert_eq!(super::origin_of("https:///app"), None);
+    }
+
     use super::*;
 
     #[test]

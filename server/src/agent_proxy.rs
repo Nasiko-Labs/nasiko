@@ -129,48 +129,25 @@ pub async fn agent_proxy(
             nasiko_agent_proxy::ResolveError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
         })?;
 
-    // Coding agents have no HTTP endpoint — they're driven over a per-session
-    // stdio turn, not reverse-proxied — so resolve that discriminator first and
-    // skip the endpoint lookup for them. The shared session/flow setup below
-    // still runs, then the request is diverted to the coding-agent turn path just
-    // before the HTTP forward.
-    let coding_target = crate::coding::proxy::load_target(&state.db, agent_id)
+    let agent_base = match state
+        .runtime
+        .endpoint(&nasiko_runtime::ContainerId::from_uuid(agent_id))
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, %agent_id, "agent proxy: coding-agent lookup failed");
-            match e {
-                // The agent is a coding agent but its image is not a kind we can
-                // drive — a deploy-time misconfiguration, not a transient fault.
-                crate::coding::proxy::LoadTargetError::UnrecognizedImage { .. } => {
-                    StatusCode::BAD_GATEWAY
-                }
-                crate::coding::proxy::LoadTargetError::Db(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            }
-        })?;
-
-    let agent_base = if coding_target.is_some() {
-        String::new()
-    } else {
-        match state
-            .runtime
-            .endpoint(&nasiko_runtime::ContainerId::from_uuid(agent_id))
-            .await
-        {
-            Ok(live) => live.trim_end_matches('/').to_string(),
-            Err(e) => {
-                let Some(stored) = &agent.endpoint else {
-                    tracing::error!(
-                        error = %e, %agent_id,
-                        "agent proxy: live endpoint lookup failed and no stored agents.url to fall back to"
-                    );
-                    return Err(StatusCode::BAD_GATEWAY);
-                };
-                tracing::warn!(
+    {
+        Ok(live) => live.trim_end_matches('/').to_string(),
+        Err(e) => {
+            let Some(stored) = &agent.endpoint else {
+                tracing::error!(
                     error = %e, %agent_id,
-                    "agent proxy: live endpoint lookup failed, falling back to stored agents.url"
+                    "agent proxy: live endpoint lookup failed and no stored agents.url to fall back to"
                 );
-                format!("http://{}:{}", stored.host, stored.port)
-            }
+                return Err(StatusCode::BAD_GATEWAY);
+            };
+            tracing::warn!(
+                error = %e, %agent_id,
+                "agent proxy: live endpoint lookup failed, falling back to stored agents.url"
+            );
+            format!("http://{}:{}", stored.host, stored.port)
         }
     };
     // The forwarded path. A bare `/` (the chat call) must land on the agent's
@@ -197,16 +174,7 @@ pub async fn agent_proxy(
 
     // Every message send must belong to a persisted session (may inject a
     // generated contextId into the body — see `ensure_chat_session`).
-    let prepared = ensure_chat_session(
-        &state,
-        &claims,
-        agent_id,
-        &agent_base,
-        body_bytes,
-        agent.is_internal,
-        !agent.keeps_session_memory,
-    )
-    .await?;
+    let prepared = ensure_chat_session(&state, &claims, agent_id, &agent_base, body_bytes).await?;
     let (body_bytes, persist_info) = (prepared.body, prepared.persist);
 
     // What this request's history selection chose from, and what it kept. Recorded here rather
@@ -337,50 +305,6 @@ pub async fn agent_proxy(
         crate::flows::record_participant(&state.db, &flow_ctx.flow_id, agent_id).await;
     }
 
-    // Coding-agent branch: drive an ACP turn and translate its events into the
-    // standard message/stream SSE, instead of HTTP-forwarding. The shared setup
-    // above (ensure_chat_session, user-message persist, flow row + participant)
-    // already ran, so a coding-agent turn is attributed exactly like any other.
-    if let Some(target) = coding_target {
-        // A coding agent is driven only by chat turns. A non-message request
-        // (agent-card fetch, GetTask, …) has no turn to run and no HTTP container
-        // to serve it, so answer those gracefully instead of a bare 501: a
-        // synthetic card for discovery, a well-formed JSON-RPC error otherwise.
-        let Some(info) = persist_info.as_ref() else {
-            return Ok(coding_non_chat_response(
-                &target,
-                agent_id,
-                &forwarded_path,
-                &body_bytes,
-            ));
-        };
-        let context_id = info.session_id.clone();
-        let task_id = nasiko_types::a2a::new_task_id();
-
-        // The shared helper mints the session-bound token (NAS-839, bound to the
-        // same `flow_id` the `flows` + `flow_participants` rows above were written
-        // under), wires the agent's env, runs the ACP turn, and streams it back —
-        // identically to the orchestrator-dispatch path (see `coding::entry`).
-        return crate::coding::entry::run_coding_turn_sse(
-            &state,
-            agent_id,
-            &target,
-            claims.user_uuid().ok(),
-            &context_id,
-            &info.user_text,
-            &flow_ctx.flow_id,
-            &task_id,
-        )
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, %agent_id, "coding-agent turn failed to start");
-            match e {
-                crate::coding::turn::CodingTurnError::Busy => StatusCode::CONFLICT,
-                _ => StatusCode::BAD_GATEWAY,
-            }
-        });
-    }
-
     // Explicit allowlist, not a denylist: the agent container is unvetted, so
     // anything not named here is dropped rather than forwarded by default.
     // In particular this drops `authorization`/`cookie` (the caller's platform
@@ -435,7 +359,6 @@ pub async fn agent_proxy(
     // already guaranteed the chat_sessions row, so the FK holds.
     if !body_bytes.is_empty()
         && let Ok(body_json) = serde_json::from_slice::<serde_json::Value>(&body_bytes)
-        && !(agent.is_internal && is_ephemeral(&body_json))
     {
         let context_id = body_json
             .pointer("/params/message/contextId")
@@ -695,79 +618,6 @@ const MESSAGE_SEND_METHODS: &[&str] = &[
     "message/stream",
 ];
 
-/// Answer a non-chat A2A request to a coding agent, which has no HTTP server of
-/// its own to forward to. Discovery (`agent-card` / `.well-known`) gets a
-/// minimal, valid synthetic AgentCard; any other method gets a well-formed
-/// JSON-RPC `method not found` error (echoing the request id) rather than a bare
-/// 501, so clients degrade gracefully.
-fn coding_non_chat_response(
-    target: &crate::coding::proxy::CodingAgentTarget,
-    agent_id: Uuid,
-    forwarded_path: &str,
-    body: &[u8],
-) -> Response {
-    use axum::response::IntoResponse;
-
-    if forwarded_path.contains("agent-card") || forwarded_path.contains(".well-known") {
-        let card = serde_json::json!({
-            "protocolVersion": "0.3.0",
-            "name": target.name,
-            "description": "ACP coding agent — driven over a stdio turn; accepts message/send and message/stream only.",
-            "url": format!("/api/agents/{agent_id}"),
-            "preferredTransport": "JSONRPC",
-            "version": "1.0.0",
-            "capabilities": { "streaming": true },
-            "defaultInputModes": ["text/plain"],
-            "defaultOutputModes": ["text/plain"],
-            "skills": [],
-        });
-        return axum::Json(card).into_response();
-    }
-
-    // Any other A2A method: echo the JSON-RPC id and return a method-not-found
-    // error (-32601). A2A JSON-RPC errors ride a 200, not an HTTP error status.
-    let rpc: serde_json::Value = serde_json::from_slice(body).unwrap_or(serde_json::Value::Null);
-    let id = rpc.get("id").cloned().unwrap_or(serde_json::Value::Null);
-    let method = rpc
-        .get("method")
-        .and_then(|m| m.as_str())
-        .unwrap_or("this method");
-    let err = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "error": {
-            "code": -32601,
-            "message": format!(
-                "{method} is not supported for ACP coding agents — use message/send or message/stream"
-            ),
-        },
-    });
-    axum::Json(err).into_response()
-}
-
-const EPHEMERAL_METADATA_KEY: &str = "nasiko_ephemeral";
-
-fn is_ephemeral(rpc: &serde_json::Value) -> bool {
-    rpc.pointer("/params/metadata")
-        .and_then(|m| m.get(EPHEMERAL_METADATA_KEY))
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false)
-}
-
-async fn session_binding(
-    state: &AppState,
-    session_id: &str,
-) -> Result<Option<(Uuid, Uuid)>, StatusCode> {
-    sqlx::query_as("SELECT user_id, agent_id FROM chat_sessions WHERE session_id = $1")
-        .bind(session_id)
-        .fetch_optional(&state.db)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, %session_id, "agent proxy: session lookup failed");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })
-}
-
 /// Session and user-message info extracted during `ensure_chat_session` so the
 /// proxy can persist both user and agent messages to `chat_messages` without
 /// re-parsing the request body a second time.
@@ -816,8 +666,6 @@ async fn ensure_chat_session(
     agent_id: Uuid,
     _agent_base_url: &str,
     body_bytes: axum::body::Bytes,
-    internal_agent: bool,
-    stitch_history: bool,
 ) -> Result<PreparedRequest, StatusCode> {
     // Not JSON, or not a message send → pass through; the agent is the
     // authority on whether the payload is valid A2A.
@@ -831,24 +679,11 @@ async fn ensure_chat_session(
     if !is_send {
         return Ok(PreparedRequest::passthrough(body_bytes));
     }
-    let user_id: Uuid = claims.sub.parse().map_err(|_| StatusCode::UNAUTHORIZED)?;
-    if internal_agent && is_ephemeral(&rpc) {
-        let context_id = rpc
-            .pointer("/params/message/contextId")
-            .and_then(serde_json::Value::as_str)
-            .filter(|s| !s.is_empty());
-        if let Some(context_id) = context_id
-            && let Some((owner, _)) = session_binding(state, context_id).await?
-            && !claims.is_superuser
-            && owner != user_id
-        {
-            return Err(StatusCode::FORBIDDEN);
-        }
-        return Ok(PreparedRequest::passthrough(body_bytes));
-    }
     let Some(message) = rpc.pointer_mut("/params/message") else {
         return Ok(PreparedRequest::passthrough(body_bytes));
     };
+
+    let user_id: Uuid = claims.sub.parse().map_err(|_| StatusCode::UNAUTHORIZED)?;
 
     let existing_ctx = message
         .get("contextId")
@@ -923,7 +758,16 @@ async fn ensure_chat_session(
     // conversation into the second agent's prompt — checked regardless of
     // superuser status, since this is about context isolation, not access.
     let same_agent_session = if inserted.rows_affected() == 0 {
-        match session_binding(state, &session_id).await? {
+        let existing: Option<(Uuid, Uuid)> =
+            sqlx::query_as("SELECT user_id, agent_id FROM chat_sessions WHERE session_id = $1")
+                .bind(&session_id)
+                .fetch_optional(&state.db)
+                .await
+                .map_err(|e| {
+                    tracing::error!(error = %e, %session_id, "agent proxy: session lookup failed");
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })?;
+        match existing {
             Some((owner, bound_agent)) => {
                 if !claims.is_superuser && owner != user_id {
                     return Err(StatusCode::FORBIDDEN);
@@ -951,7 +795,7 @@ async fn ensure_chat_session(
     // continuity its own "resume with --session-id" hint implies.
     let mut rewrite_needed = injected;
     let mut context_report = None;
-    if stitch_history && !user_text.is_empty() && same_agent_session {
+    if !user_text.is_empty() && same_agent_session {
         // This agent receives the history, so its switch decides IP-4; unreadable reads as off.
         // Via the shared helper rather than an inline query: that one also excludes soft-deleted
         // agents, which an inline `WHERE id = $1` does not.

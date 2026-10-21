@@ -10,14 +10,6 @@ path = "src/lib.rs"
 name = "nasiko-server"
 path = "src/main.rs"
 
-[[bin]]
-name = "seed-finops-demo"
-path = "src/bin/seed_finops_demo.rs"
-
-[[bin]]
-name = "seed-fleet-demo"
-path = "src/bin/seed_fleet_demo.rs"
-
 [dependencies]
 dotenvy.workspace = true
 nasiko-coding-policy.workspace = true
@@ -41,14 +33,6 @@ nasiko-utils.workspace = true
 nasiko-config.workspace = true
 nasiko-observability.workspace = true
 nasiko-llm-router.workspace = true
-# Coding-agent (ACP) turn execution: the ACP client speaks JSON-RPC to the
-# agent, `agent-client-protocol` supplies the `ByteStreams` transport + schema
-# types, and `tokio-util`'s compat shim bridges the runtime's tokio stdio halves
-# to the SDK's futures-io transport.
-nasiko-acp-client.workspace = true
-nasiko-session-token.workspace = true
-agent-client-protocol = { workspace = true }
-tokio-util = { workspace = true }
 
 tokio = { workspace = true }
 axum = { workspace = true }
