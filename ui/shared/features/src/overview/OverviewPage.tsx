@@ -4,7 +4,8 @@
 // `['agents']`, `['agents', 'deployment']`, `['router', 'budgets']`, `['tokenops', 'calendar']`); the range
 // `ToggleGroup type="single"` is Base UI's value array (`value={[range]}`, an emptied pick ignored as Radix's `v &&`
 // did); `Card asChild` + `<section>` -> `Card render={<section …/>}`; `Button asChild` + `Link` -> `ButtonLink`
-// (../agents/components/ButtonLink.tsx); Prettier formatting.
+// (../agents/components/ButtonLink.tsx); the summary card is ./components/SummaryCard.tsx (development 49950eb1e, shared
+// with GenUI's overview view); Prettier formatting.
 "use client";
 
 /**
@@ -29,9 +30,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { PageHeader } from "@nasiko/ui/composites";
 import { PageLoader } from "@nasiko/ui/composites";
 import { StateCard } from "@nasiko/ui/composites";
-import { Badge } from "@nasiko/ui/primitives";
 import { Button } from "@nasiko/ui/primitives";
-import { Card } from "@nasiko/ui/primitives";
 import { useChatSessions } from "../chat/api";
 import { overviewNarrative } from "../narrative/overview";
 import { meQueryOptions, productKey, useProductScope, type Me } from "@nasiko/data-access/product";
@@ -53,11 +52,7 @@ import {
 // import { Budget } from './components/Budget'
 import { FirstRun, FirstRunLead, FirstRunPreview } from "./components/FirstRun";
 import { FleetHealth } from "./components/FleetHealth";
-import { Harnesses, HarnessesLine } from "./components/Harnesses";
-import { Headline } from "./components/Headline";
-import { AgentsTile, RunsTile, SpendTile } from "./components/Kpis";
-import { Savings } from "./components/Savings";
-import { MonthBar } from "./components/MonthBar";
+import { HarnessesLine } from "./components/Harnesses";
 import { NeedsYou } from "./components/NeedsYou";
 import { usePausedFlows } from "../flows/paused";
 import { QuickActions } from "./components/QuickActions";
@@ -65,6 +60,7 @@ import { RecentChats } from "./components/RecentChats";
 import { RecentSessions } from "./components/RecentSessions";
 import { SetupGuide } from "./components/SetupGuide";
 import { Spend } from "./components/Spend";
+import { SummaryCard } from "./components/SummaryCard";
 import { copy } from "./copy";
 import { DEFAULT_RANGE, RANGE_DAYS, RANGES, type OverviewSearch } from "./search";
 import { RETURN_REFRESH_MS } from "./tuning";
@@ -310,30 +306,15 @@ function Overview({
   const place = budgets ? PLACE.budgets : PLACE.none;
   return (
     <Frame description={description} actions={actions}>
-      {/* The summary as one card like TokenOps' SummaryHero: the headline on the left, the KPI tiles 2×2 on the right. */}
-      <Card
-        render={<section aria-labelledby="overview-summary-title" />}
-        className="gap-0 overflow-hidden p-0 @[1100px]/overview:grid @[1100px]/overview:grid-cols-[minmax(0,1fr)_minmax(0,1.25fr)]"
-      >
-        <h2 id="overview-summary-title" className="sr-only">
-          {copy.summary}
-        </h2>
-        <div className="flex flex-col justify-center gap-4 p-5">
-          <Badge variant="outline" className="border-primary/30 bg-primary/10 text-primary-text">
-            {copy.range.item(days)}
-          </Badge>
-          <Headline narrative={narrative} nothing={needs.empty} />
-          <MonthBar spend={spend} />
-          <Savings view={savings.view} isPending={savings.isPending} />
-        </div>
-        {/* The tiles drop their own card chrome here: the hairlines between them are the grid's gap. */}
-        <div className="grid grid-cols-1 gap-px border-t border-border bg-border *:rounded-none *:border-0 @[560px]/overview:grid-cols-2 @[1100px]/overview:border-t-0 @[1100px]/overview:border-l">
-          <SpendTile spend={spend} />
-          <RunsTile spend={spend} />
-          <AgentsTile fleet={fleet} />
-          <Harnesses data={harnesses} days={days} />
-        </div>
-      </Card>
+      <SummaryCard
+        days={days}
+        narrative={narrative}
+        nothing={needs.empty}
+        spend={spend}
+        savings={savings}
+        fleet={fleet}
+        harnesses={harnesses}
+      />
       <div className="grid grid-cols-1 items-stretch gap-3 @[700px]/overview:grid-cols-2 @[1100px]/overview:grid-cols-4">
         <NeedsYou
           data={needsYou}

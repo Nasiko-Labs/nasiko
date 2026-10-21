@@ -6,7 +6,9 @@
 // handler answers; `pageSearch()` reads the page query only where `location` exists (msw/node outside jsdom has
 // none); `seedAdminSession` (new) is the session the browser boot pins (browser.ts); `!` on the seeded lookups the
 // lab's tsconfig allowed, under a file-level eslint-disable; ESLint autofixes (void-returning arrows given braces,
-// redundant casts and `String()` calls dropped); Prettier formatting.
+// redundant casts and `String()` calls dropped); development (3aac84f66, 49950eb1e and f851fdca8): `mockCtx` gives the
+// seeds, the chat context and `addChatOnlyAgent` (the chat mock's internal agents) to an edition's mocks; Prettier
+// formatting.
 /* eslint-disable @typescript-eslint/no-non-null-assertion -- ported verbatim; the seeded lookups always hit */
 /**
  * MSW handlers — every mocked endpoint derives from one seed (plan D4, A19).
@@ -2059,18 +2061,26 @@ function chatScenario(): ChatScenario | null {
   );
 }
 
+/**
+ * Agents an edition's mocks add for the chat mock only, the way the real server has internal agents no listing shows
+ * (EE: the Weave agent its assistant chats with). Keyed by id, so a module re-evaluated by HMR replaces its entry.
+ */
+const chatOnlyAgents = new Map<string, { id: string; name: string; running: boolean }>();
+
 const chatCtx: ChatMockContext = {
   loggedIn: () => loggedIn,
   userId: () => ADMIN_ID,
   now: () => nowFn(),
-  agents: () =>
-    getAgents()
+  agents: () => [
+    ...getAgents()
       .agents.filter((a) => !a.deleted && !a.tags.includes("coding-agent"))
       .map((a) => ({
         id: a.id,
         name: a.name,
         running: a.status === "running" && !hasVariant("no-agents"),
       })),
+    ...chatOnlyAgents.values(),
+  ],
   scenario: chatScenario,
   traceId: () => observabilityData(getSeed()).showcaseTraceId || null,
   username: () => "admin",
@@ -2511,6 +2521,8 @@ function usageResponse(fn: () => unknown): Response {
 /** What an edition's mocks build on: the core mock's live state and response helpers (never copies of them). */
 export const mockCtx = {
   loggedIn: () => loggedIn,
+  seed: getSeed,
+  finopsSeed,
   now: () => nowFn(),
   variant,
   superuser,
@@ -2528,4 +2540,10 @@ export const mockCtx = {
   envelope,
   unauthorized,
   usageResponse,
+  /** The chat mock's context, for a layer whose agent saves its own turns (EE: the Weave agent proxy). */
+  chatCtx: () => chatCtx,
+  /** Adds an agent the chat mock knows (sessions may name it) but the agents mock never lists: an internal agent. */
+  addChatOnlyAgent: (agent: { id: string; name: string; running: boolean }) => {
+    chatOnlyAgents.set(agent.id, agent);
+  },
 };

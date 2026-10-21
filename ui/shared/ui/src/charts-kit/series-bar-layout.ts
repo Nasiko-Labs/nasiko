@@ -1,3 +1,5 @@
+const MAX_GROUP_SHARE = 0.92;
+
 export function computeSeriesBarWidth(input: {
   innerWidth: number;
   dataLength: number;
@@ -32,7 +34,7 @@ export function computeSeriesBarWidth(input: {
     width = Math.min(width, composedMaxBarSize);
   }
   if (groupCount > 1) {
-    const maxGroup = slot * 0.92;
+    const maxGroup = slot * MAX_GROUP_SHARE;
     const needed = groupCount * width + (groupCount - 1) * gap;
     if (needed > maxGroup && maxGroup > 0) {
       width = Math.max(4, (maxGroup - (groupCount - 1) * gap) / groupCount);
@@ -57,4 +59,32 @@ export function computeSeriesBarRevealClipPadding(input: {
 
   const groupWidth = seriesCount * barWidth + (seriesCount - 1) * gap;
   return Math.ceil(groupWidth / 2);
+}
+
+/**
+ * Bars on a time axis (development 49950eb1e): the scale is inset by half a bar group so the first and last bars sit
+ * inside the plot, and the columns are sized to fit that inset range. Undefined with fewer than two points.
+ */
+export function computeSeriesBarEdge(input: {
+  innerWidth: number;
+  dataLength: number;
+  seriesCount: number;
+  composedBarSize?: number | undefined;
+  composedMaxBarSize?: number | undefined;
+  composedBarGap?: number | undefined;
+  stacked?: boolean | undefined;
+}): { inset: number; columnWidth: number } | undefined {
+  const { innerWidth, dataLength, seriesCount, composedBarGap, stacked } = input;
+  if (dataLength < 2 || innerWidth <= 0) {
+    return undefined;
+  }
+  const columnWidth = innerWidth / (dataLength - 1 + MAX_GROUP_SHARE);
+  const barWidth = computeSeriesBarWidth({ ...input, columnWidth });
+  const halfGroup = computeSeriesBarRevealClipPadding({
+    barWidth,
+    gap: composedBarGap,
+    seriesCount,
+    stacked,
+  });
+  return { inset: Math.min(innerWidth / 4, halfGroup), columnWidth };
 }

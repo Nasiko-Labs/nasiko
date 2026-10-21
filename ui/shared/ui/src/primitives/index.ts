@@ -38,3 +38,7 @@ export * from "./sidebar";
 export * from "./command";
 export * from "./radio-group";
 export * from "./slider";
+// Ported from the legacy ui/ on development (3aac84f66) for the GenUI catalog and its sandbox kit.
+export * from "./accordion";
+export * from "./calendar";
+export * from "./pagination";

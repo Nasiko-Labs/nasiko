@@ -4,7 +4,7 @@
 // provider catalog is TokenOps' scoped `providersQuery(scope)`; `prefetchRouter(client, scope)` uses `client.query`
 // (the deprecated `prefetchQuery`'s fetch-if-stale, error swallowed); optional fields admit `undefined` and an absent
 // predicate is omitted (exactOptionalPropertyTypes); `ApiError` is `ProductApiError`; Prettier
-// formatting.
+// formatting. `configsQuery` is exported (development bb0683400: GenUI's router views read it).
 /**
  * LLM router queries and mutations (plan §4, §7), keys under `['router']`.
  * - Per-agent routing reads fan out through the router's own limiter (eng #4): no server batch read exists (R-L13).
@@ -88,7 +88,7 @@ const routerLimiter = createLimiter(ROUTING_READ_CONCURRENCY);
 
 const list = { staleTime: LIST_STALE_MS, refetchOnWindowFocus: true } as const;
 
-const configsQuery = (scope: Scope) => ({
+export const configsQuery = (scope: Scope) => ({
   queryKey: routerKeys.configs(scope),
   queryFn: ({ signal }: { signal: AbortSignal }) =>
     apiData<LlmConfig[]>("/api/llm-configs", { signal }),

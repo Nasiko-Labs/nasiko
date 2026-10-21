@@ -1,6 +1,7 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/components/shared/page-loader.tsx. Local edits: `MARK_BARS` comes
 // from ./mark-bars (the lab's `app/shell/markBars.ts`, ported beside it); `cn` import mapped to ../lib/cn; optional
-// props typed `| undefined` (exactOptionalPropertyTypes).
+// props typed `| undefined` (exactOptionalPropertyTypes). Development (3794209ec): the fixed layer ends at
+// `--shell-split-end`, the width of a layer's `shellSplit` panel (EE: the assistant), when one is open.
 /**
  * The one page-level loading state: the Nasiko mark drawing itself (our take on Aceternity's LoaderThree,
  * `--animate-mark-draw` in index.css). A page shows it while its primary data loads, in place of section skeletons;
@@ -33,7 +34,7 @@ export function PageLoader({
         inline
           ? "flex-1"
           : // The sidebar's gap is --sidebar-width, or --sidebar-width-icon in the collapsed rail; none outside the shell.
-            "pointer-events-none fixed inset-y-0 right-0 left-0 z-10 md:left-[var(--sidebar-width,0px)] md:group-has-[[data-slot=sidebar][data-collapsible=icon]]/sidebar-wrapper:left-(--sidebar-width-icon)",
+            "pointer-events-none fixed inset-y-0 right-[var(--shell-split-end,0px)] left-0 z-10 md:left-[var(--sidebar-width,0px)] md:group-has-[[data-slot=sidebar][data-collapsible=icon]]/sidebar-wrapper:left-(--sidebar-width-icon)",
         className,
       )}
     >

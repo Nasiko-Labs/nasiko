@@ -6,7 +6,9 @@
 // primitives from `@nasiko/ui/primitives`, composites from `@nasiko/ui/composites`, `cn`/formatters/`POLARITY`/
 // `prefersReducedMotion` from `@nasiko/ui/cn` and `@nasiko/ui/lib`; `AgentLink` from the ported agents feature;
 // optional props typed `| undefined`; lint-driven mechanical edits (void arrow bodies braced,
-// unnecessary assertions dropped); Prettier formatting.
+// unnecessary assertions dropped); on development (3aac84f66, 49950eb1e and d2e0d4bcf, for GenUI) the table takes an
+// optional `pageSize` (a `Pager` under it) and `onSelect` (a focus toggle per row; `aria-pressed:` for Base UI's
+// Toggle); Prettier formatting.
 "use client";
 
 /**
@@ -17,8 +19,8 @@
  * exactly the visible rows in the current sort, with formula-safe cells.
  * On narrow screens the table becomes a card list.
  */
-import { Download, ListTree } from "lucide-react";
-import { createContext, use, useEffect, useMemo, useRef } from "react";
+import { Crosshair, Download, ListTree } from "lucide-react";
+import { createContext, use, useEffect, useMemo, useRef, useState } from "react";
 import {
   Badge,
   Button,
@@ -28,6 +30,7 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
+  Toggle,
   ToggleGroup,
   ToggleGroupItem,
 } from "@nasiko/ui/primitives";
@@ -43,6 +46,8 @@ import {
   fmtMoney,
   fmtPct,
   fmtTokens,
+  pageCount,
+  pageOf,
   POLARITY,
   prefersReducedMotion,
 } from "@nasiko/ui/lib";
@@ -53,6 +58,7 @@ import {
   PanelEmpty,
   PanelError,
   PanelSkeleton,
+  Pager,
   SearchInput,
 } from "@nasiko/ui/composites";
 import {
@@ -86,8 +92,10 @@ export function AttributionTable({
   onSort,
   onSearch,
   onViewTraces,
+  onSelect,
   onLast30,
   unpriced,
+  pageSize,
 }: {
   rows: AttributionRow[] | undefined;
   view: "agent" | "workflow";
@@ -103,11 +111,26 @@ export function AttributionTable({
   onSort: (s: SortKey) => void;
   onSearch: (q: string) => void;
   onViewTraces: (agentId: string) => void;
+  onSelect?: ((agentId: string) => void) | undefined;
   /** Offered in the empty-window state; undefined when already on 30d (A2). */
   onLast30?: (() => void) | undefined;
   unpriced: boolean;
+  pageSize?: number | undefined;
 }) {
   const visible = useMemo(() => sortRows(searchRows(rows ?? [], q), sort), [rows, q, sort]);
+  const firstPage = () => {
+    const at = highlightId ? visible.findIndex((r) => r.id === highlightId) : -1;
+    return pageSize && at >= 0 ? Math.floor(at / pageSize) : 0;
+  };
+  const [page, setPage] = useState(firstPage);
+  const [pagedFor, setPagedFor] = useState({ visible, highlightId });
+  if (pagedFor.visible !== visible || pagedFor.highlightId !== highlightId) {
+    setPagedFor({ visible, highlightId });
+    setPage(firstPage());
+  }
+  const pages = pageSize ? pageCount(visible.length, pageSize) : 1;
+  const current = Math.min(page, pages - 1);
+  const shown = pageSize ? pageOf(visible, current, pageSize) : visible;
   const noun = view === "agent" ? "Agent" : "Workflow";
   const sortOptions = (Object.keys(SORT_LABELS) as SortKey[]).filter(
     (s) => view === "agent" || s !== "hours",
@@ -222,20 +245,23 @@ export function AttributionTable({
       ) : (
         <>
           <DesktopTable
-            rows={visible}
+            rows={shown}
             view={view}
             sort={sort}
             prevUnavailable={prevUnavailable}
             highlightId={highlightId}
             onViewTraces={onViewTraces}
+            onSelect={onSelect}
           />
           <MobileCards
-            rows={visible}
+            rows={shown}
             view={view}
             prevUnavailable={prevUnavailable}
             highlightId={highlightId}
             onViewTraces={onViewTraces}
+            onSelect={onSelect}
           />
+          <Pager page={current} pages={pages} onPage={setPage} />
         </>
       )}
     </Panel>
@@ -250,13 +276,38 @@ const NUM = { numeric: true, headerClassName: "px-1.5 2xl:px-2", cellClassName: 
  * defs must keep their identity across renders or every cell remounts (and a focused Traces button
  * is lost when the drawer closes): the defs live at module level and read these through context.
  */
-const CellCtx = createContext<{ prevUnavailable: boolean; onViewTraces: (id: string) => void }>({
+const CellCtx = createContext<{
+  prevUnavailable: boolean;
+  onViewTraces: (id: string) => void;
+  onSelect?: ((id: string) => void) | undefined;
+  highlightId?: string | undefined;
+}>({
   prevUnavailable: true,
   onViewTraces: () => {},
 });
 
 function DeltaCell({ row }: { row: AttributionRow }) {
   return <RowDelta row={row} prevUnavailable={use(CellCtx).prevUnavailable} />;
+}
+
+function FocusToggle({ row: r }: { row: AttributionRow }) {
+  const { onSelect, highlightId } = use(CellCtx);
+  if (!onSelect) return null;
+  const on = r.id === highlightId;
+  return (
+    <Toggle
+      size="sm"
+      pressed={on}
+      onPressedChange={() => {
+        onSelect(on ? "" : r.id);
+      }}
+      className="h-7 px-2 aria-pressed:bg-primary/10 aria-pressed:text-primary-text"
+      aria-label={on ? `Stop focusing on ${r.name}` : `Focus on ${r.name}`}
+      title={on ? "In focus" : "Focus"}
+    >
+      <Crosshair className="size-3.5" aria-hidden />
+    </Toggle>
+  );
 }
 
 function TracesCell({ row: r }: { row: AttributionRow }) {
@@ -373,7 +424,12 @@ function columnsFor(view: "agent" | "workflow"): Col[] {
             id: "traces",
             header: "",
             meta: NUM,
-            cell: ({ row }) => <TracesCell row={row.original} />,
+            cell: ({ row }) => (
+              <div className="flex items-center justify-end">
+                <FocusToggle row={row.original} />
+                <TracesCell row={row.original} />
+              </div>
+            ),
           },
         ] satisfies Col[])
       : []),
@@ -390,6 +446,7 @@ function DesktopTable({
   prevUnavailable,
   highlightId,
   onViewTraces,
+  onSelect,
 }: {
   rows: AttributionRow[];
   view: "agent" | "workflow";
@@ -397,10 +454,11 @@ function DesktopTable({
   prevUnavailable: boolean;
   highlightId?: string | undefined;
   onViewTraces: (id: string) => void;
+  onSelect?: ((id: string) => void) | undefined;
 }) {
   const highlightRef = useScrollToHighlight<HTMLTableRowElement>(highlightId);
   return (
-    <CellCtx value={{ prevUnavailable, onViewTraces }}>
+    <CellCtx value={{ prevUnavailable, onViewTraces, onSelect, highlightId }}>
       <DataTable
         className="hidden md:block"
         label="Who is driving cost"
@@ -434,12 +492,14 @@ function MobileCards({
   prevUnavailable,
   highlightId,
   onViewTraces,
+  onSelect,
 }: {
   rows: AttributionRow[];
   view: "agent" | "workflow";
   prevUnavailable: boolean;
   highlightId?: string | undefined;
   onViewTraces: (id: string) => void;
+  onSelect?: ((id: string) => void) | undefined;
 }) {
   const highlightRef = useScrollToHighlight<HTMLLIElement>(highlightId);
   return (
@@ -459,16 +519,31 @@ function MobileCards({
             <RowDelta row={r} prevUnavailable={prevUnavailable} />
           </div>
           {view === "agent" ? (
-            <Button
-              variant="link"
-              size="sm"
-              className="mt-1 h-auto min-h-11 w-fit p-0 text-xs"
-              onClick={() => {
-                onViewTraces(r.id);
-              }}
-            >
-              View traces
-            </Button>
+            <div className="mt-1 flex gap-4">
+              <Button
+                variant="link"
+                size="sm"
+                className="h-auto min-h-11 w-fit p-0 text-xs"
+                onClick={() => {
+                  onViewTraces(r.id);
+                }}
+              >
+                View traces
+              </Button>
+              {onSelect ? (
+                <Button
+                  variant="link"
+                  size="sm"
+                  className="h-auto min-h-11 w-fit p-0 text-xs"
+                  aria-pressed={r.id === highlightId}
+                  onClick={() => {
+                    onSelect(r.id === highlightId ? "" : r.id);
+                  }}
+                >
+                  {r.id === highlightId ? "In focus" : "Focus"}
+                </Button>
+              ) : null}
+            </div>
           ) : null}
         </Card>
       ))}

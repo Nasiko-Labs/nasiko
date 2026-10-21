@@ -1,5 +1,6 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/app/shell/AppShell.tsx.
-// Shared navigation port, children slot, admitted primitives and browser cookie/width default.
+// Shared navigation port, children slot, admitted primitives and browser cookie/width default. Development
+// (3aac84f66, 66a4c64d0): a layer's `split` (the `shellSplit` slot) wraps the page area.
 "use client";
 
 /**
@@ -8,7 +9,7 @@
  */
 import Link from "@nasiko/app-core/navigation";
 import { usePathname } from "@nasiko/app-core/navigation";
-import { useState, useSyncExternalStore, type ReactNode } from "react";
+import { useState, useSyncExternalStore, type ComponentType, type ReactNode } from "react";
 import { Button, SidebarInset, SidebarProvider, SidebarTrigger } from "@nasiko/ui/primitives";
 import { cn } from "@nasiko/ui/cn";
 import { StaleBuildNotice } from "./StaleBuildNotice";
@@ -31,12 +32,15 @@ const serverWidthDefault = () => true;
 export function AppShell({
   children,
   end,
+  split: Split,
   badges,
   hidden,
   initialOpen,
 }: {
   children?: ReactNode;
   end?: ReactNode;
+  /** A layer's split around the page (the `shellSplit` slot; EE: the Weave assistant panel). */
+  split?: ComponentType<{ path: string; children: ReactNode }> | null | undefined;
   badges?: NavBadges | undefined;
   /** Nav paths to leave out (onboarding hides Overview while its guide stands in for it). */
   hidden?: readonly string[] | undefined;
@@ -56,6 +60,31 @@ export function AppShell({
   // The drill-in slot (sidebarPanel.ts): the sidebar hands out `target`, a page's SidebarPanel portals into it.
   const [target, setTarget] = useState<HTMLElement | null>(null);
   const [panels, setPanels] = useState(0);
+  const inset = (
+    <SidebarInset
+      id="main"
+      tabIndex={-1}
+      className={cn("outline-none", fullHeight ? "min-h-0" : "mx-auto max-w-page")}
+    >
+      {/* Phones: a slim top bar with the menu button opens the nav sheet (§4.2). */}
+      <div className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-2 md:hidden">
+        <SidebarTrigger aria-label={copy.openMenu} className="size-11" />
+        <Link
+          href="/"
+          className="flex h-11 items-center gap-2 rounded-md px-2 text-sm font-semibold focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background focus-visible:outline-none"
+        >
+          <img src="/mark-nasiko.svg" alt="" aria-hidden className="size-4" />
+          {copy.brand}
+        </Link>
+      </div>
+      <StaleBuildNotice />
+      {fullHeight ? (
+        <div className="min-h-0 flex-1">{children}</div>
+      ) : (
+        <div className="w-full px-4 py-4">{children}</div>
+      )}
+    </SidebarInset>
+  );
   return (
     <SidebarPanelContext value={{ target, setTarget, panels, setPanels }}>
       <SidebarProvider
@@ -74,29 +103,7 @@ export function AppShell({
           {copy.skipToContent}
         </Button>
         <AppSidebar badges={badges} hidden={hidden} />
-        <SidebarInset
-          id="main"
-          tabIndex={-1}
-          className={cn("outline-none", fullHeight ? "min-h-0" : "mx-auto max-w-page")}
-        >
-          {/* Phones: a slim top bar with the menu button opens the nav sheet (§4.2). */}
-          <div className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-2 md:hidden">
-            <SidebarTrigger aria-label={copy.openMenu} className="size-11" />
-            <Link
-              href="/"
-              className="flex h-11 items-center gap-2 rounded-md px-2 text-sm font-semibold focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background focus-visible:outline-none"
-            >
-              <img src="/mark-nasiko.svg" alt="" aria-hidden className="size-4" />
-              {copy.brand}
-            </Link>
-          </div>
-          <StaleBuildNotice />
-          {fullHeight ? (
-            <div className="min-h-0 flex-1">{children}</div>
-          ) : (
-            <div className="w-full px-4 py-4">{children}</div>
-          )}
-        </SidebarInset>
+        {Split ? <Split path={pathname}>{inset}</Split> : inset}
         {end}
       </SidebarProvider>
     </SidebarPanelContext>

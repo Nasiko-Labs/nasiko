@@ -1,4 +1,4 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/app/edition.ts. Local edits: `LayerNavItem`/`AnyNavItem` are declared in shell/nav.ts and re-exported here (the lab's two type-only imports formed a cycle the dependency checker rejects; same types, same name for callers); the OSS defaults are the only edition here, the slot types stay so `useSlots()` keeps its shape.
+// Ported from nasiko-ui-lab@1b99bdda common/src/app/edition.ts. Local edits: `LayerNavItem`/`AnyNavItem` are declared in shell/nav.ts and re-exported here (the lab's two type-only imports formed a cycle the dependency checker rejects; same types, same name for callers); the `shellSplit` slot (development 66a4c64d0, 3794209ec: the EE assistant panel); the OSS defaults are the only edition here, the slot types stay so `useSlots()` keeps its shape.
 /**
  * How an edition builds on the core (docs/lab-vs-react-migration-review.md §10.4). Pure TypeScript, no React:
  * the glue is edition-context.tsx.
@@ -11,7 +11,7 @@
  *   editions have (the harness usage endpoint's bare vs coded 404, crash-guardian fields). A probe never stands in
  *   for the edition.
  */
-import type { ComponentType } from "react";
+import type { ComponentType, ReactNode } from "react";
 import type { AnyNavItem, LayerNavItem, NavGroupId } from "../shell/nav";
 
 export type { AnyNavItem } from "../shell/nav";
@@ -80,6 +80,12 @@ export interface Slots {
   topbarStart: ComponentType | null;
   shellEnd: ComponentType<{ path: string }> | null;
   /**
+   * Wraps the page in a split with a panel of its own (EE: the Weave assistant). While the panel shows beside the
+   * page, it sets `--shell-split-end` (its width) on an ancestor of `children`, so fixed page layers (`PageLoader`)
+   * stop short of it.
+   */
+  shellSplit: ComponentType<{ path: string; children: ReactNode }> | null;
+  /**
    * Rows a layer adds to /optimization's Workspace footer, after the core's tiers row (EE: Organization policy;
    * plans/feat-optimization-page.md R5B). Superusers only, like the footer. Each renders a `WorkspaceRow` or nothing.
    */
@@ -114,6 +120,7 @@ export const OSS_SLOTS: Slots = {
   tokenopsOrgUnitFilter: null,
   topbarStart: null,
   shellEnd: null,
+  shellSplit: null,
   optimizationWorkspace: null,
   navHidden: null,
 };
@@ -155,6 +162,7 @@ export function resolveSlots(layers: readonly EditionLayer[]): Slots {
     if (s.tokenopsOrgUnitFilter !== undefined) out.tokenopsOrgUnitFilter = s.tokenopsOrgUnitFilter;
     if (s.topbarStart !== undefined) out.topbarStart = s.topbarStart;
     if (s.shellEnd !== undefined) out.shellEnd = s.shellEnd;
+    if (s.shellSplit !== undefined) out.shellSplit = s.shellSplit;
     if (s.optimizationWorkspace !== undefined) out.optimizationWorkspace = s.optimizationWorkspace;
     if (s.navHidden !== undefined) out.navHidden = s.navHidden;
   }

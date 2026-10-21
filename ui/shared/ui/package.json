@@ -19,6 +19,9 @@
     "./cn": "./src/lib/cn.ts",
     "./lib": "./src/lib/index.ts",
     "./styles.css": "./src/styles/index.css",
+    "./styles/shadcn-tailwind.css": "./src/styles/shadcn-tailwind.css",
+    "./styles/tokens.css": "./src/styles/tokens.css",
+    "./styles/operational-motion.css": "./src/styles/operational-motion.css",
     "./toast": "./src/toast/index.tsx",
     "./motion/testing": "./src/motion/testing.ts"
   },
@@ -50,6 +53,7 @@
     "lucide-react": "1.49.0",
     "motion": "13.4.6",
     "react": "19.3.0",
+    "react-day-picker": "10.0.2",
     "react-dom": "19.3.0",
     "recharts": "3.10.1",
     "sonner": "2.0.8",
@@ -60,6 +64,7 @@
   },
   "devDependencies": {
     "@nasiko/config": "workspace:*",
+    "@storybook/react-vite": "10.6.1",
     "@testing-library/jest-dom": "7.0.1",
     "@testing-library/react": "16.3.3",
     "@testing-library/user-event": "14.6.7",
@@ -71,7 +76,6 @@
     "jsdom": "30.1.1",
     "storybook": "10.6.1",
     "typescript": "5.9.3",
-    "vitest": "5.0.3",
-    "@storybook/react-vite": "10.6.1"
+    "vitest": "5.0.3"
   }
 }

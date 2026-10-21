@@ -1,7 +1,8 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/tokenops/api.ts. Local edits: every query key is scoped,
 // `productKey(scope, "tokenops", <the lab's key parts>)` (`providers` is `productKey(scope, "providers")`, still outside
 // the "tokenops" feature as in the lab), so the `*Query` builders take `scope` first and the hooks read it from
-// `useProductScope()`; `apiData`/`apiFetch`/`withQuery` come from `@nasiko/data-access/product`; Prettier formatting.
+// `useProductScope()`; `dayQuery`/`savingsQuery` are split out of `useDay`/`useSavings` (development 49950eb1e: GenUI
+// reads them); `apiData`/`apiFetch`/`withQuery` come from `@nasiko/data-access/product`; Prettier formatting.
 /**
  * TokenOps queries. Every key contains the resolved window key plus every filter, so
  * a stale response for an old filter set can never render for a new one (plan A17).
@@ -186,15 +187,17 @@ export function useCalendar(month: string, f: Filters, enabled: boolean) {
   });
 }
 
-export function useDay(date: string | undefined, f: Filters, enabled: boolean) {
-  const scope = useProductScope();
+export function dayQuery(scope: Scope, date: string | undefined, f: Filters) {
   const path = withQuery(`${FINOPS}/spend-calendar/day`, { date, ...filterParams(f) });
-  return useQuery({
+  return queryOptions({
     queryKey: tokenopsKeys.day(scope, date ?? "", f),
     queryFn: ({ signal }) => apiData<FinopsDayDrilldown>(path, { signal, schema: finopsDaySchema }),
-    enabled: enabled && !!date,
     meta: { path },
   });
+}
+
+export function useDay(date: string | undefined, f: Filters, enabled: boolean) {
+  return useQuery({ ...dayQuery(useProductScope(), date, f), enabled: enabled && !!date });
 }
 
 /** PROPOSED endpoint — live servers return 404 until it exists (handled by the drawer). */
@@ -236,20 +239,30 @@ export function useProviders(enabled: boolean) {
  * Token-optimisation savings for the window. `scope` picks the rollup; every scope returns the
  * total and the category breakdown, so the panel needs one request rather than three.
  */
+export function savingsQuery(
+  product: Scope,
+  win: ResolvedWindow,
+  f: Filters,
+  scope: "total" | "agent" | "session",
+) {
+  const path = withQuery(`${FINOPS}/savings`, { ...win.params, ...filterParams(f), scope });
+  return queryOptions({
+    queryKey: tokenopsKeys.savings(product, win.key, f, scope),
+    queryFn: ({ signal }) => apiData<SavingsData>(path, { signal }),
+    meta: { path },
+  });
+}
+
 export function useSavings(
   win: ResolvedWindow,
   f: Filters,
   scope: "total" | "agent" | "session",
   enabled: boolean,
 ) {
-  const product = useProductScope();
-  const path = withQuery(`${FINOPS}/savings`, { ...win.params, ...filterParams(f), scope });
   return useQuery({
-    queryKey: tokenopsKeys.savings(product, win.key, f, scope),
-    queryFn: ({ signal }) => apiData<SavingsData>(path, { signal }),
+    ...savingsQuery(useProductScope(), win, f, scope),
     placeholderData: keepPreviousData,
     enabled,
-    meta: { path },
   });
 }
 

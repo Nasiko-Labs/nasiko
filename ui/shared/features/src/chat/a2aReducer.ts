@@ -1,6 +1,7 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/chat/a2aReducer.ts. Local edits: `!` on reads at an index
 // just found (`noUncheckedIndexedAccess` here) and `| undefined` on the optional fields it fills from possibly-absent
-// frame values (`exactOptionalPropertyTypes`); Prettier formatting.
+// frame values (`exactOptionalPropertyTypes`); development 92e726fae: a paired step carries its call id (`d.id`) and a
+// result closes that call first, and a failed status with no text takes its data part's reason; Prettier formatting.
 /* eslint-disable @typescript-eslint/no-non-null-assertion -- each `!` reads an index just found or bounded */
 /**
  * The one place that knows A2A stream shapes (plan §3.2, S6).
@@ -54,6 +55,7 @@ export interface Step {
 interface CallMeta {
   turn: string;
   invocationKey: string;
+  callId?: string | undefined;
 }
 
 export type TypedEvent =
@@ -64,7 +66,14 @@ export type TypedEvent =
   | { type: "trace"; traceId: string }
   | { type: "usage"; usage: UsageMeta }
   | { type: "hitl"; request: HitlFrame }
-  | { type: "step"; step: Step; merge: boolean; pair?: "call" | "result"; turn?: string }
+  | {
+      type: "step";
+      step: Step;
+      merge: boolean;
+      pair?: "call" | "result";
+      turn?: string;
+      callId?: string | undefined;
+    }
   | { type: "awaiting"; agent?: string | undefined; message?: string | undefined }
   | { type: "agentNote"; agent: string; field: "status" | "content"; text: string }
   | { type: "activity"; text: string }
@@ -267,6 +276,7 @@ function dataEvents(d: Json): TypedEvent[] {
           merge: false,
           pair: "call",
           turn,
+          callId: str(d.id),
           step: {
             key: "",
             via: str(d.via_agent),
@@ -289,6 +299,7 @@ function dataEvents(d: Json): TypedEvent[] {
           merge: true,
           pair: "result",
           turn,
+          callId: str(d.id),
           step: {
             key: "",
             via: str(d.via_agent),
@@ -328,8 +339,18 @@ function statusEvents(status: unknown, text: string, parts: Part[]): TypedEvent[
   const state = normalizeState(isObj(status) ? status.state : undefined);
   const events: TypedEvent[] = [];
   for (const p of parts) if (p.data) events.push(...dataEvents(p.data));
-  events.push({ type: "status", state, text });
+  const failed = state === "failed" || state === "rejected";
+  events.push({ type: "status", state, text: text || (failed ? failureText(parts) : "") });
   return events;
+}
+
+/** A failed status with no message text: the reason its data part carries (Weave's failed turns). */
+function failureText(parts: Part[]): string {
+  for (const p of parts) {
+    const reason = p.data ? (str(p.data.content) ?? str(p.data.message)) : undefined;
+    if (reason) return reason;
+  }
+  return "";
 }
 
 function statusFrame(u: Json): TypedEvent[] {
@@ -464,7 +485,7 @@ export function applyEvent(s: TurnState, e: TypedEvent): TurnState {
     case "hitl":
       return { ...s, request: e.request };
     case "step": {
-      if (e.pair) return applyPaired(s, e.step, e.pair, e.turn ?? "");
+      if (e.pair) return applyPaired(s, e.step, e.pair, e.turn ?? "", e.callId);
       const i = s.steps.findIndex((x) => x.key === e.step.key);
       if (i < 0)
         return s.steps.length >= tuning.MAX_STEPS ? s : { ...s, steps: [...s.steps, e.step] };
@@ -501,7 +522,13 @@ export function applyEvent(s: TurnState, e: TypedEvent): TurnState {
  * one `turn`, so each result closes the oldest open call of the same agent, turn and via (FIFO).
  * The first call keeps v1a's `agent#turn` key; later ones add their sequence.
  */
-function applyPaired(s: TurnState, step: Step, pair: "call" | "result", turn: string): TurnState {
+function applyPaired(
+  s: TurnState,
+  step: Step,
+  pair: "call" | "result",
+  turn: string,
+  callId?: string,
+): TurnState {
   const same = (x: Step) =>
     x.name === step.name && s.calls[x.key]?.turn === turn && (x.via ?? "") === (step.via ?? "");
   const add = (): TurnState => {
@@ -515,12 +542,16 @@ function applyPaired(s: TurnState, step: Step, pair: "call" | "result", turn: st
       steps: [...s.steps, { ...step, key }],
       calls: {
         ...s.calls,
-        [key]: { turn, invocationKey: `${step.name}#${turn}#${seq}#${step.via ?? ""}` },
+        [key]: { turn, invocationKey: `${step.name}#${turn}#${seq}#${step.via ?? ""}`, callId },
       },
     };
   };
   if (pair === "call") return add();
-  const i = s.steps.findIndex((x) => x.status === "running" && same(x));
+  // A result that names its call (`id`) closes that call; otherwise the oldest open one of the same agent (FIFO).
+  const byId = callId
+    ? s.steps.findIndex((x) => x.status === "running" && s.calls[x.key]?.callId === callId)
+    : -1;
+  const i = byId >= 0 ? byId : s.steps.findIndex((x) => x.status === "running" && same(x));
   if (i < 0) return add();
   const steps = [...s.steps];
   const open = steps[i]!;

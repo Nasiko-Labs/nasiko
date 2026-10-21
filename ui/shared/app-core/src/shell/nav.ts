@@ -1,5 +1,6 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/app/shell/nav.ts. Local edits: `findLastIndex` is a reverse loop (the tsconfig's lib is below ES2023); `LayerNavItem`/`AnyNavItem`
-// live here instead of ../edition (breaks the lab's type-only import cycle); Prettier formatting.
+// live here instead of ../edition (breaks the lab's type-only import cycle); the `views` group (development
+// f851fdca8: EE's Custom views); Prettier formatting.
 /**
  * The sidebar's items (plans/feat-app-shell.md §3): one source for AppSidebar and its tests.
  * Only pages that exist get an item. Overview is `/`; Status (`/status`) is reached from the footer's status row,
@@ -25,7 +26,7 @@ import {
 } from "lucide-react";
 import { copy } from "./copy";
 
-export type NavGroupId = "work" | "fleet" | "connect" | "observe" | "org" | "lab";
+export type NavGroupId = "work" | "fleet" | "connect" | "observe" | "views" | "org" | "lab";
 
 /** In display order, grouped by job; the first group has no header. */
 export const NAV_GROUPS: readonly { id: NavGroupId; label: string | null }[] = [
@@ -33,6 +34,8 @@ export const NAV_GROUPS: readonly { id: NavGroupId; label: string | null }[] = [
   { id: "fleet", label: copy.nav.fleet },
   { id: "connect", label: copy.nav.connect },
   { id: "observe", label: copy.nav.observe },
+  // EE's Custom views is its only item, so the core never draws it (development f851fdca8).
+  { id: "views", label: copy.nav.views },
   // The workspace's settings (EE inserts Access control before them).
   { id: "org", label: copy.nav.org },
   { id: "lab", label: copy.nav.lab },

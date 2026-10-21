@@ -64,10 +64,14 @@ class ResizeObserverStub {
 }
 // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- jsdom's globals lack it
 globalThis.ResizeObserver ??= ResizeObserverStub as unknown as typeof ResizeObserver;
-// jsdom has no scrollIntoView; the page's scroll-to-section calls are optional, list items' are not.
-if (typeof Element !== "undefined")
+// jsdom has no scrollIntoView; the page's scroll-to-section calls are optional, list items' are not. Nor scrollTo
+// (the assistant thread's viewport scrolls itself; development 66a4c64d0).
+if (typeof Element !== "undefined") {
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition, @typescript-eslint/unbound-method -- jsdom's Element lacks it
   Element.prototype.scrollIntoView ??= function scrollIntoView() {};
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition, @typescript-eslint/unbound-method -- jsdom's Element lacks it
+  Element.prototype.scrollTo ??= function scrollTo() {};
+}
 
 // Full-page renders under a parallel run (or coverage instrumentation) can exceed the 1 s
 // findBy default on a busy machine, and a file's first render also pays for the React Compiler's

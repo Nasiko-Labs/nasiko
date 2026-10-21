@@ -1,7 +1,8 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/mocks/chatStore.ts. Local edits: an expired continuation's open
 // stream starts with an SSE comment, because msw 3 (Node) resolves a fetch only at the body's first chunk (the lab
 // sent no bytes); ESLint autofixes (void-returning arrows given braces, redundant casts and `String()` calls
-// dropped); Prettier formatting.
+// dropped); development (3aac84f66, d1a7ed322 and f851fdca8): `GET /api/chat/sessions?surface=` and a saved
+// message's `file_parts`, and `chatMockProxyTurn` (the agent proxy saving a Weave turn); Prettier formatting.
 /* eslint-disable @typescript-eslint/no-non-null-assertion -- ported verbatim; the seeded lookups always hit */
 /* eslint-disable @typescript-eslint/no-base-to-string, @typescript-eslint/no-unnecessary-condition -- request bodies are coerced and checked as the server does, whatever their declared type */
 /**
@@ -228,6 +229,36 @@ function flowSteps(frames: readonly MockFrame[]): FlowStep[] {
 
 /** Read-only view for other mock groups and tests. */
 export const chatMockRows = (): ChatSessionRow[] => [...chats.values()].map((c) => c.row);
+
+/**
+ * What the agent proxy saves for a chat turn sent to an agent with a `contextId` (EE Weave: "the proxy saves both
+ * sides of every turn"): the session it names, created and titled from the first prompt when it doesn't exist yet,
+ * gets the user's message now; the returned callback saves the reply, exactly as streamed, when the stream ends.
+ * Another user's session is left alone.
+ */
+export function chatMockProxyTurn(
+  ctx: ChatMockContext,
+  sessionId: string,
+  agent: { id: string; name: string },
+  prompt: string,
+): (reply: string) => void {
+  seed(ctx);
+  let c = chats.get(sessionId);
+  if (c && c.row.user_id !== ctx.userId()) return () => undefined;
+  if (!c) {
+    const now = ctx.now();
+    const title = prompt.trim() ? prompt.trim().replace(/\s+/g, " ").slice(0, 60) : "New chat";
+    c = { row: row(ctx, sessionId, agent.id, agent.name, title, now, now), messages: [], hitl: [] };
+    chats.set(sessionId, c);
+  }
+  const chat = c;
+  chat.messages.push(msg(sessionId, "user", prompt, ctx.now()));
+  return (reply) => {
+    if (!reply.trim()) return;
+    chat.messages.push(msg(sessionId, "assistant", reply, ctx.now()));
+    chat.row = { ...chat.row, updated_at: iso(ctx.now()) };
+  };
+}
 
 const iso = (ms: number) => new Date(ms).toISOString();
 const id = (prefix: string) =>
@@ -965,8 +996,18 @@ export function chatHandlers(ctx: ChatMockContext): HttpHandler[] {
       const limit = Math.min(100, Math.max(1, Number(url.searchParams.get("limit")) || 50));
       const agentId = url.searchParams.get("agent_id");
       const cursor = url.searchParams.get("cursor");
+      // `?surface=<name>` lists that surface's `<name>_` sessions; the general list hides every namespaced id
+      // except the platform's own `ses_` (routes.rs `surface_predicate`).
+      const surface = url.searchParams.get("surface");
+      const inScope = (sid: string) =>
+        surface ? sid.startsWith(`${surface}_`) : !sid.includes("_") || sid.startsWith("ses_");
       const rows = [...chats.values()]
-        .filter((c) => c.row.user_id === ctx.userId() && (!agentId || c.row.agent_id === agentId))
+        .filter(
+          (c) =>
+            c.row.user_id === ctx.userId() &&
+            (!agentId || c.row.agent_id === agentId) &&
+            inScope(c.row.session_id),
+        )
         .map(listRow)
         .sort(
           (a, b) =>
@@ -1094,6 +1135,7 @@ export function chatHandlers(ctx: ChatMockContext): HttpHandler[] {
         role?: string;
         content?: string;
         usage?: Record<string, unknown>;
+        file_parts?: unknown;
       };
       if (body.role !== "user" && body.role !== "assistant")
         return text('role must be "user" or "assistant"', 400);
@@ -1110,6 +1152,10 @@ export function chatHandlers(ctx: ChatMockContext): HttpHandler[] {
         cost_usd: typeof u.cost_usd === "number" ? u.cost_usd.toFixed(8) : null,
         usage_estimated: typeof u.estimated === "boolean" ? u.estimated : null,
         trace_id: typeof u.trace_id === "string" ? u.trace_id : null,
+        // Stored as sent (routes.rs `file_parts_json`).
+        ...(body.file_parts != null
+          ? { file_parts: body.file_parts as ChatMessage["file_parts"], has_file_parts: true }
+          : {}),
       };
       c.messages.push(saved);
       c.row = { ...c.row, updated_at: saved.timestamp };

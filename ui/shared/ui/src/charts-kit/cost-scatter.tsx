@@ -3,7 +3,8 @@
 // statistics the plot needs (`logTicks`, `median`, the lab's features/tokenops/stats.ts) come in as props from the
 // feature-side wrapper (shared/features/src/tokenops/components/CostScatter.tsx) so the kit never imports a
 // feature; `ScatterPoint` is declared here and re-exported by the wrapper; `motion`/`useReducedMotion` as in the
-// lab (this directory may import the motion runtime); void arrow bodies braced (lint); Prettier formatting.
+// lab (this directory may import the motion runtime); void arrow bodies braced (lint); the tip stays inside the plot
+// (development 49950eb1e: measured, clamped to the plot's height); Prettier formatting.
 // Destination: `useReducedMotion()` → `useKitReducedMotion()` (./use-kit-reduced-motion.ts), so the kit's at-rest
 // path also follows the motion host's clamped mode (surface `none`/`reduced`, ADR-0006); the OS rule is unchanged.
 "use client";
@@ -171,9 +172,11 @@ function Plot({
       </svg>
       {hover ? (
         <PointTip
+          key={hover.id}
           p={hover}
           left={MARGIN.left + x(hover.x)}
           top={MARGIN.top + y(hover.y)}
+          bottom={height}
           flip={x(hover.x) > w / 2}
         />
       ) : null}
@@ -181,21 +184,36 @@ function Plot({
   );
 }
 
+/** The tip's top: centred on the point, kept inside the plot (development 49950eb1e). */
+function tipTop(pointY: number, tipHeight: number, plotHeight: number) {
+  return Math.max(0, Math.min(pointY - tipHeight / 2, plotHeight - tipHeight));
+}
+
 function PointTip({
   p,
   left,
   top,
+  bottom,
   flip,
 }: {
   p: ScatterPoint;
   left: number;
   top: number;
+  bottom: number;
   flip: boolean;
 }) {
+  const [tall, setTall] = useState(0);
   return (
     <div
+      ref={(el) => {
+        if (el) setTall(el.offsetHeight);
+      }}
       className="pointer-events-none absolute z-10 rounded-md border border-border bg-popover px-3 py-2 text-xs text-popover-foreground shadow-md"
-      style={{ left, top, transform: `translate(${flip ? "calc(-100% - 12px)" : "12px"}, -50%)` }}
+      style={{
+        left,
+        top: tipTop(top, tall, bottom),
+        transform: `translateX(${flip ? "calc(-100% - 12px)" : "12px"})`,
+      }}
     >
       <div className="mb-1 font-medium">{p.name}</div>
       <div className="grid grid-cols-[auto_auto] gap-x-3 tabular-nums">

@@ -1,6 +1,6 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/overview/components/Kpis.tsx. Local edits: `"use client"`;
 // TanStack `Link to search={{}}` -> the navigation port's `Link` (`@nasiko/app-core/navigation`) `href`; `TooltipTrigger asChild` + `span` -> `render={<span …/>}`;
-// Prettier formatting.
+// `Spark` is exported (development 49950eb1e: GenUI draws it); Prettier formatting.
 "use client";
 
 /**
@@ -54,7 +54,7 @@ export const TILE = "min-w-0 gap-2 p-4";
 const PENDING = <Skeleton className="h-8 w-28 motion-reduce:animate-none" />;
 
 /** A tiny decorative chart under a figure: a line with a light area, or bars. */
-function Spark({
+export function Spark({
   points,
   kind,
   series,

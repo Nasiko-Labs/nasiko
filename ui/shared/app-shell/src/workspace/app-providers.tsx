@@ -162,7 +162,7 @@ function Shell({
   const queryClient = useQueryClient();
   const guideHidden = useGuideHiddenNav();
   // A layer's hidden items (EE: Access control until the org context says `can_read_org`), from its own query.
-  const navHidden = useSlots().navHidden;
+  const { navHidden, shellSplit } = useSlots();
   const [feature = "nav-hidden", ...parts] = navHidden?.query.queryKey ?? [];
   const layer = useQuery({
     queryFn: skipToken,
@@ -194,6 +194,7 @@ function Shell({
     <SignOutContext value={pageSignOut}>
       <AppShell
         end={<BuildToasts />}
+        split={shellSplit}
         hidden={[...guideHidden, ...layerHidden]}
         badges={
           building

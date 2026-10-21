@@ -19,6 +19,7 @@ export const copy = {
     fleet: "Fleet",
     connect: "Connect",
     observe: "Observe",
+    views: "Views",
     org: "Organization",
     lab: "Lab",
     overview: "Overview",

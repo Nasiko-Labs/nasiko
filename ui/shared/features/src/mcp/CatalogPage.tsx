@@ -1,7 +1,7 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/mcp/CatalogPage.tsx. Local edits: a server's title link is
 // the navigation port's `Link` (`@nasiko/app-core/navigation`) to `/mcp/<id>` (the lab's `Link to="/mcp/$connectorId"`); the chip `Toggle`'s pressed classes are
 // `aria-pressed:` (Base UI sets `aria-pressed`, not Radix's `data-state=on`); the lab's `EmptyState` is
-// `LabEmptyState`; `React.ReactNode` is an imported `ReactNode`; Prettier formatting.
+// `LabEmptyState`; on development (3aac84f66, d2e0d4bcf) the chip is the shared `FilterChip`; `React.ReactNode` is an imported `ReactNode`; Prettier formatting.
 "use client";
 
 /**
@@ -16,7 +16,7 @@ import { Badge } from "@nasiko/ui/primitives";
 import { Button } from "@nasiko/ui/primitives";
 import { Card } from "@nasiko/ui/primitives";
 import { Tabs, TabsList, TabsTrigger } from "@nasiko/ui/primitives";
-import { Toggle } from "@nasiko/ui/primitives";
+import { FilterChip } from "@nasiko/ui/composites";
 import { PageHeader } from "@nasiko/ui/composites";
 import { PageLoader } from "@nasiko/ui/composites";
 import { SearchInput } from "@nasiko/ui/composites";
@@ -171,7 +171,7 @@ export function CatalogPage({
           className="w-full max-w-none sm:w-80"
         />
         {VIEWS.map((v) => (
-          <Chip
+          <FilterChip
             key={v}
             active={search.view === v}
             onClick={() => {
@@ -179,7 +179,7 @@ export function CatalogPage({
             }}
           >
             {copy.views[v]}
-          </Chip>
+          </FilterChip>
         ))}
       </div>
       {toolkits.isError ? (
@@ -274,28 +274,6 @@ function ScopeEmpty({ view, actions }: { view: CatalogSearch["view"]; actions: R
     <EmptyState icon={Plug} title={e.title} action={actions ?? undefined}>
       {e.desc}
     </EmptyState>
-  );
-}
-
-function Chip({
-  active,
-  onClick,
-  children,
-}: {
-  active: boolean;
-  onClick: () => void;
-  children: string;
-}) {
-  return (
-    <Toggle
-      variant="outline"
-      size="sm"
-      pressed={active}
-      onPressedChange={onClick}
-      className="min-h-8 rounded-full px-3 text-xs font-normal text-muted-foreground shadow-none hover:bg-transparent hover:text-foreground aria-pressed:border-primary-text aria-pressed:bg-primary/10 aria-pressed:text-primary-text"
-    >
-      {children}
-    </Toggle>
   );
 }
 
