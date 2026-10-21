@@ -197,7 +197,10 @@ pub fn list(json_out: bool) -> Result<()> {
         return Ok(());
     }
     if configs.is_empty() {
-        println!("No LLM configs in your library. Create one with `nasiko llm-config create`.");
+        println!(
+            "No LLM configs in your library. Create one with `{} create`.",
+            crate::commands::local_agents::llm_config_hint()
+        );
         return Ok(());
     }
     println!("Your LLM configs:");

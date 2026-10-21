@@ -6,14 +6,8 @@ __pycache__/
 .env.*
 *.env.toml
 !.env.example
-# The UI toolchain's telemetry opt-out (ADR-0002): no secrets, and the install
-# guard (ui/tooling/security/assert-telemetry-env.mjs) tells everyone to source it.
-!ui/.env.tooling
 .venv/
 node_modules/
-.turbo/
-.trash/
-/Claude outputs/
 *.egg-info/
 dist/
 .terraform/
@@ -55,20 +49,17 @@ values.json
 # under ui/ was otherwise an untracked directory in every status.
 _to_delete/
 /_xfer/
+# Recorded eval runs (ui/scripts/eval-generations.mjs --record). One directory
+# per run, kept so a baseline is never lost again — experiment output, not
+# source, and it accumulates. To keep one durably, `git add -f` it or copy it
+# out; `--compare` takes any directory of .dsl files.
+ui/tests/fixtures/runs/
 
 # Local frontend workspace; integrate pages before deciding what to track.
 /prototype/
 
-# The React workspace's old path (it lives in ui/ now); keep stale local copies out.
+# Private React/Next migration workspace; do not force-add before release approval.
 /react/
 
 # Local git worktrees (superpowers workflow)
 .worktrees/
-
-# Cloud credentials are never committed (incident 2026-10-14: a service-account key was committed on 2026-08-19).
-# Keys live outside the repository (ee/docs/TENANT_PROVISIONING_RUNBOOK.md §2.1); scripts/security/
-# check-committed-credentials.sh enforces it in pre-commit and CI for files these patterns do not name.
-nasiko-tenant-provisioner.json
-gke-key.json
-*-sa-key.json
-*.serviceaccount.json

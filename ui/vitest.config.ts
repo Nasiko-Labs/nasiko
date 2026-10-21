@@ -1,107 +1,48 @@
-import { defineConfig } from "vitest/config";
-import react from "@vitejs/plugin-react";
-import { fileURLToPath } from "node:url";
+// One Vitest project per edition this checkout has (scripts/editions.ts), each built from that edition's own Vite
+// config: the core's tests run against the OSS route tree, a layer's tests against its edition.
+import { dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { defineConfig } from 'vitest/config'
+import { findEditions } from './scripts/editions.ts'
 
-const r = (p: string) => fileURLToPath(new URL(p, import.meta.url));
+const ROOT = dirname(fileURLToPath(import.meta.url))
 
 export default defineConfig({
   test: {
-    projects: [
-      {
-        test: {
-          name: "unit",
-          include: [
-            "shared/**/src/**/*.test.ts",
-            "ee/**/src/**/*.test.ts",
-            "tooling/**/*.test.mjs",
-            "tooling/**/*.test.ts",
-          ],
-          // The workspace application packages run in the "web" project (jsdom, router harness).
-          exclude: [
-            "shared/{app-core,app-shell,features,mocks,testing}/**",
-            "ee/features/enterprise/**",
-            "ee/app/**",
-            "ee/registry/app/**",
-            "**/node_modules/**",
-          ],
-          environment: "node",
-        },
+    projects: findEditions(ROOT).map(({ id, dir }) => ({
+      extends: `./${dir}/vite.config.ts`,
+      root: ROOT,
+      test: {
+        name: id,
+        environment: 'jsdom',
+        setupFiles: ['./common/src/test/setup.ts'],
+        // Prints once when nasiko-cloud-rs has server changes since the live fixtures were recorded (never fails).
+        globalSetup: ['./common/src/test/liveStaleness.globalSetup.ts'],
+        include:
+          id === 'oss' ? ['common/src/**/*.test.{ts,tsx}'] : [`${dir}/src/**/*.test.{ts,tsx}`],
+        // A file's first page render waits for the React Compiler's Babel pass over the app (single-threaded, in the
+        // main process), so the first tests of a parallel run need longer than Vitest's 5 s default.
+        testTimeout: 20_000,
+        css: false,
+        // One time zone for every run (v1c E9): Chat's rail groups by local calendar day.
+        env: { TZ: 'UTC' },
       },
-      {
-        plugins: [react()],
-        test: {
-          name: "ui",
-          include: [
-            "shared/{ui,data-access}/src/**/*.test.tsx",
-            "ee/features/{extensions,weave-catalog,weave-runtime}/src/**/*.test.tsx",
-          ],
-          environment: "jsdom",
-          globals: true,
-          setupFiles: [r("./tooling/test/dom-setup.ts")],
-        },
-      },
-      {
-        plugins: [react()],
-        test: {
-          name: "security-ui",
-          include: ["tests/security/ui/**/*.test.tsx"],
-          environment: "jsdom",
-          globals: true,
-          setupFiles: [r("./tooling/test/dom-setup.ts")],
-        },
-      },
-      {
-        plugins: [react()],
-        test: {
-          name: "web",
-          include: [
-            "oss/app/src/**/*.test.{ts,tsx}",
-            "shared/{app-core,app-shell,features,mocks,testing}/src/**/*.test.{ts,tsx}",
-            "ee/app/src/**/*.test.{ts,tsx}",
-            "ee/features/enterprise/src/**/*.test.{ts,tsx}",
-            "ee/registry/app/src/**/*.test.{ts,tsx}",
-          ],
-          environment: "jsdom",
-          globals: true,
-          setupFiles: [r("./shared/testing/src/unit-setup.ts"), r("./shared/testing/src/setup.ts")],
-          // The lab's page tests render a whole product page against MSW (its config: 20 s).
-          testTimeout: 20_000,
-        },
-      },
-      {
-        test: {
-          name: "contract",
-          include: ["tests/contract/**/*.test.ts"],
-          environment: "node",
-          testTimeout: 30_000,
-        },
-      },
-      {
-        test: {
-          name: "security",
-          include: ["tests/security/**/*.test.ts"],
-          environment: "node",
-        },
-      },
-      {
-        test: {
-          name: "replay",
-          include: ["tests/replay/**/*.test.ts"],
-          environment: "node",
-          testTimeout: 20_000,
-        },
-      },
-      {
-        plugins: [react()],
-        test: {
-          name: "replay-ui",
-          include: ["tests/replay/**/*.test.tsx"],
-          environment: "jsdom",
-          globals: true,
-          setupFiles: [r("./tooling/test/dom-setup.ts")],
-          testTimeout: 20_000,
-        },
-      },
-    ],
+    })),
+    // `npm run coverage` fails below CLAUDE.md's minimum (60%); the target is 80%.
+    coverage: {
+      include: ['common/src/**/*.{ts,tsx}', '*/src/**/*.{ts,tsx}', '*/*/src/**/*.{ts,tsx}'],
+      exclude: [
+        '**/*.test.{ts,tsx}',
+        '**/*.stories.tsx',
+        'common/src/test/**',
+        '**/mocks/**',
+        '**/*.gen.ts',
+        // Vendored, framework-free, and not ours to cover. Matched by shape
+        // rather than by edition path: a published config names no edition.
+        '**/src/genui/lang/**',
+        '**/main.tsx',
+      ],
+      thresholds: { lines: 60, statements: 60, functions: 60, branches: 60 },
+    },
   },
-});
+})
