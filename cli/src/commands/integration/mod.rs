@@ -234,53 +234,100 @@ pub fn sync() -> Result<()> {
     sync::run()
 }
 
-/// Discover and install every supported local coding agent after a successful
-/// account connection. One broken adapter must not block the others.
+/// After a successful account connection, offers session reporting for every detected coding
+/// agent that has none yet. Reporting sends what agents are asked, so it is only turned on when
+/// the user says so: on a terminal it asks (and whether to include prompt and response text);
+/// otherwise it only says how to turn it on. One broken adapter never blocks the others.
 pub fn auto_install_detected() -> Result<()> {
+    use std::io::IsTerminal;
+    let confirm = |question: &str, default: bool| -> Result<bool> {
+        Ok(
+            dialoguer::Confirm::with_theme(&dialoguer::theme::ColorfulTheme::default())
+                .with_prompt(question)
+                .default(default)
+                .interact()?,
+        )
+    };
+    let terminal = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
+    let ask: Option<Ask<'_>> = terminal.then_some(&confirm);
+
     let settings = IntegrationState::load()?;
-    let agents: Vec<_> = Agent::ALL
+    let detected: Vec<Agent> = Agent::ALL
         .iter()
         .copied()
         .filter(|agent| agent.spec().support == Support::Instrumented)
         .filter(|agent| detect(*agent).is_present())
         .collect();
-    if agents.is_empty() {
+    if detected.is_empty() {
         println!("No supported local coding agents detected.");
         return Ok(());
     }
-
-    println!("\nConfiguring detected coding agents for this account...");
-    let mut installed = 0usize;
-    for agent in agents {
+    let cli = crate::commands::local_agents::cli_name();
+    let mut offered = Vec::new();
+    for agent in detected {
         let spec = agent.spec();
         if settings.get(spec.id).is_some() {
             println!(
-                "{} reporting is already installed; keeping its existing cluster binding. Rebind explicitly with: {} connect {} --no-routing --reporting",
-                spec.display_name,
-                crate::commands::local_agents::cli_name(),
-                spec.id
+                "{} reporting is already installed; keeping its existing cluster binding. Rebind explicitly with: {cli} connect {} --no-routing --reporting",
+                spec.display_name, spec.id
             );
-            installed += 1;
-            continue;
+        } else {
+            offered.push(agent);
         }
-        // Only agents with no reporting installed get here, so there is no saved setting to
-        // keep: new reporting includes prompt and response text, as `connect --reporting` does.
+    }
+    if offered.is_empty() {
+        return Ok(());
+    }
+    let names: Vec<&str> = offered
+        .iter()
+        .map(|agent| agent.spec().display_name)
+        .collect();
+    let Some(capture_content) = reporting_consent(&names.join(", "), ask)? else {
+        println!(
+            "Session reporting is off for {}. Turn it on with: {cli} connect <agent> --reporting",
+            names.join(", ")
+        );
+        return Ok(());
+    };
+
+    let mut installed = 0usize;
+    for agent in &offered {
+        let spec = agent.spec();
         match install(InstallOptions {
             agent_id: spec.id,
-            no_content: false,
+            no_content: !capture_content,
             agent_name: None,
         }) {
             Ok(()) => installed += 1,
             Err(error) => eprintln!(
-                "warning: automatic {} setup failed: {error:#}\n  Retry with: {} connect {} --no-routing --reporting",
-                spec.display_name,
-                crate::commands::local_agents::cli_name(),
-                spec.id
+                "warning: {} reporting setup failed: {error:#}\n  Retry with: {cli} connect {} --no-routing --reporting",
+                spec.display_name, spec.id
             ),
         }
     }
-    println!("Automatic coding-agent setup completed for {installed} agent(s).");
+    println!("Session reporting set up for {installed} coding agent(s).");
     Ok(())
+}
+
+/// A yes/no question asked on the terminal, with its default answer.
+type Ask<'a> = &'a dyn Fn(&str, bool) -> Result<bool>;
+
+/// Whether to report sessions from `names`, and with prompt and response text: `None` when
+/// there is no terminal to ask (`ask` is `None`) or the user says no.
+fn reporting_consent(names: &str, ask: Option<Ask<'_>>) -> Result<Option<bool>> {
+    let Some(ask) = ask else {
+        return Ok(None);
+    };
+    if !ask(
+        &format!("Report sessions from {names} to Nasiko observability?"),
+        true,
+    )? {
+        return Ok(None);
+    }
+    Ok(Some(ask(
+        "Include prompt and response text? (No sends only tokens, latency and cost)",
+        true,
+    )?))
 }
 
 /// Run automatic setup only when the active cluster has a usable login.
@@ -556,6 +603,34 @@ mod tests {
         );
         assert!(result.is_err());
         assert!(rolled_back.get());
+    }
+
+    #[test]
+    fn automatic_reporting_needs_a_yes_on_a_terminal() {
+        // No terminal: nothing is asked, nothing is turned on.
+        assert_eq!(reporting_consent("Claude Code", None).unwrap(), None);
+
+        let answers = |first: bool, second: bool| {
+            move |question: &str, _: bool| -> Result<bool> {
+                Ok(if question.starts_with("Report sessions") {
+                    first
+                } else {
+                    second
+                })
+            }
+        };
+        let no = answers(false, true);
+        assert_eq!(reporting_consent("Claude Code", Some(&no)).unwrap(), None);
+        let without_text = answers(true, false);
+        assert_eq!(
+            reporting_consent("Claude Code", Some(&without_text)).unwrap(),
+            Some(false)
+        );
+        let with_text = answers(true, true);
+        assert_eq!(
+            reporting_consent("Claude Code", Some(&with_text)).unwrap(),
+            Some(true)
+        );
     }
 
     #[test]
