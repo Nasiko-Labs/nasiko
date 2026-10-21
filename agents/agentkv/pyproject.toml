@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agentkv"
+version = "0.1.0"
+description = "Workflow-aware inference optimization through the Nasiko control plane"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115,<1",
+    "httpx>=0.28,<1",
+    "typesafe-sdk>=0.7.0",
+    "uvicorn>=0.30,<1",
+]
+
+[project.optional-dependencies]
+infra = ["modal==1.5.0"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agentkv"]
