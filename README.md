@@ -103,6 +103,28 @@ do, route their LLM calls, or both. The two are independent opt-ins. `agents uni
 local reporting hooks but preserves the registered agent and its history; `disconnect` restores
 routing settings, though a running harness may need to be stopped or disconnected with `--force`.
 
+
+## External Agent Application Integration
+
+Nasiko can be used alongside an existing AI application without requiring the application to become a Nasiko-specific project.
+
+A typical integration can follow this flow:
+
+Application → Agent Workflow → Nasiko Runtime → Model/Provider
+
+The application remains responsible for its domain logic and user experience, while Nasiko can provide agent execution, model routing, telemetry, and token/cost visibility.
+
+For an external agent application:
+
+1. Identify the AI/agent workflow that needs to be observed or routed.
+2. Connect the supported coding-agent or agent runtime to Nasiko.
+3. Configure the required model/provider through Nasiko.
+4. Run the workflow through the configured runtime.
+5. Use Nasiko's observability and TokenOps features to inspect agent activity, token usage, model usage, and cost.
+
+This approach allows existing AI applications to adopt runtime-level observability and routing without rebuilding their application architecture around Nasiko.
+
+
 ### Session reporting
 
 ```sh
