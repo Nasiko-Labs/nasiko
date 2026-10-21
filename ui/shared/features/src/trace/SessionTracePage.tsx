@@ -6,7 +6,9 @@
 // the scoped `sessionKeys.trace(scope, id)`; the lab's `EmptyState` (shared/state-card) is `LabEmptyState`; the trace
 // Select takes `items` so its closed value shows the trace's label, not its id; the trace tabs' `data-[state=on]:`
 // class is `aria-pressed:` (Base UI's Toggle); optional props and `setSearch`'s `replace` admit `undefined`
-// (exactOptionalPropertyTypes); Prettier formatting.
+// (exactOptionalPropertyTypes); Prettier formatting. Previous/Next (legacy ui/ on development, 3aac84f66: 2c7d51a5d,
+// fb76eaecc, 78a5861a4): `SessionSiblings` steps with `router.replace` to the next row, the list's search and the list
+// as state.
 /**
  * Session trace: why one run cost what it did.
  *
@@ -18,14 +20,15 @@
  */
 import { useQueryClient } from "@tanstack/react-query";
 import Link from "@nasiko/app-core/navigation";
-import { usePathname } from "@nasiko/app-core/navigation";
+import { usePathname, useRouter } from "@nasiko/app-core/navigation";
+import { useSiblings } from "@nasiko/app-core/siblings";
 import { useProductScope } from "@nasiko/data-access/product";
 import { hrefFor, searchString } from "@nasiko/app-core/url-state";
 import { ButtonLink } from "../agents/components/ButtonLink";
 import { Link2, ListTree, Table2, Workflow } from "lucide-react";
 import { useDeferredValue, useMemo, useState } from "react";
 import { PageHeader } from "@nasiko/ui/composites";
-import { PageLoader } from "@nasiko/ui/composites";
+import { PageLoader, PrevNext } from "@nasiko/ui/composites";
 import { LabEmptyState as EmptyState } from "@nasiko/ui/composites";
 import { SearchInput } from "@nasiko/ui/composites";
 import {
@@ -83,6 +86,41 @@ import { SpanPanel, type SpanTab } from "./SpanPanel";
 import { Legend, SpanTable, Waterfall } from "./Waterfall";
 import { useCopy } from "@nasiko/ui/lib";
 import { useFrozenNow } from "@nasiko/app-core/useReturnTick";
+
+/**
+ * Previous/Next through the Sessions rows this trace was opened from (siblings.ts). The list's window and filters
+ * go along; the trace and span are this session's own, so they don't. Replaced: Back still returns to the list.
+ */
+function SessionSiblings({
+  sessionId,
+  back,
+}: {
+  sessionId: string;
+  back: Partial<SessionsSearch>;
+}) {
+  const router = useRouter();
+  const around = useSiblings(sessionId);
+  if (!around) return null;
+  const go = (id: string | undefined) => {
+    if (id)
+      router.replace(hrefFor(`/sessions/${encodeURIComponent(id)}`, back), {
+        state: { siblings: around.siblings },
+      });
+  };
+  return (
+    <PrevNext
+      noun="session"
+      index={around.index}
+      count={around.count}
+      onPrev={() => {
+        go(around.prev);
+      }}
+      onNext={() => {
+        go(around.next);
+      }}
+    />
+  );
+}
 
 type SetTraceSearch = (
   patch: Partial<TraceSearch>,
@@ -307,7 +345,11 @@ export function SessionTracePage({
   if (session.isError) {
     return (
       <div className="flex flex-col gap-4">
-        <Crumbs back={back} day={search.day} title="Trace" />
+        {/* The arrows stay, so a session that fails to load isn't a dead end. */}
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <Crumbs back={back} day={search.day} title="Trace" />
+          <SessionSiblings sessionId={sessionId} back={back} />
+        </div>
         <ErrorState
           error={session.error}
           onRetry={() => void session.refetch()}
@@ -322,9 +364,13 @@ export function SessionTracePage({
   return (
     <div className="flex flex-col gap-4">
       <PageHeader
+        // The arrows sit at the right of the breadcrumb row: the long title pushes the actions onto their own line.
         breadcrumb={
-          // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- the lab's defensive reads (the session has loaded here)
-          <Crumbs back={back} day={search.day} title={session.data?.title ?? sessionId} />
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            {/* eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- the lab's defensive reads (the session has loaded here) */}
+            <Crumbs back={back} day={search.day} title={session.data?.title ?? sessionId} />
+            <SessionSiblings sessionId={sessionId} back={back} />
+          </div>
         }
         title={
           <span className="inline-block">

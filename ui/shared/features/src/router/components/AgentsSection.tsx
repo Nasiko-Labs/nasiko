@@ -2,7 +2,8 @@
 // Agents link is the navigation port's `Link` (`@nasiko/app-core/navigation`), and `Button asChild` around it -> the Link with `buttonVariants(...)` classes (Base UI's
 // Button would put `role="button"` on the anchor; the lab's Slot kept it a link); `TooltipTrigger asChild` -> `render={<LinkButton …/>}`; the
 // lab's `EmptyState` is `LabEmptyState`; optional props admit `undefined` (exactOptionalPropertyTypes); Prettier
-// formatting.
+// formatting. Previous/Next (legacy ui/ on development, b7d5ba691, 069811719): rows hand the sheet their order and
+// carry `data-agent-id` for the close focus.
 "use client";
 
 /**
@@ -78,7 +79,8 @@ export function AgentsSection({
   onShowConfig: (configId: string) => void;
   spend: SpendState;
   updated: ReadonlyMap<string, number>;
-  onChange: (a: Agent) => void;
+  /** Opens the routing sheet; `order` is the rows that can be changed, as shown, for its Previous/Next. */
+  onChange: (a: Agent, order: readonly string[]) => void;
   onRetry: (id: string) => void;
   filterLabel: string | null;
   onClearFilter: () => void;
@@ -97,6 +99,11 @@ export function AgentsSection({
     setOpen(!open);
     writeOpen(PREF_DEFAULTS, !open);
   };
+  // The sheet steps through the rows as shown: the visible group, then the folded one when open; rows whose
+  // routing didn't read can't be changed, so they're skipped.
+  const order = [...shown, ...(open ? folded : [])]
+    .filter((r) => r.read.state === "ok")
+    .map((r) => r.agent.id);
   const row = (r: AgentRow) => (
     <Row
       key={r.agent.id}
@@ -104,7 +111,7 @@ export function AgentsSection({
       spend={spend}
       updatedAt={updated.get(r.agent.id)}
       onChange={() => {
-        onChange(r.agent);
+        onChange(r.agent, order);
       }}
       onRetry={() => {
         onRetry(r.agent.id);
@@ -336,6 +343,7 @@ function Row({
           size="sm"
           variant="ghost"
           className="h-8 px-2 text-primary-text pointer-coarse:min-h-11"
+          data-agent-id={agent.id}
           onClick={onChange}
           disabled={read.state !== "ok"}
           aria-label={`${copy.changeRouting}: ${name}`}

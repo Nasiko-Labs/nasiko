@@ -3,7 +3,7 @@
 // the return-tick re-read invalidates the scoped `[...flowKeys.all(scope), "list"]` prefix (`useProductScope()`); Base
 // UI's ToggleGroup is value-array based (`value={[value]}`, `onValueChange` reads `v[0]`, an empty array keeps the
 // value as the lab's `v &&` did); `setSearch`'s `replace` admits `undefined` (exactOptionalPropertyTypes); Prettier
-// formatting.
+// formatting. Previous/Next (legacy ui/ on development, c033b0c52): the rows carry the drawn list (`useSiblingState`).
 /**
  * Your flows (plans/feat-flows.md §3, §2a; T5): a wide search row with the Kind and Status filters, the window in the
  * header, requests per day by status and the Duration panel over the table.
@@ -14,6 +14,7 @@
  * history; the window pushes it, as on Sessions.
  */
 import Link from "@nasiko/app-core/navigation";
+import { useSiblingState } from "@nasiko/app-core/siblings";
 import { ArrowRight, Network, Workflow } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
@@ -375,6 +376,8 @@ function Filter<T extends string>({
 }
 
 function FlowsTable({ rows, now }: { rows: Flow[]; now: number }) {
+  // Previous/Next on the flow page walks these rows as drawn when one is clicked.
+  const linkState = useSiblingState(rows.map((f) => f.flow_id));
   return (
     <Table aria-label={copy.list.tableLabel}>
       <TableHeader>
@@ -400,6 +403,7 @@ function FlowsTable({ rows, now }: { rows: Flow[]; now: number }) {
                   <span className="sr-only">{copy.list.kindIcon[kind]}: </span>
                   <Link
                     href={`/flows/${encodeURIComponent(f.flow_id)}`}
+                    state={linkState}
                     className="truncate font-medium hover:underline"
                   >
                     {f.title || copy.callTo(root)}

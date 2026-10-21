@@ -2,7 +2,9 @@
 // Sessions link is the navigation port's `Link` (`@nasiko/app-core/navigation`) with `hrefFor('/sessions', { agent })`; Radix's `onCloseAutoFocus` is Base UI's
 // `finalFocus` (./focus.ts); the config `Select` takes `value={null}` for no pick (the lab's `''`), narrows Base
 // UI's nullable `onValueChange` value, and gets `items` (id → name) so the trigger shows the config's name, not its
-// id; `viewer.sub` admits `undefined` (exactOptionalPropertyTypes); Prettier formatting.
+// id; `viewer.sub` admits `undefined` (exactOptionalPropertyTypes); Prettier formatting. Previous/Next (legacy ui/ on
+// development, 3aac84f66: b7d5ba691, 069811719, 9dc326708): close after a step lands on the last agent's row through
+// `finalFocus`, and the sheet starts on itself (Radix's `onOpenAutoFocus` → Base UI's `initialFocus` ref).
 "use client";
 
 /**
@@ -14,10 +16,11 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import Link from "@nasiko/app-core/navigation";
 import { AlertTriangle } from "lucide-react";
-import { useEffect, useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Controller, useForm, useWatch } from "react-hook-form";
 import * as z from "zod";
-import { CopyButton } from "@nasiko/ui/composites";
+import { CopyButton, PrevNext } from "@nasiko/ui/composites";
+import { cn } from "@nasiko/ui/cn";
 import { Button } from "@nasiko/ui/primitives";
 import { Checkbox } from "@nasiko/ui/primitives";
 import { Field, FieldLabel, FieldLegend, FieldSet } from "@nasiko/ui/primitives";
@@ -74,8 +77,18 @@ export interface RoutingTarget {
   ownerId: string;
 }
 
+/** Previous/Next through the agents table (RouterPage); absent when the sheet wasn't opened from it. */
+export interface RoutingStep {
+  index: number;
+  count: number;
+  prev?: string | undefined;
+  next?: string | undefined;
+  go: (agentId: string) => void;
+}
+
 export function RoutingSheet({
   target,
+  step,
   viewer,
   configs,
   catalog,
@@ -83,6 +96,7 @@ export function RoutingSheet({
   onSaved,
 }: {
   target: RoutingTarget | null;
+  step?: RoutingStep | undefined;
   viewer: { sub?: string | undefined; superuser: boolean };
   /** The viewer's own configs; only meaningful when the viewer owns the agent. */
   configs: LlmConfig[] | undefined;
@@ -91,6 +105,28 @@ export function RoutingSheet({
   onSaved: (agentId: string, at: number) => void;
 }) {
   const returnFocus = useReturnFocus(!!target);
+  const popup = useRef<HTMLDivElement>(null);
+  // Stepping is off while the form has unsaved changes or a save runs: the sheet's LeaveGuard only covers routes.
+  const [blocked, setBlocked] = useState(false);
+  // After stepping, close lands on the last agent's row, not the one the sheet opened from.
+  const [stepped, setStepped] = useState(false);
+  const [last, setLast] = useState<RoutingTarget | null>(null);
+  if (target && target.id !== last?.id) setLast(target);
+  const go = (id: string | undefined) => {
+    if (!id || !step) return;
+    setStepped(true);
+    step.go(id);
+  };
+  const finalFocus = (): HTMLElement | true => {
+    const row =
+      stepped && last
+        ? document.querySelector<HTMLElement>(`[data-agent-id="${CSS.escape(last.id)}"]`)
+        : null;
+    setStepped(false);
+    // A disabled row (its routing read failed after the step) can't take focus: return to the opener instead.
+    if (row && !row.matches(":disabled")) return row;
+    return returnFocus();
+  };
   return (
     <Sheet
       open={!!target}
@@ -98,7 +134,19 @@ export function RoutingSheet({
         if (!o) onClose();
       }}
     >
-      <SheetContent className="w-full gap-0 sm:max-w-sheet" finalFocus={returnFocus}>
+      <SheetContent
+        ref={popup}
+        className={cn(
+          "w-full gap-0 sm:max-w-sheet",
+          // Room for the stepper beside the close button (narrower below sm, where it drops its "N of M").
+          step &&
+            "[&_[data-slot=sheet-header]]:pr-32 sm:[&_[data-slot=sheet-header]]:pr-44 pointer-coarse:[&_[data-slot=sheet-header]]:pr-40 sm:pointer-coarse:[&_[data-slot=sheet-header]]:pr-56",
+        )}
+        finalFocus={finalFocus}
+        // The default would focus the first tabbable, the stepper while the routing reads, and open its tooltip (so
+        // Escape closes that first). Start on the sheet itself instead.
+        initialFocus={step ? popup : true}
+      >
         {target ? (
           <Fresh
             key={target.id}
@@ -108,6 +156,25 @@ export function RoutingSheet({
             catalog={catalog}
             onClose={onClose}
             onSaved={onSaved}
+            onBlockedChange={setBlocked}
+          />
+        ) : null}
+        {/* Outside the keyed Fresh, so a step never remounts it and focus stays on the arrow used. After the
+            content in the DOM, like the close button. */}
+        {target && step ? (
+          <PrevNext
+            noun="agent"
+            index={step.index}
+            count={step.count}
+            onPrev={() => {
+              go(step.prev);
+            }}
+            onNext={() => {
+              go(step.next);
+            }}
+            blocked={blocked ? copy.saveBeforeStepping : undefined}
+            // Phones hide the visible "N of M" (aria-hidden; the group's name keeps the position).
+            className="absolute top-2 right-12 pointer-coarse:top-1.5 pointer-coarse:right-14 max-sm:[&>span[aria-hidden]]:hidden"
           />
         ) : null}
       </SheetContent>
@@ -158,6 +225,7 @@ function Body({
   catalog,
   onClose,
   onSaved,
+  onBlockedChange,
 }: {
   target: RoutingTarget;
   routing: AgentRouting;
@@ -166,6 +234,8 @@ function Body({
   catalog: ProviderCatalog[] | undefined;
   onClose: () => void;
   onSaved: (agentId: string, at: number) => void;
+  /** Whether the sheet's Previous/Next must wait: unsaved edits, or a save running. */
+  onBlockedChange: (blocked: boolean) => void;
 }) {
   const ids = useId();
   const announce = useAnnounce();
@@ -236,6 +306,13 @@ function Body({
     },
     [reset],
   );
+  const blocked = (!outcome && isDirty) || plan.isPending;
+  useEffect(() => {
+    onBlockedChange(blocked);
+    return () => {
+      onBlockedChange(false);
+    };
+  }, [blocked, onBlockedChange]);
 
   const run = (from: RoutingState, to: RoutingState) => {
     plan.mutate(

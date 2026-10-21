@@ -4,7 +4,7 @@
 // inside the signed-in providers (the server layout's guard is not part of a jsdom render, so the principal is the
 // seed admin unless `me` is given), or the bare sign-in tree on /login. The edition is a parameter (OSS by default;
 // an Enterprise test passes its edition). The returned `router` is a small facade over the harness with the parts of
-// TanStack's router the lab's page tests use: `navigate({ to, params, search, replace })` (`$name` segments of `to`
+// TanStack's router the lab's page tests use: `navigate({ to, params, search, replace, state })` (`$name` segments of `to`
 // filled from `params`, encoded as TanStack encoded them), `state.location` (`pathname`, and
 // `search` parsed as TanStack does: each value JSON-parsed when it can be, so `?expired=true` reads `true`, and `hash`
 // without its `#`), and
@@ -19,7 +19,7 @@
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { act, type RenderResult } from "@testing-library/react";
 import { usePathname, useRouter, useSearchParams } from "@nasiko/app-core/navigation";
-import { PathParamsContext } from "@nasiko/app-core/navigation";
+import { PathParamsContext, type HistoryState } from "@nasiko/app-core/navigation";
 import { createElement, Suspense, useEffect, type ComponentType } from "react";
 import * as z from "zod/mini";
 import { OSS, type Edition } from "@nasiko/app-core/edition/edition";
@@ -197,6 +197,8 @@ export interface TestRouter {
     params?: Record<string, string>;
     search?: Record<string, unknown>;
     replace?: boolean;
+    /** The entry's history state, or an updater over the current one (TanStack's `navigate({ state })`). */
+    state?: HistoryState | ((prev: HistoryState) => HistoryState);
   }): Promise<void>;
   readonly state: {
     location: { pathname: string; search: Record<string, unknown>; href: string; hash: string };
@@ -210,14 +212,17 @@ export interface TestRouter {
 }
 
 const testRouter: TestRouter = {
-  navigate({ to, params, search, replace }) {
+  navigate({ to, params, search, replace, state }) {
     const path = to.replace(/\$(\w+)/g, (m, name: string) => {
       const v = params?.[name];
       return v !== undefined ? encodeURIComponent(v) : m;
     });
     const href = hrefOf(path, search);
+    const prev = (window.history.state ?? {}) as HistoryState;
+    const next = typeof state === "function" ? state(prev) : state;
     act(() => {
-      if (replace) window.history.replaceState(window.history.state, "", href);
+      if (replace) window.history.replaceState(next ?? window.history.state, "", href);
+      else if (next) window.history.pushState(next, "", href);
       else harnessNavigate(href);
     });
     return Promise.resolve();

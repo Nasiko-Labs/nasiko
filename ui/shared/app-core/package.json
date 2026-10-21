@@ -29,6 +29,7 @@
     "./shell/rowStyles": "./src/shell/rowStyles.ts",
     "./shell/SidebarPanel": "./src/shell/SidebarPanel.tsx",
     "./shell/sidebarState": "./src/shell/sidebarState.ts",
+    "./siblings": "./src/siblings.ts",
     "./sign-out": "./src/sign-out.ts",
     "./stale-build": "./src/stale-build.ts",
     "./url-state": "./src/url-state.ts",

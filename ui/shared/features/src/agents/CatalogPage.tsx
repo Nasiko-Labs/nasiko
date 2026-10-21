@@ -4,7 +4,8 @@
 // chip `Toggle`'s pressed classes are `aria-pressed:` (Base UI sets `aria-pressed`, not Radix's `data-state=on`; the
 // toggle primitive's own reconciliation; on development (3aac84f66, d2e0d4bcf) the chip is the shared `FilterChip`
 // and the card is ./components/AgentCard.tsx, which GenUI's agent cards reuse); the lab's `EmptyState` is `LabEmptyState`; optional props admit
-// `undefined` (exactOptionalPropertyTypes); Prettier formatting.
+// `undefined` (exactOptionalPropertyTypes); Prettier formatting. Previous/Next (legacy ui/ on development, 22c07f9a5):
+// the cards carry the shown list (`useSiblingState`).
 "use client";
 
 /**
@@ -29,6 +30,7 @@ import { copy as overviewCopy } from "../overview/copy";
 import { meQueryOptions, useProductScope } from "@nasiko/data-access/product";
 import { useCatalogAgents, useCatalogTabs, useUsers } from "./api";
 import { AgentCard } from "./components/AgentCard";
+import { useSiblingState } from "@nasiko/app-core/siblings";
 import { AgentsNav, FirstRunSteps } from "./components/bits";
 import { copy } from "./copy";
 import type { CatalogSearch } from "./search";
@@ -107,6 +109,8 @@ export function CatalogPage({
       }),
     [pool, search.health, rated, search.tag, search.yours, term, me?.sub],
   );
+  // Previous/Next on the agent page walks the cards as shown when one is clicked.
+  const linkState = useSiblingState(shown.map((a) => a.id));
 
   const header = (
     <>
@@ -275,6 +279,7 @@ export function CatalogPage({
                 meId={me?.sub}
                 ownerName={names?.get(a.owner_id)}
                 reason={search.health ? rated?.get(a.id)?.reasons[0]?.text : undefined}
+                linkState={linkState}
               />
             </li>
           ))}

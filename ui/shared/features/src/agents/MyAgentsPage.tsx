@@ -5,7 +5,8 @@
 // asChild` + `Link` -> `render={<Link …/>}` (the navigation port's `Link` (`@nasiko/app-core/navigation`)) (Base UI useRender); Radix's `onSelect` on menu items is
 // Base UI's `onClick` (the menu still closes on it); Base UI's `Tabs` passes its value untyped (`unknown`); the
 // lab's `EmptyState` is `LabEmptyState`; optional props admit `undefined` (exactOptionalPropertyTypes); Prettier
-// formatting.
+// formatting. Previous/Next (legacy ui/ on development, 22c07f9a5): the rows' name links and "Open agent" carry the
+// shown list (`useSiblingState`).
 "use client";
 
 /**
@@ -15,7 +16,8 @@
  * counted in All.
  */
 import { useQuery } from "@tanstack/react-query";
-import Link from "@nasiko/app-core/navigation";
+import Link, { type HistoryState } from "@nasiko/app-core/navigation";
+import { useSiblingState } from "@nasiko/app-core/siblings";
 import { Bot, MoreHorizontal } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Button } from "@nasiko/ui/primitives";
@@ -132,6 +134,7 @@ export function MyAgentsPage({
       : tab === "all"
         ? agents
         : agents.filter((r) => r.display === tab);
+  const linkState = useSiblingState(shown.map((r) => r.a.id));
   const count = (t: Tab) =>
     t === "all"
       ? agents.length
@@ -334,6 +337,7 @@ export function MyAgentsPage({
                       onLogs={() => {
                         setLogsFor(a);
                       }}
+                      linkState={linkState}
                     />
                   ))}
                 </TableBody>
@@ -473,12 +477,14 @@ function AgentRow({
   usage,
   usageFailed,
   onLogs,
+  linkState,
 }: {
   agent: Agent;
   display: DisplayStatus;
   usage?: { turns: number; cost: number } | undefined;
   usageFailed: boolean;
   onLogs: () => void;
+  linkState: () => HistoryState;
 }) {
   const flow = useLifecycleFlow(agent.id);
   const name = agent.display_name || agent.name;
@@ -489,7 +495,7 @@ function AgentRow({
   return (
     <TableRow>
       <TableCell className="max-w-0 min-w-40 px-4 py-2.5 whitespace-normal sm:w-2/5">
-        <AgentLinkTo id={agent.id} className="font-medium">
+        <AgentLinkTo id={agent.id} className="font-medium" state={linkState}>
           {name}
         </AgentLinkTo>
         <div className="truncate font-mono text-xs text-muted-foreground">{agent.name}</div>
@@ -558,7 +564,9 @@ function AgentRow({
             {display !== "harness" ? (
               <DropdownMenuItem onClick={onLogs}>{copy.viewLogs}</DropdownMenuItem>
             ) : null}
-            <DropdownMenuItem render={<Link href={`/agents/${encodeURIComponent(agent.id)}`} />}>
+            <DropdownMenuItem
+              render={<Link href={`/agents/${encodeURIComponent(agent.id)}`} state={linkState} />}
+            >
               {copy.openAgent}
             </DropdownMenuItem>
             {display !== "harness" ? (

@@ -1,12 +1,13 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/sessions/SessionRow.tsx. Local edits: the row's link is
-// the navigation port's `Link` (`@nasiko/app-core/navigation`) to `/sessions/<encoded id>` with the list's context serialised by `hrefFor`; Prettier formatting.
+// the navigation port's `Link` (`@nasiko/app-core/navigation`) to `/sessions/<encoded id>` with the list's context serialised by `hrefFor`; `linkState` (Previous/Next, legacy ui/ on development 2c7d51a5d) is the port's
+// `Link state`; Prettier formatting.
 /**
  * One session row. The whole row is a real link to the session trace (middle-click opens
  * a tab); expand is a separate chevron button. Status sits in a fixed-width column so rows
  * don't reflow as checks resolve. The columns follow the list's width, not the viewport's (the
  * sidebar takes 240 px): below 672 px the row becomes two lines.
  */
-import Link from "@nasiko/app-core/navigation";
+import Link, { type HistoryState } from "@nasiko/app-core/navigation";
 import { m } from "@nasiko/ui/motion";
 import { ChevronDown, ScrollText } from "lucide-react";
 import { memo, useState } from "react";
@@ -51,6 +52,7 @@ export const SessionRow = memo(function SessionRow({
   expanded,
   onToggle,
   linkSearch,
+  linkState,
   fresh,
 }: {
   s: SessionSummary;
@@ -63,6 +65,7 @@ export const SessionRow = memo(function SessionRow({
   expanded: boolean;
   onToggle: (sessionId: string) => void;
   linkSearch: Partial<SessionsSearch>;
+  linkState: () => HistoryState;
   fresh: boolean;
 }) {
   const input = s.first_input ?? s.session_id;
@@ -85,6 +88,7 @@ export const SessionRow = memo(function SessionRow({
       <div className="group relative flex items-stretch transition-colors hover:bg-muted/50 has-aria-expanded:bg-muted/50">
         <Link
           href={hrefFor(`/sessions/${encodeURIComponent(s.session_id)}`, linkSearch)}
+          state={linkState}
           className="min-w-0 flex-1 px-2 py-2.5 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring @[672px]:grid @[672px]:grid-cols-[5.5rem_10rem_minmax(0,1fr)_5rem_4.5rem_8.5rem] @[672px]:items-center @[672px]:gap-x-3"
           aria-label={label}
         >

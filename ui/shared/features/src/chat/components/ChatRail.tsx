@@ -5,7 +5,8 @@
 // (`value={[view]}`, the first value read back) and its own arrow handling skipped (`preventBaseUIHandler`), so arrows
 // still select; `data-[state=on]:` classes are `aria-checked:`; the lab's `EmptyState` is `LabEmptyState`;
 // `onClick={onNavigate}` on links is a closure (exactOptionalPropertyTypes); optional props admit `undefined`
-// (exactOptionalPropertyTypes); Prettier formatting.
+// (exactOptionalPropertyTypes); Prettier formatting. Previous/Next (legacy ui/ on development, 3aac84f66: 858912f71,
+// fdd92df43): the rail writes its order to ../railOrder.ts, and a mouse click on a row lets go of it.
 /**
  * The chat rail (v1c §5.3): a header row with Search and New chat icon buttons, loaded rows grouped by
  * date, each with its identity icon, title, identity · time and a reserved indicator slot, then Load
@@ -33,6 +34,7 @@ import { StateCard } from "../../observability/StateCard";
 import { cn } from "@nasiko/ui/cn";
 import { sessionRows, useChatSessions } from "../api";
 import { announce } from "../announce";
+import { setRailOrder } from "../railOrder";
 import { chatSignals, useSignals } from "../registry";
 import type { ChatCarry } from "../search";
 import { rowOf, type SignalsSnapshot } from "../signals";
@@ -150,6 +152,12 @@ export function ChatRail({
     shown.map((x) => ({ ...x, updated_at: x.row.updated_at, created_at: x.row.created_at })),
     now,
   );
+  // The header's Previous/Next follows this order. Waiting has its own order, so it steps nowhere (v1).
+  const orderKey =
+    view === "waiting" ? "" : groups.flatMap((g) => g.rows.map((x) => x.row.session_id)).join(" ");
+  useEffect(() => {
+    setRailOrder(orderKey ? orderKey.split(" ") : []);
+  }, [orderKey]);
   // Dev aids survive navigation between chats (DX-A2).
   const carry = { mock: search.mock, debug: search.debug };
 
@@ -291,7 +299,12 @@ export function ChatRail({
                       <li key={r.session_id}>
                         <Link
                           href={chatHref(r.session_id, carry)}
-                          onClick={() => onNavigate?.()}
+                          onClick={(e) => {
+                            // A mouse click lets go of the row, so the opened chat focuses its composer;
+                            // Enter (detail 0) keeps keyboard users in the rail.
+                            if (e.detail > 0) e.currentTarget.blur();
+                            onNavigate?.();
+                          }}
                           title={rowTooltip(r)}
                           aria-current={active ? "page" : undefined}
                           data-testid="rail-row"

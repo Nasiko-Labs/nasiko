@@ -7,7 +7,10 @@
 // that refetch started: a source defect, visible as a flash); links are the navigation port's `Link`; `DropdownMenuTrigger asChild`
 // -> `render={<Button …/>}` (Base UI useRender) and the menu items' Radix `onSelect` is Base UI's `onClick`; Base
 // UI's `Tabs` passes its value untyped (read as a string); optional props admit `undefined`
-// (exactOptionalPropertyTypes); Prettier formatting.
+// (exactOptionalPropertyTypes); Prettier formatting. Previous/Next (legacy ui/ on development, 3aac84f66: 22c07f9a5,
+// 109e95e78, 7804f22ff, 1b7bfb943): the redirects pass the sibling list on as navigation state (`useKeepSiblings`),
+// the tab changes keep it through `useSearchState`, and a step is `router.replace` with the current search and the
+// list.
 "use client";
 
 /**
@@ -18,9 +21,10 @@
  */
 import { useQuery } from "@tanstack/react-query";
 import Link from "@nasiko/app-core/navigation";
-import { useRouter } from "@nasiko/app-core/navigation";
+import { useRouter, useSearchParams } from "@nasiko/app-core/navigation";
+import { useKeepSiblings, useSiblings } from "@nasiko/app-core/siblings";
 import { MoreHorizontal } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Badge } from "@nasiko/ui/primitives";
 import { Button } from "@nasiko/ui/primitives";
 import {
@@ -33,7 +37,7 @@ import {
 } from "@nasiko/ui/primitives";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@nasiko/ui/primitives";
 import { PageHeader } from "@nasiko/ui/composites";
-import { PageLoader } from "@nasiko/ui/composites";
+import { PageLoader, PrevNext } from "@nasiko/ui/composites";
 import { ErrorState, StateCard } from "../observability/StateCard";
 import { meQueryOptions, useProductScope } from "@nasiko/data-access/product";
 import { ProductApiError as ApiError } from "@nasiko/data-access/product";
@@ -79,14 +83,16 @@ const detailHref = (id: string, tab?: string) =>
 
 function Redirect({ id, tab }: { id: string; tab?: string | undefined }) {
   const router = useRouter();
+  const state = useKeepSiblings();
   useEffect(() => {
-    router.replace(detailHref(id, tab));
-  }, [id, tab, router]);
+    router.replace(detailHref(id, tab), { state });
+  }, [id, tab, router, state]);
   return <PageLoader label={copy.loadingAgent} />;
 }
 
-function NotFound() {
-  return (
+/** `id`: the page's own agent (a name lookup has none), for the arrows. */
+function NotFound({ id }: { id?: string | undefined }) {
+  const card = (
     <StateCard
       title={copy.notFound}
       fix={copy.notFoundFix}
@@ -100,11 +106,23 @@ function NotFound() {
       }
     />
   );
+  return id ? <WithSiblings id={id}>{card}</WithSiblings> : card;
+}
+
+/** A state shown in place of an agent stepped to from a list keeps the arrows, so the user can step on. */
+function WithSiblings({ id, children }: { id: string; children: ReactNode }) {
+  return (
+    <div className="space-y-2">
+      <AgentSiblings id={id} className="justify-end" />
+      {children}
+    </div>
+  );
 }
 
 function ResolveByName({ name, tab }: { name: string; tab?: string | undefined }) {
   const dir = useAgentsDirectory();
   const router = useRouter();
+  const state = useKeepSiblings();
   const matches = dir.byNameAll.get(name) ?? [];
   const only = matches.length === 1 ? (matches[0]?.id ?? null) : null;
   // The directory is cached for minutes (shared with Sessions): a miss refetches once before "not found",
@@ -123,8 +141,8 @@ function ResolveByName({ name, tab }: { name: string; tab?: string | undefined }
     }
   }, [miss, refetch]);
   useEffect(() => {
-    if (only) router.replace(detailHref(only, tab));
-  }, [only, tab, router]);
+    if (only) router.replace(detailHref(only, tab), { state });
+  }, [only, tab, router, state]);
   if (dir.isPending || only || (miss && (dir.isFetching || !rechecked)))
     return <PageLoader label={copy.loadingAgent} />;
   if (dir.isError) return <ErrorState error={dir.error} onRetry={() => void dir.refetch()} />;
@@ -191,9 +209,11 @@ function AgentDetail({ id, tab }: { id: string; tab?: string | undefined }) {
   if (detail.isError) {
     return detail.error instanceof ApiError &&
       (detail.error.status === 404 || detail.error.status === 403) ? (
-      <NotFound />
+      <NotFound id={id} />
     ) : (
-      <ErrorState error={detail.error} onRetry={() => void detail.refetch()} />
+      <WithSiblings id={id}>
+        <ErrorState error={detail.error} onRetry={() => void detail.refetch()} />
+      </WithSiblings>
     );
   }
   if (!agent || !status.display) return null;
@@ -203,7 +223,8 @@ function AgentDetail({ id, tab }: { id: string; tab?: string | undefined }) {
   const ownerLabel = mine
     ? copy.you
     : (users.data?.get(agent.ownerId) ?? agent.ownerId.slice(0, 8));
-  // A dirty Settings form asks first: the router's blocker holds this navigation like a link's.
+  // A dirty Settings form asks first: the router's blocker holds this navigation like a link's. The list Previous/Next
+  // walks is kept (useSearchState).
   const setTab = (t: string) => {
     navigate({ search: t === "overview" ? {} : { tab: t }, replace: false });
   };
@@ -220,6 +241,8 @@ function AgentDetail({ id, tab }: { id: string; tab?: string | undefined }) {
 
   return (
     <div className="space-y-4">
+      {/* The arrows keep one place for every agent (and for one that fails to load), whatever its actions. */}
+      <AgentSiblings id={id} className="justify-end" />
       <Header
         agent={agent}
         display={display}
@@ -361,7 +384,7 @@ function Header({
           </span>
         }
         actions={
-          <div className="flex items-start gap-2">
+          <div className="flex flex-wrap items-start justify-end gap-2">
             <TryItLink
               id={agent.id}
               name={agent.displayName}
@@ -428,5 +451,33 @@ function Header({
       />
       <DeleteAgentDialog agent={agent} open={delOpen} onOpenChange={setDelOpen} />
     </div>
+  );
+}
+
+/** Previous/Next through the list this agent was opened from (siblings.ts); nothing on a deep link. */
+function AgentSiblings({ id, className }: { id: string; className?: string | undefined }) {
+  const router = useRouter();
+  const search = useSearchParams().toString();
+  const around = useSiblings(id);
+  if (!around) return null;
+  // Replace: Back still returns to the list. The tab carries over; one the next agent lacks falls back to Overview.
+  const go = (agentId: string | undefined) => {
+    if (!agentId) return;
+    const path = `/agents/${encodeURIComponent(agentId)}`;
+    router.replace(search ? `${path}?${search}` : path, { state: { siblings: around.siblings } });
+  };
+  return (
+    <PrevNext
+      noun="agent"
+      index={around.index}
+      count={around.count}
+      onPrev={() => {
+        go(around.prev);
+      }}
+      onNext={() => {
+        go(around.next);
+      }}
+      className={className}
+    />
   );
 }

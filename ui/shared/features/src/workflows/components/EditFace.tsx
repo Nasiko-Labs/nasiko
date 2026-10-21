@@ -1,5 +1,6 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/workflows/components/EditFace.tsx. Local edits: `"use
-// client"`; scoped `workflowKeys`; Prettier formatting.
+// client"`; scoped `workflowKeys`; Prettier formatting. The leave guard (legacy ui/ on development, 3aac84f66: 2d2c113ab,
+// ef9a174b1) is the navigation port's `LeaveGuard`.
 "use client";
 
 /**
@@ -11,6 +12,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Loader2, Play } from "lucide-react";
 import { useRef, useState, type ReactNode } from "react";
 import { toast } from "@nasiko/ui/toast";
+import { LeaveGuard } from "@nasiko/app-core/leave-guard";
 import { Button } from "@nasiko/ui/primitives";
 import { Input } from "@nasiko/ui/primitives";
 import { Label } from "@nasiko/ui/primitives";
@@ -62,6 +64,9 @@ export function EditFace({
     wf.maf_json?.steps?.length ? initialDesc.trim() : null,
   );
   const [planned, setPlanned] = useState(() => snapshot("", "", steps));
+  // What the server holds: what the editor opened with, then what it last saved (even if the run or promote failed).
+  const [opened, setOpened] = useState(() => snapshot(wf.name, initialDesc, steps));
+  const dirty = snapshot(name, desc, steps) !== opened;
   const failedAt = useRef<"Save" | "Run" | "Deploy">("Save");
 
   const gen = useMutation({ mutationFn: generateWorkflow });
@@ -87,6 +92,7 @@ export function EditFace({
         description: desc.trim() || null,
         steps: payload,
       });
+      setOpened(snapshot(name, desc, steps));
       failedAt.current = then === "run" ? "Run" : "Deploy";
       if (then === "run") {
         const r = await runWorkflow(wf.id);
@@ -119,6 +125,7 @@ export function EditFace({
 
   return (
     <>
+      <LeaveGuard when={dirty && !act.isPending} />
       <h1 tabIndex={-1} className="sr-only">
         {wf.name}
       </h1>

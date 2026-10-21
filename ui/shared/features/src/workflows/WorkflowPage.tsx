@@ -3,7 +3,9 @@
 // `router.history.back()` -> `back()`); `Button asChild` + `Link` -> `ButtonLink`; the run's Back reads
 // `workflowRunPushed` from `window.history.state` (the lab's TanStack `HistoryState` augmentation; nothing in the lab
 // sets it, so Back replaces with the review there too); scoped `workflowQuery`/`dropFromLists`; the lab's `ApiError` is
-// `ProductApiError`; optional props admit `undefined`; Prettier formatting.
+// `ProductApiError`; optional props admit `undefined`; Prettier formatting. Previous/Next (legacy ui/ on development,
+// 3aac84f66: 2d2c113ab, ef9a174b1): `WorkflowSiblings` steps with `router.replace` and the list as state; the run's
+// Back replace keeps the list (`useKeepSiblings`); Save & run passes the editor's leave guard (`ignoreBlocker`).
 "use client";
 
 /**
@@ -13,9 +15,10 @@
  */
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "@nasiko/app-core/navigation";
+import { useKeepSiblings, useSiblings } from "@nasiko/app-core/siblings";
 import { ChevronLeft, Pencil, Play, RotateCw, Workflow as WorkflowIcon } from "lucide-react";
 import { useState } from "react";
-import { PageLoader } from "@nasiko/ui/composites";
+import { PageLoader, PrevNext } from "@nasiko/ui/composites";
 import { LabEmptyState as EmptyState, StateCard } from "@nasiko/ui/composites";
 import { Button } from "@nasiko/ui/primitives";
 import { hrefFor } from "@nasiko/app-core/url-state";
@@ -44,9 +47,11 @@ export function WorkflowPage({ id, run }: { id: string; run?: string | undefined
   return <Detail id={id.toLowerCase()} run={run} />;
 }
 
-function DeadEnd({ title, text }: { title: string; text: string }) {
+/** `id`: a workflow stepped to from a list keeps its arrows when it fails to load, so the user can step on. */
+function DeadEnd({ id, title, text }: { id?: string | undefined; title: string; text: string }) {
   return (
     <div className={COLUMN}>
+      {id ? <WorkflowSiblings id={id} className="justify-end" /> : null}
       <EmptyState
         icon={WorkflowIcon}
         title={<h1>{title}</h1>}
@@ -68,10 +73,11 @@ function Detail({ id, run }: { id: string; run?: string | undefined }) {
   if (wf.isError)
     return wf.error instanceof ProductApiError &&
       (wf.error.status === 404 || wf.error.isForbidden) ? (
-      <DeadEnd title={copy.notFound} text={copy.notFoundText} />
+      <DeadEnd id={id} title={copy.notFound} text={copy.notFoundText} />
     ) : (
       <div className={COLUMN}>
         <h1 className="sr-only">{copy.loadOneFailed}</h1>
+        <WorkflowSiblings id={id} className="justify-end" />
         <StateCard
           tone="error"
           title={copy.loadOneFailed}
@@ -89,11 +95,16 @@ function Detail({ id, run }: { id: string; run?: string | undefined }) {
 
 function Loaded({ wf, run }: { wf: Workflow; run?: string | undefined }) {
   const router = useRouter();
+  const keep = useKeepSiblings();
   const [editing, setEditing] = useState(false);
   const live = isDeployed(wf);
-  // Save & run lands on the Runs tab with the run open, as Run does (`run.ts`).
+  // Save & run lands on the Runs tab with the run open, as Run does (`run.ts`). The edits are saved by then, but the
+  // editor's leave guard may not have re-rendered yet.
   const openRun = (execId: string) => {
-    router.push(hrefFor("/workflows/runs", { run: execId }), { scroll: false });
+    router.push(hrefFor("/workflows/runs", { run: execId }), {
+      scroll: false,
+      ignoreBlocker: true,
+    });
   };
   if (run)
     return (
@@ -102,14 +113,19 @@ function Loaded({ wf, run }: { wf: Workflow; run?: string | undefined }) {
         exec={run}
         onBack={() => {
           if (runPushed()) router.back();
-          else router.replace(`/workflows/${encodeURIComponent(wf.id)}`, { scroll: false });
+          // Keeps the list this workflow was opened from (siblings.ts).
+          else
+            router.replace(`/workflows/${encodeURIComponent(wf.id)}`, {
+              scroll: false,
+              state: keep,
+            });
         }}
       />
     );
   return (
     <div className={COLUMN}>
       <title>{`${wf.name} · Nasiko`}</title>
-      <div>
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <ButtonLink
           variant="ghost"
           size="sm"
@@ -118,6 +134,7 @@ function Loaded({ wf, run }: { wf: Workflow; run?: string | undefined }) {
         >
           <ChevronLeft aria-hidden /> {live ? copy.crumbDeployed : copy.crumbDrafts}
         </ButtonLink>
+        <WorkflowSiblings id={wf.id} />
       </div>
       {live && !editing ? (
         <ReadOnlyFace
@@ -139,6 +156,34 @@ function Loaded({ wf, run }: { wf: Workflow; run?: string | undefined }) {
       )}
       <DangerZone wf={wf} />
     </div>
+  );
+}
+
+/** Previous/Next through the list this workflow was opened from (siblings.ts); nothing on a deep link. */
+function WorkflowSiblings({ id, className }: { id: string; className?: string | undefined }) {
+  const router = useRouter();
+  const around = useSiblings(id);
+  if (!around) return null;
+  // Replace: Back still returns to the list. A run (`?run=`) never carries over.
+  const go = (workflowId: string | undefined) => {
+    if (workflowId)
+      router.replace(`/workflows/${encodeURIComponent(workflowId)}`, {
+        state: { siblings: around.siblings },
+      });
+  };
+  return (
+    <PrevNext
+      noun="workflow"
+      index={around.index}
+      count={around.count}
+      onPrev={() => {
+        go(around.prev);
+      }}
+      onNext={() => {
+        go(around.next);
+      }}
+      className={className}
+    />
   );
 }
 

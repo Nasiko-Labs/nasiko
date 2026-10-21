@@ -1,7 +1,8 @@
 // Ported from the legacy ui/ on development (3aac84f66) common/src/features/agents/components/AgentCard.tsx (split out
 // of CatalogPage.tsx, d2e0d4bcf, so GenUI's agent cards reuse it). Local edits: the React CatalogPage's card as it
-// was (`Card render={<Link …/>}` through the navigation port, optional props admit `undefined`); Prettier formatting.
-import Link from "@nasiko/app-core/navigation";
+// was (`Card render={<Link …/>}` through the navigation port, optional props admit `undefined`); `linkState` is the
+// port's `Link state` (Previous/Next, 22c07f9a5); Prettier formatting.
+import Link, { type HistoryState } from "@nasiko/app-core/navigation";
 import { memo } from "react";
 import { Badge } from "@nasiko/ui/primitives";
 import { Card } from "@nasiko/ui/primitives";
@@ -17,11 +18,14 @@ export const AgentCard = memo(function AgentCard({
   meId,
   ownerName,
   reason,
+  linkState,
 }: {
   agent: Agent;
   meId?: string | undefined;
   ownerName?: string | undefined;
   reason?: string | undefined;
+  /** The list this card was opened from, for the detail's Previous/Next (siblings.ts). */
+  linkState?: (() => HistoryState) | undefined;
 }) {
   const harness = isHarness(agent);
   const name = agent.display_name || agent.name;
@@ -33,7 +37,7 @@ export const AgentCard = memo(function AgentCard({
   return (
     // One link, no nested interactive elements (plan §7.1).
     <Card
-      render={<Link href={`/agents/${encodeURIComponent(agent.id)}`} />}
+      render={<Link href={`/agents/${encodeURIComponent(agent.id)}`} state={linkState} />}
       className="h-full gap-2 p-4 transition-[color,border-color,box-shadow] hover:border-primary/40 hover:shadow-lg focus-visible:outline-2 focus-visible:outline-ring"
     >
       <div className="flex items-start gap-3">

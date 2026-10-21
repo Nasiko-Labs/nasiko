@@ -234,6 +234,7 @@ export const copy = {
 
   // Agent routing sheet
   routingTitle: (name: string) => `Change routing · ${name}`,
+  saveBeforeStepping: "Save or discard your changes first",
   routeWith: "Route this agent with",
   useMyDefault: "Use my default",
   useOwnersDefault: "Use the owner’s default",

@@ -3,7 +3,7 @@
 // stays mounted and `hidden`, as in the lab); the filter tiles' pressed classes are `aria-pressed:` (Base UI's
 // `Toggle` sets `aria-pressed`, not Radix's `data-state=on`); Base UI's `Tabs` passes its value untyped (narrowed as
 // in the lab); the budgets wiring stays commented out exactly as in the lab (no server serves `/api/budgets*`,
-// R-L10); Prettier formatting.
+// R-L10); Prettier formatting. Previous/Next in the routing sheet (legacy ui/ on development, b7d5ba691).
 "use client";
 
 /**
@@ -23,6 +23,7 @@ import { useOwnedAgents } from "../agents/api";
 import { ErrorState } from "../observability/StateCard";
 import { meQueryOptions, useProductScope } from "@nasiko/data-access/product";
 import { cn } from "@nasiko/ui/cn";
+import { siblingsAround } from "@nasiko/app-core/siblings";
 import { useAnnounce } from "./announce";
 import {
   // useBudgetAlerts,
@@ -133,6 +134,8 @@ function Page({
 
   const [editor, setEditor] = useState<EditorMode | null>(null);
   const [routingFor, setRoutingFor] = useState<string | null>(null);
+  // The agents table's order when the sheet opened from it, for the sheet's Previous/Next; [] from elsewhere.
+  const [routingOrder, setRoutingOrder] = useState<readonly string[]>([]);
   const [customMode, setCustomMode] = useState<CustomMode | null>(null);
   const [deleting, setDeleting] = useState<LlmConfig | null>(null);
   const [updated, setUpdated] = useState<ReadonlyMap<string, number>>(new Map());
@@ -184,6 +187,7 @@ function Page({
     : rows;
   const filterLabel = search.source ? copy.filterNames[search.source] : null;
   const routingAgent = routingFor ? agentById.get(routingFor) : undefined;
+  const routingStep = routingFor ? siblingsAround(routingOrder, routingFor) : null;
   const attached = useMemo(
     () =>
       deleting
@@ -384,8 +388,9 @@ function Page({
                 total={rows.length}
                 spend={spend}
                 updated={updated}
-                onChange={(a) => {
+                onChange={(a, order) => {
                   setRoutingFor(a.id);
+                  setRoutingOrder(order);
                 }}
                 onRetry={retry}
                 onShowConfig={(id) => {
@@ -486,6 +491,17 @@ function Page({
               }
             : null
         }
+        step={
+          routingStep
+            ? {
+                index: routingStep.index,
+                count: routingStep.count,
+                prev: routingStep.prev,
+                next: routingStep.next,
+                go: setRoutingFor,
+              }
+            : undefined
+        }
         viewer={{ sub: me?.sub, superuser }}
         configs={configs.data}
         catalog={catalog.data}
@@ -526,6 +542,7 @@ function Page({
         }}
         onChangeRouting={(id) => {
           setRoutingFor(id);
+          setRoutingOrder([]);
         }}
       />
     </div>

@@ -3,7 +3,8 @@
 // `/sessions/<encoded id>?trace=` built with `hrefFor`, `/chat/<encoded id>`, and `/flows` with the remembered list
 // search serialised without its defaults (`searchString`; TanStack wrote them all, the URL is shorter, the list the
 // same); Base UI's ToggleGroup is value-array based (`value={[shownView]}`, `onValueChange` reads `v[0]`); the lab's
-// `ApiError` is `ProductApiError`; Prettier formatting.
+// `ApiError` is `ProductApiError`; Prettier formatting. Previous/Next (legacy ui/ on development, 3aac84f66: c033b0c52,
+// 1b7bfb943): `FlowSiblings` steps with `router.replace` and the list as state.
 /**
  * One flow (plans/feat-flows.md §2, §2a; T3): header with its links, the narrative (F5), six KPI tiles (F6), the
  * swimlane panel (F2, T2) or the Call card for a lone call (F12), then Steps.
@@ -14,12 +15,14 @@
  */
 import { ArrowLeft } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { useRouter } from "@nasiko/app-core/navigation";
+import { useSiblings } from "@nasiko/app-core/siblings";
 import { Announcer } from "@nasiko/ui/composites";
 import { useAnnounce } from "@nasiko/ui/composites";
 import { CopyButton } from "@nasiko/ui/composites";
 import { KpiTile } from "@nasiko/ui/composites";
 import { PageHeader } from "@nasiko/ui/composites";
-import { PageLoader } from "@nasiko/ui/composites";
+import { PageLoader, PrevNext } from "@nasiko/ui/composites";
 import { Panel, PanelError } from "@nasiko/ui/composites";
 import { StateCard } from "@nasiko/ui/composites";
 import { Alert, AlertDescription } from "@nasiko/ui/primitives";
@@ -125,6 +128,8 @@ function FlowBody({
     const status = query.error instanceof ApiError ? query.error.status : null;
     return (
       <Frame>
+        {/* The arrows stay, so a flow that's gone isn't a dead end. */}
+        <FlowSiblings flowId={flowId} className="justify-end" />
         {status === 404 ? (
           <StateCard title={copy.page.notFound}>{copy.page.notFoundHint}</StateCard>
         ) : status === 403 && query.data ? (
@@ -199,7 +204,13 @@ function FlowBody({
   return (
     <Frame>
       <PageHeader
-        breadcrumb={<BackToFlows />}
+        // The arrows sit at the right of the breadcrumb row, so the varying actions can't move them.
+        breadcrumb={
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <BackToFlows />
+            <FlowSiblings flowId={flow.flow_id} />
+          </div>
+        }
         title={title}
         description={
           <span className="inline-flex flex-wrap items-center gap-x-2">
@@ -424,6 +435,32 @@ function BackToFlows() {
     >
       <ArrowLeft aria-hidden /> {copy.back}
     </ButtonLink>
+  );
+}
+
+/** Previous/Next through the Flows rows this flow was opened from (siblings.ts); nothing on a deep link. */
+function FlowSiblings({ flowId, className }: { flowId: string; className?: string | undefined }) {
+  const router = useRouter();
+  const around = useSiblings(flowId);
+  if (!around) return null;
+  // Replace: Back still returns to the list. `?step=` is one flow's call, so it doesn't carry over.
+  const go = (id: string | undefined) => {
+    if (id)
+      router.replace(`/flows/${encodeURIComponent(id)}`, { state: { siblings: around.siblings } });
+  };
+  return (
+    <PrevNext
+      noun="flow"
+      index={around.index}
+      count={around.count}
+      onPrev={() => {
+        go(around.prev);
+      }}
+      onNext={() => {
+        go(around.next);
+      }}
+      className={className}
+    />
   );
 }
 

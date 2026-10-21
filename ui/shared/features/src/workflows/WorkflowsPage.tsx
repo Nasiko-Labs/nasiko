@@ -3,6 +3,7 @@
 // `ButtonLink`; `DropdownMenuTrigger asChild` -> `render={<Button …/>}` and the items' Radix `onSelect` -> Base UI's
 // `onClick`; the sort `Select` gets `items` (Base UI's trigger shows the label) and passes its value untyped (read as a
 // string); scoped `workflowListQuery`/`dropFromLists`; the list search's optional fields admit `undefined`; Prettier formatting.
+// Previous/Next (legacy ui/ on development, 2d2c113ab): the cards' link and open carry the shown list.
 "use client";
 
 /**
@@ -10,7 +11,8 @@
  * carry no metrics (W-3), so the metric chips, health, last-run line and sort are hidden, and Drafts is absent (W-1).
  */
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import Link from "@nasiko/app-core/navigation";
+import Link, { type HistoryState } from "@nasiko/app-core/navigation";
+import { useSiblingState } from "@nasiko/app-core/siblings";
 import { useRouter } from "@nasiko/app-core/navigation";
 import { EllipsisVertical, Plus, RotateCw, SearchX, Workflow } from "lucide-react";
 import { memo, useDeferredValue, useState } from "react";
@@ -106,6 +108,7 @@ export function WorkflowsPage({
   const shown = q
     ? rows.filter((wf) => `${wf.name} ${descriptionOf(wf)}`.toLowerCase().includes(q))
     : rows;
+  const linkState = useSiblingState(shown.map((wf) => wf.id));
   const empty = list.isSuccess && rows.length === 0;
   const absent = mode === "drafts" && list.isError && isDraftsAbsent(list.error);
   const sorts: readonly string[] = mode === "deployed" ? WORKFLOW_SORTS : DRAFT_SORTS;
@@ -189,6 +192,7 @@ export function WorkflowsPage({
               wf={wf}
               mode={mode}
               metrics={metrics}
+              linkState={linkState}
               onRun={() => {
                 startRun(wf.id);
               }}
@@ -261,12 +265,14 @@ const WorkflowCard = memo(function WorkflowCard({
   wf,
   mode,
   metrics,
+  linkState,
   onRun,
   onDelete,
 }: {
   wf: WorkflowRow;
   mode: ListMode;
   metrics: boolean;
+  linkState: () => HistoryState;
   onRun: () => void;
   onDelete: () => void;
 }) {
@@ -278,7 +284,7 @@ const WorkflowCard = memo(function WorkflowCard({
   const description = descriptionOf(wf);
   const href = `/workflows/${encodeURIComponent(wf.id)}`;
   const open = () => {
-    router.push(href, { scroll: false });
+    router.push(href, { scroll: false, state: linkState() });
   };
   const chips = [
     copy.steps(steps),
@@ -301,6 +307,7 @@ const WorkflowCard = memo(function WorkflowCard({
         <h2 className="min-w-0 flex-1 truncate font-medium">
           <Link
             href={href}
+            state={linkState}
             className="underline-offset-4 after:absolute after:inset-0 after:rounded-xl hover:underline focus-visible:outline-none"
           >
             {wf.name}

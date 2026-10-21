@@ -5,7 +5,8 @@
 // a `ButtonLink` (the lab's `<Button asChild><Link>`); `invalidateChat` is scoped (`useProductScope()`); `ApiError` is
 // `ProductApiError`; the turns' `handlers`, `routed` context, `endFor` and `stepsFor` are memoised by hand (a stable
 // handlers object calling the latest closures through a ref), which the lab left to the React Compiler (not used here),
-// so the page's clock still never re-renders a turn; Prettier formatting.
+// so the page's clock still never re-renders a turn; Prettier formatting. A Previous/Next step's focus rule (legacy ui/
+// on development, fdd92df43) is the entry's `chatFocus` history state, read through the navigation port.
 /**
  * `/chat/$sessionId` (plan §7, v1b §5, v1c): history plus the live turn, rendered as turns; every action goes to
  * the registry or a mutation. Reconciling a finished turn with history is `reconcile.ts`, dispatched by
@@ -39,6 +40,7 @@ import { copy } from "./copy";
 import { readDraft } from "./drafts";
 import { announce } from "./announce";
 import { focusIfIdle } from "./focus";
+import { useHistoryState } from "@nasiko/app-core/navigation";
 import { needsRunAgainConfirm } from "./errors";
 import { agentLabel, exportMarkdown } from "./format";
 import {
@@ -256,10 +258,14 @@ function SessionView({
   const [traceTarget, setTraceTarget] = useState<TraceTarget | null>(null);
   // Focus stays in the composer after send (§8.1): the first send remounts this view (/chat →
   // /chat/$id), and delete or a fresh load leaves focus on <body>. Never steals it.
+  // A Previous/Next click asks for the composer outright; a J/K step leaves focus alone, so the keys keep stepping.
   const composerShown = target.kind !== "readonly";
+  const { chatFocus } = useHistoryState();
   useEffect(() => {
-    if (composerShown) focusIfIdle(composer.current);
-  }, [composerShown]);
+    if (!composerShown || chatFocus === "none") return;
+    if (chatFocus === "composer") composer.current?.focus();
+    else focusIfIdle(composer.current);
+  }, [composerShown, chatFocus]);
 
   // Search a few more rail pages for this chat's row (§6.11).
   const { hasNextPage: moreRows, isFetchingNextPage: fetchingRows, fetchNextPage: nextRows } = list;

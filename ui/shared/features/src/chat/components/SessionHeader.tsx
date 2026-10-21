@@ -4,10 +4,13 @@
 // `onSelect` on items is Base UI's `onClick` (the menu still closes on it); the menu's `onCloseAutoFocus` is Base UI's
 // `finalFocus` (false while Rename takes focus); the totals label sits in a `DropdownMenuGroup` (Base UI's group label
 // needs one); the jsx-a11y disable became a comment (no such rule here); `ApiError` is `ProductApiError`; Prettier
-// formatting.
+// formatting. Previous/Next (legacy ui/ on development, 3aac84f66: 858912f71, 12264f9b6, 1b7bfb943, fdd92df43):
+// `ChatSiblings` pushes `chatHref(id, { mock, debug })` with the step's focus rule as history state (`chatFocus`).
 /** An open chat's header (§7.3, §6.10): identity, title (inline rename), totals, View session and the ⋯ menu. */
 import { Activity, MoreHorizontal } from "lucide-react";
-import Link from "@nasiko/app-core/navigation";
+import Link, { useRouter, useSearchParams } from "@nasiko/app-core/navigation";
+import { siblingsAround } from "@nasiko/app-core/siblings";
+import { PrevNext, type StepVia } from "@nasiko/ui/composites";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   Button,
@@ -30,6 +33,8 @@ import { copy } from "../copy";
 import { announce } from "../announce";
 import { fmtCostPerOp, fmtTokens } from "@nasiko/ui/lib";
 import { chatTotals } from "../format";
+import { chatHref } from "../nav";
+import { useRailOrder } from "../railOrder";
 import type { ChatIdentity } from "../identity";
 import type { ChatMessage, ChatSessionRow } from "../types";
 import { IdentityChip, IdentityIcon } from "./ChatIdentity";
@@ -189,9 +194,47 @@ export function SessionHeader({
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
+          {/* Rightmost, so the arrows stay put from chat to chat whatever the totals' width. */}
+          <ChatSiblings sessionId={sessionId} />
         </div>
       </div>
     </header>
+  );
+}
+
+/**
+ * Previous/Next through the rail's chats as shown (railOrder.ts). Pushes, like a rail click; dev aids carry over.
+ * Below 480 px of pane width the buttons hide (the rail is the way there), but J/K still work: PrevNext stays mounted.
+ */
+function ChatSiblings({ sessionId }: { sessionId: string }) {
+  const router = useRouter();
+  const params = useSearchParams();
+  const ids = useRailOrder((s) => s.ids);
+  const around = siblingsAround(ids, sessionId);
+  if (!around) return null;
+  const go = (id: string | undefined, via: StepVia) => {
+    if (!id) return;
+    const href = chatHref(id, {
+      mock: params.get("mock") ?? undefined,
+      debug: params.get("debug") ?? undefined,
+    });
+    // A click lands in the composer; J/K keeps focus out of it, so the next key steps again.
+    router.push(href, { scroll: false, state: { chatFocus: via === "key" ? "none" : "composer" } });
+  };
+  return (
+    <PrevNext
+      noun="chat"
+      index={around.index}
+      count={around.count}
+      onPrev={(via) => {
+        go(around.prev, via);
+      }}
+      onNext={(via) => {
+        go(around.next, via);
+      }}
+      restoreFocus={false}
+      className="hidden @min-[480px]:flex"
+    />
   );
 }
 

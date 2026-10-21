@@ -5,7 +5,8 @@
 // value as All; `env.partialMocks` is read as a string list (the lab's selective mocks are always empty here,
 // app-core/env.ts, so the mixed-sources note never shows); `compareOn` is handed `{ compare }` only when set and the
 // day header's `layoutId` only when the morph has one (exactOptionalPropertyTypes); optional props and `setSearch`'s
-// `replace` admit `undefined`; Prettier formatting.
+// `replace` admit `undefined`; Prettier formatting. Previous/Next (legacy ui/ on development, 2c7d51a5d): the rows carry
+// the shown list (`useSiblingState`).
 /**
  * Sessions: the fleet pulse (fleet mode) and "that day's sessions" (day mode, ?day=).
  *
@@ -32,6 +33,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@nasiko/ui/primitives";
+import { useSiblingState } from "@nasiko/app-core/siblings";
 import { compareOn, pickShared } from "@nasiko/app-core/shell/context";
 import { copy } from "../observability/copy";
 import {
@@ -158,6 +160,8 @@ export function SessionsPage({
     if (search.status && status(s) !== search.status) return false;
     return true;
   });
+  // Previous/Next on the trace walks these rows as shown when one is clicked (loaded rows only: it never pages).
+  const linkState = useSiblingState(shown.map((s) => s.session_id));
 
   // Day mode: an empty first page is not "no sessions" while later pages are still coming.
   const scanning =
@@ -481,6 +485,7 @@ export function SessionsPage({
                     expanded={expanded === s.session_id}
                     onToggle={toggleRow}
                     linkSearch={linkSearch}
+                    linkState={linkState}
                     fresh={live.fresh.has(s.session_id)}
                   />
                 ))}
