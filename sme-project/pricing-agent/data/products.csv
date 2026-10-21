@@ -1,0 +1,401 @@
+ProductID,ProductName,CategoryID,SupplierID,StandardMarkup,DefaultSellingPrice,Description,UnitOfMeasurement
+PROD001,Tata Tea Premium 250g,CAT002,SUP001,1.2,140,Indian retail product in Packaged Foods.,Unit
+PROD002,LG Frost Free Refrigerator 260L,CAT003,SUP001,1.4,26000,Indian retail product in Large Appliances.,Unit
+PROD003,Prestige Stainless Steel Knife Set (5pc),CAT008,SUP001,1.35,850,Indian retail product in Kitchen Gadgets.,Unit
+PROD004,Meyer Glass Storage Set,CAT008,SUP035,1.39,1200,Retail item under Kitchen Gadgets.,Unit
+PROD005,Van Heusen Blazer,CAT005,SUP009,1.47,4500,Retail item under Men's Apparel.,Unit
+PROD006,Inalsa Food Processor,CAT008,SUP011,1.72,4500,Retail item under Kitchen Gadgets.,Unit
+PROD007,Prestige Pressure Cooker 5L,CAT007,SUP034,1.58,2100,Retail item under Cookware & Pots.,Unit
+PROD008,Peter England Formal Shirt,CAT005,SUP018,1.31,1300,Retail item under Men's Apparel.,Unit
+PROD009,Biba Embroidered Kurti,CAT006,SUP017,1.34,1500,Retail item under Women's Apparel.,Unit
+PROD010,LG Frost Free Refrigerator 260L,CAT003,SUP033,1.24,26000,Retail item under Large Appliances.,Unit
+PROD011,Bajaj Mixer Grinder 500W,CAT004,SUP001,1.2,3200,Retail item under Small Electronics.,Unit
+PROD012,Global Desi Palazzo Set,CAT006,SUP016,1.76,1100,Retail item under Women's Apparel.,Unit
+PROD013,Amul Milk 1L (Pack of 3),CAT001,SUP005,1.11,185.25,Retail item under Fresh Groceries.,Unit
+PROD014,Samsung Front Load Washer 7kg,CAT003,SUP017,1.43,32000,Retail item under Large Appliances.,Unit
+PROD015,Hawkins Stainless Steel Pan 3L,CAT007,SUP020,1.67,1400,Retail item under Cookware & Pots.,Unit
+PROD016,Borosil Casserole Dish,CAT007,SUP016,1.53,600,Retail item under Cookware & Pots.,Unit
+PROD017,Philips Air Fryer 2.2L,CAT004,SUP038,1.33,7500,Retail item under Small Electronics.,Unit
+PROD018,Philips Air Fryer 2.2L,CAT004,SUP005,1.34,7500,Retail item under Small Electronics.,Unit
+PROD019,Fresh Paneer 200g (Pack of 1),CAT001,SUP014,1.13,85,Retail item under Fresh Groceries.,Unit
+PROD020,Bosch Dishwasher 12 Place,CAT003,SUP013,1.29,42000,Retail item under Large Appliances.,Unit
+PROD021,Aashirvaad Atta 5kg (Pack of 3),CAT002,SUP004,1.14,627.0,Retail item under Packaged Foods.,Unit
+PROD022,Aashirvaad Atta 5kg (Pack of 2),CAT002,SUP016,1.18,418.0,Retail item under Packaged Foods.,Unit
+PROD023,Bajaj Mixer Grinder 500W,CAT004,SUP018,1.19,3200,Retail item under Small Electronics.,Unit
+PROD024,Meyer Glass Storage Set,CAT008,SUP007,1.29,1200,Retail item under Kitchen Gadgets.,Unit
+PROD025,Tomato 1kg (Pack of 1),CAT001,SUP011,1.19,60,Retail item under Fresh Groceries.,Unit
+PROD026,Wonderchef Tawa 28cm,CAT007,SUP011,1.73,950,Retail item under Cookware & Pots.,Unit
+PROD027,Prestige Pressure Cooker 5L,CAT007,SUP019,1.4,2100,Retail item under Cookware & Pots.,Unit
+PROD028,Wonderchef Tawa 28cm,CAT007,SUP038,1.41,950,Retail item under Cookware & Pots.,Unit
+PROD029,Fresh Paneer 200g (Pack of 1),CAT001,SUP011,1.15,85,Retail item under Fresh Groceries.,Unit
+PROD030,Tomato 1kg (Pack of 1),CAT001,SUP016,1.11,60,Retail item under Fresh Groceries.,Unit
+PROD031,Prestige Pressure Cooker 5L,CAT007,SUP039,1.56,2100,Retail item under Cookware & Pots.,Unit
+PROD032,Tomato 1kg (Pack of 1),CAT001,SUP021,1.16,60,Retail item under Fresh Groceries.,Unit
+PROD033,Louis Philippe Chinos,CAT005,SUP026,1.42,1800,Retail item under Men's Apparel.,Unit
+PROD034,Whirlpool Microwave 20L,CAT003,SUP001,1.43,6500,Retail item under Large Appliances.,Unit
+PROD035,Inalsa Food Processor,CAT008,SUP009,1.37,4500,Retail item under Kitchen Gadgets.,Unit
+PROD036,Biba Embroidered Kurti,CAT006,SUP029,1.45,1500,Retail item under Women's Apparel.,Unit
+PROD037,Peter England Formal Shirt,CAT005,SUP007,1.56,1300,Retail item under Men's Apparel.,Unit
+PROD038,Whirlpool Microwave 20L,CAT003,SUP010,1.18,6500,Retail item under Large Appliances.,Unit
+PROD039,Allen Solly Polo Tee,CAT005,SUP017,1.64,1200,Retail item under Men's Apparel.,Unit
+PROD040,Cello Water Bottle 1L,CAT008,SUP028,1.72,150,Retail item under Kitchen Gadgets.,Unit
+PROD041,Peter England Formal Shirt,CAT005,SUP017,1.67,1300,Retail item under Men's Apparel.,Unit
+PROD042,Bosch Dishwasher 12 Place,CAT003,SUP008,1.28,42000,Retail item under Large Appliances.,Unit
+PROD043,Maggi Masala Noodles 2-min (Pack of 3),CAT002,SUP010,1.14,39.9,Retail item under Packaged Foods.,Unit
+PROD044,Hawkins Stainless Steel Pan 3L,CAT007,SUP023,1.45,1400,Retail item under Cookware & Pots.,Unit
+PROD045,Bajaj Mixer Grinder 500W,CAT004,SUP027,1.26,3200,Retail item under Small Electronics.,Unit
+PROD046,Samsung Front Load Washer 7kg,CAT003,SUP027,1.44,32000,Retail item under Large Appliances.,Unit
+PROD047,Amul Milk 1L (Pack of 3),CAT001,SUP016,1.18,185.25,Retail item under Fresh Groceries.,Unit
+PROD048,Louis Philippe Chinos,CAT005,SUP031,1.31,1800,Retail item under Men's Apparel.,Unit
+PROD049,Bajaj Mixer Grinder 500W,CAT004,SUP015,1.29,3200,Retail item under Small Electronics.,Unit
+PROD050,Philips Air Fryer 2.2L,CAT004,SUP005,1.27,7500,Retail item under Small Electronics.,Unit
+PROD051,Allen Solly Polo Tee,CAT005,SUP022,1.47,1200,Retail item under Men's Apparel.,Unit
+PROD052,Tata Salt 1kg (Pack of 2),CAT001,SUP003,1.2,53.2,Retail item under Fresh Groceries.,Unit
+PROD053,Kissan Tomato Ketchup 1kg (Pack of 2),CAT002,SUP039,1.18,266.0,Retail item under Packaged Foods.,Unit
+PROD054,Amul Butter 500g (Pack of 3),CAT002,SUP001,1.1,741.0,Retail item under Packaged Foods.,Unit
+PROD055,Panasonic Electric Kettle 1.5L,CAT004,SUP040,1.43,1250,Retail item under Small Electronics.,Unit
+PROD056,Biba Embroidered Kurti,CAT006,SUP027,1.42,1500,Retail item under Women's Apparel.,Unit
+PROD057,Global Desi Palazzo Set,CAT006,SUP027,1.55,1100,Retail item under Women's Apparel.,Unit
+PROD058,Hawkins Stainless Steel Pan 3L,CAT007,SUP001,1.42,1400,Retail item under Cookware & Pots.,Unit
+PROD059,Allen Solly Polo Tee,CAT005,SUP021,1.68,1200,Retail item under Men's Apparel.,Unit
+PROD060,Prestige Chopper,CAT008,SUP011,1.37,450,Retail item under Kitchen Gadgets.,Unit
+PROD061,Parle-G Biscuits 400g (Pack of 3),CAT002,SUP016,1.16,142.5,Retail item under Packaged Foods.,Unit
+PROD062,Louis Philippe Chinos,CAT005,SUP016,1.33,1800,Retail item under Men's Apparel.,Unit
+PROD063,Inalsa Food Processor,CAT008,SUP013,1.74,4500,Retail item under Kitchen Gadgets.,Unit
+PROD064,Wonderchef Tawa 28cm,CAT007,SUP007,1.33,950,Retail item under Cookware & Pots.,Unit
+PROD065,Hawkins Stainless Steel Pan 3L,CAT007,SUP030,1.78,1400,Retail item under Cookware & Pots.,Unit
+PROD066,Tomato 1kg (Pack of 1),CAT001,SUP030,1.11,60,Retail item under Fresh Groceries.,Unit
+PROD067,Global Desi Palazzo Set,CAT006,SUP028,1.65,1100,Retail item under Women's Apparel.,Unit
+PROD068,Meyer Glass Storage Set,CAT008,SUP016,1.51,1200,Retail item under Kitchen Gadgets.,Unit
+PROD069,Van Heusen Blazer,CAT005,SUP019,1.4,4500,Retail item under Men's Apparel.,Unit
+PROD070,Panasonic Electric Kettle 1.5L,CAT004,SUP009,1.42,1250,Retail item under Small Electronics.,Unit
+PROD071,Samsung Front Load Washer 7kg,CAT003,SUP005,1.2,32000,Retail item under Large Appliances.,Unit
+PROD072,Wonderchef Tawa 28cm,CAT007,SUP014,1.51,950,Retail item under Cookware & Pots.,Unit
+PROD073,Wonderchef Tawa 28cm,CAT007,SUP037,1.57,950,Retail item under Cookware & Pots.,Unit
+PROD074,Wonderchef Tawa 28cm,CAT007,SUP027,1.44,950,Retail item under Cookware & Pots.,Unit
+PROD075,Prestige Sandwich Maker,CAT004,SUP025,1.28,1250,Retail item under Small Electronics.,Unit
+PROD076,Global Desi Palazzo Set,CAT006,SUP040,1.71,1100,Retail item under Women's Apparel.,Unit
+PROD077,Organic Bananas 1kg (Pack of 3),CAT001,SUP009,1.1,228.0,Retail item under Fresh Groceries.,Unit
+PROD078,Meyer Glass Storage Set,CAT008,SUP030,1.46,1200,Retail item under Kitchen Gadgets.,Unit
+PROD079,W Linen Dress,CAT006,SUP017,1.46,2200,Retail item under Women's Apparel.,Unit
+PROD080,Amul Butter 500g (Pack of 1),CAT002,SUP015,1.11,260,Retail item under Packaged Foods.,Unit
+PROD081,Aashirvaad Atta 5kg (Pack of 1),CAT002,SUP040,1.12,220,Retail item under Packaged Foods.,Unit
+PROD082,Samsung Front Load Washer 7kg,CAT003,SUP014,1.35,32000,Retail item under Large Appliances.,Unit
+PROD083,Cello Water Bottle 1L,CAT008,SUP008,1.34,150,Retail item under Kitchen Gadgets.,Unit
+PROD084,Whirlpool Microwave 20L,CAT003,SUP037,1.16,6500,Retail item under Large Appliances.,Unit
+PROD085,Wonderchef Tawa 28cm,CAT007,SUP016,1.36,950,Retail item under Cookware & Pots.,Unit
+PROD086,Parle-G Biscuits 400g (Pack of 3),CAT002,SUP003,1.11,142.5,Retail item under Packaged Foods.,Unit
+PROD087,Global Desi Palazzo Set,CAT006,SUP022,1.29,1100,Retail item under Women's Apparel.,Unit
+PROD088,Organic Bananas 1kg (Pack of 2),CAT001,SUP010,1.2,152.0,Retail item under Fresh Groceries.,Unit
+PROD089,Hawkins Stainless Steel Pan 3L,CAT007,SUP040,1.78,1400,Retail item under Cookware & Pots.,Unit
+PROD090,Prestige Chopper,CAT008,SUP021,1.65,450,Retail item under Kitchen Gadgets.,Unit
+PROD091,Philips Air Fryer 2.2L,CAT004,SUP037,1.29,7500,Retail item under Small Electronics.,Unit
+PROD092,Borosil Casserole Dish,CAT007,SUP032,1.72,600,Retail item under Cookware & Pots.,Unit
+PROD093,Panasonic Electric Kettle 1.5L,CAT004,SUP018,1.25,1250,Retail item under Small Electronics.,Unit
+PROD094,Tomato 1kg (Pack of 1),CAT001,SUP036,1.17,60,Retail item under Fresh Groceries.,Unit
+PROD095,Prestige Sandwich Maker,CAT004,SUP006,1.3,1250,Retail item under Small Electronics.,Unit
+PROD096,Louis Philippe Chinos,CAT005,SUP038,1.38,1800,Retail item under Men's Apparel.,Unit
+PROD097,Global Desi Palazzo Set,CAT006,SUP022,1.44,1100,Retail item under Women's Apparel.,Unit
+PROD098,Global Desi Palazzo Set,CAT006,SUP013,1.39,1100,Retail item under Women's Apparel.,Unit
+PROD099,Biba Embroidered Kurti,CAT006,SUP013,1.77,1500,Retail item under Women's Apparel.,Unit
+PROD100,Prestige Sandwich Maker,CAT004,SUP039,1.33,1250,Retail item under Small Electronics.,Unit
+PROD101,Peter England Formal Shirt,CAT005,SUP012,1.41,1300,Retail item under Men's Apparel.,Unit
+PROD102,Peter England Formal Shirt,CAT005,SUP004,1.32,1300,Retail item under Men's Apparel.,Unit
+PROD103,Louis Philippe Chinos,CAT005,SUP001,1.66,1800,Retail item under Men's Apparel.,Unit
+PROD104,Van Heusen Blazer,CAT005,SUP017,1.44,4500,Retail item under Men's Apparel.,Unit
+PROD105,Inalsa Food Processor,CAT008,SUP037,1.47,4500,Retail item under Kitchen Gadgets.,Unit
+PROD106,Amul Milk 1L (Pack of 1),CAT001,SUP016,1.19,65,Retail item under Fresh Groceries.,Unit
+PROD107,Kissan Tomato Ketchup 1kg (Pack of 2),CAT002,SUP034,1.18,266.0,Retail item under Packaged Foods.,Unit
+PROD108,Wonderchef Tawa 28cm,CAT007,SUP028,1.41,950,Retail item under Cookware & Pots.,Unit
+PROD109,Peter England Formal Shirt,CAT005,SUP014,1.66,1300,Retail item under Men's Apparel.,Unit
+PROD110,Peter England Formal Shirt,CAT005,SUP011,1.35,1300,Retail item under Men's Apparel.,Unit
+PROD111,Organic Bananas 1kg (Pack of 2),CAT001,SUP015,1.15,152.0,Retail item under Fresh Groceries.,Unit
+PROD112,Allen Solly Polo Tee,CAT005,SUP017,1.5,1200,Retail item under Men's Apparel.,Unit
+PROD113,Prestige Sandwich Maker,CAT004,SUP018,1.22,1250,Retail item under Small Electronics.,Unit
+PROD114,LG Frost Free Refrigerator 260L,CAT003,SUP037,1.39,26000,Retail item under Large Appliances.,Unit
+PROD115,Van Heusen Blazer,CAT005,SUP018,1.63,4500,Retail item under Men's Apparel.,Unit
+PROD116,Prestige Chopper,CAT008,SUP021,1.27,450,Retail item under Kitchen Gadgets.,Unit
+PROD117,Peter England Formal Shirt,CAT005,SUP038,1.78,1300,Retail item under Men's Apparel.,Unit
+PROD118,Fresh Paneer 200g (Pack of 3),CAT001,SUP034,1.18,242.25,Retail item under Fresh Groceries.,Unit
+PROD119,Cello Water Bottle 1L,CAT008,SUP032,1.57,150,Retail item under Kitchen Gadgets.,Unit
+PROD120,Amul Butter 500g (Pack of 2),CAT002,SUP011,1.13,494.0,Retail item under Packaged Foods.,Unit
+PROD121,Global Desi Palazzo Set,CAT006,SUP036,1.41,1100,Retail item under Women's Apparel.,Unit
+PROD122,Organic Bananas 1kg (Pack of 1),CAT001,SUP033,1.13,80,Retail item under Fresh Groceries.,Unit
+PROD123,Tomato 1kg (Pack of 2),CAT001,SUP040,1.12,114.0,Retail item under Fresh Groceries.,Unit
+PROD124,Prestige Chopper,CAT008,SUP009,1.36,450,Retail item under Kitchen Gadgets.,Unit
+PROD125,Van Heusen Blazer,CAT005,SUP039,1.52,4500,Retail item under Men's Apparel.,Unit
+PROD126,Bajaj Mixer Grinder 500W,CAT004,SUP006,1.15,3200,Retail item under Small Electronics.,Unit
+PROD127,Philips Air Fryer 2.2L,CAT004,SUP032,1.19,7500,Retail item under Small Electronics.,Unit
+PROD128,Allen Solly Polo Tee,CAT005,SUP016,1.52,1200,Retail item under Men's Apparel.,Unit
+PROD129,Meyer Glass Storage Set,CAT008,SUP009,1.76,1200,Retail item under Kitchen Gadgets.,Unit
+PROD130,Parle-G Biscuits 400g (Pack of 2),CAT002,SUP001,1.18,95.0,Retail item under Packaged Foods.,Unit
+PROD131,Allen Solly Polo Tee,CAT005,SUP032,1.57,1200,Retail item under Men's Apparel.,Unit
+PROD132,Bosch Dishwasher 12 Place,CAT003,SUP035,1.25,42000,Retail item under Large Appliances.,Unit
+PROD133,Wonderchef Tawa 28cm,CAT007,SUP037,1.73,950,Retail item under Cookware & Pots.,Unit
+PROD134,Hawkins Stainless Steel Pan 3L,CAT007,SUP031,1.48,1400,Retail item under Cookware & Pots.,Unit
+PROD135,Wonderchef Tawa 28cm,CAT007,SUP010,1.69,950,Retail item under Cookware & Pots.,Unit
+PROD136,Inalsa Food Processor,CAT008,SUP007,1.78,4500,Retail item under Kitchen Gadgets.,Unit
+PROD137,Inalsa Food Processor,CAT008,SUP027,1.5,4500,Retail item under Kitchen Gadgets.,Unit
+PROD138,LG Frost Free Refrigerator 260L,CAT003,SUP040,1.44,26000,Retail item under Large Appliances.,Unit
+PROD139,Prestige Pressure Cooker 5L,CAT007,SUP025,1.72,2100,Retail item under Cookware & Pots.,Unit
+PROD140,Global Desi Palazzo Set,CAT006,SUP016,1.27,1100,Retail item under Women's Apparel.,Unit
+PROD141,Louis Philippe Chinos,CAT005,SUP007,1.49,1800,Retail item under Men's Apparel.,Unit
+PROD142,Meyer Glass Storage Set,CAT008,SUP021,1.75,1200,Retail item under Kitchen Gadgets.,Unit
+PROD143,Fresh Paneer 200g (Pack of 2),CAT001,SUP027,1.11,161.5,Retail item under Fresh Groceries.,Unit
+PROD144,Samsung Front Load Washer 7kg,CAT003,SUP040,1.33,32000,Retail item under Large Appliances.,Unit
+PROD145,Prestige Sandwich Maker,CAT004,SUP017,1.19,1250,Retail item under Small Electronics.,Unit
+PROD146,Cello Water Bottle 1L,CAT008,SUP019,1.74,150,Retail item under Kitchen Gadgets.,Unit
+PROD147,LG Frost Free Refrigerator 260L,CAT003,SUP020,1.25,26000,Retail item under Large Appliances.,Unit
+PROD148,Borosil Casserole Dish,CAT007,SUP031,1.42,600,Retail item under Cookware & Pots.,Unit
+PROD149,Maggi Masala Noodles 2-min (Pack of 2),CAT002,SUP002,1.16,26.6,Retail item under Packaged Foods.,Unit
+PROD150,Borosil Casserole Dish,CAT007,SUP039,1.73,600,Retail item under Cookware & Pots.,Unit
+PROD151,Cello Water Bottle 1L,CAT008,SUP015,1.38,150,Retail item under Kitchen Gadgets.,Unit
+PROD152,Panasonic Electric Kettle 1.5L,CAT004,SUP009,1.37,1250,Retail item under Small Electronics.,Unit
+PROD153,Aashirvaad Atta 5kg (Pack of 2),CAT002,SUP009,1.1,418.0,Retail item under Packaged Foods.,Unit
+PROD154,Parle-G Biscuits 400g (Pack of 2),CAT002,SUP035,1.12,95.0,Retail item under Packaged Foods.,Unit
+PROD155,W Linen Dress,CAT006,SUP019,1.39,2200,Retail item under Women's Apparel.,Unit
+PROD156,Biba Embroidered Kurti,CAT006,SUP026,1.29,1500,Retail item under Women's Apparel.,Unit
+PROD157,Biba Embroidered Kurti,CAT006,SUP008,1.26,1500,Retail item under Women's Apparel.,Unit
+PROD158,Cello Water Bottle 1L,CAT008,SUP025,1.62,150,Retail item under Kitchen Gadgets.,Unit
+PROD159,Biba Embroidered Kurti,CAT006,SUP036,1.51,1500,Retail item under Women's Apparel.,Unit
+PROD160,Fabindia Cotton Saree,CAT006,SUP020,1.6,2800,Retail item under Women's Apparel.,Unit
+PROD161,Prestige Pressure Cooker 5L,CAT007,SUP032,1.77,2100,Retail item under Cookware & Pots.,Unit
+PROD162,Aashirvaad Atta 5kg (Pack of 1),CAT002,SUP024,1.11,220,Retail item under Packaged Foods.,Unit
+PROD163,Hawkins Stainless Steel Pan 3L,CAT007,SUP040,1.61,1400,Retail item under Cookware & Pots.,Unit
+PROD164,Borosil Casserole Dish,CAT007,SUP029,1.45,600,Retail item under Cookware & Pots.,Unit
+PROD165,Panasonic Electric Kettle 1.5L,CAT004,SUP023,1.36,1250,Retail item under Small Electronics.,Unit
+PROD166,Organic Bananas 1kg (Pack of 2),CAT001,SUP006,1.11,152.0,Retail item under Fresh Groceries.,Unit
+PROD167,Philips Air Fryer 2.2L,CAT004,SUP037,1.25,7500,Retail item under Small Electronics.,Unit
+PROD168,Philips Air Fryer 2.2L,CAT004,SUP014,1.32,7500,Retail item under Small Electronics.,Unit
+PROD169,Panasonic Electric Kettle 1.5L,CAT004,SUP001,1.39,1250,Retail item under Small Electronics.,Unit
+PROD170,Louis Philippe Chinos,CAT005,SUP008,1.55,1800,Retail item under Men's Apparel.,Unit
+PROD171,Amul Milk 1L (Pack of 1),CAT001,SUP021,1.18,65,Retail item under Fresh Groceries.,Unit
+PROD172,Amul Milk 1L (Pack of 2),CAT001,SUP008,1.17,123.5,Retail item under Fresh Groceries.,Unit
+PROD173,Amul Butter 500g (Pack of 2),CAT002,SUP029,1.15,494.0,Retail item under Packaged Foods.,Unit
+PROD174,Philips Air Fryer 2.2L,CAT004,SUP034,1.42,7500,Retail item under Small Electronics.,Unit
+PROD175,Van Heusen Blazer,CAT005,SUP026,1.27,4500,Retail item under Men's Apparel.,Unit
+PROD176,Prestige Pressure Cooker 5L,CAT007,SUP006,1.75,2100,Retail item under Cookware & Pots.,Unit
+PROD177,Fabindia Cotton Saree,CAT006,SUP038,1.4,2800,Retail item under Women's Apparel.,Unit
+PROD178,Global Desi Palazzo Set,CAT006,SUP033,1.54,1100,Retail item under Women's Apparel.,Unit
+PROD179,Prestige Pressure Cooker 5L,CAT007,SUP036,1.31,2100,Retail item under Cookware & Pots.,Unit
+PROD180,Prestige Sandwich Maker,CAT004,SUP030,1.22,1250,Retail item under Small Electronics.,Unit
+PROD181,Wonderchef Tawa 28cm,CAT007,SUP017,1.42,950,Retail item under Cookware & Pots.,Unit
+PROD182,Fabindia Cotton Saree,CAT006,SUP006,1.51,2800,Retail item under Women's Apparel.,Unit
+PROD183,Amul Butter 500g (Pack of 1),CAT002,SUP036,1.14,260,Retail item under Packaged Foods.,Unit
+PROD184,Tomato 1kg (Pack of 3),CAT001,SUP023,1.17,171.0,Retail item under Fresh Groceries.,Unit
+PROD185,Prestige Pressure Cooker 5L,CAT007,SUP007,1.58,2100,Retail item under Cookware & Pots.,Unit
+PROD186,Bajaj Mixer Grinder 500W,CAT004,SUP023,1.22,3200,Retail item under Small Electronics.,Unit
+PROD187,Biba Embroidered Kurti,CAT006,SUP036,1.57,1500,Retail item under Women's Apparel.,Unit
+PROD188,Tomato 1kg (Pack of 3),CAT001,SUP018,1.13,171.0,Retail item under Fresh Groceries.,Unit
+PROD189,Allen Solly Polo Tee,CAT005,SUP037,1.35,1200,Retail item under Men's Apparel.,Unit
+PROD190,Prestige Pressure Cooker 5L,CAT007,SUP006,1.6,2100,Retail item under Cookware & Pots.,Unit
+PROD191,Prestige Sandwich Maker,CAT004,SUP020,1.25,1250,Retail item under Small Electronics.,Unit
+PROD192,Biba Embroidered Kurti,CAT006,SUP004,1.34,1500,Retail item under Women's Apparel.,Unit
+PROD193,Parle-G Biscuits 400g (Pack of 2),CAT002,SUP027,1.15,95.0,Retail item under Packaged Foods.,Unit
+PROD194,Louis Philippe Chinos,CAT005,SUP008,1.31,1800,Retail item under Men's Apparel.,Unit
+PROD195,Van Heusen Blazer,CAT005,SUP026,1.42,4500,Retail item under Men's Apparel.,Unit
+PROD196,Tata Salt 1kg (Pack of 1),CAT001,SUP017,1.12,28,Retail item under Fresh Groceries.,Unit
+PROD197,Allen Solly Polo Tee,CAT005,SUP012,1.52,1200,Retail item under Men's Apparel.,Unit
+PROD198,Bosch Dishwasher 12 Place,CAT003,SUP023,1.22,42000,Retail item under Large Appliances.,Unit
+PROD199,Amul Butter 500g (Pack of 3),CAT002,SUP021,1.1,741.0,Retail item under Packaged Foods.,Unit
+PROD200,Wonderchef Tawa 28cm,CAT007,SUP026,1.48,950,Retail item under Cookware & Pots.,Unit
+PROD201,Fresh Paneer 200g (Pack of 1),CAT001,SUP006,1.16,85,Retail item under Fresh Groceries.,Unit
+PROD202,Prestige Pressure Cooker 5L,CAT007,SUP006,1.57,2100,Retail item under Cookware & Pots.,Unit
+PROD203,Borosil Casserole Dish,CAT007,SUP005,1.37,600,Retail item under Cookware & Pots.,Unit
+PROD204,Kissan Tomato Ketchup 1kg (Pack of 3),CAT002,SUP010,1.18,399.0,Retail item under Packaged Foods.,Unit
+PROD205,Philips Air Fryer 2.2L,CAT004,SUP010,1.21,7500,Retail item under Small Electronics.,Unit
+PROD206,Maggi Masala Noodles 2-min (Pack of 3),CAT002,SUP029,1.18,39.9,Retail item under Packaged Foods.,Unit
+PROD207,W Linen Dress,CAT006,SUP020,1.29,2200,Retail item under Women's Apparel.,Unit
+PROD208,Peter England Formal Shirt,CAT005,SUP029,1.29,1300,Retail item under Men's Apparel.,Unit
+PROD209,Tata Salt 1kg (Pack of 2),CAT001,SUP040,1.11,53.2,Retail item under Fresh Groceries.,Unit
+PROD210,Wonderchef Tawa 28cm,CAT007,SUP029,1.77,950,Retail item under Cookware & Pots.,Unit
+PROD211,Panasonic Electric Kettle 1.5L,CAT004,SUP029,1.3,1250,Retail item under Small Electronics.,Unit
+PROD212,Parle-G Biscuits 400g (Pack of 3),CAT002,SUP016,1.16,142.5,Retail item under Packaged Foods.,Unit
+PROD213,Prestige Chopper,CAT008,SUP024,1.59,450,Retail item under Kitchen Gadgets.,Unit
+PROD214,Van Heusen Blazer,CAT005,SUP004,1.44,4500,Retail item under Men's Apparel.,Unit
+PROD215,Biba Embroidered Kurti,CAT006,SUP019,1.56,1500,Retail item under Women's Apparel.,Unit
+PROD216,Louis Philippe Chinos,CAT005,SUP023,1.57,1800,Retail item under Men's Apparel.,Unit
+PROD217,Van Heusen Blazer,CAT005,SUP020,1.64,4500,Retail item under Men's Apparel.,Unit
+PROD218,Borosil Casserole Dish,CAT007,SUP006,1.62,600,Retail item under Cookware & Pots.,Unit
+PROD219,Borosil Casserole Dish,CAT007,SUP022,1.42,600,Retail item under Cookware & Pots.,Unit
+PROD220,Meyer Glass Storage Set,CAT008,SUP019,1.33,1200,Retail item under Kitchen Gadgets.,Unit
+PROD221,Kissan Tomato Ketchup 1kg (Pack of 3),CAT002,SUP022,1.19,399.0,Retail item under Packaged Foods.,Unit
+PROD222,Bosch Dishwasher 12 Place,CAT003,SUP040,1.2,42000,Retail item under Large Appliances.,Unit
+PROD223,Bosch Dishwasher 12 Place,CAT003,SUP016,1.26,42000,Retail item under Large Appliances.,Unit
+PROD224,Cello Water Bottle 1L,CAT008,SUP035,1.68,150,Retail item under Kitchen Gadgets.,Unit
+PROD225,Panasonic Electric Kettle 1.5L,CAT004,SUP024,1.39,1250,Retail item under Small Electronics.,Unit
+PROD226,Prestige Chopper,CAT008,SUP034,1.68,450,Retail item under Kitchen Gadgets.,Unit
+PROD227,Hawkins Stainless Steel Pan 3L,CAT007,SUP017,1.69,1400,Retail item under Cookware & Pots.,Unit
+PROD228,Organic Bananas 1kg (Pack of 2),CAT001,SUP008,1.11,152.0,Retail item under Fresh Groceries.,Unit
+PROD229,Peter England Formal Shirt,CAT005,SUP010,1.4,1300,Retail item under Men's Apparel.,Unit
+PROD230,Prestige Pressure Cooker 5L,CAT007,SUP023,1.37,2100,Retail item under Cookware & Pots.,Unit
+PROD231,Organic Bananas 1kg (Pack of 1),CAT001,SUP006,1.14,80,Retail item under Fresh Groceries.,Unit
+PROD232,Fabindia Cotton Saree,CAT006,SUP022,1.76,2800,Retail item under Women's Apparel.,Unit
+PROD233,Samsung Front Load Washer 7kg,CAT003,SUP009,1.43,32000,Retail item under Large Appliances.,Unit
+PROD234,Prestige Chopper,CAT008,SUP017,1.75,450,Retail item under Kitchen Gadgets.,Unit
+PROD235,Bajaj Mixer Grinder 500W,CAT004,SUP028,1.37,3200,Retail item under Small Electronics.,Unit
+PROD236,Parle-G Biscuits 400g (Pack of 1),CAT002,SUP040,1.1,50,Retail item under Packaged Foods.,Unit
+PROD237,Inalsa Food Processor,CAT008,SUP035,1.75,4500,Retail item under Kitchen Gadgets.,Unit
+PROD238,Tomato 1kg (Pack of 3),CAT001,SUP001,1.11,171.0,Retail item under Fresh Groceries.,Unit
+PROD239,Fabindia Cotton Saree,CAT006,SUP006,1.35,2800,Retail item under Women's Apparel.,Unit
+PROD240,Biba Embroidered Kurti,CAT006,SUP036,1.55,1500,Retail item under Women's Apparel.,Unit
+PROD241,Organic Bananas 1kg (Pack of 2),CAT001,SUP017,1.14,152.0,Retail item under Fresh Groceries.,Unit
+PROD242,Fresh Paneer 200g (Pack of 1),CAT001,SUP007,1.17,85,Retail item under Fresh Groceries.,Unit
+PROD243,Fabindia Cotton Saree,CAT006,SUP012,1.55,2800,Retail item under Women's Apparel.,Unit
+PROD244,Prestige Chopper,CAT008,SUP030,1.7,450,Retail item under Kitchen Gadgets.,Unit
+PROD245,Fresh Paneer 200g (Pack of 1),CAT001,SUP021,1.12,85,Retail item under Fresh Groceries.,Unit
+PROD246,Van Heusen Blazer,CAT005,SUP003,1.55,4500,Retail item under Men's Apparel.,Unit
+PROD247,Panasonic Electric Kettle 1.5L,CAT004,SUP022,1.38,1250,Retail item under Small Electronics.,Unit
+PROD248,Peter England Formal Shirt,CAT005,SUP029,1.49,1300,Retail item under Men's Apparel.,Unit
+PROD249,Borosil Casserole Dish,CAT007,SUP024,1.52,600,Retail item under Cookware & Pots.,Unit
+PROD250,Peter England Formal Shirt,CAT005,SUP012,1.29,1300,Retail item under Men's Apparel.,Unit
+PROD251,Allen Solly Polo Tee,CAT005,SUP020,1.43,1200,Retail item under Men's Apparel.,Unit
+PROD252,Prestige Chopper,CAT008,SUP003,1.49,450,Retail item under Kitchen Gadgets.,Unit
+PROD253,Global Desi Palazzo Set,CAT006,SUP005,1.79,1100,Retail item under Women's Apparel.,Unit
+PROD254,Borosil Casserole Dish,CAT007,SUP002,1.66,600,Retail item under Cookware & Pots.,Unit
+PROD255,Bosch Dishwasher 12 Place,CAT003,SUP024,1.17,42000,Retail item under Large Appliances.,Unit
+PROD256,Global Desi Palazzo Set,CAT006,SUP029,1.27,1100,Retail item under Women's Apparel.,Unit
+PROD257,W Linen Dress,CAT006,SUP034,1.29,2200,Retail item under Women's Apparel.,Unit
+PROD258,Global Desi Palazzo Set,CAT006,SUP002,1.4,1100,Retail item under Women's Apparel.,Unit
+PROD259,Bosch Dishwasher 12 Place,CAT003,SUP017,1.42,42000,Retail item under Large Appliances.,Unit
+PROD260,Van Heusen Blazer,CAT005,SUP013,1.59,4500,Retail item under Men's Apparel.,Unit
+PROD261,Maggi Masala Noodles 2-min (Pack of 1),CAT002,SUP006,1.19,14,Retail item under Packaged Foods.,Unit
+PROD262,W Linen Dress,CAT006,SUP020,1.55,2200,Retail item under Women's Apparel.,Unit
+PROD263,Samsung Front Load Washer 7kg,CAT003,SUP013,1.3,32000,Retail item under Large Appliances.,Unit
+PROD264,Samsung Front Load Washer 7kg,CAT003,SUP037,1.16,32000,Retail item under Large Appliances.,Unit
+PROD265,Global Desi Palazzo Set,CAT006,SUP006,1.55,1100,Retail item under Women's Apparel.,Unit
+PROD266,Parle-G Biscuits 400g (Pack of 2),CAT002,SUP027,1.17,95.0,Retail item under Packaged Foods.,Unit
+PROD267,Prestige Pressure Cooker 5L,CAT007,SUP029,1.42,2100,Retail item under Cookware & Pots.,Unit
+PROD268,Cello Water Bottle 1L,CAT008,SUP038,1.71,150,Retail item under Kitchen Gadgets.,Unit
+PROD269,Samsung Front Load Washer 7kg,CAT003,SUP008,1.42,32000,Retail item under Large Appliances.,Unit
+PROD270,Whirlpool Microwave 20L,CAT003,SUP015,1.25,6500,Retail item under Large Appliances.,Unit
+PROD271,W Linen Dress,CAT006,SUP036,1.39,2200,Retail item under Women's Apparel.,Unit
+PROD272,Louis Philippe Chinos,CAT005,SUP033,1.59,1800,Retail item under Men's Apparel.,Unit
+PROD273,Samsung Front Load Washer 7kg,CAT003,SUP022,1.34,32000,Retail item under Large Appliances.,Unit
+PROD274,Tata Salt 1kg (Pack of 1),CAT001,SUP017,1.16,28,Retail item under Fresh Groceries.,Unit
+PROD275,Prestige Sandwich Maker,CAT004,SUP035,1.16,1250,Retail item under Small Electronics.,Unit
+PROD276,Allen Solly Polo Tee,CAT005,SUP020,1.69,1200,Retail item under Men's Apparel.,Unit
+PROD277,Inalsa Food Processor,CAT008,SUP031,1.34,4500,Retail item under Kitchen Gadgets.,Unit
+PROD278,Meyer Glass Storage Set,CAT008,SUP023,1.33,1200,Retail item under Kitchen Gadgets.,Unit
+PROD279,Hawkins Stainless Steel Pan 3L,CAT007,SUP021,1.53,1400,Retail item under Cookware & Pots.,Unit
+PROD280,Prestige Sandwich Maker,CAT004,SUP007,1.28,1250,Retail item under Small Electronics.,Unit
+PROD281,Fresh Paneer 200g (Pack of 2),CAT001,SUP021,1.14,161.5,Retail item under Fresh Groceries.,Unit
+PROD282,Fabindia Cotton Saree,CAT006,SUP030,1.52,2800,Retail item under Women's Apparel.,Unit
+PROD283,Cello Water Bottle 1L,CAT008,SUP033,1.3,150,Retail item under Kitchen Gadgets.,Unit
+PROD284,Meyer Glass Storage Set,CAT008,SUP019,1.44,1200,Retail item under Kitchen Gadgets.,Unit
+PROD285,Prestige Chopper,CAT008,SUP028,1.25,450,Retail item under Kitchen Gadgets.,Unit
+PROD286,Whirlpool Microwave 20L,CAT003,SUP003,1.38,6500,Retail item under Large Appliances.,Unit
+PROD287,Prestige Pressure Cooker 5L,CAT007,SUP019,1.36,2100,Retail item under Cookware & Pots.,Unit
+PROD288,Amul Butter 500g (Pack of 3),CAT002,SUP040,1.15,741.0,Retail item under Packaged Foods.,Unit
+PROD289,Maggi Masala Noodles 2-min (Pack of 1),CAT002,SUP036,1.18,14,Retail item under Packaged Foods.,Unit
+PROD290,Fabindia Cotton Saree,CAT006,SUP003,1.53,2800,Retail item under Women's Apparel.,Unit
+PROD291,Tata Salt 1kg (Pack of 1),CAT001,SUP030,1.18,28,Retail item under Fresh Groceries.,Unit
+PROD292,Samsung Front Load Washer 7kg,CAT003,SUP026,1.33,32000,Retail item under Large Appliances.,Unit
+PROD293,Allen Solly Polo Tee,CAT005,SUP037,1.53,1200,Retail item under Men's Apparel.,Unit
+PROD294,Van Heusen Blazer,CAT005,SUP027,1.45,4500,Retail item under Men's Apparel.,Unit
+PROD295,Peter England Formal Shirt,CAT005,SUP038,1.4,1300,Retail item under Men's Apparel.,Unit
+PROD296,Philips Air Fryer 2.2L,CAT004,SUP040,1.2,7500,Retail item under Small Electronics.,Unit
+PROD297,Hawkins Stainless Steel Pan 3L,CAT007,SUP008,1.38,1400,Retail item under Cookware & Pots.,Unit
+PROD298,Philips Air Fryer 2.2L,CAT004,SUP014,1.28,7500,Retail item under Small Electronics.,Unit
+PROD299,Wonderchef Tawa 28cm,CAT007,SUP009,1.65,950,Retail item under Cookware & Pots.,Unit
+PROD300,Panasonic Electric Kettle 1.5L,CAT004,SUP021,1.29,1250,Retail item under Small Electronics.,Unit
+PROD301,Bosch Dishwasher 12 Place,CAT003,SUP017,1.25,42000,Retail item under Large Appliances.,Unit
+PROD302,Meyer Glass Storage Set,CAT008,SUP015,1.4,1200,Retail item under Kitchen Gadgets.,Unit
+PROD303,Allen Solly Polo Tee,CAT005,SUP021,1.63,1200,Retail item under Men's Apparel.,Unit
+PROD304,Cello Water Bottle 1L,CAT008,SUP019,1.76,150,Retail item under Kitchen Gadgets.,Unit
+PROD305,Kissan Tomato Ketchup 1kg (Pack of 3),CAT002,SUP023,1.19,399.0,Retail item under Packaged Foods.,Unit
+PROD306,Whirlpool Microwave 20L,CAT003,SUP023,1.44,6500,Retail item under Large Appliances.,Unit
+PROD307,Cello Water Bottle 1L,CAT008,SUP018,1.37,150,Retail item under Kitchen Gadgets.,Unit
+PROD308,Louis Philippe Chinos,CAT005,SUP016,1.66,1800,Retail item under Men's Apparel.,Unit
+PROD309,Tomato 1kg (Pack of 1),CAT001,SUP022,1.11,60,Retail item under Fresh Groceries.,Unit
+PROD310,Inalsa Food Processor,CAT008,SUP011,1.33,4500,Retail item under Kitchen Gadgets.,Unit
+PROD311,Wonderchef Tawa 28cm,CAT007,SUP021,1.36,950,Retail item under Cookware & Pots.,Unit
+PROD312,Peter England Formal Shirt,CAT005,SUP015,1.3,1300,Retail item under Men's Apparel.,Unit
+PROD313,Amul Milk 1L (Pack of 2),CAT001,SUP026,1.12,123.5,Retail item under Fresh Groceries.,Unit
+PROD314,Meyer Glass Storage Set,CAT008,SUP003,1.78,1200,Retail item under Kitchen Gadgets.,Unit
+PROD315,Fresh Paneer 200g (Pack of 3),CAT001,SUP019,1.19,242.25,Retail item under Fresh Groceries.,Unit
+PROD316,Prestige Chopper,CAT008,SUP030,1.32,450,Retail item under Kitchen Gadgets.,Unit
+PROD317,Louis Philippe Chinos,CAT005,SUP017,1.43,1800,Retail item under Men's Apparel.,Unit
+PROD318,LG Frost Free Refrigerator 260L,CAT003,SUP013,1.39,26000,Retail item under Large Appliances.,Unit
+PROD319,Bosch Dishwasher 12 Place,CAT003,SUP026,1.3,42000,Retail item under Large Appliances.,Unit
+PROD320,Maggi Masala Noodles 2-min (Pack of 1),CAT002,SUP017,1.19,14,Retail item under Packaged Foods.,Unit
+PROD321,Hawkins Stainless Steel Pan 3L,CAT007,SUP020,1.4,1400,Retail item under Cookware & Pots.,Unit
+PROD322,Fresh Paneer 200g (Pack of 3),CAT001,SUP030,1.12,242.25,Retail item under Fresh Groceries.,Unit
+PROD323,Louis Philippe Chinos,CAT005,SUP008,1.53,1800,Retail item under Men's Apparel.,Unit
+PROD324,Allen Solly Polo Tee,CAT005,SUP031,1.37,1200,Retail item under Men's Apparel.,Unit
+PROD325,Bosch Dishwasher 12 Place,CAT003,SUP036,1.33,42000,Retail item under Large Appliances.,Unit
+PROD326,Meyer Glass Storage Set,CAT008,SUP006,1.62,1200,Retail item under Kitchen Gadgets.,Unit
+PROD327,Cello Water Bottle 1L,CAT008,SUP036,1.56,150,Retail item under Kitchen Gadgets.,Unit
+PROD328,Bajaj Mixer Grinder 500W,CAT004,SUP008,1.41,3200,Retail item under Small Electronics.,Unit
+PROD329,Prestige Sandwich Maker,CAT004,SUP030,1.3,1250,Retail item under Small Electronics.,Unit
+PROD330,Bosch Dishwasher 12 Place,CAT003,SUP020,1.17,42000,Retail item under Large Appliances.,Unit
+PROD331,Organic Bananas 1kg (Pack of 2),CAT001,SUP005,1.17,152.0,Retail item under Fresh Groceries.,Unit
+PROD332,Organic Bananas 1kg (Pack of 2),CAT001,SUP005,1.15,152.0,Retail item under Fresh Groceries.,Unit
+PROD333,Inalsa Food Processor,CAT008,SUP027,1.35,4500,Retail item under Kitchen Gadgets.,Unit
+PROD334,Global Desi Palazzo Set,CAT006,SUP025,1.75,1100,Retail item under Women's Apparel.,Unit
+PROD335,Kissan Tomato Ketchup 1kg (Pack of 1),CAT002,SUP035,1.13,140,Retail item under Packaged Foods.,Unit
+PROD336,Hawkins Stainless Steel Pan 3L,CAT007,SUP002,1.37,1400,Retail item under Cookware & Pots.,Unit
+PROD337,Van Heusen Blazer,CAT005,SUP025,1.55,4500,Retail item under Men's Apparel.,Unit
+PROD338,Bajaj Mixer Grinder 500W,CAT004,SUP008,1.2,3200,Retail item under Small Electronics.,Unit
+PROD339,Organic Bananas 1kg (Pack of 3),CAT001,SUP016,1.19,228.0,Retail item under Fresh Groceries.,Unit
+PROD340,Philips Air Fryer 2.2L,CAT004,SUP004,1.16,7500,Retail item under Small Electronics.,Unit
+PROD341,Philips Air Fryer 2.2L,CAT004,SUP004,1.22,7500,Retail item under Small Electronics.,Unit
+PROD342,Whirlpool Microwave 20L,CAT003,SUP021,1.42,6500,Retail item under Large Appliances.,Unit
+PROD343,Fabindia Cotton Saree,CAT006,SUP034,1.33,2800,Retail item under Women's Apparel.,Unit
+PROD344,Prestige Sandwich Maker,CAT004,SUP012,1.17,1250,Retail item under Small Electronics.,Unit
+PROD345,Wonderchef Tawa 28cm,CAT007,SUP025,1.44,950,Retail item under Cookware & Pots.,Unit
+PROD346,Global Desi Palazzo Set,CAT006,SUP035,1.41,1100,Retail item under Women's Apparel.,Unit
+PROD347,Meyer Glass Storage Set,CAT008,SUP030,1.42,1200,Retail item under Kitchen Gadgets.,Unit
+PROD348,Tomato 1kg (Pack of 2),CAT001,SUP025,1.16,114.0,Retail item under Fresh Groceries.,Unit
+PROD349,Panasonic Electric Kettle 1.5L,CAT004,SUP024,1.34,1250,Retail item under Small Electronics.,Unit
+PROD350,Kissan Tomato Ketchup 1kg (Pack of 3),CAT002,SUP039,1.11,399.0,Retail item under Packaged Foods.,Unit
+PROD351,Tata Salt 1kg (Pack of 1),CAT001,SUP014,1.16,28,Retail item under Fresh Groceries.,Unit
+PROD352,Meyer Glass Storage Set,CAT008,SUP014,1.43,1200,Retail item under Kitchen Gadgets.,Unit
+PROD353,Philips Air Fryer 2.2L,CAT004,SUP039,1.38,7500,Retail item under Small Electronics.,Unit
+PROD354,Prestige Sandwich Maker,CAT004,SUP025,1.32,1250,Retail item under Small Electronics.,Unit
+PROD355,Cello Water Bottle 1L,CAT008,SUP030,1.45,150,Retail item under Kitchen Gadgets.,Unit
+PROD356,Amul Butter 500g (Pack of 2),CAT002,SUP003,1.14,494.0,Retail item under Packaged Foods.,Unit
+PROD357,Bajaj Mixer Grinder 500W,CAT004,SUP038,1.32,3200,Retail item under Small Electronics.,Unit
+PROD358,Borosil Casserole Dish,CAT007,SUP037,1.43,600,Retail item under Cookware & Pots.,Unit
+PROD359,Prestige Sandwich Maker,CAT004,SUP017,1.43,1250,Retail item under Small Electronics.,Unit
+PROD360,Prestige Chopper,CAT008,SUP011,1.65,450,Retail item under Kitchen Gadgets.,Unit
+PROD361,Bosch Dishwasher 12 Place,CAT003,SUP004,1.42,42000,Retail item under Large Appliances.,Unit
+PROD362,Tata Salt 1kg (Pack of 3),CAT001,SUP015,1.1,79.8,Retail item under Fresh Groceries.,Unit
+PROD363,Maggi Masala Noodles 2-min (Pack of 1),CAT002,SUP040,1.15,14,Retail item under Packaged Foods.,Unit
+PROD364,Prestige Chopper,CAT008,SUP001,1.54,450,Retail item under Kitchen Gadgets.,Unit
+PROD365,Tomato 1kg (Pack of 3),CAT001,SUP033,1.2,171.0,Retail item under Fresh Groceries.,Unit
+PROD366,Hawkins Stainless Steel Pan 3L,CAT007,SUP016,1.3,1400,Retail item under Cookware & Pots.,Unit
+PROD367,Panasonic Electric Kettle 1.5L,CAT004,SUP006,1.23,1250,Retail item under Small Electronics.,Unit
+PROD368,Global Desi Palazzo Set,CAT006,SUP020,1.38,1100,Retail item under Women's Apparel.,Unit
+PROD369,Aashirvaad Atta 5kg (Pack of 1),CAT002,SUP004,1.14,220,Retail item under Packaged Foods.,Unit
+PROD370,Amul Milk 1L (Pack of 1),CAT001,SUP037,1.14,65,Retail item under Fresh Groceries.,Unit
+PROD371,Kissan Tomato Ketchup 1kg (Pack of 1),CAT002,SUP031,1.19,140,Retail item under Packaged Foods.,Unit
+PROD372,Peter England Formal Shirt,CAT005,SUP035,1.63,1300,Retail item under Men's Apparel.,Unit
+PROD373,Amul Milk 1L (Pack of 2),CAT001,SUP026,1.12,123.5,Retail item under Fresh Groceries.,Unit
+PROD374,Parle-G Biscuits 400g (Pack of 1),CAT002,SUP035,1.16,50,Retail item under Packaged Foods.,Unit
+PROD375,Global Desi Palazzo Set,CAT006,SUP033,1.33,1100,Retail item under Women's Apparel.,Unit
+PROD376,Biba Embroidered Kurti,CAT006,SUP022,1.38,1500,Retail item under Women's Apparel.,Unit
+PROD377,Borosil Casserole Dish,CAT007,SUP032,1.4,600,Retail item under Cookware & Pots.,Unit
+PROD378,Panasonic Electric Kettle 1.5L,CAT004,SUP038,1.26,1250,Retail item under Small Electronics.,Unit
+PROD379,Prestige Pressure Cooker 5L,CAT007,SUP005,1.41,2100,Retail item under Cookware & Pots.,Unit
+PROD380,Parle-G Biscuits 400g (Pack of 1),CAT002,SUP025,1.18,50,Retail item under Packaged Foods.,Unit
+PROD381,W Linen Dress,CAT006,SUP029,1.25,2200,Retail item under Women's Apparel.,Unit
+PROD382,W Linen Dress,CAT006,SUP029,1.3,2200,Retail item under Women's Apparel.,Unit
+PROD383,Prestige Pressure Cooker 5L,CAT007,SUP039,1.44,2100,Retail item under Cookware & Pots.,Unit
+PROD384,Global Desi Palazzo Set,CAT006,SUP036,1.48,1100,Retail item under Women's Apparel.,Unit
+PROD385,Bajaj Mixer Grinder 500W,CAT004,SUP020,1.2,3200,Retail item under Small Electronics.,Unit
+PROD386,Van Heusen Blazer,CAT005,SUP027,1.34,4500,Retail item under Men's Apparel.,Unit
+PROD387,Van Heusen Blazer,CAT005,SUP032,1.45,4500,Retail item under Men's Apparel.,Unit
+PROD388,Prestige Sandwich Maker,CAT004,SUP022,1.24,1250,Retail item under Small Electronics.,Unit
+PROD389,Borosil Casserole Dish,CAT007,SUP039,1.49,600,Retail item under Cookware & Pots.,Unit
+PROD390,Whirlpool Microwave 20L,CAT003,SUP031,1.43,6500,Retail item under Large Appliances.,Unit
+PROD391,Fabindia Cotton Saree,CAT006,SUP032,1.78,2800,Retail item under Women's Apparel.,Unit
+PROD392,Panasonic Electric Kettle 1.5L,CAT004,SUP024,1.39,1250,Retail item under Small Electronics.,Unit
+PROD393,Kissan Tomato Ketchup 1kg (Pack of 1),CAT002,SUP002,1.15,140,Retail item under Packaged Foods.,Unit
+PROD394,Meyer Glass Storage Set,CAT008,SUP027,1.41,1200,Retail item under Kitchen Gadgets.,Unit
+PROD395,Meyer Glass Storage Set,CAT008,SUP010,1.38,1200,Retail item under Kitchen Gadgets.,Unit
+PROD396,Wonderchef Tawa 28cm,CAT007,SUP038,1.79,950,Retail item under Cookware & Pots.,Unit
+PROD397,Wonderchef Tawa 28cm,CAT007,SUP035,1.68,950,Retail item under Cookware & Pots.,Unit
+PROD398,Aashirvaad Atta 5kg (Pack of 1),CAT002,SUP003,1.14,220,Retail item under Packaged Foods.,Unit
+PROD399,Borosil Casserole Dish,CAT007,SUP007,1.49,600,Retail item under Cookware & Pots.,Unit
+PROD400,Louis Philippe Chinos,CAT005,SUP037,1.54,1800,Retail item under Men's Apparel.,Unit

@@ -1,0 +1,48 @@
+{
+  "agentFramework": "openai-agents",
+  "capabilities": {
+    "pushNotifications": false,
+    "stateTransitionHistory": false,
+    "streaming": false
+  },
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "description": "Analyzes supplier reliability and procurement spend to recommend cost savings.",
+  "name": "supplier-agent",
+  "preferredTransport": "JSONRPC",
+  "protocolVersion": "0.2.9",
+  "provider": {
+    "organization": "SME",
+    "url": "https://sme.local"
+  },
+  "security": [],
+  "securitySchemes": {},
+  "skills": [
+    {
+      "description": "Analyzes supplier reliability and procurement spend to recommend cost savings.",
+      "examples": [
+        "Who are my top suppliers?",
+        "How can I reduce procurement costs?"
+      ],
+      "id": "supplier_analysis",
+      "inputModes": [
+        "text/plain"
+      ],
+      "name": "Supplier Analysis",
+      "outputModes": [
+        "text/plain"
+      ],
+      "tags": [
+        "suppliers",
+        "procurement",
+        "savings"
+      ]
+    }
+  ],
+  "url": "http://localhost:10003/",
+  "version": "1.0.10"
+}
