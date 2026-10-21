@@ -56,6 +56,11 @@ values.json
 _to_delete/
 /_xfer/
 
+# Local frontend workspace; integrate pages before deciding what to track.
+/prototype/
+
+# The React workspace's old path (it lives in ui/ now); keep stale local copies out.
+/react/
 
 # Local git worktrees (superpowers workflow)
 .worktrees/

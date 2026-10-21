@@ -486,6 +486,409 @@ async fn finops_dashboard_only_lists_accessible_agents_for_non_superuser() {
     server.cleanup().await;
 }
 
+const SPEND_ENDPOINTS: [&str; 4] = ["timeseries", "calendar", "day", "attributions"];
+
+async fn spend_row(server: &common::TestServer, agent_name: &str, user: Uuid, cost: f64) {
+    sqlx::query(
+        "INSERT INTO trace_usage \
+           (trace_id, agent_name, user_id, model, provider, input_tokens, output_tokens, \
+            cost_usd, latency_ms, started_at) \
+         VALUES ($1, $2, $3, 'gpt-4o', 'openai', 100, 10, $4, 500, now())",
+    )
+    .bind(format!("trace-{}", Uuid::new_v4()))
+    .bind(agent_name)
+    .bind(user)
+    .bind(cost)
+    .execute(&server.db)
+    .await
+    .expect("seed trace_usage");
+}
+
+async fn spend_path(server: &common::TestServer, endpoint: &str) -> String {
+    let today: String =
+        sqlx::query_scalar("SELECT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD')")
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
+    match endpoint {
+        "timeseries" => "/api/observability/finops/spend-timeseries?range=7d".into(),
+        "calendar" => format!(
+            "/api/observability/finops/spend-calendar?month={}",
+            &today[..7]
+        ),
+        "day" => format!("/api/observability/finops/spend-calendar/day?date={today}"),
+        _ => "/api/observability/finops/attributions?range=7d".into(),
+    }
+}
+
+async fn spend_seen(server: &common::TestServer, endpoint: &str, token: &str) -> (f64, String) {
+    let response = server
+        .client
+        .get(server.url(&spend_path(server, endpoint).await))
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "{endpoint}");
+    let text = response.text().await.unwrap();
+    let body: Value = serde_json::from_str(&text).unwrap();
+    let data = &body["data"];
+    let sum = |rows: &Value, key: &str| -> f64 {
+        rows.as_array()
+            .map(|r| r.iter().filter_map(|x| x[key].as_f64()).sum())
+            .unwrap_or(0.0)
+    };
+    let total = match endpoint {
+        "timeseries" => sum(&data["points"], "spend_usd"),
+        "calendar" => sum(&data["days"], "spend_usd"),
+        "day" => sum(&data["hours"], "spend_usd"),
+        _ => sum(&data["rows"], "total_cost"),
+    };
+    (total, text)
+}
+
+struct SpendWorld {
+    caller_token: String,
+    stranger_token: String,
+    admin_token: String,
+}
+
+async fn spend_world(server: &common::TestServer) -> SpendWorld {
+    let caller = seed_user(server, "spend-caller").await;
+    let owner = seed_user(server, "spend-owner").await;
+    let hidden_owner = seed_user(server, "spend-hidden-owner").await;
+    let stranger = seed_user(server, "spend-stranger").await;
+    let admin = seed_user(server, "spend-admin").await;
+    seed_agent(server, caller, "spend-own-agent").await;
+    let shared = seed_agent(server, owner, "spend-shared-agent").await;
+    seed_agent(server, hidden_owner, "spend-hidden-agent").await;
+    sqlx::query(
+        "INSERT INTO agent_grants (agent_id, grant_type, grantee_id) VALUES ($1, 'user', $2)",
+    )
+    .bind(shared)
+    .bind(caller.to_string())
+    .execute(&server.db)
+    .await
+    .unwrap();
+    spend_row(server, "spend-own-agent", caller, 1.0).await;
+    spend_row(server, "spend-shared-agent", owner, 2.0).await;
+    spend_row(server, "spend-hidden-agent", hidden_owner, 4.0).await;
+    SpendWorld {
+        caller_token: common::sign_token(&caller.to_string(), "spend-caller", false, "member"),
+        stranger_token: common::sign_token(
+            &stranger.to_string(),
+            "spend-stranger",
+            false,
+            "member",
+        ),
+        admin_token: common::sign_token(&admin.to_string(), "spend-admin", true, "admin"),
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn finops_spend_endpoints_hide_agents_the_caller_cannot_access() {
+    let server = common::TestServer::start().await;
+    let _admin = init_admin(&server).await;
+    let world = spend_world(&server).await;
+
+    for endpoint in SPEND_ENDPOINTS {
+        let (total, body) = spend_seen(&server, endpoint, &world.caller_token).await;
+        assert!(
+            (total - 3.0).abs() < 1e-6,
+            "{endpoint}: own + granted agent only, got {total}"
+        );
+        assert!(
+            !body.contains("spend-hidden-agent"),
+            "{endpoint} leaked an agent the caller cannot access: {body}"
+        );
+        assert!(
+            body.contains("spend-own-agent") || endpoint == "timeseries" || endpoint == "calendar"
+        );
+    }
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn finops_spend_endpoints_are_empty_for_a_user_with_no_agents() {
+    let server = common::TestServer::start().await;
+    let _admin = init_admin(&server).await;
+    let world = spend_world(&server).await;
+
+    for endpoint in SPEND_ENDPOINTS {
+        let (total, body) = spend_seen(&server, endpoint, &world.stranger_token).await;
+        assert_eq!(total, 0.0, "{endpoint}: {body}");
+        for name in [
+            "spend-own-agent",
+            "spend-shared-agent",
+            "spend-hidden-agent",
+        ] {
+            assert!(!body.contains(name), "{endpoint} leaked {name}: {body}");
+        }
+    }
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn finops_spend_endpoints_show_the_whole_fleet_to_a_superuser() {
+    let server = common::TestServer::start().await;
+    let _admin = init_admin(&server).await;
+    let world = spend_world(&server).await;
+
+    for endpoint in SPEND_ENDPOINTS {
+        let (total, _) = spend_seen(&server, endpoint, &world.admin_token).await;
+        assert!((total - 7.0).abs() < 1e-6, "{endpoint}: got {total}");
+    }
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn finops_spend_endpoints_do_not_leak_a_private_agent_through_the_agent_filter() {
+    let server = common::TestServer::start().await;
+    let _admin = init_admin(&server).await;
+    let world = spend_world(&server).await;
+
+    for endpoint in SPEND_ENDPOINTS {
+        let path = format!(
+            "{}&agent_id=spend-hidden-agent",
+            spend_path(&server, endpoint).await
+        );
+        let response = server
+            .client
+            .get(server.url(&path))
+            .bearer_auth(&world.caller_token)
+            .send()
+            .await
+            .unwrap();
+        let status = response.status();
+        let text = response.text().await.unwrap();
+        assert!(
+            status == 404 || status == 200,
+            "{endpoint}: unexpected status {status}"
+        );
+        assert!(
+            !text.contains("4.0") && !text.contains("spend-hidden-agent\"") || status == 404,
+            "{endpoint} returned the private agent's spend: {text}"
+        );
+    }
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn finops_spend_endpoints_require_authentication() {
+    let server = common::TestServer::start().await;
+    let _admin = init_admin(&server).await;
+
+    for endpoint in SPEND_ENDPOINTS {
+        let response = server
+            .client
+            .get(server.url(&spend_path(&server, endpoint).await))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 401, "{endpoint}");
+    }
+
+    server.cleanup().await;
+}
+
+async fn seed_workflow(server: &common::TestServer, owner: Uuid, name: &str) -> Uuid {
+    sqlx::query_scalar(
+        "INSERT INTO mafs (user_id, name, maf_json) VALUES ($1, $2, '{}'::jsonb) RETURNING id",
+    )
+    .bind(owner)
+    .bind(name)
+    .fetch_one(&server.db)
+    .await
+    .expect("seed workflow")
+}
+
+async fn seed_run(
+    server: &common::TestServer,
+    workflow: Uuid,
+    owner: Uuid,
+    status: &str,
+    cost: f64,
+    step_agent: Option<&str>,
+) {
+    let steps = match step_agent {
+        Some(agent) => json!([{"agent_name": agent}]),
+        None => json!([]),
+    };
+    sqlx::query(
+        "INSERT INTO maf_executions \
+           (maf_id, user_id, status, cost_usd, started_at, duration_ms, step_results) \
+         VALUES ($1, $2, $3, $4, now(), 1000, $5)",
+    )
+    .bind(workflow)
+    .bind(owner)
+    .bind(status)
+    .bind(cost)
+    .bind(steps)
+    .execute(&server.db)
+    .await
+    .expect("seed execution");
+}
+
+struct WorkflowWorld {
+    caller_token: String,
+    stranger_token: String,
+    admin_token: String,
+}
+
+async fn workflow_world(server: &common::TestServer) -> WorkflowWorld {
+    let caller = seed_user(server, "wf-caller").await;
+    let other = seed_user(server, "wf-other").await;
+    let stranger = seed_user(server, "wf-stranger").await;
+    let admin = seed_user(server, "wf-admin").await;
+    seed_agent(server, caller, "wf-step-agent").await;
+    let own = seed_workflow(server, caller, "wf-own-flow").await;
+    let foreign = seed_workflow(server, other, "wf-foreign-flow").await;
+    seed_run(server, own, caller, "success", 1.0, Some("wf-step-agent")).await;
+    seed_run(server, own, caller, "failed", 8.0, Some("wf-step-agent")).await;
+    seed_run(
+        server,
+        foreign,
+        other,
+        "success",
+        2.0,
+        Some("wf-step-agent"),
+    )
+    .await;
+    WorkflowWorld {
+        caller_token: common::sign_token(&caller.to_string(), "wf-caller", false, "member"),
+        stranger_token: common::sign_token(&stranger.to_string(), "wf-stranger", false, "member"),
+        admin_token: common::sign_token(&admin.to_string(), "wf-admin", true, "admin"),
+    }
+}
+
+async fn workflow_rows(
+    server: &common::TestServer,
+    endpoint: &str,
+    token: &str,
+    extra: &str,
+) -> (Vec<(String, f64)>, String) {
+    let path = match endpoint {
+        "dashboard" => format!("/api/observability/finops/dashboard?range=7d&view=workflow{extra}"),
+        _ => format!("/api/observability/finops/attributions?range=7d&view=workflow{extra}"),
+    };
+    let response = server
+        .client
+        .get(server.url(&path))
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "{endpoint}{extra}");
+    let text = response.text().await.unwrap();
+    let body: Value = serde_json::from_str(&text).unwrap();
+    let rows = match endpoint {
+        "dashboard" => &body["data"]["attributions"]["rows"],
+        _ => &body["data"]["rows"],
+    };
+    let parsed = rows
+        .as_array()
+        .unwrap_or_else(|| panic!("{endpoint}: no workflow rows in {text}"))
+        .iter()
+        .map(|r| {
+            (
+                r["workflow_name"].as_str().unwrap().to_owned(),
+                r["total_cost"].as_f64().unwrap(),
+            )
+        })
+        .collect();
+    (parsed, text)
+}
+
+#[tokio::test]
+#[serial]
+async fn finops_workflow_view_lists_only_the_callers_own_successful_runs() {
+    let server = common::TestServer::start().await;
+    let _admin = init_admin(&server).await;
+    let world = workflow_world(&server).await;
+
+    for endpoint in ["dashboard", "attributions"] {
+        let (rows, body) = workflow_rows(&server, endpoint, &world.caller_token, "").await;
+        assert_eq!(rows.len(), 1, "{endpoint}: {body}");
+        assert_eq!(rows[0].0, "wf-own-flow", "{endpoint}");
+        assert!(
+            (rows[0].1 - 1.0).abs() < 1e-6,
+            "{endpoint}: failed runs must not count, got {}",
+            rows[0].1
+        );
+        assert!(
+            !body.contains("wf-foreign-flow"),
+            "{endpoint} leaked another user's workflow: {body}"
+        );
+    }
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn finops_workflow_view_is_empty_for_a_user_with_no_workflows() {
+    let server = common::TestServer::start().await;
+    let _admin = init_admin(&server).await;
+    let world = workflow_world(&server).await;
+
+    for endpoint in ["dashboard", "attributions"] {
+        let (rows, body) = workflow_rows(&server, endpoint, &world.stranger_token, "").await;
+        assert!(rows.is_empty(), "{endpoint}: {body}");
+    }
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn finops_workflow_view_shows_every_workflow_to_a_superuser() {
+    let server = common::TestServer::start().await;
+    let _admin = init_admin(&server).await;
+    let world = workflow_world(&server).await;
+
+    for endpoint in ["dashboard", "attributions"] {
+        let (rows, body) = workflow_rows(&server, endpoint, &world.admin_token, "").await;
+        let names: Vec<&str> = rows.iter().map(|r| r.0.as_str()).collect();
+        assert_eq!(rows.len(), 2, "{endpoint}: {body}");
+        assert!(names.contains(&"wf-own-flow") && names.contains(&"wf-foreign-flow"));
+        let total: f64 = rows.iter().map(|r| r.1).sum();
+        assert!((total - 3.0).abs() < 1e-6, "{endpoint}: got {total}");
+    }
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn finops_workflow_view_agent_filter_does_not_widen_the_owner_scope() {
+    let server = common::TestServer::start().await;
+    let _admin = init_admin(&server).await;
+    let world = workflow_world(&server).await;
+
+    for endpoint in ["dashboard", "attributions"] {
+        let (rows, body) = workflow_rows(
+            &server,
+            endpoint,
+            &world.caller_token,
+            "&agent_id=wf-step-agent",
+        )
+        .await;
+        let names: Vec<&str> = rows.iter().map(|r| r.0.as_str()).collect();
+        assert_eq!(names, vec!["wf-own-flow"], "{endpoint}: {body}");
+    }
+
+    server.cleanup().await;
+}
+
 #[tokio::test]
 #[serial]
 async fn agent_hours_only_returns_accessible_agents_for_non_superuser() {

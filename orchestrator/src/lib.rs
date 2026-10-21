@@ -4,6 +4,7 @@ pub mod engine;
 pub mod error;
 pub mod maf;
 pub mod models;
+pub mod outbound;
 pub mod pacms_selector;
 pub mod policy;
 pub mod providers;
@@ -21,6 +22,7 @@ pub use context_selection::{
 pub use engine::{OssRoutingEngine, RouterConfig, RoutingEngine};
 pub use error::RouterError;
 pub use models::AgentCardSummary;
+pub use outbound::{NoOutboundPrefix, OutboundPrefix};
 pub use policy::{RoutingPolicy, SelectionSchemaExtra};
 pub use reranker::Reranker;
 pub use selector::AgentSelector;

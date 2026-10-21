@@ -1203,6 +1203,19 @@ pub enum EnsureSessionOutcome {
     Conflict,
 }
 
+#[derive(Clone, Copy, Default)]
+pub struct FinopsAccess<'a> {
+    pub user_ids: Option<&'a [uuid::Uuid]>,
+    pub accessible_agent_ids: Option<&'a [uuid::Uuid]>,
+    pub workflow_owner: Option<uuid::Uuid>,
+}
+
+struct ScopeBinds {
+    agent_names: Option<Vec<String>>,
+    has_user_filter: bool,
+    user_ids: Vec<uuid::Uuid>,
+}
+
 impl ObservabilityService {
     pub fn from_state(state: &crate::state::AppState) -> Self {
         Self {
@@ -1217,6 +1230,34 @@ impl ObservabilityService {
     /// doubles as the Tempo `service.name` (the injector sets OTEL_SERVICE_NAME
     /// to the agent name); `id` is the UUID reported to callers.
     /// OSS: returns all agents (NoopAuthorizer). EE adds RBAC at a higher layer.
+    async fn scope_binds(
+        &self,
+        access: FinopsAccess<'_>,
+    ) -> Result<ScopeBinds, ObservabilityError> {
+        let agent_names = match access.accessible_agent_ids {
+            None => None,
+            Some(ids) => Some(
+                sqlx::query_scalar::<_, String>(
+                    "SELECT name FROM agents WHERE id = ANY($1) AND deleted_at IS NULL",
+                )
+                .bind(ids.to_vec())
+                .fetch_all(&self.db)
+                .await
+                .map_err(|e| ObservabilityError::Internal(e.to_string()))?,
+            ),
+        };
+        let user_ids = access
+            .user_ids
+            .filter(|ids| !ids.is_empty())
+            .map(<[uuid::Uuid]>::to_vec)
+            .unwrap_or_default();
+        Ok(ScopeBinds {
+            agent_names,
+            has_user_filter: !user_ids.is_empty(),
+            user_ids,
+        })
+    }
+
     async fn get_agent_names(
         &self,
         owner_id: Option<uuid::Uuid>,
@@ -2020,9 +2061,7 @@ impl ObservabilityService {
         agent_name: Option<&str>,
         model: Option<&str>,
         provider: Option<&str>,
-        // User UUIDs to scope results to (EE org-unit filter). `None` = no filter.
-        user_ids: Option<&[uuid::Uuid]>,
-        accessible_agent_ids: Option<&[uuid::Uuid]>,
+        access: FinopsAccess<'_>,
         // When `Some`, restricts the agent list to agents owned by this user UUID.
         owner_id: Option<&str>,
         view: &str,
@@ -2031,6 +2070,11 @@ impl ObservabilityService {
         // whether the per-agent detail is kept instead of discarded.
         compare_previous: bool,
     ) -> Result<FinopsDashboardResponse, ObservabilityError> {
+        let FinopsAccess {
+            user_ids,
+            accessible_agent_ids,
+            ..
+        } = access;
         let parsed_owner_id = owner_id.and_then(|s| s.parse::<uuid::Uuid>().ok());
         let accessible: Option<HashSet<uuid::Uuid>> =
             accessible_agent_ids.map(|ids| ids.iter().copied().collect());
@@ -2475,7 +2519,7 @@ impl ObservabilityService {
 
         let attributions = if view == "workflow" {
             let rows = self
-                .get_workflow_finops_rows(start, now, agent_name)
+                .get_workflow_finops_rows(start, now, agent_name, access)
                 .await
                 .unwrap_or_else(|e| {
                     tracing::warn!(error = %e, "workflow finops aggregation failed");
@@ -2540,7 +2584,9 @@ impl ObservabilityService {
         top: i64,
         // `compare=previous`: also return the preceding window of equal length.
         compare_previous: bool,
+        access: FinopsAccess<'_>,
     ) -> Result<FinopsSpendTimeseriesResponse, ObservabilityError> {
+        let scope = self.scope_binds(access).await?;
         let (start, end, bucket) = resolve_window(start_time, end_time, range)?;
         let trunc = match bucket {
             TimeBucket::Hour => "hour",
@@ -2578,6 +2624,8 @@ impl ObservabilityService {
                      AND ($3::TEXT IS NULL OR agent_name = $3)
                      AND ($4::TEXT IS NULL OR model = $4)
                      AND ($5::TEXT IS NULL OR provider = $5)
+                     AND ($6::TEXT[] IS NULL OR agent_name = ANY($6::TEXT[]))
+                     AND (NOT $7::BOOL OR user_id = ANY($8::UUID[]))
                    GROUP BY bucket_start, agent_name
                ),
                ranked AS (
@@ -2595,6 +2643,8 @@ impl ObservabilityService {
                      AND ($3::TEXT IS NULL OR agent_name = $3)
                      AND ($4::TEXT IS NULL OR model = $4)
                      AND ($5::TEXT IS NULL OR provider = $5)
+                     AND ($6::TEXT[] IS NULL OR agent_name = ANY($6::TEXT[]))
+                     AND (NOT $7::BOOL OR user_id = ANY($8::UUID[]))
                    GROUP BY bucket_start
                )
                SELECT r.bucket_start,
@@ -2619,6 +2669,9 @@ impl ObservabilityService {
                 .bind(agent_name)
                 .bind(model)
                 .bind(provider)
+                .bind(&scope.agent_names)
+                .bind(scope.has_user_filter)
+                .bind(&scope.user_ids)
                 .fetch_all(&self.db)
         };
 
@@ -2650,8 +2703,10 @@ impl ObservabilityService {
 
         let series = if group_by_agent {
             Some(
-                self.spend_series_by_agent(start, end, trunc, agent_name, model, provider, top)
-                    .await?,
+                self.spend_series_by_agent(
+                    start, end, trunc, agent_name, model, provider, top, &scope,
+                )
+                .await?,
             )
         } else {
             None
@@ -2685,6 +2740,7 @@ impl ObservabilityService {
         model: Option<&str>,
         provider: Option<&str>,
         top: i64,
+        scope: &ScopeBinds,
     ) -> Result<Vec<SpendAgentSeries>, ObservabilityError> {
         #[derive(sqlx::FromRow)]
         struct SeriesRow {
@@ -2704,6 +2760,8 @@ impl ObservabilityService {
                       AND ($3::TEXT IS NULL OR agent_name = $3)
                       AND ($4::TEXT IS NULL OR model = $4)
                       AND ($5::TEXT IS NULL OR provider = $5)
+                      AND ($7::TEXT[] IS NULL OR agent_name = ANY($7::TEXT[]))
+                      AND (NOT $8::BOOL OR user_id = ANY($9::UUID[]))
                ),
                ranked AS (
                    SELECT agent_name,
@@ -2728,6 +2786,9 @@ impl ObservabilityService {
             .bind(model)
             .bind(provider)
             .bind(top.clamp(1, 20))
+            .bind(&scope.agent_names)
+            .bind(scope.has_user_filter)
+            .bind(&scope.user_ids)
             .fetch_all(&self.db)
             .await
             .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
@@ -2789,7 +2850,9 @@ impl ObservabilityService {
         agent_name: Option<&str>,
         model: Option<&str>,
         provider: Option<&str>,
+        access: FinopsAccess<'_>,
     ) -> Result<FinopsSpendCalendarResponse, ObservabilityError> {
+        let scope = self.scope_binds(access).await?;
         let month_start = chrono::NaiveDateTime::parse_from_str(
             &format!("{month}-01 00:00:00"),
             "%Y-%m-%d %H:%M:%S",
@@ -2820,6 +2883,8 @@ impl ObservabilityService {
                  AND ($3::TEXT IS NULL OR agent_name = $3)
                  AND ($4::TEXT IS NULL OR model = $4)
                  AND ($5::TEXT IS NULL OR provider = $5)
+                 AND ($6::TEXT[] IS NULL OR agent_name = ANY($6::TEXT[]))
+                 AND (NOT $7::BOOL OR user_id = ANY($8::UUID[]))
                GROUP BY DATE(started_at)
                ORDER BY date"#,
         )
@@ -2828,6 +2893,9 @@ impl ObservabilityService {
         .bind(agent_name)
         .bind(model)
         .bind(provider)
+        .bind(&scope.agent_names)
+        .bind(scope.has_user_filter)
+        .bind(&scope.user_ids)
         .fetch_all(&self.db)
         .await
         .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
@@ -2881,7 +2949,9 @@ impl ObservabilityService {
         agent_name: Option<&str>,
         model: Option<&str>,
         provider: Option<&str>,
+        access: FinopsAccess<'_>,
     ) -> Result<FinopsDayDrilldownResponse, ObservabilityError> {
+        let scope = self.scope_binds(access).await?;
         let day_start =
             chrono::NaiveDateTime::parse_from_str(&format!("{date} 00:00:00"), "%Y-%m-%d %H:%M:%S")
                 .map(|d| d.and_utc())
@@ -2904,6 +2974,8 @@ impl ObservabilityService {
                  AND ($3::TEXT IS NULL OR agent_name = $3)
                  AND ($4::TEXT IS NULL OR model = $4)
                  AND ($5::TEXT IS NULL OR provider = $5)
+                 AND ($6::TEXT[] IS NULL OR agent_name = ANY($6::TEXT[]))
+                 AND (NOT $7::BOOL OR user_id = ANY($8::UUID[]))
                GROUP BY hour, agent_name
                ORDER BY hour"#,
         )
@@ -2912,6 +2984,9 @@ impl ObservabilityService {
         .bind(agent_name)
         .bind(model)
         .bind(provider)
+        .bind(&scope.agent_names)
+        .bind(scope.has_user_filter)
+        .bind(&scope.user_ids)
         .fetch_all(&self.db)
         .await
         .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
@@ -3012,7 +3087,13 @@ impl ObservabilityService {
         start: DateTime<Utc>,
         end: DateTime<Utc>,
         agent_name: Option<&str>,
+        access: FinopsAccess<'_>,
     ) -> Result<Vec<WorkflowFinopsRow>, ObservabilityError> {
+        let org_user_ids = access
+            .user_ids
+            .filter(|ids| !ids.is_empty())
+            .map(<[uuid::Uuid]>::to_vec)
+            .unwrap_or_default();
         #[derive(sqlx::FromRow)]
         struct ExecRow {
             maf_id: Option<uuid::Uuid>,
@@ -3034,11 +3115,16 @@ impl ObservabilityService {
                          SELECT 1 FROM jsonb_array_elements(e.step_results) elem
                          WHERE elem->>'agent_name' = $3
                      )
-                 )"#,
+                 )
+                 AND ($4::UUID IS NULL OR e.user_id = $4)
+                 AND (NOT $5::BOOL OR e.user_id = ANY($6::UUID[]))"#,
         )
         .bind(start)
         .bind(end)
         .bind(agent_name)
+        .bind(access.workflow_owner)
+        .bind(!org_user_ids.is_empty())
+        .bind(&org_user_ids)
         .fetch_all(&self.db)
         .await
         .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
@@ -3140,6 +3226,7 @@ impl ObservabilityService {
         sort_dir: Option<&str>,
         limit: Option<i64>,
         offset: Option<i64>,
+        access: FinopsAccess<'_>,
     ) -> Result<FinopsAttributionsResponse, ObservabilityError> {
         let start = parse_iso_or_default(start_time, 30);
         let end = end_time
@@ -3151,7 +3238,7 @@ impl ObservabilityService {
 
         if view == "workflow" {
             let mut rows = self
-                .get_workflow_finops_rows(start, end, agent_name)
+                .get_workflow_finops_rows(start, end, agent_name, access)
                 .await?;
             sort_workflow_rows(&mut rows, sort_by, desc);
             Ok(FinopsAttributionsResponse {
@@ -3164,8 +3251,8 @@ impl ObservabilityService {
         } else {
             let dashboard = self
                 .get_finops_dashboard(
-                    "", None, None, None, start_time, end_time, agent_name, model, provider, None,
-                    None, None, "agent", false,
+                    "", None, None, None, start_time, end_time, agent_name, model, provider,
+                    access, None, "agent", false,
                 )
                 .await?;
             let mut rows = dashboard.data.agents;

@@ -343,7 +343,7 @@ pub enum AgentOpsCommands {
     #[command(name = "llm-config")]
     LlmConfig {
         #[command(subcommand)]
-        command: LlmConfigCommands,
+        command: Box<LlmConfigCommands>,
     },
     /// View or set the platform tier→model registry the smart router resolves against
     #[command(name = "model-registry")]
@@ -410,6 +410,15 @@ pub enum LlmConfigCommands {
         /// Model to pin to (defaults to --model when --pin is set)
         #[arg(long = "pinned-model")]
         pinned_model: Option<String>,
+        /// Model for the HIGH tier, complex queries (tier1_model); used when not pinned
+        #[arg(long, value_name = "MODEL")]
+        high: Option<String>,
+        /// Model for the MID tier (tier2_model); used when not pinned
+        #[arg(long, value_name = "MODEL")]
+        mid: Option<String>,
+        /// Model for the LOW tier, simple queries (tier3_model); used when not pinned
+        #[arg(long, value_name = "MODEL")]
+        low: Option<String>,
         /// Mark this as your default config
         #[arg(long)]
         default: bool,
@@ -455,6 +464,15 @@ pub enum LlmConfigCommands {
         /// Reset the pinned model to null (pin falls back to the config's model)
         #[arg(long = "clear-pinned-model")]
         clear_pinned_model: bool,
+        /// Model for the HIGH tier, complex queries (tier1_model); used when not pinned
+        #[arg(long, value_name = "MODEL")]
+        high: Option<String>,
+        /// Model for the MID tier (tier2_model); used when not pinned
+        #[arg(long, value_name = "MODEL")]
+        mid: Option<String>,
+        /// Model for the LOW tier, simple queries (tier3_model); used when not pinned
+        #[arg(long, value_name = "MODEL")]
+        low: Option<String>,
         #[command(flatten)]
         embedding: EmbeddingArgs,
         /// Unset the embedding provider and model (embedding calls fall through to the
@@ -1310,7 +1328,7 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             SecretsCommands::Ls { agent } => commands::secrets::ls(agent.as_deref()),
             SecretsCommands::Rm { key, agent } => commands::secrets::rm(&key, agent.as_deref()),
         },
-        AgentOpsCommands::LlmConfig { command } => match command {
+        AgentOpsCommands::LlmConfig { command } => match *command {
             LlmConfigCommands::Create {
                 name,
                 provider,
@@ -1322,6 +1340,9 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
                 secret_value,
                 pin,
                 pinned_model,
+                high,
+                mid,
+                low,
                 default,
                 embedding,
             } => commands::llm_config::create(
@@ -1335,6 +1356,7 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
                 secret_value,
                 pin,
                 pinned_model,
+                commands::llm_config::TierModels { high, mid, low },
                 default,
                 embedding,
             ),
@@ -1353,6 +1375,9 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
                 no_pin,
                 pinned_model,
                 clear_pinned_model,
+                high,
+                mid,
+                low,
                 embedding,
                 clear_embedding_model,
                 yes,
@@ -1371,6 +1396,7 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
                 no_pin,
                 pinned_model,
                 clear_pinned_model,
+                commands::llm_config::TierModels { high, mid, low },
                 commands::llm_config::EmbeddingUpdate {
                     args: embedding,
                     clear: clear_embedding_model,

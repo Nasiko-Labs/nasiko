@@ -1,11 +1,10 @@
 //! How supplemental content is joined onto the text it qualifies.
 //!
-//! One function, in the lowest crate that needs it, because its callers across two crates have to
-//! agree on the convention byte for byte: the routed planner's preamble (in `nasiko-server`) and
-//! the MAF final-output synthesiser's system prompt (`nasiko-orchestrator`). Agent calls do not use
-//! it: supplemental context rides on those as its own message part. A second implementation
-//! anywhere would drift, and the drift would be invisible: both spellings produce text that looks
-//! right in a log and reads right to a model.
+//! One function, in the lowest crate that needs it, because four call sites across two crates
+//! have to agree on the convention byte for byte: the orchestrator's minted sub-legs (this
+//! crate), and — in `nasiko-server` — the two dispatch paths and the agent proxy. A second
+//! implementation anywhere would drift, and the drift would be invisible: both spellings produce
+//! text that looks right in a log and reads right to a model.
 
 /// Join `prefix` onto the front of `body`, separated by one blank line.
 ///

@@ -353,82 +353,15 @@ async fn dispatch(state: &AppState, token: &str, headers: &HeaderMap, body: Valu
     Json(result).into_response()
 }
 
-/// The `Bearer` value of the `Authorization` header, if any.
-fn bearer_token(headers: &HeaderMap) -> Option<&str> {
-    headers
-        .get(axum::http::header::AUTHORIZATION)?
-        .to_str()
-        .ok()?
-        .strip_prefix("Bearer ")
-        .map(str::trim)
-        .filter(|t| !t.is_empty())
-}
-
-/// Rules 3–5: resolve the flow named by `traceparent` to its user, requiring
-/// the flow to be live (`status = 'running'`, younger than the platform's flow
-/// timeout — a flow can't legitimately outlive `NASIKO_FLOW_TIMEOUT_SECS`) and
-/// the authenticated agent to be a recorded participant. Every failure is a
-/// 403 with a descriptive body: presence is not the check, resolution is —
-/// there is nothing an agent can fabricate to pass.
-///
-/// Returns the flow id alongside the user on success — this is the only place
-/// that verifies a `traceparent`-named flow is live and this agent
-/// participates in it, so it's also the only place allowed to hand that flow
-/// id onward as trustworthy (`dispatch` forwards it to
-/// `protocol::handle_request` as `verified_flow_id`, which alone may be signed
-/// into the identity header sent to system backends). Callers on the
-/// owner-fallback path (this returns `Err`) must never substitute a raw,
-/// unverified `traceparent` in its place.
-#[allow(clippy::result_large_err)]
-async fn flow_user(
-    state: &AppState,
-    traceparent: Option<&str>,
-    agent_id: Uuid,
-) -> Result<(Uuid, String), Response> {
-    let flow_id = traceparent
-        .and_then(nasiko_flow::FlowContext::from_traceparent)
-        .map(|ctx| ctx.flow_id)
-        .ok_or_else(|| {
-            deny(format!(
-                "traceparent missing or malformed (received: {:?}) — tools/call must carry the W3C trace context of the flow it serves",
-                traceparent.unwrap_or("<none>")
-            ))
-        })?;
-
-    let row: Option<(Uuid, bool)> = sqlx::query_as(
-        "SELECT f.user_id,
-                EXISTS(SELECT 1 FROM flow_participants fp
-                       WHERE fp.flow_id = f.flow_id AND fp.agent_id = $2)
-         FROM flows f
-         WHERE f.flow_id = $1
-           AND f.status = 'running'
-           AND f.created_at > now() - make_interval(secs => $3)",
-    )
-    .bind(&flow_id)
-    .bind(agent_id)
-    .bind(f64::from(state.config.flow_timeout_secs))
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|e| {
-        // Rule 5: fail closed on identity-store failure.
-        tracing::error!(error = %e, %flow_id, "mcp gateway: flow lookup failed — failing closed");
-        deny("identity store unavailable".to_string())
-    })?;
-
-    match row {
-        Some((user_id, true)) => Ok((user_id, flow_id)),
-        Some((_, false)) => Err(deny(format!(
-            "agent {agent_id} is not a participant of flow {flow_id}"
-        ))),
-        None => Err(deny(format!(
-            "traceparent does not resolve to a live flow (trace_id {flow_id})"
-        ))),
-    }
-}
-
-fn deny(body: String) -> Response {
-    (StatusCode::FORBIDDEN, body).into_response()
-}
+// Rules 3–5 (resolve the flow named by `traceparent` to its user, requiring a
+// live flow and recorded participation) live in `crate::mcp::identity`, which
+// this handler shares with every other layer that has to make the same
+// decision — see that module for why it is not a private helper here.
+// Returns `(user_id, flow_id)`: `dispatch` forwards the flow id onward as
+// `verified_flow_id`, the only form `protocol::handle_request` may sign into
+// the identity header sent to system backends — never a raw, unverified
+// `traceparent`.
+use crate::mcp::identity::{bearer_token, flow_user};
 
 /// `(owner_id, is_coding_agent)` for a live (non-deleted) agent — one query
 /// where there used to be two (a plain `agent_owner` for the read-only

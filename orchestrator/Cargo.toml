@@ -35,4 +35,9 @@ utoipa = { workspace = true }
 
 [dev-dependencies]
 mockito.workspace = true
+# Test-only, and deliberately not a real dependency: the MAF tests assert against the ONE
+# implementation of the prefix join (`nasiko_react_agent::prefixed`) rather than a local copy of
+# it, which would keep passing if that join ever changed. A dev-dependency buys that without
+# putting a production edge between these two peer crates.
+nasiko-react-agent.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

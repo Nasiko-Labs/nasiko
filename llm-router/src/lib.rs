@@ -28,6 +28,7 @@ use tower_http::decompression::RequestDecompressionLayer;
 
 pub mod auth;
 mod brevity;
+mod compact_tools;
 mod compress;
 pub mod config;
 pub mod error;
@@ -82,6 +83,10 @@ pub struct LlmRouterCtx {
     /// classify + pin. [`ClassifierSalienceGate`] when `SALIENCE_GATE_ENABLED`; else [`AllowAllGate`]
     /// (classify at every boundary, i.e. behaviour before the gate existed).
     pub salience_gate: Arc<dyn SalienceGate>,
+    /// Request-type classifier used at Level 3 of routing. [`routing::RegexClassifier`] by
+    /// default (behaviour unchanged); `CLASSIFIER_BACKEND=local|hosted` swaps in a guarded model
+    /// backend that falls back to regex on any failure. See [`build_classifier`].
+    pub classifier: Arc<dyn routing::RequestClassifier>,
     /// The platform's single cost engine. Every `token_usage` row is priced
     /// through this — the DB trigger that used to do it returned NULL for any
     /// model missing from `model_pricing`, which booked 92.8% of calls at $0.
@@ -127,6 +132,7 @@ impl LlmRouterCtx {
         let router_cache = build_router_cache(&cfg);
         let cfg = Arc::new(cfg);
         let salience_gate = build_salience_gate(&cfg);
+        let classifier = build_classifier(&cfg, http.clone());
         let pricing = Arc::new(PricingEngine::new(db.clone()));
         Self {
             db,
@@ -137,9 +143,79 @@ impl LlmRouterCtx {
             tier_registry,
             cell_store,
             salience_gate,
+            classifier,
             pricing,
         }
     }
+}
+
+/// Build the request classifier from config. The only place backend selection happens, shared by
+/// the router and the `classifier_eval` example so both exercise the same path.
+///
+/// `regex` (default / unknown value) is returned bare so default behaviour is untouched; `local`
+/// and `hosted` are wrapped in a [`routing::GuardedClassifier`] (see [`build_guarded_classifier`]).
+pub fn build_classifier(
+    cfg: &GatewayConfig,
+    http: reqwest::Client,
+) -> Arc<dyn routing::RequestClassifier> {
+    match build_guarded_classifier(cfg, http) {
+        Some(guard) => guard,
+        None => Arc::new(routing::RegexClassifier),
+    }
+}
+
+/// The configured model backend behind its [`routing::GuardedClassifier`] (timeout, regex
+/// fallback, low-confidence safe default), or `None` when routing uses the bare regex
+/// classifier: `CLASSIFIER_BACKEND=regex` / unknown, a `local` model that fails to load, or a
+/// `hosted` config with no endpoint (the last two log a warning — a degrade, never an outage).
+///
+/// Returned concretely so a caller that needs the guard's fallback counters (the
+/// `classifier_eval` example) can read [`routing::GuardedClassifier::stats`].
+pub fn build_guarded_classifier(
+    cfg: &GatewayConfig,
+    http: reqwest::Client,
+) -> Option<Arc<routing::GuardedClassifier>> {
+    use routing::{
+        GuardedClassifier, classifier::linear::LinearClassifier,
+        classifier_hosted::HostedClassifier,
+    };
+    let timeout = Duration::from_millis(cfg.classifier_timeout_ms.max(1));
+    let min_conf = cfg.classifier_min_confidence;
+    let inner: Arc<dyn routing::RequestClassifier> = match cfg.classifier_backend.as_str() {
+        "local" => {
+            let (source, model) = if cfg.classifier_model_path.is_empty() {
+                ("embedded", LinearClassifier::embedded())
+            } else {
+                (
+                    cfg.classifier_model_path.as_str(),
+                    LinearClassifier::from_path(&cfg.classifier_model_path),
+                )
+            };
+            match model {
+                Ok(m) => {
+                    tracing::info!(target: "nasiko::llm_router::startup", weights_source = source, provenance = %m.provenance(), "classifier: local model loaded");
+                    Arc::new(m)
+                }
+                Err(e) => {
+                    tracing::warn!(target: "nasiko::llm_router::startup", weights_source = source, error = %e, "classifier: local model load failed; using regex");
+                    return None;
+                }
+            }
+        }
+        "hosted" if !cfg.classifier_endpoint.is_empty() => Arc::new(HostedClassifier::new(
+            http,
+            cfg.classifier_endpoint.clone(),
+            cfg.classifier_model.clone(),
+            cfg.classifier_api_key.clone(),
+        )),
+        "hosted" => {
+            tracing::warn!(target: "nasiko::llm_router::startup", "classifier: hosted backend needs CLASSIFIER_ENDPOINT; using regex");
+            return None;
+        }
+        _ => return None,
+    };
+    tracing::info!(target: "nasiko::llm_router::startup", backend = inner.name(), timeout_ms = cfg.classifier_timeout_ms, min_confidence = min_conf, "llm-router: request classifier enabled");
+    Some(Arc::new(GuardedClassifier::new(inner, timeout, min_conf)))
 }
 
 /// Build the Level 2.5 salience gate from config.

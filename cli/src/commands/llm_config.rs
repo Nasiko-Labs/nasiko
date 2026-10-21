@@ -26,6 +26,42 @@ pub struct EmbeddingUpdate {
     pub confirmed: bool,
 }
 
+/// Per-config tier → model overrides, named the way people talk about them. The API (and the
+/// router) number tiers by strength: 1 = strongest, 3 = smallest, so HIGH is `tier1_model`.
+/// The router only consults these when the config is not pinned.
+#[derive(Default)]
+pub struct TierModels {
+    pub high: Option<String>,
+    pub mid: Option<String>,
+    pub low: Option<String>,
+}
+
+/// `(api field, label)` for each tier, strongest first.
+const TIER_FIELDS: [(&str, &str); 3] = [
+    ("tier1_model", "high"),
+    ("tier2_model", "mid"),
+    ("tier3_model", "low"),
+];
+
+impl TierModels {
+    fn values(&self) -> [&Option<String>; 3] {
+        [&self.high, &self.mid, &self.low]
+    }
+}
+
+/// `high=… mid=… low=…` for the tiers a config sets, or `None` when it sets none.
+fn tier_summary(cfg: &Value) -> Option<String> {
+    let parts: Vec<String> = TIER_FIELDS
+        .iter()
+        .filter_map(|(field, label)| {
+            cfg.get(*field)
+                .and_then(|v| v.as_str())
+                .map(|m| format!("{label}={m}"))
+        })
+        .collect();
+    (!parts.is_empty()).then(|| parts.join(" "))
+}
+
 /// Embedding fields as the API expects them, folded into a request body.
 fn embedding_body_fields(args: &EmbeddingArgs) -> Vec<(&'static str, Value)> {
     vec![
@@ -107,6 +143,7 @@ pub fn create(
     secret_value: Option<String>,
     pin: bool,
     pinned_model: Option<String>,
+    tiers: TierModels,
     default: bool,
     embedding: EmbeddingArgs,
 ) -> Result<()> {
@@ -128,8 +165,12 @@ pub fn create(
     for (key, value) in embedding_body_fields(&embedding) {
         body[key] = value;
     }
+    for ((field, _), value) in TIER_FIELDS.iter().zip(tiers.values()) {
+        body[*field] = json!(value);
+    }
     let _: Value = client.post_json("/llm-configs", &body)?;
     println!("Created LLM config '{name}' → {provider}/{model}");
+    print_tier_note(&body);
     if let (Some(p), Some(m)) = (&embedding.embedding_provider, &embedding.embedding_model) {
         println!("  embeddings → {p}/{m}");
         if embedding.embedding_model_override {
@@ -176,7 +217,15 @@ pub fn list(json_out: bool) -> Result<()> {
             (Some(p), Some(m)) => format!("  embeddings: {p}/{m}"),
             _ => String::new(),
         };
-        println!("  {name:<24} {provider}/{model}{marker}{embedding}");
+        let pinned = if c.get("pinned").and_then(|v| v.as_bool()).unwrap_or(false) {
+            " [pinned]"
+        } else {
+            ""
+        };
+        let tiers = tier_summary(c)
+            .map(|t| format!("  tiers: {t}"))
+            .unwrap_or_default();
+        println!("  {name:<24} {provider}/{model}{marker}{pinned}{tiers}{embedding}");
     }
     Ok(())
 }
@@ -204,6 +253,7 @@ pub fn update(
     no_pin: bool,
     pinned_model: Option<String>,
     clear_pinned_model: bool,
+    tiers: TierModels,
     embedding: EmbeddingUpdate,
 ) -> Result<()> {
     if pin && no_pin {
@@ -251,6 +301,7 @@ pub fn update(
         pinned,
         pinned_model,
         clear_pinned_model,
+        &tiers,
     );
     for (key, value) in embedding_body_fields(&embedding.args) {
         body[key] = value;
@@ -272,6 +323,7 @@ pub fn update(
     let p = body.get("provider").and_then(|v| v.as_str()).unwrap_or("?");
     let m = body.get("model").and_then(|v| v.as_str()).unwrap_or("?");
     println!("Updated LLM config '{config}' → {p}/{m}");
+    print_tier_note(&body);
     if body
         .get("pinned")
         .and_then(|v| v.as_bool())
@@ -284,6 +336,21 @@ pub fn update(
         println!("  pinned to {pinned_to} (smart router will not re-select)");
     }
     Ok(())
+}
+
+/// Echo the tiers a create/update body carries, and say plainly when a pin makes them inert.
+fn print_tier_note(body: &Value) {
+    let Some(tiers) = tier_summary(body) else {
+        return;
+    };
+    println!("  tiers: {tiers}");
+    if body
+        .get("pinned")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        println!("  note: the config is pinned, so the router ignores these tiers (use --no-pin)");
+    }
 }
 
 /// Build the `PATCH /llm-configs/{id}` body by overlaying the caller's flags over the existing
@@ -304,6 +371,7 @@ fn build_update_body(
     pinned: bool,
     pinned_model: Option<String>,
     clear_pinned_model: bool,
+    tiers: &TierModels,
 ) -> Value {
     let keep_str = |field: &str| {
         existing
@@ -332,7 +400,7 @@ fn build_update_body(
             })
             .unwrap_or_default()
     };
-    json!({
+    let mut body = json!({
         // Server COALESCEs a null name to the current one, so an omitted --name is a no-op rename.
         "name": name,
         "provider": provider.or_else(|| keep_str("provider")),
@@ -344,7 +412,13 @@ fn build_update_body(
         "secret_value": secret_value,
         "pinned": pinned,
         "pinned_model": pinned_model,
-    })
+    });
+    // A tier flag sets that tier; an omitted one keeps the current model. The server
+    // COALESCEs tiers, so a tier can be changed here but not cleared.
+    for ((field, _), value) in TIER_FIELDS.iter().zip(tiers.values()) {
+        body[*field] = json!(value.clone().or_else(|| keep_str(field)));
+    }
+    body
 }
 
 /// `nasiko llm-config delete <name|id>` — soft-delete a config from your library. The server
@@ -442,6 +516,9 @@ pub fn get(agent: &str, json_out: bool) -> Result<()> {
             print_field("api_key_secret_name", cfg.get("api_key_secret_name"));
             print_field("pinned", cfg.get("pinned"));
             print_field("pinned_model", cfg.get("pinned_model"));
+            for (field, label) in TIER_FIELDS {
+                print_field(&format!("{label} ({field})"), cfg.get(field));
+            }
         }
         // llm_config is null ⇒ no attached config and no owner default (platform defaults apply).
         _ => println!("  (none — using platform default routing)"),
@@ -574,6 +651,7 @@ mod tests {
             pinned,
             pinned_model.map(String::from),
             clear_pinned_model,
+            &TierModels::default(),
         )
     }
 
@@ -710,5 +788,47 @@ mod tests {
         let cleared = build(&existing, None, None, None, vec![], false, true, None, true);
         assert!(cleared["pinned_model"].is_null());
         assert_eq!(cleared["pinned"], true);
+    }
+
+    #[test]
+    fn update_sets_given_tiers_and_keeps_the_rest() {
+        let mut existing = sample();
+        existing["tier1_model"] = json!("gpt-5.4");
+        existing["tier3_model"] = json!("gpt-4.1-nano");
+        let tiers = TierModels {
+            mid: Some("gpt-4.1".into()),
+            low: Some("gpt-4o-mini".into()),
+            ..TierModels::default()
+        };
+        let body = build_update_body(
+            &existing,
+            None,
+            None,
+            None,
+            vec![],
+            false,
+            None,
+            None,
+            None,
+            None,
+            false,
+            None,
+            false,
+            &tiers,
+        );
+        assert_eq!(body["tier1_model"], "gpt-5.4");
+        assert_eq!(body["tier2_model"], "gpt-4.1");
+        assert_eq!(body["tier3_model"], "gpt-4o-mini");
+    }
+
+    #[test]
+    fn tier_summary_lists_set_tiers_strongest_first() {
+        let cfg =
+            json!({"tier1_model": "gpt-5.4", "tier2_model": null, "tier3_model": "gpt-4.1-nano"});
+        assert_eq!(
+            tier_summary(&cfg).as_deref(),
+            Some("high=gpt-5.4 low=gpt-4.1-nano")
+        );
+        assert_eq!(tier_summary(&sample()), None);
     }
 }

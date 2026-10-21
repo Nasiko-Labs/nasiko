@@ -1,6 +1,5 @@
-//! Appending admin-injected context (L1A knowledge and org policy/L0 today, at their independent
-//! call sites — the edition's forwarding hop and `oss/server/src/router/a2a_dispatch.rs` /
-//! `oss/server/src/agent_proxy.rs` respectively; a future L2 belief is the next caller) to an
+//! Appending admin-injected context (org policy/L0 today, at its two exposed delivery
+//! points — `oss/server/src/router/a2a_dispatch.rs` and `oss/server/src/agent_proxy.rs`) to an
 //! outbound A2A message as its **own part**, rather than splicing it into the text part an agent
 //! may parse for the platform's own history-glue marker.
 //!
@@ -9,12 +8,12 @@
 //! take only the text after `"\n\nCurrent message: "`, treat everything ahead of it as
 //! already-handled history to discard. Any agent that follows that same documented convention —
 //! which is exactly what it's published for — silently discards whatever text was prepended
-//! ahead of that marker. Injected context (L1A facts, org policy, a future L2 belief) is not
-//! history; it's meant to inform how the agent answers the *current* turn, every time. Splicing
-//! it into the same field the marker convention discards is a category error, not a formatting
-//! detail, and it isn't fixable by choosing a different position within that one field: whatever
-//! goes ahead of the marker is lost, and whatever goes after it becomes part of what a
-//! marker-aware agent treats as the user's literal instruction.
+//! ahead of that marker. Injected context (org policy today) is not history; it's meant to inform
+//! how the agent answers the *current* turn, every time. Splicing it into the same field the
+//! marker convention discards is a category error, not a formatting detail, and it isn't fixable
+//! by choosing a different position within that one field: whatever goes ahead of the marker is
+//! lost, and whatever goes after it becomes part of what a marker-aware agent treats as the
+//! user's literal instruction.
 //!
 //! The fix is to stop sharing the field. `parts` is already an array for exactly this reason —
 //! this platform already sends multi-part messages on every call that carries a file attachment
@@ -114,7 +113,7 @@ mod tests {
         });
         append_context_part(
             &mut message,
-            "## Known facts about this agent\nfact one",
+            "## Organization Policy\n\nrule one",
             PartTagging::Untagged,
         )
         .unwrap();
@@ -124,10 +123,7 @@ mod tests {
         // The original part is untouched, in place, at index 0 — a caller that only reads
         // `parts[0]` gets exactly what it got before this function was ever called.
         assert_eq!(parts[0]["text"], "Current message: hello");
-        assert_eq!(
-            parts[1]["text"],
-            "## Known facts about this agent\nfact one"
-        );
+        assert_eq!(parts[1]["text"], "## Organization Policy\n\nrule one");
         assert!(
             parts[1].get("kind").is_none(),
             "an untagged part must not carry a `kind` field a real a2a-lf agent would reject: {parts:?}"
@@ -141,17 +137,14 @@ mod tests {
         });
         append_context_part(
             &mut message,
-            "## Known facts about this agent\nfact one",
+            "## Organization Policy\n\nrule one",
             PartTagging::Tagged,
         )
         .unwrap();
 
         let parts = message["parts"].as_array().unwrap();
         assert_eq!(parts[1]["kind"], "text");
-        assert_eq!(
-            parts[1]["text"],
-            "## Known facts about this agent\nfact one"
-        );
+        assert_eq!(parts[1]["text"], "## Organization Policy\n\nrule one");
     }
 
     #[test]
@@ -163,7 +156,7 @@ mod tests {
         });
         append_context_part(
             &mut message,
-            "## Known facts about this agent\nfact one",
+            "## Organization Policy\n\nrule one",
             PartTagging::Untagged,
         )
         .unwrap();
@@ -174,15 +167,15 @@ mod tests {
     #[test]
     fn no_parts_array_is_a_clean_miss() {
         let mut message = serde_json::json!({"contextId": "ctx-1"});
-        assert!(append_context_part(&mut message, "facts", PartTagging::Untagged).is_none());
+        assert!(append_context_part(&mut message, "policy", PartTagging::Untagged).is_none());
         // Untouched, not partially mutated.
         assert_eq!(message, serde_json::json!({"contextId": "ctx-1"}));
     }
 
     #[test]
-    fn file_only_message_still_gets_context_appended() {
+    fn file_only_message_still_gets_the_policy_appended() {
         // A message with no text part at all (a file-only send) still has a `parts` array, and
-        // still gets context appended — there is no text part to find-and-replace, only a new
+        // still gets org policy appended — there is no text part to find-and-replace, only a new
         // part to append, so this needs no special-casing at the call site.
         let mut message = serde_json::json!({
             "parts": [{"filename": "report.pdf", "media_type": "application/pdf", "data": "..."}]
@@ -193,40 +186,8 @@ mod tests {
             PartTagging::Untagged,
         )
         .unwrap();
-
         let parts = message["parts"].as_array().unwrap();
         assert_eq!(parts.len(), 2);
         assert_eq!(parts[1]["text"], "## Organization Policy\n\nrule one");
-    }
-
-    #[test]
-    fn multiple_appends_stack_in_call_order() {
-        // The shape org policy (in-process) and L1A (injection proxy) take on one forward: each
-        // caller appends its own part, independently, with no knowledge of whether another has
-        // already run.
-        let mut message = serde_json::json!({
-            "parts": [{"text": "Current message: hello"}]
-        });
-        append_context_part(
-            &mut message,
-            "## Organization policy\nrule one",
-            PartTagging::Untagged,
-        )
-        .unwrap();
-        append_context_part(
-            &mut message,
-            "## Known facts about this agent\nfact one",
-            PartTagging::Untagged,
-        )
-        .unwrap();
-
-        let parts = message["parts"].as_array().unwrap();
-        assert_eq!(parts.len(), 3);
-        assert_eq!(parts[0]["text"], "Current message: hello");
-        assert_eq!(parts[1]["text"], "## Organization policy\nrule one");
-        assert_eq!(
-            parts[2]["text"],
-            "## Known facts about this agent\nfact one"
-        );
     }
 }
