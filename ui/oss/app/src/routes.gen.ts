@@ -34,6 +34,13 @@ export const APP_ROUTES: readonly AppRoute[] = [
       })),
   },
   {
+    path: "/account/shortcuts",
+    load: () =>
+      import("@nasiko/features/settings/AccountShortcutsRoute").then((m) => ({
+        default: m.AccountShortcutsRoute,
+      })),
+  },
+  {
     path: "/agents",
     load: () =>
       import("@nasiko/features/agents/CatalogRoute").then((m) => ({

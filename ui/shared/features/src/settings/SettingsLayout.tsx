@@ -6,6 +6,7 @@
 // `meQueryOptions(scope)`; optional props typed `| undefined`; Prettier formatting.
 // The top bar (legacy ui/ on development, 3aac84f66: e8379db5a): the open section is the breadcrumb's level, and
 // Account settings is its own first level.
+// Keyboard shortcuts (51901c342) is the account's third section.
 /**
  * The Settings module (plans/feat-settings.md §1), around each of its pages. Its sections are the sidebar's drill-in
  * panel (`SidebarPanel`: one sidebar, never two side by side); with the sidebar collapsed they fall back as Chat's
@@ -58,7 +59,8 @@ interface Row {
     | "/settings/secrets"
     | "/settings/optimization-tiers"
     | "/account/appearance"
-    | "/account/password";
+    | "/account/password"
+    | "/account/shortcuts";
   section?: string | undefined;
 }
 
@@ -98,6 +100,7 @@ export function SettingsLayout({
           rows: [
             { key: "appearance", label: copy.appearance.label, to: "/account/appearance" },
             { key: "password", label: copy.password.label, to: "/account/password" },
+            { key: "shortcuts", label: copy.shortcuts.label, to: "/account/shortcuts" },
           ],
         },
       ]
@@ -143,7 +146,7 @@ export function SettingsLayout({
       ];
   const known = new Set(groups.flatMap((g) => g.rows.map((r) => r.key)));
   const raw = params.get("section");
-  // A sub-page (Secrets, Tiers, Appearance, Password) is current by its path; the workspace page by `?section=`.
+  // A sub-page (Secrets, Tiers, Appearance, Password, Shortcuts) is current by its path; the workspace page by `?section=`.
   const page = groups.flatMap((g) => g.rows).find((r) => r.to === pathname && r.to !== "/settings");
   const onSubPage = page !== undefined;
   const current = page ? page.key : raw !== null && known.has(raw) ? raw : "general";

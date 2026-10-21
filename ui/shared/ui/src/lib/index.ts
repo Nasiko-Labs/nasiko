@@ -7,4 +7,4 @@ export { useCopy, SAVED_NOTE_MS } from "./useCopy";
 export { downloadText } from "./download";
 export * from "./chart";
 export * from "./paging";
-export { isTypingTarget, stepFromKey } from "./keys";
+export { IS_MAC, isTypingTarget, stepFromKey } from "./keys";

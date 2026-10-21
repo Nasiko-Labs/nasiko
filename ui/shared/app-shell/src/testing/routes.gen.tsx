@@ -5,32 +5,33 @@ import { OverviewRoute as R0 } from "@nasiko/features/overview/OverviewRoute";
 import { TokenopsRoutePage as R1 } from "@nasiko/features/tokenops/TokenopsRoute";
 import { AccountAppearanceRoute as R2 } from "@nasiko/features/settings/AccountAppearanceRoute";
 import { AccountPasswordRoute as R3 } from "@nasiko/features/settings/AccountPasswordRoute";
-import { AgentsCatalogRoute as R4 } from "@nasiko/features/agents/CatalogRoute";
-import { MyAgentsRoute as R5 } from "@nasiko/features/agents/MyAgentsRoute";
-import { AgentDetailRoute as R6 } from "@nasiko/features/agents/AgentDetailRoute";
-import { BuildsRoute as R7 } from "@nasiko/features/deploy/BuildsRoute";
-import { BuildRoute as R8 } from "@nasiko/features/deploy/BuildRoute";
-import { ChatRoute as R9 } from "@nasiko/features/chat/ChatRoute";
-import { ChatSessionRoute as R10 } from "@nasiko/features/chat/ChatRoute";
-import { DeployRoute as R11 } from "@nasiko/features/deploy/DeployRoute";
-import { FlowsRoute as R12 } from "@nasiko/features/flows/FlowsRoute";
-import { FlowRoute as R13 } from "@nasiko/features/flows/FlowRoute";
-import { HarnessesRoute as R14 } from "@nasiko/features/harnesses/HarnessesRoute";
-import { McpCatalogRoute as R15 } from "@nasiko/features/mcp/McpCatalogRoute";
-import { McpDetailRoute as R16 } from "@nasiko/features/mcp/McpDetailRoute";
-import { OptimizationHubRoute as R17 } from "@nasiko/features/optimization/OptimizationHubRoute";
-import { RouterRoute as R18 } from "@nasiko/features/router/RouterRoute";
-import { SessionsRoute as R19 } from "@nasiko/features/sessions/SessionsRoute";
-import { SessionTraceRoute as R20 } from "@nasiko/features/trace/SessionTraceRoute";
-import { SettingsRoute as R21 } from "@nasiko/features/settings/WorkspaceSettingsRoute";
-import { TiersRoute as R25 } from "@nasiko/features/optimization/TiersRoute";
-import { SecretsRoute as R27 } from "@nasiko/features/settings/SecretsRoute";
-import { StatusRoute as R28 } from "@nasiko/app-shell/workspace/StatusRoute";
-import { DeployedWorkflowsRoute as R29 } from "@nasiko/features/workflows/WorkflowsListRoute";
-import { DraftWorkflowsRoute as R30 } from "@nasiko/features/workflows/WorkflowsListRoute";
-import { NewWorkflowRoute as R31 } from "@nasiko/features/workflows/NewWorkflowRoute";
-import { WorkflowRunsRoute as R32 } from "@nasiko/features/workflows/WorkflowRunsRoute";
-import { WorkflowRoute as R33 } from "@nasiko/features/workflows/WorkflowRoute";
+import { AccountShortcutsRoute as R4 } from "@nasiko/features/settings/AccountShortcutsRoute";
+import { AgentsCatalogRoute as R5 } from "@nasiko/features/agents/CatalogRoute";
+import { MyAgentsRoute as R6 } from "@nasiko/features/agents/MyAgentsRoute";
+import { AgentDetailRoute as R7 } from "@nasiko/features/agents/AgentDetailRoute";
+import { BuildsRoute as R8 } from "@nasiko/features/deploy/BuildsRoute";
+import { BuildRoute as R9 } from "@nasiko/features/deploy/BuildRoute";
+import { ChatRoute as R10 } from "@nasiko/features/chat/ChatRoute";
+import { ChatSessionRoute as R11 } from "@nasiko/features/chat/ChatRoute";
+import { DeployRoute as R12 } from "@nasiko/features/deploy/DeployRoute";
+import { FlowsRoute as R13 } from "@nasiko/features/flows/FlowsRoute";
+import { FlowRoute as R14 } from "@nasiko/features/flows/FlowRoute";
+import { HarnessesRoute as R15 } from "@nasiko/features/harnesses/HarnessesRoute";
+import { McpCatalogRoute as R16 } from "@nasiko/features/mcp/McpCatalogRoute";
+import { McpDetailRoute as R17 } from "@nasiko/features/mcp/McpDetailRoute";
+import { OptimizationHubRoute as R18 } from "@nasiko/features/optimization/OptimizationHubRoute";
+import { RouterRoute as R19 } from "@nasiko/features/router/RouterRoute";
+import { SessionsRoute as R20 } from "@nasiko/features/sessions/SessionsRoute";
+import { SessionTraceRoute as R21 } from "@nasiko/features/trace/SessionTraceRoute";
+import { SettingsRoute as R22 } from "@nasiko/features/settings/WorkspaceSettingsRoute";
+import { TiersRoute as R26 } from "@nasiko/features/optimization/TiersRoute";
+import { SecretsRoute as R28 } from "@nasiko/features/settings/SecretsRoute";
+import { StatusRoute as R29 } from "@nasiko/app-shell/workspace/StatusRoute";
+import { DeployedWorkflowsRoute as R30 } from "@nasiko/features/workflows/WorkflowsListRoute";
+import { DraftWorkflowsRoute as R31 } from "@nasiko/features/workflows/WorkflowsListRoute";
+import { NewWorkflowRoute as R32 } from "@nasiko/features/workflows/NewWorkflowRoute";
+import { WorkflowRunsRoute as R33 } from "@nasiko/features/workflows/WorkflowRunsRoute";
+import { WorkflowRoute as R34 } from "@nasiko/features/workflows/WorkflowRoute";
 
 export interface TestRoute {
   path: string;
@@ -48,39 +49,40 @@ export const TEST_ROUTES: readonly TestRoute[] = [
   { path: "/tokenops", editions: ["oss", "ee"], Component: R1 },
   { path: "/account/appearance", editions: ["oss", "ee"], Component: R2 },
   { path: "/account/password", editions: ["oss", "ee"], Component: R3 },
-  { path: "/agents", editions: ["oss", "ee"], Component: R4 },
-  { path: "/agents/mine", editions: ["oss", "ee"], Component: R5 },
-  { path: "/agents/[agentId]", editions: ["oss", "ee"], Component: R6 },
-  { path: "/builds", editions: ["oss", "ee"], Component: R7 },
-  { path: "/builds/[buildId]", editions: ["oss", "ee"], Component: R8 },
-  { path: "/chat", editions: ["oss", "ee"], Component: R9 },
-  { path: "/chat/[sessionId]", editions: ["oss", "ee"], Component: R10 },
-  { path: "/deploy", editions: ["oss", "ee"], Component: R11 },
-  { path: "/flows", editions: ["oss", "ee"], Component: R12 },
-  { path: "/flows/[flowId]", editions: ["oss", "ee"], Component: R13 },
-  { path: "/harnesses", editions: ["oss", "ee"], Component: R14 },
-  { path: "/mcp", editions: ["oss", "ee"], Component: R15 },
-  { path: "/mcp/[connectorId]", editions: ["oss", "ee"], Component: R16 },
-  { path: "/optimization", editions: ["oss", "ee"], Component: R17 },
-  { path: "/router", editions: ["oss", "ee"], Component: R18 },
-  { path: "/sessions", editions: ["oss", "ee"], Component: R19 },
-  { path: "/sessions/[sessionId]", editions: ["oss", "ee"], Component: R20 },
-  { path: "/settings", editions: ["oss", "ee"], Component: R21, superuserOr: "/settings/secrets" },
+  { path: "/account/shortcuts", editions: ["oss", "ee"], Component: R4 },
+  { path: "/agents", editions: ["oss", "ee"], Component: R5 },
+  { path: "/agents/mine", editions: ["oss", "ee"], Component: R6 },
+  { path: "/agents/[agentId]", editions: ["oss", "ee"], Component: R7 },
+  { path: "/builds", editions: ["oss", "ee"], Component: R8 },
+  { path: "/builds/[buildId]", editions: ["oss", "ee"], Component: R9 },
+  { path: "/chat", editions: ["oss", "ee"], Component: R10 },
+  { path: "/chat/[sessionId]", editions: ["oss", "ee"], Component: R11 },
+  { path: "/deploy", editions: ["oss", "ee"], Component: R12 },
+  { path: "/flows", editions: ["oss", "ee"], Component: R13 },
+  { path: "/flows/[flowId]", editions: ["oss", "ee"], Component: R14 },
+  { path: "/harnesses", editions: ["oss", "ee"], Component: R15 },
+  { path: "/mcp", editions: ["oss", "ee"], Component: R16 },
+  { path: "/mcp/[connectorId]", editions: ["oss", "ee"], Component: R17 },
+  { path: "/optimization", editions: ["oss", "ee"], Component: R18 },
+  { path: "/router", editions: ["oss", "ee"], Component: R19 },
+  { path: "/sessions", editions: ["oss", "ee"], Component: R20 },
+  { path: "/sessions/[sessionId]", editions: ["oss", "ee"], Component: R21 },
+  { path: "/settings", editions: ["oss", "ee"], Component: R22, superuserOr: "/settings/secrets" },
   { path: "/settings/appearance", editions: ["oss", "ee"], redirect: "/account/appearance" },
   { path: "/settings/chat-context", editions: ["oss", "ee"], redirect: "/optimization#settings" },
   { path: "/settings/optimization", editions: ["oss", "ee"], redirect: "/optimization#settings" },
   {
     path: "/settings/optimization-tiers",
     editions: ["oss", "ee"],
-    Component: R25,
+    Component: R26,
     superuserOr: "/optimization#settings",
   },
   { path: "/settings/password", editions: ["oss", "ee"], redirect: "/account/password" },
-  { path: "/settings/secrets", editions: ["oss", "ee"], Component: R27 },
-  { path: "/status", editions: ["oss", "ee"], Component: R28 },
-  { path: "/workflows", editions: ["oss", "ee"], Component: R29 },
-  { path: "/workflows/drafts", editions: ["oss", "ee"], Component: R30 },
-  { path: "/workflows/new", editions: ["oss", "ee"], Component: R31 },
-  { path: "/workflows/runs", editions: ["oss", "ee"], Component: R32 },
-  { path: "/workflows/[workflowId]", editions: ["oss", "ee"], Component: R33 },
+  { path: "/settings/secrets", editions: ["oss", "ee"], Component: R28 },
+  { path: "/status", editions: ["oss", "ee"], Component: R29 },
+  { path: "/workflows", editions: ["oss", "ee"], Component: R30 },
+  { path: "/workflows/drafts", editions: ["oss", "ee"], Component: R31 },
+  { path: "/workflows/new", editions: ["oss", "ee"], Component: R32 },
+  { path: "/workflows/runs", editions: ["oss", "ee"], Component: R33 },
+  { path: "/workflows/[workflowId]", editions: ["oss", "ee"], Component: R34 },
 ];

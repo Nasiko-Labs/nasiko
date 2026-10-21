@@ -12,6 +12,7 @@
 // ported there); `signOut`'s `navigate` maps the lab's `{to, search}` onto a URL for `router.push`; the callback props are
 // arrow-typed (`unbound-method`); imports mapped to
 // `@nasiko/ui/*`; Prettier formatting. Every class string, attribute, timing and string is the lab's.
+// Legacy ui/ on development (3aac84f66, 51901c342): `IS_MAC` is shared from `@nasiko/ui/lib` (keys.ts).
 "use client";
 
 /**
@@ -19,6 +20,7 @@
  * from `nav.ts` or a page's drill-in panel (`SidebarPanel`: Chat's history, Settings' sections), and the footer
  * (status in local builds, account; account settings open from the account menu). Built on shadcn's sidebar primitive.
  */
+import { IS_MAC } from "@nasiko/ui/lib";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
@@ -746,9 +748,6 @@ function ThemeSubmenu() {
     </DropdownMenuSub>
   );
 }
-
-// eslint-disable-next-line @typescript-eslint/no-deprecated -- the lab reads `navigator.platform` (the only sync, widely supported source)
-const IS_MAC = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 
 /** Top right of the open sidebar's header. Phones open the sheet from the top bar instead. */
 function CollapseButton() {

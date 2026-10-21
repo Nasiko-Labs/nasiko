@@ -1,7 +1,12 @@
 // Ported from the legacy ui/ on development (3aac84f66) common/src/lib/keys.ts. Local edits: Prettier formatting;
-// `IS_MAC` comes with the keyboard shortcuts page.
+// `IS_MAC` came with the keyboard shortcuts page (51901c342).
 
 /** Keyboard rules shared by the shell and pages. */
+
+/** ⌘ rather than Ctrl for the modifier shortcuts. */
+export const IS_MAC =
+  // eslint-disable-next-line @typescript-eslint/no-deprecated -- the lab reads `navigator.platform` (the only sync, widely supported source)
+  typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 
 /** True while the user is typing: a letter shortcut must not steal keys from a field. */
 export function isTypingTarget(target: EventTarget | null): boolean {

@@ -1,5 +1,6 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/settings/copy.ts. Local edits: none beyond imports and
 // Prettier.
+// Legacy ui/ on development (3aac84f66, 51901c342): `shortcuts`, the keyboard shortcuts page's list.
 /**
  * Every user-facing string on Settings and Secrets (plans/feat-settings.md). Worded as nasiko-cloud-rs `43833316`
  * ui/common/pages/settings-page.js, secrets-page.js and features/secrets-manager.js say it, except where the legacy
@@ -39,6 +40,70 @@ export const copy = {
 
   // Settings → Workspace → Optimization tiers (/settings/optimization-tiers): its words are in features/optimization.
   optimizationTiers: { label: "Optimization tiers" },
+  // Account settings → Keyboard shortcuts (/account/shortcuts): every key the app answers, by where it works. `Mod` is
+  // ⌘ on a Mac, Ctrl elsewhere. Keep in step with the handlers (lib/keys.ts, TourHost, Composer, Waterfall, Swimlane…).
+  shortcuts: {
+    label: "Keyboard shortcuts",
+    sub: "Keys Nasiko answers. Letter keys do nothing while you type in a field.",
+    groups: [
+      {
+        title: "Everywhere",
+        rows: [
+          { action: "Take this page’s tour", keys: [["?"]] },
+          { action: "Collapse or expand the sidebar", keys: [["Mod", "B"]] },
+        ],
+      },
+      {
+        title: "Detail pages",
+        hint: "Where the page shows “3 of 18” with ↑ ↓ arrows: agents, chats, sessions, flows and workflows.",
+        rows: [
+          { action: "Next item", keys: [["J"]] },
+          { action: "Previous item", keys: [["K"]] },
+        ],
+      },
+      {
+        title: "Search and chat",
+        rows: [
+          { action: "Focus search", where: "Agent and MCP catalogs", keys: [["/"]] },
+          { action: "Focus the message box", where: "Chat", keys: [["/"]] },
+          { action: "Send the message", where: "Chat", keys: [["Enter"]] },
+          { action: "New line", where: "Chat", keys: [["Shift", "Enter"]] },
+          { action: "Close the chat filter", where: "Chat history, when empty", keys: [["Esc"]] },
+        ],
+      },
+      {
+        title: "Traces and flows",
+        rows: [
+          { action: "Move between spans", where: "Trace waterfall", keys: [["↑"], ["↓"]] },
+          { action: "Expand or collapse", where: "Trace waterfall", keys: [["→"], ["←"]] },
+          { action: "Open a span", where: "Trace waterfall", keys: [["Enter"], ["Space"]] },
+          {
+            action: "Move between calls",
+            where: "Flow swimlane",
+            keys: [["←"], ["→"], ["↑"], ["↓"]],
+          },
+          { action: "First or last", where: "Waterfall and swimlane", keys: [["Home"], ["End"]] },
+          { action: "Clear the selection", where: "Flow swimlane", keys: [["Esc"]] },
+        ],
+      },
+      {
+        title: "Other",
+        rows: [
+          { action: "Next or previous tour step", where: "Tours", keys: [["→"], ["←"]] },
+          {
+            action: "Move a step up or down",
+            where: "Workflow editor, on a step’s handle",
+            keys: [["↑"], ["↓"]],
+          },
+        ],
+      },
+    ] as {
+      title: string;
+      hint?: string;
+      rows: { action: string; where?: string; keys: string[][] }[];
+    }[],
+  },
+
   // Account settings → Password (/account/password), worded as nasiko-cloud-rs `43833316`
   // ui/common/features/change-password-modal.js.
   password: {

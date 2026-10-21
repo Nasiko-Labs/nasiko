@@ -96,6 +96,7 @@
     "./sessions/SessionsRoute": "./src/sessions/SessionsRoute.tsx",
     "./settings/AccountAppearanceRoute": "./src/settings/AccountAppearanceRoute.tsx",
     "./settings/AccountPasswordRoute": "./src/settings/AccountPasswordRoute.tsx",
+    "./settings/AccountShortcutsRoute": "./src/settings/AccountShortcutsRoute.tsx",
     "./settings/components/SettingRow": "./src/settings/components/SettingRow.tsx",
     "./settings/logic": "./src/settings/logic.ts",
     "./settings/SecretsRoute": "./src/settings/SecretsRoute.tsx",
