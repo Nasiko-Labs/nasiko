@@ -72,15 +72,24 @@ class AssistantExecutor(AgentExecutor):
         try:
             if DISCOVERY_URL:
                 agents = await self._discover_agents()
-                plan = await self._plan(query, agents)
-                results = await self._delegate(plan, query)
+                if query.startswith("GROW_CAMPAIGN:"):
+                    results = await self._grower_pipeline(query[len("GROW_CAMPAIGN:"):].strip(), agents)
+                else:
+                    plan = await self._plan(query, agents)
+                    results = await self._delegate(plan, query)
             else:
                 agents = []
                 results = []
 
-            full_response = ""
-            async for chunk in self._synthesize(query, results):
-                full_response += chunk
+            if query.startswith("GROW_CAMPAIGN:"):
+                full_response = json.dumps({
+                    "type": "grower_campaign",
+                    "stages": results,
+                }, ensure_ascii=False)
+            else:
+                full_response = ""
+                async for chunk in self._synthesize(query, results):
+                    full_response += chunk
 
             await event_queue.enqueue_event(
                 new_text_artifact_update_event(
@@ -143,6 +152,53 @@ class AssistantExecutor(AgentExecutor):
                     agent["url"] = url.replace("localhost", "host.docker.internal")
 
             return [a for a in agents if a.get("name") != "assistant-agent"]
+
+    async def _grower_pipeline(self, campaign: str, agents: list[dict]) -> list[dict]:
+        """Run Grower's GTM chain with real A2A hand-offs between specialist agents."""
+        by_name = {a.get("name"): a for a in agents}
+        names = [
+            "grower-research-agent",
+            "grower-icp-agent",
+            "grower-prospect-agent",
+            "grower-outreach-agent",
+        ]
+        if not all(name in by_name for name in names):
+            missing = [name for name in names if name not in by_name]
+            return [{"agent": "grower-pipeline", "response": f"Missing registered Grower agents: {missing}"}]
+
+        payload = campaign
+        results = []
+        for name in names:
+            agent = by_name[name]
+            url = agent.get("url", "").rstrip("/")
+            if not url:
+                results.append({"agent": name, "response": "Agent has no URL"})
+                return results
+            try:
+                async with httpx.AsyncClient(timeout=90.0) as client:
+                    resp = await client.post(
+                        f"{url}/",
+                        headers={"A2A-Version": "1.0"},
+                        json={
+                            "jsonrpc": "2.0",
+                            "id": str(uuid.uuid4()),
+                            "method": "SendMessage",
+                            "params": {
+                                "message": {
+                                    "messageId": str(uuid.uuid4()),
+                                    "role": "ROLE_USER",
+                                    "parts": [{"text": payload}],
+                                }
+                            },
+                        },
+                    )
+                    response = self._extract_text(resp.json()) or "No response"
+                results.append({"agent": name, "response": response})
+                payload = response
+            except Exception as e:
+                results.append({"agent": name, "response": f"Error: {e}"})
+                break
+        return results
 
     async def _plan(self, query: str, agents: list[dict]) -> list[dict]:
         if not agents:

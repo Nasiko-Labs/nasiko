@@ -1,0 +1,16 @@
+{
+  "agentFramework":"starlette",
+  "capabilities":{"chat_agent":false,"pushNotifications":false,"stateTransitionHistory":false,"streaming":true},
+  "defaultInputModes":["text/plain"],
+  "defaultOutputModes":["text/plain"],
+  "description":"Finds companies using ICP fit and observable public GTM signals.",
+  "framework":"starlette",
+  "llm_provider":"openai",
+  "name":"grower-prospect-agent",
+  "preferredTransport":"JSONRPC",
+  "protocolVersion":"1.0",
+  "skills":[{"id":"prospecting","name":"Prospect Discovery","description":"Finds relevant companies from live web research.","tags":["grower","gtm","prospects","anakin"]}],
+  "transport":"http",
+  "url":"http://localhost:8003/",
+  "version":"1.0.0"
+}

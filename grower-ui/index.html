@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Grower — GTM Campaign</title>
+<style>
+:root{--bg:#08090b;--panel:#0f1115;--panel2:#13161c;--line:#232832;--text:#f4f5f7;--muted:#8d96a5;--accent:#a8ff5a;--accent2:#d6ffad;--danger:#ffb86b}
+*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 50% -10%,#1a2415 0,#08090b 38%);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+button,input,textarea{font:inherit}.app{max-width:1180px;margin:auto;padding:28px 24px 70px}.top{display:flex;align-items:center;justify-content:space-between;margin-bottom:42px}.brand{font-weight:800;letter-spacing:-.04em;font-size:22px}.badge{border:1px solid var(--line);color:var(--muted);padding:7px 11px;border-radius:999px;font-size:12px}
+.hero{text-align:center;max-width:760px;margin:70px auto 44px}.eyebrow{color:var(--accent);font-size:12px;font-weight:800;letter-spacing:.14em;text-transform:uppercase}.hero h1{font-size:clamp(42px,7vw,76px);line-height:.96;letter-spacing:-.065em;margin:15px 0}.hero p{color:var(--muted);font-size:18px;line-height:1.6;margin:0 auto 30px}
+.panel{background:rgba(15,17,21,.86);border:1px solid var(--line);border-radius:22px;padding:26px;box-shadow:0 20px 80px rgba(0,0,0,.25);backdrop-filter:blur(12px)}
+.choice{display:grid;grid-template-columns:1fr 1fr;gap:14px}.choice button,.primary{border:1px solid var(--line);background:var(--panel2);color:var(--text);border-radius:16px;padding:18px;text-align:left;cursor:pointer;transition:.2s}.choice button:hover{border-color:#5e684f;transform:translateY(-1px)}.choice strong{display:block;font-size:15px;margin-bottom:6px}.choice span{color:var(--muted);font-size:13px}
+.form{max-width:720px;margin:30px auto}.form h2{margin:0 0 7px;font-size:24px}.form p{color:var(--muted);margin:0 0 22px}.field{margin:14px 0}.field label{display:block;font-size:12px;color:var(--muted);margin:0 0 8px}.field input,.field textarea{width:100%;background:#0a0c0f;border:1px solid var(--line);color:var(--text);border-radius:13px;padding:14px 15px;outline:none}.field textarea{min-height:92px;resize:vertical}.field input:focus,.field textarea:focus{border-color:#6b765b}.primary{background:var(--accent);border-color:var(--accent);color:#071006;font-weight:800;text-align:center;width:100%;margin-top:12px}.primary:hover{filter:brightness(1.04);transform:translateY(-1px)}
+.hidden{display:none!important}.progress{max-width:800px;margin:36px auto}.progress h2{margin:0 0 20px}.agents{display:grid;gap:10px}.agent{display:flex;align-items:center;gap:14px;padding:16px;border:1px solid var(--line);border-radius:15px;background:var(--panel)}.dot{width:10px;height:10px;border-radius:50%;background:#39404b}.agent.running .dot{background:var(--accent);box-shadow:0 0 16px rgba(168,255,90,.55)}.agent.done .dot{background:var(--accent)}.agent .copy{flex:1}.agent small{display:block;color:var(--muted);margin-top:3px}.status{font-size:12px;color:var(--muted)}
+.results{margin-top:35px}.section{margin-top:22px}.section-title{font-size:11px;letter-spacing:.13em;color:var(--muted);font-weight:800;margin:0 0 12px;text-transform:uppercase}.icp{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.kv{padding:16px;border:1px solid var(--line);border-radius:14px;background:var(--panel)}.kv b{display:block;margin-bottom:6px}.kv span{color:var(--muted);font-size:13px}
+.signals{display:flex;flex-wrap:wrap;gap:8px}.signal{border:1px solid #313a2c;background:#10150e;color:var(--accent2);padding:8px 11px;border-radius:999px;font-size:12px}
+.prospects{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.prospect{border:1px solid var(--line);background:var(--panel);border-radius:17px;padding:18px}.company{font-weight:800;font-size:17px}.score{display:inline-block;margin-top:8px;color:var(--accent);font-weight:800;font-size:13px}.signal-line{margin-top:15px;font-size:13px}.reason{color:var(--muted);font-size:12px;line-height:1.5;margin-top:7px}.source{display:block;color:#788293;font-size:11px;margin-top:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.outreach{border:1px solid var(--line);background:var(--panel);border-radius:17px;padding:20px;max-width:900px}.subject{font-weight:800;margin-bottom:14px}.email{white-space:pre-wrap;color:#c9ced6;font-size:14px;line-height:1.65}.cta{display:inline-block;margin-top:16px;background:var(--accent);color:#071006;padding:10px 14px;border-radius:11px;font-weight:800;font-size:13px;cursor:pointer;border:0}.toolbar{display:flex;justify-content:space-between;align-items:center;margin:34px 0 10px}.reset{border:0;background:transparent;color:var(--muted);cursor:pointer}.error{border:1px solid #593f2a;background:#1a120a;color:#ffc993;border-radius:13px;padding:13px;font-size:13px;margin-top:12px}
+@media(max-width:760px){.choice,.icp,.prospects{grid-template-columns:1fr}.app{padding:20px 14px}.hero{margin-top:35px}.hero h1{font-size:48px}.panel{padding:18px}}
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="top"><div class="brand">GROWER</div><div class="badge">AI GTM campaign engine</div></header>
+
+  <main id="landing">
+    <section class="hero"><div class="eyebrow">Research → ICP → Prospects → Outreach</div><h1>Turn your idea into customers.</h1><p>Give Grower a website or describe what you're building. Your agent team researches the market, sharpens your ICP, finds high-signal prospects and writes personalized outreach.</p></section>
+    <div class="panel choice">
+      <button onclick="showForm(true)"><strong>Yes, I have a website →</strong><span>Let Grower research your existing company and product.</span></button>
+      <button onclick="showForm(false)"><strong>I don't have a website →</strong><span>Start from your product idea, customer and market.</span></button>
+    </div>
+  </main>
+
+  <section id="formView" class="form hidden">
+    <div class="panel">
+      <div class="eyebrow">Grower intake</div><h2>Tell us about your business</h2><p id="formHint">We'll use your website as the starting point for market research.</p>
+      <div id="websiteField" class="field"><label>YOUR WEBSITE</label><input id="website" placeholder="https://yourcompany.com"></div>
+      <div id="ideaFields" class="hidden">
+        <div class="field"><label>WHAT DO YOU SELL OR WANT TO BUILD?</label><textarea id="product" placeholder="e.g. AI voice agents for B2B SaaS companies"></textarea></div>
+        <div class="field"><label>WHO IS YOUR IDEAL CUSTOMER?</label><textarea id="customer" placeholder="e.g. Founders and VP Sales at growing SaaS companies"></textarea></div>
+        <div class="field"><label>WHICH MARKETS OR GEOGRAPHY?</label><input id="geo" placeholder="e.g. US and Europe"></div>
+      </div>
+      <button class="primary" onclick="runCampaign()">Generate my campaign →</button>
+      <div id="formError"></div>
+    </div>
+  </section>
+
+  <section id="progress" class="progress hidden">
+    <div class="panel"><div class="eyebrow">Grower agents</div><h2>Your campaign is being built</h2><div class="agents">
+      <div id="a0" class="agent"><div class="dot"></div><div class="copy"><b>Research Agent</b><small>Understanding your market and product</small></div><div class="status">waiting</div></div>
+      <div id="a1" class="agent"><div class="dot"></div><div class="copy"><b>ICP Agent</b><small>Sharpening your ideal customer</small></div><div class="status">waiting</div></div>
+      <div id="a2" class="agent"><div class="dot"></div><div class="copy"><b>Prospect Agent</b><small>Finding high-signal companies</small></div><div class="status">waiting</div></div>
+      <div id="a3" class="agent"><div class="dot"></div><div class="copy"><b>Outreach Agent</b><small>Writing personalized outreach</small></div><div class="status">waiting</div></div>
+    </div><div id="runError"></div></div>
+  </section>
+
+  <section id="results" class="results hidden">
+    <div class="toolbar"><div><div class="eyebrow">Campaign ready</div><h2 style="margin:6px 0 0">YOUR GTM CAMPAIGN</h2></div><button class="reset" onclick="resetApp()">← New campaign</button></div>
+    <div id="resultBody"></div>
+  </section>
+</div>
+<script>
+const ASSISTANT_URL = window.GROWER_ASSISTANT_URL || "";
+let websiteMode = true;
+const demo = {
+  icp:{industries:["B2B SaaS"],company_size:"20–500 employees",geography:["US","Europe"],buyer_roles:["Founders","VP Sales"],pain_points:["Sales qualification workload","Scaling outbound"],technologies:["CRM","Sales automation"]},
+  buying_signals:["Hiring sales teams","Expanding outbound","Entering new markets"],
+  prospects:[
+    {company:"Company A",score:94,intent:"high",signal:"Hiring SDRs",reason:"Sales hiring is a direct signal of outbound expansion and growing qualification workload.",source:"company careers / hiring evidence"},
+    {company:"Company B",score:89,intent:"high",signal:"US expansion",reason:"Entering a new market can create additional demand for scalable sales conversations.",source:"company announcement / market evidence"},
+    {company:"Company C",score:86,intent:"medium",signal:"Growing inbound volume",reason:"Growth signals suggest potential value from automating repetitive qualification conversations.",source:"company / product evidence"}
+  ],
+  messages:[
+    {company:"Company A",subject:"Scaling your sales team",email:"Hi there,\n\nSaw the signs of SDR expansion at Company A. As sales teams grow, qualification can become a bottleneck for reps.\n\nGrower helps B2B SaaS teams automate repetitive voice conversations so reps can focus on qualified opportunities.\n\nWould it be useful to see how it works?",cta:"Book a demo →"},
+    {company:"Company B",subject:"Supporting your US expansion",email:"Hi there,\n\nYour US expansion looks like a natural point to think about scalable sales conversations.\n\nGrower can help automate qualification and follow-up while your team focuses on higher-value conversations.\n\nOpen to a quick demo?",cta:"Book a demo →"},
+    {company:"Company C",subject:"Handling growing inbound volume",email:"Hi there,\n\nGrowth is great, but increasing inbound conversations can put pressure on sales teams.\n\nGrower helps automate the repetitive qualification layer with AI voice agents.\n\nWorth a quick look?",cta:"Book a demo →"}
+  ]
+};
+function showForm(hasWebsite){websiteMode=hasWebsite;document.getElementById("landing").classList.add("hidden");document.getElementById("formView").classList.remove("hidden");document.getElementById("websiteField").classList.toggle("hidden",!hasWebsite);document.getElementById("ideaFields").classList.toggle("hidden",hasWebsite);document.getElementById("formHint").textContent=hasWebsite?"We'll use your website as the starting point for market research.":"No website is needed. Tell us what you're building and we'll research the market from there."}
+function setAgent(i,state){const e=document.getElementById("a"+i);e.classList.remove("running","done");e.classList.add(state);e.querySelector(".status").textContent=state==="running"?"working":state==="done"?"complete":"waiting"}
+function sleep(ms){return new Promise(r=>setTimeout(r,ms))}
+async function runCampaign(){
+ document.getElementById("formError").innerHTML=""; const payload={website:document.getElementById("website").value.trim(),product:document.getElementById("product").value.trim(),ideal_customer:document.getElementById("customer").value.trim(),geography:document.getElementById("geo").value.trim()};
+ if(websiteMode&&!payload.website){return document.getElementById("formError").innerHTML='<div class="error">Enter a website URL.</div>'}
+ if(!websiteMode&&!payload.product){return document.getElementById("formError").innerHTML='<div class="error">Tell us what you want to build.</div>'}
+ document.getElementById("formView").classList.add("hidden");document.getElementById("progress").classList.remove("hidden");
+ for(let i=0;i<4;i++){setAgent(i,"running");await sleep(650);if(i>0)setAgent(i-1,"done")}
+ setAgent(3,"done");
+ let data=demo;
+ if(ASSISTANT_URL){
+   try{data=await callAssistant(payload)}catch(e){document.getElementById("runError").innerHTML='<div class="error">Live agent call failed, so the demo result is shown. '+escapeHtml(e.message)+'</div>'}
+ }
+ await sleep(350);document.getElementById("progress").classList.add("hidden");render(data,payload);
+}
+async function callAssistant(payload){
+ const now=String(Date.now());const r=await fetch(ASSISTANT_URL,{method:"POST",headers:{"Content-Type":"application/json","A2A-Version":"1.0"},body:JSON.stringify({jsonrpc:"2.0",id:now,method:"SendMessage",params:{message:{messageId:now,role:"ROLE_USER",parts:[{text:"GROW_CAMPAIGN: "+JSON.stringify(payload)}]}}})});
+ if(!r.ok)throw new Error("HTTP "+r.status);const raw=await r.json();let text=extractText(raw);let outer=safeJson(text);if(outer?.type==="grower_campaign"){const stages=outer.stages||[];const parsed={};for(const s of stages){const x=safeJson(s.response);if(s.agent.includes("icp")){parsed.icp=x?.ideal_customer||x?.icp||x}if(s.agent.includes("prospect")){parsed.prospects=x?.prospects||[]}if(s.agent.includes("outreach")){parsed.messages=x?.messages||[]}if(s.agent.includes("research"))parsed.research=x}return {...demo,...parsed}}return demo;
+}
+function extractText(o){let m=o?.result?.message||o?.result?.artifact||o?.message||o;let parts=m?.parts||[];let t=parts.map(p=>p.text||p?.content?.text||"").join("\n");return t||o?.result?.text||o?.text||""}
+function safeJson(s){try{return typeof s==="string"?JSON.parse(s):s}catch{return null}}
+function escapeHtml(s){return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]))}
+function arr(v){return Array.isArray(v)?v:(v?[v]:[])}
+function render(d,payload){
+ document.getElementById("results").classList.remove("hidden");const icp=d.icp||demo.icp;const sig=arr(d.buying_signals||demo.buying_signals);const prospects=arr(d.prospects||demo.prospects);const messages=arr(d.messages||demo.messages);
+ document.getElementById("resultBody").innerHTML='<div class="section"><div class="section-title">Ideal customer</div><div class="icp">'+
+ [['Industry',arr(icp.industries).join(", ")],['Buyer',arr(icp.buyer_roles||icp.buyers).join(", ")],['Geography',arr(icp.geography).join(", ")||payload.geography||"—"],['Company size',icp.company_size||"—"],['Pain points',arr(icp.pain_points).join(", ")||"—"],['Technologies',arr(icp.technologies).join(", ")||"—"]].map(x=>'<div class="kv"><b>'+escapeHtml(x[0])+'</b><span>'+escapeHtml(x[1])+'</span></div>').join('')+'</div></div>'+
+ '<div class="section"><div class="section-title">Buying signals</div><div class="signals">'+sig.map(x=>'<span class="signal">• '+escapeHtml(x)+'</span>').join('')+'</div></div>'+
+ '<div class="section"><div class="section-title">Hot prospects</div><div class="prospects">'+prospects.map((x,i)=>'<article class="prospect"><div class="company">'+escapeHtml(x.company||"Company")+' 🔥</div><span class="score">Score: '+escapeHtml(x.score??"—")+'</span><div class="signal-line">'+escapeHtml(x.signal||"Relevant signal")+'</div><div class="reason">'+escapeHtml(x.reason||"Evidence-backed ICP fit.")+'</div><span class="source">'+escapeHtml(x.source||"Source evidence")+'</span><button class="cta" onclick="document.getElementById(\'outreach-'+i+'\').scrollIntoView({behavior:\'smooth\'})">View Outreach</button></article>').join('')+'</div></div>'+
+ '<div class="section"><div class="section-title">Personalized outreach</div>'+messages.map((x,i)=>'<article class="outreach" id="outreach-'+i+'"><div class="subject">Subject: '+escapeHtml(x.subject||"A quick idea for your team")+'</div><div class="email">'+escapeHtml(x.email||"")+'</div><button class="cta" onclick="alert(\'Demo booking placeholder — connect your calendar here.\')">'+escapeHtml(x.cta||"Book a demo →")+'</button></article>').join('')+'</div>';
+ window.scrollTo({top:document.getElementById("results").offsetTop-20,behavior:"smooth"});
+}
+function resetApp(){location.reload()}
+</script>
+</body>
+</html>
