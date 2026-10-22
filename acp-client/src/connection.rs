@@ -12,6 +12,8 @@
 //! which keeps update routing simple: streamed `session/update` notifications
 //! are funneled through one channel and filtered by session id.
 
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -68,6 +70,13 @@ impl Default for AcpConnectConfig {
 /// background task on drop.
 pub struct AcpConnection {
     commands: mpsc::UnboundedSender<Command>,
+    /// Side channel for `session/cancel`, kept separate from `commands` so a
+    /// cancel can reach the agent *during* a turn — the command loop is busy
+    /// awaiting that turn and can't service a queued `Command` until it ends.
+    cancels: mpsc::UnboundedSender<SessionId>,
+    /// Set while a turn is in flight so a second `prompt` is rejected up front
+    /// rather than silently queued behind it (one active turn per connection).
+    turn_active: Arc<AtomicBool>,
     capabilities: NegotiatedCapabilities,
     task: tokio::task::JoinHandle<()>,
 }
@@ -88,9 +97,6 @@ enum Command {
         text: String,
         events: mpsc::UnboundedSender<TurnEvent>,
     },
-    Cancel {
-        session_id: SessionId,
-    },
     Shutdown,
 }
 
@@ -106,6 +112,11 @@ impl AcpConnection {
         T: ConnectTo<Client> + Send + 'static,
     {
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<Command>();
+        let (cancel_tx, cancel_rx) = mpsc::unbounded_channel::<SessionId>();
+        // Shared between the handle (claims it in `prompt`) and the command loop
+        // (releases it when the turn ends).
+        let turn_active = Arc::new(AtomicBool::new(false));
+        let turn_active_task = turn_active.clone();
         let (ready_tx, ready_rx) = oneshot::channel::<Result<NegotiatedCapabilities, AcpError>>();
         // Shared so the transport-error arm below can still report if the
         // connection task fails before the handshake ever runs.
@@ -164,6 +175,8 @@ impl AcpConnection {
                         ready_for_run,
                         cmd_rx,
                         update_rx,
+                        cancel_rx,
+                        turn_active_task,
                     )
                     .await;
                     Ok(())
@@ -185,6 +198,8 @@ impl AcpConnection {
         match ready_rx.await {
             Ok(Ok(capabilities)) => Ok(AcpConnection {
                 commands: cmd_tx,
+                cancels: cancel_tx,
+                turn_active,
                 capabilities,
                 task,
             }),
@@ -201,6 +216,7 @@ impl AcpConnection {
 
     /// Open a new session (`session/new`). Returns the agent's session id.
     pub async fn new_session(&self, params: NewSessionParams) -> Result<SessionId, AcpError> {
+        ensure_absolute_cwd(&params.cwd)?;
         let (reply, reply_rx) = oneshot::channel();
         self.commands
             .send(Command::NewSession { params, reply })
@@ -221,6 +237,7 @@ impl AcpConnection {
         session_id: SessionId,
         params: NewSessionParams,
     ) -> Result<(), AcpError> {
+        ensure_absolute_cwd(&params.cwd)?;
         let (reply, reply_rx) = oneshot::channel();
         self.commands
             .send(Command::LoadSession {
@@ -239,21 +256,43 @@ impl AcpConnection {
         session_id: SessionId,
         text: impl Into<String>,
     ) -> Result<TurnStream, AcpError> {
+        // Claim the turn slot before sending, so a prompt issued while another
+        // turn is live is rejected here instead of silently queued behind it. The
+        // command loop releases the slot when the turn ends.
+        if self
+            .turn_active
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Err(AcpError::TurnInProgress);
+        }
         let (events_tx, events_rx) = mpsc::unbounded_channel::<TurnEvent>();
-        self.commands
+        if self
+            .commands
             .send(Command::Prompt {
                 session_id,
                 text: text.into(),
                 events: events_tx,
             })
-            .map_err(|_| AcpError::ConnectionClosed)?;
+            .is_err()
+        {
+            // The task is gone and no turn will run; release the slot we claimed.
+            self.turn_active.store(false, Ordering::Release);
+            return Err(AcpError::ConnectionClosed);
+        }
         Ok(TurnStream { events: events_rx })
     }
 
     /// Cancel the running turn for a session (`session/cancel`).
+    ///
+    /// Delivered on a side channel, not the command queue, so it reaches the agent
+    /// *during* the turn it targets — the command loop is busy awaiting that turn
+    /// and would not service a queued command until it ended. [`run_turn`] selects
+    /// on this channel and sends `session/cancel`; the turn then resolves with a
+    /// cancelled stop reason. A cancel with no matching live turn is dropped.
     pub fn cancel(&self, session_id: SessionId) -> Result<(), AcpError> {
-        self.commands
-            .send(Command::Cancel { session_id })
+        self.cancels
+            .send(session_id)
             .map_err(|_| AcpError::ConnectionClosed)
     }
 
@@ -286,6 +325,9 @@ pub async fn connect_local(
 
 /// The body of the connection task: initialize, negotiate, then serve commands
 /// until the handle is dropped or the connection drops.
+// The spawned task owns each of its channels and the handshake config outright;
+// bundling them into a struct would only move the same fields behind one name.
+#[allow(clippy::too_many_arguments)]
 async fn run_connection(
     conn: ConnectionTo<Agent>,
     required: RequiredCapabilities,
@@ -294,6 +336,8 @@ async fn run_connection(
     ready_slot: ReadySlot,
     mut cmd_rx: mpsc::UnboundedReceiver<Command>,
     mut update_rx: mpsc::UnboundedReceiver<SessionNotification>,
+    mut cancel_rx: mpsc::UnboundedReceiver<SessionId>,
+    turn_active: Arc<AtomicBool>,
 ) {
     // Claim the readiness sender; from here on this task owns signaling, and the
     // transport-error arm in `connect` finds the slot empty.
@@ -382,12 +426,17 @@ async fn run_connection(
                 text,
                 events,
             } => {
-                run_turn(&conn, &mut update_rx, &session_id, &text, &events).await;
-            }
-            Command::Cancel { session_id } => {
-                let _ = conn.send_notification(
-                    agent_client_protocol::schema::v1::CancelNotification::new(session_id),
-                );
+                run_turn(
+                    &conn,
+                    &mut update_rx,
+                    &mut cancel_rx,
+                    &session_id,
+                    &text,
+                    &events,
+                )
+                .await;
+                // Release the one-active-turn slot the handle claimed in `prompt`.
+                turn_active.store(false, Ordering::Release);
             }
             Command::Shutdown => break,
         }
@@ -399,18 +448,29 @@ async fn run_connection(
 async fn run_turn(
     conn: &ConnectionTo<Agent>,
     updates: &mut mpsc::UnboundedReceiver<SessionNotification>,
+    cancels: &mut mpsc::UnboundedReceiver<SessionId>,
     session_id: &SessionId,
     text: &str,
     events: &mpsc::UnboundedSender<TurnEvent>,
 ) {
     // Clear any stragglers buffered while the connection was idle between turns.
     while updates.try_recv().is_ok() {}
+    // Drop cancels left over from a prior turn so they can't abort this one before
+    // it has a chance to run.
+    while cancels.try_recv().is_ok() {}
 
     let blocks = vec![ContentBlock::Text(TextContent::new(text.to_string()))];
     let prompt = conn
         .send_request(PromptRequest::new(session_id.clone(), blocks))
         .block_task();
     tokio::pin!(prompt);
+
+    // Once `session/cancel` is sent we stop watching for cancels and let the
+    // prompt resolve — the agent still answers it, with a cancelled stop reason.
+    let mut cancel_sent = false;
+    // Cleared when the cancel channel closes (handle dropped), so the select arm
+    // stops firing on an endlessly-ready closed receiver.
+    let mut cancels_open = true;
 
     loop {
         tokio::select! {
@@ -443,6 +503,50 @@ async fn run_turn(
                     }
                 }
             }
+            maybe_cancel = cancels.recv(), if cancels_open && !cancel_sent => {
+                match maybe_cancel {
+                    Some(sid) if &sid == session_id => {
+                        // Ask the agent to end this turn early. It still resolves
+                        // the prompt, so we keep looping until that response lands.
+                        let _ = conn.send_notification(
+                            agent_client_protocol::schema::v1::CancelNotification::new(
+                                session_id.clone(),
+                            ),
+                        );
+                        cancel_sent = true;
+                    }
+                    Some(_) => {} // cancel aimed at another session
+                    None => cancels_open = false, // handle dropped; teardown imminent
+                }
+            }
+        }
+    }
+}
+
+/// Reject a non-absolute session `cwd` before it reaches the agent: the ACP
+/// protocol requires an absolute path, and a relative one otherwise fails later
+/// with a vaguer agent-side error.
+fn ensure_absolute_cwd(cwd: &Path) -> Result<(), AcpError> {
+    if cwd.is_absolute() {
+        Ok(())
+    } else {
+        Err(AcpError::InvalidParams(format!(
+            "session cwd must be an absolute path, got {}",
+            cwd.display()
+        )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn absolute_cwd_is_accepted_relative_is_rejected() {
+        assert!(ensure_absolute_cwd(Path::new("/abs/workspace")).is_ok());
+        match ensure_absolute_cwd(Path::new("rel/workspace")) {
+            Err(AcpError::InvalidParams(_)) => {}
+            other => panic!("expected InvalidParams, got {other:?}"),
         }
     }
 }
