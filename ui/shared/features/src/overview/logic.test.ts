@@ -271,7 +271,22 @@ describe("mergeNeeds (design 5A, eng R5)", () => {
         outside: 2,
       }),
       agents: ok([{ id: "x", name: "X", reason: "crashed", budget: false }]),
-      budgets: ok([{ id: "bud", label: "Your monthly", crossed: 80, state: "warning" as const }]),
+      budgets: ok([
+        {
+          id: "bud",
+          label: "Your monthly",
+          agentId: null,
+          crossed: 80,
+          state: "warning" as const,
+          over: null,
+          stopped: false,
+          stops: false,
+          runsOutOn: null,
+          resetsAt: null,
+          period: "month" as const,
+          covers: "routed_calls" as const,
+        },
+      ]),
       sessions: ok({ failed: 3, agents: ["X"] }),
     });
     expect(n.rows.map((r) => r.key)).toEqual([

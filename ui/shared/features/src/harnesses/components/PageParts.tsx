@@ -1,6 +1,6 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/harnesses/components/PageParts.tsx. Local edits: optional
 // props typed `| undefined`; the split sentence's `@eslint-react/no-array-index-key` disable is a plain comment (no
-// such rule here); Prettier formatting.
+// such rule here); development (84c6f11eb); Prettier formatting.
 // The bento (legacy ui/ on development, 3aac84f66: 8bf09bf29): `Reveal` is `RevealGroup` (@nasiko/ui/composites),
 // `Card asChild` -> `render`.
 /**
@@ -358,6 +358,7 @@ export function LiveFallbackLevel({
             title={copy.lastSessions(LIVE_SESSION_LIMIT)}
             note={copy.sessionsOwnOnly}
             linkable={!preview}
+            ledger
             items={d.sessions}
             initial={RECENT_SESSIONS_SHOWN}
             emptyText={copy.noRecentSessions}
@@ -431,6 +432,7 @@ export function UserLevel({
           title="Recent sessions"
           note={self || viewerIsSuperuser ? undefined : copy.sessionsOwnOnly}
           linkable={!preview && (self || viewerIsSuperuser)}
+          ledger={self}
           items={res.recent_sessions ?? []}
           initial={RECENT_SESSIONS_SHOWN}
         />

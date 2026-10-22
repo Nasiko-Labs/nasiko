@@ -74,6 +74,7 @@ describe("sidebar items", () => {
   it("lists every page with a name, even as the collapsed rail", async () => {
     renderApp("/tokenops");
     await screen.findByRole("navigation", { name: "Main" });
+    // Every core item is static: the one probe-gated item (Budgets) is Enterprise only, so the EE suite covers it.
     // jsdom is 1024 px wide: no cookie means the first-visit rail (design review 9A).
     expect(sidebarState()).toBe("collapsed");
     for (const n of NAV_ITEMS)
@@ -89,7 +90,7 @@ describe("sidebar items", () => {
     ["/deploy", "Agents"],
     ["/builds", "Agents"],
     ["/chat", "Chat"],
-    ["/", "Overview"],
+    ["/", "Home"],
   ])("marks %s as %s with aria-current", async (url, label) => {
     renderApp(url);
     await waitFor(() => {
@@ -173,7 +174,7 @@ describe("sidebar items", () => {
 });
 
 describe("header brand link", () => {
-  it("goes to the Overview through the router without marking itself current", async () => {
+  it("goes Home through the router without marking itself current", async () => {
     wide();
     renderApp("/agents");
     await screen.findByRole("navigation", { name: "Main" });
@@ -184,7 +185,7 @@ describe("header brand link", () => {
       expect(routerState().pathname).toBe("/");
     });
     expect(brand).not.toHaveAttribute("aria-current");
-    expect(navLink("Overview")).toHaveAttribute("aria-current", "page");
+    expect(navLink("Home")).toHaveAttribute("aria-current", "page");
   });
 
   it("leaves a modified click (new tab) to the browser", async () => {

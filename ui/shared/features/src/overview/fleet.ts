@@ -1,7 +1,9 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/overview/api.ts (`useFleetHealth`, `FleetHealth` and their
 // helpers only). Local edits: split out of overview/api.ts into this module so the Agents catalog's `?health=` filter
 // can use it before the Overview page is ported (overview/api.ts re-exports it from here); imports are the ported
-// modules; `displayName` is declared as a function property (the Overview passes it on unbound); Prettier formatting.
+// modules; `displayName` is declared as a function property (the Overview passes it on unbound); development
+// (be271b564, 1c28b0bb9): `fleetSeries` (members never read the fleet-wide spend series) and the budgets slot's
+// `useOverviewBudgets` for the budget reasons; Prettier formatting.
 /**
  * The fleet ratings (plans/feat-overview.md §5, eng review R1): `useFleetHealth()` is the one source of them, called
  * by the Overview and by the Agents catalog while `?health=` is set, so both apply the same rules to the same directory
@@ -11,7 +13,7 @@ import { useCallback, useMemo } from "react";
 import { useAgentsDirectory } from "../agents/api";
 import { displayStatus, isHarness } from "../agents/status";
 import type { Agent } from "../agents/types";
-import { useBudgetStatus, useBudgets } from "../router/api";
+import { useSlots } from "@nasiko/app-core/edition/edition-context";
 import { useDashboard, useTimeseries } from "../tokenops/api";
 import { zeroFillTimeline } from "../tokenops/series";
 import type { AgentFinopsRow } from "../tokenops/types";
@@ -87,8 +89,10 @@ export interface FleetHealth {
 /**
  * Ratings for every visible agent. `enabled: false` (the Agents catalog without `?health=`) fetches and computes
  * nothing. There are no per-agent `/deployment` reads: the recent-crash rule was dropped (/ship review).
+ * `fleetSeries: false` (anyone but a superuser) never reads the fleet-wide spend series, which isn't ACL-scoped
+ * (plans/feat-agent-centric.md eng "Health input contract"): there is no spike check then, only the ACL-scoped dashboards.
  */
-export function useFleetHealth(now: Date, enabled = true): FleetHealth {
+export function useFleetHealth(now: Date, enabled = true, fleetSeries = true): FleetHealth {
   const dir = useAgentsDirectory(enabled);
   const win7 = useMemo(() => resolveWindow({ preset: "7d" }, now), [now]);
   const win30 = useMemo(() => resolveWindow({ preset: "30d" }, now), [now]);
@@ -99,17 +103,14 @@ export function useFleetHealth(now: Date, enabled = true): FleetHealth {
   // First run (no agents but harnesses) fetches nothing else (design review 7A).
   const on = enabled && agents.length > 0;
   // One dashboard, not two: `compare=previous` carries each agent's preceding
-  // window in the same response.
+  // window in the same response (the server already queried it for the KPI
+  // strip and used to discard the per-agent detail).
   const cur = useDashboard(win7, {}, "agent", "current", on, true);
   const d30 = useDashboard(win30, {}, "agent", "current", on);
-  const ts = useTimeseries(win30, {}, on);
-  // Budgets hidden: no server support for /api/budgets yet (R-L10). Restore the commented lines when it lands.
-  // const budgets = useBudgets(on)
-  // const budgetsAbsent = isEndpointAbsent(budgets.error)
-  const budgets = useBudgets(false);
-  const budgetsAbsent = true;
-  // Only once the list answered: on a server without budgets (bare 404) no status request goes out.
-  const budgetStatus = useBudgetStatus(on && budgets.isSuccess);
+  const ts = useTimeseries(win30, {}, on && fleetSeries);
+  // Budgets are Enterprise only (docs/requirements/budgets.md): a stopped budget is an agent's reason where the
+  // edition has them. An OSS build answers settled-and-empty without a request, so ratings never wait on it.
+  const budgetInputs = useSlots().budgets.useOverviewBudgets(on);
   const deployedCount = useMemo(
     () => agents.filter((a) => RATED.has(displayStatus(a.status, false))).length,
     [agents],
@@ -124,12 +125,7 @@ export function useFleetHealth(now: Date, enabled = true): FleetHealth {
   );
   // Any failed cost input leaves ratings incomplete: rate cost as unknown rather than silently healthy.
   const costFailed =
-    on &&
-    (cur.isError ||
-      d30.isError ||
-      ts.isError ||
-      (budgets.isError && !budgetsAbsent) ||
-      budgetStatus.isError);
+    on && (cur.isError || d30.isError || (fleetSeries && ts.isError) || budgetInputs.failed);
 
   const summary = useMemo(() => {
     if (!enabled || !dir.data) return null;
@@ -142,7 +138,9 @@ export function useFleetHealth(now: Date, enabled = true): FleetHealth {
       (d30.data?.agents ?? []).map((r) => [r.agent_id, r.avg_cost_per_operation ?? null]),
     );
     const days =
-      ts.data?.bucket === "day"
+      // Gate the data, not just the fetch: a disabled query still hands out a cached fleet series (TokenOps fills the same
+      // key), which a member must never be rated on (review: security, Codex P1).
+      fleetSeries && ts.data?.bucket === "day"
         ? zeroFillTimeline(ts.data.points, "day", win30.start, win30.end).map((p) => ({
             date: p.iso.slice(0, 10),
             spend: p.spend,
@@ -150,13 +148,7 @@ export function useFleetHealth(now: Date, enabled = true): FleetHealth {
           }))
         : [];
     const spikes = spikeDrivers(days, uniqueByName(dir.byNameAll), t);
-    const budgetByAgent = new Map<string, { stopped: boolean; exceeded: boolean }>();
-    const statusById = new Map((budgetStatus.data?.data ?? []).map((st) => [st.budget_id, st]));
-    for (const b of budgets.data ?? []) {
-      const st = statusById.get(b.id);
-      if (b.agent_id && st)
-        budgetByAgent.set(b.agent_id, { stopped: st.stopped, exceeded: st.state === "exceeded" });
-    }
+    const budgetByAgent = budgetInputs.byAgent;
     return summarizeFleet(
       agents.map((a) =>
         rateAgent(
@@ -188,9 +180,9 @@ export function useFleetHealth(now: Date, enabled = true): FleetHealth {
     costFailed,
     d30.data,
     ts.data,
+    fleetSeries,
     win30,
-    budgets.data,
-    budgetStatus.data,
+    budgetInputs.byAgent,
   ]);
 
   const p95 = useMemo(
@@ -202,10 +194,9 @@ export function useFleetHealth(now: Date, enabled = true): FleetHealth {
       ),
     [cur.data],
   );
-  const budgetsSettled =
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- the lab's guard, kept as written
-    budgetsAbsent || budgets.isError || budgetStatus.isSuccess || budgetStatus.isError;
-  const ratingsPending = on && (cur.isPending || d30.isPending || ts.isPending || !budgetsSettled);
+  const ratingsPending =
+    on &&
+    (cur.isPending || d30.isPending || (fleetSeries && ts.isPending) || !budgetInputs.settled);
   return {
     isPending: dir.isPending || (on && cur.isPending),
     error: dir.error,
@@ -219,7 +210,9 @@ export function useFleetHealth(now: Date, enabled = true): FleetHealth {
     p95,
     retry: () => void dir.refetch(),
     retryCost: () => {
-      for (const q of [cur, d30, ts, budgets, budgetStatus]) if (q.isError) void q.refetch();
+      // Never the fleet series for a member: Retry must not send the request the gate withholds.
+      for (const q of [cur, d30, ...(fleetSeries ? [ts] : [])]) if (q.isError) void q.refetch();
+      budgetInputs.retry();
     },
   };
 }

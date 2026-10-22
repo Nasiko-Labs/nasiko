@@ -2,7 +2,7 @@
 // imports and Prettier.
 /**
  * The first-run guide (docs/superpowers/specs/2026-10-01-login-onboarding-design.md §2-§3): a first-time user gets it on
- * `/` with Overview hidden; the persona saves on Continue; the model step saves a default config; skipping lasts the
+ * `/` with Home hidden; the persona saves on Continue; the model step saves a default config; skipping lasts the
  * session; the Ready step opens the persona's page.
  */
 import { screen, waitFor, within } from "@testing-library/react";
@@ -27,11 +27,14 @@ const nav = () => screen.getByRole("navigation", { name: shellCopy.navLabel, hid
 const guide = () => screen.findByRole("dialog", { name: /welcome to nasiko/i });
 
 describe("first-run guide", () => {
-  it("stands in for the Overview and hides its nav item", async () => {
+  it("stands in for Home and hides its nav item", async () => {
     firstTime();
     renderApp("/");
     await guide();
-    expect(within(nav()).queryByRole("link", { name: "Overview", hidden: true })).toBeNull();
+    expect(within(nav()).queryByRole("link", { name: "Home", hidden: true })).toBeNull();
+    // Home was the first group's only item: Fleet opens the nav, without a header (PR3 review).
+    expect(within(nav()).getByRole("link", { name: "Agents", hidden: true })).toBeInTheDocument();
+    expect(within(nav()).queryByText(shellCopy.nav.fleet)).toBeNull();
     expect(screen.queryByRole("button", { name: "Setup guide", hidden: true })).toBeNull();
     await waitFor(() => expect(screen.getByRole("button", { name: /get started/i })).toHaveFocus());
   });
@@ -80,7 +83,7 @@ describe("first-run guide", () => {
     });
   });
 
-  it("skips for the session: the Overview and its nav item come back", async () => {
+  it("skips for the session: Home and its nav item come back", async () => {
     firstTime();
     const user = userEvent.setup();
     renderApp("/");
@@ -88,7 +91,8 @@ describe("first-run guide", () => {
     await user.click(screen.getByRole("button", { name: "Skip guide" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(await screen.findByRole("button", { name: "Setup guide" })).toBeInTheDocument();
-    expect(within(nav()).getByRole("link", { name: "Overview" })).toBeInTheDocument();
+    expect(within(nav()).getByRole("link", { name: "Home" })).toBeInTheDocument();
+    expect(within(nav()).getByText(shellCopy.nav.fleet)).toBeInTheDocument();
     expect(localStorage.getItem(skipKey(ADMIN_ID))).toBe("1");
   });
 
@@ -178,8 +182,14 @@ describe("first-run guide", () => {
   it("treats an older server (bare 404) as finished", async () => {
     configureMocks({ variant: "onboarding-absent" });
     renderApp("/");
-    expect(await screen.findByRole("button", { name: "Setup guide" })).toBeInTheDocument();
+    // The home paints before the onboarding read settles, so the button turns into the older server's sheet trigger.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Setup guide" })).toHaveAttribute(
+        "aria-haspopup",
+        "dialog",
+      ),
+    );
     expect(screen.queryByRole("dialog")).toBeNull();
-    expect(within(nav()).getByRole("link", { name: "Overview" })).toBeInTheDocument();
+    expect(within(nav()).getByRole("link", { name: "Home" })).toBeInTheDocument();
   });
 });

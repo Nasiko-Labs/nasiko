@@ -1,4 +1,5 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/onboarding/copy.ts. Local edits: none beyond imports and Prettier.
+// Ported from nasiko-ui-lab@1b99bdda common/src/features/onboarding/copy.ts. Local edits: none beyond imports and
+// Prettier. Development (be271b564, 309a7bd8f): Home.
 /**
  * Every onboarding string. The flow and wording follow the user's prototype ("Nasiko Console", screen "02 Onboarding"),
  * with the lab's naming: the platform is OpenRuntime, never a "control plane".
@@ -18,7 +19,7 @@ export const copy = {
     skipStep: "Skip this step",
     getStarted: "Get started",
     continue: "Continue",
-    finish: "Go to Overview",
+    finish: "Go to Home",
     left: (minutes: number) =>
       minutes
         ? `About ${minutes} min left · skip anytime`
@@ -161,8 +162,8 @@ export const copy = {
       line: "Each agent has switches that trim what it sends to the model — bulky tool output, old chat history, long answers. Find them under Agent → Settings → Optimisation, and see what they saved on TokenOps.",
       beta: "These are new and still being tuned, so try them on one agent first. You can turn any of them off at any time.",
     },
-    overview: "Open the Overview",
-    overviewLine: "Spend, sessions and agent health",
+    home: "Open Home",
+    homeLine: "Your agents, their spend and health, and what needs you",
     open: (page: string) => `Open ${page}`,
     openLine: "Your suggested first screen",
   },

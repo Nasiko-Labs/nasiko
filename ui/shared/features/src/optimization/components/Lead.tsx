@@ -1,6 +1,7 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/optimization/components/Lead.tsx. Local edits: `Button
-// asChild` around the Chat link -> `ButtonLink` (agents/components/ButtonLink.tsx); the TokenOps link is the navigation port's `Link` (`@nasiko/app-core/navigation`)
-// with `hrefFor('/tokenops', …)`; optional props typed `| undefined`; Prettier formatting.
+// asChild` around the Chat link -> `ButtonLink` (agents/components/ButtonLink.tsx); the TokenOps link is the navigation
+// port's `Link` (`@nasiko/app-core/navigation`) with `hrefFor('/tokenops', …)`; optional props typed `| undefined`;
+// development (5d46c313f): `@nasiko/app-core/slice`; Prettier formatting.
 // The bento (legacy ui/ on development, 3aac84f66: 8bf09bf29): `Reveal` is `RevealGroup`; `m` and `transitions` from
 // @nasiko/ui/motion.
 /**
@@ -30,13 +31,12 @@ import {
   latestChange,
   pctOf,
   savedCost,
-  savedOf,
   tokensShort,
   trendOf,
   TREND_DAYS,
-  type BucketSize,
   type LeadState,
 } from "../lead";
+import { savedOf, type BucketSize } from "@nasiko/app-core/slice";
 import type { SettingsChange } from "../types";
 import { Outline } from "./Outline";
 import { SavingsTrend, type LabelledRow } from "./SavingsTrend";

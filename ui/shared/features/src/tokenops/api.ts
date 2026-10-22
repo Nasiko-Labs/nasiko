@@ -2,7 +2,7 @@
 // `productKey(scope, "tokenops", <the lab's key parts>)` (`providers` is `productKey(scope, "providers")`, still outside
 // the "tokenops" feature as in the lab), so the `*Query` builders take `scope` first and the hooks read it from
 // `useProductScope()`; `dayQuery`/`savingsQuery` are split out of `useDay`/`useSavings` (development 49950eb1e: GenUI
-// reads them); `apiData`/`apiFetch`/`withQuery` come from `@nasiko/data-access/product`; Prettier formatting.
+// reads them; development 5d46c313f: a `limit`, part of the key); `apiData`/`apiFetch`/`withQuery` come from `@nasiko/data-access/product`; Prettier formatting.
 /**
  * TokenOps queries. Every key contains the resolved window key plus every filter, so
  * a stale response for an old filter set can never render for a new one (plan A17).
@@ -244,10 +244,12 @@ export function savingsQuery(
   win: ResolvedWindow,
   f: Filters,
   scope: "total" | "agent" | "session",
+  /** Rows per breakdown (the server's default is 25, its maximum 200); part of the key, so reads never mix. */
+  limit?: number,
 ) {
-  const path = withQuery(`${FINOPS}/savings`, { ...win.params, ...filterParams(f), scope });
+  const path = withQuery(`${FINOPS}/savings`, { ...win.params, ...filterParams(f), scope, limit });
   return queryOptions({
-    queryKey: tokenopsKeys.savings(product, win.key, f, scope),
+    queryKey: [...tokenopsKeys.savings(product, win.key, f, scope), limit ?? null],
     queryFn: ({ signal }) => apiData<SavingsData>(path, { signal }),
     meta: { path },
   });
@@ -258,9 +260,11 @@ export function useSavings(
   f: Filters,
   scope: "total" | "agent" | "session",
   enabled: boolean,
+  /** Rows per breakdown (the server's default is 25, its maximum 200); part of the key, so reads never mix. */
+  limit?: number,
 ) {
   return useQuery({
-    ...savingsQuery(useProductScope(), win, f, scope),
+    ...savingsQuery(useProductScope(), win, f, scope, limit),
     placeholderData: keepPreviousData,
     enabled,
   });

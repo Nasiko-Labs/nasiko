@@ -1,17 +1,16 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/agents/detail/ActivityTab.tsx. Local edits: the session
-// links are the navigation port's `Link` (`@nasiko/app-core/navigation`) to `/sessions/<id>`; the level `Select` narrows Base UI's nullable `onValueChange` value and
-// gets `items` (value → label) so the trigger shows "All levels" as the lab's Radix value did; `ApiError` is
-// `ProductApiError`; Prettier formatting.
+// Ported from nasiko-ui-lab@1b99bdda common/src/features/agents/detail/ActivityTab.tsx. Local edits: the session links
+// are the navigation port's `Link` (`@nasiko/app-core/navigation`) to `/sessions/<id>`; the level `Select` narrows Base
+// UI's nullable `onValueChange` value and gets `items` (value → label) so the trigger shows "All levels" as the lab's
+// Radix value did; `ApiError` is `ProductApiError`; development (c96a2ba3a): recent sessions moved to the agent hub;
+// Prettier formatting.
 // Legacy ui/ on development (3aac84f66, dd9fe0f64): usage and resources are one strip (`StatGroup`), memory a meter
-// against the limit, recent sessions full rows with their duration and an All sessions link.
+// against the limit.
 "use client";
 
 /**
- * Activity (plan §7.3): 24 h stats, resources, recent sessions (name-matched from the first
- * 100 session/list rows, created after the agent), and logs (newest first) with a live tail.
+ * Activity (plan §7.3): 24 h stats, resources, and logs (newest first) with a live tail. Recent sessions moved to the
+ * Overview's hub, which reads a bounded 7-day sample (plans/feat-agent-centric.md PR1c, eng "Hub sessions").
  */
-import { hrefFor } from "@nasiko/app-core/url-state";
-import Link from "@nasiko/app-core/navigation";
 import { useId, useState, type ReactNode } from "react";
 import { Button } from "@nasiko/ui/primitives";
 import { Field, FieldLabel } from "@nasiko/ui/primitives";
@@ -26,21 +25,14 @@ import { Progress } from "@nasiko/ui/primitives";
 import { Skeleton } from "@nasiko/ui/primitives";
 import { SearchInput } from "@nasiko/ui/composites";
 import { LogDrawer } from "../../sessions/LogDrawer";
-import { fmtDuration, fmtInt, fmtLatency, fmtMoney } from "@nasiko/ui/lib";
+import { fmtInt, fmtLatency, fmtMoney } from "@nasiko/ui/lib";
 import { cn } from "@nasiko/ui/cn";
 import { ProductApiError as ApiError } from "@nasiko/data-access/product";
-import {
-  useAgentLogs,
-  useAgentResources,
-  useAgentSessions,
-  useAgentStats,
-  useAgentsDirectory,
-} from "../api";
+import { useAgentLogs, useAgentResources, useAgentStats } from "../api";
 import { ErrorNote, LearnMore, Section } from "../components/bits";
-import { relTime } from "../format";
 import { copy } from "../copy";
 import type { AgentView } from "../normalize";
-import { MEMORY_WARN_PCT, RECENT_SESSIONS_SHOWN, SESSIONS_SCAN } from "../tuning";
+import { MEMORY_WARN_PCT } from "../tuning";
 
 const LEVELS = ["", "ERROR", "WARN", "INFO"] as const;
 /** Radix Select items can't have an empty value: "all levels" travels as this key. */
@@ -57,13 +49,10 @@ export function ActivityTab({
 }) {
   const stats = useAgentStats(agent.id, true);
   const resources = useAgentResources(agent.id, true);
-  const sessions = useAgentSessions(agent.name, agent.createdAt, true);
-  const dir = useAgentsDirectory();
   const [level, setLevel] = useState<(typeof LEVELS)[number]>("");
   const [term, setTerm] = useState("");
   const levelId = useId();
   const logs = useAgentLogs(agent.id, level, true);
-  const shared = (dir.byNameAll.get(agent.name)?.length ?? 0) > 1;
   const obsOff = (e: unknown) => e instanceof ApiError && e.status === 503;
   const lines = (logs.data ?? []).filter(
     (l) => !term || l.message.toLowerCase().includes(term.toLowerCase()),
@@ -127,61 +116,6 @@ export function ActivityTab({
           )}
         </StatGroup>
       </section>
-
-      <Section
-        title={copy.recentSessions}
-        action={
-          <Link
-            href={hrefFor("/sessions", { agent: agent.id })}
-            className="text-sm text-primary-text underline-offset-4 hover:underline"
-          >
-            {copy.allSessions}
-          </Link>
-        }
-      >
-        {shared ? <p className="text-xs text-muted-foreground">{copy.nameCollision}</p> : null}
-        {sessions.isPending ? (
-          <Skeleton className="h-16" />
-        ) : sessions.isError ? (
-          <ErrorNote error={sessions.error} onRetry={() => void sessions.refetch()} />
-        ) : sessions.data.length ? (
-          <ul className="-mx-2 text-sm">
-            {sessions.data.slice(0, RECENT_SESSIONS_SHOWN).map((s) => (
-              <li key={s.session_id} className="border-b border-border last:border-b-0">
-                <Link
-                  href={`/sessions/${encodeURIComponent(s.session_id)}`}
-                  className="grid grid-cols-[minmax(0,1fr)_auto] items-baseline gap-x-4 rounded-md px-2 py-2 outline-none hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring sm:grid-cols-[minmax(0,1fr)_5rem_4.5rem_7rem]"
-                >
-                  <span className="truncate">
-                    {s.first_input ? (
-                      `“${s.first_input}”`
-                    ) : (
-                      <span className="font-mono text-xs">{s.session_id}</span>
-                    )}
-                  </span>
-                  <span
-                    title={copy.duration}
-                    className="hidden text-right text-muted-foreground tabular-nums sm:block"
-                  >
-                    {fmtDuration(s.duration_ms)}
-                  </span>
-                  <span
-                    title={copy.cost}
-                    className="hidden text-right text-muted-foreground tabular-nums sm:block"
-                  >
-                    {fmtMoney(s.cost_summary.total.cost)}
-                  </span>
-                  <span className="text-right text-xs text-muted-foreground tabular-nums">
-                    {relTime(s.start_time)}
-                  </span>
-                </Link>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="text-sm text-muted-foreground">{copy.noSessions(SESSIONS_SCAN)}</p>
-        )}
-      </Section>
 
       <Section
         title={copy.logs}

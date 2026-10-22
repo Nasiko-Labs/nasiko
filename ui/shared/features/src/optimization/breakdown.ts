@@ -1,9 +1,9 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/optimization/breakdown.ts. Local edits: none beyond imports
-// and Prettier.
+// and Prettier. Development (5d46c313f): `savedOf` from `@nasiko/app-core/slice`.
 /**
  * By agent (plans/feat-optimization-page.md R7B): the sort and the cut. Pure; tested in breakdown.test.ts.
  */
-import { savedOf } from "./lead";
+import { savedOf } from "@nasiko/app-core/slice";
 import type { AgentSort } from "./search";
 import type { SavingsAgent } from "./types";
 

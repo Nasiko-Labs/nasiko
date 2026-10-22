@@ -2,8 +2,7 @@
 // (the bento, 8bf09bf29; the tour target, dd9fe0f64). Local edits, as in this file's earlier port: the spike clause's
 // `m.span layoutId` is `MorphSpan` from `@nasiko/ui/motion`; `d3-shape`'s `area`/`line`/`curveMonotoneX` come from
 // `@nasiko/ui/charts-kit` (the UI package owns the dependency) and `m` from `@nasiko/ui/motion`; `Reveal` is
-// `RevealGroup`; the Budgets link on Month-end stays hidden (no budgets server here; development shows it when the
-// budgets capability is available, a later budgets change); optional props admit `undefined`; the `@eslint-react`
+// `RevealGroup`; the Month-end figure's Budgets link is the budgets slot's `OpenLink` (1c28b0bb9); optional props admit `undefined`; the `@eslint-react`
 // directives are plain comments (no such rule here); Prettier formatting.
 "use client";
 
@@ -25,6 +24,7 @@ import { Delta, PanelError, RevealGroup, RevealItem, SpotlightCard } from "@nasi
 import { m, MorphSpan } from "@nasiko/ui/motion";
 import { Badge, Skeleton } from "@nasiko/ui/primitives";
 import { cn } from "@nasiko/ui/cn";
+import { useSlots } from "@nasiko/app-core/edition/edition-context";
 import {
   describeDelta,
   fmtCostPerOp,
@@ -79,6 +79,8 @@ export function SummaryHero({
   /** The savings strip, the bento's last row. */
   children?: ReactNode;
 }) {
+  // Budgets are Enterprise only: the link is the layer's, and an OSS build has neither it nor the route.
+  const OpenBudgets = useSlots().budgets.OpenLink;
   if (error) return <PanelError error={error} onRetry={onRetry} what="the summary" />;
   const kpis = data?.kpis;
   const delta = (k: KpiValue | undefined, polarity: Polarity) =>
@@ -117,7 +119,11 @@ export function SummaryHero({
           />
           <Tile
             label="Month-end at pace"
-            // Budgets hidden: no budgets server here (development links Budgets from this tile when it has one).
+            aside={
+              // Budgets count their own populations, not this page's trace_usage, so only a link — and only where
+              // the edition has budgets and the server serves them (the layer's own probe).
+              OpenBudgets ? <OpenBudgets /> : null
+            }
             value={
               month?.show && month.low !== null && month.high !== null ? (
                 <>

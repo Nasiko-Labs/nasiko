@@ -21,7 +21,8 @@
     "./optimization": "./src/optimization.ts",
     "./router": "./src/router.ts",
     "./seed": "./src/seed.ts",
-    "./seed-harness": "./src/seed-harness.ts"
+    "./seed-harness": "./src/seed-harness.ts",
+    "./spanBuilder": "./src/spanBuilder.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",

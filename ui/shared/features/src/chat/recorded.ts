@@ -1,5 +1,6 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/chat/recorded.ts. Local edits: optional fields admit
-// `undefined` (exactOptionalPropertyTypes); Prettier formatting.
+// `undefined` (exactOptionalPropertyTypes); development (84c6f11eb): the session ledger maps recorded tool calls with
+// it; Prettier formatting.
 /**
  * A recorded harness chat's tool calls as step chips (v1c §5.7, ND-10, R2, DP11). Pure. Raw values are
  * kept and each detail section is stringified and cut only when it opens (E8), so a message with 2000
@@ -61,7 +62,12 @@ const STATUS_WORD: Partial<Record<RecordedStatus, string>> = {
 };
 
 type Json = Record<string, unknown>;
-const isObject = (v: unknown): v is Json => !!v && typeof v === "object" && !Array.isArray(v);
+export const isObject = (v: unknown): v is Json =>
+  !!v && typeof v === "object" && !Array.isArray(v);
+
+/** A message's `metadata.coding_agent` record (`types/src/coding_agent.rs`), or null when it has none. */
+export const codingAgentOf = (metadata: unknown): Json | null =>
+  isObject(metadata) && isObject(metadata.coding_agent) ? metadata.coding_agent : null;
 
 /**
  * The calls on an assistant message: `metadata.coding_agent.tool_calls`, only when it is an array
@@ -73,8 +79,7 @@ export function toolCallsToSteps(
     console.warn(m);
   },
 ): RecordedCalls | null {
-  const agent =
-    isObject(metadata) && isObject(metadata.coding_agent) ? metadata.coding_agent : null;
+  const agent = codingAgentOf(metadata);
   const calls = agent?.tool_calls;
   if (!Array.isArray(calls)) return null;
   const steps: RecordedStep[] = [];

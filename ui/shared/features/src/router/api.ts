@@ -3,8 +3,9 @@
 // first, the hooks read it from `useProductScope()`, and `afterConfigWrite`/`afterCustomWrite` take it too); the shared
 // provider catalog is TokenOps' scoped `providersQuery(scope)`; `prefetchRouter(client, scope)` uses `client.query`
 // (the deprecated `prefetchQuery`'s fetch-if-stale, error swallowed); optional fields admit `undefined` and an absent
-// predicate is omitted (exactOptionalPropertyTypes); `ApiError` is `ProductApiError`; Prettier
-// formatting. `configsQuery` is exported (development bb0683400: GenUI's router views read it).
+// predicate is omitted (exactOptionalPropertyTypes); `ApiError` is `ProductApiError`; development (55840ba24,
+// 1c28b0bb9): the budget reads and writes moved to the EE budgets feature; `routingQuery` is exported for the budget
+// levers; Prettier formatting. `configsQuery` is exported (development bb0683400: GenUI's router views read it).
 /**
  * LLM router queries and mutations (plan §4, §7), keys under `['router']`.
  * - Per-agent routing reads fan out through the router's own limiter (eng #4): no server batch read exists (R-L13).
@@ -47,11 +48,6 @@ import {
 import type {
   AgentRouting,
   AgentUsage,
-  Budget,
-  BudgetAlert,
-  BudgetStatusResponse,
-  CreateBudgetBody,
-  UpdateBudgetBody,
   CreateConfigBody,
   CreateCustomProviderBody,
   CustomProvider,
@@ -78,9 +74,6 @@ export const routerKeys = {
   registry: (scope: Scope) => rk(scope, "registry"),
   custom: (scope: Scope) => rk(scope, "custom"),
   usage: (scope: Scope) => rk(scope, "usage"),
-  budgets: (scope: Scope) => rk(scope, "budgets"),
-  budgetStatus: (scope: Scope) => rk(scope, "budgets", "status"),
-  budgetAlerts: (scope: Scope) => rk(scope, "budgets", "alerts"),
 };
 
 // R-L13: one request per agent until a batch read exists; this page's own limiter, not observability's.
@@ -192,7 +185,8 @@ export function useUsageByAgent(enabled: boolean) {
   });
 }
 
-const routingQuery = (scope: Scope, id: string) => ({
+/** One agent's routing read, as query options (the budget levers read it fresh before a pin, eng D4). */
+export const routingQuery = (scope: Scope, id: string) => ({
   queryKey: routerKeys.agent(scope, id),
   queryFn: ({ signal }: { signal: AbortSignal }) =>
     routerLimiter(signal, () => apiData<AgentRouting>(`/api/agents/${id}/llm-config`, { signal })),
@@ -483,80 +477,3 @@ export function referencingConfigs(err: unknown): string[] | null {
 }
 
 const json = { "Content-Type": "application/json" };
-
-// ─── R2 budgets (proposed R-L10, mocked) ────────────────────────────────────
-
-/** The caller's budgets; `['router','budgets']` prefixes status and alerts too, so one invalidation re-reads all three. */
-export function useBudgets(enabled = true) {
-  const scope = useProductScope();
-  return useQuery({
-    queryKey: [...routerKeys.budgets(scope), "list"] as const,
-    queryFn: ({ signal }) => apiData<Budget[]>("/api/budgets", { signal }),
-    enabled,
-    ...list,
-  });
-}
-
-export function useBudgetStatus(enabled: boolean) {
-  const scope = useProductScope();
-  const path = "/api/budgets/status";
-  return useQuery({
-    queryKey: routerKeys.budgetStatus(scope),
-    queryFn: async ({ signal }) => {
-      const body = await apiFetch<BudgetStatusResponse>(path, { signal });
-      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive read of server data (the lab's)
-      if (!body || !Array.isArray(body.data))
-        throw new ApiError(200, body, path, `GET ${path} → unexpected response (no data array)`);
-      return body;
-    },
-    enabled,
-    ...list,
-  });
-}
-
-/** @public Hidden until /api/budgets lands (R-L10); RouterPage has the call commented out. */
-export function useBudgetAlerts(enabled: boolean) {
-  const scope = useProductScope();
-  return useQuery({
-    queryKey: routerKeys.budgetAlerts(scope),
-    queryFn: ({ signal }) => apiData<BudgetAlert[]>("/api/budgets/alerts", { signal }),
-    enabled,
-    ...list,
-  });
-}
-
-export type SaveBudget =
-  | { mode: "create"; body: CreateBudgetBody }
-  | { mode: "update"; id: string; body: UpdateBudgetBody };
-
-export function useSaveBudget() {
-  const scope = useProductScope();
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (v: SaveBudget) =>
-      v.mode === "create"
-        ? apiData<Budget>("/api/budgets", {
-            method: "POST",
-            headers: json,
-            body: JSON.stringify(v.body),
-          })
-        : apiData<Budget>(`/api/budgets/${v.id}`, {
-            method: "PUT",
-            headers: json,
-            body: JSON.stringify(v.body),
-          }),
-    // Awaited, so the mutation stays pending until the list is re-read (no window where a stale row can be clicked again).
-    onSettled: () => qc.invalidateQueries({ queryKey: routerKeys.budgets(scope) }),
-  });
-}
-
-export function useDeleteBudget() {
-  const scope = useProductScope();
-  const qc = useQueryClient();
-  return useMutation({
-    // DELETE answers `data: null`, so apiFetch (apiData treats a null data as an error).
-    mutationFn: (id: string) => apiFetch(`/api/budgets/${id}`, { method: "DELETE" }),
-    // Awaited, so the mutation stays pending until the list is re-read (no window where a stale row can be clicked again).
-    onSettled: () => qc.invalidateQueries({ queryKey: routerKeys.budgets(scope) }),
-  });
-}

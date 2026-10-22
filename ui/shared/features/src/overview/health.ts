@@ -1,6 +1,7 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/overview/health.ts. Local edits: `Rating` and
-// `SpikeHit` live in ./rating.ts (re-exported here) so copy.ts reads them without an import cycle; the optional
-// `budget`/`spike` inputs admit `undefined` (exactOptionalPropertyTypes); Prettier formatting.
+// Ported from nasiko-ui-lab@1b99bdda common/src/features/overview/health.ts. Local edits: `Rating` and `SpikeHit` live
+// in ./rating.ts (re-exported here) so copy.ts reads them without an import cycle; the optional `budget`/`spike` inputs
+// admit `undefined` (exactOptionalPropertyTypes); development (5d46c313f): the hub rates one agent with these rules;
+// Prettier formatting.
 /**
  * Fleet health (plans/feat-overview.md §5): each agent gets Healthy / Watch / Needs action / Unknown from explainable
  * rules, and its worst dimension wins. Thresholds are relative to the agent's own history (tuning.ts), never a
@@ -143,7 +144,7 @@ export interface FleetHealthSummary {
   byId: Map<string, AgentHealth>;
   /** Watch agents, most reasons first, then by name. */
   watch: AgentHealth[];
-  /** Needs-action agents, for Needs you (they don't repeat in the Fleet health card). */
+  /** Needs-action agents, for Needs you (the home's rows show every agent's rating). */
   action: AgentHealth[];
 }
 

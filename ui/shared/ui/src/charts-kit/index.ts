@@ -31,3 +31,13 @@ export { CostScatter, type CostScatterProps, type ScatterPoint } from "./cost-sc
 // TokenOps' hero spend curve (legacy ui/ on development, 3aac84f66: 8bf09bf29) draws with d3-shape directly; the
 // UI package owns that dependency, so features take its helpers from here.
 export { area, curveMonotoneX, line } from "d3-shape";
+// The agent hub's stacked lanes on one time axis (development 5d46c313f) and the budgets' burn chart (c43cec94e).
+export { LaneChart, type LaneChartProps, type LaneSpec } from "./lanes";
+export { laneBand, type LaneBand } from "./lane-band";
+export {
+  BurnChart,
+  type BurnChartData,
+  type BurnChartLabels,
+  type BurnChartPoint,
+  type BurnChartProps,
+} from "./burn-chart";

@@ -1,5 +1,6 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/agents/tuning.ts. Local edits: the full module replaces the
-// pilot's three-value subset; `SAVED_NOTE_MS` is re-exported from `@nasiko/ui/lib`; Prettier formatting.
+// pilot's three-value subset; `SAVED_NOTE_MS` is re-exported from `@nasiko/ui/lib`; development (c96a2ba3a): the
+// recent-sessions scan moved to the hub; Prettier formatting.
 /** Timing knobs for the agent pages (plan §6.2), in one place. */
 
 /** Poll interval while something is deploying, restarting or rolling back. */
@@ -24,20 +25,15 @@ export const ERROR_LOGS_STALE_MS = 60_000;
 export const AGENTS_PAGE = 100;
 /** Safety stop for the paging loop (plan: up to 300 agents). */
 export const AGENTS_MAX_PAGES = 20;
-/** Recent sessions are filtered from the first page of session/list (limit ≤ 100). */
-export const SESSIONS_SCAN = 100;
 /** Error-dot query size (logs are newest first; the level filter runs after this cut). */
 export const ERROR_LOG_LIMIT = 50;
 /** Error-dot window (`since`, RFC 3339). */
 export const ERROR_LOG_WINDOW_MS = 24 * 3_600_000;
 /** Activity log list size. */
 export const LOG_LIMIT = 200;
-/** Recent sessions window when the agent has no `created_at`. */
-export const SESSIONS_FALLBACK_MS = 7 * 86_400_000;
 /** Owner names for superusers (`GET /api/users` page size). */
 export const USERS_LIMIT = 200;
-/** Rows shown: recent sessions on Activity, error lines on the OSS crash card. */
-export const RECENT_SESSIONS_SHOWN = 10;
+/** Error lines on the OSS crash card. */
 export const CRASH_LINES_SHOWN = 5;
 /** Memory use (% of the container limit) from which the Activity meter turns warning. */
 export const MEMORY_WARN_PCT = 85;

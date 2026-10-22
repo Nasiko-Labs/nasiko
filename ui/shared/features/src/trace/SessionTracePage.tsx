@@ -6,9 +6,11 @@
 // the scoped `sessionKeys.trace(scope, id)`; the lab's `EmptyState` (shared/state-card) is `LabEmptyState`; the trace
 // Select takes `items` so its closed value shows the trace's label, not its id; the trace tabs' `data-[state=on]:`
 // class is `aria-pressed:` (Base UI's Toggle); optional props and `setSearch`'s `replace` admit `undefined`
-// (exactOptionalPropertyTypes); Prettier formatting. Previous/Next (legacy ui/ on development, 3aac84f66: 2c7d51a5d,
-// fb76eaecc, 78a5861a4): `SessionSiblings` steps with `router.replace` to the next row, the list's search and the list
-// as state. The top bar (e8379db5a) holds the breadcrumb (`crumbs`) and the arrows.
+// (exactOptionalPropertyTypes); development (84c6f11eb): the breadcrumb's component moved to ./Crumbs.tsx (the ledger's)
+// and a harness session's owner gets Open ledger (`ButtonLink` to `?view=ledger`); Prettier formatting. Previous/Next
+// (legacy ui/ on development, 3aac84f66: 2c7d51a5d, fb76eaecc, 78a5861a4): `SessionSiblings` steps with `router.replace`
+// to the next row, the list's search and the list as state. The top bar (e8379db5a) holds the breadcrumb (`crumbs`)
+// and the arrows.
 /**
  * Session trace: why one run cost what it did.
  *
@@ -25,7 +27,7 @@ import { useSiblings } from "@nasiko/app-core/siblings";
 import { useProductScope } from "@nasiko/data-access/product";
 import { hrefFor, searchString } from "@nasiko/app-core/url-state";
 import { ButtonLink } from "../agents/components/ButtonLink";
-import { Link2, ListTree, Table2, Workflow } from "lucide-react";
+import { Link2, ListTree, Rows3, Table2, Workflow } from "lucide-react";
 import { useDeferredValue, useMemo, useState } from "react";
 import { PageHeader } from "@nasiko/ui/composites";
 import { PageLoader, PrevNext } from "@nasiko/ui/composites";
@@ -33,6 +35,7 @@ import { LabEmptyState as EmptyState } from "@nasiko/ui/composites";
 import { SearchInput } from "@nasiko/ui/composites";
 import { Button } from "@nasiko/ui/primitives";
 import { Toggle } from "@nasiko/ui/primitives";
+import { useChatProbe } from "../chat/api";
 import { OpenChatLink } from "../chat/components/OpenChatLink";
 import { OpenFlowLink } from "../flows/components/OpenFlowLink";
 import {
@@ -69,6 +72,7 @@ import { IN_PROGRESS_MS } from "../observability/tuning";
 import type { TraceDetail, TraceEntry } from "../observability/types";
 import { AgentLink } from "../agents/components/AgentLink";
 import { useAgentsDirectory } from "../agents/api";
+import { isHarness } from "../agents/status";
 import { requestSpanOf } from "../optimization/logic";
 import { sessionKeys, useSessionDetail } from "../sessions/api";
 import { traceSearchSchema, type SessionsSearch, type TraceSearch } from "../sessions/search";
@@ -331,6 +335,10 @@ export function SessionTracePage({
   const agentLabel = agentRaw
     ? (agents.byName.get(agentRaw)?.display_name ?? agentRaw)
     : copy.unknownAgent;
+  const agentRow = agentRaw ? agents.byName.get(agentRaw) : undefined;
+  const agentIsHarness = !!agentRow && isHarness(agentRow);
+  // The ledger reads the chat's messages, which only its owner can: chat's own probe (shared with Open chat) says so.
+  const ownChat = useChatProbe(sessionId, agentIsHarness).state === "yours";
   const sessionCost = session.data?.cost_summary.total.cost;
   const numTraces = session.data?.num_traces ?? traces.length;
   const firstStart = traces[0]?.root_span.start_time;
@@ -401,6 +409,19 @@ export function SessionTracePage({
         }
         actions={
           <>
+            {agentIsHarness && ownChat ? (
+              <ButtonLink
+                variant="outline"
+                size="sm"
+                className="pointer-coarse:min-h-11"
+                href={hrefFor(`/sessions/${encodeURIComponent(sessionId)}`, {
+                  ...search,
+                  view: "ledger",
+                })}
+              >
+                <Rows3 className="size-3.5" aria-hidden /> {copy.openLedger}
+              </ButtonLink>
+            ) : null}
             <OpenChatLink sessionId={sessionId} />
             {/* The selected trace's flow: a flow's id is its trace id (plans/feat-flows.md F19). */}
             {traceId ? <OpenFlowLink flowId={traceId} /> : null}

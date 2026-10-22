@@ -447,11 +447,6 @@ describe("errors (plan §4.9)", () => {
     [400, "base_url must not be empty", "The provider details aren’t complete.", "baseUrl"],
     [409, "provider is still referenced", "This provider is still used by configs.", undefined],
     [504, "gateway timeout", copy.errDown, undefined],
-    // R2 budgets: matched before the config name rule ("already exists").
-    [409, "budget already exists for this scope", "This scope already has a budget.", undefined],
-    [409, "budget changed elsewhere", copy.budgetChanged, undefined],
-    [400, "limit_usd must be greater than 0", copy.limitPositive, "limit"],
-    [400, "thresholds must be whole percents from 1 to 100", copy.thresholdRange, "thresholds"],
   ])('maps %i "%s"', (status, text, problem, field) => {
     const v = routerError(e(status, text));
     expect(v.problem).toBe(problem);

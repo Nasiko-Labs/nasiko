@@ -5,4 +5,5 @@ export {
   VirtualDataTable,
   type VirtualDataTableProps,
   type VirtualDataTableColumn,
+  type VirtualDataTableGroups,
 } from "./virtual-data-table";

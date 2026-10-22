@@ -1,6 +1,6 @@
 // Browser-owned session scope; seeded only after the authenticated /api/me bootstrap.
 // The product tour (legacy ui/ on development, 3aac84f66: dd9fe0f64): the tour host is mounted beside the build
-// toasts.
+// toasts. Development (1c28b0bb9): the budgets slot's `useNavHidden`.
 "use client";
 
 import { skipToken, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
@@ -165,7 +165,7 @@ function Shell({
   const queryClient = useQueryClient();
   const guideHidden = useGuideHiddenNav();
   // A layer's hidden items (EE: Access control until the org context says `can_read_org`), from its own query.
-  const { navHidden, shellSplit } = useSlots();
+  const { navHidden, shellSplit, budgets } = useSlots();
   const [feature = "nav-hidden", ...parts] = navHidden?.query.queryKey ?? [];
   const layer = useQuery({
     queryFn: skipToken,
@@ -173,6 +173,9 @@ function Shell({
     queryKey: productKey(scope, String(feature), ...parts),
   });
   const layerHidden = navHidden ? navHidden.hidden(layer.data) : NO_ITEMS;
+  // Budgets are Enterprise only (development 1c28b0bb9): an OSS build has no item to hide, and EE hides its own while
+  // its availability probe is out.
+  const budgetsHidden = budgets.useNavHidden();
   // Other tabs' sign-outs and sign-ins (review D2): installed once per client.
   useEffect(
     () =>
@@ -203,7 +206,7 @@ function Shell({
           </>
         }
         split={shellSplit}
-        hidden={[...guideHidden, ...layerHidden]}
+        hidden={[...guideHidden, ...layerHidden, ...budgetsHidden]}
         badges={
           building
             ? { "/agents": { count: building, label: deployCopy.toast.agentsBadge(building) } }

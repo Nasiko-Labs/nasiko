@@ -1,6 +1,7 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/harnesses/components/IndividualView.tsx. Local edits: the
-// session link is the navigation port's `Link` (`@nasiko/app-core/navigation`) to `/sessions/<id>` (encoded as the lab's router encoded params; the lab's empty
-// `search` is no query); optional props typed `| undefined`; Prettier formatting.
+// session link is the navigation port's `Link` (`@nasiko/app-core/navigation`) to `/sessions/<id>` (encoded as the
+// lab's router encoded params; the lab's empty `search` is no query); optional props typed `| undefined`; development
+// (84c6f11eb): the viewer's own sessions open the ledger (`?view=ledger`); Prettier formatting.
 /**
  * Individual level (plan §6, G9): full form from the usage endpoint, degraded form from
  * the live fallback. Session links open Sessions only for the viewer themself or a
@@ -40,6 +41,7 @@ const when = (iso: string) =>
 export function SessionsList({
   items,
   linkable,
+  ledger = false,
   title,
   note,
   emptyText = "No harness sessions in this window.",
@@ -47,6 +49,9 @@ export function SessionsList({
 }: {
   items: SessionItem[];
   linkable: boolean;
+  /** The viewer's own sessions: links open the ledger (plans/feat-agent-centric.md PR1b). Anyone else's open the
+   * trace, since only a chat's owner can read its messages. */
+  ledger?: boolean;
   title: string;
   note?: string | undefined;
   emptyText?: string | undefined;
@@ -75,7 +80,7 @@ export function SessionsList({
               >
                 {linkable ? (
                   <Link
-                    href={`/sessions/${encodeURIComponent(s.session_id)}`}
+                    href={`/sessions/${encodeURIComponent(s.session_id)}${ledger ? "?view=ledger" : ""}`}
                     className="inline-flex min-h-8 items-center gap-1 hover:underline"
                   >
                     {label}

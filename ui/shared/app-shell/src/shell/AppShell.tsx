@@ -1,7 +1,7 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/app/shell/AppShell.tsx.
-// Shared navigation port, children slot, admitted primitives and browser cookie/width default. Development
-// (3aac84f66, 66a4c64d0): a layer's `split` (the `shellSplit` slot) wraps the page area; e8379db5a: one top bar
-// (`ShellTopBar`, @nasiko/app-core/shell/TopBar) above every page replaces the phones' slim bar.
+// Ported from nasiko-ui-lab@1b99bdda common/src/app/shell/AppShell.tsx. Shared navigation port, children slot, admitted
+// primitives and browser cookie/width default. Development (3aac84f66, 66a4c64d0): a layer's `split` (the `shellSplit`
+// slot) wraps the page area; e8379db5a: one top bar (`ShellTopBar`, @nasiko/app-core/shell/TopBar) above every page
+// replaces the phones' slim bar. Development (309a7bd8f).
 "use client";
 
 /**
@@ -48,7 +48,7 @@ export function AppShell({
   /** A layer's split around the page (the `shellSplit` slot; EE: the Weave assistant panel). */
   split?: ComponentType<{ path: string; children: ReactNode }> | null | undefined;
   badges?: NavBadges | undefined;
-  /** Nav paths to leave out (onboarding hides Overview while its guide stands in for it). */
+  /** Nav paths to leave out (onboarding hides Home while its guide stands in for it). */
   hidden?: readonly string[] | undefined;
   /** Optional browser cookie snapshot; undefined falls back to the current cookie and width. */
   initialOpen?: boolean | undefined;

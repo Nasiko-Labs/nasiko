@@ -1,11 +1,12 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/agents/api.ts. Local edits: every query key is scoped,
 // `productKey(scope, "agents", …the lab's parts)` (`agentKeys.*` and the query-option builders `directoryQuery`,
 // `catalogQuery`, `ownedQuery`, `agentDetailQuery` take the scope first; hooks read it from `useProductScope()`), so
-// the lab's `AGENTS_DIRECTORY_KEY` constant is `agentKeys.directory(scope)` and the pilot's `AGENTS_FEATURE` names
-// the feature; prefix invalidations use `agentKeys.all(scope)`/`productKey` prefixes and the delete's `queryKey[2]
-// === id` predicate reads index 6 (the scope adds four parts); the TokenOps savings invalidations are
-// `productKey(scope, "tokenops", …)`; `ApiError` is `ProductApiError`; `qc.query` for the lab's deprecated `fetchQuery` (same fetch-if-stale); named
-// eslint-disables on the defensive reads of server data; Prettier formatting.
+// the lab's `AGENTS_DIRECTORY_KEY` constant is `agentKeys.directory(scope)` and the pilot's `AGENTS_FEATURE` names the
+// feature; prefix invalidations use `agentKeys.all(scope)`/`productKey` prefixes and the delete's `queryKey[2] === id`
+// predicate reads index 6 (the scope adds four parts); the TokenOps savings invalidations are `productKey(scope,
+// "tokenops", …)`; `ApiError` is `ProductApiError`; `qc.query` for the lab's deprecated `fetchQuery` (same
+// fetch-if-stale); named eslint-disables on the defensive reads of server data; development (c96a2ba3a): the Activity
+// tab's recent sessions (`useAgentSessions`) moved to the agent hub's bounded sample; Prettier formatting.
 /**
  * Agent queries and mutations (plan §5, §6). Facts that shape them:
  * - The list is a bare array paged by offset over `created_at DESC`, so pages are deduped by
@@ -40,7 +41,7 @@ import {
 } from "@nasiko/data-access/product";
 import { isSignedOutLocally, isSigningOut, signInGeneration } from "@nasiko/app-core/session";
 import { createLimiter } from "../observability/limiter";
-import type { LogLine, SessionListResponse, SessionSummary } from "../observability/types";
+import type { LogLine } from "../observability/types";
 import type { components } from "@nasiko/data-access/product/schema";
 import {
   grantsBodySchema,
@@ -63,8 +64,6 @@ import {
   LIVE_CARD_STALE_MS,
   LOG_LIMIT,
   POLL_MS,
-  SESSIONS_FALLBACK_MS,
-  SESSIONS_SCAN,
   USER_SEARCH_MAX,
   USER_SEARCH_MIN,
   USERS_LIMIT,
@@ -124,8 +123,6 @@ export const agentKeys = {
   errorLogs: (scope: Scope, id: string) => k(scope, "error-logs", id),
   logs: (scope: Scope, id: string, level: string) => k(scope, "logs", id, level),
   liveCard: (scope: Scope, id: string) => k(scope, "live-card", id),
-  sessions: (scope: Scope, name: string, createdAt: string) =>
-    k(scope, "sessions", name, createdAt),
   usage24h: (scope: Scope) => k(scope, "usage-24h"),
   users: (scope: Scope) => k(scope, "users"),
   userSearch: (scope: Scope, q: string) => k(scope, "user-search", q),
@@ -537,33 +534,6 @@ export function useLiveCard(id: string, enabled: boolean) {
       apiFetch<unknown>(`/api/agents/${id}/.well-known/agent-card.json`, { signal }),
     enabled,
     staleTime: LIVE_CARD_STALE_MS,
-  });
-}
-
-/**
- * Recent sessions: the first page of session/list (no agent filter server-side), matched by
- * the raw agent name and created after the agent was (a deleted namesake's sessions drop).
- */
-export function useAgentSessions(name: string, createdAt: string, enabled: boolean) {
-  return useQuery({
-    queryKey: agentKeys.sessions(useProductScope(), name, createdAt),
-    queryFn: ({ signal }) =>
-      apiFetch<SessionListResponse>(
-        withQuery(`${OBS}/session/list`, {
-          start_time: createdAt || new Date(Date.now() - SESSIONS_FALLBACK_MS).toISOString(),
-          limit: SESSIONS_SCAN,
-          offset: 0,
-        }),
-        { signal },
-      ),
-    enabled: enabled && !!name,
-    select: (r): SessionSummary[] => {
-      const since = createdAt ? Date.parse(createdAt) : 0;
-      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- server data, read defensively whatever the generated type says
-      return (r?.data?.sessions ?? []).filter(
-        (s) => s.agent_id === name && (!s.start_time || Date.parse(s.start_time) >= since),
-      );
-    },
   });
 }
 

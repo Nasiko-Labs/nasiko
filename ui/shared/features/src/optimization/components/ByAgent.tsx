@@ -1,5 +1,5 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/optimization/components/ByAgent.tsx. Local edits: none
-// beyond imports and Prettier.
+// Ported from nasiko-ui-lab@1b99bdda common/src/features/optimization/components/ByAgent.tsx. Local edits: none beyond
+// imports and Prettier. Development (5d46c313f): `@nasiko/app-core/slice`.
 // The redesign of TokenOps, Optimization, Overview and Harnesses (legacy ui/ on development, 3aac84f66: 8bf09bf29),
 // merged into this port.
 /**
@@ -32,7 +32,8 @@ import type { Proposed } from "../api";
 import { sortAgents, TOP_AGENTS } from "../breakdown";
 import type { AgentSort } from "../search";
 import { copy } from "../copy";
-import { pctOf, savedOf, savedShare, tokensShort } from "../lead";
+import { pctOf, savedShare, tokensShort } from "../lead";
+import { savedOf } from "@nasiko/app-core/slice";
 import type { SavingsAgent } from "../types";
 import { Outline } from "./Outline";
 import { Without } from "./Without";

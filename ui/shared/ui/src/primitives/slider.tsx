@@ -4,7 +4,8 @@
 // thumb is `bg-background`). Local edits: Base UI `Slider` (Root › Control › Track › Indicator, Thumb) instead of
 // Radix (Root › Track › Range, Thumb); Base UI marks orientation with `data-orientation` like Radix and disabled
 // with `data-disabled`, so the lab's class strings carry over; `value`/`defaultValue` accept a number or an array
-// in both; `cn` from "../lib/cn".
+// in both; `cn` from "../lib/cn"; development (c96a2ba3a): `thumbLabel` / `thumbValueText` name the
+// focusable thumb (axe `aria-input-field-name`), through Base UI's `getAriaLabel` / `getAriaValueText` on its input.
 import { Slider as SliderPrimitive } from "@base-ui/react/slider"
 import { cn } from "../lib/cn"
 import * as React from "react"
@@ -15,8 +16,14 @@ function Slider({
   value,
   min = 0,
   max = 100,
+  thumbLabel,
+  thumbValueText,
   ...props
-}: SliderPrimitive.Root.Props) {
+}: SliderPrimitive.Root.Props & {
+  /** Names the focusable thumb (it owns the slider role; a label on the root never reaches it). */
+  thumbLabel?: string | undefined
+  thumbValueText?: string | undefined
+}) {
   const values = React.useMemo((): readonly number[] => {
     const pick = (v: unknown): readonly number[] | null =>
       Array.isArray(v) ? (v as readonly number[]) : typeof v === "number" ? [v] : null
@@ -50,6 +57,8 @@ function Slider({
           <SliderPrimitive.Thumb
             data-slot="slider-thumb"
             key={index}
+            getAriaLabel={thumbLabel === undefined ? undefined : () => thumbLabel}
+            getAriaValueText={thumbValueText === undefined ? undefined : () => thumbValueText}
             className="block size-4 shrink-0 rounded-full border border-primary bg-background shadow-sm ring-ring/50 transition-[color,box-shadow] hover:ring-4 focus-visible:ring-4 focus-visible:outline-hidden disabled:pointer-events-none disabled:opacity-50"
           />
         ))}

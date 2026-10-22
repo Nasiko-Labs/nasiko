@@ -29,6 +29,7 @@ const data = (n: number): NeedsYouData => ({
   lastChecked: 0,
   retry: { requests: () => {}, agents: () => {}, budgets: () => {}, sessions: () => {} },
   sessions: {} as NeedsYouData["sessions"],
+  waiting: {} as NeedsYouData["waiting"],
 });
 
 function renderCard(d: NeedsYouData) {

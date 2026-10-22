@@ -1,5 +1,5 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/observability/limiter.ts. Local edits: none beyond imports
-// and Prettier.
+// Ported from nasiko-ui-lab@1b99bdda common/src/features/observability/limiter.ts. Local edits: none beyond imports and
+// Prettier. Development (f7252ccb2): a queued read dropped when its row scrolls away.
 /**
  * At most `max` async jobs in flight. A finished job hands its slot straight to the next
  * waiter (no window where a newcomer can overshoot), and a waiter whose query was
@@ -20,6 +20,8 @@ export function createLimiter(max: number) {
   };
 
   return async function run<T>(signal: AbortSignal, fn: () => Promise<T>): Promise<T> {
+    // Already cancelled: its abort event has fired, so a queued wait would never settle.
+    if (signal.aborted) throw signal.reason ?? new DOMException("Aborted", "AbortError");
     if (active >= max) {
       await new Promise<void>((resolve, reject) => {
         const entry = { start: resolve, signal };

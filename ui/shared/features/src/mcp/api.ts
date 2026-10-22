@@ -1,14 +1,21 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/mcp/api.ts. Local edits: every key is scoped,
 // `productKey(scope, "mcp", …the lab's parts)` (`mcpKeys.*` take the scope first and `mcpKeys.all(scope)` is the
 // feature prefix; `connectorsQuery`, `toolkitsQuery` and `connectorQuery` take it too); the arrow-function hooks are
-// function declarations that read the scope from `useProductScope()`; `refreshAll` takes the scope; `json()` omits
-// an absent body (exactOptionalPropertyTypes); Prettier formatting.
+// function declarations that read the scope from `useProductScope()`; `refreshAll` takes the scope; `json()` omits an
+// absent body (exactOptionalPropertyTypes); development (c96a2ba3a): `agentToolsQuery` shared with the hub's Tools card
+// (`useAgentBlockedTools`); Prettier formatting.
 /**
  * MCP queries and mutations (plans/feat-mcp.md). Every read and write is under `['mcp', …]`, and every write
  * invalidates it all: a connect changes the catalog, the server's page and each agent's MCP tab at once.
  * Key-bearing writes (credentials, register with secrets) have `gcTime: 0` so the key isn't kept in the cache.
  */
-import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import {
+  useMutation,
+  useQueries,
+  useQuery,
+  useQueryClient,
+  type QueryClient,
+} from "@tanstack/react-query";
 import { createLimiter } from "../observability/limiter";
 import type { Scope } from "@nasiko/data-access";
 import {
@@ -245,19 +252,50 @@ export function useAgentConnectors(agentId: string, enabled: boolean) {
 // One read per connector until a batch read exists (M-5); this tab's own limiter.
 const toolsLimiter = createLimiter(TOOL_READ_CONCURRENCY);
 
+/** One connector's tools for an agent: the MCP tab's and the hub's Tools card's read (same key, limiter and parse). */
+const agentToolsQuery = (scope: Scope, agentId: string, connectorId: string) => ({
+  queryKey: mcpKeys.agentTools(scope, agentId, connectorId),
+  queryFn: ({ signal }: { signal: AbortSignal }) =>
+    toolsLimiter(signal, () =>
+      apiData<AgentTools>(`${A(agentId)}/connectors/${enc(connectorId)}/tools`, {
+        signal,
+        schema: agentToolsSchema,
+      }),
+    ),
+});
+
 export function useAgentTools(agentId: string, connectorId: string, enabled: boolean) {
   const scope = useProductScope();
   return useQuery({
-    queryKey: mcpKeys.agentTools(scope, agentId, connectorId),
-    queryFn: ({ signal }) =>
-      toolsLimiter(signal, () =>
-        apiData<AgentTools>(`${A(agentId)}/connectors/${enc(connectorId)}/tools`, {
-          signal,
-          schema: agentToolsSchema,
-        }),
-      ),
+    ...agentToolsQuery(scope, agentId, connectorId),
     enabled,
     select: (r) => r.tools,
+  });
+}
+
+/**
+ * Tools set to Block across some of an agent's connectors (the agent hub's Tools card, plans/feat-agent-centric.md
+ * PR1c): configured rules, not observed blocks. The same reads, keys and limiter as the MCP tab's, so they share cache.
+ */
+export function useAgentBlockedTools(
+  agentId: string,
+  connectorIds: readonly string[],
+  enabled: boolean,
+) {
+  const scope = useProductScope();
+  return useQueries({
+    queries: connectorIds.map((cid) => ({
+      ...agentToolsQuery(scope, agentId, cid),
+      enabled,
+    })),
+    combine: (rs) => ({
+      blocked: rs.reduce(
+        (n, r) => n + (r.data?.tools.filter((t) => t.stance === "block").length ?? 0),
+        0,
+      ),
+      pending: rs.some((r) => r.isPending && enabled),
+      failed: rs.some((r) => r.isError),
+    }),
   });
 }
 

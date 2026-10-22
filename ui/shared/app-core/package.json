@@ -33,6 +33,7 @@
     "./shell/TopBar": "./src/shell/TopBar.tsx",
     "./siblings": "./src/siblings.ts",
     "./sign-out": "./src/sign-out.ts",
+    "./slice": "./src/slice.ts",
     "./stale-build": "./src/stale-build.ts",
     "./tour": "./src/tour.ts",
     "./url-state": "./src/url-state.ts",

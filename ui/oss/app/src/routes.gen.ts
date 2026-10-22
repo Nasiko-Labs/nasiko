@@ -9,8 +9,7 @@ export const APP_ROUTES: readonly AppRoute[] = [
   },
   {
     path: "/",
-    load: () =>
-      import("@nasiko/features/overview/OverviewRoute").then((m) => ({ default: m.OverviewRoute })),
+    load: () => import("@nasiko/features/home/HomeRoute").then((m) => ({ default: m.HomeRoute })),
   },
   {
     path: "/tokenops",

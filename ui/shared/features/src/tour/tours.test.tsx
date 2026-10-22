@@ -1,5 +1,5 @@
 // Ported from the legacy ui/ on development (3aac84f66) common/src/features/tour/tours.test.tsx (dd9fe0f64). Local edits:
-// React mocks and harness imports; no TokenOps nav group; the agent facts are on the Overview tab.
+// React mocks and harness imports; no TokenOps nav group; the agent facts are on the Details tab (the agent hub).
 /**
  * Each tour points at elements by `data-tour` (tours.ts). A target that disappears from its page only drops a step,
  * silently, so this renders every page on the seed and checks its targets are still there.
@@ -33,7 +33,8 @@ const PAGES: Record<string, readonly string[]> = {
   "/chat": ["chat-rail", "chat-target", "chat-composer"],
   "/agents": ["section-nav", "page-actions", "agents-toolbar", "agents-grid"],
   "/agents/mine": ["mine-status-tabs", "mine-table"],
-  [`/agents/${seed.agents[0]?.id}`]: ["agent-header", "agent-tabs", "agent-facts"],
+  // The facts column moved to the Details tab with the agent hub; the tour drops the step on other tabs.
+  [`/agents/${seed.agents[0]?.id}?tab=details`]: ["agent-header", "agent-tabs", "agent-facts"],
   "/deploy": ["deploy-methods", "deploy-upload-form", "deploy-requirements", "deploy-cli"],
   "/builds": ["builds-filters", "builds-panel"],
   "/workflows": ["workflows-toolbar", "workflows-list"],

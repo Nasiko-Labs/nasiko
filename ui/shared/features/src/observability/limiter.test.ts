@@ -39,3 +39,16 @@ describe("createLimiter", () => {
     expect(ran).toEqual(["a", "c", "d"]);
   });
 });
+
+describe("createLimiter with a signal already cancelled", () => {
+  it("rejects at once instead of queueing a wait that never settles", async () => {
+    const run = createLimiter(1);
+    const busy = run(new AbortController().signal, () => new Promise((r) => setTimeout(r, 20)));
+    const gone = new AbortController();
+    gone.abort();
+    const job = vi.fn(async () => "never");
+    await expect(run(gone.signal, job)).rejects.toBeDefined();
+    expect(job).not.toHaveBeenCalled();
+    await busy;
+  });
+});

@@ -1,5 +1,5 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/agents/copy.ts. Local edits: `ApiError` is
-// `ProductApiError`; Prettier formatting.
+// Ported from nasiko-ui-lab@1b99bdda common/src/features/agents/copy.ts. Local edits: `ApiError` is `ProductApiError`;
+// development (c96a2ba3a): the Details tab; Prettier formatting.
 /**
  * Every user-facing string on the agent pages (plan §6.4, DX). Retired wording ("Shared with
  * you", "last deployed", a "Registered" badge) must not come back; logic.test.ts checks. Status
@@ -32,7 +32,7 @@ export const copy = {
   noResults: "No agents match this search",
   noResultsHint: "Try another name, tag or skill, or clear the search and filters.",
   clearSearch: "Clear search",
-  /** The Overview's Fleet health filter (overview design 15A). */
+  /** The health filter: the home's rating badges link here (overview design 15A; plans/feat-agent-centric.md PR2a). */
   healthChip: (rating: string) => `Health: ${rating}`,
   clearHealth: (rating: string) => `Remove the Health: ${rating} filter`,
   healthReason: (reason: string) => `Why: ${reason}`,
@@ -94,6 +94,7 @@ export const copy = {
   tabMcp: "MCP",
   tabAccess: "Access",
   tabSettings: "Settings",
+  tabDetails: "Details",
 
   crashTitle: "This agent crashed",
   crashOss: "The runtime reports this agent as crashed. Recent error lines:",
@@ -153,12 +154,6 @@ export const copy = {
   noResources: "Resource usage appears when the agent is running.",
   obsOff:
     "Observability is not configured: set OTEL_EXPORTER_OTLP_ENDPOINT, TEMPO_URL and LOKI_URL.",
-  recentSessions: "Recent sessions",
-  allSessions: "All sessions",
-  duration: "Duration",
-  noSessions: (n: number) => `No sessions for this agent in the latest ${n} sessions.`,
-  nameCollision:
-    "Matched by name; may include sessions of another owner's agent, or a deleted one, with the same name.",
   logs: "Logs",
   noLogs: "No log lines yet.",
   liveTail: "Live tail",

@@ -1,17 +1,19 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/app/shell/AppSidebar.tsx. Local edits: `NasikoMark` from `@nasiko/ui/composites` (the shell's NasikoMark.tsx moved there so a feature can draw the mark); `"use client"`; TanStack
-// Router -> the navigation port (`useRouterState` pathname/href -> `usePathname`/`useSearchParams`, `useNavigate` -> `useRouter().push`,
-// `Link to … search={fn}` -> the navigation port's `Link` (`@nasiko/app-core/navigation`) with the href built by `sharedHref` from the current query through
+// Ported from nasiko-ui-lab@1b99bdda common/src/app/shell/AppSidebar.tsx. Local edits: `NasikoMark` from
+// `@nasiko/ui/composites` (the shell's NasikoMark.tsx moved there so a feature can draw the mark); `"use client"`;
+// TanStack Router -> the navigation port (`useRouterState` pathname/href -> `usePathname`/`useSearchParams`,
+// `useNavigate` -> `useRouter().push`, `Link to … search={fn}` -> the navigation port's `Link`
+// (`@nasiko/app-core/navigation`) with the href built by `sharedHref` from the current query through
 // `sharedSearchSchema`, `activeOptions` dropped since `aria-current` was already set by hand; the Retry redirect reads
 // the hook-derived href instead of `router.state.location.href`); Radix -> Base UI (`asChild` -> `render={…}`,
 // `onSelect` + `preventDefault` -> `closeOnClick={false}` + `onClick`, `onCloseAutoFocus` -> the popup's `finalFocus`
 // callback returning `false`; Base UI's `GroupLabel` must sit inside its group, so each radio group's label is its
 // first child and the loading hint is wrapped in a `DropdownMenuGroup`: same text, same order on screen);
-// `meQuery`/`useHealth` -> `meQueryOptions(scope)`/`healthQueryOptions(scope, …)` under
-// `useProductScope()` (the scoped product keys); `ApiError` -> `ProductApiError`; `import.meta.env.DEV` ->
-// `process.env.NODE_ENV !== "production"`; the theme store comes from `@nasiko/ui/theme` (the lab's `./theme`,
-// ported there); `signOut`'s `navigate` maps the lab's `{to, search}` onto a URL for `router.push`; the callback props are
-// arrow-typed (`unbound-method`); imports mapped to
-// `@nasiko/ui/*`; Prettier formatting. Every class string, attribute, timing and string is the lab's.
+// `meQuery`/`useHealth` -> `meQueryOptions(scope)`/`healthQueryOptions(scope, …)` under `useProductScope()` (the scoped
+// product keys); `ApiError` -> `ProductApiError`; `import.meta.env.DEV` -> `process.env.NODE_ENV !== "production"`; the
+// theme store comes from `@nasiko/ui/theme` (the lab's `./theme`, ported there); `signOut`'s `navigate` maps the lab's
+// `{to, search}` onto a URL for `router.push`; the callback props are arrow-typed (`unbound-method`); imports mapped to
+// `@nasiko/ui/*`; development (ed10cb3f2): the first group drawn has no header; Prettier formatting. Every class
+// string, attribute, timing and string is the lab's.
 // Legacy ui/ on development (3aac84f66, 51901c342): `IS_MAC` is shared from `@nasiko/ui/lib` (keys.ts).
 // The product tour (legacy ui/ on development, 3aac84f66: dd9fe0f64): each nav group is a `nav-<group>` target.
 "use client";
@@ -220,7 +222,7 @@ export function AppSidebar({
                   tooltip={copy.brandTooltip}
                   className={cn(ROW, "h-10")}
                   render={
-                    // A plain link: a router Link would mark it aria-current on /, doubling the nav's Overview item
+                    // A plain link: a router Link would mark it aria-current on /, doubling the nav's Home item
                     // (§3 rule 4: one current item).
                     <a
                       href="/"
@@ -408,11 +410,12 @@ function NavGroups({
                 : undefined,
         )}
       >
-        {/* A group with no items (Lab, in a production build) has no header either. */}
-        {NAV_GROUPS.filter((g) => items.some((n) => n.group === g.id)).map((g) => (
+        {/* A group with no items (Lab, in a production build) has no header either, and the first group drawn has none:
+            while the onboarding guide hides Home, Fleet opens the nav without a header or a leading hairline. */}
+        {NAV_GROUPS.filter((g) => items.some((n) => n.group === g.id)).map((g, i) => (
           <SidebarGroup key={g.id} data-tour={`nav-${g.id}`} className={cn(GROUP, "py-0")}>
             {/* In the rail a header becomes a short hairline: the icons stay one even column, the groups still apart. */}
-            {g.label ? (
+            {g.label && i > 0 ? (
               <>
                 <SidebarGroupLabel className="mt-5 mb-1 h-4 px-2 text-2xs font-medium tracking-[0.04em] text-muted-foreground uppercase group-data-[collapsible=icon]:hidden">
                   {g.label}

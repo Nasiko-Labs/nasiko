@@ -3,7 +3,7 @@
 // the persona write take the scope; `meQuery` is `meQueryOptions(scope)` read without a mount refetch or retry (the
 // signed-in guard already re-checks `/api/me`; the shell's pilot `useGuideHiddenNav` read it the same way, and this
 // module now replaces that pilot); the optional chains on `globalThis.addEventListener` go (lib.dom declares it);
-// Prettier formatting.
+// development (be271b564): `usePersona` for the home's default scope; Prettier formatting.
 "use client";
 
 /**
@@ -32,6 +32,13 @@ const onboardingQuery = (scope: Scope) =>
   });
 
 const useOnboarding = () => useQuery(onboardingQuery(useProductScope()));
+
+/** The viewer's persona for defaults (the home's scope): settled once the read answers or fails (an older server's
+ * bare 404 settles as no persona). */
+export function usePersona(): { persona: Persona | null; settled: boolean } {
+  const q = useOnboarding();
+  return { persona: q.data?.persona ?? null, settled: !q.isPending };
+}
 
 /** Saves the persona; the server's first PATCH also completes onboarding. */
 export function useSavePersona() {
@@ -110,7 +117,7 @@ export function useGuide() {
 }
 
 // ─── The open guide ─────────────────────────────────────────────────────────────────────────────────────────────────
-// One guide per page, opened by `/` for a first-time user or by the Overview's Setup guide; the sidebar hides Overview
+// One guide per page, opened by `/` for a first-time user or by the home's Setup guide; the sidebar hides Home
 // while a first-run guide is open, so the shell and the route read the same state.
 
 export interface GuideState {
@@ -142,11 +149,11 @@ export const useGuideState = () =>
     () => guideState,
   );
 
-/** The sidebar paths to hide: Overview, while the guide stands in for it. */
+/** The sidebar paths to hide: Home, while the guide stands in for it. */
 export function useGuideHiddenNav(): readonly string[] {
   const { due } = useGuide();
   const state = useGuideState();
-  return due || (state.open && state.firstRun) ? HIDE_OVERVIEW : NONE;
+  return due || (state.open && state.firstRun) ? HIDE_HOME : NONE;
 }
-const HIDE_OVERVIEW = ["/"] as const;
+const HIDE_HOME = ["/"] as const;
 const NONE = [] as const;

@@ -1,13 +1,17 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/overview/api.ts. Local edits: `useFleetHealth` and
 // `FleetHealth` live in ./fleet.ts (ported earlier for the Agents catalog) and are re-exported, so their imports go;
-// the results' `retry` are function properties (the cards pass them on unbound) and the harness fallback's `retry` wraps `live.refetch` in an
-// arrow (unbound-method lint); Prettier formatting. Ported from nasiko-cloud-rs development (480650a69): the spend
-// hook reads one dashboard (`compare=previous`) and one grouped timeseries instead of a request per driver, and the
-// Overview's session reads are two small filtered pages (`useSessionPage`).
+// the results' `retry` are function properties (the cards pass them on unbound) and the harness fallback's `retry`
+// wraps `live.refetch` in an arrow (unbound-method lint); development (be271b564, b3dd6d4f8, 1c28b0bb9): Needs you's
+// budget rows come from the budgets slot (`useBudgetNeeds`; Enterprise only), the Budgets card and its router reads are
+// gone, and the result carries `waiting` for the home's per-agent counts; Prettier formatting. Ported from
+// nasiko-cloud-rs development (480650a69): the spend hook reads one dashboard (`compare=previous`) and one grouped
+// timeseries instead of a request per driver, and the Overview's session reads are two small filtered pages
+// (`useSessionPage`).
 /**
- * The Overview's shared data (plans/feat-overview.md §5, eng review R1): `useFleetHealth()` is the one source of the
- * fleet ratings, called by the Overview and by the Agents catalog while `?health=` is set, so both apply the same
- * rules to the same directory rows. It reuses existing query keys, so TokenOps and the Agents pages open warm.
+ * The Overview's shared data (plans/feat-overview.md §5, eng review R1), now the home's (plans/feat-agent-centric.md
+ * PR2a): `useFleetHealth()` is the one source of the fleet ratings, called by the home, the agent hub and the Agents
+ * catalog while `?health=` is set, so all apply the same rules to the same directory rows; `useNeedsYou()` feeds Needs
+ * you. Both reuse existing query keys, so TokenOps and the Agents pages open warm.
  */
 import { isNotVisible, useUsage } from "../harnesses/api";
 import { useLiveIndividual } from "../harnesses/liveIndividual";
@@ -17,9 +21,7 @@ import { useWaiting } from "../chat/waiting";
 import { useSessionPage } from "../sessions/api";
 import type { Me } from "@nasiko/data-access/product";
 import { useMemo } from "react";
-import { useBudgetStatus, useBudgets } from "../router/api";
-import { budgetForecast, usedPercent, type Forecast } from "../router/budgets";
-import type { BudgetAction, BudgetState } from "../router/types";
+import { useSlots } from "@nasiko/app-core/edition/edition-context";
 import { findSpike, type Spike } from "../narrative/tokenops";
 import { useCalendar, useDashboard, useSavings, useTimeseries } from "../tokenops/api";
 import { buildAttribution, type AttributionRow } from "../tokenops/attribution";
@@ -33,7 +35,7 @@ import { isEndpointAbsent } from "@nasiko/data-access/product";
 import { copy } from "./copy";
 import { mergeNeeds, type Needs, type NeedsInput, type SourceId } from "./needs";
 import { stackSpend, type Stack } from "./stack";
-import { DAY, FAILED_SESSION_ROWS, RECENT_SESSION_ROWS, TOP_DRIVERS } from "./tuning";
+import { FAILED_SESSION_ROWS, RECENT_SESSION_ROWS, TOP_DRIVERS } from "./tuning";
 
 // useFleetHealth and FleetHealth moved to ./fleet (ported early for the Agents catalog's ?health= filter).
 export { useFleetHealth, type FleetHealth } from "./fleet";
@@ -249,8 +251,10 @@ export interface NeedsYou {
   /** The oldest answer among the sources that answered (design review 8A's "Checked …"), or 0. */
   lastChecked: number;
   retry: Record<SourceId, () => void>;
-  /** The newest sessions of the last 7 days and their checked status, shared with Recent sessions (eng review R7). */
+  /** The newest sessions of the last 7 days and their checked status (eng review R7); the home counts failures per agent. */
   sessions: ReturnType<typeof useRecentSessions>;
+  /** The pending-requests match this card used, so the home counts requests per agent without a second matcher. */
+  waiting: ReturnType<typeof useWaiting>;
 }
 
 /**
@@ -290,12 +294,16 @@ export function useNeedsYou(now: Date, me: Me, fleet: FleetHealth, enabled = tru
   const chats = useChatSessions();
   // The fleet's directory, not a second observer: one enabled late would refetch a failed list and flicker it pending.
   const dir = { byId: fleet.byId };
-  // Budgets hidden: no server support for /api/budgets yet (R-L10). Restore the commented lines when it lands.
-  // const budgets = useBudgets(enabled)
-  // const budgetsAbsent = isEndpointAbsent(budgets.error)
-  const budgets = useBudgets(false);
-  const budgetsAbsent = true;
-  const status = useBudgetStatus(enabled && budgets.isSuccess);
+  // Budgets (plans/feat-budget-burn.md F8): the viewer's scope's At risk, or R-L10's own list on an older server.
+  const shownAsAgent = (agentId: string) =>
+    // The agent row shows only its first reason: a stop listed lower down isn't said there.
+    fleet.summary?.byId.get(agentId)?.reasons[0]?.code === "budgetStopped";
+  const agentLabel = (agentId: string) => {
+    const a = dir.byId.get(agentId);
+    return a?.display_name || a?.name;
+  };
+  // Budgets are Enterprise only: an OSS build's source is absent, so Needs you simply never lists a budget row.
+  const budgetNeeds = useSlots().budgets.useBudgetNeeds(me, enabled, agentLabel, shownAsAgent);
   const sessions = useRecentSessions(now, enabled);
   // Stable inputs for the memo below: query result objects are new on every render.
   const { match, failedCold, isPending: waitingPending } = waiting;
@@ -343,40 +351,7 @@ export function useNeedsYou(now: Date, me: Me, fleet: FleetHealth, enabled = tru
               // Rows are real, but with a cost input down the source can't vouch that nothing else needs action.
               incomplete: fleet.costFailed,
             };
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- `budgetsAbsent` is the lab's deliberate constant until /api/budgets ships; the branch is kept for that server
-    const budgetRows: NeedsInput["budgets"] = budgetsAbsent
-      ? { state: "absent" }
-      : budgets.isError || status.isError
-        ? { state: "failed" }
-        : budgets.isPending || status.isPending
-          ? { state: "loading" }
-          : {
-              state: "ok",
-              // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- `budgetsAbsent` is the lab's deliberate constant until /api/budgets ships; the branch is kept for that server
-              value: (budgets.data ?? []).flatMap((b) => {
-                // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- `budgetsAbsent` is the lab's deliberate constant until /api/budgets ships; the branch is kept for that server
-                const st = status.data?.data.find((x) => x.budget_id === b.id);
-                // A stopped agent budget is skipped only when its agent row already says so (a stopped, harness or unlisted
-                // agent isn't rated, so the budget row must stay; /ship adversarial).
-                const shownAsAgent =
-                  !!b.agent_id &&
-                  !!fleet.summary?.byId
-                    .get(b.agent_id)
-                    ?.reasons.some((r) => r.code === "budgetStopped");
-                if (!st || st.state === "ok" || (st.stopped && shownAsAgent)) return [];
-                const agent = b.agent_id ? dir.byId.get(b.agent_id) : undefined;
-                return [
-                  {
-                    id: b.id,
-                    label: b.agent_id
-                      ? agent?.display_name || agent?.name || copy.needs.anAgent
-                      : copy.needs.yourBudget,
-                    crossed: st.crossed,
-                    state: st.state === "warning" ? "warning" : "exceeded",
-                  } as const,
-                ];
-              }),
-            };
+    const budgetRows = budgetNeeds.value;
     // One indexed read, filtered in SQL: `matching_count` is every failed session
     // in the window, so this states a fact. It used to be a sample — the newest
     // 25 rows, each status-checked by downloading its traces — which could only
@@ -411,14 +386,7 @@ export function useNeedsYou(now: Date, me: Me, fleet: FleetHealth, enabled = tru
     fleet.ratingsPending,
     fleet.costFailed,
     fleet.displayName,
-    budgetsAbsent,
-    budgets.data,
-    budgets.isError,
-    budgets.isPending,
-    status.data,
-    status.isError,
-    status.isPending,
-    dir.byId,
+    budgetNeeds.value,
     sessions.failed.rows,
     sessions.failed.matchingCount,
     sessions.failed.isError,
@@ -426,14 +394,12 @@ export function useNeedsYou(now: Date, me: Me, fleet: FleetHealth, enabled = tru
   ]);
 
   const needs = useMemo(() => mergeNeeds(input), [input]);
-  const stamps = [
-    waiting.lastChecked,
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- `budgetsAbsent` is the lab's deliberate constant until /api/budgets ships; the branch is kept for that server
-    budgetsAbsent ? 0 : status.dataUpdatedAt,
-    sessions.failed.dataUpdatedAt,
-  ].filter((t) => t > 0);
+  const stamps = [waiting.lastChecked, budgetNeeds.stamp, sessions.failed.dataUpdatedAt].filter(
+    (t) => t > 0,
+  );
   return {
     needs,
+    waiting,
     lastChecked: stamps.length ? Math.min(...stamps) : 0,
     retry: {
       requests: waiting.retry,
@@ -442,10 +408,7 @@ export function useNeedsYou(now: Date, me: Me, fleet: FleetHealth, enabled = tru
         fleet.retry();
         if (fleet.costFailed) fleet.retryCost();
       },
-      budgets: () => {
-        void budgets.refetch();
-        void status.refetch();
-      },
+      budgets: budgetNeeds.retry,
       sessions: () => {
         void sessions.failed.refetch();
         void sessions.recent.refetch();
@@ -514,80 +477,6 @@ export function useHarnessSummary(now: Date, me: Me, range: Range): HarnessSumma
       // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- the proposed usage endpoint sends a null cost for unpriced turns; the type predates that (harness contract)
       .sort((a, b) => (b.cost ?? 0) - (a.cost ?? 0)),
     retry: () => void usage.refetch(),
-  };
-}
-
-export interface BudgetLine {
-  id: string;
-  /** The agent's display name; null for the viewer's own monthly budget. */
-  name: string | null;
-  limit: number;
-  used: number;
-  /** Bar fill 0-100, capped at the limit. */
-  pct: number;
-  state: BudgetState;
-  stopped: boolean;
-  thresholds: number[];
-  action: BudgetAction;
-  forecast: Forecast;
-  /** Whole days until the period resets, from when the status was read. */
-  daysLeft: number;
-}
-
-export interface BudgetCard {
-  /** No `/api/budgets` on this server (a bare 404): the card isn't shown. */
-  absent: boolean;
-  isPending: boolean;
-  error: unknown;
-  /** The viewer's own monthly budget, if set. */
-  own: BudgetLine | null;
-  agents: BudgetLine[];
-  retry: () => void;
-}
-
-/** The Budgets card: the same list and status reads as Needs you and Fleet health (one fetch each). */
-/** @public Hidden until /api/budgets lands (R-L10); OverviewPage has the call commented out. */
-export function useBudgetCard(fleet: FleetHealth, enabled: boolean): BudgetCard {
-  const budgets = useBudgets(enabled);
-  const status = useBudgetStatus(enabled && budgets.isSuccess);
-  const absent = isEndpointAbsent(budgets.error);
-  const lines = useMemo(() => {
-    // The forecast's clock is when the status was read, never the page's frozen `now` (plans/feat-llm-router.md §5.1).
-    const read = new Date(status.dataUpdatedAt);
-    const byId = new Map((status.data?.data ?? []).map((s) => [s.budget_id, s]));
-    return (budgets.data ?? []).flatMap((b): BudgetLine[] => {
-      const st = byId.get(b.id);
-      if (!st) return [];
-      const agent = b.agent_id ? fleet.byId.get(b.agent_id) : undefined;
-      return [
-        {
-          id: b.id,
-          name:
-            b.scope === "owner" ? null : agent?.display_name || agent?.name || copy.needs.anAgent,
-          limit: b.limit_usd,
-          used: st.used_usd,
-          pct: usedPercent(st.used_usd, b.limit_usd),
-          state: st.state,
-          stopped: st.stopped,
-          thresholds: b.thresholds,
-          action: b.action,
-          forecast: budgetForecast(st, b.limit_usd, read),
-          daysLeft: Math.max(0, Math.ceil((Date.parse(st.resets_at) - read.getTime()) / DAY)),
-        },
-      ];
-    });
-  }, [budgets.data, status.data, status.dataUpdatedAt, fleet.byId]);
-  return {
-    absent,
-    isPending: !absent && (budgets.isPending || (budgets.isSuccess && status.isPending)),
-    error: absent ? null : (budgets.error ?? status.error),
-    own: lines.find((l) => l.name === null) ?? null,
-    // Most used first: the one nearest its limit leads.
-    agents: lines.filter((l) => l.name !== null).sort((a, b) => b.pct - a.pct),
-    retry: () => {
-      void budgets.refetch();
-      void status.refetch();
-    },
   };
 }
 

@@ -1,4 +1,5 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/tokenops/forecast.ts. Local edits: none (Prettier formatting only).
+// Ported from nasiko-ui-lab@1b99bdda common/src/features/tokenops/forecast.ts. Local edits: none (development
+// (b3dd6d4f8); Prettier formatting only).
 import { median } from "./stats";
 import type { SpendCalendarDay } from "./types";
 
@@ -31,8 +32,8 @@ const DAY = 86_400_000;
 export const FORECAST_MIN_DAYS = 3;
 
 export function summarizeMonth(
-  thisMonth: SpendCalendarDay[],
-  lastMonth: SpendCalendarDay[],
+  thisMonth: Pick<SpendCalendarDay, "date" | "spend_usd">[],
+  lastMonth: Pick<SpendCalendarDay, "date" | "spend_usd">[],
   now: Date,
 ): MonthSummary {
   const monthStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1);
@@ -82,4 +83,40 @@ export function summarizeMonth(
     lastMonthSameDays,
     vsLastMonthPct,
   };
+}
+
+/** Recorded days whose mean is the pace a crossing date projects. */
+export const CROSSING_PACE_DAYS = 7;
+
+export type Crossing = { kind: "reached" } | { kind: "crosses"; date: string };
+
+/**
+ * When a monthly limit is reached at this pace (plans/feat-agent-centric.md X5): month-to-date spend plus, per remaining
+ * day, the mean of the last CROSSING_PACE_DAYS completed days; the first UTC date the running total reaches the limit.
+ * Built on `summarizeMonth`: nothing before FORECAST_MIN_DAYS elapsed days or with no spend, nothing unless the band's
+ * high projection reaches the limit, and nothing when the date falls after month end. Already at the limit: `reached`.
+ */
+export function crossingDate(
+  limit: number,
+  thisMonth: Pick<SpendCalendarDay, "date" | "spend_usd">[],
+  now: Date,
+): Crossing | null {
+  if (!(limit > 0)) return null;
+  const m = summarizeMonth(thisMonth, [], now);
+  // Whole cents: 0.1 + 0.7 is 0.7999…, and still meets a $0.80 limit.
+  if (Math.round(m.mtd * 100) >= Math.round(limit * 100)) return { kind: "reached" };
+  if (!m.show || m.high === null || m.high < limit) return null;
+  const monthStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1);
+  const completed = Math.floor(m.elapsedDays);
+  const spendByDom = new Map<number, number>();
+  for (const d of thisMonth) spendByDom.set(Number(d.date.slice(8, 10)), d.spend_usd);
+  const recent = Array.from(
+    { length: Math.min(CROSSING_PACE_DAYS, completed) },
+    (_, i) => spendByDom.get(completed - i) ?? 0,
+  );
+  const pace = recent.length ? recent.reduce((s, v) => s + v, 0) / recent.length : 0;
+  if (pace <= 0) return null;
+  const at = now.getTime() + ((limit - m.mtd) / pace) * DAY;
+  if (at >= monthStart + m.daysInMonth * DAY) return null;
+  return { kind: "crosses", date: new Date(at).toISOString().slice(0, 10) };
 }

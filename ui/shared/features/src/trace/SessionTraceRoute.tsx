@@ -4,12 +4,14 @@
 // `useSetSearch(…, true)` is `setSearch` with `replace` defaulting to true (selection replaces history, as in the lab);
 // `remountDeps: sessionId` is a `key` on the page (another session is another page: its frozen clock, selection and
 // panels start fresh); the loader's `preload` prefetch is `prefetchSessionDetail(queryClient, scope, id)`
-// (../sessions/api.ts), for a link's intent handler; `Suspense` around `useSearchParams`; Prettier formatting.
+// (../sessions/api.ts), for a link's intent handler; `Suspense` around `useSearchParams`; development (84c6f11eb):
+// `?view=ledger` renders the harness session ledger (../hub/components/LedgerPage.tsx) instead; Prettier formatting.
 "use client";
 
 import { useParams } from "@nasiko/app-core/navigation";
 import { Suspense, useCallback } from "react";
 import { useSearchState } from "@nasiko/app-core/url-state";
+import { LedgerPage } from "../hub/components/LedgerPage";
 import { traceSearchSchema, type TraceSearch } from "../sessions/search";
 import { SessionTracePage } from "./SessionTracePage";
 
@@ -30,6 +32,9 @@ function Trace() {
     },
     [setSearch],
   );
+  // The ledger is its own page, outside the trace page's success branch (plans/feat-agent-centric.md eng "Ledger").
+  if (search.view === "ledger")
+    return <LedgerPage key={sessionId} sessionId={sessionId} search={search} />;
   return (
     <SessionTracePage
       key={sessionId}

@@ -6,10 +6,12 @@
   "description": "Test harness for the workspace apps and features: the Next router/history harness, pinned seed, setup files. devDependency only.",
   "sideEffects": false,
   "exports": {
+    "./agents": "./src/agents.ts",
     "./gated-sse": "./src/gated-sse.ts",
     "./intersection": "./src/intersection.ts",
     "./pinned-seed": "./src/pinned-seed.ts",
-    "./router": "./src/router.tsx"
+    "./router": "./src/router.tsx",
+    "./routing": "./src/routing.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",

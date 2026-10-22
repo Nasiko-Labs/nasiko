@@ -1,6 +1,7 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/agents/search.ts. Local edits: `import * as z from "zod/mini"` (a named import keeps all zod locales in the bundle); the TanStack Router
-// `HistoryState` augmentation is gone (the navigation port has no typed history state): `DeletedNote` travels through
-// ./deletedNote.ts; Prettier formatting.
+// Ported from nasiko-ui-lab@1b99bdda common/src/features/agents/search.ts. Local edits: `import * as z from "zod/mini"`
+// (a named import keeps all zod locales in the bundle); the TanStack Router `HistoryState` augmentation is gone (the
+// navigation port has no typed history state): `DeletedNote` travels through ./deletedNote.ts; development (5d46c313f,
+// c96a2ba3a): the Details tab, and the detail route's schema is the hub's (../hub/search.ts); Prettier formatting.
 import * as z from "zod/mini";
 import { flag, opt, text } from "@nasiko/app-core/search";
 
@@ -14,7 +15,7 @@ export const catalogSearchSchema = z.object({
   tag: opt(text),
   harnesses: opt(flag),
   yours: opt(flag),
-  /** The Overview's Fleet health count links here (overview design 15A, 16B); computed by `useFleetHealth` (eng R1). */
+  /** The home's rating badges link here (plans/feat-agent-centric.md PR2a); computed by `useFleetHealth` (eng R1). */
   health: opt(z.enum(["healthy", "watch", "action", "unknown"])),
 });
 export type CatalogSearch = z.infer<typeof catalogSearchSchema>;
@@ -43,12 +44,11 @@ export const DETAIL_TABS = [
   "mcp",
   "access",
   "settings",
+  // Today's Overview facts, since the hub took the Overview over (plans/feat-agent-centric.md PR1c).
+  "details",
 ] as const;
 export type DetailTab = (typeof DETAIL_TABS)[number];
-/** Unknown tab values are kept as strings so the page can fall back to Overview with replace-history. */
-export const detailSearchSchema = z.object({
-  tab: opt(z.string().check(z.trim(), z.maxLength(40))),
-});
+// The detail route's schema is the hub's (`features/hub/search.ts`): `tab` plus the hub's window, slice and marker.
 
 /**
  * The delete result, carried to Your agents in history state (./deletedNote.ts), not the URL: a crafted

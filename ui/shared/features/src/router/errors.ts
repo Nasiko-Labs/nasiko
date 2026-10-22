@@ -1,5 +1,6 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/router/errors.ts. Local edits: `ApiError` is
-// `ProductApiError`; `ErrorView.cause` admits `undefined` (exactOptionalPropertyTypes); Prettier formatting.
+// `ProductApiError`; `ErrorView.cause` admits `undefined` (exactOptionalPropertyTypes); development (55840ba24);
+// Prettier formatting.
 /**
  * Router errors (plan §4.9): each entry is problem, cause and action, matched by status plus the server's
  * plain-text message (nasiko-server @ cb3aaf0c returns text, not codes). Anything unmapped is shown verbatim
@@ -31,27 +32,8 @@ type Rule = {
   view: (msg: string) => ErrorView;
 };
 
-// R-L1..R-L10: these match the server's text; error codes would make them robust.
+// R-L1..R-L9: these match the server's text; error codes would make them robust. Budget errors: budgets/errors.ts.
 const RULES: Rule[] = [
-  { status: 409, match: /budget changed elsewhere/, view: () => ({ problem: copy.budgetChanged }) },
-  {
-    status: 409,
-    match: /budget already exists/,
-    view: () => ({
-      problem: "This scope already has a budget.",
-      action: "Edit that budget instead.",
-    }),
-  },
-  {
-    status: 400,
-    match: /limit_usd/,
-    view: () => ({ problem: copy.limitPositive, field: "limit" }),
-  },
-  {
-    status: 400,
-    match: /thresholds must/,
-    view: () => ({ problem: copy.thresholdRange, field: "thresholds" }),
-  },
   {
     status: 409,
     match: /already exists/,

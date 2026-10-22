@@ -1,3 +1,4 @@
+// Development (5d46c313f): `isPreview`.
 /** Public build configuration. VITE_* values ship to every browser: never put credentials here.
  * APIs stay same-origin; NASIKO_API_UPSTREAM configures only the local development proxy.
  * Test mocks require an explicit development/test build and are excluded from releases.
@@ -94,3 +95,16 @@ export function validHttpUrl(value: string): string | null {
 }
 
 export const env = readEnv();
+
+/**
+ * A preview section may render (development 5d46c313f; plans/feat-agent-centric.md eng, preview policy): true only in
+ * full mock mode or when the feature's group is partially mocked. It gates the section's queries and rendering, whatever
+ * the server answers, so a preview never draws from an unexpected live response. Partial mocks are a Vite dev-server
+ * feature this build has none of (`MOCKABLE`), so here it is mock mode alone; the group stays for the callers.
+ */
+export function isPreview(
+  group: string,
+  config: Pick<EnvConfig, "mode" | "partialMocks"> = env,
+): boolean {
+  return config.mode === "mock" || (config.partialMocks as readonly string[]).includes(group);
+}

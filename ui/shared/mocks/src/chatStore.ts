@@ -1,8 +1,9 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/mocks/chatStore.ts. Local edits: an expired continuation's open
-// stream starts with an SSE comment, because msw 3 (Node) resolves a fetch only at the body's first chunk (the lab
-// sent no bytes); ESLint autofixes (void-returning arrows given braces, redundant casts and `String()` calls
-// dropped); development (3aac84f66, d1a7ed322 and f851fdca8): `GET /api/chat/sessions?surface=` and a saved
-// message's `file_parts`, and `chatMockProxyTurn` (the agent proxy saving a Weave turn); Prettier formatting.
+// Ported from nasiko-ui-lab@1b99bdda common/src/mocks/chatStore.ts. Local edits: an expired continuation's open stream
+// starts with an SSE comment, because msw 3 (Node) resolves a fetch only at the body's first chunk (the lab sent no
+// bytes); ESLint autofixes (void-returning arrows given braces, redundant casts and `String()` calls dropped);
+// development (3aac84f66, d1a7ed322 and f851fdca8): `GET /api/chat/sessions?surface=` and a saved message's
+// `file_parts`, and `chatMockProxyTurn` (the agent proxy saving a Weave turn); development (84c6f11eb): recorded
+// harness chats; Prettier formatting.
 /* eslint-disable @typescript-eslint/no-non-null-assertion -- ported verbatim; the seeded lookups always hit */
 /* eslint-disable @typescript-eslint/no-base-to-string, @typescript-eslint/no-unnecessary-condition -- request bodies are coerced and checked as the server does, whatever their declared type */
 /**
@@ -369,19 +370,54 @@ function seedRecorded(ctx: ChatMockContext, now: number) {
   });
   const c4 = "5eedc000-0000-4000-8000-00000000c004";
   const t4 = now - 4 * 86_400_000;
-  const turn = (i: number, prompt: string, reply: string, calls: ToolCallSeed[]) => [
-    msg(c4, "user", prompt, t4 + i * 120_000),
-    {
-      ...msg(c4, "assistant", reply, t4 + i * 120_000 + 60_000),
-      model: "claude-sonnet-4",
-      metadata: {
-        coding_agent: {
-          capture_policy: "content",
-          tool_calls: calls.map((c, n) => toolCall(c, t4 + i * 120_000 + n * 4_000)),
+  // Usage as the CLI reports it (estimated, API list price: claude-sonnet-4 at $3 / $15 per M tokens), plus the
+  // ledger's proposed per-turn records (AH-7, plans/feat-agent-centric.md PR1b): context report, memory use and the
+  // controls that acted. The ledger reads those only in preview mode.
+  const turn = (
+    i: number,
+    prompt: string,
+    reply: string,
+    calls: ToolCallSeed[],
+    proposed: Record<string, unknown> = {},
+  ) => {
+    const at = t4 + i * 120_000;
+    const input = 12_000 + i * 3_000;
+    const output = 900 + i * 200;
+    return [
+      { ...msg(c4, "user", prompt, at), external_turn_id: `c004-turn-${i}` },
+      {
+        ...msg(c4, "assistant", reply, at + 60_000),
+        external_turn_id: `c004-turn-${i}`,
+        model: "claude-sonnet-4",
+        input_tokens: input,
+        output_tokens: output,
+        cost_usd: ((input * 3 + output * 15) / 1e6).toFixed(6),
+        usage_estimated: true,
+        metadata: {
+          coding_agent: {
+            capture_policy: "content",
+            tool_calls: calls.map((c, n) => toolCall(c, at + n * 4_000)),
+            ...proposed,
+          },
         },
       },
-    },
-  ];
+    ];
+  };
+  const ctxReport = (pool: number, poolTokens: number, kept: number, keptTokens: number) => ({
+    "nasiko.context.strategy": "pacms",
+    "nasiko.context.level": "medium",
+    "nasiko.context.pool": pool,
+    "nasiko.context.pool_tokens": poolTokens,
+    "nasiko.context.kept": kept,
+    "nasiko.context.kept_tokens_est": keptTokens,
+  });
+  const control = (
+    i: number,
+    kind: string,
+    rule: { id: string; name: string },
+    outcome: string,
+    extra: Record<string, unknown> = {},
+  ) => ({ at: iso(t4 + i * 120_000 + 30_000), kind, rule, outcome, ...extra });
   chats.set(c4, {
     row: recorded(c4, "Refactor billing webhook", t4),
     messages: [
@@ -435,30 +471,61 @@ function seedRecorded(ctx: ChatMockContext, now: number) {
             ms: 5,
           },
         ],
+        {
+          context: ctxReport(40, 21_400, 12, 12_000),
+          memory: { tokens: 1_800, items: 4 },
+          controls: [
+            control(
+              0,
+              "context",
+              { id: "pacms-medium", name: "History: PACMS (Medium)" },
+              "trimmed",
+              { tokens_saved: 9_400 },
+            ),
+          ],
+        },
       ),
       // Five calls (shown one by one): the other failure statuses and the calls with no result.
-      ...turn(1, "Why did the test time out?", "Still checking the mock server.", [
+      ...turn(
+        1,
+        "Why did the test time out?",
+        "Still checking the mock server.",
+        [
+          {
+            name: "bash",
+            status: "denied",
+            args: { cmd: "rm -rf node_modules" },
+            error: "The user denied this command.",
+          },
+          {
+            name: "web_fetch",
+            status: "timed_out",
+            args: { url: "https://status.stripe.com" },
+            ms: 30_000,
+          },
+          { name: "grep", status: "cancelled", args: { pattern: "stripe-mock" } },
+          { name: "bash", status: "pending", args: { cmd: "docker ps" }, quality: "inferred" },
+          {
+            name: "read_file",
+            status: "running",
+            args: { path: "docker-compose.yml" },
+            quality: "receipt",
+          },
+        ],
         {
-          name: "bash",
-          status: "denied",
-          args: { cmd: "rm -rf node_modules" },
-          error: "The user denied this command.",
+          context: ctxReport(42, 24_100, 14, 15_000),
+          memory: { tokens: 2_100, items: 5 },
+          controls: [
+            control(
+              1,
+              "tool_rule",
+              { id: "rule-shell-delete", name: "Block destructive shell commands" },
+              "blocked",
+              { tool: "bash" },
+            ),
+          ],
         },
-        {
-          name: "web_fetch",
-          status: "timed_out",
-          args: { url: "https://status.stripe.com" },
-          ms: 30_000,
-        },
-        { name: "grep", status: "cancelled", args: { pattern: "stripe-mock" } },
-        { name: "bash", status: "pending", args: { cmd: "docker ps" }, quality: "inferred" },
-        {
-          name: "read_file",
-          status: "running",
-          args: { path: "docker-compose.yml" },
-          quality: "receipt",
-        },
-      ]),
+      ),
       ...turn(
         2,
         "Summarise the diff.",
@@ -474,13 +541,21 @@ function seedRecorded(ctx: ChatMockContext, now: number) {
           },
           { name: "telemetry", status: "unknown", association: "unknown" },
         ],
+        {
+          context: ctxReport(44, 27_300, 15, 18_000),
+          controls: [
+            control(2, "budget", { id: "owner-budget", name: "Your monthly budget" }, "warned"),
+          ],
+        },
       ),
     ],
     hitl: [],
   });
   const c5 = "5eedc000-0000-4000-8000-00000000c005";
   chats.set(c5, {
-    row: recorded(c5, CODING_SESSION_TITLE, now - 9 * 86_400_000),
+    // 10 days back: Older in the rail, and off the demo's spike day now that session/list lists recorded chats too
+    // (docs/designs/openruntime-demo-script.md pins that day's session count).
+    row: recorded(c5, CODING_SESSION_TITLE, now - 10 * 86_400_000),
     messages: [],
     hitl: [],
   });

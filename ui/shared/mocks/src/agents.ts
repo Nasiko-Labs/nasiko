@@ -1,5 +1,5 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/mocks/agents.ts. Local edits: non-null assertions are kept under a
-// file-level eslint-disable; Prettier formatting.
+// file-level eslint-disable; development (5d46c313f); Prettier formatting.
 /* eslint-disable @typescript-eslint/no-non-null-assertion -- ported verbatim; the seeded indexes are in range */
 /**
  * Agents mock state (plan §8): derived from the TokenOps seed (A2A agents) and the harness
@@ -244,6 +244,11 @@ export function buildAgentsState(seed: Seed, hs: HarnessSeed, now: number): Agen
     };
   });
   for (const h of hs.agents) {
+    // Registered no later than its first recorded session (the seed spans 30 days); never "created today" with older use.
+    const first = Math.min(...hs.sessions.filter((x) => x.agent_id === h.id).map((x) => x.ts));
+    const created = Number.isFinite(first)
+      ? iso(Math.min(first, Date.parse(hs.anchor)))
+      : hs.anchor;
     agents.push({
       id: h.id,
       name: h.name,
@@ -255,7 +260,7 @@ export function buildAgentsState(seed: Seed, hs: HarnessSeed, now: number): Agen
       tags: ["local", "coding-agent"],
       skills: [],
       capabilities: {},
-      created_at: hs.anchor,
+      created_at: created,
       updated_at: hs.anchor,
       image: null,
       icon_url: null,

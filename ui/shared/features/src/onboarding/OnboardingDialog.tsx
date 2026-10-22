@@ -1,8 +1,9 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/onboarding/OnboardingDialog.tsx. Local edits: `"use client"`;
-// `useNavigate` -> `useRouter().push` from the navigation port (`@nasiko/app-core/navigation`); `NasikoMark` from `@nasiko/ui/composites` (moved out of
-// the shell so a feature can draw it); Radix's `onOpenAutoFocus` (preventDefault, then focus the primary button) is
-// Base UI's `initialFocus={primary}`; the persona cards' checked style reads Base UI's `data-checked`
-// (`has-[[data-state=checked]]` -> `has-[[data-checked]]`); callbacks that returned a void expression are braced (lint); Prettier formatting.
+// `useNavigate` -> `useRouter().push` from the navigation port (`@nasiko/app-core/navigation`); `NasikoMark` from
+// `@nasiko/ui/composites` (moved out of the shell so a feature can draw it); Radix's `onOpenAutoFocus` (preventDefault,
+// then focus the primary button) is Base UI's `initialFocus={primary}`; the persona cards' checked style reads Base
+// UI's `data-checked` (`has-[[data-state=checked]]` -> `has-[[data-checked]]`); callbacks that returned a void
+// expression are braced (lint); development (be271b564): the home's scope follows the persona; Prettier formatting.
 "use client";
 
 /**
@@ -14,8 +15,8 @@ import {
   ArrowRight,
   Check,
   Clock,
+  House,
   Info,
-  LayoutDashboard,
   Play,
   Plug,
   Scissors,
@@ -23,6 +24,7 @@ import {
   Sparkles,
   WandSparkles,
   X,
+  type LucideIcon,
 } from "lucide-react";
 import { useRouter } from "@nasiko/app-core/navigation";
 import { useRef, useState } from "react";
@@ -466,9 +468,9 @@ function Ready({
       </div>
       <div className="grid gap-3 sm:grid-cols-2">
         <Choice
-          icon={LayoutDashboard}
-          title={copy.ready.overview}
-          line={copy.ready.overviewLine}
+          icon={House}
+          title={copy.ready.home}
+          line={copy.ready.homeLine}
           onClick={onOverview}
         />
         {opens !== "/" ? (
@@ -490,7 +492,7 @@ function Choice({
   line,
   onClick,
 }: {
-  icon: typeof LayoutDashboard;
+  icon: LucideIcon;
   title: string;
   line: string;
   onClick: () => void;

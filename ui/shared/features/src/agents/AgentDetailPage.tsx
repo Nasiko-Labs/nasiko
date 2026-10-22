@@ -1,8 +1,8 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/agents/AgentDetailPage.tsx. Local edits: `meQuery` is
 // `meQueryOptions(useProductScope())`; the name and mixed-case redirects are
 // `useRouter().replace('/agents/<id>[?tab=]')` from the navigation port (`detailHref`), and the tab changes
-// (`navigate({ to: '.', search, replace })`) are `useSearchState(detailSearchSchema).navigate` (the History API, the
-// whole search replaced as the lab's did; a dirty Settings tab's `LeaveGuard` holds it, as the lab's `useBlocker` did); a name the
+// (`navigate({ to: '.', search, replace })`) are `useSearchState(hubSearchSchema).navigate` (the History API; since
+// the agent hub (development 5d46c313f) a tab switch keeps the hub's window keys; a dirty Settings tab's `LeaveGuard` holds it, as the lab's `useBlocker` did); a name the
 // directory misses keeps the loader until its one refetch answers (the lab rendered "not found" for a frame before
 // that refetch started: a source defect, visible as a flash); links are the navigation port's `Link`; `DropdownMenuTrigger asChild`
 // -> `render={<Button …/>}` (Base UI useRender) and the menu items' Radix `onSelect` is Base UI's `onClick`; Base
@@ -61,13 +61,15 @@ import { relTime } from "./format";
 import { ACTION_LABEL, useLifecycleFlow } from "./lifecycleFlow";
 import { ActivityTab } from "./detail/ActivityTab";
 import { AccessTab } from "./detail/AccessTab";
+import { DetailsTab } from "./detail/DetailsTab";
 import { OverviewTab } from "./detail/OverviewTab";
 import { SettingsTab } from "./detail/SettingsTab";
 import { VersionsTab } from "./detail/VersionsTab";
 import { AgentBuildsTab } from "../deploy/AgentBuildsTab";
 import { AgentMcpTab } from "../mcp/components/AgentMcpTab";
 import { isUuid, type AgentView } from "./normalize";
-import { DETAIL_TABS, detailSearchSchema, type DetailTab } from "./search";
+import { DETAIL_TABS, type DetailTab } from "./search";
+import { hubSearchSchema } from "../hub/search";
 import { hrefFor, useSearchState } from "@nasiko/app-core/url-state";
 import { actionsFor, displayStatus, isHarness } from "./status";
 
@@ -171,8 +173,9 @@ function ResolveByName({ name, tab }: { name: string; tab?: string | undefined }
 
 function tabsFor(agent: AgentView): DetailTab[] {
   // A harness is an ordinary agent id to the MCP gateway, so its manager gets the MCP tab too.
-  if (agent.isHarness) return agent.canManage ? ["overview", "mcp"] : ["overview"];
-  return agent.canManage ? [...DETAIL_TABS] : ["overview", "activity", "versions"];
+  if (agent.isHarness)
+    return agent.canManage ? ["overview", "mcp", "details"] : ["overview", "details"];
+  return agent.canManage ? [...DETAIL_TABS] : ["overview", "activity", "versions", "details"];
 }
 
 function AgentDetail({ id, tab }: { id: string; tab?: string | undefined }) {
@@ -181,7 +184,7 @@ function AgentDetail({ id, tab }: { id: string; tab?: string | undefined }) {
   // Off the owner's first list page, the detail is the only status source: poll it while watching.
   const detail = useAgentDetail(id, true, w.watching && offPage);
   // The lab's `navigate({ to: '.', search })`: this page's search, replaced whole.
-  const { navigate } = useSearchState(detailSearchSchema);
+  const { navigate } = useSearchState(hubSearchSchema);
   const me = useQuery(meQueryOptions(useProductScope())).data;
   const agent = detail.data;
   const status = useAgentStatus(agent, w.watching);
@@ -203,7 +206,7 @@ function AgentDetail({ id, tab }: { id: string; tab?: string | undefined }) {
   const badTab = !!agent && !!tab && current !== tab;
   // An unknown or hidden tab falls back to Overview without a history entry.
   useEffect(() => {
-    if (badTab) navigate({ search: {}, replace: true });
+    if (badTab) navigate({ search: (prev) => ({ ...prev, tab: undefined }), replace: true });
   }, [badTab, navigate]);
 
   if (detail.isPending) return <PageLoader label={copy.loadingAgent} />;
@@ -225,9 +228,13 @@ function AgentDetail({ id, tab }: { id: string; tab?: string | undefined }) {
     ? copy.you
     : (users.data?.get(agent.ownerId) ?? agent.ownerId.slice(0, 8));
   // A dirty Settings form asks first: the router's blocker holds this navigation like a link's. The list Previous/Next
-  // walks is kept (useSearchState).
+  // walks is kept (useSearchState), and the hub's window keys follow the tab switch, so coming back to Overview keeps
+  // the window.
   const setTab = (t: string) => {
-    navigate({ search: t === "overview" ? {} : { tab: t }, replace: false });
+    navigate({
+      search: (prev) => ({ ...prev, tab: t === "overview" ? undefined : t }),
+      replace: false,
+    });
   };
   const hasErrors = !!errors.data?.length;
   const labels: Record<DetailTab, string> = {
@@ -238,6 +245,7 @@ function AgentDetail({ id, tab }: { id: string; tab?: string | undefined }) {
     mcp: copy.tabMcp,
     access: copy.tabAccess,
     settings: copy.tabSettings,
+    details: copy.tabDetails,
   };
 
   return (
@@ -321,6 +329,11 @@ function AgentDetail({ id, tab }: { id: string; tab?: string | undefined }) {
         {allowed.includes("access") ? (
           <TabsContent value="access" className="pt-3">
             <AccessTab agent={agent} />
+          </TabsContent>
+        ) : null}
+        {allowed.includes("details") ? (
+          <TabsContent value="details" className="pt-3">
+            <DetailsTab agent={agent} display={display} ownerLabel={ownerLabel} />
           </TabsContent>
         ) : null}
         {allowed.includes("settings") ? (

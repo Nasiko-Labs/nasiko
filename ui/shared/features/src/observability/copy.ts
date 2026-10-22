@@ -1,5 +1,5 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/observability/copy.ts. Local edits: the full module replaces
-// the pilot's `ErrorState` subset; Prettier formatting.
+// the pilot's `ErrorState` subset; development (84c6f11eb); Prettier formatting.
 /**
  * Every user-facing string for Sessions and Trace (plan: DX "copy.ts"). Tests assert
  * against these, so wording changes happen here once. Degraded states always say what
@@ -97,6 +97,8 @@ export const copy = {
   captureOff:
     "Content capture is off for this agent (OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT).",
   unknownSpan: "That span isn't in this trace; showing the default span instead.",
+  /** A harness session's ledger (plans/feat-agent-centric.md PR1b): one row per turn instead of the trace. */
+  openLedger: "Ledger",
   linkCopied: "Link copied",
   copyFailed: "Copy failed: select the address bar and copy it instead.",
   logsEmpty: "No log lines yet",

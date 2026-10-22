@@ -1,11 +1,12 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/optimization/OptimizationHubPage.tsx. Local edits: `"use
 // client"`; the router seam: `search`/`setSearch` come in as props from the route (TokenOps' pattern, for the lab's
 // `useSearch`/`useSetSearch`), the hash is `useHash()` (@nasiko/app-core/url-state, over the port's `useUrlHash()`) and
-// dropping `#settings` after the jump is `history.replaceState` to the same path and query (the lab's `navigate({
-// hash: '', replace: true, resetScroll: false })`); the Your settings link is the navigation port's `Link` (`@nasiko/app-core/navigation`) to `useSettingsHref()`;
-// `meQuery`/`strategyQuery`/`budgetQuery` take the scope and the return-tick refresh invalidates the scoped prefixes
-// (`productKey(scope, 'tokenops', 'context-savings' | 'savings')`, `productKey(scope, 'optimization', 'history')`);
-// Prettier formatting.
+// dropping `#settings` after the jump is `history.replaceState` to the same path and query (the lab's `navigate({ hash:
+// '', replace: true, resetScroll: false })`); the Your settings link is the navigation port's `Link`
+// (`@nasiko/app-core/navigation`) to `useSettingsHref()`; `meQuery`/`strategyQuery`/`budgetQuery` take the scope and
+// the return-tick refresh invalidates the scoped prefixes (`productKey(scope, 'tokenops', 'context-savings' |
+// 'savings')`, `productKey(scope, 'optimization', 'history')`); development (5d46c313f): the slice rules moved to
+// `@nasiko/app-core/slice`; Prettier formatting.
 // The top bar (legacy ui/ on development, 3aac84f66: e8379db5a): the sticky bar sits under the shell's top bar
 // (`top-(--topbar-h)`).
 // The redesign of TokenOps, Optimization, Overview and Harnesses (legacy ui/ on development, 3aac84f66: 8bf09bf29),
@@ -56,15 +57,8 @@ import { useSettingsHref } from "./components/settingsHref";
 import { Lead } from "./components/Lead";
 import { NeedsAttention } from "./components/NeedsAttention";
 import { copy } from "./copy";
-import {
-  leadState,
-  parseSlice,
-  sliceLabel,
-  sliceOf,
-  trendRows,
-  weeklyPoints,
-  type BucketSize,
-} from "./lead";
+import { leadState, sliceLabel, trendRows, weeklyPoints } from "./lead";
+import { parseSlice, sliceOf, type BucketSize } from "@nasiko/app-core/slice";
 import { OptimizationPage } from "./OptimizationPage";
 import type { OptimizationSearch } from "./search";
 

@@ -1,11 +1,12 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/deploy/api.ts. Local edits: every key is scoped: the lab's
 // `['builds', …]` keys are `productKey(scope, "builds", …)` (`buildKeys.*`, `buildsListQuery`, `activeQuery`,
-// `uploadQuery` and `recentUploadsQuery` take the scope first, the last moved to ./uploadsQuery.ts and re-exported
-// here so follower.ts no longer imports this module (an import cycle); the active key carries the search as its last part,
+// `uploadQuery` and `recentUploadsQuery` take the scope first, the last moved to ./uploadsQuery.ts and re-exported here
+// so follower.ts no longer imports this module (an import cycle); the active key carries the search as its last part,
 // as the lab appended it) and `githubKeys` are `productKey(scope, "deploy", "github", …)`; the hooks read the scope
 // from `useProductScope()`; the stream's 401 re-check invalidates `meQueryOptions(scope).queryKey` (the lab's
 // `['me']`); the clone follows its build with `follow(qc, scope, …)`; `ApiError` is `ProductApiError`; optional list
-// params admit `undefined` (exactOptionalPropertyTypes); Prettier formatting.
+// params admit `undefined` (exactOptionalPropertyTypes); development (5d46c313f): `agentBuildsKey`/`fetchAgentBuilds`
+// and an `enabled` flag, for the hub's deploy markers and the home's last change; Prettier formatting.
 /**
  * Builds and uploads data (plans/feat-deploy.md §5, §6, §8). All `/api/*` reads go through TanStack Query; the build
  * page's live status comes from the deploy stream (`src/lib/sse.ts`, fetch-based, so no EventSource auto-reconnect).
@@ -229,16 +230,23 @@ export function useBuild(id: string, live: boolean) {
   });
 }
 
-/** `GET /api/builds/agent/{id}` (last 20) for an agent's Builds tab. */
-export function useAgentBuilds(agentId: string) {
+/** The key of an agent's build records, shared by every reader so one invalidation reaches them all. */
+export const agentBuildsKey = (scope: Scope, agentId: string) => buildKeys.forAgent(scope, agentId);
+
+/** `GET /api/builds/agent/{id}`: the agent's newest 20 build records, or `{available:false}` without deploy rights. */
+export const fetchAgentBuilds = async (agentId: string, signal: AbortSignal) =>
+  gated(
+    await apiFetch<unknown>(`/api/builds/agent/${encodeURIComponent(agentId)}`, { signal }),
+    (b) => buildRecordSchema.array().parse(b),
+  );
+
+/** `GET /api/builds/agent/{id}` (last 20) for an agent's Builds tab and the agent hub's deploy markers. */
+export function useAgentBuilds(agentId: string, enabled = true) {
   const scope = useProductScope();
   return useQuery({
     queryKey: buildKeys.forAgent(scope, agentId),
-    queryFn: async ({ signal }) =>
-      gated(
-        await apiFetch<unknown>(`/api/builds/agent/${encodeURIComponent(agentId)}`, { signal }),
-        (b) => buildRecordSchema.array().parse(b),
-      ),
+    enabled,
+    queryFn: ({ signal }) => fetchAgentBuilds(agentId, signal),
     retry: false,
     // Like the Builds list (§6): refresh while one of them is queued or building and the tab is visible.
     refetchInterval: (q) =>

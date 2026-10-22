@@ -1,8 +1,11 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/overview/components/NeedsYou.tsx. Local edits: the lab's `EmptyState` (shared/state-card) is `LabEmptyState`; `"use client"`;
-// each row's `Action` (`Button asChild` around a TanStack `Link`) is a `ButtonLink` taking the link's props (hrefs:
-// `chatHref(id)`, `/agents/<id>`, and `pageHref` for the router's budgets hash and the Sessions filter); the request
-// row's `state={{ waitingRequest }}` (the navigation port's links carry no state) is chat/waitingNav.ts `openFromWaiting(sessionId,
-// requestId)` on click, as Chat's own Waiting rows do; optional props admit `undefined`; Prettier formatting.
+// Ported from nasiko-ui-lab@1b99bdda common/src/features/overview/components/NeedsYou.tsx. Local edits: the lab's
+// `EmptyState` (shared/state-card) is `LabEmptyState`; `"use client"`; each row's `Action` (`Button asChild` around a
+// TanStack `Link`) is a `ButtonLink` taking the link's props (hrefs: `chatHref(id)`, `/agents/<id>`, and `pageHref` for
+// the router's budgets hash and the Sessions filter); the request row's `state={{ waitingRequest }}` (the navigation
+// port's links carry no state) is chat/waitingNav.ts `openFromWaiting(sessionId, requestId)` on click, as Chat's own
+// Waiting rows do; optional props admit `undefined`; development (b3dd6d4f8, 3279a16e9, 1c28b0bb9): an agent's budget
+// row opens its hub's Budget section (`pageHref("/agents/<id>", {}, "hub-budget")`) and any other budget row the
+// budgets slot's `NeedsLink`; Prettier formatting.
 // The redesign of TokenOps, Optimization, Overview and Harnesses (legacy ui/ on development, 3aac84f66: 8bf09bf29),
 // merged into this port.
 "use client";
@@ -12,6 +15,7 @@
  * the text (design review 9A); five rows show and the rest scroll inside the card (2A); the header always says when
  * it last checked (8A); a failed source adds a line and never turns into "Nothing needs you" (5A).
  */
+import { useSlots } from "@nasiko/app-core/edition/edition-context";
 import { OpenFlowLink } from "../../flows/components/OpenFlowLink";
 import { CircleAlert, Hand, TriangleAlert } from "lucide-react";
 import { useEffect, useRef, useState, type ComponentProps, type ReactNode } from "react";
@@ -26,7 +30,7 @@ import { openFromWaiting } from "../../chat/waitingNav";
 import { cn } from "@nasiko/ui/cn";
 import type { NeedsYou as NeedsYouData } from "../api";
 import { copy } from "../copy";
-import type { NeedRow, Severity } from "../needs";
+import { budgetView, type NeedRow, type Severity } from "../needs";
 import { CHECKED_TICK_MS, LAST_WEEK, NEEDS_VISIBLE_ROWS } from "../tuning";
 import { Card, CardError, CardSkeleton, pageHref, SourceFailed, TOUCH } from "./Card";
 
@@ -204,6 +208,8 @@ function Row({
   flowId?: string | undefined;
 }) {
   const { Icon, tone, detail: detailTone, label } = ICON[row.severity];
+  // Budgets are Enterprise only: an OSS build has no `/budgets` route to link a budget row to.
+  const BudgetsLink = useSlots().budgets.NeedsLink;
   let title: string;
   let detail: string;
   let action: ReactNode;
@@ -244,10 +250,10 @@ function Row({
       detail = row.reason;
       action = row.budget ? (
         <Action
-          href={pageHref("/router", {}, "router-budgets")}
-          aria-label={copy.needs.budgetsLabel(row.name)}
+          href={pageHref(`/agents/${encodeURIComponent(row.id)}`, {}, "hub-budget")}
+          aria-label={copy.needs.agentBudgetLabel(row.name)}
         >
-          {copy.needs.budgets}
+          {copy.needs.agentBudget}
         </Action>
       ) : (
         <Action
@@ -258,18 +264,24 @@ function Row({
         </Action>
       );
       break;
-    case "budget":
-      title = copy.needs.budget(row.label, row.state, row.crossed);
-      detail = copy.needs.budgetDetail;
-      action = (
+    case "budget": {
+      const v = budgetView(row);
+      title = v.title;
+      detail = v.detail;
+      action = row.agentId ? (
         <Action
-          href={pageHref("/router", {}, "router-budgets")}
-          aria-label={copy.needs.budgetsLabel(row.label)}
+          href={pageHref(`/agents/${encodeURIComponent(row.agentId)}`, {}, "hub-budget")}
+          aria-label={copy.needs.agentBudgetLabel(row.label)}
         >
-          {copy.needs.budgets}
+          {copy.needs.agentBudget}
         </Action>
-      );
+      ) : BudgetsLink ? (
+        // Budgets are Enterprise only, and so is `/budgets`: the core cannot type a link to a route it has no
+        // routes for, and a budget row only ever reaches an OSS build if a layer put it there.
+        <BudgetsLink label={copy.needs.budgets} ariaLabel={copy.needs.budgetsLabel(row.label)} />
+      ) : null;
       break;
+    }
     case "sessions":
       title = copy.needs.sessions(row.failed);
       detail = row.agents.join(", ");

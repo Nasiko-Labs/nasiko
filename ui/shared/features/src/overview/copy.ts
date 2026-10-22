@@ -1,17 +1,18 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/overview/copy.ts. Local edits: `Rating`/`SpikeHit` come
-// from ./rating.ts (split out of ./health.ts to break an import cycle); Prettier formatting.
+// Ported from nasiko-ui-lab@1b99bdda common/src/features/overview/copy.ts. Local edits: `Rating`/`SpikeHit` come from
+// ./rating.ts (split out of ./health.ts to break an import cycle); development (be271b564, b3dd6d4f8): the page is
+// Home, and the budget rows' wording; `Severity`/`SourceId` come from ./needKinds.ts (needs.ts now reads the copy); Prettier formatting.
 /** Every user-facing Overview string (plans/feat-overview.md §13). */
 import type { HitlKind } from "../chat/types";
 import { fmtShortDay } from "@nasiko/ui/lib";
 import type { Rating, SpikeHit } from "./rating";
-import type { Severity, SourceId } from "./needs";
+import type { Severity, SourceId } from "./needKinds";
 
 const pct = (v: number) => `${Math.round(v)}%`;
 
 export const copy = {
-  title: "Overview",
+  title: "Home",
   loading: "Loading",
-  loadingPage: "Loading the Overview",
+  loadingPage: "Loading Home",
   meFailed: "Couldn't reach OpenRuntime to load your account.",
   checkStatus: "Check server status",
   retry: "Retry",
@@ -38,7 +39,7 @@ export const copy = {
     button: "Setup guide",
     title: "Set up OpenRuntime",
     intro:
-      "Deploy an agent from the app, or use the CLI. Cost, health and sessions show up on the Overview once it runs.",
+      "Deploy an agent from the app, or use the CLI. Cost, health and sessions show up on Home once it runs.",
   },
   // Overview's token-optimisation band. One figure, one next step, then hand off to TokenOps.
   savings: {
@@ -125,13 +126,34 @@ export const copy = {
     openAgentLabel: (name: string) => `Open ${name}`,
     budgets: "Budgets",
     budgetsLabel: (name: string) => `Budgets for ${name}`,
+    // An agent budget's row opens the agent's own Budget section (B5).
+    agentBudget: "Budget",
+    agentBudgetLabel: (name: string) => `Budget for ${name}`,
     anAgent: "An agent",
     yourBudget: "Your monthly",
     budget: (label: string, state: "warning" | "exceeded", crossed: number | null) =>
       state === "exceeded"
         ? `${label} budget is over its limit`
         : `${label} budget is at ${crossed ?? 0}%`,
-    budgetDetail: "This month, routed calls",
+    // plans/feat-budget-burn.md F8: how much over and whether calls stop; when it reaches its limit ("runs out" only
+    // where calls stop, design 1C).
+    budgetStopped: (label: string) => `${label} budget ran out: calls are stopped`,
+    budgetOverBy: (amount: string, until: string | null) =>
+      until ? `Over by ${amount} · calls stopped until ${until}` : `Over by ${amount} this period`,
+    budgetRunsOut: (label: string, day: string, stops: boolean) =>
+      stops
+        ? `${label} budget runs out around ${day}`
+        : `${label} budget exceeds its limit around ${day}`,
+    budgetProjected: "Projected from the last 7 days",
+    budgetDetailFor: (
+      period: "month" | "quarter" | "session",
+      covers: "routed_calls" | "all_priced",
+    ) =>
+      `${period === "session" ? "This session" : `This ${period}`}, ${covers === "all_priced" ? "all priced spend" : "routed calls"}`,
+    aBudget: "A budget",
+    fleetBudget: "The fleet",
+    budgetStoppedUntil: (until: string | null) =>
+      until ? `Calls stopped until ${until}` : "Calls stopped",
     // An exact count: `session/list?status=failed` counts every match in the
     // window in SQL. It used to read "N of the M latest sessions checked
     // failed", because the status of each row was sampled client-side.

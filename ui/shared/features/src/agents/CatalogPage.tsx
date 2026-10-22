@@ -1,11 +1,12 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/agents/CatalogPage.tsx. Local edits: `meQuery` is
-// `meQueryOptions(useProductScope())`; `useFleetHealth` comes from ../overview/fleet.ts (split out of
-// overview/api.ts); `Card asChild` + `Link` -> `Card render={<Link …/>}` (the navigation port's `Link` (`@nasiko/app-core/navigation`), the one link per card); the
-// chip `Toggle`'s pressed classes are `aria-pressed:` (Base UI sets `aria-pressed`, not Radix's `data-state=on`; the
-// toggle primitive's own reconciliation; on development (3aac84f66, d2e0d4bcf) the chip is the shared `FilterChip`
-// and the card is ./components/AgentCard.tsx, which GenUI's agent cards reuse); the lab's `EmptyState` is `LabEmptyState`; optional props admit
-// `undefined` (exactOptionalPropertyTypes); Prettier formatting. Previous/Next (legacy ui/ on development, 22c07f9a5):
-// the cards carry the shown list (`useSiblingState`).
+// `meQueryOptions(useProductScope())`; `useFleetHealth` comes from ../overview/fleet.ts (split out of overview/api.ts);
+// `Card asChild` + `Link` -> `Card render={<Link …/>}` (the navigation port's `Link` (`@nasiko/app-core/navigation`),
+// the one link per card); the chip `Toggle`'s pressed classes are `aria-pressed:` (Base UI sets `aria-pressed`, not
+// Radix's `data-state=on`; the toggle primitive's own reconciliation; on development (3aac84f66, d2e0d4bcf) the chip is
+// the shared `FilterChip` and the card is ./components/AgentCard.tsx, which GenUI's agent cards reuse); the lab's
+// `EmptyState` is `LabEmptyState`; optional props admit `undefined` (exactOptionalPropertyTypes); development
+// (be271b564): members' ratings skip the fleet-wide spend series; Prettier formatting.
+// Previous/Next (legacy ui/ on development, 22c07f9a5): the cards carry the shown list (`useSiblingState`).
 // Legacy ui/ on development (3aac84f66, c721a11a8): the Agents module header (`AgentsHeader`), and the owner, tag
 // and harness filters as prefixed Selects and a Switch on the search row's right.
 "use client";
@@ -61,9 +62,10 @@ export function CatalogPage({
   const pinnedTabs = useCatalogTabs().data;
   const names = useUsers(!!me?.is_superuser).data;
   const inputRef = useRef<HTMLInputElement>(null);
-  // Ratings are fetched only while the Overview's ?health= filter is on (eng review R1).
+  // Ratings are fetched only while the ?health= filter (the home's rating badges link here) is on (eng review R1).
   const [now] = useState(() => new Date());
-  const fleet = useFleetHealth(now, !!search.health);
+  // Members never read the fleet-wide spend series (the home and the hub rate them the same way).
+  const fleet = useFleetHealth(now, !!search.health, !!me?.is_superuser);
 
   // "/" focuses search unless the user is already typing somewhere.
   useEffect(() => {

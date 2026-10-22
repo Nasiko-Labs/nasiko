@@ -1,5 +1,7 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/harnesses/search.ts. Local edits: `import * as z from "zod/mini"` (a named import keeps all zod locales in the bundle); `top-traces-absent` and `large-fleet` join
-// the mirrored variant list (the destination's MOCK_VARIANTS added them for TokenOps and the large-data journeys; the test keeps the lists equal);
+// Ported from nasiko-ui-lab@1b99bdda common/src/features/harnesses/search.ts. Local edits: `import * as z from
+// "zod/mini"` (a named import keeps all zod locales in the bundle); `top-traces-absent` and `large-fleet` join the
+// mirrored variant list (the destination's MOCK_VARIANTS added them for TokenOps and the large-data journeys; the test
+// keeps the lists equal); development (5d46c313f … 73118dcb8): the hub, ledger, home and budgets mock variants;
 // Prettier formatting.
 import * as z from "zod/mini";
 import { fallback, flag, isoDate, opt, PRESETS } from "@nasiko/app-core/search";
@@ -54,6 +56,15 @@ export const HARNESS_MOCK_VARIANTS = [
   "flows-absent",
   // Large-data scenario (a destination addition, `?mock=large-fleet`); same reason.
   "large-fleet",
+  "hub-not-visible",
+  "hub-gate-error",
+  "hub-deleted",
+  "hub-markers-fail",
+  "hub-no-savings-row",
+  "hub-many-builds",
+  "events-absent",
+  "ledger-no-trace",
+  "home-budgets-absent",
   // Chat page variants (v1c DX1); harmless here, listed so the lists stay equal.
   "no-agents",
   "many-chats",
@@ -75,6 +86,16 @@ export const HARNESS_MOCK_VARIANTS = [
   "router-legacy",
   "router-budgets-empty",
   "router-budgets-fail",
+  // Budget page variants (plans/feat-budget-burn.md); same reason.
+  "budgets-empty",
+  "budgets-fail",
+  "budgets-absent",
+  "budgets-rl10-only",
+  "budgets-golden",
+  // Alert delivery (docs/requirements/alert-delivery.md); same reason.
+  "alerts-absent",
+  "alerts-nowhere",
+  "alerts-failing",
 ] as const;
 
 const id = z.string().check(z.trim(), z.minLength(1), z.maxLength(100));

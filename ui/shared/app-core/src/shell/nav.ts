@@ -1,9 +1,10 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/app/shell/nav.ts. Local edits: `findLastIndex` is a reverse loop (the tsconfig's lib is below ES2023); `LayerNavItem`/`AnyNavItem`
-// live here instead of ../edition (breaks the lab's type-only import cycle); the `views` group (development
-// f851fdca8: EE's Custom views); Prettier formatting.
+// Ported from nasiko-ui-lab@1b99bdda common/src/app/shell/nav.ts. Local edits: `findLastIndex` is a reverse loop (the
+// tsconfig's lib is below ES2023); `LayerNavItem`/`AnyNavItem` live here instead of ../edition (breaks the lab's
+// type-only import cycle); the `views` group (development f851fdca8: EE's Custom views); development (309a7bd8f): Home
+// alone opens the nav and Chat moves to Fleet; Prettier formatting.
 /**
  * The sidebar's items (plans/feat-app-shell.md §3): one source for AppSidebar and its tests.
- * Only pages that exist get an item. Overview is `/`; Status (`/status`) is reached from the footer's status row,
+ * Only pages that exist get an item. Home is `/`; Status (`/status`) is reached from the footer's status row,
  * and Settings (the account's) opens from the account menu. Deploy and Builds belong to Agents (its sub-nav), so they mark it current.
  *
  * `shared` items carry the shared context (window, filters, compare) between them through
@@ -13,7 +14,7 @@ import {
   Bot,
   DollarSign,
   Gauge,
-  LayoutDashboard,
+  House,
   ListTree,
   MessageSquare,
   Network,
@@ -68,8 +69,8 @@ export type LayerNavItem = Omit<NavItem, "to"> & { to: string };
 export type AnyNavItem = NavItem | LayerNavItem;
 
 export const NAV_ITEMS: readonly NavItem[] = [
-  { to: "/", label: copy.nav.overview, icon: LayoutDashboard, group: "work", shared: false },
-  { to: "/chat", label: copy.nav.chat, icon: MessageSquare, group: "work", shared: false },
+  // plans/feat-agent-centric.md PR3: Home alone opens the nav; Chat sits in Fleet beside the agents it talks to.
+  { to: "/", label: copy.nav.home, icon: House, group: "work", shared: false },
   // plans/feat-deploy.md §3: Deploy and Builds are Agents' sub-pages (its sub-nav and "Deploy an agent").
   {
     to: "/agents",
@@ -81,6 +82,7 @@ export const NAV_ITEMS: readonly NavItem[] = [
   },
   // plans/feat-workflows.md §1: Drafts and Runs are its sub-pages (/workflows/*).
   { to: "/workflows", label: copy.nav.workflows, icon: Workflow, group: "fleet", shared: false },
+  { to: "/chat", label: copy.nav.chat, icon: MessageSquare, group: "fleet", shared: false },
   // What agents can call: models (plans/feat-llm-router.md §4), then tools (plans/feat-mcp.md §1).
   { to: "/router", label: copy.nav.router, icon: Waypoints, group: "connect", shared: false },
   { to: "/mcp", label: copy.nav.mcp, icon: Plug, group: "connect", shared: false },
@@ -88,6 +90,7 @@ export const NAV_ITEMS: readonly NavItem[] = [
   // One request's orchestration (plans/feat-flows.md F1): its own 7-day window, so it doesn't carry the shared one.
   { to: "/flows", label: copy.nav.flows, icon: Network, group: "observe", shared: false },
   { to: "/tokenops", label: copy.nav.tokenops, icon: DollarSign, group: "observe", shared: true },
+  // Budgets are Enterprise only (docs/requirements/budgets.md): the item is an EE nav patch, after TokenOps.
   // What context optimization saves and your settings for it (plans/feat-optimization-page.md P7, P2).
   {
     to: "/optimization",
@@ -113,7 +116,7 @@ const under = (pathname: string, to: string) =>
 
 /**
  * The item for a pathname, including its sub-routes (`/agents/mine`, `/chat/<id>`) and the pages it owns (`/builds/<id>`
- * is Agents); Overview only on `/` itself, none on `/status` or `/account` (footer rows).
+ * is Agents); Home only on `/` itself, none on `/status` or `/account` (footer rows).
  */
 export function activeItem(
   pathname: string,

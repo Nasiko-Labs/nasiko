@@ -1,5 +1,5 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/optimization/components/SavingsTrend.tsx. Local edits: none
-// beyond imports and Prettier.
+// beyond imports and Prettier. Development (5d46c313f): `@nasiko/app-core/slice`.
 /**
  * The lead's chart (plans/feat-optimization-page.md R5A, R4C, R7C; eng C2, C5): tokens per bucket on the kit's stacked
  * bars, Sent at the bottom and Saved on top, so the full bar is what would have gone without optimization. Buckets that
@@ -32,7 +32,8 @@ import {
 import { seriesAt } from "@nasiko/ui/lib";
 import { cn } from "@nasiko/ui/cn";
 import { copy } from "../copy";
-import { pctOf, savedShare, tokensShort, type BucketSize, type TrendRow } from "../lead";
+import { pctOf, savedShare, tokensShort, type TrendRow } from "../lead";
+import { type BucketSize } from "@nasiko/app-core/slice";
 import { Without } from "./Without";
 
 const SENT = seriesAt(0);

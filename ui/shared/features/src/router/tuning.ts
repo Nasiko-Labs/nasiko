@@ -1,5 +1,5 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/router/tuning.ts. Local edits: none beyond imports and
-// Prettier.
+// Prettier. Development (55840ba24).
 /** Every tuning number of the router page (plan §7). */
 
 /** At most this many `GET /api/agents/{id}/llm-config` reads in flight (the page's own limiter, eng #4). */
@@ -14,8 +14,6 @@ export const LIST_STALE_MS = 10_000;
 export const DEFAULT_GROUP_MIN = 3;
 /** A name search appears above Your agents from this many agents. */
 export const AGENT_SEARCH_MIN = 20;
-/** A new budget's alert marks, in percent of the limit (R-L10 default). */
-export const DEFAULT_THRESHOLDS = [50, 80, 100] as const;
 /** Spend is a 30-day aggregate: re-read after this long, never on focus. */
 export const SPEND_STALE_MS = 5 * 60_000;
 /** Router-metered spend window (E1), in days. */

@@ -4,8 +4,10 @@
 // `['agents']`, `['agents', 'deployment']`, `['router', 'budgets']`, `['tokenops', 'calendar']`); the range
 // `ToggleGroup type="single"` is Base UI's value array (`value={[range]}`, an emptied pick ignored as Radix's `v &&`
 // did); `Card asChild` + `<section>` -> `Card render={<section …/>}`; `Button asChild` + `Link` -> `ButtonLink`
-// (../agents/components/ButtonLink.tsx); the summary card is ./components/SummaryCard.tsx (development 49950eb1e, shared
-// with GenUI's overview view); Prettier formatting.
+// (../agents/components/ButtonLink.tsx); the summary card is ./components/SummaryCard.tsx (development 49950eb1e,
+// shared with GenUI's overview view); development (1c28b0bb9): the router budgets key is gone with budgets (Enterprise
+// only), so the return tick no longer invalidates it, and since PR2a (be271b564) `/` is the home, so this page has no
+// route; Prettier formatting.
 // The product tour (legacy ui/ on development, 3aac84f66: dd9fe0f64): the range and summary are tour targets, and
 // the header has its own tour button (no top bar on desktop).
 // The redesign (legacy ui/ on development, 3aac84f66: 8bf09bf29): the summary bento (./components/SummaryCard.tsx)
@@ -41,7 +43,6 @@ import { overviewNarrative } from "../narrative/overview";
 import { meQueryOptions, productKey, useProductScope, type Me } from "@nasiko/data-access/product";
 import { AGENTS_FEATURE } from "../agents/api";
 import { ButtonLink } from "../agents/components/ButtonLink";
-import { routerKeys } from "../router/api";
 import { TOKENOPS_FEATURE } from "../tokenops/api";
 import { useReturnTick } from "@nasiko/app-core/useReturnTick";
 // import { fmtMonthYear } from '@nasiko/ui/lib' // Budgets hidden: used only by the Budgets card.
@@ -228,7 +229,6 @@ function Overview({
     // Window-keyed queries (finops, sessions) move with `now`; these keys don't, so refresh them.
     void qc.invalidateQueries({ queryKey: productKey(scope, AGENTS_FEATURE), exact: true });
     void qc.invalidateQueries({ queryKey: productKey(scope, AGENTS_FEATURE, "deployment") });
-    void qc.invalidateQueries({ queryKey: routerKeys.budgets(scope) });
     // The month calendar is keyed by month, not window: refresh it too, as TokenOps does (/ship review).
     void qc.invalidateQueries({ queryKey: productKey(scope, TOKENOPS_FEATURE, "calendar") });
   }, [returnTick, qc, scope]);
