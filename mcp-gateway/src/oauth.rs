@@ -116,7 +116,12 @@ async fn refresh(
             }
         },
         Ok(r) => {
-            tracing::warn!(connector = %connector.name, status = r.status().as_u16(), "oauth refresh rejected");
+            let status = r.status().as_u16();
+            let (error, error_description) = token_error(&r.text().await.unwrap_or_default());
+            tracing::warn!(
+                connector = %connector.name, status, error, error_description,
+                "oauth refresh rejected"
+            );
             return Ok(Err(ConnectorUnusable::AuthRequired));
         }
         Err(e) => {
@@ -152,6 +157,22 @@ async fn refresh(
 
     tracing::info!(connector = %connector.name, "refreshed oauth token");
     Ok(Ok(new_access))
+}
+
+const TOKEN_ERROR_DESCRIPTION_MAX_CHARS: usize = 200;
+
+/// RFC 6749 §5.2 `error` / `error_description` of a rejected token request,
+/// for the log only: a bare status says nothing about why the provider
+/// refused (an Entra ID description names its AADSTS code), and neither field
+/// carries a credential. Truncated because providers append trace ids.
+fn token_error(body: &str) -> (String, String) {
+    let parsed: Value = serde_json::from_str(body).unwrap_or(Value::Null);
+    let field = |name: &str| first_str(&parsed, &[name]).unwrap_or_default();
+    let description = field("error_description")
+        .chars()
+        .take(TOKEN_ERROR_DESCRIPTION_MAX_CHARS)
+        .collect();
+    (field("error"), description)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1725,6 +1746,28 @@ mod tests {
             stored_secret_for(&connector, "another-client"),
             None,
             "a stored secret never pairs with a different client id"
+        );
+    }
+
+    #[test]
+    fn token_error_reports_the_providers_reason_and_tolerates_non_json() {
+        let entra = r#"{"error":"invalid_request","error_description":"AADSTS900144: The request body must contain the following parameter: 'scope'.","error_codes":[900144]}"#;
+        let (error, description) = token_error(entra);
+        assert_eq!(error, "invalid_request");
+        assert!(description.starts_with("AADSTS900144"));
+
+        let long = format!(
+            r#"{{"error":"x","error_description":"{}"}}"#,
+            "d".repeat(500)
+        );
+        assert_eq!(
+            token_error(&long).1.len(),
+            TOKEN_ERROR_DESCRIPTION_MAX_CHARS
+        );
+
+        assert_eq!(
+            token_error("<html>bad gateway</html>"),
+            (String::new(), String::new())
         );
     }
 }
