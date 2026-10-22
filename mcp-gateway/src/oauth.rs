@@ -84,16 +84,7 @@ async fn refresh(
         }
     };
 
-    let mut form: Vec<(&str, String)> = vec![
-        ("grant_type", "refresh_token".to_string()),
-        ("refresh_token", refresh_plain.clone()),
-    ];
-    if let Some(cid) = &connector.oauth_client_id {
-        form.push(("client_id", cid.clone()));
-    }
-    if let Some(secret) = client_secret_plain(connector) {
-        form.push(("client_secret", secret));
-    }
+    let form = refresh_form(connector, conn, &refresh_plain);
 
     // Guarded client: the token endpoint was discovered from the target server's
     // response, so it must be SSRF-checked, not fetched with the internal client.
@@ -157,6 +148,33 @@ async fn refresh(
 
     tracing::info!(connector = %connector.name, "refreshed oauth token");
     Ok(Ok(new_access))
+}
+
+/// The refresh-token grant's form fields.
+///
+/// Re-requests exactly the granted scope (RFC 6749 §6 allows it). Without
+/// one, Entra ID resolves the original resource itself and rejects an app
+/// registration that is both the client and the API (AADSTS90009) — the
+/// simplest way to put an Entra-protected MCP server behind this gateway.
+fn refresh_form(
+    connector: &McpConnector,
+    conn: &McpUserConnection,
+    refresh_token: &str,
+) -> Vec<(&'static str, String)> {
+    let mut form = vec![
+        ("grant_type", "refresh_token".to_string()),
+        ("refresh_token", refresh_token.to_string()),
+    ];
+    if let Some(scope) = conn.scope.as_deref().filter(|s| !s.trim().is_empty()) {
+        form.push(("scope", scope.to_string()));
+    }
+    if let Some(cid) = &connector.oauth_client_id {
+        form.push(("client_id", cid.clone()));
+    }
+    if let Some(secret) = client_secret_plain(connector) {
+        form.push(("client_secret", secret));
+    }
+    form
 }
 
 const TOKEN_ERROR_DESCRIPTION_MAX_CHARS: usize = 200;
@@ -1769,5 +1787,24 @@ mod tests {
             token_error("<html>bad gateway</html>"),
             (String::new(), String::new())
         );
+    }
+
+    #[test]
+    fn refresh_re_requests_the_granted_scope_only_when_one_was_granted() {
+        install_valid_encryption_key();
+        let user_id = Uuid::new_v4();
+        let crypto = SecretsCrypto::for_user(user_id);
+        let connector = oauth_connector("https://as.example/token");
+        let mut conn = oauth_connection(user_id, connector.id, &crypto);
+        let scope_of = |conn: &McpUserConnection| {
+            refresh_form(&connector, conn, "refresh-token-value")
+                .into_iter()
+                .find(|(name, _)| *name == "scope")
+                .map(|(_, value)| value)
+        };
+
+        assert_eq!(scope_of(&conn), None, "no granted scope, no scope sent");
+        conn.scope = Some("api://app/mcp.access".to_string());
+        assert_eq!(scope_of(&conn).as_deref(), Some("api://app/mcp.access"));
     }
 }
