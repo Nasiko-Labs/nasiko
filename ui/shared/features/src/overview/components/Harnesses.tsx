@@ -1,6 +1,7 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/overview/components/Harnesses.tsx. Local edits: `"use
 // client"`; `Button asChild` + `Link to="/harnesses" search={{}}` -> `ButtonLink href="/harnesses"`; `Card asChild` +
 // `<section>` -> `Card render={<section …/>}`; optional props admit `undefined`; Prettier formatting.
+// Development (2d95e6e79): the estimated cost is the tile's figure, the connected count under it.
 "use client";
 
 /**
@@ -136,6 +137,12 @@ export function Harnesses({ data, days }: { data: HarnessSummary; days: number }
           <Skeleton className="h-8 w-28 motion-reduce:animate-none" />
         ) : data.error || data.notVisible ? (
           "—"
+        ) : total > 0 ? (
+          // The estimated cost is the figure (redesign 2026-10-19): often the largest dollar amount on the page.
+          <>
+            {fmtMoney(total)}{" "}
+            <span className="text-base font-normal text-muted-foreground">{copy.kpi.est}</span>
+          </>
         ) : (
           <>
             {data.connected}{" "}
@@ -163,44 +170,53 @@ export function Harnesses({ data, days }: { data: HarnessSummary; days: number }
           </ButtonLink>
         </p>
       ) : (
-        <div className="mt-auto flex flex-col gap-2">
-          {data.ownOnly ? (
-            <p className="text-xs text-muted-foreground">{copy.harnesses.ownOnly}</p>
-          ) : null}
+        <>
           {total > 0 ? (
-            <div aria-hidden className="flex h-2 gap-0.5 overflow-hidden rounded-full bg-muted">
-              {priced.map((h) => (
-                <span
-                  key={h.id}
-                  className="h-full bg-(--bar)"
-                  style={{ width: `${share(h)}%`, "--bar": colorOf(h.id) } as CSSProperties}
-                />
-              ))}
-            </div>
+            <p className="text-xs text-muted-foreground tabular-nums">
+              {copy.kpi.connectedCount(data.connected)}
+            </p>
           ) : null}
-          <ul className="grid grid-cols-[auto_1fr_auto_auto] items-center gap-x-2 gap-y-0.5 text-xs">
-            {data.harnesses.map((h) => {
-              const s = share(h);
-              return (
-                <li key={h.id} className="contents">
+          <div className="mt-auto flex flex-col gap-2">
+            {data.ownOnly ? (
+              <p className="text-xs text-muted-foreground">{copy.harnesses.ownOnly}</p>
+            ) : null}
+            {total > 0 ? (
+              <div aria-hidden className="flex h-2 gap-0.5 overflow-hidden rounded-full bg-muted">
+                {priced.map((h) => (
                   <span
-                    aria-hidden
-                    className="size-2.5 rounded-xs bg-(--bar)"
-                    style={{ "--bar": colorOf(h.id) } as CSSProperties}
+                    key={h.id}
+                    className="h-full bg-(--bar)"
+                    style={{ width: `${share(h)}%`, "--bar": colorOf(h.id) } as CSSProperties}
                   />
-                  <span className="truncate">{known.get(h.id)?.name ?? h.id}</span>
-                  <span className="text-right text-muted-foreground tabular-nums">
-                    {s === null ? "" : fmtPct(s)}
-                  </span>
-                  <span className="text-right text-muted-foreground tabular-nums">
-                    {h.unpriced ? copy.harnesses.unpriced : fmtMoney(h.cost ?? 0)}
-                  </span>
-                </li>
-              );
-            })}
-          </ul>
-          <p className="text-[0.6875rem] text-muted-foreground">{copy.harnesses.costNote(days)}</p>
-        </div>
+                ))}
+              </div>
+            ) : null}
+            <ul className="grid grid-cols-[auto_1fr_auto_auto] items-center gap-x-2 gap-y-0.5 text-xs">
+              {data.harnesses.map((h) => {
+                const s = share(h);
+                return (
+                  <li key={h.id} className="contents">
+                    <span
+                      aria-hidden
+                      className="size-2.5 rounded-xs bg-(--bar)"
+                      style={{ "--bar": colorOf(h.id) } as CSSProperties}
+                    />
+                    <span className="truncate">{known.get(h.id)?.name ?? h.id}</span>
+                    <span className="text-right text-muted-foreground tabular-nums">
+                      {s === null ? "" : fmtPct(s)}
+                    </span>
+                    <span className="text-right text-muted-foreground tabular-nums">
+                      {h.unpriced ? copy.harnesses.unpriced : fmtMoney(h.cost ?? 0)}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+            <p className="text-[0.6875rem] text-muted-foreground">
+              {copy.harnesses.costNote(days)}
+            </p>
+          </div>
+        </>
       )}
     </KpiTile>
   );

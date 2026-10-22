@@ -6,12 +6,12 @@
 // did); `Card asChild` + `<section>` -> `Card render={<section …/>}`; `Button asChild` + `Link` -> `ButtonLink`
 // (../agents/components/ButtonLink.tsx); the summary card is ./components/SummaryCard.tsx (development 49950eb1e,
 // shared with GenUI's overview view); development (1c28b0bb9): the router budgets key is gone with budgets (Enterprise
-// only), so the return tick no longer invalidates it, and since PR2a (be271b564) `/` is the home, so this page has no
-// route; Prettier formatting.
+// only), so the return tick no longer invalidates it; Prettier formatting.
 // The product tour (legacy ui/ on development, 3aac84f66: dd9fe0f64): the range and summary are tour targets, and
 // the header has its own tour button (no top bar on desktop).
 // The redesign (legacy ui/ on development, 3aac84f66: 8bf09bf29): the summary bento (./components/SummaryCard.tsx)
-// and the twelve-column grid without budgets; the budgets placement is unchanged (budgets are hidden here).
+// and the twelve-column grid. Back at `/` (2d95e6e79): Home's Budget burn (the budgets slot's `useHomePanel`, on the
+// persona's default scope) and Saved tokens by agent; the return tick refreshes the scoped `budgets`/`v1` keys.
 "use client";
 
 /**
@@ -24,11 +24,17 @@
  * refetch on focus (eng review correction).
  * The grids follow the page area's width, not the viewport, because the sidebar changes it (design review 1A). The summary
  * is a bento: the headline in a lead card beside the KPI tiles (2×2) from 1100 px of content, stacked below (tiles 2
- * across from 560 px). Below it, from 1100 px, twelve columns: Needs you and Spend each span the row, then Fleet health
- * beside Recent sessions and Recent chats beside Quick actions; 2 columns from 700 px, 1 below. DOM order stays the
- * priority order (Needs you first); wide layouts place cards
- * explicitly, so nothing leaves a hole with or without budgets.
+ * across from 560 px). Below it, from 1100 px, twelve columns: Needs you beside Fleet health, Budget burn and Spend each
+ * span the row, then Recent sessions beside Saved tokens by agent and Recent chats beside Quick actions; 2 columns from
+ * 700 px, 1 below. DOM order stays the priority order (Needs you first); wide layouts place cards explicitly, so
+ * nothing leaves a hole.
+ *
+ * Restored at `/` on 2026-10-17 in place of the agent-centric Home (its table, scope switch and chart band are gone),
+ * with Home's Budget burn panel (the `budgets.useHomePanel` slot, EE only) spanning the row under Needs you. The panel
+ * reads the persona's default scope (`homeScopeFor`: Fleet for leads and finance, Yours otherwise), since the Overview
+ * has no scope switch; the first paint waits for it, so it never pushes the cards down mid-look.
  */
+import { useSlots } from "@nasiko/app-core/edition/edition-context";
 import { TourButton } from "@nasiko/app-core/shell/TopBar";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ToggleGroup, ToggleGroupItem } from "@nasiko/ui/primitives";
@@ -44,18 +50,17 @@ import { meQueryOptions, productKey, useProductScope, type Me } from "@nasiko/da
 import { AGENTS_FEATURE } from "../agents/api";
 import { ButtonLink } from "../agents/components/ButtonLink";
 import { TOKENOPS_FEATURE } from "../tokenops/api";
+import { usePersona } from "../onboarding/api";
+import { homeScopeFor } from "../onboarding/logic";
 import { useReturnTick } from "@nasiko/app-core/useReturnTick";
-// import { fmtMonthYear } from '@nasiko/ui/lib' // Budgets hidden: used only by the Budgets card.
-// import { useBudgetCard, useFleetHealth, useHarnessSummary, useNeedsYou, useSpend } from './api'
 import {
   useFleetHealth,
   useHarnessSummary,
   useNeedsYou,
   useOverviewSavings,
+  useSavedByAgent,
   useSpend,
 } from "./api";
-// Budgets hidden: no server support for /api/budgets yet (R-L10). Restore when it lands.
-// import { Budget } from './components/Budget'
 import { FirstRun, FirstRunLead, FirstRunPreview } from "./components/FirstRun";
 import { FleetHealth } from "./components/FleetHealth";
 import { HarnessesLine } from "./components/Harnesses";
@@ -64,6 +69,7 @@ import { usePausedFlows } from "../flows/paused";
 import { QuickActions } from "./components/QuickActions";
 import { RecentChats } from "./components/RecentChats";
 import { RecentSessions } from "./components/RecentSessions";
+import { SavedByAgent } from "./components/SavedByAgent";
 import { SetupGuide } from "./components/SetupGuide";
 import { Spend } from "./components/Spend";
 import { SummaryCard } from "./components/SummaryCard";
@@ -134,37 +140,23 @@ function HeaderActions({
 /** A first-run row that spans the grid at every width. */
 const FULL_ROW = "@[700px]/overview:col-span-2 @[1100px]/overview:col-span-3";
 
-/**
- * Where each card sits from 1100 px (4 columns) and from 700 px (2), with and without budgets. Literal class names, so
- * Tailwind sees them.
- */
+/** Where each card sits: twelve columns from 1100 px, 2 from 700. Literal class names, so Tailwind sees them. */
+// Redesign 2026-10-13: Needs you, Budget burn and Spend span the row; then Fleet health beside Recent sessions and
+// Recent chats beside Quick actions, alternating widths. Heights match within a row, so no card stretches far past
+// its content.
+// Redesign 2026-10-19: Needs you (8) beside Fleet health (4), both "what's wrong"; Needs you at that width draws one
+// row per item (its tiles start at 900 px of card). Budget burn and Spend span the row; then Recent sessions (7) beside
+// Saved tokens by agent (5), and Recent chats (7) beside Quick actions (5): pairs of about the same height, so neither
+// card in a row is left half empty.
 const PLACE = {
-  budgets: {
-    needs:
-      "@[700px]/overview:col-span-2 @[1100px]/overview:col-span-1 @[1100px]/overview:col-start-4 @[1100px]/overview:row-start-1",
-    spend:
-      "@[700px]/overview:col-span-2 @[1100px]/overview:col-span-3 @[1100px]/overview:col-start-1 @[1100px]/overview:row-start-1 @[1100px]/overview:row-span-2",
-    budget: "@[1100px]/overview:col-start-4 @[1100px]/overview:row-start-2",
-    health:
-      "@[1100px]/overview:col-span-2 @[1100px]/overview:col-start-3 @[1100px]/overview:row-start-4",
-    sessions:
-      "@[700px]/overview:col-span-2 @[1100px]/overview:col-span-3 @[1100px]/overview:col-start-1 @[1100px]/overview:row-start-3",
-    chats:
-      "@[1100px]/overview:col-span-2 @[1100px]/overview:col-start-1 @[1100px]/overview:row-start-4",
-    actions: "@[1100px]/overview:col-start-4 @[1100px]/overview:row-start-3",
-  },
-  // Redesign 2026-10-13: twelve columns from 1100 px. Needs you and Spend span the row; then Fleet health beside Recent
-  // sessions and Recent chats beside Quick actions, alternating widths. Heights match within a row, so no card
-  // stretches far past its content.
-  none: {
-    needs: "@[700px]/overview:col-span-2 @[1100px]/overview:col-span-12",
-    spend: "@[700px]/overview:col-span-2 @[1100px]/overview:col-span-12",
-    budget: "",
-    health: "@[700px]/overview:col-span-2 @[1100px]/overview:col-span-5",
-    sessions: "@[700px]/overview:col-span-2 @[1100px]/overview:col-span-7",
-    chats: "@[700px]/overview:col-span-2 @[1100px]/overview:col-span-7",
-    actions: "@[700px]/overview:col-span-2 @[1100px]/overview:col-span-5",
-  },
+  needs: "@[700px]/overview:col-span-2 @[1100px]/overview:col-span-8",
+  health: "@[700px]/overview:col-span-2 @[1100px]/overview:col-span-4",
+  burn: "@[700px]/overview:col-span-2 @[1100px]/overview:col-span-12",
+  spend: "@[700px]/overview:col-span-2 @[1100px]/overview:col-span-12",
+  sessions: "@[700px]/overview:col-span-2 @[1100px]/overview:col-span-7",
+  saved: "@[700px]/overview:col-span-2 @[1100px]/overview:col-span-5",
+  chats: "@[700px]/overview:col-span-2 @[1100px]/overview:col-span-7",
+  actions: "@[700px]/overview:col-span-2 @[1100px]/overview:col-span-5",
 } as const;
 
 export function OverviewPage({
@@ -229,6 +221,8 @@ function Overview({
     // Window-keyed queries (finops, sessions) move with `now`; these keys don't, so refresh them.
     void qc.invalidateQueries({ queryKey: productKey(scope, AGENTS_FEATURE), exact: true });
     void qc.invalidateQueries({ queryKey: productKey(scope, AGENTS_FEATURE, "deployment") });
+    // The Budget burn panel's burn and At risk, and Needs you's budget rows (Home's rule, Codex 2).
+    void qc.invalidateQueries({ queryKey: productKey(scope, "budgets", "v1") });
     // The month calendar is keyed by month, not window: refresh it too, as TokenOps does (/ship review).
     void qc.invalidateQueries({ queryKey: productKey(scope, TOKENOPS_FEATURE, "calendar") });
   }, [returnTick, qc, scope]);
@@ -240,14 +234,19 @@ function Overview({
   const firstRun = !!fleet.summary && fleet.agentCount === 0;
   const spend = useSpend(now, range, ready);
   const savings = useOverviewSavings(now, range, ready);
+  const savedByAgent = useSavedByAgent(now, range, fleet, ready && !firstRun);
   const needsYou = useNeedsYou(now, me, fleet, ready);
   const harnesses = useHarnessSummary(now, me, range);
   // The Recent chats card's own query (same key): first paint waits for it too.
   const chats = useChatSessions();
-  // Budgets hidden: no server support for /api/budgets yet (R-L10). Restore when it lands.
-  // const budget = useBudgetCard(fleet, ready)
-  // const budgets = !budget.absent
-  const budgets = false;
+  // Budget burn (EE): the persona's default scope; null until the persona settles (it settles on a failure too).
+  const persona = usePersona();
+  const burn = useSlots().budgets.useHomePanel({
+    scope: persona.settled ? homeScopeFor(persona.persona, me.is_superuser) : null,
+    meSub: me.sub,
+    isSuperuser: me.is_superuser,
+    unitLabel: null,
+  });
   const { needs } = needsYou;
   // Read only when there are requests to link (plans/feat-flows.md O2, amended 2026-10-06).
   const pausedFlows = usePausedFlows(needs.rows.some((r) => r.kind === "request"));
@@ -278,6 +277,8 @@ function Overview({
       (spend.isPending ||
         (!spend.totals && !spend.totalsError) ||
         needsYou.sessions.recent.isPending ||
+        !persona.settled ||
+        burn.pending ||
         chats.isPending));
   const [painted, setPainted] = useState(false);
   if (!painted && !coldPending) setPainted(true);
@@ -305,8 +306,6 @@ function Overview({
       </Frame>
     );
   }
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- `budgetsAbsent` is the lab's deliberate constant until /api/budgets ships; the branch is kept for that server
-  const place = budgets ? PLACE.budgets : PLACE.none;
   return (
     <Frame description={description} actions={actions}>
       <SummaryCard
@@ -315,7 +314,6 @@ function Overview({
         nothing={needs.empty}
         spend={spend}
         savings={savings}
-        fleet={fleet}
         harnesses={harnesses}
       />
       <div className="grid grid-cols-1 items-stretch gap-3 @[700px]/overview:grid-cols-2 @[1100px]/overview:grid-cols-12">
@@ -324,28 +322,25 @@ function Overview({
           now={now.getTime()}
           userId={me.sub}
           pausedFlows={pausedFlows}
-          className={place.needs}
+          className={PLACE.needs}
         />
-        <Spend spend={spend} now={now.getTime()} className={place.spend} />
-        {/* Budgets hidden: no server support for /api/budgets yet (R-L10). Restore when it lands.
-        {budgets ? (
-          <Budget data={budget} month={fmtMonthYear(now)} className={place.budget} />
-        ) : null}
-        */}
-        <FleetHealth fleet={fleet} className={place.health} />
+        <FleetHealth fleet={fleet} className={PLACE.health} />
+        {burn.node ? <div className={PLACE.burn}>{burn.node}</div> : null}
+        <Spend spend={spend} now={now.getTime()} className={PLACE.spend} />
         <RecentSessions
           sessions={needsYou.sessions}
           displayName={fleet.displayName}
           now={now.getTime()}
-          className={place.sessions}
+          className={PLACE.sessions}
         />
+        <SavedByAgent data={savedByAgent} className={PLACE.saved} />
         <RecentChats
           byId={fleet.byId}
           username={me.username}
           now={now.getTime()}
-          className={place.chats}
+          className={PLACE.chats}
         />
-        <QuickActions budgets={budgets} className={place.actions} />
+        <QuickActions className={PLACE.actions} />
       </div>
     </Frame>
   );

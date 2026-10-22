@@ -1,28 +1,34 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/overview/components/Kpis.tsx. Local edits: `"use client"`;
 // TanStack `Link to search={{}}` -> the navigation port's `Link` (`@nasiko/app-core/navigation`) `href`; `TooltipTrigger asChild` + `span` -> `render={<span …/>}`;
 // `Spark` is exported (development 49950eb1e: GenUI draws it); Prettier formatting.
+// Development (2d95e6e79): the Tokens tile and the Runs tile's cost per run; the Agents running tile is gone (its run
+// states open Fleet health).
 "use client";
 
 /**
- * The KPI row: Spend, Agent runs and Agents running over the page's range (the fourth tile, Harnesses used, is
- * `Harnesses.tsx`). Each label links to the page that owns the number. Spend and runs come from the fleet-wide
- * timeseries (the same series as the Spend chart), agents from the directory. The month line is the summary card's
- * `MonthBar`.
+ * The KPI tiles: Spend, Tokens and Agent runs over the page's range (the fourth, Harnesses used, is `Harnesses.tsx`).
+ * Each label links to the page that owns the number. Spend and runs come from the fleet-wide timeseries (the same
+ * series as the Spend chart), cost per run from the same totals, tokens from the dashboard's KPIs and the savings read.
+ * The month line is the summary card's `MonthBar`; the agents' run states are Fleet health's first line.
  * Sparklines are decorative: the figures above them carry the numbers.
  */
 import Link from "@nasiko/app-core/navigation";
-import { Bot, DollarSign, Workflow, type LucideIcon } from "lucide-react";
-import type { ReactNode } from "react";
+import { Coins, DollarSign, Workflow, type LucideIcon } from "lucide-react";
+import type { CSSProperties, ReactNode } from "react";
 import { Delta } from "@nasiko/ui/composites";
 import { KpiTile } from "@nasiko/ui/composites";
 import { Skeleton } from "@nasiko/ui/primitives";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@nasiko/ui/primitives";
-import { displayStatus, isHarness, type DisplayStatus } from "../../agents/status";
 import { seriesAt, type Series } from "@nasiko/ui/lib";
 import { POLARITY } from "@nasiko/ui/lib";
-import { fmtInt, fmtMoneyFloor, fmtMoneyShort } from "@nasiko/ui/lib";
-import { cn } from "@nasiko/ui/cn";
-import type { FleetHealth, Spend } from "../api";
+import {
+  fmtCostPerOp,
+  fmtInt,
+  fmtMoneyFloor,
+  fmtMoneyShort,
+  fmtPct,
+  fmtTokens,
+} from "@nasiko/ui/lib";
+import type { Spend } from "../api";
 import { copy } from "../copy";
 import { SourceFailed } from "./Card";
 
@@ -178,8 +184,26 @@ export function RunsTile({ spend }: { spend: Spend }) {
       value={totals ? fmtInt(totals.runs) : spend.totalsError ? "—" : PENDING}
     >
       {totals ? (
-        <p className="text-xs text-muted-foreground tabular-nums">
+        <p className="flex flex-wrap items-baseline gap-x-1.5 text-xs text-muted-foreground tabular-nums">
           {copy.kpi.perDay(fmtInt(Math.round(totals.runs / spend.rangeDays)))}
+          {totals.runs > 0 ? (
+            <>
+              <span aria-hidden>·</span>
+              <span data-testid="kpi-cost-per-run">
+                {copy.kpi.perRun(fmtCostPerOp(totals.spend / totals.runs))}
+              </span>
+              {totals.previous && totals.previous.runs > 0 ? (
+                <Delta
+                  changePct={pctChange(
+                    totals.spend / totals.runs,
+                    totals.previous.spend / totals.previous.runs,
+                  )}
+                  polarity={POLARITY.costPerOp}
+                  current={totals.spend / totals.runs}
+                />
+              ) : null}
+            </>
+          ) : null}
         </p>
       ) : null}
       <Spark
@@ -191,87 +215,55 @@ export function RunsTile({ spend }: { spend: Spend }) {
   );
 }
 
-/** Status tokens, never the accent; each square's status is also in the counts line. */
-const SQUARE: Record<DisplayStatus, string> = {
-  running: "bg-success",
-  deploying: "bg-info",
-  attention: "bg-destructive",
-  stopped: "bg-muted-foreground/30",
-  "not-deployed": "bg-muted-foreground/30",
-  unknown: "bg-muted-foreground/30",
-  harness: "bg-muted-foreground/30",
-};
-const ORDER: readonly DisplayStatus[] = [
-  "running",
-  "deploying",
-  "attention",
-  "stopped",
-  "not-deployed",
-  "unknown",
-];
-
-export function AgentsTile({ fleet }: { fleet: FleetHealth }) {
-  const agents = [...fleet.byId.values()]
-    .filter((a) => !isHarness(a))
-    .map((a) => ({
-      id: a.id,
-      name: a.display_name || a.name,
-      status: displayStatus(a.status, false),
-    }))
-    .sort(
-      (a, b) => ORDER.indexOf(a.status) - ORDER.indexOf(b.status) || a.name.localeCompare(b.name),
-    );
-  const count = (s: DisplayStatus) => agents.filter((a) => a.status === s).length;
-  const parts = (["deploying", "attention", "stopped", "not-deployed"] as const)
-    .filter((s) => count(s) > 0)
-    .map((s) => copy.kpi.agentParts[s](count(s)));
-  const loaded = !fleet.isPending || fleet.byId.size > 0;
+/**
+ * Tokens over the range with their change and the input / output split (a bar over its two percentages). What
+ * optimisation saved stays in the summary card's Token optimisation box, never a sent / saved bar here: its share is of
+ * the optimised requests' pool, not of every token.
+ */
+export function TokensTile({ spend }: { spend: Spend }) {
+  const { tokens } = spend;
+  const io = tokens ? tokens.input + tokens.output : 0;
+  const inputShare = tokens && io > 0 ? (tokens.input / io) * 100 : null;
   return (
     <KpiTile
-      data-testid="kpi-agents"
+      data-testid="kpi-tokens"
       className={TILE}
       label={
-        <TileLabel Icon={Bot} to="/agents">
-          {copy.kpi.agents}
+        <TileLabel Icon={Coins} to="/tokenops">
+          {copy.kpi.tokens}
         </TileLabel>
       }
-      value={
-        fleet.error && !fleet.byId.size ? (
-          "—"
-        ) : !loaded ? (
-          PENDING
-        ) : (
-          <>
-            {count("running")}{" "}
-            <span className="text-base font-normal text-muted-foreground">
-              {copy.kpi.of(agents.length)}
-            </span>
-          </>
-        )
+      aside={
+        tokens ? (
+          <Delta changePct={tokens.changePct} polarity={POLARITY.tokens} current={tokens.total} />
+        ) : null
       }
+      value={tokens ? fmtTokens(tokens.total) : spend.driversError ? "—" : PENDING}
     >
-      {fleet.error && !fleet.byId.size ? (
-        <SourceFailed what={copy.health.what} onRetry={fleet.retry} />
-      ) : loaded ? (
-        <p className="text-xs text-muted-foreground tabular-nums">
-          {!agents.length
-            ? copy.kpi.noAgents
-            : parts.length
-              ? parts.join(" · ")
-              : copy.kpi.allRunning}
-        </p>
+      {spend.driversError && !tokens ? (
+        <SourceFailed what={copy.spend.rangeWhat} onRetry={spend.retry} />
       ) : null}
-      <div
-        aria-hidden
-        className="mt-auto grid grid-cols-[repeat(auto-fill,minmax(0.875rem,1fr))] gap-1"
-      >
-        {agents.map((a) => (
-          <Tooltip key={a.id}>
-            <TooltipTrigger render={<span className={cn("h-6 rounded-xs", SQUARE[a.status])} />} />
-            <TooltipContent>{`${a.name} · ${a.status}`}</TooltipContent>
-          </Tooltip>
-        ))}
-      </div>
+      {inputShare !== null ? (
+        // The split is in the words under the bar; the bar only draws it.
+        <div className="mt-auto flex flex-col gap-1">
+          <div aria-hidden className="flex h-2 gap-0.5 overflow-hidden rounded-full bg-muted">
+            <span
+              className="h-full bg-(--input)"
+              style={{ width: `${inputShare}%`, "--input": seriesAt(0).fill } as CSSProperties}
+            />
+            <span
+              className="h-full flex-1 bg-(--output)"
+              style={{ "--output": seriesAt(1).fill } as CSSProperties}
+            />
+          </div>
+          <p className="flex justify-between text-2xs text-muted-foreground tabular-nums">
+            <span>{copy.kpi.tokensInput(fmtPct(inputShare))}</span>
+            <span>{copy.kpi.tokensOutput(fmtPct(100 - inputShare))}</span>
+          </p>
+        </div>
+      ) : (
+        <div className="mt-auto h-10" aria-hidden />
+      )}
     </KpiTile>
   );
 }

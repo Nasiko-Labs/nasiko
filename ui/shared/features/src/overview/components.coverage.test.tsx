@@ -3,6 +3,7 @@
 // Prettier formatting.
 // The redesign of TokenOps, Optimization, Overview and Harnesses (legacy ui/ on development, 3aac84f66: 8bf09bf29),
 // merged into this port.
+// Development (2d95e6e79): the spend fixture carries `tokens`.
 /**
  * Needs you rendered on its own with hand-built data (ship coverage audit): the states and links the page tests can't
  * reach deterministically from the seed (plans/feat-overview.md §6-§10). The home (PR2) keeps this card; the Overview's
@@ -256,6 +257,7 @@ const spendData = (over: Partial<SpendData> = {}): SpendData => ({
   rangeDays: 30,
   totals: { spend: 120, runs: 10, previous: null },
   totalsError: null,
+  tokens: null,
   days: [day("2026-09-28", 20), day("2026-09-29", 100)],
   stack: null,
   stackPending: false,

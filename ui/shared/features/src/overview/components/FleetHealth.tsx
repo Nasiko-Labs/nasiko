@@ -2,6 +2,7 @@
 // client"`; TanStack `Link` -> the navigation port's `Link` (`@nasiko/app-core/navigation`) (the agent's `/agents/<id>`; the counts' `/agents?health=<rating>` through
 // `pageHref`); `Badge asChild` + `Link` -> `Badge render={<Link …/>}` and `TooltipTrigger asChild` + `span` ->
 // `render={<span …/>}` (Base UI useRender: the same elements); optional props admit `undefined`; Prettier formatting.
+// Development (2d95e6e79): the card opens with the directory's run states.
 "use client";
 
 /**
@@ -9,6 +10,9 @@
  * Agents catalog filtered by that rating (15A, computed by the same `useFleetHealth`, eng review R1), a square per agent
  * in rating order (the badges are its labels, so it is decorative), then the rated agents, Watch first with their reason,
  * each with its rating and 7-day p95. Needs-action agents go to Needs you instead of repeating here.
+ *
+ * Redesign 2026-10-19: it sits beside Needs you and opens with the run states the summary's old Agents running tile
+ * showed ("14 of 19 running · 1 deploying · 2 crashed or failed"), so the summary's tiles can carry money and tokens.
  */
 import Link from "@nasiko/app-core/navigation";
 import { CircleCheck, TriangleAlert } from "lucide-react";
@@ -16,6 +20,7 @@ import { useRef } from "react";
 import { LabEmptyState as EmptyState } from "@nasiko/ui/composites";
 import { Badge } from "@nasiko/ui/primitives";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@nasiko/ui/primitives";
+import { displayStatus, isHarness, type DisplayStatus } from "../../agents/status";
 import { fmtLatency } from "@nasiko/ui/lib";
 import { cn } from "@nasiko/ui/cn";
 import type { FleetHealth as FleetHealthData } from "../api";
@@ -39,6 +44,21 @@ const BADGE: Record<Rating, "success" | "warning" | "destructive" | "muted"> = {
   action: "destructive",
   unknown: "muted",
 };
+
+const PARTS = ["deploying", "attention", "stopped", "not-deployed"] as const;
+
+/** "14 of 19 running · 1 deploying · 2 crashed or failed": the directory's run states, harnesses left out. */
+function runStates(fleet: FleetHealthData): string {
+  const states: DisplayStatus[] = [...fleet.byId.values()]
+    .filter((a) => !isHarness(a))
+    .map((a) => displayStatus(a.status, false));
+  if (!states.length) return copy.kpi.noAgents;
+  const count = (s: DisplayStatus) => states.filter((x) => x === s).length;
+  return [
+    copy.kpi.running(count("running"), states.length),
+    ...PARTS.filter((s) => count(s) > 0).map((s) => copy.kpi.agentParts[s](count(s))),
+  ].join(" · ");
+}
 
 export function FleetHealth({
   fleet,
@@ -77,6 +97,9 @@ export function FleetHealth({
         <CardError what={copy.health.what} onRetry={fleet.retry} titleRef={titleRef} />
       ) : (
         <div className="flex flex-col gap-3">
+          <p className="text-sm text-muted-foreground tabular-nums" data-testid="health-run-states">
+            {runStates(fleet)}
+          </p>
           <p className="flex flex-wrap gap-1.5">
             {ORDER.map((r) => {
               const names =

@@ -7,6 +7,7 @@
 // nasiko-cloud-rs development (480650a69): the spend hook reads one dashboard (`compare=previous`) and one grouped
 // timeseries instead of a request per driver, and the Overview's session reads are two small filtered pages
 // (`useSessionPage`).
+// Development (2d95e6e79): `Spend.tokens` (the dashboard's token KPI and split) and `useSavedByAgent`.
 /**
  * The Overview's shared data (plans/feat-overview.md §5, eng review R1), now the home's (plans/feat-agent-centric.md
  * PR2a): `useFleetHealth()` is the one source of the fleet ratings, called by the home, the agent hub and the Agents
@@ -35,7 +36,7 @@ import { isEndpointAbsent } from "@nasiko/data-access/product";
 import { copy } from "./copy";
 import { mergeNeeds, type Needs, type NeedsInput, type SourceId } from "./needs";
 import { stackSpend, type Stack } from "./stack";
-import { FAILED_SESSION_ROWS, RECENT_SESSION_ROWS, TOP_DRIVERS } from "./tuning";
+import { FAILED_SESSION_ROWS, RECENT_SESSION_ROWS, SAVINGS_ROWS, TOP_DRIVERS } from "./tuning";
 
 // useFleetHealth and FleetHealth moved to ./fleet (ported early for the Agents catalog's ?health= filter).
 export { useFleetHealth, type FleetHealth } from "./fleet";
@@ -107,6 +108,9 @@ export interface Spend {
   } | null;
   /** The range's timeseries failed: no totals, no chart. */
   totalsError: unknown;
+  /** Tokens over the range and their change, from the dashboard's KPIs (ACL-scoped, as the drivers are), with the
+   *  input / output split from its token usage; null while it loads or when it failed. */
+  tokens: { total: number; changePct: number | null; input: number; output: number } | null;
   /** The range's UTC days, zero-filled (fleet-wide). */
   days: TimelinePoint[];
   /** Those days split by the top drivers plus Other; null while their series load, or when one failed (the chart
@@ -229,6 +233,14 @@ export function useSpend(now: Date, range: Range, enabled = true): Spend {
     rangeDays: RANGE_DAYS[range],
     totals,
     totalsError: ts.error,
+    tokens: cur.data
+      ? {
+          total: cur.data.kpis.total_tokens.current,
+          changePct: cur.data.kpis.total_tokens.change_pct,
+          input: cur.data.token_usage.prompt_tokens,
+          output: cur.data.token_usage.completion_tokens,
+        }
+      : null,
     days,
     stack,
     stackPending: cur.isPending || ts.isPending,
@@ -493,3 +505,40 @@ export function useOverviewSavings(now: Date, range: Range, enabled = true) {
   const view = useMemo(() => (q.data ? summarizeOptimisation(q.data) : undefined), [q.data]);
   return { view, isPending: q.isPending, isError: q.isError };
 }
+
+/**
+ * Tokens saved per agent over the range (Saved tokens by agent; Home's PR2d panel, back on the Overview 2026-10-19):
+ * the savings read's `by_agent` rows, as many as the server returns, kept to agents in the viewer's directory so a
+ * member never sees another owner's agent, ranked largest first. `capped`: the server returned as many rows as asked,
+ * so agents past them may have savings too.
+ */
+export function useSavedByAgent(now: Date, range: Range, fleet: FleetHealth, enabled = true) {
+  const win = useMemo(() => rangeWindow(range, now), [range, now]);
+  const q = useSavings(win, {}, "agent", enabled, SAVINGS_ROWS);
+  const rows = useMemo(() => {
+    if (!q.data) return null;
+    return q.data.by_agent
+      .flatMap((r) => {
+        const agent = fleet.byId.get(r.agent_id);
+        return r.saved_tokens > 0 && agent
+          ? [
+              {
+                id: r.agent_id,
+                name: agent.display_name || agent.name,
+                tokens: r.saved_tokens,
+                basis: r.basis,
+              },
+            ]
+          : [];
+      })
+      .sort((a, b) => b.tokens - a.tokens || a.name.localeCompare(b.name));
+  }, [q.data, fleet]);
+  return {
+    rows,
+    capped: (q.data?.by_agent.length ?? 0) >= SAVINGS_ROWS,
+    isPending: q.isPending,
+    error: q.error,
+    retry: () => void q.refetch(),
+  };
+}
+export type SavedByAgent = ReturnType<typeof useSavedByAgent>;

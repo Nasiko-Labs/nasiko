@@ -1,6 +1,7 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/overview/copy.ts. Local edits: `Rating`/`SpikeHit` come from
 // ./rating.ts (split out of ./health.ts to break an import cycle); development (be271b564, b3dd6d4f8): the page is
 // Home, and the budget rows' wording; `Severity`/`SourceId` come from ./needKinds.ts (needs.ts now reads the copy); Prettier formatting.
+// Development (2d95e6e79): the Tokens tile, cost per run, run states and Saved tokens by agent.
 /** Every user-facing Overview string (plans/feat-overview.md §13). */
 import type { HitlKind } from "../chat/types";
 import { fmtShortDay } from "@nasiko/ui/lib";
@@ -62,6 +63,11 @@ export const copy = {
     spend: "Spend",
     runs: "Agent runs",
     perDay: (n: string) => `${n} per day`,
+    perRun: (cost: string) => `${cost} per run`,
+    tokens: "Tokens",
+    tokensInput: (pct: string) => `input ${pct}`,
+    tokensOutput: (pct: string) => `output ${pct}`,
+    running: (n: number, total: number) => `${n} of ${total} running`,
     agents: "Agents running",
     of: (total: number) => `/ ${total}`,
     agentParts: {
@@ -74,8 +80,20 @@ export const copy = {
     noAgents: "No agents yet",
     harnesses: "Harnesses used",
     connected: "connected",
+    est: "est.",
+    connectedCount: (n: number) => `${n} connected`,
     devs: (n: number) => `${n} developer${n === 1 ? "" : "s"}`,
     yourUsage: "your usage",
+  },
+  saved: {
+    title: "Saved tokens by agent",
+    link: "TokenOps",
+    what: "savings by agent",
+    subtitle: (basis: string | null) =>
+      basis ? `Largest first · basis: ${basis}` : "Largest first",
+    capped: "Agents past the first 200 may have savings too",
+    none: "No savings reported in this range.",
+    other: (n: number) => `Other (${n})`,
   },
   chats: {
     title: "Recent chats",

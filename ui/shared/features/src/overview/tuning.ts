@@ -1,5 +1,6 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/overview/tuning.ts. Local edits: none beyond imports and
 // development (be271b564): the Budgets card's row cap is gone with the card; Prettier formatting.
+// Development (2d95e6e79): Saved tokens by agent's bars and savings rows.
 /** Every Overview tuning number (plans/feat-overview.md §5.2): thresholds are relative to each agent's own history. */
 
 const HOUR = 3_600_000;
@@ -44,6 +45,10 @@ export const NEEDS_VISIBLE_ROWS = 5;
 export const HEALTH_LIST_ROWS = 5;
 /** Recent sessions shows this many rows — and asks the server for exactly that. */
 export const RECENT_SESSION_ROWS = 5;
+/** Saved tokens by agent: named bars before Other; 7 fill the card beside 5 Recent sessions rows. */
+export const SAVED_BARS = 7;
+/** Savings rows asked for: the server's maximum (its default of 25 would leave most agents out of the ranking). */
+export const SAVINGS_ROWS = 200;
 /** How often Needs you's "Checked …" label re-ages on an open tab. */
 export const CHECKED_TICK_MS = 30_000;
 /** Returning to the page after this long refetches the inbox (design review 8A, the TokenOps rule). */

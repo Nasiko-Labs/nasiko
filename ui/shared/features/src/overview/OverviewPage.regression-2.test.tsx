@@ -1,15 +1,15 @@
-// Ported from the legacy ui/ on development (3aac84f66) common/src/features/home/HomePage.regression-1.test.tsx. Local edits: Prettier formatting.
+// Ported from nasiko-ui-lab@1b99bdda common/src/features/overview/OverviewPage.regression-2.test.tsx. Local edits: none
+// beyond imports and Prettier.
 // Regression: ISSUE-005 — with every session check failing (no trace store), Needs you still said "Nothing needs you"
 // Found by /qa on 2026-09-29 (live, EE without Tempo)
 // Report: .gstack/qa-reports/qa-report-localhost-2026-09-29.md
-// Moved from the Overview to the home (plans/feat-agent-centric.md PR2a), which keeps the Needs you card.
-import { screen, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
 import { describe, expect, it } from "vitest";
 import { setupPinnedSeed } from "@nasiko/testing/pinned-seed";
 import { renderApp } from "@nasiko/app-shell/testing/render-app";
 import { server } from "@nasiko/testing/pinned-seed";
-import { copy } from "../overview/copy";
+import { copy } from "./copy";
 
 setupPinnedSeed();
 
@@ -37,7 +37,8 @@ describe("Needs you when no session can be checked (ISSUE-005)", () => {
       ),
     ).toBeInTheDocument();
     expect(within(needs).queryByTestId("needs-empty")).toBeNull();
-    // The home's sentence never claims an all-clear either (it counts what needs you, or says nothing).
-    expect(screen.queryByText(new RegExp(copy.needs.nothing))).toBeNull();
+    await waitFor(() =>
+      expect(screen.getByTestId("overview-headline")).not.toHaveTextContent(copy.needs.nothing),
+    );
   });
 });
