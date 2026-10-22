@@ -560,7 +560,8 @@ flowchart TD
     → record INITIATED connection"]
     T -->|bearer / basic / url_param| CR["Store per-user credential
     (encrypted) → connected immediately"]
-    T -->|oauth2 custom server| OD["Discover OAuth endpoints (once per server)
+    T -->|oauth2 custom server| OD["Discover authorization server + requested access
+    (endpoints and client stored on first use)
     → PKCE + signed state
     → return authorization URL"]
     T -->|none| OK[Connected immediately]
@@ -571,6 +572,29 @@ flowchart TD
     verify ACTIVE status
     → record connected-account id"]
 ```
+
+**OAuth discovery for custom servers** (`oauth.rs`), in the MCP spec's order:
+
+1. A bare `initialize` must answer 401. Its `WWW-Authenticate` may name the resource
+   metadata URL and a `scope`; otherwise RFC 9728's well-known URLs are tried.
+2. The first `authorization_servers` issuer's metadata is looked up at RFC 8414's
+   path-inserted URL, then OpenID Connect Discovery's inserted and appended URLs. Some
+   identity providers publish only OpenID Connect discovery (Entra ID 404s every
+   RFC 8414 URL).
+3. **Scope**: the challenge's `scope`, else every scope in the resource's
+   `scopes_supported`, else none — plus `offline_access` when the authorization server
+   offers it, since some providers (Entra ID) issue a refresh token only on request.
+4. **Resource** (RFC 8707): the connector URL, omitted when the authorization server
+   is known only through OpenID Connect discovery — Entra ID rejects a `resource` that
+   differs from the requested scope's own resource.
+5. **Client**: the user's own client id and secret when supplied (required where the
+   authorization server has no `registration_endpoint`), else RFC 7591 dynamic
+   registration. A user-supplied secret is kept, never overwritten by discovery.
+
+A discovery failure is a 502 naming the cause; for a connector that is already
+configured, authorization falls back to the request it used before scope selection
+existed. Refresh re-requests exactly the granted scope (RFC 6749 §6), which Entra ID
+needs when one app registration is both the client and the protected API.
 
 ### 9.4 Sharing a custom MCP server
 
