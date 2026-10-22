@@ -1,5 +1,6 @@
 mod error;
 mod stats;
+mod stdio;
 mod types;
 
 #[cfg(feature = "docker")]
@@ -13,6 +14,7 @@ pub use stats::{
     AgentNameResolver, CachedStatsProvider, ContainerStats, DiskSource, HostStats, PlatformStats,
     ResourceStatsProvider, StatsGroup, UnsupportedStatsProvider,
 };
+pub use stdio::{SessionAttach, StdioHandle};
 pub use types::validate_build_inputs;
 pub use types::{
     ContainerId, DeploymentSpec, DeploymentStatus, InstanceInfo, ResourceLimits, RuntimeState,
@@ -164,6 +166,39 @@ pub trait ContainerRuntime: Send + Sync {
     ///
     /// Returns `RuntimeError::ContainerNotFound` if no deployment exists for `container_id`.
     async fn endpoint(&self, container_id: &ContainerId) -> Result<String>;
+
+    /// Open a per-session, bidirectional stdio stream to a coding-agent
+    /// container (`WorkloadKind::AcpCodingAgent`).
+    ///
+    /// Unlike [`endpoint`](ContainerRuntime::endpoint) — a cheap lookup of a
+    /// long-lived HTTP address — this **execs a fresh agent process** for the
+    /// session named by `attach` and returns its live stdin/stdout as a
+    /// [`StdioHandle`]. The container is reused across sessions (a single
+    /// coding-agent container serves many sessions, one process each); the
+    /// caller ensures the container is deployed and running first, exactly as
+    /// with `endpoint()`.
+    ///
+    /// The stream is raw and newline-delimited (never a TTY), so the ACP client
+    /// can frame JSON-RPC directly. Each session's process runs in its own
+    /// workspace subdirectory under the agent's writable folder
+    /// (`<writable-mount>/<session_id>`), which the runtime creates if absent.
+    ///
+    /// Default: [`RuntimeError::Unsupported`] — correct for a backend with no
+    /// stdio-attach mechanism, and the signal for a caller to degrade to the
+    /// hook transport. Decorators MUST forward it explicitly (see RUN-1 in
+    /// `InstrumentedRuntime`).
+    ///
+    /// Returns [`RuntimeError::ContainerNotFound`] if no container exists for
+    /// `container_id`.
+    async fn attach_stdio(
+        &self,
+        _container_id: &ContainerId,
+        _attach: SessionAttach,
+    ) -> Result<StdioHandle> {
+        Err(RuntimeError::Unsupported(
+            "this runtime does not support stdio attach for coding agents".to_owned(),
+        ))
+    }
 
     /// Where a forward *to* this agent should actually be sent — distinct from
     /// [`endpoint`](ContainerRuntime::endpoint), which is the agent's real address and is also

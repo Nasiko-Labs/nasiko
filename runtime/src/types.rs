@@ -507,6 +507,47 @@ pub enum WorkloadKind {
     #[default]
     Agent,
     McpConnector,
+    /// An ACP (Agent Client Protocol) coding agent — e.g. OpenCode in `acp`
+    /// mode. Unlike `Agent`/`McpConnector`, it exposes **no inbound HTTP port**:
+    /// the control plane reaches it over a per-session stdio stream
+    /// ([`ContainerRuntime::attach_stdio`](crate::ContainerRuntime::attach_stdio)),
+    /// so [`DeploymentSpec::validate`] permits an empty `ports` list for this
+    /// kind. It still calls back out to the platform (MCP gateway + LLM router),
+    /// so `KubeRuntime` gives it the same A2A-hairpin egress an `Agent` gets.
+    AcpCodingAgent,
+}
+
+impl WorkloadKind {
+    /// Whether this workload serves inbound HTTP on a container port. Coding
+    /// agents do not — they are driven over stdio — so `deploy()` must not
+    /// require them to declare a port.
+    pub fn requires_inbound_port(&self) -> bool {
+        !matches!(self, WorkloadKind::AcpCodingAgent)
+    }
+
+    /// The token stored in `agents.workload_kind`. These strings are the single
+    /// source of truth for the column and MUST match its `CHECK` constraint
+    /// (migration `0063_acp_coding_agent.sql`); [`WorkloadKind::from_db_str`] is
+    /// the inverse.
+    pub fn as_db_str(&self) -> &'static str {
+        match self {
+            WorkloadKind::Agent => "agent",
+            WorkloadKind::McpConnector => "mcp_connector",
+            WorkloadKind::AcpCodingAgent => "acp_coding_agent",
+        }
+    }
+
+    /// Parse a `agents.workload_kind` value back into a variant. Returns `None`
+    /// for any string outside the column's `CHECK` set, so a caller can reject a
+    /// bad value at the edge rather than letting the database do it.
+    pub fn from_db_str(s: &str) -> Option<Self> {
+        match s {
+            "agent" => Some(WorkloadKind::Agent),
+            "mcp_connector" => Some(WorkloadKind::McpConnector),
+            "acp_coding_agent" => Some(WorkloadKind::AcpCodingAgent),
+            _ => None,
+        }
+    }
 }
 
 impl DeploymentSpec {
@@ -537,7 +578,10 @@ impl DeploymentSpec {
                 "image must not be empty".to_owned(),
             ));
         }
-        if self.ports.is_empty() {
+        // Coding agents are driven over stdio and expose no inbound HTTP port,
+        // so an empty `ports` list is valid for them; every other workload must
+        // declare at least one port (the primary service port).
+        if self.ports.is_empty() && self.workload_kind.requires_inbound_port() {
             return Err(RuntimeError::InvalidSpec(
                 "ports must not be empty".to_owned(),
             ));

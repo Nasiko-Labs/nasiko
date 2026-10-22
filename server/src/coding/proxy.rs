@@ -205,6 +205,7 @@ pub fn build_spec(agent_id: Uuid, target: &CodingAgentTarget) -> DeploymentSpec 
         image: target.image.clone(),
         min_replicas: 1,
         max_replicas: 1,
+        replica_target: None,
         env_vars: std::collections::HashMap::new(),
         // No inbound HTTP port — the runtime permits an empty list for this kind.
         ports: Vec::new(),

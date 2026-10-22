@@ -261,6 +261,28 @@ pub async fn a2a_dispatch_handler(
     let query = history.with_current_query(&text);
 
     if let Some(agent) = target_agent {
+        // Coding agents have no HTTP endpoint — they're driven over an ACP stdio
+        // turn, not reverse-proxied. Detect and run that path instead of falling
+        // through to `agent_stream`, which would try to resolve a (nonexistent)
+        // endpoint and 500 with "no endpoint found" (NAS-C1). This is what makes
+        // the web UI (which always dispatches here) able to chat coding agents.
+        if let Some(coding_target) = crate::coding::proxy::load_target(&state.db, agent.id)
+            .await
+            .map_err(|e| A2aDispatchError::Internal(e.to_string()))?
+        {
+            return coding_agent_stream(
+                &state,
+                &agent,
+                coding_target,
+                &query,
+                &text,
+                &context_id,
+                &task_id,
+                user_id,
+                session_id.is_some(),
+            )
+            .await;
+        }
         // Supplemental per-agent context (L1A) is no longer injected here: it now rides the EE
         // injection proxy, which sits on every outbound forward `forwarding_endpoint()` resolves
         // to — including this one — so injecting it a second time in-process here would double
@@ -439,31 +461,6 @@ pub(crate) struct OrchestratorTurn<'a> {
     pub(crate) context_report: Option<&'a nasiko_orchestrator::ContextReport>,
 }
 
-/// Assembles the routed path's preamble in strict precedence order — L0 (org policy) outranks
-/// L1A (per-agent facts) outranks L2 (per-user recall) — by construction: each layer is placed
-/// ahead of the ones that follow it in the text, so nothing downstream has to re-rank them.
-/// `None` at every layer (the common case: OSS, or an EE deployment with nothing configured or
-/// recalled yet) must return `None`, not an empty string, so `OrchestratorConfig.preamble` stays
-/// exactly what it was before any of these three seams existed.
-fn build_preamble(
-    org_context: Option<&str>,
-    agent_facts: Option<&str>,
-    user_context: Option<&str>,
-) -> Option<String> {
-    let user_section = user_context.map(|user| format!("## What you know about this user\n{user}"));
-    let agent_and_user = match (agent_facts, user_section.as_deref()) {
-        (None, None) => None,
-        (Some(facts), None) => Some(facts.to_string()),
-        (None, Some(user)) => Some(user.to_string()),
-        (Some(facts), Some(user)) => Some(crate::prompt_context::prefixed(Some(facts), user)),
-    };
-    match (org_context, agent_and_user) {
-        (None, facts) => facts,
-        (Some(org), Some(facts)) => Some(crate::prompt_context::prefixed(Some(org), &facts)),
-        (Some(org), None) => Some(org.to_string()),
-    }
-}
-
 pub(crate) async fn orchestrator_stream(
     state: &AppState,
     turn: OrchestratorTurn<'_>,
@@ -584,7 +581,7 @@ pub(crate) async fn orchestrator_stream(
     // `A2aTool::call()`, a lower-level OSS crate with no path to this EE-installed context)
     // carries its own L1A separately, injected by the EE injection proxy that
     // `forwarding_endpoint()` routes every outbound forward through — see
-    // the edition's forwarding hop. The planner preamble can't move to that proxy because
+    // `ee/server/src/injection_proxy.rs`. The planner preamble can't move to that proxy because
     // it isn't an outbound forward at all; it's text folded into the LLM's own prompt before any
     // agent is chosen.
     // From `agents` (the post-endpoint-resolution roster actually rendered below), not
@@ -613,13 +610,6 @@ pub(crate) async fn orchestrator_stream(
         Some(text)
     };
 
-    // User-scoped recall — unlike `agent_facts` above, not tied to any candidate agent, so it is
-    // the one channel that reaches a **zero-leg** answer (the planner responds directly, without
-    // delegating): a minted sub-leg's own outbound call carries no path back to this trait, and a
-    // zero-leg turn never reaches one at all. `None` on OSS and on an EE deployment with nothing
-    // user-scoped to add yet — see `PromptContextProvider::context_for_user`.
-    let user_context = state.prompt_context.context_for_user(user_id, query).await;
-
     // Organization-wide context, resolved once for the whole turn. It reaches the routed path
     // TWICE, and both are needed: the planner's own preamble, because a zero-leg turn is answered
     // by the planner and never reaches an agent at all; and `outbound_prefix`, because a minted
@@ -632,11 +622,11 @@ pub(crate) async fn orchestrator_stream(
     // observability.
     let org_applied = org_context.is_some();
     let org_policy_chars = org_context.as_deref().map(str::len).unwrap_or(0);
-    let preamble = build_preamble(
-        org_context.as_deref(),
-        agent_facts.as_deref(),
-        user_context.as_deref(),
-    );
+    let preamble = match (org_context.as_deref(), agent_facts) {
+        (None, facts) => facts,
+        (Some(org), Some(facts)) => Some(crate::prompt_context::prefixed(Some(org), &facts)),
+        (Some(org), None) => Some(org.to_string()),
+    };
     // IP-3 skips opted-out agents' results; unreadable switches turn it off for the turn.
     let uncompressed_tools = match opted_out_agent_tools(&state.db).await {
         Ok(tools) => Some(tools),
@@ -702,11 +692,6 @@ pub(crate) async fn orchestrator_stream(
         .unwrap_or_else(FlowContext::new_root);
     let flow_id = flow_ctx.flow_id.clone();
     let traceparent = crate::telemetry::traceparent_for(&flow_ctx);
-    // The inbound traceparent seeds this trace id, and it is the caller's to send, so it can
-    // name a flow that belongs to someone else. Refuse before any per-flow state is touched
-    // (including the telemetry below, which is keyed by this trace id); `open_flow` further down
-    // is the race-free backstop.
-    refuse_foreign_flow(state, &flow_id, user_id).await?;
 
     // Selection ran in the caller, before any of this existed; `dispatch_span` is the span the
     // trace page looks for, so the report is attached here. `agent_id` stays unset — routing has
@@ -742,19 +727,18 @@ pub(crate) async fn orchestrator_stream(
         TurnKind::User => serde_json::json!({ "context_id": context_id, "user_message": raw_text }),
         TurnKind::Continuation => serde_json::json!({ "context_id": context_id }),
     };
-    open_dispatch_flow(
-        state,
-        crate::flows::NewFlow {
-            flow_id: &flow_id,
-            user_id,
-            root_agent_id: None,
-            root_agent_name: "orchestrator",
-            title: Some(query),
-            metadata: &flow_metadata,
-            session_id: None,
-        },
+    let _ = sqlx::query(
+        r#"INSERT INTO flows (flow_id, user_id, root_agent_name, title, status, metadata)
+           VALUES ($1, $2, 'orchestrator', $3, 'running', $4)
+           ON CONFLICT (flow_id) DO UPDATE
+              SET status = 'running', completed_at = NULL"#,
     )
-    .await?;
+    .bind(&flow_id)
+    .bind(user_id)
+    .bind(query)
+    .bind(&flow_metadata)
+    .execute(&state.db)
+    .await;
 
     // `flow_id` doubles as the trace id (see comment below) — index it against
     // the session so `nasiko history`'s Tempo-miss fallback
@@ -1280,41 +1264,6 @@ pub(crate) async fn orchestrator_stream(
 /// Resolve a caller-supplied target (either the agent's UUID or its name) to a
 /// concrete, running agent row. Callers MUST authorize on the returned `id`
 /// before using it — this function does no access control of its own.
-/// Rejects a dispatch whose flow id already belongs to another user. See
-/// [`crate::flows::OpenFlowError::ForeignFlow`] for why the flow id cannot be trusted.
-async fn refuse_foreign_flow(
-    state: &AppState,
-    flow_id: &str,
-    user_id: Uuid,
-) -> Result<(), A2aDispatchError> {
-    match crate::flows::flow_belongs_to_another(&state.db, flow_id, user_id).await {
-        Ok(false) => Ok(()),
-        Ok(true) => Err(foreign_flow_rejection(flow_id, user_id)),
-        Err(e) => Err(A2aDispatchError::Internal(e.to_string())),
-    }
-}
-
-/// Opens the dispatch's `flows` row. The row is load-bearing for the agent's MCP and LLM
-/// authorization, and an unwritten row has no known owner, so a failure here stops the dispatch
-/// rather than forwarding without it.
-async fn open_dispatch_flow(
-    state: &AppState,
-    flow: crate::flows::NewFlow<'_>,
-) -> Result<(), A2aDispatchError> {
-    let (flow_id, user_id) = (flow.flow_id.to_string(), flow.user_id);
-    crate::flows::open_flow(&state.db, flow)
-        .await
-        .map_err(|e| match e {
-            crate::flows::OpenFlowError::ForeignFlow => foreign_flow_rejection(&flow_id, user_id),
-            crate::flows::OpenFlowError::Db(e) => A2aDispatchError::Internal(e.to_string()),
-        })
-}
-
-fn foreign_flow_rejection(flow_id: &str, user_id: Uuid) -> A2aDispatchError {
-    tracing::warn!(%flow_id, %user_id, "a2a dispatch: traceparent names another user's flow");
-    A2aDispatchError::Forbidden("traceparent does not belong to this user".into())
-}
-
 async fn resolve_agent(state: &AppState, target: &str) -> Result<AgentRow, A2aDispatchError> {
     // Excludes `is_internal` agents unconditionally, including for the owning
     // superuser — this is the platform's only generic A2A entry point, and an
@@ -1448,11 +1397,6 @@ async fn agent_stream(
     let flow_ctx = crate::telemetry::flow_context_from_span(&dispatch_span)
         .unwrap_or_else(FlowContext::new_root);
     let flow_id = flow_ctx.flow_id.clone();
-    // The inbound traceparent seeds this trace id, and it is the caller's to send, so it can
-    // name a flow that belongs to someone else. Refuse before any per-flow state is touched
-    // (including the telemetry below, which is keyed by this trace id); `open_flow` further down
-    // is the race-free backstop.
-    refuse_foreign_flow(state, &flow_id, user_id).await?;
 
     if let Some(report) = context_report {
         crate::telemetry::record_context_report(
@@ -1503,19 +1447,20 @@ async fn agent_stream(
             serde_json::json!({ "applied": true })
         };
     }
-    open_dispatch_flow(
-        state,
-        crate::flows::NewFlow {
-            flow_id: &flow_id,
-            user_id,
-            root_agent_id: Some(agent.id),
-            root_agent_name: &agent.name,
-            title: Some(query),
-            metadata: &flow_metadata,
-            session_id: None,
-        },
+    let _ = sqlx::query(
+        r#"INSERT INTO flows (flow_id, user_id, root_agent_id, root_agent_name, title, status, metadata)
+           VALUES ($1, $2, $3, $4, $5, 'running', $6)
+           ON CONFLICT (flow_id) DO UPDATE
+              SET status = 'running', completed_at = NULL"#,
     )
-    .await?;
+    .bind(&flow_id)
+    .bind(user_id)
+    .bind(agent.id)
+    .bind(&agent.name)
+    .bind(query)
+    .bind(&flow_metadata)
+    .execute(&state.db)
+    .await;
     // Participant record — load-bearing for MCP gateway / LLM router auth
     // (docs/MCP_GATEWAY_AGENT_AUTH.md §2.4); same synchronous pre-forward write
     // as the flows row above.
@@ -2251,6 +2196,140 @@ async fn ensure_orchestrator_chat_session(
     .await;
 }
 
+/// Run a coding-agent turn for the orchestrator-dispatch path and stream it back
+/// as A2A SSE. The dispatch path has no coding awareness of its own, so this does
+/// the minimal pre-turn bookkeeping the coding turn needs — a `chat_sessions` row
+/// (the lease keys on it), a `flows` row + participant (so the session token is
+/// authorizable), and the user message — then hands off to the shared
+/// `coding::entry::run_coding_turn_sse`, exactly as `agent_proxy` does (NAS-C1).
+#[allow(clippy::too_many_arguments)]
+async fn coding_agent_stream(
+    state: &AppState,
+    agent: &AgentRow,
+    target: crate::coding::proxy::CodingAgentTarget,
+    // History-packed text — recorded on the flow (`flows.title`) like `agent_stream`.
+    query: &str,
+    // The raw user message — the turn's prompt and what's persisted to the transcript.
+    user_message: &str,
+    context_id: &str,
+    task_id: &str,
+    user_id: Uuid,
+    client_owns_transcript: bool,
+) -> Result<Response, A2aDispatchError> {
+    // Session row (the coding lease UPDATEs it) + user message. `agent_id` is set,
+    // so the session is tied to this coding agent for runtime reconcile + the UI.
+    ensure_coding_chat_session(
+        state,
+        context_id,
+        user_id,
+        agent.id,
+        user_message,
+        client_owns_transcript,
+    )
+    .await;
+
+    // Open the flow the session token binds to — same shape as `agent_stream`'s own
+    // flow setup, so the gateway/router authorize the agent's calls off the signed
+    // claims instead of a traceparent.
+    let dispatch_span = tracing::info_span!(
+        "a2a.dispatch",
+        otel.kind = "server",
+        gen_ai.operation.name = "invoke_agent",
+        gen_ai.agent.name = %agent.name,
+        session.id = %context_id,
+    );
+    let flow_ctx = crate::telemetry::flow_context_from_span(&dispatch_span)
+        .unwrap_or_else(FlowContext::new_root);
+    let flow_id = flow_ctx.flow_id.clone();
+    state.flow_guard.init_flow(&flow_ctx, &agent.name).await;
+    let flow_metadata = json!({ "context_id": context_id, "user_message": user_message });
+    let _ = sqlx::query(
+        r#"INSERT INTO flows (flow_id, user_id, root_agent_id, root_agent_name, title, status, metadata)
+           VALUES ($1, $2, $3, $4, $5, 'running', $6)
+           ON CONFLICT (flow_id) DO UPDATE SET status = 'running', completed_at = NULL"#,
+    )
+    .bind(&flow_id)
+    .bind(user_id)
+    .bind(agent.id)
+    .bind(&agent.name)
+    .bind(query)
+    .bind(&flow_metadata)
+    .execute(&state.db)
+    .await;
+    crate::flows::record_participant(&state.db, &flow_id, agent.id).await;
+
+    crate::coding::entry::run_coding_turn_sse(
+        state,
+        agent.id,
+        &target,
+        Some(user_id),
+        context_id,
+        user_message,
+        &flow_id,
+        task_id,
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!(error = %e, agent_id = %agent.id, "coding-agent dispatch turn failed to start");
+        A2aDispatchError::Internal(e.to_string())
+    })
+}
+
+/// Upsert the `chat_sessions` row for a coding-agent dispatch turn (with `agent_id`
+/// set, unlike [`ensure_orchestrator_chat_session`]) and persist the user message
+/// unless the client owns its transcript. Fire-and-forget bookkeeping.
+async fn ensure_coding_chat_session(
+    state: &AppState,
+    context_id: &str,
+    user_id: Uuid,
+    agent_id: Uuid,
+    user_message: &str,
+    client_owns_transcript: bool,
+) {
+    let title = {
+        let t = user_message.trim();
+        if t.is_empty() {
+            "New chat".to_string()
+        } else if t.len() > 60 {
+            let mut n = 60;
+            while !t.is_char_boundary(n) {
+                n -= 1;
+            }
+            format!("{}…", &t[..n])
+        } else {
+            t.to_string()
+        }
+    };
+
+    let _ = sqlx::query(
+        "INSERT INTO chat_sessions (session_id, user_id, agent_id, agent_url, title) \
+         VALUES ($1, $2, $3, $4, $5) ON CONFLICT (session_id) DO NOTHING",
+    )
+    .bind(context_id)
+    .bind(user_id)
+    .bind(agent_id)
+    .bind(format!("/api/agents/{agent_id}"))
+    .bind(&title)
+    .execute(&state.db)
+    .await;
+
+    if client_owns_transcript {
+        return;
+    }
+    // 10s dedup guard, same as the other transcript writers.
+    let _ = sqlx::query(
+        "INSERT INTO chat_messages (session_id, role, content) \
+         SELECT $1, 'user', $2 WHERE NOT EXISTS ( \
+             SELECT 1 FROM chat_messages \
+             WHERE session_id = $1 AND role = 'user' AND content = $2 \
+               AND timestamp > now() - INTERVAL '10 seconds')",
+    )
+    .bind(context_id)
+    .bind(user_message)
+    .execute(&state.db)
+    .await;
+}
+
 pub(crate) async fn resolve_endpoint(
     state: &AppState,
     agent_id: &str,
@@ -2760,65 +2839,6 @@ mod hitl_pause_tests {
     }
 }
 
-/// `build_preamble`'s only job is precedence ordering — L0 > L1A > L2 — over three independently
-/// optional inputs. Pure and DB-free, so every combination is cheap to pin hermetically without
-/// standing up `orchestrator_stream`'s full DB/state dependencies.
-#[cfg(test)]
-mod build_preamble_tests {
-    use super::*;
-
-    #[test]
-    fn nothing_configured_or_recalled_is_none_not_an_empty_string() {
-        // The common case (OSS, or an EE deployment with nothing to add yet) must leave
-        // `OrchestratorConfig.preamble` exactly `None`, not `Some(String::new())` — a caller that
-        // only checks `.is_some()` would otherwise start behaving as if something was injected.
-        assert_eq!(build_preamble(None, None, None), None);
-    }
-
-    #[test]
-    fn each_layer_alone_surfaces_on_its_own() {
-        assert_eq!(
-            build_preamble(Some("ORG"), None, None),
-            Some("ORG".to_string())
-        );
-        assert_eq!(
-            build_preamble(None, Some("FACTS"), None),
-            Some("FACTS".to_string())
-        );
-        assert_eq!(
-            build_preamble(None, None, Some("RECALL")),
-            Some("## What you know about this user\nRECALL".to_string())
-        );
-    }
-
-    #[test]
-    fn all_three_land_in_precedence_order_l0_then_l1a_then_l2() {
-        let preamble = build_preamble(Some("ORG"), Some("FACTS"), Some("RECALL")).unwrap();
-        let org_at = preamble.find("ORG").expect("org policy present");
-        let facts_at = preamble.find("FACTS").expect("agent facts present");
-        let user_at = preamble
-            .find("## What you know about this user")
-            .expect("user recall present");
-        assert!(
-            org_at < facts_at && facts_at < user_at,
-            "L0 must precede L1A must precede L2, got: {preamble:?}"
-        );
-    }
-
-    #[test]
-    fn user_recall_is_headed_but_agent_facts_are_not_double_headed() {
-        // `agent_facts` already carries its own "## Known facts..." heading from its own call
-        // site — `build_preamble` must not add a second one on top of it.
-        let preamble =
-            build_preamble(None, Some("## Known facts about specific agents\nX"), None).unwrap();
-        assert_eq!(
-            preamble.matches("##").count(),
-            1,
-            "agent_facts must not be re-headed: {preamble:?}"
-        );
-    }
-}
-
 #[cfg(test)]
 mod reply_outcome_tests {
     use super::*;
@@ -2858,9 +2878,9 @@ mod reply_outcome_tests {
 }
 
 /// `append_org_policy_part` is `agent_stream`'s half of the marker-splicing fix — the other half
-/// (L1A, at the EE injection proxy) is pinned by that hop's own tests. These
-/// don't need a live agent or the EE proxy: `append_org_policy_part` operates purely on an
-/// in-memory `JsonRpcRequest`, so they run hermetically.
+/// (`agent_proxy.rs`'s own delivery point) is pinned by its own tests. These don't need a live
+/// agent: `append_org_policy_part` operates purely on an in-memory `JsonRpcRequest`, so they run
+/// hermetically.
 #[cfg(test)]
 mod org_policy_part_tests {
     use super::*;

@@ -374,6 +374,7 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
             env_encrypted,
             writable,
             writable_path,
+            workload_kind,
         } => {
             let job_env = match open_job_env(owner_id, env, env_encrypted) {
                 Ok(env) => env,
@@ -390,6 +391,10 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
                     return;
                 }
             };
+            // Empty (old job rows) or unrecognized → `Agent`, the pre-existing
+            // behavior.
+            let workload_kind =
+                nasiko_runtime::WorkloadKind::from_db_str(&workload_kind).unwrap_or_default();
             execute_upload_and_deploy(
                 &state,
                 build_id,
@@ -403,6 +408,7 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
                 job_env,
                 writable,
                 writable_path,
+                workload_kind,
             )
             .await;
         }

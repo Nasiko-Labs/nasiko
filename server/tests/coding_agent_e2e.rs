@@ -33,6 +33,7 @@ fn coding_spec(id: &ContainerId) -> DeploymentSpec {
         image: "opencode:0.1.0".to_owned(),
         min_replicas: 1,
         max_replicas: 1,
+        replica_target: None,
         env_vars: HashMap::new(),
         ports: Vec::new(),
         resources: None,
