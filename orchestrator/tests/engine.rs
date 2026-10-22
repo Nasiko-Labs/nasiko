@@ -118,6 +118,7 @@ async fn route_returns_error_when_no_agents_in_db() {
         session_id: "test-session".to_string(),
         user_id: uuid::Uuid::new_v4(),
         file_parts: vec![],
+        org_granted_agent_ids: vec![],
     };
 
     // With no running agents in DB, should return NoAgentsAvailable

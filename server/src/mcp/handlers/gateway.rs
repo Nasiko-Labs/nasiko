@@ -22,6 +22,7 @@ use uuid::Uuid;
 use nasiko_mcp_gateway::protocol;
 use nasiko_mcp_gateway::types::codes;
 
+use crate::mcp::identity::deny;
 use crate::state::AppState;
 use crate::usage::TokenUsageBuilder;
 
@@ -150,20 +151,6 @@ pub async fn mcp_gateway_via_url(
 /// authorization behaviour — the URL form is a transport detail, not a weaker
 /// door.
 async fn dispatch(state: &AppState, token: &str, headers: &HeaderMap, body: Value) -> Response {
-    let agent_id = match nasiko_mcp_gateway::agent_tokens::authenticate(&state.db, token).await {
-        Ok(Some(id)) => id,
-        Ok(None) => {
-            return (StatusCode::UNAUTHORIZED, "unknown or revoked gateway token").into_response();
-        }
-        // Rule 5: identity store unreachable → fail closed (403, not a retryable
-        // 5xx that could be read as "try without auth"), matching FlowGuard's
-        // GuardUnavailable posture.
-        Err(e) => {
-            tracing::error!(error = %e, "mcp gateway: token lookup failed — failing closed");
-            return (StatusCode::FORBIDDEN, "identity store unavailable").into_response();
-        }
-    };
-
     // `method` must be known before the protocol-version check below, because
     // the check is gated on it: streamable-http clients (openai-agents,
     // pydantic-ai, Claude Code) open a session with a method this gateway
@@ -212,9 +199,6 @@ async fn dispatch(state: &AppState, token: &str, headers: &HeaderMap, body: Valu
         }
     }
 
-    let traceparent = headers
-        .get(nasiko_flow::TRACEPARENT_HEADER)
-        .and_then(|v| v.to_str().ok());
     // `invoked_tool_name`, not `params.name`: a `nasiko_call_tool` call is
     // recorded — usage, metrics, the approval event below — as the inner
     // tool it ran, resolved by the same parse the protocol layer dispatches on.
@@ -223,66 +207,128 @@ async fn dispatch(state: &AppState, token: &str, headers: &HeaderMap, body: Valu
         .map(protocol::invoked_tool_name)
         .unwrap_or("")
         .to_string();
+    let header_traceparent = headers
+        .get(nasiko_flow::TRACEPARENT_HEADER)
+        .and_then(|v| v.to_str().ok());
 
-    // Resolve the user identity. `tools/call` (rules 3+4) requires the
-    // traceparent to name a live flow this agent was dispatched into — the
-    // flow's user is the authorization subject — except for a CLI-bound
-    // local coding-agent row (rule 3b, `agent_owner` below), which has
-    // no flow to require and resolves to its owner instead. Read-only methods
-    // (initialize/ping/tools/list, rule 2) work agent-only: the flow user when
-    // one resolves, else the agent's owner (startup-time tool discovery
-    // happens outside any flow).
+    // Two doors onto the same tail:
+    //   - a coding-agent *session token* (NAS-839) carries {agent, user, flow}
+    //     in signed claims, so it needs neither the ngt_ lookup nor a
+    //     traceparent — the signature is the proof of the binding, so the
+    //     claims' flow id is the verified flow for everything downstream;
+    //   - otherwise the deploy-time ngt_ gateway token names the agent and the
+    //     user is resolved from the request's traceparent + flow (the A2A path,
+    //     docs/MCP_GATEWAY_AGENT_AUTH.md §2.4), with rule 3b for CLI-bound
+    //     coding-agent rows.
     //
     // `verified_flow_id` travels alongside `user_id` (rather than being
     // re-derived from `traceparent` further down) because it's the one thing
-    // this function actually verified against `flows`/`flow_participants` —
-    // the raw `traceparent` a caller sends is not proof of anything on its
-    // own. On the owner-fallback branch below, `user_id` did NOT come from a
-    // verified flow, so `verified_flow_id` must be `None` even though
-    // `traceparent` may still be a well-formed (just unresolvable, or
-    // rejected) value: `protocol::handle_request` signs `verified_flow_id`,
-    // never `traceparent`, into the identity header it forwards to system
-    // backends, specifically so a caller can't launder an unverified trace id
-    // into a header a backend is told to trust unconditionally.
-    let (user_id, verified_flow_id) = match flow_user(state, traceparent, agent_id).await {
-        Ok((user_id, flow_id)) => (user_id, Some(flow_id)),
-        Err(denial) => match agent_owner(state, agent_id).await {
-            // Deliberate policy (MCP_GATEWAY_AGENT_AUTH.md §5, rule 3b):
-            // a local coding agent — a row the CLI bound with
-            // `coding_agent_integration_id` — is never dispatched through the
-            // proxy, so it never has a flow; it acts as its owner instead,
-            // even for `tools/call`. Same predicate the LLM router uses for
-            // the same rows (`oss/llm-router/src/resolver/mod.rs`,
-            // `coding_agent_integration_id IS NOT NULL`), so the gateway and
-            // the router agree on which rows count as "personal desks" —
-            // though not on how they're billed: the router always attributes
-            // these rows to their owner with no flow at all, while the
-            // gateway takes a verified flow first (above) and only reaches
-            // this fallback when one doesn't resolve. That difference is
-            // unreachable today: a coding-agent row is never dispatched into,
-            // so nothing ever has an endpoint of its own to route a flow to.
-            Ok(Some((owner, true))) => (owner, None),
-            // Every other flow-less `tools/call` stays denied (rules 3+4).
-            Ok(_) if method == "tools/call" => return denial,
-            // Read-only methods (rule 2): agent-only identity via the owner —
-            // unchanged from before the coding-agent policy existed.
-            Ok(Some((owner, false))) => (owner, None),
-            Ok(None) => {
-                return (
-                    StatusCode::UNAUTHORIZED,
-                    "agent no longer exists — gateway token is stale",
-                )
-                    .into_response();
-            }
-            // Rule 5 again: an unreachable identity store is not "the agent
-            // is gone". Reporting 401 here would tell a healthy agent its
-            // credential is stale and trigger a pointless rotate/redeploy.
-            Err(e) => {
-                tracing::error!(error = %e, %agent_id, "mcp gateway: owner lookup failed — failing closed");
-                return (StatusCode::FORBIDDEN, "identity store unavailable").into_response();
-            }
-        },
+    // this function actually proved — by signature on the session path, or
+    // against `flows`/`flow_participants` on the A2A path. The raw
+    // `traceparent` a caller sends is not proof of anything on its own. On the
+    // owner-fallback branch below, `user_id` did NOT come from a verified flow,
+    // so `verified_flow_id` must be `None` even though `traceparent` may still
+    // be a well-formed (just unresolvable, or rejected) value:
+    // `protocol::handle_request` signs `verified_flow_id`, never `traceparent`,
+    // into the identity header it forwards to system backends, specifically so
+    // a caller can't launder an unverified trace id into a header a backend is
+    // told to trust unconditionally.
+    let (agent_id, user_id, verified_flow_id, synthesized_tp): (
+        Uuid,
+        Uuid,
+        Option<String>,
+        Option<String>,
+    ) = match try_session_identity(state, token).await {
+        SessionResolution::Session {
+            agent_id,
+            user_id,
+            flow_id,
+        } => {
+            let synthesized = synth_traceparent(&flow_id);
+            (agent_id, user_id, Some(flow_id), Some(synthesized))
+        }
+        SessionResolution::Deny(resp) => return resp,
+        SessionResolution::NotSession => {
+            let agent_id = match nasiko_mcp_gateway::agent_tokens::authenticate(&state.db, token)
+                .await
+            {
+                Ok(Some(id)) => id,
+                Ok(None) => {
+                    return (StatusCode::UNAUTHORIZED, "unknown or revoked gateway token")
+                        .into_response();
+                }
+                // Rule 5: identity store unreachable → fail closed (403, not
+                // a retryable 5xx that could be read as "try without auth"),
+                // matching FlowGuard's GuardUnavailable posture.
+                Err(e) => {
+                    tracing::error!(error = %e, "mcp gateway: token lookup failed — failing closed");
+                    return (StatusCode::FORBIDDEN, "identity store unavailable").into_response();
+                }
+            };
+
+            // Resolve the user identity. `tools/call` (rules 3+4) requires the
+            // traceparent to name a live flow this agent was dispatched into —
+            // the flow's user is the authorization subject — except for a
+            // CLI-bound local coding-agent row (rule 3b, `agent_owner` below),
+            // which has no flow to require and resolves to its owner instead.
+            // Read-only methods (initialize/ping/tools/list, rule 2) work
+            // agent-only: the flow user when one resolves, else the agent's
+            // owner (startup-time tool discovery happens outside any flow).
+            let (user_id, verified_flow_id) = match flow_user(state, header_traceparent, agent_id)
+                .await
+            {
+                Ok((user_id, flow_id)) => (user_id, Some(flow_id)),
+                Err(denial) => match agent_owner(state, agent_id).await {
+                    // Deliberate policy (MCP_GATEWAY_AGENT_AUTH.md §5, rule
+                    // 3b): a local coding agent — a row the CLI bound with
+                    // `coding_agent_integration_id` — is never dispatched
+                    // through the proxy, so it never has a flow; it acts as
+                    // its owner instead, even for `tools/call`. Same
+                    // predicate the LLM router uses for the same rows
+                    // (`oss/llm-router/src/resolver/mod.rs`,
+                    // `coding_agent_integration_id IS NOT NULL`), so the
+                    // gateway and the router agree on which rows count as
+                    // "personal desks" — though not on how they're billed:
+                    // the router always attributes these rows to their
+                    // owner with no flow at all, while the gateway takes a
+                    // verified flow first (above) and only reaches this
+                    // fallback when one doesn't resolve. That difference is
+                    // unreachable today: a coding-agent row is never
+                    // dispatched into, so nothing ever has an endpoint of
+                    // its own to route a flow to.
+                    Ok(Some((owner, true))) => (owner, None),
+                    // Every other flow-less `tools/call` stays denied
+                    // (rules 3+4).
+                    Ok(_) if method == "tools/call" => return denial,
+                    // Read-only methods (rule 2): agent-only identity via
+                    // the owner — unchanged from before the coding-agent
+                    // policy existed.
+                    Ok(Some((owner, false))) => (owner, None),
+                    Ok(None) => {
+                        return (
+                            StatusCode::UNAUTHORIZED,
+                            "agent no longer exists — gateway token is stale",
+                        )
+                            .into_response();
+                    }
+                    // Rule 5 again: an unreachable identity store is not
+                    // "the agent is gone". Reporting 401 here would tell a
+                    // healthy agent its credential is stale and trigger a
+                    // pointless rotate/redeploy.
+                    Err(e) => {
+                        tracing::error!(error = %e, %agent_id, "mcp gateway: owner lookup failed — failing closed");
+                        return (StatusCode::FORBIDDEN, "identity store unavailable")
+                            .into_response();
+                    }
+                },
+            };
+            (agent_id, user_id, verified_flow_id, None)
+        }
     };
+
+    // The session path supplies a flow via its claims; the A2A path uses the
+    // request's own header.
+    let traceparent: Option<&str> = synthesized_tp.as_deref().or(header_traceparent);
 
     let started = std::time::Instant::now();
     let Some(result) = protocol::handle_request(
@@ -362,6 +408,102 @@ async fn dispatch(state: &AppState, token: &str, headers: &HeaderMap, body: Valu
 // the identity header sent to system backends — never a raw, unverified
 // `traceparent`.
 use crate::mcp::identity::{bearer_token, flow_user};
+
+/// Outcome of trying to read a coding-agent session token off the credential.
+enum SessionResolution {
+    /// A valid, non-revoked session token: use its signed identity directly.
+    Session {
+        agent_id: Uuid,
+        user_id: Uuid,
+        flow_id: String,
+    },
+    /// Not a session token (the ngt_ gateway token, or anything else) — the
+    /// caller should fall back to the deploy-time-token + traceparent path.
+    NotSession,
+    /// A session token that must be rejected (revoked, malformed claims, or the
+    /// store could not be reached).
+    Deny(Response),
+}
+
+/// Try to authenticate the credential as a coding-agent session token.
+///
+/// The signature is the proof of `{agent_id, user_id, flow_id}`, so — unlike the
+/// A2A path — this needs no live-flow freshness window (a long turn is never
+/// rejected for age) and no `flow_participants` lookup. The one DB touch is the
+/// `jti` revocation check, so a token can still be killed before its `exp`.
+async fn try_session_identity(state: &AppState, token: &str) -> SessionResolution {
+    let secret = &state.config.agent_jwt_secret;
+    // Unconfigured secret ⇒ this deployment doesn't issue session tokens; leave
+    // the legacy path untouched.
+    if secret.is_empty() {
+        return SessionResolution::NotSession;
+    }
+    let algorithm = nasiko_session_token::parse_algorithm(&state.config.agent_jwt_algorithm);
+
+    let claims = match nasiko_session_token::verify_session_token(token, secret, algorithm) {
+        Ok(claims) => claims,
+        Err(nasiko_session_token::SessionTokenError::NotSessionToken) => {
+            return SessionResolution::NotSession;
+        }
+        // Expired or otherwise unusable session token: reject rather than fall
+        // back (a fallback would just 401 on the ngt_ lookup anyway).
+        Err(e) => {
+            return SessionResolution::Deny(
+                (
+                    StatusCode::UNAUTHORIZED,
+                    format!("session token rejected: {e}"),
+                )
+                    .into_response(),
+            );
+        }
+    };
+
+    let agent_id = match Uuid::parse_str(&claims.agent_id) {
+        Ok(id) => id,
+        Err(_) => {
+            return SessionResolution::Deny(deny("session token agent_id is not a UUID".into()));
+        }
+    };
+    let user_id = match Uuid::parse_str(&claims.user_id) {
+        Ok(id) => id,
+        Err(_) => {
+            return SessionResolution::Deny(deny("session token user_id is not a UUID".into()));
+        }
+    };
+
+    match is_session_token_revoked(&state.db, &claims.jti).await {
+        Ok(false) => SessionResolution::Session {
+            agent_id,
+            user_id,
+            flow_id: claims.flow_id,
+        },
+        Ok(true) => SessionResolution::Deny(deny("session token revoked".into())),
+        Err(e) => {
+            // Rule 5: fail closed on identity-store failure.
+            tracing::error!(error = %e, "mcp gateway: revocation check failed — failing closed");
+            SessionResolution::Deny(deny("identity store unavailable".into()))
+        }
+    }
+}
+
+/// True if this `jti` has been revoked.
+async fn is_session_token_revoked(db: &sqlx::PgPool, jti: &str) -> sqlx::Result<bool> {
+    let found: Option<i32> =
+        sqlx::query_scalar("SELECT 1 FROM revoked_session_tokens WHERE jti = $1")
+            .bind(jti)
+            .fetch_optional(db)
+            .await?;
+    Ok(found.is_some())
+}
+
+/// Build a well-formed `traceparent` for a flow id from a session token, so the
+/// rest of the gateway (flow events, tool-approval context) sees the same W3C
+/// trace context the A2A path carries in a header.
+fn synth_traceparent(flow_id: &str) -> String {
+    let mut ctx = nasiko_flow::FlowContext::new_root();
+    ctx.flow_id = flow_id.to_owned();
+    ctx.to_traceparent()
+}
 
 /// `(owner_id, is_coding_agent)` for a live (non-deleted) agent — one query
 /// where there used to be two (a plain `agent_owner` for the read-only

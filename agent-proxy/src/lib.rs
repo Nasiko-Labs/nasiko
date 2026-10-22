@@ -2,6 +2,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 pub mod context_part;
+pub mod headers;
 
 pub const SESSION_MEMORY_EXTENSION: &str = "urn:nasiko:a2a:session-memory";
 

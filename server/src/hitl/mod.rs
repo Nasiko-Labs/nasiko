@@ -281,7 +281,7 @@ async fn deliver(state: AppState, row: HitlRequest) {
         return;
     };
 
-    let endpoint = match resolve_endpoint(&state, &row.agent_id.to_string(), &agent_name).await {
+    let target = match resolve_endpoint(&state, &row.agent_id.to_string(), &agent_name).await {
         Ok(e) => e,
         Err(e) => {
             let _ = state
@@ -444,15 +444,24 @@ async fn deliver(state: AppState, row: HitlRequest) {
     // orchestrator's sub-agent sees the exact same tool-approval prompt again on the very next
     // step, forever.
     let build_req = |body: &nasiko_types::a2a::JsonRpcRequest| {
-        state
+        let mut req = state
             .http_client
-            .post(&endpoint)
+            .post(&target.url)
             .timeout(Duration::from_secs(
                 AGENT_RESUME_REQUEST_TIMEOUT_SECS as u64,
             ))
             .header("A2A-Version", nasiko_types::a2a::A2A_VERSION_HEADER_VALUE)
-            .header("traceparent", crate::telemetry::traceparent_for(&flow_ctx))
-            .json(body)
+            .header(
+                nasiko_agent_proxy::headers::HEADER_TRACEPARENT,
+                crate::telemetry::traceparent_for(&flow_ctx),
+            )
+            .json(body);
+        // Whatever `forwarding_endpoint()` asked to have attached (the injection proxy's own
+        // `Authorization` credential when memory is enabled; empty otherwise).
+        for (name, value) in &target.headers {
+            req = req.header(name, value);
+        }
+        req
     };
 
     let response = match build_req(&req_body).send().await {

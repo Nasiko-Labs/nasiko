@@ -866,6 +866,10 @@ async fn route_with_access_check(
         session_id: Uuid::new_v4().to_string(),
         user_id,
         file_parts: vec![],
+        // Left empty here deliberately: EeRoutingEngine resolves this itself from its own
+        // AuthService before delegating to the wrapped OssRoutingEngine (see RouteRequest's doc
+        // comment). OSS has no org hierarchy, so this stays empty end to end on that edition.
+        org_granted_agent_ids: vec![],
     };
     let routed = match state
         .routing_engine

@@ -13,6 +13,14 @@ pub struct AgentInfo {
     pub description: String,
     pub endpoint: String,
     pub skills: Vec<AgentSkill>,
+    /// A header this specific endpoint requires — e.g. the EE injection proxy's own credential,
+    /// when `endpoint` is the proxy's address rather than the agent's real one
+    /// (`ContainerRuntime::forwarding_endpoint`'s `ForwardTarget::headers`). `None` for every
+    /// plain agent endpoint, which is every agent discovered from the control-plane registry:
+    /// this only ever gets set locally by the orchestrator, which is why it's not required on
+    /// deserialize.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_header: Option<(String, String)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -60,6 +60,32 @@ pub use simulated::SimulatedRuntime;
 
 use async_trait::async_trait;
 
+/// Where an outbound forward to an agent should actually go, plus any header the resolving
+/// runtime wants attached to that specific request — e.g. a decorator whose own endpoint sits in
+/// front of the real agent and requires its own credential. `headers` is empty for every plain
+/// [`endpoint`](ContainerRuntime::endpoint)-equivalent target; callers that don't attach it get
+/// exactly today's behavior.
+///
+/// Deliberately a header list carried alongside the URL, not folded into the URL itself: a
+/// credential embedded in a URL travels wherever that URL string travels, including into any
+/// `Display` an HTTP client formats for a network or timeout error — visible to end users,
+/// response payloads, and logs alike. A header a caller attaches explicitly only ever appears on
+/// the wire.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ForwardTarget {
+    pub url: String,
+    pub headers: Vec<(String, String)>,
+}
+
+impl From<String> for ForwardTarget {
+    fn from(url: String) -> Self {
+        Self {
+            url,
+            headers: Vec::new(),
+        }
+    }
+}
+
 /// Core trait for managing the deployment lifecycle of Nasiko agents.
 ///
 /// Every method is async and idempotent:
@@ -172,6 +198,22 @@ pub trait ContainerRuntime: Send + Sync {
         Err(RuntimeError::Unsupported(
             "this runtime does not support stdio attach for coding agents".to_owned(),
         ))
+    }
+
+    /// Where a forward *to* this agent should actually be sent — distinct from
+    /// [`endpoint`](ContainerRuntime::endpoint), which is the agent's real address and is also
+    /// what gets persisted into `agents.url` at deploy time. Defaults to `endpoint()` with no
+    /// extra headers, so every implementation and every caller gets identical behavior unless
+    /// something explicitly overrides this method — only an EE decorator that installs an
+    /// injection proxy does.
+    ///
+    /// The two must stay separate methods, not one parameterized call: a decorator overriding
+    /// this to return its own address must never affect what `endpoint()` returns, because
+    /// deploy-time persistence (`resolve_agent_url`) and the injection proxy's own address
+    /// resolution both call `endpoint()` and would corrupt each other if the two purposes were
+    /// conflated behind one method.
+    async fn forwarding_endpoint(&self, container_id: &ContainerId) -> Result<ForwardTarget> {
+        self.endpoint(container_id).await.map(Into::into)
     }
 
     /// Return the last `tail` lines of stdout+stderr from the agent's container(s).

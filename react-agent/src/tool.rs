@@ -237,12 +237,19 @@ impl Tool for A2aTool {
         // rides the client-wide `traceparent` + the flow_participants record
         // the platform's CallGuard writes before this call.
 
+        // Whatever `endpoint` requires as a header to actually accept the call — e.g. the EE
+        // injection proxy's own credential, when `endpoint` is the proxy's address rather than
+        // the agent's real one. Not a caller credential: this is consumed by the hop `endpoint`
+        // points at, same as `agent_proxy.rs`'s and `a2a_dispatch.rs`'s own outbound calls.
+        let per_call_headers: Vec<(String, String)> =
+            self.agent.auth_header.iter().cloned().collect();
+
         // Streaming first when a progress channel is attached; the match below
         // decides per error whether falling back to non-streaming is safe.
         let streamed = match self.progress {
             Some(ref orch_tx) => {
                 match self
-                    .call_streaming(&args, orch_tx.clone(), &[], &extra_text_parts)
+                    .call_streaming(&args, orch_tx.clone(), &per_call_headers, &extra_text_parts)
                     .await
                 {
                     Ok(SendOutcome::Text(text)) => Some(text),
@@ -281,7 +288,7 @@ impl Tool for A2aTool {
                         &self.agent.endpoint,
                         &args.message,
                         args.context_id.as_deref(),
-                        &[],
+                        &per_call_headers,
                         &self.file_parts,
                         &extra_text_parts,
                     )
@@ -427,6 +434,7 @@ mod tests {
             description: "for tests".to_string(),
             endpoint: endpoint.to_string(),
             skills: vec![],
+            auth_header: None,
         }
     }
 
