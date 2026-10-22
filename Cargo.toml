@@ -107,6 +107,7 @@ toml_edit = "0.25"
 # (clap_complete would otherwise offer internal helpers like `__coding-agent-token` on TAB).
 clap = { version = "4", features = ["derive", "string"] }
 clap_complete = "4"
+clap_mangen = "0.2"
 ureq = { version = "3", features = ["json"] }
 dialoguer = "0.11"
 indicatif = "0.17"

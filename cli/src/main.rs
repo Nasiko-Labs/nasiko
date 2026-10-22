@@ -29,6 +29,7 @@ const HELP_TEXT: &str = "\
   auth       Authentication (login/status/logout)
   doctor     Check Docker, cluster, login, and registry setup
   completions  Print a shell tab-completion script (bash/zsh/fish/...)
+  man        Print the man page (troff format)
 
 \x1b[33mCreate:\x1b[0m
   new        Scaffold a new agent project
@@ -175,6 +176,9 @@ enum CpCommands {
         /// Shell to generate the script for
         shell: Shell,
     },
+    /// Print the man page (troff format)
+    #[command(after_help = "Example: nasiko man > /usr/local/share/man/man1/nasiko.1")]
+    Man,
     /// Internal Claude Code credential helper
     #[command(name = "__claude-token", hide = true)]
     ClaudeToken,
@@ -315,6 +319,9 @@ fn main() -> Result<()> {
                 write_completions(shell, &mut IgnoreBrokenPipe(std::io::stdout()));
                 Ok(())
             }
+            // clap_mangen already leaves hidden subcommands and flags out of the page.
+            CpCommands::Man => Ok(clap_mangen::Man::new(Cli::command())
+                .render(&mut IgnoreBrokenPipe(std::io::stdout()))?),
             CpCommands::ClaudeToken => commands::claude::credential(),
             CpCommands::CodingAgentToken { agent } => match agent.as_str() {
                 "claude" => commands::claude::credential(),
@@ -491,6 +498,22 @@ mod tests {
             Commands::Cp(CpCommands::Completions { shell: Shell::Zsh })
         ));
         assert!(Cli::try_parse_from(["nasiko", "completions", "not-a-shell"]).is_err());
+
+        let man = Cli::try_parse_from(["nasiko", "man"]).unwrap();
+        assert!(matches!(man.command, Commands::Cp(CpCommands::Man)));
+    }
+
+    #[test]
+    fn man_page_lists_commands_but_not_hidden_ones() {
+        let mut page = Vec::new();
+        clap_mangen::Man::new(Cli::command())
+            .render(&mut page)
+            .unwrap();
+        let page = String::from_utf8(page).unwrap();
+        assert!(page.starts_with(".ie"), "troff header");
+        assert!(page.contains("deploy"));
+        assert!(!page.contains("__coding\\-agent\\-token"));
+        assert!(!page.contains("__coding-agent-token"));
     }
 
     #[test]
