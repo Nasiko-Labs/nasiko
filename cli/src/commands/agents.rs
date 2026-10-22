@@ -266,11 +266,19 @@ pub fn logs(agent: &str, tail: u32, follow: bool, filters: &LogFilters) -> Resul
 fn print_log_lines(lines: &[LogLine]) {
     // API returns newest-first; reverse for chronological display.
     for l in lines.iter().rev() {
-        let ts = l.timestamp.as_deref().unwrap_or("").get(..23).unwrap_or("");
-        let lvl = l.level.as_deref().unwrap_or("INFO");
-        let src = l.source.as_deref().unwrap_or("?");
-        println!("{ts} {lvl:<5} [{src}] {}", l.message);
+        println!("{}", format_log_line(l));
     }
+}
+
+/// One log line as `<time> <LEVEL> [<source>] <message>`. The time is cut to millisecond
+/// precision (23 chars); a shorter timestamp — e.g. a whole-second `…T12:00:00Z`, which omits
+/// the fraction — is shown as-is rather than dropped.
+fn format_log_line(l: &LogLine) -> String {
+    let ts = l.timestamp.as_deref().unwrap_or("");
+    let ts = ts.get(..23).unwrap_or(ts);
+    let lvl = l.level.as_deref().unwrap_or("INFO");
+    let src = l.source.as_deref().unwrap_or("?");
+    format!("{ts} {lvl:<5} [{src}] {}", l.message)
 }
 
 /// Open an SSE stream from `/api/observability/agents/{agent}/logs/stream` and print
@@ -304,10 +312,7 @@ fn stream_logs(agent: &str, filters: &LogFilters) -> Result<()> {
             && let Ok(l) = serde_json::from_str::<LogLine>(json)
             && filters.matches(&l, None)
         {
-            let ts = l.timestamp.as_deref().unwrap_or("").get(..23).unwrap_or("");
-            let lvl = l.level.as_deref().unwrap_or("INFO");
-            let src = l.source.as_deref().unwrap_or("?");
-            println!("{ts} {lvl:<5} [{src}] {}", l.message);
+            println!("{}", format_log_line(&l));
         }
     }
     Ok(())
@@ -1120,6 +1125,17 @@ mod tests {
         assert!(f.matches(&line("INFO", "new", Some("2026-10-22T11:30:00Z")), since));
         assert!(!f.matches(&line("INFO", "old", Some("2026-10-22T09:00:00Z")), since));
         assert!(f.matches(&line("INFO", "undated", None), since));
+    }
+
+    #[test]
+    fn log_line_keeps_whole_second_timestamps_and_trims_long_ones() {
+        let whole = line("INFO", "ok", Some("2026-10-22T12:00:00Z"));
+        assert_eq!(format_log_line(&whole), "2026-10-22T12:00:00Z INFO  [?] ok");
+        let precise = line("WARN", "slow", Some("2026-10-22T12:00:00.123456789Z"));
+        assert_eq!(
+            format_log_line(&precise),
+            "2026-10-22T12:00:00.123 WARN  [?] slow"
+        );
     }
 
     #[test]
