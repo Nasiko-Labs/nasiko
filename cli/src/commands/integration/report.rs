@@ -133,8 +133,10 @@ fn canonical_event(
         },
         turn: CodingAgentTurn {
             id: turn.uuid.clone(),
-            prompt: capture_content.then(|| turn.prompt.clone()),
-            response: capture_content.then(|| turn.response.clone()).flatten(),
+            prompt: capture_content.then(|| without_nul(&turn.prompt)),
+            response: capture_content
+                .then(|| turn.response.as_deref().map(without_nul))
+                .flatten(),
             started_at: turn.started_at,
             ended_at: turn.ended_at,
             llm_calls: turn
@@ -191,9 +193,11 @@ fn canonical_event(
 }
 
 fn bounded_value(value: &serde_json::Value) -> serde_json::Value {
-    let serialized = serde_json::to_string(value).unwrap_or_else(|_| "null".into());
+    let mut value = value.clone();
+    replace_nul(&mut value);
+    let serialized = serde_json::to_string(&value).unwrap_or_else(|_| "null".into());
     if serialized.len() <= CODING_AGENT_CONTENT_MAX_BYTES {
-        return value.clone();
+        return value;
     }
     serde_json::Value::String(bounded_text_to(
         &serialized,
@@ -206,8 +210,9 @@ fn bounded_text(value: &str) -> String {
 }
 
 fn bounded_text_to(value: &str, max: usize) -> String {
+    let value = without_nul(value);
     if value.len() <= max {
-        return value.to_string();
+        return value;
     }
     let suffix = "...";
     let mut end = max.saturating_sub(suffix.len());
@@ -215,6 +220,23 @@ fn bounded_text_to(value: &str, max: usize) -> String {
         end -= 1;
     }
     format!("{}{suffix}", &value[..end])
+}
+
+/// The server stores content in Postgres `text` and `jsonb`, which cannot hold
+/// NUL, so validation rejects it; Codex rollouts carry it in prompts and tool
+/// output. U+FFFD keeps the position visible and, unlike deleting it, doesn't
+/// join the text either side (`find -print0` output stays separable).
+fn without_nul(text: &str) -> String {
+    text.replace('\0', "\u{FFFD}")
+}
+
+fn replace_nul(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::String(text) if text.contains('\0') => *text = without_nul(text),
+        serde_json::Value::Array(values) => values.iter_mut().for_each(replace_nul),
+        serde_json::Value::Object(values) => values.values_mut().for_each(replace_nul),
+        _ => {}
+    }
 }
 
 fn queue_then_mark(record: &QueueRecord, lock: &SessionLock) -> Result<()> {
@@ -462,5 +484,39 @@ mod tests {
         let bounded = bounded_text(&text);
         assert!(bounded.len() <= CODING_AGENT_CONTENT_MAX_BYTES);
         assert!(bounded.ends_with("..."));
+    }
+
+    #[test]
+    fn content_nul_is_replaced_before_validation() {
+        let mut turn = turn("nul", true);
+        turn.prompt = "first\0second".into();
+        turn.response = Some("done\0".into());
+        turn.tool_calls.push(ToolCall {
+            id: "tool-1".into(),
+            name: "Shell".into(),
+            kind: "tool".into(),
+            model_call_id: None,
+            status: nasiko_types::CodingAgentToolCallStatus::Succeeded,
+            arguments: Some(serde_json::json!({"paths": ["a\0b"]})),
+            output: Some(serde_json::json!("a\0b")),
+            raw: Some("raw\0".into()),
+            error: Some("error\0".into()),
+            started_at: None,
+            ended_at: None,
+            duration_ms: None,
+            association: nasiko_types::CodingAgentToolAssociation::Turn,
+            timestamp_quality: nasiko_types::CodingAgentTimestampQuality::Unknown,
+        });
+        let event = canonical_event("codex", "codex", "s", Some("title\0"), &turn, true);
+
+        assert!(event.validate().is_ok());
+        assert_eq!(event.turn.prompt.as_deref(), Some("first\u{FFFD}second"));
+        assert_eq!(event.session.title.as_deref(), Some("title\u{FFFD}"));
+        let tool = &event.turn.tool_calls[0];
+        assert_eq!(
+            tool.arguments,
+            Some(serde_json::json!({"paths": ["a\u{FFFD}b"]}))
+        );
+        assert_eq!(tool.raw.as_deref(), Some("raw\u{FFFD}"));
     }
 }
