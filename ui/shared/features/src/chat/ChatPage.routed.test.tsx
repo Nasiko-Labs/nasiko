@@ -1,7 +1,7 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/chat/ChatPage.routed.test.tsx. Local edits:
 // `setupMockServer()` starts the msw server for the file (the lab started it globally in its test setup); one
 // attribution check waits for the text instead of holding the node `findByText` returned (the live-to-saved swap can
-// land in between here); Prettier formatting.
+// land in between here), and so do the routed end states' notice checks; Prettier formatting.
 /**
  * v1b routed chat, page level (plan §7 page tests 1-13): the opt-in entry, the routed empty
  * state, the turn anatomy, every §5.5 end state and §5.6 notice, routed HITL and resume. Every
@@ -414,13 +414,18 @@ describe("end states (§5.5) and notices (§5.6)", () => {
     "%s: problem, action, Copy details and anchor",
     async (sc, problem, action, anchor) => {
       const { router } = await sendRouted("please", sc);
-      expect(await screen.findByText(problem)).toBeInTheDocument();
-      if (action) expect(screen.getByRole("button", { name: action })).toBeInTheDocument();
-      else
-        expect(
-          within(screen.getByTestId("routed-live")).getByRole("link", { name: "Agents" }),
-        ).toBeInTheDocument();
-      expect(screen.getByText(`docs/chat.md#errors-${anchor}`)).toBeInTheDocument();
+      await screen.findByText(problem);
+      // Read the notice again rather than keep the found node: the turn can re-render once more as it settles, and a
+      // node held from before that is detached (a load-sensitive failure in the full run).
+      await waitFor(() => {
+        expect(screen.getByText(problem)).toBeInTheDocument();
+        if (action) expect(screen.getByRole("button", { name: action })).toBeInTheDocument();
+        else
+          expect(
+            within(screen.getByTestId("routed-live")).getByRole("link", { name: "Agents" }),
+          ).toBeInTheDocument();
+        expect(screen.getByText(`docs/chat.md#errors-${anchor}`)).toBeInTheDocument();
+      });
       // The user row is saved: the draft isn't restored, so a plain Send can't duplicate it (review D2).
       expect(screen.getByLabelText("Ask the Orchestrator")).toHaveValue("");
       router;
