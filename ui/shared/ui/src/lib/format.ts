@@ -1,4 +1,6 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/lib/format.ts. Local edits: none.
+// Ported from nasiko-ui-lab@1b99bdda common/src/lib/format.ts. Local edits: `moneyCompact` names its minimum fraction
+// digits (0) instead of leaving them to the engine: ECMA-402 gives compact currency a default minimum of 0 ("$150K",
+// as Node 24 formats it), while older V8 (Node 22 and below) takes the currency's 2 capped at the maximum, 1 ("$150.0K").
 /** Number formats (plan A10). All pure, all locale-aware via Intl with en-US shapes. */
 
 const money2 = new Intl.NumberFormat("en-US", {
@@ -11,6 +13,7 @@ const moneyCompact = new Intl.NumberFormat("en-US", {
   style: "currency",
   currency: "USD",
   notation: "compact",
+  minimumFractionDigits: 0,
   maximumFractionDigits: 1,
 });
 const compact = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 });
