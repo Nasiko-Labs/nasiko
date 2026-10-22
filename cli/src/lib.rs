@@ -184,8 +184,11 @@ pub enum AgentOpsCommands {
     /// List running agents
     Ps {
         /// Output as JSON
-        #[arg(short = 'j', long)]
+        #[arg(short = 'j', long, conflicts_with = "watch")]
         json: bool,
+        /// Refresh the list every 2s until Ctrl-C
+        #[arg(short = 'w', long)]
+        watch: bool,
     },
     /// Stream agent container logs
     Logs {
@@ -195,6 +198,15 @@ pub enum AgentOpsCommands {
         /// Live-tail: stream new log lines as they arrive (SSE)
         #[arg(short = 'f', long)]
         follow: bool,
+        /// Only lines at this level
+        #[arg(long, ignore_case = true, value_parser = ["INFO", "WARN", "ERROR", "DEBUG"])]
+        level: Option<String>,
+        /// Only lines whose message contains this text (case-insensitive)
+        #[arg(long)]
+        search: Option<String>,
+        /// Only lines from this far back: 30m, 2h, 1d, or an ISO-8601 time
+        #[arg(long, conflicts_with = "follow")]
+        since: Option<String>,
     },
     /// Stop agent container
     Stop { agent: String },
@@ -1111,12 +1123,24 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             writable_path.as_deref(),
         ),
         AgentOpsCommands::Import { reference } => commands::import::from_registry(&reference),
-        AgentOpsCommands::Ps { json } => commands::agents::ps(json),
+        AgentOpsCommands::Ps { json, watch } => commands::agents::ps(json, watch),
         AgentOpsCommands::Logs {
             agent,
             tail,
             follow,
-        } => commands::agents::logs(&agent, tail, follow),
+            level,
+            search,
+            since,
+        } => commands::agents::logs(
+            &agent,
+            tail,
+            follow,
+            &commands::agents::LogFilters {
+                level,
+                search,
+                since,
+            },
+        ),
         AgentOpsCommands::Stop { agent } => commands::agents::stop(&agent),
         AgentOpsCommands::Start { agent } => commands::agents::start(&agent),
         AgentOpsCommands::Restart { agent } => commands::agents::restart(&agent),

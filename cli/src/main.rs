@@ -150,8 +150,14 @@ enum CpCommands {
     Use { name: String },
     /// List configured control planes
     Clusters,
-    /// Control plane health + metrics
-    Status { target: Option<String> },
+    /// Control plane health + metrics (exits 1 if unhealthy), or a coding agent's connection
+    Status {
+        /// `claude`, `codex`, or `opencode` (omit for the cluster)
+        target: Option<String>,
+        /// Output cluster status as JSON
+        #[arg(short = 'j', long, conflicts_with = "target")]
+        json: bool,
+    },
     /// Authentication commands
     #[command(after_help = "Config: ~/.nasiko/config.json")]
     Auth {
@@ -287,7 +293,7 @@ fn main() -> Result<()> {
             },
             CpCommands::Use { name } => commands::cluster::use_cluster(&name),
             CpCommands::Clusters => commands::cluster::list(),
-            CpCommands::Status { target } => match target.as_deref() {
+            CpCommands::Status { target, json } => match target.as_deref() {
                 Some("claude") => commands::claude::status(),
                 Some("codex") => commands::codex::status(),
                 Some("opencode") => commands::opencode::status(),
@@ -296,7 +302,7 @@ fn main() -> Result<()> {
                         "unknown status target '{other}' (expected: claude, codex, or opencode)"
                     )
                 }
-                None => commands::status::status(),
+                None => commands::status::status(json),
             },
             CpCommands::Auth { command } => match command {
                 AuthCommands::Login => commands::auth::login(),
@@ -440,7 +446,7 @@ mod tests {
         let status = Cli::try_parse_from(["nasiko", "status", "codex"]).unwrap();
         assert!(matches!(
             status.command,
-            Commands::Cp(CpCommands::Status { target }) if target.as_deref() == Some("codex")
+            Commands::Cp(CpCommands::Status { target, .. }) if target.as_deref() == Some("codex")
         ));
         let disconnect = Cli::try_parse_from(["nasiko", "disconnect", "codex"]).unwrap();
         assert!(matches!(
@@ -478,13 +484,34 @@ mod tests {
         let status = Cli::try_parse_from(["nasiko", "status", "opencode"]).unwrap();
         assert!(matches!(
             status.command,
-            Commands::Cp(CpCommands::Status { target }) if target.as_deref() == Some("opencode")
+            Commands::Cp(CpCommands::Status { target, .. }) if target.as_deref() == Some("opencode")
         ));
         let disconnect = Cli::try_parse_from(["nasiko", "disconnect", "opencode"]).unwrap();
         assert!(matches!(
             disconnect.command,
             Commands::Cp(CpCommands::Disconnect { target, force }) if target == "opencode" && !force
         ));
+    }
+
+    #[test]
+    fn parses_cluster_status_json_but_not_with_a_coding_agent_target() {
+        let cluster = Cli::try_parse_from(["nasiko", "status", "--json"]).unwrap();
+        assert!(matches!(
+            cluster.command,
+            Commands::Cp(CpCommands::Status {
+                target: None,
+                json: true
+            })
+        ));
+        let plain = Cli::try_parse_from(["nasiko", "status"]).unwrap();
+        assert!(matches!(
+            plain.command,
+            Commands::Cp(CpCommands::Status {
+                target: None,
+                json: false
+            })
+        ));
+        assert!(Cli::try_parse_from(["nasiko", "status", "codex", "--json"]).is_err());
     }
 
     #[test]

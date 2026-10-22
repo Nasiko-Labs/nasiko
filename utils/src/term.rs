@@ -96,6 +96,11 @@ pub fn yellow(s: &str) -> String {
     paint(s, "33", use_color_stdout())
 }
 
+/// `s` dimmed, for secondary text printed to stdout.
+pub fn dim(s: &str) -> String {
+    paint(s, "2", use_color_stdout())
+}
+
 /// `s` in cyan, for text printed to stdout — used for next-step command hints.
 pub fn cyan(s: &str) -> String {
     paint(s, "36", use_color_stdout())
