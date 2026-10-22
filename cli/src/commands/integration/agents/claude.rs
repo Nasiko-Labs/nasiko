@@ -424,6 +424,21 @@ fn turns_from_lines(content: &str) -> Vec<Turn> {
         }
     }
 
+    // A tool_use whose call was never recorded in its turn (a record without
+    // usage, say) keeps the turn association instead of a dangling exact one.
+    for turn in &mut turns {
+        for tool in &mut turn.tool_calls {
+            let dangling = tool
+                .model_call_id
+                .as_ref()
+                .is_some_and(|id| !turn.calls.iter().any(|call| &call.uuid == id));
+            if dangling {
+                tool.model_call_id = None;
+                tool.association = CodingAgentToolAssociation::Turn;
+            }
+        }
+    }
+
     turns
 }
 
@@ -594,6 +609,9 @@ struct Entry {
     session_id: Option<String>,
     #[serde(rename = "isSidechain", default)]
     is_sidechain: bool,
+    /// Claude Code's own injected context, such as a skill's instructions.
+    #[serde(rename = "isMeta", default)]
+    is_meta: bool,
     timestamp: Option<DateTime<Utc>>,
     message: Option<Message>,
     #[serde(rename = "requestId")]
@@ -668,7 +686,7 @@ impl Entry {
         if self.kind == "last-prompt" {
             return nonempty(self.last_prompt.as_deref()?);
         }
-        if self.kind != "user" {
+        if self.kind != "user" || self.is_meta {
             return None;
         }
         let content = self.message.as_ref()?.content.as_ref()?;
@@ -1153,6 +1171,46 @@ mod tests {
             turn.tool_calls[1].timestamp_quality,
             CodingAgentTimestampQuality::Inferred
         );
+    }
+
+    #[test]
+    fn meta_records_inside_a_response_do_not_open_a_turn() {
+        // One streamed response writes a record per block. A tool's injected
+        // context (isMeta) can land between its tool_use blocks.
+        let input = r#"
+{"type":"user","uuid":"u1","timestamp":"2026-01-01T00:00:00Z","message":{"content":"inspect"}}
+{"type":"assistant","uuid":"a1","parentUuid":"u1","requestId":"req-1","timestamp":"2026-01-01T00:00:01Z","message":{"id":"msg-1","model":"m","stop_reason":"tool_use","content":[{"type":"tool_use","id":"tool-1","name":"Skill","input":{}}],"usage":{"input_tokens":1,"output_tokens":2}}}
+{"type":"user","uuid":"r1","parentUuid":"a1","timestamp":"2026-01-01T00:00:02Z","message":{"content":[{"type":"tool_result","tool_use_id":"tool-1","content":"ok"}]}}
+{"type":"user","uuid":"m1","parentUuid":"r1","isMeta":true,"sourceToolUseID":"tool-1","timestamp":"2026-01-01T00:00:02Z","message":{"content":[{"type":"text","text":"injected context"}]}}
+{"type":"assistant","uuid":"a2","parentUuid":"m1","requestId":"req-1","timestamp":"2026-01-01T00:00:03Z","message":{"id":"msg-1","model":"m","stop_reason":"tool_use","content":[{"type":"tool_use","id":"tool-2","name":"Read","input":{}}],"usage":{"input_tokens":1,"output_tokens":2}}}
+{"type":"user","uuid":"r2","parentUuid":"a2","timestamp":"2026-01-01T00:00:04Z","message":{"content":[{"type":"tool_result","tool_use_id":"tool-2","content":"ok"}]}}
+{"type":"assistant","uuid":"a3","parentUuid":"r2","requestId":"req-2","timestamp":"2026-01-01T00:00:05Z","message":{"id":"msg-2","model":"m","stop_reason":"end_turn","content":"done","usage":{"input_tokens":3,"output_tokens":4}}}
+"#;
+        let turns = turns_from_lines(input);
+        assert_eq!(turns.len(), 1);
+        let turn = &turns[0];
+        assert_eq!(turn.uuid, "u1");
+        assert_eq!(turn.response.as_deref(), Some("done"));
+        assert_eq!(turn.calls.len(), 2);
+        assert_eq!(turn.tool_calls.len(), 2);
+        for tool in &turn.tool_calls {
+            assert_eq!(tool.association, CodingAgentToolAssociation::Exact);
+            assert_eq!(tool.model_call_id.as_ref(), Some(&turn.calls[0].uuid));
+        }
+    }
+
+    #[test]
+    fn tool_use_without_a_recorded_call_degrades_to_turn_association() {
+        let input = r#"
+{"type":"user","uuid":"u1","timestamp":"2026-01-01T00:00:00Z","message":{"content":"inspect"}}
+{"type":"assistant","uuid":"a1","parentUuid":"u1","timestamp":"2026-01-01T00:00:01Z","message":{"model":"m","content":[{"type":"tool_use","id":"tool-1","name":"Read","input":{}}]}}
+{"type":"assistant","uuid":"a2","parentUuid":"a1","timestamp":"2026-01-01T00:00:02Z","message":{"model":"m","stop_reason":"end_turn","content":"done","usage":{"input_tokens":1,"output_tokens":2}}}
+"#;
+        let turn = &turns_from_lines(input)[0];
+        assert_eq!(turn.calls.len(), 1);
+        let tool = &turn.tool_calls[0];
+        assert_eq!(tool.association, CodingAgentToolAssociation::Turn);
+        assert_eq!(tool.model_call_id, None);
     }
 
     #[test]
