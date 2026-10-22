@@ -46,6 +46,7 @@ mod compressors;
 mod content_type;
 mod detect;
 mod error;
+mod levels;
 mod marker;
 mod policy;
 mod text;

@@ -6,8 +6,6 @@
 use crate::marker;
 use crate::policy::Policy;
 
-const SEVERE: [&str; 5] = ["ERROR", "WARN", "WARNING", "FATAL", "PANIC"];
-
 pub(super) fn compress(input: &str, policy: &Policy<'_>) -> Option<String> {
     let lines: Vec<&str> = input.lines().collect();
     let (head, tail) = policy.level.log_head_tail();
@@ -61,8 +59,7 @@ fn render(lines: &[&str], keep: &[bool], policy: &Policy<'_>) -> String {
 }
 
 fn is_severe(line: &str) -> bool {
-    let prefix = crate::text::take_chars(line, 120);
-    SEVERE.iter().any(|lvl| prefix.contains(lvl))
+    crate::levels::is_severe(line)
 }
 
 fn is_stack_frame(line: &str) -> bool {
@@ -138,6 +135,33 @@ mod tests {
 
         assert!(out.contains("at src/main.rs:42"));
         assert!(out.contains("at src/lib.rs:7"));
+    }
+
+    #[test]
+    fn keeps_lower_case_and_structured_errors_from_the_middle() {
+        let mut lines: Vec<String> = (0..200)
+            .map(|i| {
+                format!(
+                    "[Sun Dec 04 05:{:02}:00 2005] [notice] child {i} started",
+                    i % 60
+                )
+            })
+            .collect();
+        lines[100] =
+            "[Sun Dec 04 05:15:09 2005] [error] [client 222.166.160.184] Directory index forbidden"
+                .into();
+        lines[120] = "ts=05:20:00 level=fatal msg=\"disk full\"".into();
+        lines[140] = "[Sun Dec 04 05:30:00 2005] [notice] parity error corrected".into();
+        let input = lines.join("\n");
+
+        let out = compress(&input, &policy()).unwrap();
+
+        assert!(out.contains("222.166.160.184"), "dropped the [error] line");
+        assert!(out.contains("disk full"), "dropped the level=fatal line");
+        assert!(
+            !out.contains("parity error corrected"),
+            "kept a notice that only mentions an error"
+        );
     }
 
     #[test]
