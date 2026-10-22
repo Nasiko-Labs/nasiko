@@ -14,6 +14,8 @@ pub enum PriceSource {
     Exact,
     /// Matched the model family in a synced book, after dropping a minor version.
     Family,
+    /// The synced book's newest rate, for a call older than its price history.
+    Backdated,
     /// Matched the offline list-price table.
     Static,
     /// No rate found; inferred from the vendor's cache-pricing convention.
@@ -29,7 +31,7 @@ impl PriceSource {
     fn is_estimate(self) -> bool {
         matches!(
             self,
-            Self::Family | Self::Static | Self::Ratio | Self::Default
+            Self::Family | Self::Backdated | Self::Static | Self::Ratio | Self::Default
         )
     }
 }
@@ -214,6 +216,7 @@ fn lookup_plan(key: &ModelKey) -> Vec<Probe> {
 fn attribute(tier: BookTier, name_match: NameMatch) -> PriceSource {
     match (tier, name_match) {
         (BookTier::Offline, _) => PriceSource::Static,
+        (BookTier::Backdated, _) => PriceSource::Backdated,
         (BookTier::Synced, NameMatch::AsNamed) => PriceSource::Exact,
         (BookTier::Synced, NameMatch::Family) => PriceSource::Family,
     }
