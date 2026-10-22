@@ -27,7 +27,9 @@ describe("tourFor", () => {
     ["/status", "status"],
   ])("%s → %s", (path, id) => expect(tourFor(path)).toBe(id));
 
-  it.each(["/weave", "/login"])("has none on %s", (path) => expect(tourFor(path)).toBeNull());
+  it.each(["/no-such-page", "/login"])("has none on %s", (path) =>
+    expect(tourFor(path)).toBeNull(),
+  );
 
   it("falls back to a layer's tours, after the core's", () => {
     const layers = [
@@ -48,13 +50,13 @@ describe("dueTour", () => {
   it("starts nothing while tours are off", () => expect(dueTour(NO_PREFS, "/")).toBeNull());
   it("folds the app tour into the first one, wherever the user is", () => {
     expect(dueTour(on, "/tokenops")).toEqual({ id: "tokenops", withApp: true });
-    expect(dueTour(on, "/weave")).toEqual({ id: "app", withApp: true });
+    expect(dueTour(on, "/no-such-page")).toEqual({ id: "app", withApp: true });
   });
   it("then each page's own, once", () => {
     const afterApp = markSeen(markSeen(on, "app"), "tokenops");
     expect(dueTour(afterApp, "/tokenops")).toBeNull();
     expect(dueTour(afterApp, "/sessions")).toEqual({ id: "sessions", withApp: false });
-    expect(dueTour(afterApp, "/weave")).toBeNull();
+    expect(dueTour(afterApp, "/no-such-page")).toBeNull();
   });
 });
 

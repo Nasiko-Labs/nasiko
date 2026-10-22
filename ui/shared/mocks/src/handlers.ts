@@ -569,7 +569,7 @@ const SETTINGS_DEFAULTS = {
   catalog_tabs: null,
 };
 // Budgets are Enterprise only (docs/requirements/budgets.md): their whole mock — the engine, the world, the golden
-// scenario and every route — lives in the Enterprise mocks (budgetMocks) and registers through `editionHandlers`.
+// scenario and every route — lives in the Enterprise layer and registers through `editionHandlers`.
 // What stays here is only what the harness itself owns: the `?mock=` variant names and the `budgets` group key.
 /** Partial-live mode: the live user's id, learned from their `owner=` agent list (the mock has no session). */
 let liveOwner: string | null = null;
@@ -1899,7 +1899,7 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
     state: getWorkflows,
   }),
   // Budgets are Enterprise only (docs/requirements/budgets.md): both groups are empty here and EE fills them
-  // through `editionHandlers` (the Enterprise budgetMocks). The keys stay so `VITE_NASIKO_MOCK=budgets`
+  // through `editionHandlers`. The keys stay so `VITE_NASIKO_MOCK=budgets`
   // and the `?mock=budgets-*` variants keep working in both editions' harnesses.
   budgets: [],
   "budgets-fill": [],
@@ -2209,7 +2209,7 @@ function chatScenario(): ChatScenario | null {
 
 /**
  * Agents an edition's mocks add for the chat mock only, the way the real server has internal agents no listing shows
- * (EE: the Weave agent its assistant chats with). Keyed by id, so a module re-evaluated by HMR replaces its entry.
+ * (EE: the agent its assistant chats with). Keyed by id, so a module re-evaluated by HMR replaces its entry.
  */
 const chatOnlyAgents = new Map<string, { id: string; name: string; running: boolean }>();
 
@@ -2692,7 +2692,7 @@ export const mockCtx = {
   envelope,
   unauthorized,
   usageResponse,
-  /** The chat mock's context, for a layer whose agent saves its own turns (EE: the Weave agent proxy). */
+  /** The chat mock's context, for a layer whose agent saves its own turns (EE: its assistant's agent proxy). */
   chatCtx: () => chatCtx,
   /** Adds an agent the chat mock knows (sessions may name it) but the agents mock never lists: an internal agent. */
   addChatOnlyAgent: (agent: { id: string; name: string; running: boolean }) => {

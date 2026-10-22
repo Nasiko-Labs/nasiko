@@ -1,4 +1,6 @@
-// Ported from the legacy ui/ on development (3aac84f66) common/src/features/chat/a2aReducer.weave.test.ts. Local edits:
+// Ported from the legacy ui/ on development (3aac84f66): the chat reducer's tests for a generator agent's frames
+// (common/src/features/chat/, 92e726fae). Local edits: named for what they test (the published tree names no EE
+// product);
 // `!` on reads at an index the test just made (`noUncheckedIndexedAccess` here); Prettier formatting.
 import { describe, expect, it } from "vitest";
 import { emptyTurn, reduceSseEvent, replyText, type TurnState } from "./a2aReducer";
@@ -56,7 +58,7 @@ const feed = (frames: Json[], from: TurnState = emptyTurn()): TurnState =>
     from,
   );
 
-describe("Weave tool frames", () => {
+describe("an agent's tool frames", () => {
   it("renders a tool_call as a running tool step named after the tool", () => {
     const s = feed([toolCall()]);
     expect(s.steps).toHaveLength(1);
@@ -159,7 +161,7 @@ describe("Weave tool frames", () => {
   });
 });
 
-describe("Weave live reply artifacts", () => {
+describe("an agent's live reply artifacts", () => {
   it("appends streamed chunks into one reply artifact", () => {
     const s = feed([chunk("Hel"), chunk("lo")]);
     expect(s.artifacts).toEqual([{ id: "reply", text: "Hello" }]);
@@ -255,7 +257,7 @@ describe("Weave live reply artifacts", () => {
   });
 });
 
-describe("Weave thinking frames", () => {
+describe("an agent's thinking frames", () => {
   it("renders a thinking frame as activity", () => {
     const s = feed([statusFrame({ type: "thinking", content: "Checking the data." })]);
     expect(s.activity).toEqual(["Checking the data."]);
@@ -282,12 +284,17 @@ describe("Weave thinking frames", () => {
   });
 });
 
-describe("Weave failures", () => {
+describe("an agent's failures", () => {
   it("marks the turn failed and keeps the streamed text when a failed frame follows chunks", () => {
     const s = feed([
       chunk("partial"),
       statusFrame(
-        { type: "sub_content", agent: "weave", content: "model exploded", code: "rate_limited" },
+        {
+          type: "sub_content",
+          agent: "generator",
+          content: "model exploded",
+          code: "rate_limited",
+        },
         "failed",
       ),
     ]);
@@ -299,7 +306,12 @@ describe("Weave failures", () => {
   it("surfaces the failure content rather than a bare state name", () => {
     const s = feed([
       statusFrame(
-        { type: "sub_content", agent: "weave", content: "model exploded", code: "rate_limited" },
+        {
+          type: "sub_content",
+          agent: "generator",
+          content: "model exploded",
+          code: "rate_limited",
+        },
         "failed",
       ),
     ]);

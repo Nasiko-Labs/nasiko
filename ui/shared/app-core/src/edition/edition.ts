@@ -116,7 +116,7 @@ interface OrgUnitFilterProps {
 
 /**
  * Budgets are an **Enterprise** feature end to end (docs/requirements/budgets.md, user decision 2026-10-14): the
- * feature, its queries, its mocks and its pages live in the Enterprise features package, and an OSS build contains
+ * feature, its queries, its mocks and its pages live in the Enterprise layer, and an OSS build contains
  * none of it. What stays in the core is this contract — the shapes the core's own surfaces render when a layer
  * fills them, exactly as `HomeLevel` is the contract for EE's org units.
  *
@@ -316,7 +316,7 @@ export interface Slots {
   topbarStart: ComponentType | null;
   shellEnd: ComponentType<{ path: string }> | null;
   /**
-   * Wraps the page in a split with a panel of its own (EE: the Weave assistant). While the panel shows beside the
+   * Wraps the page in a split with a panel of its own (EE: its assistant). While the panel shows beside the
    * page, it sets `--shell-split-end` (its width) on an ancestor of `children`, so fixed page layers (`PageLoader`)
    * stop short of it.
    */

@@ -1,7 +1,8 @@
 // Ported from the legacy ui/ on development (3aac84f66, 66a4c64d0) common/src/app/shell/shellSplit.test.tsx. Local
 // edits: the app is the page-test harness (`renderApp` from ../testing/render-app with the edition as a parameter)
 // instead of a TanStack router over a memory history, so navigation goes through its `router.navigate` facade;
-// `/settings` is a redirect route here, so the last navigation lands on `/status`; Prettier formatting.
+// `/settings` is a redirect route here, so the last navigation lands on `/status`; the OSS case looks for any labelled side panel and launcher rather
+// naming the EE one; Prettier formatting.
 import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useEffect, useState, type ComponentType, type ReactNode } from "react";
@@ -150,8 +151,13 @@ describe("with no slot (OSS)", () => {
   it("has no launcher or panel of any kind", async () => {
     renderApp("/account/appearance");
     await ready();
-    expect(screen.queryByRole("complementary", { name: "Weave" })).toBeNull();
-    expect(screen.queryByRole("button", { name: /weave/i })).toBeNull();
+    // Nothing a layer's split would add: no labelled side panel (the settings nav's own aside has no name), no launcher.
+    expect(
+      screen
+        .queryAllByRole("complementary")
+        .filter((el) => el.hasAttribute("aria-label") || el.hasAttribute("aria-labelledby")),
+    ).toEqual([]);
+    expect(screen.queryByRole("button", { name: /\bask\b/i })).toBeNull();
   });
 });
 

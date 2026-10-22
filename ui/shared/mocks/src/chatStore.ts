@@ -2,7 +2,7 @@
 // starts with an SSE comment, because msw 3 (Node) resolves a fetch only at the body's first chunk (the lab sent no
 // bytes); ESLint autofixes (void-returning arrows given braces, redundant casts and `String()` calls dropped);
 // development (3aac84f66, d1a7ed322 and f851fdca8): `GET /api/chat/sessions?surface=` and a saved message's
-// `file_parts`, and `chatMockProxyTurn` (the agent proxy saving a Weave turn); development (84c6f11eb): recorded
+// `file_parts`, and `chatMockProxyTurn` (the agent proxy saving an edition agent's turn); development (84c6f11eb): recorded
 // harness chats; Prettier formatting.
 /* eslint-disable @typescript-eslint/no-non-null-assertion -- ported verbatim; the seeded lookups always hit */
 /* eslint-disable @typescript-eslint/no-base-to-string, @typescript-eslint/no-unnecessary-condition -- request bodies are coerced and checked as the server does, whatever their declared type */
@@ -232,7 +232,7 @@ function flowSteps(frames: readonly MockFrame[]): FlowStep[] {
 export const chatMockRows = (): ChatSessionRow[] => [...chats.values()].map((c) => c.row);
 
 /**
- * What the agent proxy saves for a chat turn sent to an agent with a `contextId` (EE Weave: "the proxy saves both
+ * What the agent proxy saves for a chat turn sent to an agent with a `contextId` (an EE generator agent: "the proxy saves both
  * sides of every turn"): the session it names, created and titled from the first prompt when it doesn't exist yet,
  * gets the user's message now; the returned callback saves the reply, exactly as streamed, when the stream ends.
  * Another user's session is left alone.

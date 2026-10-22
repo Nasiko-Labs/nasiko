@@ -344,7 +344,7 @@ function statusEvents(status: unknown, text: string, parts: Part[]): TypedEvent[
   return events;
 }
 
-/** A failed status with no message text: the reason its data part carries (Weave's failed turns). */
+/** A failed status with no message text: the reason its data part carries (an edition's generator agent's failed turns). */
 function failureText(parts: Part[]): string {
   for (const p of parts) {
     const reason = p.data ? (str(p.data.content) ?? str(p.data.message)) : undefined;

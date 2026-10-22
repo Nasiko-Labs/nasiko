@@ -45,7 +45,7 @@ export function AppShell({
 }: {
   children?: ReactNode;
   end?: ReactNode;
-  /** A layer's split around the page (the `shellSplit` slot; EE: the Weave assistant panel). */
+  /** A layer's split around the page (the `shellSplit` slot; EE: its assistant panel). */
   split?: ComponentType<{ path: string; children: ReactNode }> | null | undefined;
   badges?: NavBadges | undefined;
   /** Nav paths to leave out (onboarding hides Home while its guide stands in for it). */

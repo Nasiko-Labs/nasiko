@@ -194,7 +194,7 @@ describe("flows errors", () => {
 
 describe("layer cards", () => {
   // Budget is its own section, not a layer card (B5). That it renders at all is Enterprise only, so the EE suite
-  // asserts it (its HubBudget test); here we only hold that it is never a card.
+  // asserts it; here we only hold that it is never a card.
   it("the owner sees Routing, Tools and Optimization", async () => {
     renderApp(url());
     const cards = await screen.findByRole("region", { name: copy.cards.title });
