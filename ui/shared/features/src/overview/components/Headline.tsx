@@ -1,33 +1,14 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/overview/components/Headline.tsx. Local edits: none beyond
-// imports and Prettier.
+// imports and Prettier. Development (3ab686e6d): `emphasize` moved to ../emphasize.tsx.
 /**
  * The headline band (plans/feat-overview.md §10; design review 3A, 10A): a plain sentence, no icon and no status chip,
  * numbers standing out by weight, never colour. Below 640 px of content only the attention sentence shows (the money
  * one when nothing needs attention), so a phone opens on what needs you. Not a live region (design review 14A).
  */
-import { Fragment } from "react";
 import type { OverviewNarrative } from "../../narrative/overview";
 import { cn } from "@nasiko/ui/cn";
 import { copy } from "../copy";
-
-/** Money amounts, ranges and counts in semibold tabular figures. */
-const NUMBER = /(\$[\d,.]+(?:[kKmM])?(?:–\$[\d,.]+(?:[kKmM])?)?|\b\d[\d,]*%?)/;
-
-function emphasize(text: string) {
-  // Keyed by offset and text: split alternates text and numbers, so no two parts share both.
-  let at = 0;
-  return text.split(NUMBER).map((part, k) => {
-    const key = `${at}:${part}`;
-    at += part.length;
-    return k % 2 ? (
-      <span key={key} className="font-semibold tabular-nums">
-        {part}
-      </span>
-    ) : (
-      <Fragment key={key}>{part}</Fragment>
-    );
-  });
-}
+import { emphasize } from "../emphasize";
 
 export function Headline({
   narrative,
