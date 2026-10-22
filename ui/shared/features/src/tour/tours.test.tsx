@@ -1,5 +1,5 @@
 // Ported from the legacy ui/ on development (3aac84f66) common/src/features/tour/tours.test.tsx (dd9fe0f64). Local edits:
-// React mocks and harness imports; no TokenOps nav group; the agent facts are on the Details tab (the agent hub).
+// React mocks and harness imports; the agent facts are on the Details tab (the agent hub).
 /**
  * Each tour points at elements by `data-tour` (tours.ts). A target that disappears from its page only drops a step,
  * silently, so this renders every page on the seed and checks its targets are still there.
@@ -21,6 +21,7 @@ const PAGES: Record<string, readonly string[]> = {
     "nav-work",
     "nav-fleet",
     "nav-observe",
+    "nav-tokenops",
     "nav-connect",
     "nav-org",
     "tour-button",

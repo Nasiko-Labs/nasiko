@@ -82,7 +82,7 @@ describe("sidebar items", () => {
   });
 
   it.each([
-    ["/tokenops", "TokenOps"],
+    ["/tokenops", "Monitor"],
     ["/sessions", "Sessions"],
     ["/harnesses", "Harnesses"],
     ["/agents", "Agents"],
@@ -115,7 +115,7 @@ describe("sidebar items", () => {
     // The other shared keys still cross into Sessions and TokenOps; the window doesn't.
     expect(navLink("Sessions").getAttribute("href")).toContain("compare=false");
     expect(navLink("Sessions").getAttribute("href")).not.toContain("preset");
-    expect(navLink("TokenOps").getAttribute("href")).not.toContain("preset");
+    expect(navLink("Monitor").getAttribute("href")).not.toContain("preset");
     expect(navLink("Chat").getAttribute("href")).toBe("/chat");
     expect(navLink("Agents").getAttribute("href")).toBe("/agents");
   });
@@ -123,7 +123,7 @@ describe("sidebar items", () => {
   it("keeps the shared keys and drops page-only ones when following the links", async () => {
     renderApp("/sessions?preset=7d&day=2026-03-18&agent=a1");
     await screen.findByRole("navigation", { name: "Main" });
-    await userEvent.click(navLink("TokenOps"));
+    await userEvent.click(navLink("Monitor"));
     await waitFor(() => {
       expect(routerState().pathname).toBe("/tokenops");
     });
@@ -595,13 +595,13 @@ describe("drill-in panel (one sidebar on Chat and Settings)", () => {
     await waitFor(() => {
       expect(routerState().pathname).toBe("/chat");
     });
-    await userEvent.click(await screen.findByRole("button", { name: "Back to TokenOps" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Back to Monitor" }));
     await waitFor(() => {
       expect(routerState().pathname).toBe("/tokenops");
     });
     expect(search()).toMatchObject({ preset: "7d" });
     await waitFor(() => {
-      expect(document.activeElement).toBe(navLink("TokenOps"));
+      expect(document.activeElement).toBe(navLink("Monitor"));
     });
   });
 

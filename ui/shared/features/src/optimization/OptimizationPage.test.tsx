@@ -177,7 +177,7 @@ describe("Your settings on /optimization#settings", () => {
     await form();
     const heading = screen.getByRole("heading", { level: 2, name: copy.hub.yourSettings });
     await waitFor(() => expect(heading).toHaveFocus());
-    const item = await screen.findByRole("link", { name: "Optimization" }, T);
+    const item = await screen.findByRole("link", { name: "Optimise" }, T);
     expect(item).toHaveAttribute("aria-current", "page");
   });
 
@@ -271,7 +271,7 @@ describe("Your settings on /optimization#settings", () => {
     await waitFor(() => expect(router.state.location.search).toMatchObject({ preset: "7d" }));
     expect(screen.queryByRole("alertdialog")).toBeNull();
     expect(within(await form()).getByRole("radio", { name: copy.level("high") })).toBeChecked();
-    await userEvent.click(screen.getByRole("link", { name: "TokenOps" }));
+    await userEvent.click(screen.getByRole("link", { name: "Monitor" }));
     expect(await screen.findByRole("alertdialog", {}, T)).toBeInTheDocument();
     expect(router.state.location.pathname).toBe("/optimization");
   });

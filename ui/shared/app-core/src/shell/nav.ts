@@ -1,7 +1,8 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/app/shell/nav.ts. Local edits: `findLastIndex` is a reverse loop (the
 // tsconfig's lib is below ES2023); `LayerNavItem`/`AnyNavItem` live here instead of ../edition (breaks the lab's
-// type-only import cycle); the `views` group (development f851fdca8: EE's Custom views); development (309a7bd8f): Home
-// alone opens the nav and Chat moves to Fleet; Prettier formatting.
+// type-only import cycle); development (309a7bd8f): Home alone opens the nav and Chat moves to Fleet; development
+// (f851fdca8): the TokenOps group (Monitor, Optimise, EE's Control) after Observe, Harnesses in Fleet, Connect after
+// TokenOps and the `views` group (EE's Custom views); Prettier formatting.
 /**
  * The sidebar's items (plans/feat-app-shell.md §3): one source for AppSidebar and its tests.
  * Only pages that exist get an item. Home is `/`; Status (`/status`) is reached from the footer's status row,
@@ -27,15 +28,17 @@ import {
 } from "lucide-react";
 import { copy } from "./copy";
 
-export type NavGroupId = "work" | "fleet" | "connect" | "observe" | "views" | "org" | "lab";
+export type NavGroupId =
+  "work" | "fleet" | "observe" | "tokenops" | "connect" | "views" | "org" | "lab";
 
 /** In display order, grouped by job; the first group has no header. */
 export const NAV_GROUPS: readonly { id: NavGroupId; label: string | null }[] = [
   { id: "work", label: null },
   { id: "fleet", label: copy.nav.fleet },
-  { id: "connect", label: copy.nav.connect },
   { id: "observe", label: copy.nav.observe },
-  // EE's Custom views is its only item, so the core never draws it (development f851fdca8).
+  { id: "tokenops", label: copy.nav.tokenops },
+  { id: "connect", label: copy.nav.connect },
+  // EE's Custom views is its only item, so the core never draws it.
   { id: "views", label: copy.nav.views },
   // The workspace's settings (EE inserts Access control before them).
   { id: "org", label: copy.nav.org },
@@ -83,30 +86,30 @@ export const NAV_ITEMS: readonly NavItem[] = [
   // plans/feat-workflows.md §1: Drafts and Runs are its sub-pages (/workflows/*).
   { to: "/workflows", label: copy.nav.workflows, icon: Workflow, group: "fleet", shared: false },
   { to: "/chat", label: copy.nav.chat, icon: MessageSquare, group: "fleet", shared: false },
-  // What agents can call: models (plans/feat-llm-router.md §4), then tools (plans/feat-mcp.md §1).
-  { to: "/router", label: copy.nav.router, icon: Waypoints, group: "connect", shared: false },
-  { to: "/mcp", label: copy.nav.mcp, icon: Plug, group: "connect", shared: false },
-  { to: "/sessions", label: copy.nav.sessions, icon: ListTree, group: "observe", shared: true },
-  // One request's orchestration (plans/feat-flows.md F1): its own 7-day window, so it doesn't carry the shared one.
-  { to: "/flows", label: copy.nav.flows, icon: Network, group: "observe", shared: false },
-  { to: "/tokenops", label: copy.nav.tokenops, icon: DollarSign, group: "observe", shared: true },
-  // Budgets are Enterprise only (docs/requirements/budgets.md): the item is an EE nav patch, after TokenOps.
-  // What context optimization saves and your settings for it (plans/feat-optimization-page.md P7, P2).
-  {
-    to: "/optimization",
-    label: copy.nav.optimization,
-    icon: Gauge,
-    group: "observe",
-    shared: true,
-    also: ["/settings/optimization"],
-  },
   {
     to: "/harnesses",
     label: copy.nav.harnesses,
     icon: SquareTerminal,
-    group: "observe",
+    group: "fleet",
     shared: true,
   },
+  { to: "/sessions", label: copy.nav.sessions, icon: ListTree, group: "observe", shared: true },
+  // One request's orchestration (plans/feat-flows.md F1): its own 7-day window, so it doesn't carry the shared one.
+  { to: "/flows", label: copy.nav.flows, icon: Network, group: "observe", shared: false },
+  { to: "/tokenops", label: copy.nav.monitor, icon: DollarSign, group: "tokenops", shared: true },
+  // Budgets (Control) are Enterprise only (docs/requirements/budgets.md): the item is an EE nav patch, after Optimise.
+  // What context optimization saves and your settings for it (plans/feat-optimization-page.md P7, P2).
+  {
+    to: "/optimization",
+    label: copy.nav.optimise,
+    icon: Gauge,
+    group: "tokenops",
+    shared: true,
+    also: ["/settings/optimization"],
+  },
+  // What agents can call: models (plans/feat-llm-router.md §4), then tools (plans/feat-mcp.md §1).
+  { to: "/router", label: copy.nav.router, icon: Waypoints, group: "connect", shared: false },
+  { to: "/mcp", label: copy.nav.mcp, icon: Plug, group: "connect", shared: false },
   // Workspace and Security settings; the account's own (Appearance, Password) are /account, from the account menu.
   { to: "/settings", label: copy.nav.settings, icon: Settings, group: "org", shared: false },
 ];

@@ -1,6 +1,6 @@
 // Ported from the legacy ui/ on development (3aac84f66) common/src/features/tour/tours.ts (dd9fe0f64). Local edits:
-// `TourStep` from @nasiko/app-core/tour; Prettier formatting; the app tour follows this sidebar (no TokenOps group);
-// the overview tour is development's for the Overview page (no Home rows or scope).
+// `TourStep` from @nasiko/app-core/tour; Prettier formatting; the app tour follows the sidebar's TokenOps group
+// (f851fdca8); the overview tour is development's for the Overview page (no Home rows or scope).
 // The TokenOps tour follows its one-page redesign (8bf09bf29).
 /**
  * Every tour's steps. A step with a `target` points at `[data-tour~="<target>"]` and is shown only while that element
@@ -46,19 +46,25 @@ export const TOURS: Record<TourId, readonly TourStep[]> = {
       target: "nav-fleet",
       side: "right",
       title: "Your fleet",
-      body: "Agents are what you deploy and run. Workflows chain several agents into one repeatable job.",
+      body: "Agents are what you deploy and run. Workflows chain several agents into one repeatable job. Harnesses are the coding tools connected to it.",
+    },
+    {
+      target: "nav-observe",
+      side: "right",
+      title: "Watch",
+      body: "Sessions and Flows show what happened, step by step.",
+    },
+    {
+      target: "nav-tokenops",
+      side: "right",
+      title: "Spend",
+      body: "Monitor shows what it cost. Optimise shows how to spend less.",
     },
     {
       target: "nav-connect",
       side: "right",
       title: "What agents can call",
       body: "The LLM router decides which model and key each agent uses. MCP servers give agents tools.",
-    },
-    {
-      target: "nav-observe",
-      side: "right",
-      title: "Watch and pay",
-      body: "Sessions and Flows show what happened, step by step. TokenOps, Optimization and Harnesses show what it cost and how to spend less.",
     },
     {
       target: "nav-org",

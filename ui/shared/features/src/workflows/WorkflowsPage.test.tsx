@@ -1,6 +1,7 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/features/workflows/WorkflowsPage.test.tsx. Local edits: an open run
 // card is read by Base UI's `data-open` (Radix's `data-state="open"`; see the comment); Prettier formatting.
-// Legacy ui/ on development (3aac84f66, c721a11a8): the open section is the current section tab.
+// Legacy ui/ on development (3aac84f66, c721a11a8): the open section is the current section tab; f851fdca8: the
+// drafts tab is read after the drafts list loads.
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vitest";
@@ -68,10 +69,10 @@ describe("Workflow lists (plans/feat-workflows.md §2)", () => {
     renderApp("/workflows");
     await card("Ticket resolution");
     await userEvent.click(screen.getByRole("link", { name: copy.nav.drafts }));
-    expect(
-      await screen.findByRole("link", { name: copy.nav.drafts, current: "page" }, T),
-    ).toBeVisible();
+    // Wait for the drafts list first: the page re-renders its sub-nav as the list loads, so a tab found before then
+    // can be detached by the time it is checked (the flake this replaced).
     const onboarding = await card("Onboarding checklist");
+    expect(screen.getByRole("link", { name: copy.nav.drafts, current: "page" })).toBeVisible();
     expect(within(onboarding).getByText(/^Updated /)).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Ticket resolution" })).toBeNull();
   });

@@ -1,13 +1,15 @@
 // Ported from nasiko-ui-lab@1b99bdda common/src/app/shell/nav.test.ts. Local edits: the route-tree check moved to
 // each composition root (oss/app/src/app/routes.test.ts and the EE workspace's), because the route files belong to
-// the app, not to this package; the `views` group (development f851fdca8); Prettier formatting.
+// the app, not to this package; development (f851fdca8): the TokenOps and Views groups, Monitor and Optimise;
+// Prettier formatting.
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import { activeItem, backIndex, NAV_GROUPS, NAV_ITEMS } from "./nav";
 
 /** The header nav before the sidebar (src/routes/__root.tsx at v0.7.1.0), minus Status (now the footer row) and Weave (EE only). */
 const OLD_NAV = [
-  { to: "/tokenops", label: "TokenOps", shared: true },
+  // TokenOps became its own section; the page is its Monitor item.
+  { to: "/tokenops", label: "Monitor", shared: true },
   { to: "/sessions", label: "Sessions", shared: true },
   { to: "/harnesses", label: "Harnesses", shared: true },
   { to: "/agents", label: "Agents", shared: false },
@@ -26,10 +28,10 @@ describe("nav items", () => {
     expect(now.filter((n) => !OLD_NAV.some((o) => o.to === n.to))).toEqual([
       { to: "/", label: "Home", shared: false },
       { to: "/workflows", label: "Workflows", shared: false },
+      { to: "/flows", label: "Flows", shared: false },
+      { to: "/optimization", label: "Optimise", shared: true },
       { to: "/router", label: "LLM router", shared: false },
       { to: "/mcp", label: "MCP servers", shared: false },
-      { to: "/flows", label: "Flows", shared: false },
-      { to: "/optimization", label: "Optimization", shared: true },
       { to: "/settings", label: "Settings", shared: false },
     ]);
   });
@@ -38,8 +40,9 @@ describe("nav items", () => {
     expect(NAV_GROUPS.map((g) => [g.id, g.label])).toEqual([
       ["work", null],
       ["fleet", "Fleet"],
-      ["connect", "Connect"],
       ["observe", "Observe"],
+      ["tokenops", "TokenOps"],
+      ["connect", "Connect"],
       ["views", "Views"],
       ["org", "Organization"],
       ["lab", "Lab"],
@@ -49,13 +52,13 @@ describe("nav items", () => {
       "Agents",
       "Workflows",
       "Chat",
-      "LLM router",
-      "MCP servers",
+      "Harnesses",
       "Sessions",
       "Flows",
-      "TokenOps",
-      "Optimization",
-      "Harnesses",
+      "Monitor",
+      "Optimise",
+      "LLM router",
+      "MCP servers",
       "Settings",
     ]);
     // Items of one group are contiguous and follow the group order.
@@ -68,7 +71,7 @@ describe("nav items", () => {
     expect(activeItem("/agents/5eed0000-0000-4000-8000-000000000001")?.label).toBe("Agents");
     expect(activeItem("/sessions/abc")?.label).toBe("Sessions");
     expect(activeItem("/chat/abc")?.label).toBe("Chat");
-    expect(activeItem("/tokenops")?.label).toBe("TokenOps");
+    expect(activeItem("/tokenops")?.label).toBe("Monitor");
     expect(activeItem("/")?.label).toBe("Home");
     expect(activeItem("/status")).toBeUndefined();
     expect(activeItem("/chatter")).toBeUndefined();
