@@ -1,0 +1,16 @@
+{"timestamp": "2026-03-01T10:00:30Z", "type": "session_meta", "payload": {"id": "fork", "timestamp": "2026-03-01T10:00:30Z", "forked_from_id": "parent"}}
+{"timestamp": "2026-03-01T10:00:30Z", "type": "event_msg", "payload": {"type": "task_started", "turn_id": "shared"}}
+{"timestamp": "2026-03-01T10:00:30Z", "type": "turn_context", "payload": {"model": "gpt-test"}}
+{"timestamp": "2026-03-01T10:00:30Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Parent question"}]}}
+{"timestamp": "2026-03-01T10:00:30Z", "type": "event_msg", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 100, "cached_input_tokens": 60, "output_tokens": 10}, "last_token_usage": {"input_tokens": 999, "cached_input_tokens": 999, "output_tokens": 999}}}}
+{"timestamp": "2026-03-01T10:00:30Z", "type": "event_msg", "payload": {"type": "task_complete", "turn_id": "shared", "last_agent_message": "Parent answer"}}
+{"timestamp": "2026-03-01T10:00:31Z", "type": "event_msg", "payload": {"type": "task_started", "turn_id": "own"}}
+{"timestamp": "2026-03-01T10:00:31Z", "type": "turn_context", "payload": {"model": "gpt-test"}}
+{"timestamp": "2026-03-01T10:00:31Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Fork question"}]}}
+{"timestamp": "2026-03-01T10:00:32Z", "type": "event_msg", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 200, "cached_input_tokens": 160, "output_tokens": 20}, "last_token_usage": {"input_tokens": 999, "cached_input_tokens": 999, "output_tokens": 999}}}}
+{"timestamp": "2026-03-01T10:00:33Z", "type": "event_msg", "payload": {"type": "task_complete", "turn_id": "own", "last_agent_message": "Fork answer"}}
+{"timestamp": "2026-03-01T10:00:34Z", "type": "event_msg", "payload": {"type": "task_started", "turn_id": "own-next"}}
+{"timestamp": "2026-03-01T10:00:34Z", "type": "turn_context", "payload": {"model": "gpt-test"}}
+{"timestamp": "2026-03-01T10:00:34Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Next fork question"}]}}
+{"timestamp": "2026-03-01T10:00:35Z", "type": "event_msg", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 250, "cached_input_tokens": 190, "output_tokens": 25}, "last_token_usage": {"input_tokens": 999, "cached_input_tokens": 999, "output_tokens": 999}}}}
+{"timestamp": "2026-03-01T10:00:36Z", "type": "event_msg", "payload": {"type": "task_complete", "turn_id": "own-next", "last_agent_message": "Next fork answer"}}

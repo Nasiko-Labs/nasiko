@@ -1,0 +1,6 @@
+{"timestamp": "2026-03-01T10:00:00Z", "type": "session_meta", "payload": {"id": "parent", "timestamp": "2026-03-01T10:00:00Z"}}
+{"timestamp": "2026-03-01T10:00:01Z", "type": "event_msg", "payload": {"type": "task_started", "turn_id": "shared"}}
+{"timestamp": "2026-03-01T10:00:01Z", "type": "turn_context", "payload": {"model": "gpt-test"}}
+{"timestamp": "2026-03-01T10:00:01Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Parent question"}]}}
+{"timestamp": "2026-03-01T10:00:02Z", "type": "event_msg", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 100, "cached_input_tokens": 60, "output_tokens": 10}, "last_token_usage": {"input_tokens": 999, "cached_input_tokens": 999, "output_tokens": 999}}}}
+{"timestamp": "2026-03-01T10:00:03Z", "type": "event_msg", "payload": {"type": "task_complete", "turn_id": "shared", "last_agent_message": "Parent answer"}}

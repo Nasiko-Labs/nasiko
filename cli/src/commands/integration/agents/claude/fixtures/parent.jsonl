@@ -1,0 +1,3 @@
+{"type":"user","uuid":"u1","sessionId":"parent","timestamp":"2026-01-01T00:00:00Z","message":{"role":"user","content":"Synthetic task"}}
+{"type":"assistant","uuid":"parent-call","parentUuid":"u1","sessionId":"parent","timestamp":"2026-01-01T00:00:10Z","requestId":"req-parent-call","message":{"id":"msg-parent-call","role":"assistant","model":"claude-sonnet-4-6","content":[{"type":"text","text":"Synthetic answer"}],"stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":20,"cache_read_input_tokens":30,"cache_creation_input_tokens":40}}}
+{"type":"custom-title","sessionId":"parent","customTitle":"Synthetic parent"}

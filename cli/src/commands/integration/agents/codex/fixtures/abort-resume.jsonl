@@ -1,0 +1,13 @@
+{"timestamp": "2026-03-01T10:00:00Z", "type": "session_meta", "payload": {"id": "resume"}}
+{"timestamp": "2026-03-01T10:00:01Z", "type": "event_msg", "payload": {"type": "task_started", "turn_id": "aborted"}}
+{"timestamp": "2026-03-01T10:00:01Z", "type": "turn_context", "payload": {"model": "gpt-test"}}
+{"timestamp": "2026-03-01T10:00:01Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "First try"}]}}
+{"timestamp": "2026-03-01T10:00:02Z", "type": "event_msg", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 100, "cached_input_tokens": 60, "output_tokens": 10}, "last_token_usage": {"input_tokens": 999, "cached_input_tokens": 999, "output_tokens": 999}}}}
+{"timestamp": "2026-03-01T10:00:03Z", "type": "event_msg", "payload": {"type": "turn_aborted", "turn_id": "aborted"}}
+{"timestamp": "2026-03-01T10:00:04Z", "type": "event_msg", "payload": {"type": "task_started", "turn_id": "resumed"}}
+{"timestamp": "2026-03-01T10:00:04Z", "type": "turn_context", "payload": {"model": "gpt-test"}}
+{"timestamp": "2026-03-01T10:00:04Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Try again"}]}}
+{"timestamp": "2026-03-01T10:00:05Z", "type": "event_msg", "payload": {"type": "turn_aborted", "turn_id": "aborted"}}
+{"timestamp": "2026-03-01T10:00:05Z", "type": "event_msg", "payload": {"type": "task_complete", "turn_id": "aborted", "last_agent_message": "Stale"}}
+{"timestamp": "2026-03-01T10:00:06Z", "type": "event_msg", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 150, "cached_input_tokens": 80, "output_tokens": 15}, "last_token_usage": {"input_tokens": 999, "cached_input_tokens": 999, "output_tokens": 999}}}}
+{"timestamp": "2026-03-01T10:00:07Z", "type": "event_msg", "payload": {"type": "task_complete", "turn_id": "resumed", "last_agent_message": "Resumed"}}

@@ -1,0 +1,7 @@
+{"timestamp": "2026-03-01T10:00:00Z", "type": "session_meta", "payload": {"id": "older"}}
+{"timestamp": "2026-03-01T10:00:01Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Explain the test"}]}}
+{"timestamp": "2026-03-01T10:00:02Z", "type": "event_msg", "payload": {"type": "task_started", "turn_id": "old-1"}}
+{"timestamp": "2026-03-01T10:00:02Z", "type": "turn_context", "payload": {"model": "gpt-test"}}
+{"timestamp": "2026-03-01T10:00:03Z", "type": "event_msg", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 60, "cached_input_tokens": 40, "output_tokens": 10}, "last_token_usage": {"input_tokens": 999, "cached_input_tokens": 999, "output_tokens": 999}}}}
+{"timestamp": "2026-03-01T10:00:04Z", "type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Explanation"}]}}
+{"timestamp": "2026-03-01T10:00:05Z", "type": "event_msg", "payload": {"type": "task_complete", "turn_id": "old-1", "last_agent_message": null}}
