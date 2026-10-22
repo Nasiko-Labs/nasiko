@@ -2,8 +2,8 @@
 //!
 //! Tokens live on `mcp_user_connections` (one row per user+connector). OAuth
 //! endpoint/client config lives on the connector. Pure crypto/HTTP helpers
-//! (PKCE, signed state, RFC 9728/8414 discovery, RFC 7591 DCR, code exchange)
-//! are backend-agnostic.
+//! (PKCE, signed state, RFC 9728 + RFC 8414 / OpenID Connect discovery,
+//! RFC 7591 DCR, code exchange) are backend-agnostic.
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
@@ -161,12 +161,67 @@ async fn refresh(
 const DISCOVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const STATE_TTL_MINUTES: i64 = 10;
 
+/// What an MCP server's discovery documents say its authorization server
+/// needs: where to send the user, where to redeem the code, whether clients
+/// can self-register, and what the authorize request must ask for.
 #[derive(Debug, Clone)]
-pub struct DiscoveredOAuth {
+pub struct DiscoveredAuthorization {
     pub authorization_endpoint: String,
     pub token_endpoint: String,
-    pub client_id: Option<String>,
-    pub client_secret: Option<String>,
+    pub registration_endpoint: Option<String>,
+    pub requested_access: RequestedAccess,
+}
+
+/// What the authorize request asks for beyond the client's identity. `None`
+/// omits the parameter rather than sending it empty.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestedAccess {
+    pub scope: Option<String>,
+    /// RFC 8707 resource indicator.
+    pub resource: Option<String>,
+}
+
+impl RequestedAccess {
+    /// The request every authorization sent before scope selection existed.
+    fn without_scope(server_url: &str) -> Self {
+        Self {
+            scope: None,
+            resource: Some(server_url.to_string()),
+        }
+    }
+}
+
+/// Which discovery document described the authorization server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MetadataSource {
+    /// RFC 8414 OAuth 2.0 Authorization Server Metadata.
+    OAuth,
+    /// OpenID Connect Discovery 1.0 — the only document some identity
+    /// providers publish (confirmed live: Entra ID 404s every RFC 8414 URL).
+    OpenIdConnect,
+}
+
+/// An authorization server's metadata, already checked to name both
+/// endpoints the flow cannot run without.
+struct AuthorizationServerMetadata {
+    authorization_endpoint: String,
+    token_endpoint: String,
+    document: Value,
+    source: MetadataSource,
+}
+
+/// A client identity to persist on the connector; the secret is already
+/// encrypted with the owner's key.
+#[derive(Debug, Default)]
+struct StoredClient {
+    client_id: Option<String>,
+    encrypted_secret: Option<String>,
+}
+
+/// A client issued by RFC 7591 dynamic registration.
+struct RegisteredClient {
+    client_id: String,
+    client_secret: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -242,155 +297,67 @@ pub fn verify_state(token: &str, key: &str) -> Option<OAuthState> {
     Some(state)
 }
 
-/// RFC 9728 + RFC 8414 discovery + RFC 7591 dynamic client registration.
-pub async fn discover_oauth_config(
+/// RFC 9728 resource metadata, then the authorization server's RFC 8414 or
+/// OpenID Connect metadata, in the MCP spec's order. A server that is down
+/// is a `Backend` error; every malformed or missing document is an `Oauth`
+/// error — they come from third-party servers, so neither is our 500.
+pub async fn discover_authorization(
     http: &reqwest::Client,
     mcp_url: &str,
-    redirect_uri: &str,
-    pre_client_id: Option<&str>,
-) -> Result<DiscoveredOAuth> {
-    let probe = http
-        .post(mcp_url)
-        .timeout(DISCOVERY_TIMEOUT)
-        .header("Content-Type", "application/json")
-        .body(
-            json!({
-                "jsonrpc": "2.0", "id": 1, "method": "initialize",
-                "params": {"protocolVersion": MCP_PROTOCOL_VERSION, "capabilities": {},
-                           "clientInfo": {"name": "mcp-gateway", "version": "1.0"}},
-            })
-            .to_string(),
-        )
-        .send()
-        .await?;
-
-    if probe.status() != reqwest::StatusCode::UNAUTHORIZED {
-        return Err(McpError::Oauth(format!(
-            "expected 401 from OAuth server, got {}. Try auth_type='none' or 'bearer'.",
-            probe.status().as_u16()
-        )));
-    }
-
-    let www_auth = probe
-        .headers()
-        .get(reqwest::header::WWW_AUTHENTICATE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_string();
-
-    // Primary: the header explicitly points at the resource metadata document.
-    // Fallback: some real OAuth-capable servers (confirmed: Atlassian) never
-    // include the resource_metadata pointer at all — try the well-known
-    // endpoint directly instead of giving up, since that's the spec's own
-    // primary discovery method, not really a fallback in principle.
-    let rm: Value = if let Some(rm_url) = extract_resource_metadata(&www_auth) {
-        http.get(&rm_url)
-            .timeout(DISCOVERY_TIMEOUT)
-            .send()
-            .await?
-            .json()
-            .await?
-    } else {
-        fetch_protected_resource_metadata(http, mcp_url)
-            .await
-            .ok_or_else(|| {
-                McpError::Oauth(
-                    "401 has no resource_metadata URL in WWW-Authenticate, and no RFC 9728 \
-                 well-known endpoint was found either — this server may not actually \
-                 support OAuth 2.1, or doesn't publish discovery metadata"
-                        .to_string(),
-                )
-            })?
-    };
-    let as_url = rm
-        .get("authorization_servers")
-        .and_then(|v| v.as_array())
-        .and_then(|a| a.first())
-        .and_then(|v| v.as_str())
+) -> Result<DiscoveredAuthorization> {
+    let challenge = fetch_auth_challenge(http, mcp_url).await?;
+    let resource_metadata = fetch_resource_metadata_for(http, mcp_url, &challenge).await?;
+    let issuer = first_authorization_server(&resource_metadata).ok_or_else(|| {
+        McpError::Oauth("no authorization_servers in resource metadata document".to_string())
+    })?;
+    let server_metadata = fetch_authorization_server_metadata(http, issuer)
+        .await
         .ok_or_else(|| {
-            McpError::Oauth("no authorization_servers in resource metadata document".to_string())
-        })?;
-
-    let as_meta_url = format!(
-        "{}/.well-known/oauth-authorization-server",
-        as_url.trim_end_matches('/')
-    );
-    let as_meta: Value = http
-        .get(&as_meta_url)
-        .timeout(DISCOVERY_TIMEOUT)
-        .send()
-        .await?
-        .json()
-        .await?;
-    let authorization_endpoint =
-        first_str(&as_meta, &["authorization_endpoint"]).ok_or_else(|| {
             McpError::Oauth(format!(
-                "AS metadata at {as_meta_url} missing authorization_endpoint"
+                "no authorization server metadata found for {issuer} at any RFC 8414 or \
+                 OpenID Connect discovery URL"
             ))
         })?;
-    let token_endpoint = first_str(&as_meta, &["token_endpoint"]).ok_or_else(|| {
-        McpError::Oauth(format!(
-            "AS metadata at {as_meta_url} missing token_endpoint"
-        ))
-    })?;
-    let registration_endpoint = first_str(&as_meta, &["registration_endpoint"]);
-
-    let mut client_id = pre_client_id.map(str::to_string);
-    let mut client_secret = None;
-    if client_id.is_none()
-        && let Some(reg_endpoint) = registration_endpoint
-    {
-        let reg = http
-            .post(&reg_endpoint)
-            .timeout(DISCOVERY_TIMEOUT)
-            .json(&json!({
-                "client_name": "MCP Gateway",
-                "redirect_uris": [redirect_uri],
-                "grant_types": ["authorization_code", "refresh_token"],
-                "response_types": ["code"],
-                "token_endpoint_auth_method": "none",
-            }))
-            .send()
-            .await?;
-        if reg.status().is_success() {
-            let reg_data: Value = reg.json().await?;
-            client_id = first_str(&reg_data, &["client_id"]);
-            client_secret = first_str(&reg_data, &["client_secret"]);
-        } else {
-            tracing::warn!(
-                status = reg.status().as_u16(),
-                "dynamic client registration failed"
-            );
-        }
-    }
-
-    Ok(DiscoveredOAuth {
-        authorization_endpoint,
-        token_endpoint,
-        client_id,
-        client_secret,
+    let requested_access = RequestedAccess {
+        scope: requested_scope(&challenge, &resource_metadata, &server_metadata.document),
+        resource: requested_resource(mcp_url, server_metadata.source),
+    };
+    Ok(DiscoveredAuthorization {
+        registration_endpoint: first_str(&server_metadata.document, &["registration_endpoint"]),
+        authorization_endpoint: server_metadata.authorization_endpoint,
+        token_endpoint: server_metadata.token_endpoint,
+        requested_access,
     })
 }
 
-/// Build the authorization URL the user opens in their browser.
+/// Build the authorization URL the user opens in their browser. Parameters
+/// are appended, so any query the endpoint already carries is preserved.
 pub fn build_authorize_url(
     authorization_endpoint: &str,
     client_id: &str,
     redirect_uri: &str,
     state: &str,
     code_challenge: &str,
-    resource: &str,
+    requested_access: &RequestedAccess,
 ) -> Result<String> {
     let mut url = reqwest::Url::parse(authorization_endpoint)
         .map_err(|e| McpError::Oauth(format!("invalid authorization_endpoint: {e}")))?;
-    url.query_pairs_mut()
-        .append_pair("response_type", "code")
-        .append_pair("client_id", client_id)
-        .append_pair("redirect_uri", redirect_uri)
-        .append_pair("state", state)
-        .append_pair("code_challenge", code_challenge)
-        .append_pair("code_challenge_method", "S256")
-        .append_pair("resource", resource);
+    {
+        let mut query = url.query_pairs_mut();
+        query
+            .append_pair("response_type", "code")
+            .append_pair("client_id", client_id)
+            .append_pair("redirect_uri", redirect_uri)
+            .append_pair("state", state)
+            .append_pair("code_challenge", code_challenge)
+            .append_pair("code_challenge_method", "S256");
+        if let Some(scope) = &requested_access.scope {
+            query.append_pair("scope", scope);
+        }
+        if let Some(resource) = &requested_access.resource {
+            query.append_pair("resource", resource);
+        }
+    }
     Ok(url.to_string())
 }
 
@@ -493,11 +460,12 @@ pub async fn load_accessible_oauth_connector(
     Ok(connector)
 }
 
-/// Discover + register a client if needed, then build the signed authorization URL.
+/// Discover the server's authorization requirements, store a client on first
+/// use, then build the signed authorization URL.
 pub async fn begin_authorization(
     state: &McpState,
     user_id: Uuid,
-    mut connector: McpConnector,
+    connector: McpConnector,
     redirect_url: Option<String>,
     pre_client_id: Option<String>,
 ) -> Result<String> {
@@ -510,37 +478,25 @@ pub async fn begin_authorization(
         .clone()
         .ok_or_else(|| McpError::BadRequest("connector has no url".into()))?;
 
-    if !connector.oauth_configured() {
-        // Guarded client: discovery follows URLs from the target server's own
-        // response (resource_metadata, authorization_servers, endpoints), which
-        // are attacker-influenced and must be SSRF-checked.
-        let discovered = discover_oauth_config(
-            &state.guarded_http_client,
-            &server_url,
+    // Guarded client: discovery follows URLs from the target server's own
+    // response (resource_metadata, authorization_servers, endpoints), which
+    // are attacker-influenced and must be SSRF-checked.
+    let discovery = discover_authorization(&state.guarded_http_client, &server_url).await;
+    let (connector, requested_access) = if connector.oauth_configured() {
+        let requested_access = requested_access_or_fallback(discovery, &connector, &server_url);
+        (connector, requested_access)
+    } else {
+        let discovery = discovery?;
+        let connector = store_client_config(
+            state,
+            connector,
+            &discovery,
             &redirect_uri,
-            pre_client_id
-                .as_deref()
-                .or(connector.oauth_client_id.as_deref()),
+            pre_client_id.as_deref(),
         )
         .await?;
-        // Encrypt the DCR client secret at rest with the owner's key.
-        let client_secret_enc = match (discovered.client_secret.as_deref(), connector.owner_id) {
-            (Some(sec), Some(owner)) => Some(SecretsCrypto::for_user(owner).encrypt(sec)),
-            _ => None,
-        };
-        repo::update_connector_oauth_config(
-            &state.db,
-            connector.id,
-            &discovered.authorization_endpoint,
-            &discovered.token_endpoint,
-            discovered.client_id.as_deref(),
-            client_secret_enc.as_deref(),
-        )
-        .await?;
-        connector = repo::get_connector_by_id(&state.db, connector.id)
-            .await?
-            .ok_or_else(|| McpError::Internal("connector vanished after oauth config".into()))?;
-    }
+        (connector, discovery.requested_access)
+    };
 
     let (Some(auth_endpoint), Some(client_id)) = (
         connector.oauth_authorization_endpoint.as_ref(),
@@ -560,8 +516,97 @@ pub async fn begin_authorization(
         &redirect_uri,
         &signed,
         &challenge,
-        &server_url,
+        &requested_access,
     )
+}
+
+/// A connector configured before scope selection existed authorized without
+/// it, so a discovery failure there must not newly break re-authorization:
+/// fall back to that original request, and record that a fallback happened.
+fn requested_access_or_fallback(
+    discovery: Result<DiscoveredAuthorization>,
+    connector: &McpConnector,
+    server_url: &str,
+) -> RequestedAccess {
+    match discovery {
+        Ok(discovered) => discovered.requested_access,
+        Err(e) => {
+            tracing::warn!(
+                connector = %connector.name, error = %e, fallback_used = true,
+                "oauth discovery failed for a configured connector — authorizing without scope selection"
+            );
+            RequestedAccess::without_scope(server_url)
+        }
+    }
+}
+
+/// First authorization only: persist the discovered endpoints and a client —
+/// the user's own, else one registered dynamically. Returns the reloaded row.
+async fn store_client_config(
+    state: &McpState,
+    connector: McpConnector,
+    discovery: &DiscoveredAuthorization,
+    redirect_uri: &str,
+    pre_client_id: Option<&str>,
+) -> Result<McpConnector> {
+    let client = match pre_client_id.or(connector.oauth_client_id.as_deref()) {
+        Some(client_id) => StoredClient {
+            client_id: Some(client_id.to_string()),
+            encrypted_secret: stored_secret_for(&connector, client_id),
+        },
+        None => dynamically_registered_client(state, &connector, discovery, redirect_uri).await?,
+    };
+    repo::update_connector_oauth_config(
+        &state.db,
+        connector.id,
+        &discovery.authorization_endpoint,
+        &discovery.token_endpoint,
+        client.client_id.as_deref(),
+        client.encrypted_secret.as_deref(),
+    )
+    .await?;
+    repo::get_connector_by_id(&state.db, connector.id)
+        .await?
+        .ok_or_else(|| McpError::Internal("connector vanished after oauth config".into()))
+}
+
+/// The secret the user registered alongside `client_id`, still encrypted.
+/// Persisting discovery must keep it: a confidential client (Entra ID
+/// requires one) cannot redeem its authorization code without it.
+fn stored_secret_for(connector: &McpConnector, client_id: &str) -> Option<String> {
+    if connector.oauth_client_id.as_deref() == Some(client_id) {
+        connector.oauth_client_secret.clone()
+    } else {
+        None
+    }
+}
+
+/// An RFC 7591 client, when the server offers registration and accepts ours;
+/// otherwise an empty client, which `begin_authorization` reports as needing
+/// a user-supplied client id.
+async fn dynamically_registered_client(
+    state: &McpState,
+    connector: &McpConnector,
+    discovery: &DiscoveredAuthorization,
+    redirect_uri: &str,
+) -> Result<StoredClient> {
+    let Some(endpoint) = discovery.registration_endpoint.as_deref() else {
+        return Ok(StoredClient::default());
+    };
+    let Some(registered) =
+        register_dynamic_client(&state.guarded_http_client, endpoint, redirect_uri).await?
+    else {
+        return Ok(StoredClient::default());
+    };
+    // Encrypt the DCR client secret at rest with the owner's key.
+    let encrypted_secret = match (registered.client_secret, connector.owner_id) {
+        (Some(secret), Some(owner)) => Some(SecretsCrypto::for_user(owner).encrypt(&secret)),
+        _ => None,
+    };
+    Ok(StoredClient {
+        client_id: Some(registered.client_id),
+        encrypted_secret,
+    })
 }
 
 /// Outcome of the public OAuth callback for the server to render.
@@ -728,14 +773,17 @@ pub async fn handle_callback(
     CallbackOutcome::ClosePopup(safe_dest)
 }
 
-/// Parse `resource_metadata="<url>"` out of a `WWW-Authenticate` header value.
-fn extract_resource_metadata(www_authenticate: &str) -> Option<String> {
-    let marker = "resource_metadata=";
-    let start = www_authenticate.find(marker)? + marker.len();
-    let rest = &www_authenticate[start..];
-    let rest = rest.trim_start_matches('"');
-    let end = rest.find('"').unwrap_or(rest.len());
-    Some(rest[..end].to_string())
+/// Check whether the authorization server for an OAuth-protected resource
+/// advertises a `registration_endpoint` (RFC 7591 DCR). Used by the probe
+/// endpoint so the frontend can decide whether to show client-credential fields.
+pub async fn as_supports_dcr(http: &reqwest::Client, resource_metadata: &Value) -> bool {
+    let Some(issuer) = first_authorization_server(resource_metadata) else {
+        return false;
+    };
+    fetch_authorization_server_metadata(http, issuer)
+        .await
+        .and_then(|metadata| first_str(&metadata.document, &["registration_endpoint"]))
+        .is_some_and(|endpoint| !endpoint.is_empty())
 }
 
 /// RFC 9728 direct discovery: `GET /.well-known/oauth-protected-resource` at
@@ -744,58 +792,19 @@ fn extract_resource_metadata(www_authenticate: &str) -> Option<String> {
 /// RFC 9728 §3.1), then root-only as a fallback for servers that publish it
 /// there regardless of path. This is the MCP spec's own PRIMARY discovery
 /// method — unlike inferring from a `WWW-Authenticate: resource_metadata=...`
-/// header on a bare 401 (`extract_resource_metadata` above), which some real
-/// servers omit even though they support OAuth. Confirmed live: Atlassian's
-/// hosted MCP server does neither — `/.well-known/oauth-protected-resource`
-/// 404s there entirely, a real, currently-open gap on their side
-/// (atlassian/atlassian-mcp-server#148), not something this can work around.
-/// Check whether the authorization server for an OAuth-protected resource
-/// advertises a `registration_endpoint` (RFC 7591 DCR). Used by the probe
-/// endpoint so the frontend can decide whether to show client-credential fields.
-pub async fn as_supports_dcr(http: &reqwest::Client, resource_metadata: &Value) -> bool {
-    let Some(as_url) = resource_metadata
-        .get("authorization_servers")
-        .and_then(|v| v.as_array())
-        .and_then(|a| a.first())
-        .and_then(|v| v.as_str())
-    else {
-        return false;
-    };
-    let as_meta_url = format!(
-        "{}/.well-known/oauth-authorization-server",
-        as_url.trim_end_matches('/')
-    );
-    let Ok(resp) = http
-        .get(&as_meta_url)
-        .timeout(DISCOVERY_TIMEOUT)
-        .send()
-        .await
-    else {
-        return false;
-    };
-    let Ok(doc) = resp.json::<Value>().await else {
-        return false;
-    };
-    doc.get("registration_endpoint")
-        .and_then(|v| v.as_str())
-        .is_some_and(|s| !s.is_empty())
-}
-
+/// header on a bare 401, which some real servers omit even though they
+/// support OAuth. Confirmed live: Atlassian's hosted MCP server does neither —
+/// `/.well-known/oauth-protected-resource` 404s there entirely, a real,
+/// currently-open gap on their side (atlassian/atlassian-mcp-server#148), not
+/// something this can work around.
+///
 /// Returns the parsed resource metadata document, or `None` if no candidate
 /// URL returned a document with a non-empty `authorization_servers` array.
 pub async fn fetch_protected_resource_metadata(
     http: &reqwest::Client,
     mcp_url: &str,
 ) -> Option<Value> {
-    let parsed = reqwest::Url::parse(mcp_url).ok()?;
-    let origin = format!(
-        "{}://{}{}",
-        parsed.scheme(),
-        parsed.host_str()?,
-        parsed.port().map(|p| format!(":{p}")).unwrap_or_default()
-    );
-    let path = parsed.path().trim_matches('/');
-
+    let (origin, path) = origin_and_path(mcp_url)?;
     let mut candidates = Vec::new();
     if !path.is_empty() {
         candidates.push(format!(
@@ -805,24 +814,295 @@ pub async fn fetch_protected_resource_metadata(
     candidates.push(format!("{origin}/.well-known/oauth-protected-resource"));
 
     for candidate in candidates {
-        let Ok(resp) = http.get(&candidate).timeout(DISCOVERY_TIMEOUT).send().await else {
-            continue;
-        };
-        if !resp.status().is_success() {
-            continue;
-        }
-        let Ok(doc) = resp.json::<Value>().await else {
-            continue;
-        };
-        let has_auth_servers = doc
-            .get("authorization_servers")
-            .and_then(|v| v.as_array())
-            .is_some_and(|a| !a.is_empty());
-        if has_auth_servers {
-            return Some(doc);
+        if let Some(document) = fetch_resource_metadata_document(http, &candidate).await {
+            return Some(document);
         }
     }
     None
+}
+
+const OAUTH_METADATA_PATH: &str = ".well-known/oauth-authorization-server";
+const OIDC_METADATA_PATH: &str = ".well-known/openid-configuration";
+const OFFLINE_ACCESS_SCOPE: &str = "offline_access";
+
+/// POST a bare `initialize`. An OAuth-protected MCP server answers 401, and
+/// its `WWW-Authenticate` value (returned here) may name the resource
+/// metadata URL and the scope to request.
+async fn fetch_auth_challenge(http: &reqwest::Client, mcp_url: &str) -> Result<String> {
+    let probe = http
+        .post(mcp_url)
+        .timeout(DISCOVERY_TIMEOUT)
+        .header("Content-Type", "application/json")
+        .body(
+            json!({
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": MCP_PROTOCOL_VERSION, "capabilities": {},
+                           "clientInfo": {"name": "mcp-gateway", "version": "1.0"}},
+            })
+            .to_string(),
+        )
+        .send()
+        .await
+        .map_err(|e| McpError::Backend(format!("could not reach MCP server: {e}")))?;
+
+    if probe.status() != reqwest::StatusCode::UNAUTHORIZED {
+        return Err(McpError::Oauth(format!(
+            "expected 401 from OAuth server, got {}. Try auth_type='none' or 'bearer'.",
+            probe.status().as_u16()
+        )));
+    }
+    Ok(probe
+        .headers()
+        .get(reqwest::header::WWW_AUTHENTICATE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string())
+}
+
+/// The resource metadata document: from the URL the 401 challenge names,
+/// else RFC 9728's well-known URLs — some real OAuth-capable servers
+/// (confirmed: Atlassian) never include the `resource_metadata` pointer.
+async fn fetch_resource_metadata_for(
+    http: &reqwest::Client,
+    mcp_url: &str,
+    challenge: &str,
+) -> Result<Value> {
+    if let Some(url) = auth_param(challenge, "resource_metadata")
+        && let Some(document) = fetch_resource_metadata_document(http, &url).await
+    {
+        return Ok(document);
+    }
+    fetch_protected_resource_metadata(http, mcp_url)
+        .await
+        .ok_or_else(|| {
+            McpError::Oauth(
+                "401 has no usable resource_metadata URL in WWW-Authenticate, and no RFC 9728 \
+                 well-known endpoint was found either — this server may not actually \
+                 support OAuth 2.1, or doesn't publish discovery metadata"
+                    .to_string(),
+            )
+        })
+}
+
+/// The first authorization server a resource metadata document names.
+fn first_authorization_server(resource_metadata: &Value) -> Option<&str> {
+    resource_metadata
+        .get("authorization_servers")?
+        .as_array()?
+        .first()?
+        .as_str()
+}
+
+/// The first metadata document found for `issuer`, trying
+/// [`authorization_server_metadata_urls`] in order.
+async fn fetch_authorization_server_metadata(
+    http: &reqwest::Client,
+    issuer: &str,
+) -> Option<AuthorizationServerMetadata> {
+    for (url, source) in authorization_server_metadata_urls(issuer) {
+        if let Some(metadata) = fetch_json_document(http, &url)
+            .await
+            .and_then(|document| parse_authorization_server_metadata(document, source))
+        {
+            return Some(metadata);
+        }
+    }
+    None
+}
+
+/// Where an issuer's metadata may live, in the MCP spec's order: RFC 8414's
+/// path insertion, then OpenID Connect Discovery's insertion and appending
+/// forms. Last, for an issuer with a path, the RFC 8414 document appended to
+/// the issuer — non-standard, but it is the only URL this gateway used to
+/// try, so a server only ever discovered that way must keep working.
+fn authorization_server_metadata_urls(issuer: &str) -> Vec<(String, MetadataSource)> {
+    let Some((origin, path)) = origin_and_path(issuer) else {
+        return Vec::new();
+    };
+    if path.is_empty() {
+        return vec![
+            (
+                format!("{origin}/{OAUTH_METADATA_PATH}"),
+                MetadataSource::OAuth,
+            ),
+            (
+                format!("{origin}/{OIDC_METADATA_PATH}"),
+                MetadataSource::OpenIdConnect,
+            ),
+        ];
+    }
+    vec![
+        (
+            format!("{origin}/{OAUTH_METADATA_PATH}/{path}"),
+            MetadataSource::OAuth,
+        ),
+        (
+            format!("{origin}/{OIDC_METADATA_PATH}/{path}"),
+            MetadataSource::OpenIdConnect,
+        ),
+        (
+            format!("{origin}/{path}/{OIDC_METADATA_PATH}"),
+            MetadataSource::OpenIdConnect,
+        ),
+        (
+            format!("{origin}/{path}/{OAUTH_METADATA_PATH}"),
+            MetadataSource::OAuth,
+        ),
+    ]
+}
+
+fn parse_authorization_server_metadata(
+    document: Value,
+    source: MetadataSource,
+) -> Option<AuthorizationServerMetadata> {
+    let authorization_endpoint = first_str(&document, &["authorization_endpoint"])?;
+    let token_endpoint = first_str(&document, &["token_endpoint"])?;
+    Some(AuthorizationServerMetadata {
+        authorization_endpoint,
+        token_endpoint,
+        document,
+        source,
+    })
+}
+
+async fn fetch_resource_metadata_document(http: &reqwest::Client, url: &str) -> Option<Value> {
+    fetch_json_document(http, url)
+        .await
+        .filter(|document| first_authorization_server(document).is_some())
+}
+
+/// A JSON document from a successful `GET`; `None` for any failure, since
+/// every caller moves on to its next candidate URL.
+async fn fetch_json_document(http: &reqwest::Client, url: &str) -> Option<Value> {
+    let response = http.get(url).timeout(DISCOVERY_TIMEOUT).send().await.ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    response.json().await.ok()
+}
+
+/// `(origin, path)` of a URL, the path without surrounding slashes.
+fn origin_and_path(url: &str) -> Option<(String, String)> {
+    let parsed = reqwest::Url::parse(url).ok()?;
+    let origin = format!(
+        "{}://{}{}",
+        parsed.scheme(),
+        parsed.host_str()?,
+        parsed.port().map(|p| format!(":{p}")).unwrap_or_default()
+    );
+    Some((origin, parsed.path().trim_matches('/').to_string()))
+}
+
+/// The MCP spec's scope selection: the scope the 401 challenge asks for,
+/// else every scope the resource advertises, else none. `offline_access` is
+/// added when the authorization server offers it, because some (Entra ID)
+/// only issue a refresh token when it is requested — and holding a
+/// refreshable grant is the point of this flow.
+fn requested_scope(
+    challenge: &str,
+    resource_metadata: &Value,
+    server_metadata: &Value,
+) -> Option<String> {
+    let scope = auth_param(challenge, "scope")
+        .filter(|scope| !scope.trim().is_empty())
+        .or_else(|| {
+            let advertised = scopes_supported(resource_metadata);
+            (!advertised.is_empty()).then(|| advertised.join(" "))
+        })?;
+    let offline_access_offered = scopes_supported(server_metadata).contains(&OFFLINE_ACCESS_SCOPE);
+    let offline_access_requested = scope.split_whitespace().any(|s| s == OFFLINE_ACCESS_SCOPE);
+    if offline_access_offered && !offline_access_requested {
+        Some(format!("{scope} {OFFLINE_ACCESS_SCOPE}"))
+    } else {
+        Some(scope)
+    }
+}
+
+fn scopes_supported(metadata: &Value) -> Vec<&str> {
+    metadata
+        .get("scopes_supported")
+        .and_then(Value::as_array)
+        .map(|scopes| scopes.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default()
+}
+
+/// RFC 8707 `resource`: the connector URL, except for an authorization
+/// server known only through OpenID Connect discovery. Entra ID — the case
+/// that path exists for — rejects a `resource` that differs from the
+/// requested scope's own resource (AADSTS9010010, confirmed live against
+/// Azure DevOps' MCP server), and there the scope already fixes the token's
+/// audience.
+fn requested_resource(mcp_url: &str, source: MetadataSource) -> Option<String> {
+    match source {
+        MetadataSource::OAuth => Some(mcp_url.to_string()),
+        MetadataSource::OpenIdConnect => None,
+    }
+}
+
+/// One auth-param (`name="value"` or `name=value`) of a `WWW-Authenticate`
+/// value. Matched only at a parameter boundary, so `scope` is never read out
+/// of a longer name such as `xscope`.
+fn auth_param(www_authenticate: &str, name: &str) -> Option<String> {
+    let marker = format!("{name}=");
+    let mut search_from = 0;
+    while let Some(offset) = www_authenticate[search_from..].find(&marker) {
+        let start = search_from + offset;
+        let value_start = start + marker.len();
+        let at_boundary = www_authenticate[..start]
+            .chars()
+            .next_back()
+            .is_none_or(|c| c == ' ' || c == ',');
+        if at_boundary {
+            let rest = &www_authenticate[value_start..];
+            let value = match rest.strip_prefix('"') {
+                Some(quoted) => &quoted[..quoted.find('"').unwrap_or(quoted.len())],
+                None => &rest[..rest.find([',', ' ']).unwrap_or(rest.len())],
+            };
+            return Some(value.to_string());
+        }
+        search_from = value_start;
+    }
+    None
+}
+
+/// RFC 7591 dynamic client registration. `None` when the server refuses, so
+/// the caller can ask for a user-supplied client id instead.
+async fn register_dynamic_client(
+    http: &reqwest::Client,
+    registration_endpoint: &str,
+    redirect_uri: &str,
+) -> Result<Option<RegisteredClient>> {
+    let response = http
+        .post(registration_endpoint)
+        .timeout(DISCOVERY_TIMEOUT)
+        .json(&json!({
+            "client_name": "MCP Gateway",
+            "redirect_uris": [redirect_uri],
+            "grant_types": ["authorization_code", "refresh_token"],
+            "response_types": ["code"],
+            "token_endpoint_auth_method": "none",
+        }))
+        .send()
+        .await
+        .map_err(|e| McpError::Oauth(format!("dynamic client registration failed: {e}")))?;
+    if !response.status().is_success() {
+        tracing::warn!(
+            status = response.status().as_u16(),
+            "dynamic client registration failed"
+        );
+        return Ok(None);
+    }
+    let registration: Value = response.json().await.map_err(|e| {
+        McpError::Oauth(format!(
+            "dynamic client registration returned bad JSON: {e}"
+        ))
+    })?;
+    Ok(
+        first_str(&registration, &["client_id"]).map(|client_id| RegisteredClient {
+            client_id,
+            client_secret: first_str(&registration, &["client_secret"]),
+        }),
+    )
 }
 
 #[cfg(test)]
@@ -1023,8 +1303,22 @@ mod tests {
     fn extracts_resource_metadata_url() {
         let h = r#"Bearer resource_metadata="https://as.example.com/.well-known/x", error="x""#;
         assert_eq!(
-            extract_resource_metadata(h).as_deref(),
+            auth_param(h, "resource_metadata").as_deref(),
             Some("https://as.example.com/.well-known/x")
+        );
+    }
+
+    #[test]
+    fn auth_param_matches_only_at_a_parameter_boundary() {
+        let h = r#"Bearer xscope="wrong", scope="files:read files:write", realm="r""#;
+        assert_eq!(
+            auth_param(h, "scope").as_deref(),
+            Some("files:read files:write")
+        );
+        assert_eq!(auth_param(r#"Bearer xscope="wrong""#, "scope"), None);
+        assert_eq!(
+            auth_param("Bearer error=invalid_token, scope=read", "scope").as_deref(),
+            Some("read")
         );
     }
 
@@ -1175,6 +1469,262 @@ mod tests {
         assert!(
             doc.is_none(),
             "an empty authorization_servers array must not count as discovery"
+        );
+    }
+
+    // ─── discover_authorization (RFC 9728 → RFC 8414 / OpenID Connect) ─────────
+
+    fn json_body(body: Value) -> String {
+        body.to_string()
+    }
+
+    /// `POST /mcp` answers 401 with a challenge pointing at resource metadata
+    /// that names `issuer` and advertises `scopes`.
+    async fn mount_protected_mcp(
+        server: &mut mockito::ServerGuard,
+        challenge_suffix: &str,
+        issuer: &str,
+        scopes: &[&str],
+    ) {
+        let metadata_url = format!("{}/.well-known/oauth-protected-resource/mcp", server.url());
+        server
+            .mock("POST", "/mcp")
+            .with_status(401)
+            .with_header(
+                "www-authenticate",
+                &format!(r#"Bearer resource_metadata="{metadata_url}"{challenge_suffix}"#),
+            )
+            .create_async()
+            .await;
+        server
+            .mock("GET", "/.well-known/oauth-protected-resource/mcp")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(json_body(json!({
+                "resource": format!("{}/mcp", server.url()),
+                "authorization_servers": [issuer],
+                "scopes_supported": scopes,
+            })))
+            .create_async()
+            .await;
+    }
+
+    async fn mount_metadata(server: &mut mockito::ServerGuard, path: &str, document: Value) {
+        server
+            .mock("GET", path)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(json_body(document))
+            .create_async()
+            .await;
+    }
+
+    #[tokio::test]
+    async fn discovers_an_openid_connect_only_issuer_and_requests_scope_without_resource() {
+        // Entra ID's shape: an issuer with a path, no RFC 8414 document at
+        // all (unmounted paths answer 501 here, 404 there), OpenID Connect
+        // discovery appended to the issuer.
+        let mut server = mockito::Server::new_async().await;
+        let issuer = format!("{}/tenant/v2.0", server.url());
+        mount_protected_mcp(&mut server, "", &issuer, &["api://app/.default"]).await;
+        mount_metadata(
+            &mut server,
+            "/tenant/v2.0/.well-known/openid-configuration",
+            json!({
+                "authorization_endpoint": "https://idp.example/authorize",
+                "token_endpoint": "https://idp.example/token",
+                "scopes_supported": ["openid", "offline_access"],
+            }),
+        )
+        .await;
+
+        let discovered =
+            discover_authorization(&reqwest::Client::new(), &format!("{}/mcp", server.url()))
+                .await
+                .expect("OpenID Connect discovery succeeds");
+
+        assert_eq!(
+            discovered.authorization_endpoint,
+            "https://idp.example/authorize"
+        );
+        assert_eq!(discovered.token_endpoint, "https://idp.example/token");
+        assert_eq!(discovered.registration_endpoint, None);
+        assert_eq!(
+            discovered.requested_access,
+            RequestedAccess {
+                scope: Some("api://app/.default offline_access".to_string()),
+                resource: None,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn prefers_rfc_8414_metadata_and_the_scope_the_challenge_asks_for() {
+        let mut server = mockito::Server::new_async().await;
+        let issuer = format!("{}/tenant", server.url());
+        mount_protected_mcp(
+            &mut server,
+            r#", scope="files:read""#,
+            &issuer,
+            &["files:read", "files:write"],
+        )
+        .await;
+        mount_metadata(
+            &mut server,
+            "/.well-known/oauth-authorization-server/tenant",
+            json!({
+                "authorization_endpoint": "https://as.example/authorize",
+                "token_endpoint": "https://as.example/token",
+                "registration_endpoint": "https://as.example/register",
+            }),
+        )
+        .await;
+        let oidc = server
+            .mock("GET", "/.well-known/openid-configuration/tenant")
+            .expect(0)
+            .create_async()
+            .await;
+        let mcp_url = format!("{}/mcp", server.url());
+
+        let discovered = discover_authorization(&reqwest::Client::new(), &mcp_url)
+            .await
+            .expect("RFC 8414 discovery succeeds");
+
+        oidc.assert_async().await;
+        assert_eq!(
+            discovered.authorization_endpoint,
+            "https://as.example/authorize"
+        );
+        assert_eq!(
+            discovered.registration_endpoint.as_deref(),
+            Some("https://as.example/register")
+        );
+        assert_eq!(
+            discovered.requested_access,
+            RequestedAccess {
+                scope: Some("files:read".to_string()),
+                resource: Some(mcp_url),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn still_discovers_rfc_8414_metadata_appended_to_an_issuer_path() {
+        let mut server = mockito::Server::new_async().await;
+        let issuer = format!("{}/tenant", server.url());
+        mount_protected_mcp(&mut server, "", &issuer, &[]).await;
+        mount_metadata(
+            &mut server,
+            "/tenant/.well-known/oauth-authorization-server",
+            json!({
+                "authorization_endpoint": "https://as.example/authorize",
+                "token_endpoint": "https://as.example/token",
+            }),
+        )
+        .await;
+        let mcp_url = format!("{}/mcp", server.url());
+
+        let discovered = discover_authorization(&reqwest::Client::new(), &mcp_url)
+            .await
+            .expect("the original appended URL is still tried");
+
+        assert_eq!(discovered.token_endpoint, "https://as.example/token");
+        assert_eq!(
+            discovered.requested_access,
+            RequestedAccess::without_scope(&mcp_url)
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_authorization_server_metadata_is_an_oauth_error_not_a_500() {
+        let mut server = mockito::Server::new_async().await;
+        let issuer = format!("{}/tenant/v2.0", server.url());
+        mount_protected_mcp(&mut server, "", &issuer, &["api://app/.default"]).await;
+
+        let err = discover_authorization(&reqwest::Client::new(), &format!("{}/mcp", server.url()))
+            .await
+            .expect_err("no metadata document anywhere");
+
+        assert!(matches!(err, McpError::Oauth(_)), "got {err:?}");
+        assert_eq!(err.http_status(), 502);
+    }
+
+    #[test]
+    fn requested_scope_adds_offline_access_only_when_offered_and_not_yet_asked_for() {
+        let offered = json!({"scopes_supported": ["openid", "offline_access"]});
+        let advertised = json!({"scopes_supported": ["a", "b"]});
+
+        assert_eq!(
+            requested_scope("", &advertised, &offered).as_deref(),
+            Some("a b offline_access")
+        );
+        assert_eq!(
+            requested_scope(r#"Bearer scope="a offline_access""#, &advertised, &offered).as_deref(),
+            Some("a offline_access")
+        );
+        assert_eq!(
+            requested_scope("", &advertised, &json!({})).as_deref(),
+            Some("a b")
+        );
+        assert_eq!(
+            requested_scope("", &json!({}), &offered),
+            None,
+            "offline_access is never requested on its own"
+        );
+    }
+
+    #[test]
+    fn authorize_url_carries_requested_access_and_keeps_the_endpoints_own_query() {
+        let query_of = |access: &RequestedAccess| -> std::collections::HashMap<String, String> {
+            let url = build_authorize_url(
+                "https://idp.example/authorize?audience=api",
+                "client",
+                "https://cp.example/api/mcp/oauth/callback",
+                "state",
+                "challenge",
+                access,
+            )
+            .expect("valid endpoint");
+            reqwest::Url::parse(&url)
+                .expect("built URL parses")
+                .query_pairs()
+                .into_owned()
+                .collect()
+        };
+
+        let entra = query_of(&RequestedAccess {
+            scope: Some("api://app/.default offline_access".to_string()),
+            resource: None,
+        });
+        assert_eq!(entra.get("audience").map(String::as_str), Some("api"));
+        assert_eq!(
+            entra.get("scope").map(String::as_str),
+            Some("api://app/.default offline_access")
+        );
+        assert!(!entra.contains_key("resource"));
+
+        let unscoped = query_of(&RequestedAccess::without_scope("https://mcp.example/mcp"));
+        assert!(!unscoped.contains_key("scope"));
+        assert_eq!(
+            unscoped.get("resource").map(String::as_str),
+            Some("https://mcp.example/mcp")
+        );
+    }
+
+    #[test]
+    fn first_authorization_keeps_the_secret_registered_with_the_client_id() {
+        let mut connector = oauth_connector("https://as.example/token");
+        connector.oauth_client_id = Some("entra-app".to_string());
+        connector.oauth_client_secret = Some("encrypted-secret".to_string());
+
+        assert_eq!(
+            stored_secret_for(&connector, "entra-app").as_deref(),
+            Some("encrypted-secret")
+        );
+        assert_eq!(
+            stored_secret_for(&connector, "another-client"),
+            None,
+            "a stored secret never pairs with a different client id"
         );
     }
 }

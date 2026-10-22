@@ -6,7 +6,14 @@
 
 mod common;
 
-use axum::{Router, response::IntoResponse, routing::post};
+use std::collections::HashMap;
+
+use axum::{
+    Router,
+    http::{StatusCode, header},
+    response::IntoResponse,
+    routing::{get, post},
+};
 use chrono::{Duration as ChronoDuration, Utc};
 use nasiko_mcp_gateway::oauth::{OAuthState, sign_state};
 use serde_json::{Value, json};
@@ -145,6 +152,184 @@ async fn seed_connector(
     .fetch_one(&server.db)
     .await
     .unwrap()
+}
+
+/// An Entra-shaped protected MCP server: `POST /mcp` answers 401 pointing at
+/// resource metadata whose issuer publishes only OpenID Connect discovery
+/// (no RFC 8414 document). Returns the MCP URL.
+async fn start_stub_openid_connect_protected_mcp() -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+    let challenge =
+        format!(r#"Bearer resource_metadata="{base}/.well-known/oauth-protected-resource/mcp""#);
+    let resource_metadata = json!({
+        "resource": format!("{base}/mcp"),
+        "authorization_servers": [format!("{base}/tenant/v2.0")],
+        "scopes_supported": ["api://app/.default"],
+    });
+    let openid_configuration = json!({
+        "authorization_endpoint": "https://idp.test.local/authorize",
+        "token_endpoint": "https://idp.test.local/token",
+        "scopes_supported": ["openid", "offline_access"],
+    });
+    let app = Router::new()
+        .route(
+            "/mcp",
+            post(move || {
+                let challenge = challenge.clone();
+                async move {
+                    (
+                        StatusCode::UNAUTHORIZED,
+                        [(header::WWW_AUTHENTICATE, challenge)],
+                    )
+                }
+            }),
+        )
+        .route(
+            "/.well-known/oauth-protected-resource/mcp",
+            get(move || {
+                let document = resource_metadata.clone();
+                async move { axum::Json(document) }
+            }),
+        )
+        .route(
+            "/tenant/v2.0/.well-known/openid-configuration",
+            get(move || {
+                let document = openid_configuration.clone();
+                async move { axum::Json(document) }
+            }),
+        );
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    format!("{base}/mcp")
+}
+
+/// POST `/oauth/authorize` as the admin and return the authorization URL's
+/// host plus its query parameters.
+async fn authorize_url_query(
+    server: &common::TestServer,
+    uid: &str,
+    cid: Uuid,
+) -> (String, HashMap<String, String>) {
+    let res = common::as_superuser(
+        server
+            .client
+            .post(server.url(&format!("/api/mcp/connectors/{cid}/oauth/authorize"))),
+        uid,
+        "admin",
+    )
+    .json(&json!({}))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 200);
+    let body: Value = res.json().await.unwrap();
+    let url = reqwest::Url::parse(
+        body["data"]["authorization_url"]
+            .as_str()
+            .expect("authorization_url in response"),
+    )
+    .expect("authorization_url parses");
+    let host = url.host_str().unwrap_or_default().to_string();
+    (host, url.query_pairs().into_owned().collect())
+}
+
+#[tokio::test]
+#[serial]
+async fn authorize_against_openid_connect_only_issuer_requests_scope_and_keeps_client_secret() {
+    allow_private_urls();
+    set_gateway_public_url();
+    set_signing_key(SIGNING_KEY);
+    let mcp_url = start_stub_openid_connect_protected_mcp().await;
+    let server = common::TestServer::start().await;
+    let (uid, uuid) = init_admin(&server).await;
+    let cid = seed_connector(&server, uuid, "entra-protected", "oauth2").await;
+    sqlx::query(
+        "UPDATE mcp_connectors SET url = $2, oauth_client_id = 'entra-app', \
+         oauth_client_secret = 'encrypted-entra-secret' WHERE id = $1",
+    )
+    .bind(cid)
+    .bind(&mcp_url)
+    .execute(&server.db)
+    .await
+    .unwrap();
+
+    let (host, query) = authorize_url_query(&server, &uid, cid).await;
+
+    assert_eq!(host, "idp.test.local");
+    assert_eq!(
+        query.get("client_id").map(String::as_str),
+        Some("entra-app")
+    );
+    assert_eq!(
+        query.get("scope").map(String::as_str),
+        Some("api://app/.default offline_access")
+    );
+    assert!(
+        !query.contains_key("resource"),
+        "an OpenID Connect-only issuer (Entra ID) rejects a mismatched resource"
+    );
+    let (token_endpoint, client_secret): (Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT oauth_token_endpoint, oauth_client_secret FROM mcp_connectors WHERE id = $1",
+    )
+    .bind(cid)
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+    assert_eq!(
+        token_endpoint.as_deref(),
+        Some("https://idp.test.local/token")
+    );
+    assert_eq!(
+        client_secret.as_deref(),
+        Some("encrypted-entra-secret"),
+        "the user's client secret must survive first authorization"
+    );
+
+    server.cleanup().await;
+    clear_signing_key();
+    clear_gateway_public_url();
+    disallow_private_urls();
+}
+
+#[tokio::test]
+#[serial]
+async fn authorize_on_configured_connector_falls_back_when_discovery_fails() {
+    allow_private_urls();
+    set_gateway_public_url();
+    set_signing_key(SIGNING_KEY);
+    // Answers 200 to `initialize`, so discovery fails with "expected 401".
+    let mcp_url = start_stub_mcp_server_ok().await;
+    let server = common::TestServer::start().await;
+    let (uid, uuid) = init_admin(&server).await;
+    let cid = seed_oauth_connector_with_token_endpoint(
+        &server,
+        uuid,
+        "configured-oauth",
+        "https://as.example.com/token",
+    )
+    .await;
+    sqlx::query("UPDATE mcp_connectors SET url = $2 WHERE id = $1")
+        .bind(cid)
+        .bind(&mcp_url)
+        .execute(&server.db)
+        .await
+        .unwrap();
+
+    let (host, query) = authorize_url_query(&server, &uid, cid).await;
+
+    assert_eq!(host, "as.example.com");
+    assert!(!query.contains_key("scope"));
+    assert_eq!(
+        query.get("resource").map(String::as_str),
+        Some(mcp_url.as_str())
+    );
+
+    server.cleanup().await;
+    clear_signing_key();
+    clear_gateway_public_url();
+    disallow_private_urls();
 }
 
 #[tokio::test]
