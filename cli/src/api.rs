@@ -79,6 +79,25 @@ pub enum Attempt<T> {
     Rejected(ApiFailure),
 }
 
+/// The server refused a request body as too large (HTTP 413). Retrying the
+/// same body can never succeed, so callers branch on this instead of backing off.
+#[derive(Debug)]
+pub(crate) struct PayloadTooLarge {
+    url: String,
+}
+
+impl std::fmt::Display for PayloadTooLarge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "HTTP 413 from {}: request body exceeds the server's size limit",
+            self.url
+        )
+    }
+}
+
+impl std::error::Error for PayloadTooLarge {}
+
 /// Pull a human-readable message out of a server error body.
 /// Tries the standard `{"message":"..."}` and `{"error":"..."}` shapes first;
 /// falls back to the raw body when neither is present.
@@ -432,6 +451,9 @@ impl Client {
             .auth_post(&url)
             .send_json(body)
             .context("cannot reach control plane")?;
+        if resp.status() == ureq::http::StatusCode::PAYLOAD_TOO_LARGE {
+            return Err(PayloadTooLarge { url }.into());
+        }
         check_status(&mut resp, &url)?;
         let envelope: serde_json::Value = resp
             .body_mut()

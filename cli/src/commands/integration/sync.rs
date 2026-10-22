@@ -1,15 +1,15 @@
 //! Destination-bound delivery for queued coding-agent telemetry.
 
 use anyhow::Result;
-use nasiko_types::{
-    CODING_AGENT_BATCH_MAX_EVENTS, CodingAgentEventBatchRequest, CodingAgentEventStatus,
-};
+use nasiko_types::{CodingAgentEventBatchRequest, CodingAgentEventStatus};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
 use uuid::Uuid;
 
+use super::budget::{self, EventFit};
 use super::queue::{self, DeliveryState, QueueDestination, QueueRecord};
+use crate::api::PayloadTooLarge;
 use crate::config::{ClusterEntry, Config};
 
 const MAX_DELIVERY_ATTEMPTS: u32 = 5;
@@ -88,11 +88,41 @@ fn sync_records(config: &Config, records: Vec<(PathBuf, QueueRecord)>) -> Result
             Some(Duration::from_secs(10)),
         );
         attempted_delivery = true;
-        for batch in records.chunks(CODING_AGENT_BATCH_MAX_EVENTS) {
+        let records = fit_records(records)?;
+        for batch in budget::batches(&records, |(_, record)| &record.event) {
             retry |= deliver_batch(&client, batch)?;
         }
     }
     Ok(retry || attempted_delivery)
+}
+
+/// Reduce or reject records that cannot fit a request on their own. Hooks
+/// already do this before enqueueing; this guards records queued by older
+/// clients, so a too-large event never burns its retries on HTTP 413.
+fn fit_records(records: Vec<(PathBuf, QueueRecord)>) -> Result<Vec<(PathBuf, QueueRecord)>> {
+    let mut fitted = Vec::with_capacity(records.len());
+    for (path, mut record) in records {
+        match budget::fit(&record.event) {
+            EventFit::Fits => {}
+            EventFit::Reduced(event) => {
+                record.event = *event;
+                queue::update(&path, &record)?;
+            }
+            EventFit::Oversized { request_bytes } => {
+                reject(
+                    &path,
+                    &record,
+                    format!(
+                        "permanently rejected: {}",
+                        budget::oversized_error(request_bytes)
+                    ),
+                )?;
+                continue;
+            }
+        }
+        fitted.push((path, record));
+    }
+    Ok(fitted)
 }
 
 fn deliver_batch(client: &crate::api::Client, records: &[(PathBuf, QueueRecord)]) -> Result<bool> {
@@ -104,6 +134,9 @@ fn deliver_batch(client: &crate::api::Client, records: &[(PathBuf, QueueRecord)]
     };
     let response = match client.post_coding_agent_batch(&request) {
         Ok(response) => response,
+        Err(error) if error.downcast_ref::<PayloadTooLarge>().is_some() => {
+            return deliver_after_payload_too_large(client, records, &error);
+        }
         Err(error) => {
             return defer_delivery_all(records, &format!("delivery failed: {error:#}"));
         }
@@ -134,6 +167,31 @@ fn deliver_batch(client: &crate::api::Client, records: &[(PathBuf, QueueRecord)]
         }
     }
     Ok(false)
+}
+
+/// A 413 can never succeed on retry. Batches are sized to the advertised limit,
+/// so this means the server (or a proxy in front of it) enforces a smaller one:
+/// split the batch, then reduce a lone event before giving up on it.
+fn deliver_after_payload_too_large(
+    client: &crate::api::Client,
+    records: &[(PathBuf, QueueRecord)],
+    error: &anyhow::Error,
+) -> Result<bool> {
+    if records.len() > 1 {
+        let (left, right) = records.split_at(records.len() / 2);
+        let retry = deliver_batch(client, left)?;
+        return Ok(deliver_batch(client, right)? || retry);
+    }
+    let (path, record) = &records[0];
+    let reduced = budget::reduce(&record.event);
+    if reduced == record.event {
+        reject(path, record, format!("permanently rejected: {error:#}"))?;
+        return Ok(false);
+    }
+    let mut record = record.clone();
+    record.event = reduced;
+    queue::update(path, &record)?;
+    deliver_batch(client, &[(path.clone(), record)])
 }
 
 fn defer_blocked_all(records: &[(PathBuf, QueueRecord)], error: &str) -> Result<()> {
@@ -240,12 +298,14 @@ fn normalize_url(url: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
+    use super::super::budget::tests::{event as budget_event, oversized_event};
     use super::*;
     use crate::config::ClusterEntry;
     use chrono::{TimeZone, Utc};
     use nasiko_types::{
-        CODING_AGENT_EVENT_VERSION, CapturePolicy, CodingAgentEventV1, CodingAgentSession,
-        CodingAgentSource, CodingAgentTurn, coding_agent_event_id, coding_agent_session_id,
+        CODING_AGENT_BATCH_MAX_BYTES, CODING_AGENT_EVENT_VERSION, CapturePolicy,
+        CodingAgentEventV1, CodingAgentSession, CodingAgentSource, CodingAgentTurn,
+        coding_agent_event_id, coding_agent_session_id,
     };
     use std::collections::HashMap;
 
@@ -507,6 +567,205 @@ mod tests {
         let retained = queue::load(&queued.0).unwrap();
         assert_eq!(retained.delivery_state, DeliveryState::Deferred);
         assert!(retained.last_error.unwrap().contains("one ordered result"));
+    }
+
+    fn content_record(url: &str, event: CodingAgentEventV1) -> QueueRecord {
+        QueueRecord::new(
+            QueueDestination {
+                cluster_name: "bound".into(),
+                cluster_url: url.into(),
+                principal_id: Uuid::nil(),
+            },
+            event,
+        )
+    }
+
+    fn accepted_body<'a>(event_ids: impl IntoIterator<Item = &'a String>) -> String {
+        let results: Vec<_> = event_ids
+            .into_iter()
+            .map(|event_id| serde_json::json!({"event_id": event_id, "status": "accepted"}))
+            .collect();
+        serde_json::json!({"data": {"results": results}, "status_code": 200, "message": "ok"})
+            .to_string()
+    }
+
+    fn sent_event(request: &mockito::Request) -> serde_json::Value {
+        let body: serde_json::Value = serde_json::from_slice(request.body().unwrap()).unwrap();
+        body["events"][0].clone()
+    }
+
+    fn sent_event_ids(request: &mockito::Request) -> Vec<String> {
+        let body: CodingAgentEventBatchRequest =
+            serde_json::from_slice(request.body().unwrap()).unwrap();
+        body.events
+            .into_iter()
+            .map(|event| event.event_id)
+            .collect()
+    }
+
+    #[test]
+    fn event_over_the_request_limit_is_reduced_and_delivered() {
+        let mut server = mockito::Server::new();
+        let dir = tempfile::tempdir().unwrap();
+        let original = oversized_event("too-big");
+        assert!(
+            budget::request_bytes(std::slice::from_ref(&original)) > CODING_AGENT_BATCH_MAX_BYTES
+        );
+        let queued = queued(&dir, content_record(&server.url(), original.clone()));
+        let delivery = server
+            .mock("POST", "/api/telemetry/coding-agent/events/batch")
+            .match_request(|request| {
+                let event = sent_event(request);
+                request.body().unwrap().len() <= CODING_AGENT_BATCH_MAX_BYTES
+                    && event["turn"]["llm_calls"][0]["input_tokens"] == 1_234
+                    && event["turn"]["tool_calls"][0].get("output").is_none()
+                    && event["capture_policy"] == "content"
+            })
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(accepted_body([&original.event_id]))
+            .expect(1)
+            .create();
+
+        sync_records(
+            &config("bound", &server.url(), Some(&token(Uuid::nil()))),
+            vec![queued.clone()],
+        )
+        .unwrap();
+        delivery.assert();
+        assert!(!queued.0.exists());
+        assert!(!dir.path().join("rejected").exists());
+    }
+
+    #[test]
+    fn payload_too_large_reduces_content_and_resends_once() {
+        let mut server = mockito::Server::new();
+        let dir = tempfile::tempdir().unwrap();
+        let event = budget_event("proxy-limited", "prompt", vec!["tool text".into()]);
+        let event_id = event.event_id.clone();
+        let queued = queued(&dir, content_record(&server.url(), event));
+        let has_tool_content = |request: &mockito::Request| {
+            sent_event(request)["turn"]["tool_calls"][0]
+                .get("output")
+                .is_some()
+        };
+        let too_large = server
+            .mock("POST", "/api/telemetry/coding-agent/events/batch")
+            .match_request(move |request| has_tool_content(request))
+            .with_status(413)
+            .expect(1)
+            .create();
+        let accepted = server
+            .mock("POST", "/api/telemetry/coding-agent/events/batch")
+            .match_request(move |request| !has_tool_content(request))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(accepted_body([&event_id]))
+            .expect(1)
+            .create();
+
+        sync_records(
+            &config("bound", &server.url(), Some(&token(Uuid::nil()))),
+            vec![queued.clone()],
+        )
+        .unwrap();
+        too_large.assert();
+        accepted.assert();
+        assert!(!queued.0.exists());
+    }
+
+    #[test]
+    fn payload_too_large_is_permanent_not_retried() {
+        let mut server = mockito::Server::new();
+        let dir = tempfile::tempdir().unwrap();
+        let queued = queued(&dir, record("bound", &server.url(), "s", "irreducible"));
+        let too_large = server
+            .mock("POST", "/api/telemetry/coding-agent/events/batch")
+            .with_status(413)
+            .expect(1)
+            .create();
+
+        let retry = sync_records(
+            &config("bound", &server.url(), Some(&token(Uuid::nil()))),
+            vec![queued.clone()],
+        )
+        .unwrap();
+        too_large.assert();
+        assert!(retry, "a delivery was attempted");
+        assert!(!queued.0.exists());
+        let group = std::fs::read_dir(dir.path().join("rejected"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let rejected_path = std::fs::read_dir(group)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let rejected = queue::load(&rejected_path).unwrap();
+        assert_eq!(rejected.attempts, 0);
+        assert!(rejected.last_error.unwrap().contains("HTTP 413"));
+    }
+
+    #[test]
+    fn payload_too_large_splits_the_batch_and_settles_each_half_on_its_own() {
+        let mut server = mockito::Server::new();
+        let dir = tempfile::tempdir().unwrap();
+        let queued: Vec<_> = ["one", "two", "three", "four"]
+            .into_iter()
+            .map(|turn| queued(&dir, record("bound", &server.url(), "s", turn)))
+            .collect();
+        let ids: Vec<_> = queued
+            .iter()
+            .map(|(_, record)| record.event.event_id.clone())
+            .collect();
+        let (left, right) = ids.split_at(2);
+        let sends = |expected: &[String]| {
+            let expected = expected.to_vec();
+            move |request: &mockito::Request| sent_event_ids(request) == expected
+        };
+        let combined = server
+            .mock("POST", "/api/telemetry/coding-agent/events/batch")
+            .match_request(sends(&ids))
+            .with_status(413)
+            .expect(1)
+            .create();
+        let accepted = server
+            .mock("POST", "/api/telemetry/coding-agent/events/batch")
+            .match_request(sends(left))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(accepted_body(left))
+            .expect(1)
+            .create();
+        let unavailable = server
+            .mock("POST", "/api/telemetry/coding-agent/events/batch")
+            .match_request(sends(right))
+            .with_status(503)
+            .expect(1)
+            .create();
+
+        let retry = sync_records(
+            &config("bound", &server.url(), Some(&token(Uuid::nil()))),
+            queued.clone(),
+        )
+        .unwrap();
+        combined.assert();
+        accepted.assert();
+        unavailable.assert();
+        assert!(retry, "the half that failed is retried");
+        assert!(queued[..2].iter().all(|(path, _)| !path.exists()));
+        for (path, _) in &queued[2..] {
+            let retained = queue::load(path).unwrap();
+            assert_eq!(retained.delivery_state, DeliveryState::Deferred);
+            assert_eq!(retained.attempts, 1);
+            assert!(retained.next_attempt_at.is_some());
+            assert!(retained.last_error.unwrap().contains("HTTP 503"));
+        }
+        assert!(!dir.path().join("rejected").exists());
     }
 
     #[test]

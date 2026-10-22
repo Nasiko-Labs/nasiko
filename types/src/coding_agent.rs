@@ -6,6 +6,9 @@ use uuid::Uuid;
 
 pub const CODING_AGENT_EVENT_VERSION: u32 = 1;
 pub const CODING_AGENT_BATCH_MAX_EVENTS: usize = 100;
+/// Largest batch request body, in serialized bytes, the ingest route accepts.
+/// Shared so the client sizes batches against the limit the server enforces.
+pub const CODING_AGENT_BATCH_MAX_BYTES: usize = 8 * 1024 * 1024;
 pub const CODING_AGENT_ID_MAX_BYTES: usize = 512;
 pub const CODING_AGENT_NAME_MAX_BYTES: usize = 256;
 /// Maximum UTF-8 byte length of a content-captured external session title.
