@@ -16,6 +16,7 @@ anyhow.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
 clap_mangen.workspace = true
+strsim.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 toml_edit.workspace = true

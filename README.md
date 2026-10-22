@@ -630,14 +630,17 @@ pull from the artifact registry.
 | ------------------------------------------------- | --------------------------------------------------------------------- |
 | `nasiko connect <url>`                            | Register a control plane and switch to it                             |
 | `nasiko auth login`                               | Authenticate with the active cluster                                  |
+| `nasiko doctor`                                   | Check Docker, cluster, login, and registry setup                      |
+| `nasiko completions <shell>` / `nasiko man`       | Shell tab-completion script / man page                                |
 | `nasiko new [template] [name]`                    | Scaffold a new agent project                                          |
 | `nasiko build` / `nasiko run`                     | Build the agent image / build + run it locally                        |
 | `nasiko push` / `nasiko deploy <image>`           | Push image / build-push-deploy to the cluster                         |
+| `nasiko deploy <dir> --dry-run`                   | Show what a deploy would do, without doing it                         |
 | `nasiko upload [source]`                          | Upload source; the server builds it (no local Docker)                 |
 | `nasiko ps`                                       | List running agents                                                   |
 | `nasiko logs <agent> -f`                          | Stream (and follow) agent logs                                        |
 | `nasiko stop` / `start` / `restart` / `scale <n>` | Agent lifecycle                                                       |
-| `nasiko rm --name <agent>`                        | Terminate + deregister an agent (positional `id` only accepts a UUID) |
+| `nasiko rm <agent>`                               | Terminate + deregister an agent (by name or UUID)                     |
 | `nasiko chat <agent>`                             | Interactive or one-shot A2A chat                                      |
 | `nasiko secrets set`                              | Configure encrypted per-agent secrets                                 |
 | `nasiko mcp`                                      | Manage MCP Gateway connectors and tool permissions                    |

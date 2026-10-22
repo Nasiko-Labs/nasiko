@@ -121,6 +121,10 @@ pub enum AgentOpsCommands {
         /// Non-interactive: auto-accept the suggested version instead of prompting
         #[arg(long, short = 'y')]
         yes: bool,
+        /// Show what would be deployed (version, image, env keys) without building, pushing,
+        /// or deploying anything
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Push image to cluster OCI registry (without deploying)
     Push {
@@ -268,11 +272,11 @@ pub enum AgentOpsCommands {
     },
     /// Terminate + deregister agent
     Rm {
-        /// Agent UUID (preferred; use --name to look up by name instead)
-        #[arg(conflicts_with = "name")]
-        id: Option<String>,
-        /// Delete by agent name (resolved to UUID via the CP registry)
-        #[arg(long, short = 'n', conflicts_with = "id")]
+        /// Agent name or UUID
+        #[arg(required_unless_present = "name", conflicts_with = "name")]
+        agent: Option<String>,
+        /// Older spelling of the positional argument, kept so existing scripts keep working
+        #[arg(long, short = 'n', hide = true)]
         name: Option<String>,
         #[arg(short, long)]
         force: bool,
@@ -1077,6 +1081,7 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             writable_path,
             version,
             yes,
+            dry_run,
         } => commands::deploy::deploy_with_version_flags(
             &image,
             name.as_deref(),
@@ -1089,6 +1094,7 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             },
             writable,
             writable_path.as_deref(),
+            dry_run,
         ),
         AgentOpsCommands::Push {
             image,
@@ -1179,8 +1185,10 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             version.as_deref(),
             reason.as_deref(),
         ),
-        AgentOpsCommands::Rm { id, name, force } => {
-            commands::agents::rm(id.as_deref(), name.as_deref(), force)
+        AgentOpsCommands::Rm { agent, name, force } => {
+            // Parsing guarantees exactly one of the two is set.
+            let agent = agent.or(name).unwrap_or_default();
+            commands::agents::rm(&agent, force)
         }
         AgentOpsCommands::Chat {
             url,

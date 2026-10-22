@@ -515,6 +515,47 @@ mod tests {
     }
 
     #[test]
+    fn parses_rm_by_name_or_uuid_and_the_legacy_name_flag() {
+        let rm = |args: &[&str]| {
+            let cli = Cli::try_parse_from(args)?;
+            let Commands::Ops(AgentOpsCommands::Rm { agent, name, force }) = cli.command else {
+                panic!("expected rm");
+            };
+            Ok::<_, clap::Error>((agent, name, force))
+        };
+        assert_eq!(
+            rm(&["nasiko", "rm", "weather"]).unwrap(),
+            (Some("weather".into()), None, false)
+        );
+        assert_eq!(
+            rm(&["nasiko", "rm", "--name", "weather", "-f"]).unwrap(),
+            (None, Some("weather".into()), true)
+        );
+        assert_eq!(
+            rm(&["nasiko", "rm", "-n", "weather"]).unwrap(),
+            (None, Some("weather".into()), false)
+        );
+        assert!(rm(&["nasiko", "rm"]).is_err(), "an agent is required");
+        assert!(
+            rm(&["nasiko", "rm", "weather", "--name", "other"]).is_err(),
+            "not both"
+        );
+    }
+
+    #[test]
+    fn parses_deploy_dry_run() {
+        let cli = Cli::try_parse_from(["nasiko", "deploy", ".", "--dry-run", "--yes"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Ops(AgentOpsCommands::Deploy {
+                dry_run: true,
+                yes: true,
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn parses_doctor_and_completions() {
         let doctor = Cli::try_parse_from(["nasiko", "doctor"]).unwrap();
         assert!(matches!(doctor.command, Commands::Cp(CpCommands::Doctor)));

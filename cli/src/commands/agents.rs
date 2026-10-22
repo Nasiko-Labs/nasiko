@@ -349,24 +349,10 @@ pub fn scale(agent: &str, replicas: u32) -> Result<()> {
     Ok(())
 }
 
-pub fn rm(id: Option<&str>, name: Option<&str>, force: bool) -> Result<()> {
-    let (agent_id, label) = match (id, name) {
-        (Some(id), None) => {
-            if uuid::Uuid::parse_str(id).is_err() {
-                bail!(
-                    "'{}' is not a valid UUID — use --name to delete by name",
-                    id
-                );
-            }
-            (id.to_string(), id.to_string())
-        }
-        (None, Some(n)) => {
-            let resolved = resolve_agent_id(n)?;
-            (resolved, n.to_string())
-        }
-        (None, None) => bail!("provide an agent UUID or use --name <name>"),
-        (Some(_), Some(_)) => bail!("provide either an id or --name, not both"),
-    };
+/// Terminate and deregister `agent` — a UUID, or a name resolved to one by exact match.
+pub fn rm(agent: &str, force: bool) -> Result<()> {
+    let agent_id = resolve_agent_id(agent)?;
+    let label = agent;
 
     if !force {
         let confirm = dialoguer::Confirm::new()
@@ -385,12 +371,12 @@ pub fn rm(id: Option<&str>, name: Option<&str>, force: bool) -> Result<()> {
     // `ps`/`agents ls` forever after a "successful" removal.
     let result: DeletedAgent = client.delete_json(&format!("/agents/{agent_id}"))?;
     for err in &result.runtime_errors {
-        eprintln!("warning: {err}");
+        term::print_warning(err);
     }
-    println!(
+    term::print_success(&format!(
         "Removed: {label} ({} container(s) stopped)",
         result.containers_stopped
-    );
+    ));
     Ok(())
 }
 
@@ -486,9 +472,15 @@ pub fn resolve_agent_id(name_or_id: &str) -> Result<String> {
 
     match matches.as_slice() {
         [one] => Ok(one.id.clone()),
-        [] => bail!(
-            "no agent named '{name_or_id}' found on the active cluster (run `nasiko agents ls`)"
-        ),
+        [] => {
+            let hint = suggest_agent_name(&client, name_or_id)
+                .map(|name| format!(" — did you mean '{name}'?"))
+                .unwrap_or_default();
+            bail!(
+                "no agent named '{name_or_id}' found on the active cluster{hint} \
+                 (run `nasiko agents ls`)"
+            )
+        }
         many => bail!(
             "multiple agents named '{name_or_id}': {} — use an ID instead",
             many.iter()
@@ -497,6 +489,53 @@ pub fn resolve_agent_id(name_or_id: &str) -> Result<String> {
                 .join(", ")
         ),
     }
+}
+
+/// Pages of agent names [`suggest_agent_name`] reads at most — it only runs after a lookup
+/// has already failed, so it stays cheap even on a large cluster.
+const SUGGESTION_MAX_PAGES: i64 = 5;
+
+/// The one agent name close enough to `typed` to be what was meant, for a "did you mean"
+/// hint. Only ever shown, never acted on. Fetches names without the `q=` filter, since a
+/// misspelling won't match it; any fetch error just means no suggestion.
+fn suggest_agent_name(client: &Client, typed: &str) -> Option<String> {
+    let mut names = Vec::new();
+    for page in 0..SUGGESTION_MAX_PAGES {
+        let path = format!("/registry/user/agents?limit=100&offset={}", page * 100);
+        let raw: serde_json::Value = client.get_json(&path).ok()?;
+        let agents = unwrap_agents(raw).ok()?;
+        let full_page = agents.len() == 100;
+        names.extend(agents.into_iter().map(|a| a.name));
+        if !full_page {
+            break;
+        }
+    }
+    closest_match(typed, &names).map(str::to_string)
+}
+
+/// The candidate nearest to `typed` by edit distance (case-insensitive), if it is within a
+/// third of `typed`'s length (at least 1) and strictly closer than every other candidate —
+/// a tie means no suggestion, rather than a guess.
+fn closest_match<'a>(typed: &str, candidates: &'a [String]) -> Option<&'a str> {
+    let typed = typed.to_lowercase();
+    let max_distance = (typed.chars().count() / 3).max(1);
+    let mut best: Option<(&str, usize)> = None;
+    let mut tied = false;
+    for candidate in candidates {
+        let distance = strsim::levenshtein(&typed, &candidate.to_lowercase());
+        if distance > max_distance {
+            continue;
+        }
+        match best {
+            Some((name, d)) if distance == d && name != candidate => tied = true,
+            Some((_, d)) if distance >= d => {}
+            _ => {
+                best = Some((candidate, distance));
+                tied = false;
+            }
+        }
+    }
+    best.filter(|_| !tied).map(|(name, _)| name)
 }
 
 pub fn cmd_ls() -> Result<()> {
@@ -1136,6 +1175,35 @@ mod tests {
             format_log_line(&precise),
             "2026-10-22T12:00:00.123 WARN  [?] slow"
         );
+    }
+
+    fn names(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn closest_match_suggests_a_near_typo() {
+        let agents = names(&["weather", "billing", "notes"]);
+        assert_eq!(closest_match("wether", &agents), Some("weather"));
+        assert_eq!(closest_match("WEATHER", &agents), Some("weather"));
+        assert_eq!(closest_match("biling", &agents), Some("billing"));
+    }
+
+    #[test]
+    fn closest_match_stays_quiet_when_nothing_is_close() {
+        let agents = names(&["weather", "billing"]);
+        assert_eq!(closest_match("payments", &agents), None);
+        assert_eq!(closest_match("w", &agents), None);
+        assert_eq!(closest_match("anything", &[]), None);
+    }
+
+    #[test]
+    fn closest_match_refuses_to_guess_between_equally_close_names() {
+        let agents = names(&["agent-a", "agent-b"]);
+        assert_eq!(closest_match("agent-c", &agents), None);
+        // ...but a strictly closer later candidate still wins over an earlier tie.
+        let agents = names(&["agent-a", "agent-b", "agent-cc"]);
+        assert_eq!(closest_match("agent-ccc", &agents), Some("agent-cc"));
     }
 
     #[test]
