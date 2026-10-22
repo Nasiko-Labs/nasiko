@@ -121,14 +121,6 @@ async fn main() {
         nasiko_server::state::AppState::from_config_with_db(config, auth, runtime, oci_storage, db)
             .await;
     state.init().await;
-    // Clear stale coding-agent session leases left by a prior crash, then keep
-    // reconciling session rows against live containers in the background.
-    nasiko_server::coding::spawn_reconciler(state.clone());
-    // Purge expired session-token revocations so the table only holds tokens that
-    // could still verify (the turn path records them; they self-expire anyway).
-    tokio::spawn(nasiko_server::coding::revocation::sweep_loop(
-        state.db.clone(),
-    ));
     let app = nasiko_server::build_app(state, static_handler);
 
     let listener = tokio::net::TcpListener::bind(&bind).await.unwrap();

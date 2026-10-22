@@ -326,8 +326,9 @@ pub struct OrchestratorConfig {
     /// framing of what this orchestrator is for, while a policy is operator
     /// rules that outlive any one caller.
     pub policy: Option<Arc<dyn DelegationPolicy>>,
-    /// Text prepended to the message of every agent call this orchestration
-    /// makes. `None` sends the model's own wording unchanged.
+    /// Text sent with every agent call this orchestration makes, as its own
+    /// message part after the model's own message. `None` sends the model's
+    /// own wording unchanged.
     ///
     /// Distinct from `preamble`, which reaches only this orchestrator's own
     /// system prompt: a minted sub-leg is a fresh conversation with a different
