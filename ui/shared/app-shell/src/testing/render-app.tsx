@@ -15,7 +15,9 @@
 // `redirect` route replaces the URL with its target and a `superuser` route sends a non-superuser (the re-read
 // `/api/me`) to its `to`, as the server guard does (the lab's `beforeLoad` redirects ran in its router). An edition's
 // own routes (EE: Access control) are not in the public map: its tests pass them as `routes` (the edition's generated
-// map, tooling/routes/generate.mjs), so this harness never imports enterprise code.
+// map, tooling/routes/generate.mjs), so this harness never imports enterprise code. The tree sits in the app's motion
+// host (`MotionProvider`, app scope with the lab's feature set, as RootApplication's `UiProvider` gives it), so reveal
+// entrances (development 8bf09bf29) finish as in the app.
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { act, type RenderResult } from "@testing-library/react";
 import { usePathname, useRouter, useSearchParams } from "@nasiko/app-core/navigation";
@@ -24,6 +26,7 @@ import { createElement, Suspense, useEffect, type ComponentType } from "react";
 import * as z from "zod/mini";
 import { OSS, type Edition } from "@nasiko/app-core/edition/edition";
 import { EditionProvider } from "@nasiko/app-core/edition/EditionProvider";
+import { MotionProvider } from "@nasiko/ui/motion";
 import { meQueryOptions, useProductScope, type Me } from "@nasiko/data-access/product";
 import { ADMIN_ID } from "@nasiko/mocks/seed-harness";
 import { navigate as harnessNavigate, renderWithRouter, routerState } from "@nasiko/testing/router";
@@ -272,10 +275,14 @@ export function renderApp(
   } = {},
 ): RenderResult & { router: TestRouter; readonly queryClient: QueryClient } {
   const extra = routes.map(withMatcher);
+  // The app's motion host (RootApplication's UiProvider: app scope, the lab's feature set), so `m.*` components animate
+  // as they do in the app; without it a reveal entrance stays at its hidden frame (opacity 0).
   const result = renderWithRouter(
-    <EditionProvider edition={edition}>
-      <App me={me} edition={edition} extra={extra} />
-    </EditionProvider>,
+    <MotionProvider scope="app" features="max">
+      <EditionProvider edition={edition}>
+        <App me={me} edition={edition} extra={extra} />
+      </EditionProvider>
+    </MotionProvider>,
     { url },
   );
   return Object.assign(result, {
