@@ -11,6 +11,7 @@ pub mod context_selection;
 pub mod deploy;
 pub mod deployments;
 pub mod dev;
+pub mod doctor;
 pub mod github;
 pub mod import;
 pub mod integration;

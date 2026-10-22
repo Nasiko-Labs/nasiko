@@ -561,8 +561,18 @@ impl Client {
     }
 
     pub fn health_check(url: &str) -> Result<()> {
+        Self::health_check_with_timeout(url, None)
+    }
+
+    /// [`Self::health_check`] bounded by `timeout`, so a probe against an address that never
+    /// answers fails instead of hanging.
+    pub(crate) fn health_check_with_timeout(
+        url: &str,
+        timeout: Option<std::time::Duration>,
+    ) -> Result<()> {
         let agent = Agent::new_with_config(
             ureq::config::Config::builder()
+                .timeout_global(timeout)
                 .http_status_as_error(false)
                 .build(),
         );
