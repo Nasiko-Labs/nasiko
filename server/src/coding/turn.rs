@@ -170,7 +170,6 @@ async fn start_turn(
         &state.db,
         &req.session_id,
         SessionRuntimeState::Starting,
-        Some(&state.config.agent_runtime),
         Some(&handle),
     )
     .await?;
@@ -180,7 +179,6 @@ async fn start_turn(
         &state.db,
         &req.session_id,
         SessionRuntimeState::Running,
-        None,
         None,
     )
     .await?;

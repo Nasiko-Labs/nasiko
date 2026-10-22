@@ -126,26 +126,23 @@ pub async fn release_turn(db: &PgPool, lease: &TurnLease) -> sqlx::Result<()> {
     Ok(())
 }
 
-/// Record the container now backing a session and its lifecycle state. `None`
-/// arguments leave the existing `runtime_kind` / `runtime_handle` untouched, so
-/// a plain state transition need not re-supply them.
+/// Record the container now backing a session and its lifecycle state. A `None`
+/// `runtime_handle` leaves the existing one untouched, so a plain state
+/// transition need not re-supply it.
 pub async fn set_runtime_state(
     db: &PgPool,
     session_id: &str,
     state: SessionRuntimeState,
-    runtime_kind: Option<&str>,
     runtime_handle: Option<&str>,
 ) -> sqlx::Result<()> {
     sqlx::query(
         "UPDATE chat_sessions \
          SET runtime_state = $2, \
-             runtime_kind = COALESCE($3, runtime_kind), \
-             runtime_handle = COALESCE($4, runtime_handle) \
+             runtime_handle = COALESCE($3, runtime_handle) \
          WHERE session_id = $1",
     )
     .bind(session_id)
     .bind(state.as_str())
-    .bind(runtime_kind)
     .bind(runtime_handle)
     .execute(db)
     .await?;

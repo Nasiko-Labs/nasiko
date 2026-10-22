@@ -34,9 +34,10 @@ ALTER TABLE chat_sessions
     -- The agent's own session id from `session/new`. NULL until the first turn
     -- opens a session; required later to `session/load` on the cold path.
     ADD COLUMN acp_session_id TEXT,
-    -- Which runtime backs this session's container: 'docker' or 'k8s'.
-    ADD COLUMN runtime_kind TEXT,
-    -- Backend handle for that container: Docker container id, or K8s object name.
+    -- Backend handle for the session's container: Docker container id, or K8s
+    -- object name. The runtime itself is a single deployment-wide choice
+    -- (`AGENT_RUNTIME`), so it is not recorded per session — the turn path drives
+    -- every runtime the same way through the `ContainerRuntime` trait.
     ADD COLUMN runtime_handle TEXT,
     -- Where the container is in its lifecycle. 'parked' = no container running
     -- (the default and the cold-start state); 'starting' = being brought up;
