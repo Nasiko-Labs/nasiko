@@ -81,13 +81,19 @@ db_enum!(HitlStatus {
 // auto-retried. `Skipped` = resume deliberately never attempted for this row (a mirrored
 // `mcp_tool` row whose real resume happens on its linked `direct_chat`/`agent_proxy` row instead
 // — see `repo::skip_resume_for_mirrored_row`'s own doc comment); distinct from `Completed`
-// because no delivery attempt was ever made.
+// because no delivery attempt was ever made. `AgentLostTask` = the agent answered the resume with
+// A2A `TaskNotFoundError` (JSON-RPC -32001, also as the body of an HTTP 404) on every one of a
+// bounded number of re-deliveries: it no longer holds the paused task (it restarted, or the answer
+// never reached a replica that has it), so the answer reached no task.
+// Terminal and never retried or requeued, since re-sending cannot find a task that is gone;
+// distinct from `Failed` (delivery itself failed) and `Completed` (a live task got the answer).
 db_enum!(ResumeStatus {
     NotStarted => "not_started",
     Completed => "completed",
     Failed => "failed",
     DeliveryOutcomeUnknown => "delivery_outcome_unknown",
     Skipped => "skipped",
+    AgentLostTask => "agent_lost_task",
 });
 
 /// Wire vocabulary for the `tool_approval`/`auth_required` resolve flows. These live outside
@@ -375,6 +381,7 @@ mod tests {
         "failed",
         "delivery_outcome_unknown",
         "skipped",
+        "agent_lost_task",
     ];
 
     fn assert_round_trips<T>(variants: &[T])
@@ -449,6 +456,7 @@ mod tests {
             ResumeStatus::Failed,
             ResumeStatus::DeliveryOutcomeUnknown,
             ResumeStatus::Skipped,
+            ResumeStatus::AgentLostTask,
         ];
         assert_round_trips(&all);
         assert_matches_sql_check(&all, SQL_RESUME_STATUS_VALUES);
@@ -497,6 +505,7 @@ mod tests {
             ResumeStatus::Failed,
             ResumeStatus::DeliveryOutcomeUnknown,
             ResumeStatus::Skipped,
+            ResumeStatus::AgentLostTask,
         ]);
     }
 
@@ -522,17 +531,19 @@ mod tests {
         // migration file and compares it against those consts value-for-value, in order — so
         // the migration and the consts above can't silently drift apart in either direction.
         //
-        // `resume_status` reads from 0027, not 0007: sqlx hashes applied migration files, so a
+        // `resume_status` reads from 0055, not 0007: sqlx hashes applied migration files, so a
         // widened CHECK on an already-shipped column has to be re-expressed as a forward-only
-        // ALTER (0011_baseline_deltas.sql's own precedent) rather than edited in place — 0027 is
-        // the column's current source of truth, same as 0007 still is for the other three.
+        // ALTER (0011_baseline_deltas.sql's own precedent) rather than edited in place. 0055 (which
+        // re-states 0027's list plus `agent_lost_task`) is the column's current source of truth,
+        // same as 0007 still is for the other three.
         let migration_0007 = include_str!("../../migrations/0007_hitl.sql");
-        let migration_0027 = include_str!("../../migrations/0027_hitl_resume_status_skipped.sql");
+        let migration_0060 =
+            include_str!("../../migrations/0060_hitl_resume_status_agent_lost_task.sql");
         for (migration, column, expected) in [
             (migration_0007, "kind", SQL_KIND_VALUES),
             (migration_0007, "origin", SQL_ORIGIN_VALUES),
             (migration_0007, "status", SQL_STATUS_VALUES),
-            (migration_0027, "resume_status", SQL_RESUME_STATUS_VALUES),
+            (migration_0060, "resume_status", SQL_RESUME_STATUS_VALUES),
         ] {
             let actual = parse_check_values(migration, column);
             assert_eq!(

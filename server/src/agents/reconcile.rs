@@ -66,15 +66,24 @@ pub async fn reconcile_agents_on_startup(state: &AppState) {
             "agent reconciliation: no live workload for a DB-running agent, redeploying"
         );
 
-        let mut env = state.agent_env(agent.id).await;
-        // Same env-wiring every other deploy path applies (rollback, seed,
-        // upload) — a redeployed-but-recovered agent must behave identically
-        // to one that was deployed normally, not miss router wiring.
-        crate::llm_router::wiring::inject_agent_llm_env(
-            &state.db,
-            &mut env,
+        // Read before the deploy env is built, as on every deploy path.
+        let scaling = state.agent_scaling.begin_deploy(agent.id).await;
+        let replica_bounds = match scaling.bounds().await {
+            Ok(bounds) => bounds,
+            Err(e) => {
+                warn!(agent_id = %agent.id, error = %e, "agent reconciliation: could not read replica bounds, not redeploying");
+                continue;
+            }
+        };
+        // Same env every other deploy path gets - a redeployed-but-recovered
+        // agent must behave identically to one that was deployed normally.
+        // The same image comes back, so a durable agent is durable again as it starts.
+        let env = crate::agents::deploy_env::build(
+            state,
             agent.id,
-            Some(agent.owner_id),
+            agent.owner_id,
+            Default::default(),
+            crate::agents::deploy_env::StateModeOnDeploy::Keep,
         )
         .await;
 
@@ -87,7 +96,7 @@ pub async fn reconcile_agents_on_startup(state: &AppState) {
             vec![],
             env,
             &state.config.agent_default_memory,
-            state.config.agent_max_replicas,
+            replica_bounds,
             agent.writable,
             agent.writable_path.clone(),
             agent.owner_id,
@@ -101,7 +110,7 @@ pub async fn reconcile_agents_on_startup(state: &AppState) {
         )
         .await;
 
-        match state.runtime.deploy(&spec).await {
+        match scaling.deploy(&spec).await {
             Ok(deploy_status) => {
                 let agent_url = crate::agents::resolve_agent_url(
                     &state.runtime,

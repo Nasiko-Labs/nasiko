@@ -7,7 +7,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::authz::HitlIdentity;
-use crate::types::{HitlKind, HitlOrigin, HitlRequest, HitlStatus, NewHitlRequest};
+use crate::types::{HitlKind, HitlOrigin, HitlRequest, HitlStatus, NewHitlRequest, ResumeStatus};
 
 #[derive(Debug, thiserror::Error)]
 pub enum HitlError {
@@ -133,13 +133,14 @@ pub trait HitlStore: Send + Sync {
     async fn mark_resume_completed(&self, id: Uuid) -> Result<(), HitlError>;
     /// Delivery failed before or during the attempt. Releases the lease for a retry unless
     /// `resume_dispatch_attempts` has reached `failure`'s threshold, in which case `resume_status`
-    /// becomes the terminal `failed`.
+    /// becomes the terminal `failed`. Returns the `resume_status` the row holds afterwards, so the
+    /// caller knows whether this failure was terminal without reading the row back.
     async fn mark_resume_failed(
         &self,
         id: Uuid,
         error: &str,
         failure: FailureKind,
-    ) -> Result<(), HitlError>;
+    ) -> Result<ResumeStatus, HitlError>;
     /// Flips every `pending` row whose `expires_at` has passed to `expired`. Called once per
     /// dispatcher poll tick (`hitl/mod.rs::run`) — cheap, since `idx_hitl_pending_owner` already
     /// covers `status = 'pending'`. Returns the number of rows expired, for logging.
@@ -152,8 +153,25 @@ pub trait HitlStore: Send + Sync {
     /// outcome — i.e. every attempt up to the cap crashed the dispatcher process mid-delivery
     /// rather than failing cleanly (a clean HTTP/parse failure already self-terminates via
     /// `mark_resume_failed`'s own cap check). Sets `resume_status = 'delivery_outcome_unknown'`
-    /// and releases the lease so it stops being reclaimed.
-    async fn mark_resume_unknown(&self, id: Uuid) -> Result<(), HitlError>;
+    /// and releases the lease so it stops being reclaimed. `reason` is stored in
+    /// `resume_last_error` so the unknown outcome is explained to operators.
+    async fn mark_resume_unknown(&self, id: Uuid, reason: &str) -> Result<(), HitlError>;
+    /// The agent answered every re-delivery of the resume with "no such task" (A2A
+    /// `TaskNotFoundError`, JSON-RPC -32001): it no longer holds the paused task, so the human's
+    /// answer reached no task. Sets
+    /// `resume_status = 'agent_lost_task'`, releases the lease and stores `error` (which signal
+    /// said so) in `resume_last_error`. Terminal and never retried: re-sending the answer cannot
+    /// find a task that is gone, so unlike `mark_resume_unknown` there is no double-delivery to
+    /// guard against. Only acts on a row still `not_started` AND still on claim number `attempt`
+    /// (`resume_dispatch_attempts`), so neither a late duplicate nor an attempt whose lease lapsed
+    /// and was taken over by a later claim can overwrite an outcome the live claim owns. Returns
+    /// whether this call wrote the outcome; the caller skips every follow-up side effect when not.
+    async fn mark_resume_agent_lost_task(
+        &self,
+        id: Uuid,
+        attempt: i32,
+        error: &str,
+    ) -> Result<bool, HitlError>;
     /// Records that the human clicked "start authorization" (§7/Phase 4) — an in-place,
     /// non-terminal annotation on `human_response.auth_outcome`, deliberately **not** a call to
     /// `resolve()`: the row stays `pending` (the human hasn't actually completed the external
@@ -475,7 +493,14 @@ impl HitlStore for PgHitlStore {
         .await;
 
         match result {
-            Ok(row) => row.try_into(),
+            Ok(row) => {
+                // `create` is the one funnel every conversational and MAF pause goes through; the
+                // `mcp_tool` rows are counted where `repo` inserts them. Not reached when the
+                // insert collided with an already-pending row below: no row was created.
+                let created: HitlRequest = row.try_into()?;
+                crate::observer::pause_recorded(&created);
+                Ok(created)
+            }
             Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => {
                 match self.find_existing_pending(&req).await? {
                     Some(existing) => Ok(existing),
@@ -735,20 +760,26 @@ impl HitlStore for PgHitlStore {
         id: Uuid,
         error: &str,
         failure: FailureKind,
-    ) -> Result<(), HitlError> {
-        sqlx::query(
+    ) -> Result<ResumeStatus, HitlError> {
+        let status: Option<String> = sqlx::query_scalar(
             "UPDATE hitl_requests
                 SET resume_last_error = $2,
                     resume_claimed_at = NULL,
                     resume_status = CASE WHEN resume_dispatch_attempts >= $3 THEN 'failed' ELSE resume_status END
-              WHERE id = $1",
+              WHERE id = $1
+          RETURNING resume_status",
         )
         .bind(id)
         .bind(error)
         .bind(failure.threshold())
-        .execute(&self.pool)
+        .fetch_optional(&self.pool)
         .await?;
-        Ok(())
+        let status = status.ok_or(HitlError::NotFound(id))?;
+        status.parse().map_err(|_| {
+            HitlError::CorruptRow(format!(
+                "resume_status column holds unrecognized value {status:?}"
+            ))
+        })
     }
 
     async fn expire_stale(&self) -> Result<u64, HitlError> {
@@ -781,16 +812,38 @@ impl HitlStore for PgHitlStore {
         }
     }
 
-    async fn mark_resume_unknown(&self, id: Uuid) -> Result<(), HitlError> {
+    async fn mark_resume_unknown(&self, id: Uuid, reason: &str) -> Result<(), HitlError> {
         sqlx::query(
             "UPDATE hitl_requests
-                SET resume_status = 'delivery_outcome_unknown', resume_claimed_at = NULL
+                SET resume_status = 'delivery_outcome_unknown', resume_claimed_at = NULL,
+                    resume_last_error = $2
               WHERE id = $1",
         )
         .bind(id)
+        .bind(reason)
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    async fn mark_resume_agent_lost_task(
+        &self,
+        id: Uuid,
+        attempt: i32,
+        error: &str,
+    ) -> Result<bool, HitlError> {
+        let result = sqlx::query(
+            "UPDATE hitl_requests
+                SET resume_status = $4, resume_claimed_at = NULL, resume_last_error = $3
+              WHERE id = $1 AND resume_status = 'not_started' AND resume_dispatch_attempts = $2",
+        )
+        .bind(id)
+        .bind(attempt)
+        .bind(error)
+        .bind(ResumeStatus::AgentLostTask.as_str())
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
     }
 
     async fn record_auth_start(&self, id: Uuid) -> Result<Option<HitlRequest>, HitlError> {
@@ -960,7 +1013,7 @@ mod resolve_display_row_tests {
             _id: Uuid,
             _error: &str,
             _failure: FailureKind,
-        ) -> Result<(), HitlError> {
+        ) -> Result<ResumeStatus, HitlError> {
             unimplemented!("not exercised by resolve_display_row")
         }
         async fn expire_stale(&self) -> Result<u64, HitlError> {
@@ -969,7 +1022,15 @@ mod resolve_display_row_tests {
         async fn cancel(&self, _id: Uuid, _canceled_by: Uuid) -> Result<ResolveOutcome, HitlError> {
             unimplemented!("not exercised by resolve_display_row")
         }
-        async fn mark_resume_unknown(&self, _id: Uuid) -> Result<(), HitlError> {
+        async fn mark_resume_unknown(&self, _id: Uuid, _reason: &str) -> Result<(), HitlError> {
+            unimplemented!("not exercised by resolve_display_row")
+        }
+        async fn mark_resume_agent_lost_task(
+            &self,
+            _id: Uuid,
+            _attempt: i32,
+            _error: &str,
+        ) -> Result<bool, HitlError> {
             unimplemented!("not exercised by resolve_display_row")
         }
         async fn record_auth_start(&self, _id: Uuid) -> Result<Option<HitlRequest>, HitlError> {

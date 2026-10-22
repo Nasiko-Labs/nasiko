@@ -392,22 +392,28 @@ pub(crate) async fn build_and_deploy(
             .execute(&state.db)
             .await;
 
+    let scaling = state.agent_scaling.begin_deploy(agent_id).await;
+    let replica_bounds = scaling.bounds().await.map_err(|e| {
+        tracing::error!(%e, %agent_id, "build_and_deploy: read replica bounds");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal error".to_string(),
+        )
+    })?;
     // Deploy container — UUID-keyed (see build_agent_spec) so import re-targets the
     // existing workload on re-import and can't collide cross-team on the name.
     // Seed from agent_env (per-agent secrets + platform OPENAI_*/PORT fallback) like
     // every other deploy path (agents/upload.rs, deployments.rs::restart) — this path
     // used to start from an empty map, so imported agents booted with no LLM env at
     // all and failed on their first call with a 401.
-    let mut env_vars = state.agent_env(agent_id).await;
-    crate::llm_router::wiring::inject_agent_llm_env(
-        &state.db,
-        &mut env_vars,
+    let env_vars = crate::agents::deploy_env::build(
+        state,
         agent_id,
-        Some(owner_id),
+        owner_id,
+        Default::default(),
+        crate::agents::deploy_env::StateModeOnDeploy::Reset,
     )
     .await;
-    // Per-agent MCP gateway credential (rotates on re-import).
-    crate::mcp::wiring::inject_agent_gateway_token(&state.db, &mut env_vars, agent_id).await;
     let mut spec = crate::agents::build_agent_spec(
         agent_id,
         &meta.name,
@@ -415,7 +421,7 @@ pub(crate) async fn build_and_deploy(
         vec![],
         env_vars,
         &state.config.agent_default_memory,
-        state.config.agent_max_replicas,
+        replica_bounds,
         // Catalog import has no --writable equivalent yet.
         false,
         None,
@@ -430,7 +436,7 @@ pub(crate) async fn build_and_deploy(
     )
     .await;
 
-    let container_name = match state.runtime.deploy(&spec).await {
+    let container_name = match scaling.deploy(&spec).await {
         Ok(status) => {
             // Sibling deploy paths (agents/upload.rs, agents/update.rs) all mark
             // the agent `running` with its resolved URL immediately after a
@@ -1111,21 +1117,27 @@ pub(crate) async fn import_registry(
             }
         };
 
+        let scaling = state.agent_scaling.begin_deploy(agent_id).await;
+        let replica_bounds = match scaling.bounds().await {
+            Ok(bounds) => bounds,
+            Err(e) => {
+                tracing::error!(%e, %agent_id, "import_registry: read replica bounds");
+                return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+            }
+        };
         // Deploy — UUID-keyed (see build_agent_spec).
         // Seed from agent_env (per-agent secrets + platform OPENAI_*/PORT fallback) like
         // every other deploy path (agents/upload.rs, deployments.rs::restart) — this path
         // used to start from an empty map, so imported agents booted with no LLM env at
         // all and failed on their first call with a 401.
-        let mut env_vars = state.agent_env(agent_id).await;
-        crate::llm_router::wiring::inject_agent_llm_env(
-            &state.db,
-            &mut env_vars,
+        let env_vars = crate::agents::deploy_env::build(
+            &state,
             agent_id,
-            Some(owner_id),
+            owner_id,
+            Default::default(),
+            crate::agents::deploy_env::StateModeOnDeploy::Reset,
         )
         .await;
-        // Per-agent MCP gateway credential (rotates on redeploy).
-        crate::mcp::wiring::inject_agent_gateway_token(&state.db, &mut env_vars, agent_id).await;
         let mut spec = crate::agents::build_agent_spec(
             agent_id,
             &agent_name,
@@ -1133,7 +1145,7 @@ pub(crate) async fn import_registry(
             vec![],
             env_vars,
             &state.config.agent_default_memory,
-            state.config.agent_max_replicas,
+            replica_bounds,
             // Catalog import has no --writable equivalent yet.
             false,
             None,
@@ -1148,7 +1160,7 @@ pub(crate) async fn import_registry(
         )
         .await;
 
-        let container_name = match state.runtime.deploy(&spec).await {
+        let container_name = match scaling.deploy(&spec).await {
             Ok(status) => {
                 let agent_url = crate::agents::resolve_agent_url(
                     &state.runtime,

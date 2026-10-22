@@ -238,6 +238,12 @@ pub struct DeploymentSpec {
     pub min_replicas: u32,
     /// Maximum replica count hint. Not enforced by this crate.
     pub max_replicas: u32,
+    /// Per-replica capacity target for a backend that autoscales: how many requests
+    /// one replica is expected to serve at once. `None` leaves it to the backend.
+    /// Only meaningful when `min_replicas < max_replicas`; ignored by backends that
+    /// do not autoscale.
+    #[serde(default)]
+    pub replica_target: Option<u32>,
     /// Environment variables injected into every container.
     pub env_vars: HashMap<String, String>,
     /// Container port(s). The first port is treated as the primary service port.

@@ -1,8 +1,8 @@
 //! The single source of truth for which HTTP headers reach an agent container, and under what
 //! names — shared by `oss/server/src/agent_proxy.rs` (which builds the outbound request to an
-//! agent) and `ee/server/src/injection_proxy.rs` (the EE hop that relays it onward when
+//! agent) and the edition's forwarding hop (which relays it onward when
 //! `MEMORY_ENABLED=true`). Before this module existed, the two kept independent allowlists;
-//! `injection_proxy.rs`'s was copied from `agent_proxy.rs`'s *inbound* copy-from-caller allowlist
+//! the hop's was copied from `agent_proxy.rs`'s *inbound* copy-from-caller allowlist
 //! rather than its *outbound* header set, so the EE hop silently dropped `x-user-id`/`x-username`/
 //! `x-is-superuser` the moment memory was enabled — found in review, not by a test. Both call
 //! sites now reference these constants by name, so a header added to one side is automatically
@@ -30,7 +30,7 @@ pub const HEADER_X_IS_SUPERUSER: &str = "x-is-superuser";
 /// Trace context and caller identity, computed server-side from the caller's already-verified
 /// claims — never copied from the caller's own inbound headers (see [`CALLER_SAFE_HEADERS`]'s doc
 /// comment for why). `agent_proxy.rs` sets these explicitly, by name, using these same constants;
-/// `injection_proxy.rs` relays them onward alongside [`CALLER_SAFE_HEADERS`] because from its
+/// the forwarding hop relays them onward alongside [`CALLER_SAFE_HEADERS`] because from its
 /// point of view — a second HTTP hop — they're indistinguishable from any other inbound header
 /// without this shared list naming them.
 pub const IDENTITY_HEADERS: &[&str] = &[

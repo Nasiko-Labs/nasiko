@@ -65,6 +65,28 @@ pub struct NewAuthRequired {
     pub question: Value,
 }
 
+/// A row an `INSERT ... ON CONFLICT DO UPDATE` returned, plus whether the statement inserted it.
+/// `xmax` is zero on a freshly inserted tuple and set once the conflict branch updated an existing
+/// one, which is the only way to tell "a pause was created" from "the pending row was touched
+/// again" without a second round trip.
+#[derive(sqlx::FromRow)]
+struct UpsertedRow {
+    #[sqlx(flatten)]
+    row: HitlRequestRow,
+    inserted: bool,
+}
+
+impl UpsertedRow {
+    /// The request, reported to the observer as a new pause only when this call created it.
+    fn into_request_observing_pause(self) -> Result<HitlRequest> {
+        let request = HitlRequest::try_from(self.row)?;
+        if self.inserted {
+            crate::observer::pause_recorded(&request);
+        }
+        Ok(request)
+    }
+}
+
 /// Create a pending `auth_required`/`mcp_tool` request, or — if one already
 /// exists for this exact `(owner_user_id, agent_id, connector_id, context_id)`
 /// — return that existing row unchanged (only `updated_at` is bumped).
@@ -87,7 +109,7 @@ pub async fn create_pending_auth_required_with_ttl(
     ttl_days: i64,
 ) -> Result<HitlRequest> {
     let expires_at = Utc::now() + Duration::days(ttl_days);
-    let row = sqlx::query_as::<_, HitlRequestRow>(
+    let upserted = sqlx::query_as::<_, UpsertedRow>(
         r#"
         INSERT INTO hitl_requests
             (kind, origin, agent_id, owner_user_id, connector_id, context_id, question, expires_at)
@@ -108,7 +130,7 @@ pub async fn create_pending_auth_required_with_ttl(
             -- of reusing this one (found in review) — every real re-hit should push the deadline
             -- out exactly as far as a fresh row would get.
             DO UPDATE SET updated_at = now(), expires_at = EXCLUDED.expires_at
-        RETURNING *
+        RETURNING *, (xmax = 0) AS inserted
         "#,
     )
     .bind(req.agent_id)
@@ -120,7 +142,7 @@ pub async fn create_pending_auth_required_with_ttl(
     .fetch_one(db)
     .await?;
 
-    row.try_into()
+    upserted.into_request_observing_pause()
 }
 
 /// Everything needed to create a pending `kind=tool_approval`,
@@ -177,7 +199,7 @@ pub async fn create_pending_tool_approval_with_ttl(
     ttl_days: i64,
 ) -> Result<HitlRequest> {
     let expires_at = Utc::now() + Duration::days(ttl_days);
-    let row = sqlx::query_as::<_, HitlRequestRow>(
+    let upserted = sqlx::query_as::<_, UpsertedRow>(
         r#"
         INSERT INTO hitl_requests
             (kind, origin, agent_id, owner_user_id, connector_id, tool_name, context_id, question, expires_at)
@@ -195,7 +217,7 @@ pub async fn create_pending_tool_approval_with_ttl(
             -- pushing its own deadline out instead of expiring mid-retry and then forking into a
             -- brand-new row.
             DO UPDATE SET updated_at = now(), expires_at = EXCLUDED.expires_at
-        RETURNING *
+        RETURNING *, (xmax = 0) AS inserted
         "#,
     )
     .bind(req.agent_id)
@@ -208,7 +230,7 @@ pub async fn create_pending_tool_approval_with_ttl(
     .fetch_one(db)
     .await?;
 
-    row.try_into()
+    upserted.into_request_observing_pause()
 }
 
 /// Look up a request by id — read-only, used by the tests below and by
@@ -828,7 +850,11 @@ pub async fn finish_resume(
     .bind(last_error)
     .fetch_optional(db)
     .await?;
-    row.map(HitlRequest::try_from).transpose()
+    let finished = row.map(HitlRequest::try_from).transpose()?;
+    if let Some(request) = &finished {
+        crate::observer::resume_finished(request, request.resume_status, request.updated_at);
+    }
+    Ok(finished)
 }
 
 /// Marks an `mcp_tool`-origin row's resume as deliberately never attempted — for
@@ -892,20 +918,27 @@ pub async fn skip_resume_for_mirrored_row(db: &PgPool, id: Uuid) -> Result<()> {
 /// matched) and to `claim_for_resume` (blocked by its own non-NULL `resume_claimed_at`) alike —
 /// stuck forever, with the agent never told it was denied.
 pub async fn recover_stuck_resumes(db: &PgPool, lease_minutes: i64) -> Result<u64> {
-    let result = sqlx::query(
+    let rows = sqlx::query_as::<_, HitlRequestRow>(
         r#"
         UPDATE hitl_requests
-           SET resume_status = 'delivery_outcome_unknown'
+           SET resume_status = 'delivery_outcome_unknown',
+               resume_last_error = 'resume attempt was interrupted and could not be confirmed'
          WHERE status IN ('resolved', 'rejected') AND resume_status = 'not_started'
            AND resume_claimed_at IS NOT NULL
            AND resume_claimed_at < now() - make_interval(mins => $1::int)
            AND origin = 'mcp_tool'
+        RETURNING *
         "#,
     )
     .bind(lease_minutes as i32)
-    .execute(db)
+    .fetch_all(db)
     .await?;
-    Ok(result.rows_affected())
+    let quarantined = rows.len() as u64;
+    for row in rows {
+        let request = HitlRequest::try_from(row)?;
+        crate::observer::resume_finished(&request, request.resume_status, request.updated_at);
+    }
+    Ok(quarantined)
 }
 
 /// Manually reset one `delivery_outcome_unknown` row back to claimable — the operator remediation

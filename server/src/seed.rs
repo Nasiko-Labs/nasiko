@@ -160,6 +160,14 @@ pub async fn seed_agents_if_configured(state: &AppState) {
             },
         };
 
+        let scaling = state.agent_scaling.begin_deploy(agent.id).await;
+        let replica_bounds = match scaling.bounds().await {
+            Ok(bounds) => bounds,
+            Err(e) => {
+                warn!(agent = %agent_name, error = %e, "failed to read the seed agent's replica bounds");
+                continue;
+            }
+        };
         let mut env = HashMap::new();
         env.insert("PORT".into(), AGENT_PORT.to_string());
         if !openai_key.is_empty() {
@@ -178,17 +186,16 @@ pub async fn seed_agents_if_configured(state: &AppState) {
             .unwrap_or_else(|_| "http://host.docker.internal:8080".into());
         env.insert("A2A_DISCOVERY_URL".into(), discovery_url);
 
-        // Route the seed agent's LLM SDK through the configured LLM router when set;
-        // otherwise the direct OPENAI_API_KEY/BASE_URL set above remain (best-effort).
-        crate::llm_router::wiring::inject_agent_llm_env(
-            &state.db,
+        // The LLM router replaces the direct OPENAI_API_KEY/BASE_URL set above when
+        // configured; the gateway and state credentials rotate on every re-seed.
+        crate::agents::deploy_env::apply_platform_env(
+            state,
             &mut env,
             agent.id,
-            Some(owner_id),
+            owner_id,
+            crate::agents::deploy_env::StateModeOnDeploy::Reset,
         )
         .await;
-        // Per-agent MCP gateway credential (rotates on every re-seed).
-        crate::mcp::wiring::inject_agent_gateway_token(&state.db, &mut env, agent.id).await;
 
         // UUID-keyed (see agents::build_agent_spec) so a re-seed re-targets the same
         // workload rather than leaving a name-keyed orphan.
@@ -199,7 +206,7 @@ pub async fn seed_agents_if_configured(state: &AppState) {
             vec![AGENT_PORT],
             env,
             &state.config.agent_default_memory,
-            state.config.agent_max_replicas,
+            replica_bounds,
             // SEED_AGENTS has no --writable equivalent yet.
             false,
             None,
@@ -222,7 +229,7 @@ pub async fn seed_agents_if_configured(state: &AppState) {
         )
         .await;
 
-        match state.runtime.deploy(&spec).await {
+        match scaling.deploy(&spec).await {
             Ok(status) => {
                 info!(agent = %agent_name, ?status, "seed agent deployed");
                 let agent_url =
@@ -505,9 +512,24 @@ async fn deploy_internal_agent(
     image: &str,
     force_pull: bool,
 ) -> Result<(), String> {
+    let scaling = state.agent_scaling.begin_deploy(agent_id).await;
+    let replica_bounds = scaling
+        .bounds()
+        .await
+        .map_err(|e| format!("failed to read the replica bounds: {e}"))?;
     let mut env = state.agent_env(agent_id).await;
     env.insert("PORT".into(), AGENT_PORT.to_string());
-    crate::mcp::wiring::inject_agent_gateway_token(&state.db, &mut env, agent_id).await;
+    // Without the gateway credential, McpInjector still sets MCP_GATEWAY_URL but has
+    // no MCP_GATEWAY_TOKEN to complete MCP_GATEWAY_CONNECT_URL with, leaving the
+    // gateway unreachable from inside the container. Credentials only: an internal agent's
+    // model access comes from its own `extra_env`, never the LLM router.
+    crate::agents::deploy_env::apply_credentials(
+        state,
+        &mut env,
+        agent_id,
+        crate::agents::deploy_env::StateModeOnDeploy::Reset,
+    )
+    .await;
 
     let mut spec = crate::agents::build_agent_spec(
         agent_id,
@@ -516,7 +538,7 @@ async fn deploy_internal_agent(
         vec![AGENT_PORT],
         env,
         &state.config.agent_default_memory,
-        state.config.agent_max_replicas,
+        replica_bounds,
         false,
         None,
         owner_id,
@@ -531,11 +553,7 @@ async fn deploy_internal_agent(
     )
     .await;
 
-    let status = state
-        .runtime
-        .deploy(&spec)
-        .await
-        .map_err(|e| e.to_string())?;
+    let status = scaling.deploy(&spec).await.map_err(|e| e.to_string())?;
     info!(agent = %agent_name, ?status, "internal agent deployed");
     let agent_url =
         crate::agents::resolve_agent_url(&state.runtime, &status, &spec.container_id).await;

@@ -6,7 +6,7 @@ use tokio::sync::RwLock;
 use crate::a2a::A2aClient;
 
 /// Metadata about a discovered A2A agent.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct AgentInfo {
     pub id: String,
     pub name: String,
@@ -16,11 +16,32 @@ pub struct AgentInfo {
     /// A header this specific endpoint requires — e.g. the EE injection proxy's own credential,
     /// when `endpoint` is the proxy's address rather than the agent's real one
     /// (`ContainerRuntime::forwarding_endpoint`'s `ForwardTarget::headers`). `None` for every
-    /// plain agent endpoint, which is every agent discovered from the control-plane registry:
-    /// this only ever gets set locally by the orchestrator, which is why it's not required on
-    /// deserialize.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// plain agent endpoint, which is every agent discovered from the control-plane registry.
+    ///
+    /// It is a credential, so it never crosses a serde boundary: `skip` keeps a remote registry
+    /// response from setting a header on outbound calls, and keeps it out of anything the struct
+    /// is serialized into. Only the orchestrator sets it, locally. `Debug` redacts the value.
+    #[serde(skip)]
     pub auth_header: Option<(String, String)>,
+}
+
+impl std::fmt::Debug for AgentInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentInfo")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("description", &self.description)
+            .field("endpoint", &self.endpoint)
+            .field("skills", &self.skills)
+            .field(
+                "auth_header",
+                &self
+                    .auth_header
+                    .as_ref()
+                    .map(|(name, _)| format!("{name}: <redacted>")),
+            )
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -139,4 +160,48 @@ impl AgentRegistry {
 pub enum RegistryError {
     #[error("discovery failed: {0}")]
     Discovery(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn info(auth_header: Option<(String, String)>) -> AgentInfo {
+        AgentInfo {
+            id: "a".into(),
+            name: "agent".into(),
+            description: "d".into(),
+            endpoint: "http://agent".into(),
+            skills: Vec::new(),
+            auth_header,
+        }
+    }
+
+    #[test]
+    fn the_auth_header_is_never_read_from_a_registry_response() {
+        let from_registry = serde_json::json!({
+            "id": "a", "name": "agent", "description": "d", "endpoint": "http://agent",
+            "skills": [], "auth_header": ["authorization", "Bearer attacker-chosen"]
+        });
+        let parsed: AgentInfo = serde_json::from_value(from_registry).unwrap();
+        assert_eq!(parsed.auth_header, None);
+    }
+
+    #[test]
+    fn the_auth_header_is_never_serialized_or_printed() {
+        let secret = (
+            "authorization".to_string(),
+            "Bearer s3cret-token".to_string(),
+        );
+        let with = info(Some(secret));
+        let json = serde_json::to_string(&with).unwrap();
+        assert!(
+            !json.contains("s3cret") && !json.contains("auth_header"),
+            "{json}"
+        );
+        let debug = format!("{with:?}");
+        assert!(!debug.contains("s3cret"), "{debug}");
+        assert!(debug.contains("authorization: <redacted>"), "{debug}");
+        assert!(format!("{:?}", info(None)).contains("auth_header: None"));
+    }
 }

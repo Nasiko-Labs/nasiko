@@ -18,7 +18,9 @@ use nasiko_runtime::{ContainerId, ContainerRuntime, DeploymentSpec, SimulatedRun
 use uuid::Uuid;
 
 mod common;
+mod recorder;
 use common::TestDb;
+use recorder::Recorder;
 
 impl TestDb {
     /// Back a `context_id` with a real `chat_sessions` row owned by this fixture's own
@@ -156,6 +158,7 @@ fn agent_spec(container_id: ContainerId) -> DeploymentSpec {
         image: "example/agent:latest".to_string(),
         min_replicas: 1,
         max_replicas: 1,
+        replica_target: None,
         env_vars: HashMap::new(),
         ports: vec![8080],
         resources: None,
@@ -237,6 +240,7 @@ async fn concurrent_claims_exactly_one_wins() {
 
 #[tokio::test]
 async fn finish_resume_records_completed_outcome() {
+    let recorder = Recorder::installed();
     let db = TestDb::new("hitl_dispatch_test").await;
     let id = db.seed_resolved_tool_approval("ctx-1").await;
     repo::claim_for_resume(&db.pool)
@@ -250,10 +254,16 @@ async fn finish_resume_records_completed_outcome() {
         .expect("claimed row can be finished");
     assert_eq!(updated.resume_status, ResumeStatus::Completed);
     assert_eq!(updated.resume_dispatch_attempts, 1);
+    assert_eq!(
+        recorder.outcomes_of(id),
+        [ResumeStatus::Completed],
+        "the terminal write must be reported to the observer exactly once"
+    );
 }
 
 #[tokio::test]
 async fn finish_resume_does_not_clobber_a_quarantined_row() {
+    let recorder = Recorder::installed();
     let db = TestDb::new("hitl_dispatch_test").await;
     let id = db.seed_resolved_tool_approval("ctx-1").await;
     repo::claim_for_resume(&db.pool)
@@ -269,6 +279,16 @@ async fn finish_resume_does_not_clobber_a_quarantined_row() {
         .expect("recovery sweep");
     assert_eq!(quarantined, 1);
     assert_eq!(db.resume_status_of(id).await, "delivery_outcome_unknown");
+    let reason: Option<String> =
+        sqlx::query_scalar("SELECT resume_last_error FROM hitl_requests WHERE id = $1")
+            .bind(id)
+            .fetch_one(&db.pool)
+            .await
+            .expect("fetch resume_last_error");
+    assert!(
+        reason.is_some_and(|r| r.contains("interrupted")),
+        "the sweep must say why the outcome is unknown"
+    );
 
     // A late-finishing zombie attempt must not be able to overwrite that.
     let result = repo::finish_resume(&db.pool, id, ResumeStatus::Completed, 1, None)
@@ -279,6 +299,11 @@ async fn finish_resume_does_not_clobber_a_quarantined_row() {
         "finish_resume must refuse to overwrite a row the recovery sweep already quarantined"
     );
     assert_eq!(db.resume_status_of(id).await, "delivery_outcome_unknown");
+    assert_eq!(
+        recorder.outcomes_of(id),
+        [ResumeStatus::DeliveryOutcomeUnknown],
+        "the quarantine is the one outcome; the refused zombie write reports nothing"
+    );
 }
 
 #[tokio::test]
@@ -630,6 +655,7 @@ async fn resume_nudge_aborts_when_context_id_names_another_users_chat_session() 
 
 #[tokio::test]
 async fn peer_error_response_is_retried_then_marked_failed() {
+    let recorder = Recorder::installed();
     let db = TestDb::new("hitl_dispatch_test").await;
     let request_id = db.seed_resolved_tool_approval("ctx-peer-error").await;
 
@@ -689,6 +715,7 @@ async fn peer_error_response_is_retried_then_marked_failed() {
         .expect("row exists");
     assert_eq!(row.resume_dispatch_attempts, 3);
     assert!(row.resume_last_error.is_some());
+    assert_eq!(recorder.outcomes_of(request_id), [ResumeStatus::Failed]);
 }
 
 /// A rejected `tool_approval` row must reach the paused agent too, not just an approved one —

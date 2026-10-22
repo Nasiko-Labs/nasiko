@@ -17,7 +17,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use nasiko_orchestrator::maf::types::{ExecutionResult, MafDefinition, StepOutcome};
 use nasiko_orchestrator::maf::{
-    LlmConfig, MafExecutor, MafResume, MafRunContext, STREAM_KEY, WorkerConfig, start_worker,
+    AgentCalls, LlmConfig, MafExecutor, MafResume, MafRunContext, STREAM_KEY, WorkerConfig,
+    start_worker,
 };
 use serial_test::serial;
 use uuid::Uuid;
@@ -206,6 +207,21 @@ async fn queue_executions(
     ids
 }
 
+/// The worker's agent calls, unused here: `CountingExecutor` never calls an agent.
+fn agent_calls() -> AgentCalls {
+    struct Unmetered;
+    impl nasiko_types::agent_call::AgentCallMeter for Unmetered {
+        fn begin(&self, _agent_id: Uuid) -> Box<dyn nasiko_types::agent_call::AgentCallHandle> {
+            Box::new(nasiko_types::agent_call::UnmeteredCall)
+        }
+    }
+    AgentCalls {
+        client: reqwest::Client::new(),
+        meter: Arc::new(Unmetered),
+        outbound: Arc::new(nasiko_orchestrator::outbound::NoOutboundPrefix),
+    }
+}
+
 fn start(db: &sqlx::PgPool, redis: redis::Client, concurrency: usize) -> Arc<CountingExecutor> {
     start_with(db, redis, concurrency, CountingExecutor::taking(RUN_TIME))
 }
@@ -225,6 +241,7 @@ fn start_with(
         db.clone(),
         redis,
         reqwest::Client::new(),
+        agent_calls(),
         flow_guard,
         WorkerConfig {
             llm: LlmConfig {

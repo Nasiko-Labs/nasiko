@@ -1,6 +1,5 @@
 mod error;
 mod stats;
-mod stdio;
 mod types;
 
 #[cfg(feature = "docker")]
@@ -14,7 +13,6 @@ pub use stats::{
     AgentNameResolver, CachedStatsProvider, ContainerStats, DiskSource, HostStats, PlatformStats,
     ResourceStatsProvider, StatsGroup, UnsupportedStatsProvider,
 };
-pub use stdio::{SessionAttach, StdioHandle};
 pub use types::validate_build_inputs;
 pub use types::{
     ContainerId, DeploymentSpec, DeploymentStatus, InstanceInfo, ResourceLimits, RuntimeState,
@@ -167,39 +165,6 @@ pub trait ContainerRuntime: Send + Sync {
     /// Returns `RuntimeError::ContainerNotFound` if no deployment exists for `container_id`.
     async fn endpoint(&self, container_id: &ContainerId) -> Result<String>;
 
-    /// Open a per-session, bidirectional stdio stream to a coding-agent
-    /// container (`WorkloadKind::AcpCodingAgent`).
-    ///
-    /// Unlike [`endpoint`](ContainerRuntime::endpoint) — a cheap lookup of a
-    /// long-lived HTTP address — this **execs a fresh agent process** for the
-    /// session named by `attach` and returns its live stdin/stdout as a
-    /// [`StdioHandle`]. The container is reused across sessions (a single
-    /// coding-agent container serves many sessions, one process each); the
-    /// caller ensures the container is deployed and running first, exactly as
-    /// with `endpoint()`.
-    ///
-    /// The stream is raw and newline-delimited (never a TTY), so the ACP client
-    /// can frame JSON-RPC directly. Each session's process runs in its own
-    /// workspace subdirectory under the agent's writable folder
-    /// (`<writable-mount>/<session_id>`), which the runtime creates if absent.
-    ///
-    /// Default: [`RuntimeError::Unsupported`] — correct for a backend with no
-    /// stdio-attach mechanism, and the signal for a caller to degrade to the
-    /// hook transport. Decorators MUST forward it explicitly (see RUN-1 in
-    /// `InstrumentedRuntime`).
-    ///
-    /// Returns [`RuntimeError::ContainerNotFound`] if no container exists for
-    /// `container_id`.
-    async fn attach_stdio(
-        &self,
-        _container_id: &ContainerId,
-        _attach: SessionAttach,
-    ) -> Result<StdioHandle> {
-        Err(RuntimeError::Unsupported(
-            "this runtime does not support stdio attach for coding agents".to_owned(),
-        ))
-    }
-
     /// Where a forward *to* this agent should actually be sent — distinct from
     /// [`endpoint`](ContainerRuntime::endpoint), which is the agent's real address and is also
     /// what gets persisted into `agents.url` at deploy time. Defaults to `endpoint()` with no
@@ -262,13 +227,45 @@ pub trait ContainerRuntime: Send + Sync {
     ///   `KubeRuntimeConfig::build_timeout` (default 30 min).
     async fn build(&self, tar_context: &[u8], image_tag: &str) -> Result<String>;
 
-    /// Best-effort delete of any autoscaler resource (e.g. KEDA ScaledObject) for this agent.
+    /// Whether this runtime can scale an agent between replica bounds on its own.
     ///
-    /// Default no-op — only Kubernetes backends with KEDA installed override this.
-    /// Called by the crash-loop guardian before scaling to 0 so KEDA cannot
-    /// immediately scale the deployment back up.
-    async fn try_delete_autoscaler(&self, _id: &ContainerId) -> Result<()> {
-        Ok(())
+    /// Async because a backend may have to ask its control plane whether the
+    /// autoscaler is present. Default `false`: a runtime that cannot autoscale
+    /// runs every agent at a fixed count. Decorators MUST forward it explicitly
+    /// (see RUN-1 in `InstrumentedRuntime`).
+    async fn supports_autoscaling(&self) -> bool {
+        false
+    }
+
+    /// Re-applies the replica bounds of an already deployed agent without a
+    /// redeploy. `min < max` hands the replica count to the autoscaler within
+    /// those bounds; `min == max` removes the autoscaling and runs exactly `min`
+    /// replicas. A stopped agent stays stopped either way. `target` is the
+    /// per-replica capacity hint for the autoscaler, when the caller has one.
+    ///
+    /// Returns `RuntimeError::ContainerNotFound` if no deployment exists for
+    /// this ID. Default: unsupported. Decorators MUST forward it explicitly (RUN-1).
+    async fn apply_replica_bounds(
+        &self,
+        _id: &ContainerId,
+        _min: u32,
+        _max: u32,
+        _target: Option<u32>,
+    ) -> Result<()> {
+        Err(RuntimeError::Internal(
+            "autoscaling not supported by this runtime".to_owned(),
+        ))
+    }
+
+    /// Whether [`restart`](ContainerRuntime::restart) replaces a running agent in place, one
+    /// instance at a time and without dropping its capacity or its autoscaling settings, with
+    /// the replacements reading the env last given to
+    /// [`refresh_secrets`](ContainerRuntime::refresh_secrets).
+    ///
+    /// Default `false`: `restart` reuses the running container's own env, so a caller that
+    /// changed the env has to redeploy to apply it. Decorators MUST forward it explicitly (RUN-1).
+    async fn restarts_in_place(&self) -> bool {
+        false
     }
 
     /// Re-apply the agent's current secrets before a scale-up restart.

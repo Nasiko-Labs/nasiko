@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 use crate::auth::Claims;
 use crate::state::AppState;
+use crate::telemetry::agent_request::{AgentRequestGuard, RequestOutcome};
 
 /// Proxy agent requests: auth → flow guard → resolve endpoint → forward.
 ///
@@ -101,6 +102,23 @@ pub async fn agent_proxy(
         })
         .unwrap_or_else(FlowContext::new_root);
 
+    // The traceparent is the caller's to send, so it can name a flow that belongs to someone
+    // else. Refuse before any per-flow state is touched; `open_flow` below is the race-free
+    // backstop.
+    if let Ok(user_id) = claims.user_uuid() {
+        match crate::flows::flow_belongs_to_another(&state.db, &flow_ctx.flow_id, user_id).await {
+            Ok(false) => {}
+            Ok(true) => {
+                tracing::warn!(flow_id = %flow_ctx.flow_id, %user_id, "agent proxy: traceparent names another user's flow");
+                return Err(StatusCode::FORBIDDEN);
+            }
+            Err(e) => {
+                tracing::error!(error = %e, flow_id = %flow_ctx.flow_id, "agent proxy: flow ownership check failed");
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        }
+    }
+
     let agent_id_str = agent_id.to_string();
     if let Err(rejection) = state.flow_guard.check(&flow_ctx, &agent_id_str).await {
         tracing::warn!(%rejection, %agent_id_str, "flow cascade rejected");
@@ -132,62 +150,34 @@ pub async fn agent_proxy(
             nasiko_agent_proxy::ResolveError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
         })?;
 
-    // Coding agents have no HTTP endpoint — they're driven over a per-session
-    // stdio turn, not reverse-proxied — so resolve that discriminator first and
-    // skip the endpoint lookup for them. The shared session/flow setup below
-    // still runs, then the request is diverted to the coding-agent turn path just
-    // before the HTTP forward.
-    let coding_target = crate::coding::proxy::load_target(&state.db, agent_id)
+    let (agent_base, forward_headers) = match state
+        .runtime
+        .forwarding_endpoint(&nasiko_runtime::ContainerId::from_uuid(agent_id))
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, %agent_id, "agent proxy: coding-agent lookup failed");
-            match e {
-                // The agent is a coding agent but its image is not a kind we can
-                // drive — a deploy-time misconfiguration, not a transient fault.
-                crate::coding::proxy::LoadTargetError::UnrecognizedImage { .. } => {
-                    StatusCode::BAD_GATEWAY
-                }
-                crate::coding::proxy::LoadTargetError::Db(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            }
-        })?;
-
-    // A coding agent is diverted to the ACP turn path below, so it needs no HTTP
-    // endpoint and no forward headers. Every other agent resolves its live
-    // forwarding endpoint — the injection proxy when memory/L1A is enabled, which
-    // also returns the headers to attach — falling back to the stored `agents.url`
-    // on a transient runtime lookup failure.
-    let (agent_base, forward_headers) = if coding_target.is_some() {
-        (String::new(), Vec::new())
-    } else {
-        match state
-            .runtime
-            .forwarding_endpoint(&nasiko_runtime::ContainerId::from_uuid(agent_id))
-            .await
-        {
-            Ok(target) => (target.url.trim_end_matches('/').to_string(), target.headers),
-            Err(e) => {
-                let Some(stored) = &agent.endpoint else {
-                    tracing::error!(
-                        error = %e, %agent_id,
-                        "agent proxy: live endpoint lookup failed and no stored agents.url to fall back to"
-                    );
-                    return Err(StatusCode::BAD_GATEWAY);
-                };
-                // Falls back to the plain stored address, bypassing whatever `forwarding_endpoint()`
-                // would otherwise route through (the injection proxy, when memory is enabled) — so
-                // this forward gets no L1A. Rare (only on a transient runtime lookup failure) and
-                // fails toward availability rather than blocking the call entirely, but worth a line
-                // in the logs: a silent L1A skip looks identical to "L1A had nothing to say."
-                tracing::warn!(
+    {
+        Ok(target) => (target.url.trim_end_matches('/').to_string(), target.headers),
+        Err(e) => {
+            let Some(stored) = &agent.endpoint else {
+                tracing::error!(
                     error = %e, %agent_id,
-                    "agent proxy: live endpoint lookup failed, falling back to stored agents.url \
-                     (bypasses the injection proxy — this forward gets no L1A)"
+                    "agent proxy: live endpoint lookup failed and no stored agents.url to fall back to"
                 );
-                (
-                    format!("http://{}:{}", stored.host, stored.port),
-                    Vec::new(),
-                )
-            }
+                return Err(StatusCode::BAD_GATEWAY);
+            };
+            // Falls back to the plain stored address, bypassing whatever `forwarding_endpoint()`
+            // would otherwise route through (the injection proxy, when memory is enabled) — so
+            // this forward gets no L1A. Rare (only on a transient runtime lookup failure) and
+            // fails toward availability rather than blocking the call entirely, but worth a line
+            // in the logs: a silent L1A skip looks identical to "L1A had nothing to say."
+            tracing::warn!(
+                error = %e, %agent_id,
+                "agent proxy: live endpoint lookup failed, falling back to stored agents.url \
+                 (bypasses the injection proxy — this forward gets no L1A)"
+            );
+            (
+                format!("http://{}:{}", stored.host, stored.port),
+                Vec::new(),
+            )
         }
     };
     // The forwarded path. See `resolve_forwarded_path`'s doc comment for the root-mount case.
@@ -303,7 +293,7 @@ pub async fn agent_proxy(
     // move billing — and `created_at` still ages the row out of the attribution
     // window normally.
     if let Ok(user_id) = claims.user_uuid() {
-        let title = persist_info.as_ref().map(|i| i.user_text.clone());
+        let title = persist_info.as_ref().map(|i| i.user_text.as_str());
         // Carry the A2A context_id (the session id `ensure_chat_session` minted
         // or adopted) on the flow row so the LLM gateway can key its decision
         // cache on the *conversation*, not this turn's trace id. The CLI re-mints
@@ -326,72 +316,39 @@ pub async fn agent_proxy(
         // stays as it is: `derive_boundary_signals` and the LLM gateway read it
         // from there, and the column is written on this same insert so the two
         // can never disagree.
-        let session_id = persist_info.as_ref().map(|i| i.session_id.clone());
-        let _ = sqlx::query(
-            r#"INSERT INTO flows (flow_id, user_id, root_agent_id, root_agent_name, title, status, metadata, session_id)
-               VALUES ($1, $2, $3, $4, $5, 'running', $6, $7)
-               ON CONFLICT (flow_id) DO UPDATE
-                  SET status = 'running', completed_at = NULL"#,
+        let session_id = persist_info.as_ref().map(|i| i.session_id.as_str());
+        let opened = crate::flows::open_flow(
+            &state.db,
+            crate::flows::NewFlow {
+                flow_id: &flow_ctx.flow_id,
+                user_id,
+                root_agent_id: Some(agent_id),
+                root_agent_name: &agent.name,
+                title,
+                metadata: &metadata,
+                session_id,
+            },
         )
-        .bind(&flow_ctx.flow_id)
-        .bind(user_id)
-        .bind(agent_id)
-        .bind(&agent.name)
-        .bind(title)
-        .bind(&metadata)
-        .bind(session_id)
-        .execute(&state.db)
         .await;
+        match opened {
+            Ok(()) => {}
+            Err(crate::flows::OpenFlowError::ForeignFlow) => {
+                tracing::warn!(flow_id = %flow_ctx.flow_id, %user_id, "agent proxy: traceparent names another user's flow");
+                return Err(StatusCode::FORBIDDEN);
+            }
+            Err(crate::flows::OpenFlowError::Db(e)) => {
+                // The row is load-bearing for the agent's MCP and LLM authorization, and the
+                // ownership of an unwritten row is unknown, so this does not forward.
+                tracing::error!(error = %e, flow_id = %flow_ctx.flow_id, "agent proxy: could not open the flow");
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        }
         // Membership record for the flow: the MCP gateway / LLM router only
         // authorize this agent's calls if it is a recorded participant of the
         // traceparent-named flow. Rides the same synchronous, pre-forward write
         // as the flows row so it is guaranteed present before the agent can
         // call back into the platform.
         crate::flows::record_participant(&state.db, &flow_ctx.flow_id, agent_id).await;
-    }
-
-    // Coding-agent branch: drive an ACP turn and translate its events into the
-    // standard message/stream SSE, instead of HTTP-forwarding. The shared setup
-    // above (ensure_chat_session, user-message persist, flow row + participant)
-    // already ran, so a coding-agent turn is attributed exactly like any other.
-    if let Some(target) = coding_target {
-        // A coding agent is driven only by chat turns. A non-message request
-        // (agent-card fetch, GetTask, …) has no turn to run and no HTTP container
-        // to serve it, so answer those gracefully instead of a bare 501: a
-        // synthetic card for discovery, a well-formed JSON-RPC error otherwise.
-        let Some(info) = persist_info.as_ref() else {
-            return Ok(coding_non_chat_response(
-                &target,
-                agent_id,
-                &forwarded_path,
-                &body_bytes,
-            ));
-        };
-        let context_id = info.session_id.clone();
-        let task_id = nasiko_types::a2a::new_task_id();
-
-        // The shared helper mints the session-bound token (NAS-839, bound to the
-        // same `flow_id` the `flows` + `flow_participants` rows above were written
-        // under), wires the agent's env, runs the ACP turn, and streams it back —
-        // identically to the orchestrator-dispatch path (see `coding::entry`).
-        return crate::coding::entry::run_coding_turn_sse(
-            &state,
-            agent_id,
-            &target,
-            claims.user_uuid().ok(),
-            &context_id,
-            &info.user_text,
-            &flow_ctx.flow_id,
-            &task_id,
-        )
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, %agent_id, "coding-agent turn failed to start");
-            match e {
-                crate::coding::turn::CodingTurnError::Busy => StatusCode::CONFLICT,
-                _ => StatusCode::BAD_GATEWAY,
-            }
-        });
     }
 
     // Explicit allowlist, not a denylist: the agent container is unvetted, so anything not named
@@ -401,13 +358,13 @@ pub async fn agent_proxy(
     // — reqwest's `.header()` below is `HeaderMap::append`, not replace, so a copied attacker
     // value would sit ahead of the trusted one most header readers return the first occurrence
     // of). See `nasiko_agent_proxy::headers`'s module doc for why this is shared with
-    // `injection_proxy.rs` rather than a second, independent list.
+    // the forwarding hop rather than a second, independent list.
     //
     // Agent turns outrun the shared client's short default (long tool calls, multi-step
     // orchestration), so this hop carries the agent-call budget.
     let mut forwarded =
         state
-            .http_client
+            .agent_client
             .request(method, &target_url)
             .timeout(std::time::Duration::from_secs(
                 state.config.agent_call_timeout_secs,
@@ -422,7 +379,7 @@ pub async fn agent_proxy(
 
     // Whatever `forwarding_endpoint()` asked to have attached (the injection proxy's own
     // `Authorization` credential when memory is enabled; empty otherwise). This is consumed by
-    // that hop, not the real agent — `injection_proxy.rs`'s own relay explicitly drops
+    // that hop, not the real agent — that hop's own relay explicitly drops
     // `authorization` before continuing on, so it never reaches the agent container.
     for (name, value) in &forward_headers {
         forwarded = forwarded.header(name, value);
@@ -491,6 +448,10 @@ pub async fn agent_proxy(
         forwarded = forwarded.body(body_bytes);
     }
 
+    // In flight from here to the end of the reply (for a stream, to the end of the stream, or the
+    // client dropping it). Starts as `Error`, so the early returns below count as failures.
+    let mut request_guard = state.genai_metrics.begin_agent_request(&agent_id_str);
+
     let response = forwarded.send().await.map_err(|e| {
         tracing::error!(error = %e, %agent_id, %target_url, "agent proxy: request to agent failed");
         StatusCode::BAD_GATEWAY
@@ -506,6 +467,8 @@ pub async fn agent_proxy(
         .get("content-type")
         .and_then(|v| v.to_str().ok())
         .is_some_and(|ct| ct.contains("text/event-stream"));
+
+    let upstream_outcome = RequestOutcome::from_success(status.is_success());
 
     let mut builder = Response::builder().status(status.as_u16());
     for (name, value) in resp_headers.iter() {
@@ -536,26 +499,38 @@ pub async fn agent_proxy(
         // right after the chunk that fed the pause is yielded, driven by the *client's*
         // next read of the response body (via hyper/axum), not by another upstream poll —
         // so ending the stream never depends on the agent sending or closing anything else.
+        // Until the stream reaches its natural end the request is `Cancelled`: dropping the
+        // relay (client disconnect) is the only way out that skips the end-of-stream code.
+        request_guard.set_outcome(RequestOutcome::Cancelled);
         let boxed: std::pin::Pin<
             Box<dyn futures::Stream<Item = reqwest::Result<bytes::Bytes>> + Send>,
         > = Box::pin(stream);
         let body = Body::from_stream(futures::stream::unfold(
-            RelayStep::Read(boxed, tap),
-            |step| async move {
+            RelayStep::Read(boxed, tap, Box::new(request_guard)),
+            move |step| async move {
                 match step {
                     RelayStep::Done => None,
                     // One extra chunk carrying the synthetic "type":"hitl" frame, injected
                     // right after the agent's own pause event — see `RelayStep`'s doc
                     // comment for why this can't just be yielded inline in the same step.
                     RelayStep::Inject(extra) => Some((Ok(extra), RelayStep::Done)),
-                    RelayStep::Read(mut stream, mut tap) => {
-                        let chunk_result = stream.next().await?;
-                        if let Ok(bytes) = &chunk_result {
-                            tap.collector.feed(bytes);
+                    RelayStep::Read(mut stream, mut tap, mut guard) => {
+                        let Some(chunk_result) = stream.next().await else {
+                            guard.settle(upstream_outcome);
+                            return None;
+                        };
+                        match &chunk_result {
+                            Ok(bytes) => tap.collector.feed(bytes),
+                            Err(_) => guard.set_outcome(RequestOutcome::Error),
                         }
                         if !tap.collector.is_paused() {
-                            return Some((chunk_result, RelayStep::Read(stream, tap)));
+                            return Some((chunk_result, RelayStep::Read(stream, tap, guard)));
                         }
+                        // A pause ends the agent's part of the request here. Release the count
+                        // now: persisting the pause below is the platform's bookkeeping, not
+                        // load on the agent.
+                        guard.settle(upstream_outcome);
+                        drop(guard);
                         // Persist synchronously here, before the stream is allowed to
                         // close, and inject the id-carrying frame on this same still-open
                         // connection: this used to happen only in `Drop`, after the stream
@@ -579,6 +554,10 @@ pub async fn agent_proxy(
         tracing::error!(error = %e, %agent_id, "agent proxy: failed to read agent response body");
         StatusCode::BAD_GATEWAY
     })?;
+    // The agent's work is done once its reply is fully read; the pause check and persistence
+    // below are not load on the agent.
+    request_guard.set_outcome(upstream_outcome);
+    drop(request_guard);
 
     // A non-streaming reply can pause too — same check `agent_stream()`'s own non-streaming
     // branch runs, so this proxy doesn't flatten a pause into a bogus "assistant reply" just
@@ -739,56 +718,6 @@ const MESSAGE_SEND_METHODS: &[&str] = &[
     "message/send",
     "message/stream",
 ];
-
-/// Answer a non-chat A2A request to a coding agent, which has no HTTP server of
-/// its own to forward to. Discovery (`agent-card` / `.well-known`) gets a
-/// minimal, valid synthetic AgentCard; any other method gets a well-formed
-/// JSON-RPC `method not found` error (echoing the request id) rather than a bare
-/// 501, so clients degrade gracefully.
-fn coding_non_chat_response(
-    target: &crate::coding::proxy::CodingAgentTarget,
-    agent_id: Uuid,
-    forwarded_path: &str,
-    body: &[u8],
-) -> Response {
-    use axum::response::IntoResponse;
-
-    if forwarded_path.contains("agent-card") || forwarded_path.contains(".well-known") {
-        let card = serde_json::json!({
-            "protocolVersion": "0.3.0",
-            "name": target.name,
-            "description": "ACP coding agent — driven over a stdio turn; accepts message/send and message/stream only.",
-            "url": format!("/api/agents/{agent_id}"),
-            "preferredTransport": "JSONRPC",
-            "version": "1.0.0",
-            "capabilities": { "streaming": true },
-            "defaultInputModes": ["text/plain"],
-            "defaultOutputModes": ["text/plain"],
-            "skills": [],
-        });
-        return axum::Json(card).into_response();
-    }
-
-    // Any other A2A method: echo the JSON-RPC id and return a method-not-found
-    // error (-32601). A2A JSON-RPC errors ride a 200, not an HTTP error status.
-    let rpc: serde_json::Value = serde_json::from_slice(body).unwrap_or(serde_json::Value::Null);
-    let id = rpc.get("id").cloned().unwrap_or(serde_json::Value::Null);
-    let method = rpc
-        .get("method")
-        .and_then(|m| m.as_str())
-        .unwrap_or("this method");
-    let err = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "error": {
-            "code": -32601,
-            "message": format!(
-                "{method} is not supported for ACP coding agents — use message/send or message/stream"
-            ),
-        },
-    });
-    axum::Json(err).into_response()
-}
 
 const EPHEMERAL_METADATA_KEY: &str = "nasiko_ephemeral";
 
@@ -1256,6 +1185,8 @@ enum RelayStep {
     Read(
         std::pin::Pin<Box<dyn futures::Stream<Item = reqwest::Result<bytes::Bytes>> + Send>>,
         SseReplyTap,
+        // Boxed: the guard carries the metric handles and would bloat every `RelayStep`.
+        Box<AgentRequestGuard>,
     ),
     /// One buffered chunk — the synthetic HITL frame — left to yield before the stream ends.
     Inject(bytes::Bytes),

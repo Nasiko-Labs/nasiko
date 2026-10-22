@@ -342,19 +342,22 @@ pub(crate) async fn restart_deployment(
     let image = info.spec_image.unwrap_or_else(|| info.image.clone());
 
     // Resolve agent environment (platform vars + agent-specific secrets).
-    let mut secrets = state.agent_env(info.agent_id).await;
-    // Re-inject LLM router wiring (agent JWT + base URL) so the restarted agent
-    // keeps routing through the gateway. Best-effort — skipped if not configured.
-    crate::llm_router::wiring::inject_agent_llm_env(
-        &state.db,
-        &mut secrets,
+    // Platform credentials rotate on restart and reach the pod via the K8s secret
+    // refresh below, or the Docker recreate's env.
+    // Same image comes back, so a durable agent stays durable.
+    // Read before the deploy env is built, as on every deploy path.
+    let scaling = state.agent_scaling.begin_deploy(info.agent_id).await;
+    // Only the Docker branch applies bounds; a failed read is handled there, so the K8s
+    // scale-to-1 path is not failed by it.
+    let bounds = scaling.bounds().await;
+    let secrets = crate::agents::deploy_env::build(
+        &state,
         info.agent_id,
-        Some(info.owner_id),
+        info.owner_id,
+        Default::default(),
+        crate::agents::deploy_env::StateModeOnDeploy::Keep,
     )
     .await;
-    // Per-agent MCP gateway credential (rotates on restart; reaches the pod via
-    // the K8s secret refresh below, or the Docker recreate's env).
-    crate::mcp::wiring::inject_agent_gateway_token(&state.db, &mut secrets, info.agent_id).await;
 
     if let Some(k8s_name) = &info.k8s_deployment_name {
         // ── K8s path: scale-to-1 (avoids tearing down and recreating the Deployment) ──
@@ -389,6 +392,14 @@ pub(crate) async fn restart_deployment(
         // Post-fix containers use the agent UUID as ContainerId; pre-fix containers
         // used the agent name. Try UUID first; fall back to name to avoid leaving a
         // stale name-based container running alongside the new UUID-based one.
+        let bounds = match bounds {
+            Ok(bounds) => bounds,
+            Err(e) => {
+                tracing::error!(%e, %deployment_id, "restart_deployment: could not read replica bounds");
+                revert_starting_status(&state, deployment_id, &original_status).await;
+                return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+            }
+        };
         let uuid_id = ContainerId::from_uuid(info.agent_id);
         let name_id = ContainerId::new(&info.name);
         if state.runtime.destroy(&uuid_id).await.is_err() {
@@ -401,8 +412,9 @@ pub(crate) async fn restart_deployment(
             image: image.clone(),
             ports: ports.clone(),
             env_vars: secrets,
-            min_replicas: 1,
-            max_replicas: 1,
+            min_replicas: bounds.min,
+            max_replicas: bounds.max,
+            replica_target: bounds.target,
             // TODO: persist spec_resources in agent_deployments and restore here.
             // Currently the upload path also uses None, so both deploy and restart
             // apply the runtime default (0.5 CPU / 512 MiB). No behavioral regression
@@ -421,7 +433,7 @@ pub(crate) async fn restart_deployment(
             force_pull: false,
         };
 
-        match state.runtime.deploy(&spec).await {
+        match scaling.deploy(&spec).await {
             Ok(status) => {
                 let agent_url = status.endpoint.unwrap_or_default();
                 if let Err(e) = sqlx::query(

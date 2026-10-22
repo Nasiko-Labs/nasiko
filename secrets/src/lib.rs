@@ -39,7 +39,7 @@
 use aes_gcm::aead::rand_core::RngCore;
 use aes_gcm::{
     Aes256Gcm, KeyInit, Nonce,
-    aead::{Aead, OsRng},
+    aead::{Aead, OsRng, Payload},
 };
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use hkdf::Hkdf;
@@ -72,6 +72,13 @@ const PLATFORM_SETTINGS_SCOPE: &[u8] = b"platform-settings-v1";
 /// scope so it can never collide with a real secret.
 const BACKUP_CANARY_SCOPE: &[u8] = b"nasiko-backup-canary-v1";
 
+/// HKDF `info` prefix for an agent's durable state (task snapshots and key-value
+/// entries); the agent's UUID bytes follow it. Keeps that key independent from the
+/// agent's secrets key (`for_agent`, whose `info` is the bare UUID), so a ciphertext
+/// can never be carried from one domain into the other. Must not change, or stored
+/// state becomes undecryptable.
+const AGENT_STATE_SCOPE_PREFIX: &[u8] = b"agent-state-v1";
+
 pub struct SecretsCrypto {
     cipher: Aes256Gcm,
 }
@@ -84,6 +91,15 @@ impl SecretsCrypto {
     /// paths); use [`try_for_agent`](Self::try_for_agent) on the request path.
     pub fn for_agent(agent_id: Uuid) -> Self {
         Self::derive(agent_id.as_bytes())
+    }
+
+    /// Derive the key for one agent's durable state (task snapshots, key-value
+    /// entries). Distinct from [`for_agent`](Self::for_agent)'s key for the same agent:
+    /// HKDF `info` is [`AGENT_STATE_SCOPE_PREFIX`] followed by the agent's UUID bytes.
+    /// Fallible, for the request path. Pair it with
+    /// [`encrypt_with_aad`](Self::encrypt_with_aad) to bind each ciphertext to its row.
+    pub fn try_for_agent_state(agent_id: Uuid) -> Result<Self, SecretsError> {
+        Self::try_derive(&agent_state_info(agent_id))
     }
 
     /// Derive a user-scoped key from the master key. Use for every read/write to
@@ -176,13 +192,26 @@ impl SecretsCrypto {
     /// Encrypt `plaintext` → `base64(nonce || ciphertext)`. Infallible in practice
     /// (AES-GCM only fails on absurd input sizes).
     pub fn encrypt(&self, plaintext: &str) -> String {
+        self.encrypt_with_aad(plaintext, &[])
+    }
+
+    /// [`encrypt`](Self::encrypt), binding the ciphertext to `associated_data`: it
+    /// decrypts only when the same bytes are presented again, so a ciphertext copied
+    /// to a place that names different associated data fails authentication. The
+    /// associated data is not stored; the caller rebuilds it from where the
+    /// ciphertext lives. Empty associated data is exactly [`encrypt`](Self::encrypt).
+    pub fn encrypt_with_aad(&self, plaintext: &str, associated_data: &[u8]) -> String {
         let mut nonce_bytes = [0u8; 12];
         OsRng.fill_bytes(&mut nonce_bytes);
         let nonce = Nonce::from_slice(&nonce_bytes);
 
+        let payload = Payload {
+            msg: plaintext.as_bytes(),
+            aad: associated_data,
+        };
         let ciphertext = self
             .cipher
-            .encrypt(nonce, plaintext.as_bytes())
+            .encrypt(nonce, payload)
             .expect("AES-256-GCM encryption failed");
 
         let mut combined = nonce_bytes.to_vec();
@@ -192,6 +221,16 @@ impl SecretsCrypto {
 
     /// Decrypt `base64(nonce || ciphertext)` → plaintext.
     pub fn decrypt(&self, encrypted: &str) -> Result<String, SecretsError> {
+        self.decrypt_with_aad(encrypted, &[])
+    }
+
+    /// Decrypt what [`encrypt_with_aad`](Self::encrypt_with_aad) produced. Fails
+    /// unless `associated_data` is the same bytes it was sealed with.
+    pub fn decrypt_with_aad(
+        &self,
+        encrypted: &str,
+        associated_data: &[u8],
+    ) -> Result<String, SecretsError> {
         let combined = BASE64
             .decode(encrypted)
             .map_err(|e| SecretsError::DecryptionFailed(format!("invalid base64: {e}")))?;
@@ -203,9 +242,13 @@ impl SecretsCrypto {
         let (nonce_bytes, ciphertext) = combined.split_at(12);
         let nonce = Nonce::from_slice(nonce_bytes);
 
+        let payload = Payload {
+            msg: ciphertext,
+            aad: associated_data,
+        };
         let plaintext = self
             .cipher
-            .decrypt(nonce, ciphertext)
+            .decrypt(nonce, payload)
             .map_err(|_| SecretsError::DecryptionFailed("decryption failed".into()))?;
 
         String::from_utf8(plaintext)
@@ -241,11 +284,22 @@ impl SecretsCrypto {
     }
 
     /// Same as [`for_user_with_master`](Self::for_user_with_master), for the
+    /// agent state scope.
+    #[cfg(test)]
+    fn for_agent_state_with_master(agent_id: Uuid, master: &[u8]) -> Self {
+        Self::derive_with_master(&agent_state_info(agent_id), master)
+    }
+
+    /// Same as [`for_user_with_master`](Self::for_user_with_master), for the
     /// tenant scope.
     #[cfg(test)]
     fn for_tenant_with_master(tenant_id: Uuid, master: &[u8]) -> Self {
         Self::derive_with_master(tenant_id.as_bytes(), master)
     }
+}
+
+fn agent_state_info(agent_id: Uuid) -> Vec<u8> {
+    [AGENT_STATE_SCOPE_PREFIX, agent_id.as_bytes().as_slice()].concat()
 }
 
 fn try_load_master_key() -> Result<Vec<u8>, SecretsError> {
@@ -303,6 +357,50 @@ mod tests {
         // Same master, different scope ⇒ independent key ⇒ GCM auth fails.
         assert!(
             SecretsCrypto::for_user_with_master(b, &MASTER)
+                .decrypt(&ct)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn associated_data_must_match_to_decrypt() {
+        let agent = Uuid::parse_str(VECTOR_UUID).unwrap();
+        let crypto = SecretsCrypto::for_agent_state_with_master(agent, &MASTER);
+        let ct = crypto.encrypt_with_aad("state", b"row-a");
+        assert_eq!(crypto.decrypt_with_aad(&ct, b"row-a").unwrap(), "state");
+        assert!(crypto.decrypt_with_aad(&ct, b"row-b").is_err());
+        assert!(
+            crypto.decrypt(&ct).is_err(),
+            "no associated data is different data"
+        );
+    }
+
+    #[test]
+    fn empty_associated_data_is_plain_encryption() {
+        let uuid = Uuid::parse_str(VECTOR_UUID).unwrap();
+        let crypto = SecretsCrypto::for_user_with_master(uuid, &MASTER);
+        assert_eq!(
+            crypto.decrypt_with_aad(VECTOR, &[]).unwrap(),
+            VECTOR_PLAINTEXT
+        );
+        let ct = crypto.encrypt_with_aad("x", &[]);
+        assert_eq!(crypto.decrypt(&ct).unwrap(), "x");
+    }
+
+    #[test]
+    fn an_agents_state_key_is_not_its_secrets_key() {
+        let agent = Uuid::parse_str(VECTOR_UUID).unwrap();
+        let ct = SecretsCrypto::for_agent_state_with_master(agent, &MASTER).encrypt("x");
+        // `for_agent` derives from the bare UUID, which is what `for_user_with_master`
+        // computes for the same bytes.
+        assert!(
+            SecretsCrypto::for_user_with_master(agent, &MASTER)
+                .decrypt(&ct)
+                .is_err()
+        );
+        let other = Uuid::parse_str("22222222-2222-2222-2222-222222222222").unwrap();
+        assert!(
+            SecretsCrypto::for_agent_state_with_master(other, &MASTER)
                 .decrypt(&ct)
                 .is_err()
         );

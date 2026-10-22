@@ -330,7 +330,7 @@ impl ResumeNotifier for RuntimeResumeNotifier {
             .traceparent_for_context(context_id, request.agent_id, request.owner_user_id)
             .await?;
 
-        // 300s, not `http_client`'s shared 60s default — matches `hitl/mod.rs::deliver`'s own
+        // 300s, not the client's own default - matches `hitl/mod.rs::deliver`'s own
         // override for the equivalent "make an outbound A2A call on a human's behalf" work.
         // Without it, a legitimately slow-but-healthy agent turn (well under the 300s the OTHER
         // dispatcher tolerates for the same kind of call) reads as a transport failure here,

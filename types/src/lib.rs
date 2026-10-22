@@ -1,4 +1,5 @@
 pub mod a2a;
+pub mod agent_call;
 pub mod coding_agent;
 pub mod maf;
 pub mod registry;

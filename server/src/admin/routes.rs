@@ -8,10 +8,11 @@ use axum::{
 use serde::Deserialize;
 use uuid::Uuid;
 
+use crate::agent_scaling::{AgentDeploy, ReplicaBounds};
 use crate::auth::Claims;
 use crate::catalog::agent_secrets;
 use crate::state::AppState;
-use nasiko_runtime::{ContainerId, DeploymentSpec};
+use nasiko_runtime::{ContainerId, DeploymentSpec, RuntimeState};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -88,6 +89,12 @@ async fn deploy(
         return StatusCode::FORBIDDEN.into_response();
     }
 
+    // Read before the deploy env is built, which may reset `state_mode` (see `AgentScaling::begin_deploy`).
+    let scaling = match resolved_agent_id {
+        Some(agent_id) => Some(state.agent_scaling.begin_deploy(agent_id).await),
+        None => None,
+    };
+
     // Resolve vault + agent secrets (vault = base, agent = override, request = highest)
     if let Some(agent_id) = resolved_agent_id {
         let resolved = resolve_full_env(&state, owner_id, agent_id).await;
@@ -95,15 +102,14 @@ async fn deploy(
         for (k, v) in resolved {
             env.entry(k).or_insert(v);
         }
-        crate::llm_router::wiring::inject_agent_llm_env(
-            &state.db,
+        crate::agents::deploy_env::apply_platform_env(
+            &state,
             &mut env,
             agent_id,
-            Some(owner_id),
+            owner_id,
+            crate::agents::deploy_env::StateModeOnDeploy::Reset,
         )
         .await;
-        // Per-agent MCP gateway credential (rotates on redeploy).
-        crate::mcp::wiring::inject_agent_gateway_token(&state.db, &mut env, agent_id).await;
     }
 
     // UUID-key when the name maps to a catalog agent; fall back to name-keying only
@@ -151,8 +157,15 @@ async fn deploy(
     };
     // The Service/port-mapping targets ports[0], so the agent must listen
     // there — every in-tree agent honors PORT. Explicit env still wins.
-    env.entry("PORT".into())
-        .or_insert_with(|| ports[0].to_string());
+    crate::agents::set_port_env(&mut env, ports[0]);
+
+    let bounds = match deploy_bounds(scaling.as_deref(), req.replicas, writable).await {
+        Ok(bounds) => bounds,
+        Err(e) => {
+            tracing::error!(%e, name = %req.name, "deploy: could not read replica bounds");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response();
+        }
+    };
 
     let mut spec = DeploymentSpec {
         container_id,
@@ -160,8 +173,9 @@ async fn deploy(
         image: crate::agents::qualify_deploy_image(&state.config.agent_image_registry, &req.image),
         ports,
         env_vars: env,
-        min_replicas: req.replicas.unwrap_or(1),
-        max_replicas: req.replicas.unwrap_or(1),
+        min_replicas: bounds.min,
+        max_replicas: bounds.max,
+        replica_target: bounds.target,
         resources: None,
         image_pull_secret_name: None,
         image_pull_credential_seed: None,
@@ -189,7 +203,11 @@ async fn deploy(
         .await;
     }
 
-    match state.runtime.deploy(&spec).await {
+    let outcome = match &scaling {
+        Some(scaling) => scaling.deploy(&spec).await,
+        None => state.runtime.deploy(&spec).await,
+    };
+    match outcome {
         Ok(status) => {
             // Update the catalog URL + record deployment (fire-and-forget).
             if let Some(agent_id) = resolve_agent_id_by_name(&state, &req.name).await {
@@ -259,6 +277,28 @@ async fn deploy(
             (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
         }
     }
+}
+
+/// The replica bounds of an ad-hoc deploy. A registered agent gets what its scaling
+/// policy gives it, as on every other deploy path, and a writable one stays on its single
+/// volume; the caller's `replicas` applies only to an image with no catalog entry.
+async fn deploy_bounds(
+    scaling: Option<&dyn AgentDeploy>,
+    replicas: Option<u32>,
+    writable: bool,
+) -> sqlx::Result<ReplicaBounds> {
+    let Some(scaling) = scaling else {
+        let fixed = replicas.unwrap_or(1);
+        return Ok(ReplicaBounds {
+            min: fixed,
+            max: fixed,
+            target: None,
+        });
+    };
+    if writable {
+        return Ok(ReplicaBounds::SINGLE);
+    }
+    scaling.bounds().await
 }
 
 async fn list(State(state): State<AppState>, claims: Claims) -> impl IntoResponse {
@@ -522,17 +562,36 @@ async fn restart(
     // path does (no-op for refs outside the `nasiko/` convention).
     let image = crate::agents::qualify_deploy_image(&state.config.agent_image_registry, &image);
 
+    let uuid_id = ContainerId::from_uuid(agent_id);
+    // A running agent is restarted where it is, so it stays available and keeps its
+    // autoscaling. Destroy and recreate stays for what it alone can do: starting an agent that
+    // is not running (including a pre-UUID name-keyed one), pulling the image fresh
+    // (`refresh`), and any runtime whose restart does not apply a changed env.
+    if !query.refresh && can_restart_in_place(&state, &uuid_id).await {
+        return restart_in_place(&state, &uuid_id, agent_id, owner_id, &name).await;
+    }
+
+    let scaling = state.agent_scaling.begin_deploy(agent_id).await;
+    let replica_bounds = match scaling.bounds().await {
+        Ok(bounds) => bounds,
+        Err(e) => {
+            tracing::error!(%e, %name, "restart: could not read replica bounds");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+        }
+    };
     // Resolve env: vault (base) + agent secrets (override)
     let mut env = resolve_full_env(&state, owner_id, agent_id).await;
-    // Inject LLM router wiring so the redeployed agent routes through the gateway.
-    crate::llm_router::wiring::inject_agent_llm_env(&state.db, &mut env, agent_id, Some(owner_id))
-        .await;
-    // Per-agent MCP gateway credential (rotates on redeploy).
-    crate::mcp::wiring::inject_agent_gateway_token(&state.db, &mut env, agent_id).await;
+    crate::agents::deploy_env::apply_platform_env(
+        &state,
+        &mut env,
+        agent_id,
+        owner_id,
+        crate::agents::deploy_env::StateModeOnDeploy::Reset,
+    )
+    .await;
 
     // Destroy the UUID-keyed workload (post-fix); fall back to the name-keyed one
     // for pre-fix containers so we don't leave a stale duplicate running.
-    let uuid_id = ContainerId::from_uuid(agent_id);
     if state.runtime.destroy(&uuid_id).await.is_err() {
         let _ = state.runtime.destroy(&ContainerId::new(&name)).await;
     }
@@ -546,7 +605,7 @@ async fn restart(
         vec![],
         env,
         &state.config.agent_default_memory,
-        state.config.agent_max_replicas,
+        replica_bounds,
         writable,
         writable_path,
         owner_id,
@@ -561,7 +620,7 @@ async fn restart(
     )
     .await;
 
-    match state.runtime.deploy(&spec).await {
+    match scaling.deploy(&spec).await {
         Ok(status) => {
             // The container may come back on a different host port, and a
             // rebuilt image may advertise a different card (transport_path,
@@ -590,6 +649,62 @@ async fn restart(
     }
 }
 
+/// Whether `restart` can replace the agent where it runs: the runtime rolls restarts in place
+/// and the agent is serving. A status that cannot be read counts as not running, so the
+/// restart falls back to a redeploy, which does not need it.
+async fn can_restart_in_place(state: &AppState, id: &ContainerId) -> bool {
+    if !state.runtime.restarts_in_place().await {
+        return false;
+    }
+    match state.runtime.status(id).await {
+        Ok(status) => status.state == RuntimeState::Running,
+        Err(e) => {
+            tracing::warn!(%e, container = %id, "restart: could not read the agent's status - redeploying it");
+            false
+        }
+    }
+}
+
+/// Rolls a running agent's instances one at a time. The workload and its autoscaling are left
+/// as they are, and so is `state_mode`: the same image comes back and registers its task
+/// store as before. The env is rebuilt first, with the platform credentials rotated, and
+/// applied to the runtime so the replacements start with it; if that fails nothing is rolled.
+async fn restart_in_place(
+    state: &AppState,
+    id: &ContainerId,
+    agent_id: Uuid,
+    owner_id: Uuid,
+    name: &str,
+) -> axum::response::Response {
+    let mut env = resolve_full_env(state, owner_id, agent_id).await;
+    crate::agents::deploy_env::apply_platform_env(
+        state,
+        &mut env,
+        agent_id,
+        owner_id,
+        crate::agents::deploy_env::StateModeOnDeploy::Keep,
+    )
+    .await;
+    // The runtime applies this as the agent's whole env, so it carries the port as a deploy does.
+    crate::agents::set_port_env(&mut env, crate::agents::DEFAULT_AGENT_PORT);
+
+    if let Err(e) = state.runtime.refresh_secrets(id, name, env).await {
+        tracing::error!(%e, %name, "restart: could not apply the agent's env");
+        return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+    }
+    if let Err(e) = state.runtime.restart(id).await {
+        tracing::error!(%e, %name, "restart: rolling restart failed");
+        return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+    }
+    match state.runtime.status(id).await {
+        Ok(status) => Json(status).into_response(),
+        Err(e) => {
+            tracing::error!(%e, %name, "restart: could not read the status after the restart");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+        }
+    }
+}
+
 #[derive(Deserialize)]
 struct ScaleRequest {
     replicas: u32,
@@ -601,10 +716,32 @@ async fn scale(
     Path(name): Path<String>,
     Json(req): Json<ScaleRequest>,
 ) -> impl IntoResponse {
-    let id = match resolve_authorized_container(&state, &claims, &name).await {
-        Ok(id) => id,
+    let agent_id = match resolve_authorized_agent(&state, &claims, &name).await {
+        Ok(agent_id) => agent_id,
         Err(resp) => return resp,
     };
+    // An autoscaled agent's count belongs to the autoscaler, which would undo a manual
+    // one. Scaling to 0 still stops it: the runtime pauses the autoscaler first.
+    if req.replicas > 0 {
+        match state.agent_scaling.is_autoscaled(agent_id).await {
+            Ok(true) => {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(serde_json::json!({
+                        "error": "the replica count is managed by its autoscaler",
+                        "code": "autoscaled",
+                    })),
+                )
+                    .into_response();
+            }
+            Ok(false) => {}
+            Err(e) => {
+                tracing::error!(%e, %name, "scale: could not read the agent's scaling state");
+                return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+            }
+        }
+    }
+    let id = ContainerId::from_uuid(agent_id);
     match state.runtime.scale(&id, req.replicas).await {
         Ok(()) => {
             // Scaling to zero is what `stop` does, so it must leave the same
@@ -768,13 +905,25 @@ async fn resolve_authorized_container(
     claims: &Claims,
     name: &str,
 ) -> Result<ContainerId, axum::response::Response> {
+    resolve_authorized_agent(state, claims, name)
+        .await
+        .map(ContainerId::from_uuid)
+}
+
+/// The agent `name` resolves to (see [`resolve_authorized_container`]), when the caller
+/// may manage it.
+async fn resolve_authorized_agent(
+    state: &AppState,
+    claims: &Claims,
+    name: &str,
+) -> Result<Uuid, axum::response::Response> {
     let Some(agent_id) = resolve_agent_id_by_name(state, name).await else {
         return Err((StatusCode::NOT_FOUND, "agent not found").into_response());
     };
     if !crate::acl::can_manage_agent(state, claims, agent_id).await {
         return Err(StatusCode::FORBIDDEN.into_response());
     }
-    Ok(ContainerId::from_uuid(agent_id))
+    Ok(agent_id)
 }
 
 /// Resolve the full env for an agent: platform defaults (base) + vault secrets

@@ -13,7 +13,9 @@ use std::fmt::Debug;
 
 use async_trait::async_trait;
 
-/// Supplies, and applies, the text prepended to every agent call this crate makes.
+/// Supplies, and applies, the supplemental text this crate adds to the calls it makes: sent as its
+/// own message part on an agent call, and joined onto the front of the final-output synthesiser's
+/// system prompt.
 ///
 /// Two methods rather than one `compose(body)`, because they have different cadences: the prefix
 /// is resolved **once per execution** (a MAF run is one unit of work, and a policy change landing

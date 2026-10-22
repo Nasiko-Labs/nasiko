@@ -186,12 +186,14 @@ impl A2aClient {
     /// their proto-named equivalents), injecting `request_metadata` into
     /// `params.metadata`.
     ///
-    /// `extra_parts` are pre-built `Value`s (file attachments) appended as-is; `extra_text_parts`
-    /// are raw strings this function tags itself, per `dialect` — a caller-supplied part built
-    /// once outside the retry loop would carry whichever dialect happened to be tried first, and
-    /// silently be wrong on the fallback attempt. See `nasiko_agent_proxy::context_part`'s module
-    /// doc for why the tag matters at all: this platform's real agents (a2a-lf-based) reject an
-    /// unexpected `"kind"` field outright.
+    /// `extra_parts` are pre-built `Value`s taken as-is (file parts — their shape is the caller's
+    /// business, not this dialect's). `extra_text_parts` are raw strings this function tags
+    /// itself, via the SAME `dialect.text_part()` the primary message part uses — needed because a
+    /// caller building a text part ahead of time (as `context_part::append_context_part`'s callers
+    /// do for an already-serialized body) can't know here which dialect this specific attempt will
+    /// end up using: `send_message_with_headers`/`send_message_streaming` retry the same extra
+    /// content under BOTH dialects (JSON-RPC first, proto on `-32601`), so a part tagged once,
+    /// outside this function, would be wrong on whichever attempt didn't match it.
     fn build_message_body(
         &self,
         dialect: Dialect,
@@ -900,7 +902,9 @@ mod tests {
         let body = client.build_message_body(Dialect::Proto, false, "hi", "ctx-1", &[], &[]);
         assert_eq!(body["method"], "SendMessage");
         assert_eq!(body["params"]["message"]["role"], "ROLE_USER");
-        // Proto parts carry no `kind` discriminator.
+        // Proto parts carry no `kind` discriminator — this platform's real `a2a-lf` `Part` type
+        // has no such field at all, and a real agent's strict parser rejects one it doesn't
+        // expect (confirmed live against a real deployed agent).
         assert!(body["params"]["message"]["parts"][0].get("kind").is_none());
         assert_eq!(body["params"]["message"]["parts"][0]["text"], "hi");
 
@@ -932,6 +936,65 @@ mod tests {
         assert_eq!(parts[0]["text"], "analyze this");
         assert_eq!(parts[1]["raw"], "aGVsbG8=");
         assert_eq!(parts[1]["filename"], "test.txt");
+    }
+
+    /// The whole reason `extra_text_parts` is a separate parameter from `extra_parts`: the same
+    /// call is retried under BOTH dialects when an agent rejects the first one, and injected text
+    /// content has to be re-tagged for whichever dialect is actually being tried — a part tagged
+    /// once outside this function would be wrong on one of the two attempts.
+    #[test]
+    fn extra_text_parts_are_tagged_per_dialect_not_fixed() {
+        let client = A2aClient::new();
+        let jsonrpc = client.build_message_body(
+            Dialect::JsonRpc,
+            false,
+            "hi",
+            "ctx-1",
+            &[],
+            &["## Organization Policy\nrule".to_string()],
+        );
+        let jsonrpc_parts = jsonrpc["params"]["message"]["parts"].as_array().unwrap();
+        assert_eq!(jsonrpc_parts.len(), 2);
+        assert_eq!(jsonrpc_parts[1]["kind"], "text");
+        assert_eq!(jsonrpc_parts[1]["text"], "## Organization Policy\nrule");
+
+        let proto = client.build_message_body(
+            Dialect::Proto,
+            false,
+            "hi",
+            "ctx-1",
+            &[],
+            &["## Organization Policy\nrule".to_string()],
+        );
+        let proto_parts = proto["params"]["message"]["parts"].as_array().unwrap();
+        assert_eq!(proto_parts.len(), 2);
+        assert!(
+            proto_parts[1].get("kind").is_none(),
+            "proto dialect must never carry a kind field: {proto_parts:?}"
+        );
+        assert_eq!(proto_parts[1]["text"], "## Organization Policy\nrule");
+    }
+
+    /// File parts (`extra_parts`) and text parts (`extra_text_parts`) coexist without either
+    /// clobbering the other, in a stable order: primary message, then files, then text.
+    #[test]
+    fn file_parts_and_extra_text_parts_coexist() {
+        let client = A2aClient::new();
+        let file_part = serde_json::json!({"raw": "aGVsbG8=", "filename": "test.txt"});
+        let body = client.build_message_body(
+            Dialect::Proto,
+            false,
+            "hi",
+            "ctx-1",
+            &[file_part],
+            &["POLICY".to_string()],
+        );
+        let parts = body["params"]["message"]["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[0]["text"], "hi");
+        assert_eq!(parts[1]["filename"], "test.txt");
+        assert_eq!(parts[2]["text"], "POLICY");
+        assert!(parts[2].get("kind").is_none());
     }
 
     #[test]

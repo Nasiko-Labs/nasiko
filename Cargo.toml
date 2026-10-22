@@ -74,7 +74,8 @@ utoipa-swagger-ui = { version = "9", features = ["axum"] }
 
 # ─── Serialization ──────────────────────────────────────────────────────────
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# `raw_value`: the agent state API stores and returns JSON bodies byte for byte, never re-encoded.
+serde_json = { version = "1", features = ["raw_value"] }
 
 # ─── Text / patterns ────────────────────────────────────────────────────────
 regex = "1"

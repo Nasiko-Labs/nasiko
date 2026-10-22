@@ -1137,12 +1137,22 @@ pub(crate) async fn delete(
         }
     };
 
-    // Tombstone the agent's MCP gateway credential — a destroyed agent's leaked
-    // env must not keep authenticating at /api/mcp. Best-effort: the soft
-    // delete above already stands, and the gateway's flow-participant check
-    // still bounds any residual credential to flows actively routed here.
+    // Tombstone the agent's credentials - a destroyed agent's leaked env must not
+    // keep authenticating at /api/mcp or the agent state API. Best-effort: the soft
+    // delete above already stands (both lookups also refuse a deleted agent), and the
+    // gateway's flow-participant check still bounds any residual credential to flows
+    // actively routed here.
     if let Err(e) = nasiko_mcp_gateway::agent_tokens::revoke(&state.db, id).await {
         tracing::warn!(%e, %id, "delete agent: gateway token revoke failed");
+    }
+    if let Err(e) = nasiko_mcp_gateway::agent_tokens::revoke_scoped(
+        &state.db,
+        id,
+        nasiko_mcp_gateway::agent_tokens::TokenScope::State,
+    )
+    .await
+    {
+        tracing::warn!(%e, %id, "delete agent: state token revoke failed");
     }
 
     // Let enterprise-only, agent-keyed state clean itself up (e.g. a reserved name that has no

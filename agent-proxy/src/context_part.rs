@@ -1,6 +1,6 @@
-//! Appending admin-injected context (org policy/L0 at its two in-process delivery points —
-//! `oss/server/src/router/a2a_dispatch.rs` and `oss/server/src/agent_proxy.rs` — and L1A
-//! knowledge from the EE injection proxy; L2 beliefs are an independent future caller) to an
+//! Appending admin-injected context (L1A knowledge and org policy/L0 today, at their independent
+//! call sites — the edition's forwarding hop and `oss/server/src/router/a2a_dispatch.rs` /
+//! `oss/server/src/agent_proxy.rs` respectively; a future L2 belief is the next caller) to an
 //! outbound A2A message as its **own part**, rather than splicing it into the text part an agent
 //! may parse for the platform's own history-glue marker.
 //!
@@ -9,12 +9,12 @@
 //! take only the text after `"\n\nCurrent message: "`, treat everything ahead of it as
 //! already-handled history to discard. Any agent that follows that same documented convention —
 //! which is exactly what it's published for — silently discards whatever text was prepended
-//! ahead of that marker. Injected context (org policy, L1A facts) is not history; it's meant to inform
-//! how the agent answers the *current* turn, every time. Splicing it into the same field the
-//! marker convention discards is a category error, not a formatting detail, and it isn't fixable
-//! by choosing a different position within that one field: whatever goes ahead of the marker is
-//! lost, and whatever goes after it becomes part of what a marker-aware agent treats as the
-//! user's literal instruction.
+//! ahead of that marker. Injected context (L1A facts, org policy, a future L2 belief) is not
+//! history; it's meant to inform how the agent answers the *current* turn, every time. Splicing
+//! it into the same field the marker convention discards is a category error, not a formatting
+//! detail, and it isn't fixable by choosing a different position within that one field: whatever
+//! goes ahead of the marker is lost, and whatever goes after it becomes part of what a
+//! marker-aware agent treats as the user's literal instruction.
 //!
 //! The fix is to stop sharing the field. `parts` is already an array for exactly this reason —
 //! this platform already sends multi-part messages on every call that carries a file attachment

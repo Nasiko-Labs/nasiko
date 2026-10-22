@@ -9,7 +9,9 @@ use nasiko_hitl::repo::{self, NewAuthRequired, NewSessionGrant, NewToolApproval,
 use uuid::Uuid;
 
 mod common;
+mod recorder;
 use common::TestDb;
+use recorder::Recorder;
 
 impl TestDb {
     fn new_auth_required(&self, connector_id: Uuid, context_id: &str) -> NewAuthRequired {
@@ -1250,4 +1252,34 @@ async fn find_linked_direct_chat_row_never_crosses_agents() {
         linked.is_none(),
         "must never return another agent's row, even with a matching metadata.hitl_request_id link"
     );
+}
+
+/// The MCP gateway's own pauses (`mcp_tool` rows) are inserted here, not through the store, so they
+/// are counted here: once when the row is created, never again for the idempotent upsert that
+/// returns the same pending row.
+#[tokio::test]
+async fn an_mcp_pause_is_observed_when_created_and_not_when_re_hit() {
+    let recorder = Recorder::installed();
+    let db = TestDb::new("hitl_test").await;
+    let connector_id = Uuid::new_v4();
+
+    let approval = db.new_tool_approval(connector_id, "GITHUB_DELETE_REPO", "ctx-obs");
+    let first = repo::create_pending_tool_approval(&db.pool, approval.clone())
+        .await
+        .expect("create tool_approval");
+    let again = repo::create_pending_tool_approval(&db.pool, approval)
+        .await
+        .expect("idempotent re-create");
+    assert_eq!(again.id, first.id);
+    assert_eq!(recorder.pauses_of(first.id), 1);
+
+    let auth = db.new_auth_required(connector_id, "ctx-obs");
+    let first = repo::create_pending_auth_required(&db.pool, auth.clone())
+        .await
+        .expect("create auth_required");
+    let again = repo::create_pending_auth_required(&db.pool, auth)
+        .await
+        .expect("idempotent re-create");
+    assert_eq!(again.id, first.id);
+    assert_eq!(recorder.pauses_of(first.id), 1);
 }

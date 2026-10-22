@@ -204,6 +204,7 @@ fn minimal_spec() -> DeploymentSpec {
         image: "my-registry/agent:latest".to_owned(),
         min_replicas: 1,
         max_replicas: 3,
+        replica_target: None,
         env_vars: HashMap::new(),
         ports: vec![8080],
         resources: None,
@@ -244,6 +245,7 @@ fn deployment_spec_with_all_fields() {
         image: "harbor.example.io/agents/full-agent:v1.2.3".to_owned(),
         min_replicas: 2,
         max_replicas: 5,
+        replica_target: None,
         env_vars,
         ports: vec![8080, 9090],
         resources: Some(ResourceLimits {

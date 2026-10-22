@@ -7,15 +7,17 @@
 pub mod acl;
 pub mod admin;
 pub mod admission;
+pub mod agent_client;
 pub mod agent_lifecycle;
 pub mod agent_proxy;
+pub mod agent_scaling;
+pub mod agent_state;
 pub mod agents;
 pub mod auth;
 pub mod build;
 pub mod capabilities;
 pub mod catalog;
 pub mod chat;
-pub mod coding;
 pub mod coding_agent_otlp;
 pub mod coding_agent_telemetry;
 pub mod context_selection;
@@ -26,6 +28,7 @@ pub mod hitl;
 pub mod llm_configs;
 pub mod llm_router;
 pub mod maf;
+pub mod maf_policy;
 pub mod mcp;
 pub mod multipart_util;
 pub mod observability;
@@ -164,16 +167,19 @@ where
     // panicking: MAF routes still work (create/list/run) without a key, jobs
     // just queue in Redis unprocessed until one is configured.
     if let Some(api_key) = state.config.openai_api_key.clone() {
-        let llm_config = nasiko_orchestrator::maf::LlmConfig {
-            api_key,
-            base_url: state.config.openai_base_url.clone(),
-            model: state.config.openai_model.clone(),
+        let worker_config = nasiko_orchestrator::maf::WorkerConfig {
+            llm: nasiko_orchestrator::maf::LlmConfig {
+                api_key,
+                base_url: state.config.openai_base_url.clone(),
+                model: state.config.openai_model.clone(),
+            },
+            concurrency: state.config.maf_worker_concurrency,
+            heartbeat: std::time::Duration::from_secs(state.config.maf_heartbeat_secs),
         };
-        // The MAF worker's client makes nothing but agent A2A calls, so it
-        // carries the agent-call budget at the client level rather than
-        // repeating a per-request override at each of the executor's call
-        // sites. Its own pool, deliberately: a background worker's traffic
-        // profile has no business sharing the request path's.
+        // The MAF worker's LLM calls carry the agent-call budget at the client
+        // level. Their own pool, deliberately: a background worker's traffic
+        // profile has no business sharing the request path's. Its agent calls go
+        // through `agent_client`, which is built with the same budget.
         let maf_client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(
                 state.config.agent_call_timeout_secs,
@@ -184,17 +190,23 @@ where
             state.db.clone(),
             state.redis.clone(),
             maf_client,
+            // Step calls bypass the proxy, so they report their load through this seam.
+            nasiko_orchestrator::maf::AgentCalls {
+                client: state.agent_client.clone(),
+                meter: state.genai_metrics.agent_call_meter(),
+                // The worker outlives every request, so it gets the shared cell to ask rather
+                // than a value captured now - see `PromptContextOutbound`.
+                outbound: std::sync::Arc::new(crate::prompt_context::PromptContextOutbound::new(
+                    state.prompt_context.clone(),
+                )),
+            },
             // The same guard the A2A dispatch and agent-proxy paths use, so a
             // MAF step's agent call is bounded by exactly the cascade limits
             // every other inter-agent call already is.
             std::sync::Arc::new(state.flow_guard.clone()),
-            llm_config,
+            worker_config,
             state.hitl_store.clone(),
-            // The worker outlives every request, so it gets the shared cell to ask rather than a
-            // value captured now — see `PromptContextOutbound`.
-            std::sync::Arc::new(crate::prompt_context::PromptContextOutbound::new(
-                state.prompt_context.clone(),
-            )),
+            state.maf_executor.clone(),
         );
     } else {
         tracing::warn!(
@@ -356,6 +368,14 @@ where
         )
         .with_state(state.clone());
 
+    // Agent state API (`/api/agent-state/*`): mounted OUTSIDE `require_auth` for the same
+    // reason as the MCP gateway above: its callers are deployed agents holding their own
+    // state-scoped credential, never a user session. The router authenticates that credential and
+    // rate-limits per agent itself, and the CORS layer below covers it like every other mount.
+    let agent_state_routes = Router::new()
+        .nest("/api", agent_state::router(&state))
+        .with_state(state.clone());
+
     let oci_state = nasiko_oci::OciState::new(state.db.clone(), state.oci_storage.clone());
     // Blob deletes commit a reclaim tombstone and then remove the bytes, so a
     // crash or storage outage between the two leaves work queued. Drain it in the
@@ -462,6 +482,7 @@ where
         .merge(oci_routes)
         .merge(llm_routes)
         .merge(mcp_agent_gateway)
+        .merge(agent_state_routes)
         .fallback_service(ui_pages)
         .layer(cors)
         // Default span-making records the full request URI, which would publish

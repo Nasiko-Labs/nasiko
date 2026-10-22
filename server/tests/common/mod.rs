@@ -46,11 +46,44 @@ pub struct FakeRuntime {
     /// When set, `deploy` fails instead of succeeding — lets a test exercise
     /// a genuine (post-build) deploy failure without a real runtime.
     fail_deploy: std::sync::atomic::AtomicBool,
+    /// When set, `build` fails instead of succeeding - a failed image build, which must leave
+    /// the running agent untouched.
+    fail_build: std::sync::atomic::AtomicBool,
+    /// Every spec `deploy` accepted, in order - lets a test assert on the env a
+    /// deploy path actually handed the runtime.
+    deployed: std::sync::Mutex<Vec<DeploymentSpec>>,
+    /// When set, `status` reports a container that was never deployed (or was
+    /// destroyed) as not found, like a real runtime - what startup reconcile
+    /// keys on. Off by default: most tests expect everything to look running.
+    status_follows_deploys: std::sync::atomic::AtomicBool,
     /// Stands in for agents' persistent `/workspace`, keyed by
     /// `{subpath}/{rel_path}` so a test can prove the server scoped a read to
     /// the right agent rather than just echoing back what it asked for.
     workspace: std::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>,
+    /// What `supports_autoscaling` answers; off by default, like a runtime that
+    /// cannot autoscale.
+    autoscaling: std::sync::atomic::AtomicBool,
+    /// Every `apply_replica_bounds` call, in order: (container, min, max, target).
+    applied_bounds: std::sync::Mutex<Vec<AppliedBounds>>,
+    /// Every `deploy` call's replica bounds, in order: (container, min, max).
+    deployed_bounds: std::sync::Mutex<Vec<(ContainerId, u32, u32)>>,
+    /// When set, `build` waits for it to be notified before returning.
+    build_gate: std::sync::Mutex<Option<Arc<tokio::sync::Notify>>>,
+    /// How many `build` calls have started.
+    builds_started: std::sync::atomic::AtomicUsize,
+    /// What `restarts_in_place` answers; off by default, like a runtime whose restart does not
+    /// apply a changed env.
+    restarts_in_place: std::sync::atomic::AtomicBool,
+    /// When set, `status` reports this state instead of `Running`.
+    reported_state: std::sync::Mutex<Option<RuntimeState>>,
+    /// Every `restart` call, in order.
+    restarted: std::sync::Mutex<Vec<ContainerId>>,
+    /// Every `refresh_secrets` call, in order: the container and the env it was given.
+    refreshed: std::sync::Mutex<Vec<(ContainerId, std::collections::HashMap<String, String>)>>,
 }
+
+/// One `apply_replica_bounds` call: (container, min, max, target).
+pub type AppliedBounds = (ContainerId, u32, u32, Option<u32>);
 
 impl FakeRuntime {
     /// Replace the instance set the next `list_instances` call reports.
@@ -70,12 +103,113 @@ impl FakeRuntime {
             .insert(format!("{}/{rel_path}", workspace.subpath()), body.to_vec());
     }
 
+    /// The specs deployed so far, oldest first.
+    #[allow(dead_code)]
+    pub fn deployed_specs(&self) -> Vec<DeploymentSpec> {
+        self.deployed.lock().unwrap().clone()
+    }
+
+    /// The most recent spec deployed for `container_id`, if any.
+    #[allow(dead_code)]
+    pub fn last_spec_for(&self, container_id: &ContainerId) -> Option<DeploymentSpec> {
+        self.deployed
+            .lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|spec| &spec.container_id == container_id)
+            .cloned()
+    }
+
+    /// Make `status` answer from what was actually deployed.
+    #[allow(dead_code)]
+    pub fn set_status_follows_deploys(&self, follow: bool) {
+        self.status_follows_deploys
+            .store(follow, std::sync::atomic::Ordering::SeqCst);
+    }
+
     /// Make the next (and all subsequent) `deploy` calls fail instead of
     /// succeeding.
     #[allow(dead_code)]
     pub fn set_fail_deploy(&self, fail: bool) {
         self.fail_deploy
             .store(fail, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Make `build` calls fail instead of succeeding.
+    #[allow(dead_code)]
+    pub fn set_fail_build(&self, fail: bool) {
+        self.fail_build
+            .store(fail, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Make `supports_autoscaling` answer `supported`.
+    #[allow(dead_code)]
+    pub fn set_supports_autoscaling(&self, supported: bool) {
+        self.autoscaling
+            .store(supported, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// The `apply_replica_bounds` calls made so far.
+    #[allow(dead_code)]
+    pub fn applied_bounds(&self) -> Vec<AppliedBounds> {
+        self.applied_bounds.lock().unwrap().clone()
+    }
+
+    /// Make `restarts_in_place` answer `in_place`.
+    #[allow(dead_code)]
+    pub fn set_restarts_in_place(&self, in_place: bool) {
+        self.restarts_in_place
+            .store(in_place, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Make `status` report `state` (the agent is stopped, crashed, ...) instead of `Running`.
+    #[allow(dead_code)]
+    pub fn set_reported_state(&self, state: RuntimeState) {
+        *self.reported_state.lock().unwrap() = Some(state);
+    }
+
+    /// The containers `restart` was called on so far.
+    #[allow(dead_code)]
+    pub fn restarted(&self) -> Vec<ContainerId> {
+        self.restarted.lock().unwrap().clone()
+    }
+
+    /// The env most recently given to `refresh_secrets` for `container_id`, if any.
+    #[allow(dead_code)]
+    pub fn last_refreshed_env(
+        &self,
+        container_id: &ContainerId,
+    ) -> Option<std::collections::HashMap<String, String>> {
+        self.refreshed
+            .lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|(id, _)| id == container_id)
+            .map(|(_, env)| env.clone())
+    }
+
+    /// The (container, min, max) of every `deploy` so far.
+    #[allow(dead_code)]
+    pub fn deployed_bounds(&self) -> Vec<(ContainerId, u32, u32)> {
+        self.deployed_bounds.lock().unwrap().clone()
+    }
+
+    /// Makes every later `build` wait until the returned gate is notified
+    /// (`notify_one` per build), so a test can act between a job's start and its deploy.
+    #[allow(dead_code)]
+    pub fn hold_builds(&self) -> Arc<tokio::sync::Notify> {
+        let gate = Arc::new(tokio::sync::Notify::new());
+        *self.build_gate.lock().unwrap() = Some(gate.clone());
+        gate
+    }
+
+    /// How many `build` calls have started, held or not.
+    #[allow(dead_code)]
+    pub fn builds_started(&self) -> usize {
+        self.builds_started
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 
@@ -99,6 +233,12 @@ impl ContainerRuntime for FakeRuntime {
             ));
         }
         let status = fake_status(&spec.container_id);
+        self.deployed.lock().unwrap().push(spec.clone());
+        self.deployed_bounds.lock().unwrap().push((
+            spec.container_id.clone(),
+            spec.min_replicas,
+            spec.max_replicas,
+        ));
         self.containers
             .lock()
             .unwrap()
@@ -115,12 +255,25 @@ impl ContainerRuntime for FakeRuntime {
         Ok(())
     }
 
-    async fn restart(&self, _container_id: &ContainerId) -> RuntimeResult<()> {
+    async fn restart(&self, container_id: &ContainerId) -> RuntimeResult<()> {
+        self.restarted.lock().unwrap().push(container_id.clone());
         Ok(())
     }
 
     async fn status(&self, container_id: &ContainerId) -> RuntimeResult<DeploymentStatus> {
-        Ok(fake_status(container_id))
+        let follows = self
+            .status_follows_deploys
+            .load(std::sync::atomic::Ordering::SeqCst);
+        if follows && !self.containers.lock().unwrap().contains_key(container_id) {
+            return Err(nasiko_runtime::RuntimeError::ContainerNotFound(
+                container_id.clone(),
+            ));
+        }
+        let mut status = fake_status(container_id);
+        if let Some(state) = *self.reported_state.lock().unwrap() {
+            status.state = state;
+        }
+        Ok(status)
     }
 
     async fn list(&self) -> RuntimeResult<Vec<DeploymentStatus>> {
@@ -146,7 +299,54 @@ impl ContainerRuntime for FakeRuntime {
     }
 
     async fn build(&self, _tar_context: &[u8], image_tag: &str) -> RuntimeResult<String> {
+        self.builds_started
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let gate = self.build_gate.lock().unwrap().clone();
+        if let Some(gate) = gate {
+            gate.notified().await;
+        }
+        if self.fail_build.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(nasiko_runtime::RuntimeError::BackendUnreachable(
+                "fake build failure (scripted by test)".into(),
+            ));
+        }
         Ok(image_tag.to_owned())
+    }
+
+    async fn supports_autoscaling(&self) -> bool {
+        self.autoscaling.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    async fn restarts_in_place(&self) -> bool {
+        self.restarts_in_place
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    async fn refresh_secrets(
+        &self,
+        container_id: &ContainerId,
+        _name: &str,
+        env_vars: std::collections::HashMap<String, String>,
+    ) -> RuntimeResult<()> {
+        self.refreshed
+            .lock()
+            .unwrap()
+            .push((container_id.clone(), env_vars));
+        Ok(())
+    }
+
+    async fn apply_replica_bounds(
+        &self,
+        container_id: &ContainerId,
+        min: u32,
+        max: u32,
+        target: Option<u32>,
+    ) -> RuntimeResult<()> {
+        self.applied_bounds
+            .lock()
+            .unwrap()
+            .push((container_id.clone(), min, max, target));
+        Ok(())
     }
 
     // Explicit impl (not the trait default) so tests fully control what the
@@ -220,6 +420,14 @@ pub struct TestServer {
     /// response.
     #[allow(dead_code)]
     pub flow_events: nasiko_flow::FlowEventBus,
+    /// Clone of the running server's `AppState::genai_metrics`: lets a test read the
+    /// in-process per-agent in-flight count while a request is held open.
+    #[allow(dead_code)]
+    pub genai_metrics: nasiko_server::telemetry::genai::GenAiMetrics,
+    /// Clone of the running server's `AppState`, for tests that call a
+    /// background routine (seed, reconcile) directly instead of over HTTP.
+    #[allow(dead_code)]
+    pub state: AppState,
     db_name: String,
     admin_pool: PgPool,
 }
@@ -269,84 +477,6 @@ impl TestServer {
     ) -> Self {
         Self::start_with_runtime_and_handle(configure, runtime, Arc::new(FakeRuntime::default()))
             .await
-    }
-
-    /// Like [`start_with_runtime`](Self::start_with_runtime), but binds `0.0.0.0`
-    /// and publishes `LLM_GATEWAY_BASE_URL=http://host.docker.internal:<port>`
-    /// into the environment **before** the app reads its config at boot — so a
-    /// deployed agent *container* can route its model calls back to this server.
-    /// A container cannot reach the host's loopback, which is why the default
-    /// `127.0.0.1` bind of the other constructors is unusable here.
-    ///
-    /// Mutates process env, so callers must be `#[serial]`. Used by the
-    /// coding-agent live E2E; `TestServer.runtime` is an unrelated `FakeRuntime`.
-    #[allow(dead_code)]
-    pub async fn start_reachable_with_runtime(
-        configure: impl FnOnce(&mut Config),
-        runtime: Arc<dyn ContainerRuntime>,
-    ) -> Self {
-        let pg_admin = pg_admin_url();
-        let db_name = format!("nasiko_test_{}", Uuid::new_v4().simple());
-        let admin = minimal_pool_opts()
-            .connect(&pg_admin)
-            .await
-            .expect("connect to postgres — is the DB available? (set TEST_PG_URL to override)");
-        sqlx::query(&format!("CREATE DATABASE \"{db_name}\""))
-            .execute(&admin)
-            .await
-            .expect("create test database");
-        let db_url = {
-            let base = pg_admin.rsplitn(2, '/').last().unwrap_or(&pg_admin);
-            format!("{base}/{db_name}")
-        };
-        let db = minimal_pool_opts()
-            .connect(&db_url)
-            .await
-            .expect("connect to test db");
-        AppState::run_migrations(&db).await;
-
-        // Bind first so the port is known, then publish it as the gateway base URL
-        // the app's router config reads at boot (and the coding-agent per-turn
-        // injector reads per request).
-        let listener = tokio::net::TcpListener::bind("0.0.0.0:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        // SAFETY: callers of this constructor are #[serial].
-        unsafe {
-            std::env::set_var(
-                "LLM_GATEWAY_BASE_URL",
-                format!("http://host.docker.internal:{port}"),
-            );
-        }
-
-        let s3_ep = s3_endpoint();
-        let mut config = test_config(db_url, redis_url(), s3_ep.clone());
-        configure(&mut config);
-
-        let jwt_secret = std::env::var("JWT_SECRET").expect("JWT_SECRET must be set");
-        let auth: Arc<dyn nasiko_auth::AuthService> =
-            Arc::new(nasiko_auth::AuthServiceImpl::new(db.clone(), jwt_secret));
-        let oci_storage: Arc<dyn nasiko_runtime::BlobStore> = Arc::new(
-            nasiko_oci::storage::S3Storage::from_env(config.oci_storage_bucket.clone()).await,
-        );
-        let state =
-            AppState::from_config_with_db(config, auth, runtime, oci_storage, db.clone()).await;
-        let flow_events = state.flow_events.clone();
-        let app = nasiko_server::build_app(state, fallback);
-
-        tokio::spawn(async move {
-            axum::serve(listener, app).await.unwrap();
-        });
-
-        TestServer {
-            // The test's own client runs on the host, so loopback works for it.
-            base_url: format!("http://127.0.0.1:{port}"),
-            client: reqwest::Client::new(),
-            db: db.clone(),
-            runtime: Arc::new(FakeRuntime::default()),
-            flow_events,
-            db_name,
-            admin_pool: admin,
-        }
     }
 
     /// Shared implementation: `runtime` backs `AppState` (may be fake or
@@ -405,6 +535,8 @@ impl TestServer {
         let state =
             AppState::from_config_with_db(config, auth, runtime, oci_storage, db.clone()).await;
         let flow_events = state.flow_events.clone();
+        let genai_metrics = state.genai_metrics.clone();
+        let handle_state = state.clone();
 
         let app = nasiko_server::build_app(state, fallback);
 
@@ -412,7 +544,9 @@ impl TestServer {
         let port = listener.local_addr().unwrap().port();
 
         tokio::spawn(async move {
-            axum::serve(listener, app).await.unwrap();
+            // As the server binary does, so per-address limits see the peer.
+            let service = app.into_make_service_with_connect_info::<std::net::SocketAddr>();
+            axum::serve(listener, service).await.unwrap();
         });
 
         TestServer {
@@ -421,6 +555,8 @@ impl TestServer {
             db: db.clone(),
             runtime: fake_handle,
             flow_events,
+            genai_metrics,
+            state: handle_state,
             db_name,
             admin_pool: admin,
         }
@@ -491,8 +627,6 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         seed_image_platform: "linux/amd64".into(),
         agent_image_registry_placeholder: None,
         build_push_token: String::new(),
-        agent_jwt_secret: String::new(),
-        agent_jwt_algorithm: "HS256".into(),
         injection_proxy_token: String::new(),
         seed_agents: None,
         openai_api_key: None,
@@ -529,9 +663,11 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         hitl_resume_lease_minutes: 2,
         hitl_resume_max_attempts: 3,
         hitl_resume_retry_delay_secs: 2,
-        coding_agent_idle_ttl_secs: 0,
-        coding_agent_turn_lease_secs: 60,
-        coding_agent_lease_heartbeat_secs: 20,
+        hitl_lost_task_retries: 3,
+        agent_state_ttl_days: 7,
+        agent_state_max_body_bytes: 1_048_576,
+        agent_state_rate_limit_per_minute: 600,
+        agent_state_list_bytes_budget: 8 * 1024 * 1024,
         github_client_id: None,
         github_client_secret: None,
         router_shortlist_threshold: 15,
@@ -616,6 +752,9 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         // Serial builds in tests: several suites seed build_jobs rows and assert
         // on them, and a concurrent worker would make those assertions racy.
         build_concurrency: 1,
+        // Serial MAF runs in tests, for the same reason as build_concurrency above.
+        maf_worker_concurrency: 1,
+        maf_heartbeat_secs: 20,
         agent_default_memory: "512Mi".to_string(),
         agent_memory_volume: "nasiko-agent-memory".to_string(),
         agent_memory_init_image: "alpine:3.21".to_string(),

@@ -69,6 +69,7 @@ fn test_spec() -> DeploymentSpec {
         image: "alpine:latest".to_owned(),
         min_replicas: 1,
         max_replicas: 1,
+        replica_target: None,
         env_vars: HashMap::new(),
         ports: vec![8080],
         resources: Some(ResourceLimits {
@@ -229,6 +230,7 @@ async fn docker_runtime_deploy_and_destroy_alpine() {
         image: "alpine:latest".to_owned(),
         min_replicas: 1,
         max_replicas: 1,
+        replica_target: None,
         env_vars: {
             let mut m = HashMap::new();
             m.insert("TEST".to_owned(), "1".to_owned());
@@ -303,6 +305,7 @@ async fn docker_runtime_deploy_recreates_container_when_env_changes() {
         image: "alpine:latest".to_owned(),
         min_replicas: 1,
         max_replicas: 1,
+        replica_target: None,
         env_vars: HashMap::from([("SECRET".to_owned(), "v1".to_owned())]),
         ports: vec![9998],
         resources: None,
@@ -363,6 +366,7 @@ async fn docker_runtime_deploy_does_not_recreate_when_unchanged() {
         image: "alpine:latest".to_owned(),
         min_replicas: 1,
         max_replicas: 1,
+        replica_target: None,
         env_vars: HashMap::from([("SECRET".to_owned(), "v1".to_owned())]),
         ports: vec![9997],
         resources: None,
@@ -432,6 +436,7 @@ async fn docker_runtime_writable_persists_across_redeploy_and_is_private_per_age
             image: "redis:7-alpine".to_owned(),
             min_replicas: 1,
             max_replicas: 1,
+            replica_target: None,
             env_vars: HashMap::new(),
             ports: vec![port],
             resources: None,
@@ -514,6 +519,7 @@ async fn docker_runtime_reads_workspace_files_even_after_the_agent_is_gone() {
         image: "redis:7-alpine".to_owned(),
         min_replicas: 1,
         max_replicas: 1,
+        replica_target: None,
         env_vars: HashMap::new(),
         ports: vec![9994],
         resources: None,
@@ -636,6 +642,7 @@ async fn docker_runtime_workspace_read_refuses_symlink_escape() {
         image: "redis:7-alpine".to_owned(),
         min_replicas: 1,
         max_replicas: 1,
+        replica_target: None,
         env_vars: HashMap::new(),
         ports: vec![port],
         resources: None,

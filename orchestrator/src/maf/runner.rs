@@ -10,17 +10,23 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use nasiko_flow::FlowGuard;
+use nasiko_types::agent_call::AgentCallMeter;
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use super::executor;
 use super::llm::LlmClient;
 use super::types::{MafDefinition, StepOutcome, StepResult};
+use crate::outbound::OutboundPrefix;
 
 /// Everything a run needs that does not come from the job itself.
 pub struct MafRunContext<'a> {
     /// The worker's agent-call client, built with the platform's agent-call budget.
     pub client: &'a reqwest::Client,
+    /// Counts each step's agent call as in flight to its agent.
+    pub agent_calls: &'a Arc<dyn AgentCallMeter>,
+    /// The organization policy prefix for each step's message and the final answer.
+    pub outbound: &'a dyn OutboundPrefix,
     pub db: &'a PgPool,
     /// The guard every other inter-agent call is bounded by.
     pub flow_guard: &'a Arc<FlowGuard>,
@@ -81,11 +87,13 @@ impl MafExecutor for LinearMafExecutor {
             ctx.client,
             ctx.db,
             ctx.flow_guard,
+            ctx.agent_calls,
             ctx.execution_id,
             ctx.user_id,
             maf_def,
             ctx.llm,
             content,
+            ctx.outbound,
         )
         .await
     }
@@ -100,6 +108,7 @@ impl MafExecutor for LinearMafExecutor {
             ctx.client,
             ctx.db,
             ctx.flow_guard,
+            ctx.agent_calls,
             ctx.execution_id,
             ctx.user_id,
             maf_def,
@@ -112,6 +121,7 @@ impl MafExecutor for LinearMafExecutor {
             resume.task_id,
             resume.context_id,
             resume.answer,
+            ctx.outbound,
         )
         .await
     }

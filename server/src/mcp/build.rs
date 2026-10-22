@@ -661,6 +661,7 @@ fn build_mcp_server_spec(
         resources: None, // DockerRuntime defaults None to ResourceLimits::default()
         min_replicas: 1,
         max_replicas,
+        replica_target: None,
         image_pull_secret_name: None,
         image_pull_credential_seed: None,
         harden: true,

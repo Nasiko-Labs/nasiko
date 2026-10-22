@@ -45,6 +45,22 @@ pub trait PromptContextProvider: Send + Sync {
     async fn org_context(&self) -> Option<String> {
         None
     }
+
+    /// Supplemental text scoped to the **user**, not to any one candidate agent — the planner's
+    /// own recall, present whether or not the turn ends up delegating to anyone at all. This is
+    /// what lets a zero-leg answer ("what did I tell you last week?") be memory-aware: unlike
+    /// per-agent context, which reaches only the agent(s) that get called, this reaches the
+    /// planner's own preamble before any delegation decision is made, so it is the one seam a
+    /// minted sub-leg's own outbound call (`nasiko-react-agent`, no path back to this trait)
+    /// cannot substitute for.
+    ///
+    /// Defaulted rather than required, so an implementation with nothing user-scoped to add —
+    /// which is every implementation until a per-user store exists — stays correct without
+    /// naming this concern at all. `None` is a real, common answer, not just the OSS default:
+    /// even an enterprise deployment returns it for a user with nothing recalled yet.
+    async fn context_for_user(&self, _user_id: Uuid, _query: &str) -> Option<String> {
+        None
+    }
 }
 
 /// How a supplemental section is joined onto the text it qualifies.
@@ -113,6 +129,10 @@ impl SwappablePromptContext {
 
     pub async fn org_context(&self) -> Option<String> {
         self.current().org_context().await
+    }
+
+    pub async fn context_for_user(&self, user_id: Uuid, query: &str) -> Option<String> {
+        self.current().context_for_user(user_id, query).await
     }
 }
 
@@ -260,5 +280,64 @@ mod tests {
     #[tokio::test]
     async fn a_provider_that_ignores_org_context_contributes_none() {
         assert_eq!(FixedContextProvider("ee context").org_context().await, None);
+    }
+
+    /// Same silent default for the user-scoped seam: a provider that only has per-agent content
+    /// names no `context_for_user` and must still compile and answer `None`, not force every
+    /// existing implementor (including the OSS no-op) to learn about a per-user store that may
+    /// not exist yet.
+    #[tokio::test]
+    async fn a_provider_that_ignores_context_for_user_contributes_none() {
+        assert_eq!(
+            FixedContextProvider("ee context")
+                .context_for_user(Uuid::nil(), "q")
+                .await,
+            None
+        );
+        assert_eq!(
+            NoopPromptContextProvider
+                .context_for_user(Uuid::nil(), "q")
+                .await,
+            None
+        );
+    }
+
+    /// `SwappablePromptContext` must forward this method through the same shared cell as every
+    /// other one — the exact property `install_is_visible_to_a_clone_taken_before_the_install_call`
+    /// pins for `context_for_agent`, repeated here so a future implementor of this method inherits
+    /// the same swap-visibility guarantee without re-deriving it.
+    #[tokio::test]
+    async fn context_for_user_is_forwarded_through_the_swappable_cell() {
+        struct UserContextProvider(&'static str);
+
+        #[async_trait]
+        impl PromptContextProvider for UserContextProvider {
+            async fn context_for_agents(
+                &self,
+                _agent_ids: &[Uuid],
+                _query: &str,
+            ) -> HashMap<Uuid, String> {
+                HashMap::new()
+            }
+
+            async fn context_for_agent(&self, _agent_id: Uuid, _query: &str) -> Option<String> {
+                None
+            }
+
+            async fn context_for_user(&self, _user_id: Uuid, _query: &str) -> Option<String> {
+                Some(self.0.to_string())
+            }
+        }
+
+        let cell = Arc::new(SwappablePromptContext::new(Arc::new(
+            NoopPromptContextProvider,
+        )));
+        assert_eq!(cell.context_for_user(Uuid::nil(), "q").await, None);
+
+        cell.install(Arc::new(UserContextProvider("what we know about you")));
+        assert_eq!(
+            cell.context_for_user(Uuid::nil(), "q").await,
+            Some("what we know about you".to_string())
+        );
     }
 }

@@ -17,7 +17,7 @@ pub use a2a::{A2aClient, A2aClientError, A2aResponse, RawAgentFrame};
 pub use context::{CompressionTally, ContextConfig, ContextManager, ContextWindow};
 pub use error::OrchestratorError;
 pub use events::{OrchestratorEvent, PolicyRejectionKind};
-pub use guard::CallGuard;
+pub use guard::{BeforeCallFuture, CallGuard};
 pub use policy::{DelegationPolicy, ToolSchemaExtra};
 pub use prompt::prefixed;
 pub use react_loop::{OrchestrationResult, Orchestrator, OrchestratorConfig, TurnTrace};
