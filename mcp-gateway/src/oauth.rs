@@ -84,39 +84,37 @@ async fn refresh(
         }
     };
 
-    let form = refresh_form(connector, conn, &refresh_plain);
-
+    let request = RefreshRequest {
+        token_endpoint,
+        client_id: connector.oauth_client_id.as_deref(),
+        client_secret: client_secret_plain(connector),
+        refresh_token: &refresh_plain,
+    };
+    let granted_scope = conn.scope.as_deref().filter(|s| !s.trim().is_empty());
     // Guarded client: the token endpoint was discovered from the target server's
     // response, so it must be SSRF-checked, not fetched with the internal client.
-    let mut req = state
-        .guarded_http_client
-        .post(token_endpoint)
-        .timeout(REFRESH_TIMEOUT)
-        .form(&form);
-    if let (Some(cid), Some(secret)) = (&connector.oauth_client_id, client_secret_plain(connector))
+    let body = match send_refresh(
+        &state.guarded_http_client,
+        &request,
+        granted_scope,
+        &connector.name,
+    )
+    .await
     {
-        req = req.basic_auth(cid, Some(secret));
-    }
-    let resp = req.send().await;
-    let body: Value = match resp {
-        Ok(r) if r.status().is_success() => match r.json().await {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!(connector = %connector.name, error = %e, "oauth refresh: bad token response");
-                return Ok(Err(ConnectorUnusable::AuthRequired));
-            }
-        },
-        Ok(r) => {
-            let status = r.status().as_u16();
-            let (error, error_description) = token_error(&r.text().await.unwrap_or_default());
+        RefreshOutcome::Granted(body) => body,
+        RefreshOutcome::Rejected {
+            status,
+            error,
+            error_description,
+        } => {
             tracing::warn!(
                 connector = %connector.name, status, error, error_description,
                 "oauth refresh rejected"
             );
             return Ok(Err(ConnectorUnusable::AuthRequired));
         }
-        Err(e) => {
-            tracing::warn!(connector = %connector.name, error = %e, "oauth refresh request failed");
+        RefreshOutcome::Failed(reason) => {
+            tracing::warn!(connector = %connector.name, reason, "oauth refresh failed");
             return Ok(Err(ConnectorUnusable::AuthRequired));
         }
     };
@@ -150,31 +148,104 @@ async fn refresh(
     Ok(Ok(new_access))
 }
 
-/// The refresh-token grant's form fields.
-///
-/// Re-requests exactly the granted scope (RFC 6749 §6 allows it). Without
-/// one, Entra ID resolves the original resource itself and rejects an app
-/// registration that is both the client and the API (AADSTS90009) — the
-/// simplest way to put an Entra-protected MCP server behind this gateway.
-fn refresh_form(
-    connector: &McpConnector,
-    conn: &McpUserConnection,
-    refresh_token: &str,
-) -> Vec<(&'static str, String)> {
-    let mut form = vec![
-        ("grant_type", "refresh_token".to_string()),
-        ("refresh_token", refresh_token.to_string()),
-    ];
-    if let Some(scope) = conn.scope.as_deref().filter(|s| !s.trim().is_empty()) {
-        form.push(("scope", scope.to_string()));
+/// Refresh exactly as before a scope was ever sent, so every provider that
+/// already refreshed gets the same request; only a 400 rejection is retried,
+/// once, with the granted scope (RFC 6749 §6 allows it). A rejected grant does
+/// not consume the refresh token, so the retry is safe with rotation. Entra ID
+/// needs it: without a scope it rejects an app registration that is both the
+/// client and the API (AADSTS90009), the simplest way to put an
+/// Entra-protected MCP server behind this gateway.
+async fn send_refresh(
+    http: &reqwest::Client,
+    request: &RefreshRequest<'_>,
+    granted_scope: Option<&str>,
+    connector_name: &str,
+) -> RefreshOutcome {
+    let outcome = request.send(http, None).await;
+    let retry_scope = match &outcome {
+        RefreshOutcome::Rejected {
+            status: 400,
+            error,
+            error_description,
+        } => granted_scope.inspect(|_| {
+            tracing::info!(
+                connector = %connector_name, error, error_description,
+                "oauth refresh without scope rejected; retrying with the granted scope"
+            );
+        }),
+        _ => None,
+    };
+    match retry_scope {
+        Some(scope) => request.send(http, Some(scope)).await,
+        None => outcome,
     }
-    if let Some(cid) = &connector.oauth_client_id {
-        form.push(("client_id", cid.clone()));
+}
+
+/// One connection's refresh-token grant, with the client secret decrypted
+/// once for both the form and the Basic header.
+struct RefreshRequest<'a> {
+    token_endpoint: &'a str,
+    client_id: Option<&'a str>,
+    client_secret: Option<String>,
+    refresh_token: &'a str,
+}
+
+enum RefreshOutcome {
+    Granted(Value),
+    /// The token endpoint answered with an error status.
+    Rejected {
+        status: u16,
+        error: String,
+        error_description: String,
+    },
+    /// No usable answer: transport failure or an undecodable success body.
+    Failed(String),
+}
+
+impl RefreshRequest<'_> {
+    fn form(&self, scope: Option<&str>) -> Vec<(&'static str, String)> {
+        let mut form = vec![
+            ("grant_type", "refresh_token".to_string()),
+            ("refresh_token", self.refresh_token.to_string()),
+        ];
+        if let Some(scope) = scope {
+            form.push(("scope", scope.to_string()));
+        }
+        if let Some(client_id) = self.client_id {
+            form.push(("client_id", client_id.to_string()));
+        }
+        if let Some(secret) = &self.client_secret {
+            form.push(("client_secret", secret.clone()));
+        }
+        form
     }
-    if let Some(secret) = client_secret_plain(connector) {
-        form.push(("client_secret", secret));
+
+    async fn send(&self, http: &reqwest::Client, scope: Option<&str>) -> RefreshOutcome {
+        let mut request = http
+            .post(self.token_endpoint)
+            .timeout(REFRESH_TIMEOUT)
+            .form(&self.form(scope));
+        if let (Some(client_id), Some(secret)) = (self.client_id, &self.client_secret) {
+            request = request.basic_auth(client_id, Some(secret));
+        }
+        match request.send().await {
+            Ok(response) if response.status().is_success() => match response.json().await {
+                Ok(body) => RefreshOutcome::Granted(body),
+                Err(e) => RefreshOutcome::Failed(format!("bad token response: {e}")),
+            },
+            Ok(response) => {
+                let status = response.status().as_u16();
+                let (error, error_description) =
+                    token_error(&response.text().await.unwrap_or_default());
+                RefreshOutcome::Rejected {
+                    status,
+                    error,
+                    error_description,
+                }
+            }
+            Err(e) => RefreshOutcome::Failed(format!("request failed: {e}")),
+        }
     }
-    form
 }
 
 const TOKEN_ERROR_DESCRIPTION_MAX_CHARS: usize = 200;
@@ -235,7 +306,7 @@ impl RequestedAccess {
 enum MetadataSource {
     /// RFC 8414 OAuth 2.0 Authorization Server Metadata.
     OAuth,
-    /// OpenID Connect Discovery 1.0 — the only document some identity
+    /// OpenID Connect Discovery 1.0 - the only document some identity
     /// providers publish (confirmed live: Entra ID 404s every RFC 8414 URL).
     OpenIdConnect,
 }
@@ -339,7 +410,7 @@ pub fn verify_state(token: &str, key: &str) -> Option<OAuthState> {
 /// RFC 9728 resource metadata, then the authorization server's RFC 8414 or
 /// OpenID Connect metadata, in the MCP spec's order. A server that is down
 /// is a `Backend` error; every malformed or missing document is an `Oauth`
-/// error — they come from third-party servers, so neither is our 500.
+/// error - they come from third-party servers, so neither is our 500.
 pub async fn discover_authorization(
     http: &reqwest::Client,
     mcp_url: &str,
@@ -572,14 +643,14 @@ fn requested_access_or_fallback(
         Err(e) => {
             tracing::warn!(
                 connector = %connector.name, error = %e, fallback_used = true,
-                "oauth discovery failed for a configured connector — authorizing without scope selection"
+                "oauth discovery failed for a configured connector - authorizing without scope selection"
             );
             RequestedAccess::without_scope(server_url)
         }
     }
 }
 
-/// First authorization only: persist the discovered endpoints and a client —
+/// First authorization only: persist the discovered endpoints and a client -
 /// the user's own, else one registered dynamically. Returns the reloaded row.
 async fn store_client_config(
     state: &McpState,
@@ -826,13 +897,13 @@ pub async fn as_supports_dcr(http: &reqwest::Client, resource_metadata: &Value) 
 }
 
 /// RFC 9728 direct discovery: `GET /.well-known/oauth-protected-resource` at
-/// the resource's origin — tried path-aware first (e.g.
+/// the resource's origin - tried path-aware first (e.g.
 /// `/.well-known/oauth-protected-resource/mcp` for a resource at `/mcp`, per
 /// RFC 9728 §3.1), then root-only as a fallback for servers that publish it
 /// there regardless of path. This is the MCP spec's own PRIMARY discovery
-/// method — unlike inferring from a `WWW-Authenticate: resource_metadata=...`
+/// method - unlike inferring from a `WWW-Authenticate: resource_metadata=...`
 /// header on a bare 401, which some real servers omit even though they
-/// support OAuth. Confirmed live: Atlassian's hosted MCP server does neither —
+/// support OAuth. Confirmed live: Atlassian's hosted MCP server does neither -
 /// `/.well-known/oauth-protected-resource` 404s there entirely, a real,
 /// currently-open gap on their side (atlassian/atlassian-mcp-server#148), not
 /// something this can work around.
@@ -899,7 +970,7 @@ async fn fetch_auth_challenge(http: &reqwest::Client, mcp_url: &str) -> Result<S
 }
 
 /// The resource metadata document: from the URL the 401 challenge names,
-/// else RFC 9728's well-known URLs — some real OAuth-capable servers
+/// else RFC 9728's well-known URLs - some real OAuth-capable servers
 /// (confirmed: Atlassian) never include the `resource_metadata` pointer.
 async fn fetch_resource_metadata_for(
     http: &reqwest::Client,
@@ -916,7 +987,7 @@ async fn fetch_resource_metadata_for(
         .ok_or_else(|| {
             McpError::Oauth(
                 "401 has no usable resource_metadata URL in WWW-Authenticate, and no RFC 9728 \
-                 well-known endpoint was found either — this server may not actually \
+                 well-known endpoint was found either - this server may not actually \
                  support OAuth 2.1, or doesn't publish discovery metadata"
                     .to_string(),
             )
@@ -949,11 +1020,13 @@ async fn fetch_authorization_server_metadata(
     None
 }
 
-/// Where an issuer's metadata may live, in the MCP spec's order: RFC 8414's
-/// path insertion, then OpenID Connect Discovery's insertion and appending
-/// forms. Last, for an issuer with a path, the RFC 8414 document appended to
-/// the issuer — non-standard, but it is the only URL this gateway used to
-/// try, so a server only ever discovered that way must keep working.
+/// Where an issuer's metadata may live. Every RFC 8414 URL comes before any
+/// OpenID Connect one: RFC 8414's path insertion, then the RFC 8414 document
+/// appended to the issuer (non-standard, but the only URL this gateway used to
+/// try), then OpenID Connect Discovery's insertion and appending forms. A
+/// server that publishes both documents (Keycloak, Okta) is therefore still
+/// discovered as RFC 8414 and keeps receiving `resource`; only an issuer with
+/// no RFC 8414 document at all (Entra ID) is treated as OpenID Connect.
 fn authorization_server_metadata_urls(issuer: &str) -> Vec<(String, MetadataSource)> {
     let Some((origin, path)) = origin_and_path(issuer) else {
         return Vec::new();
@@ -976,16 +1049,16 @@ fn authorization_server_metadata_urls(issuer: &str) -> Vec<(String, MetadataSour
             MetadataSource::OAuth,
         ),
         (
+            format!("{origin}/{path}/{OAUTH_METADATA_PATH}"),
+            MetadataSource::OAuth,
+        ),
+        (
             format!("{origin}/{OIDC_METADATA_PATH}/{path}"),
             MetadataSource::OpenIdConnect,
         ),
         (
             format!("{origin}/{path}/{OIDC_METADATA_PATH}"),
             MetadataSource::OpenIdConnect,
-        ),
-        (
-            format!("{origin}/{path}/{OAUTH_METADATA_PATH}"),
-            MetadataSource::OAuth,
         ),
     ]
 }
@@ -1035,7 +1108,7 @@ fn origin_and_path(url: &str) -> Option<(String, String)> {
 /// The MCP spec's scope selection: the scope the 401 challenge asks for,
 /// else every scope the resource advertises, else none. `offline_access` is
 /// added when the authorization server offers it, because some (Entra ID)
-/// only issue a refresh token when it is requested — and holding a
+/// only issue a refresh token when it is requested - and holding a
 /// refreshable grant is the point of this flow.
 fn requested_scope(
     challenge: &str,
@@ -1066,8 +1139,8 @@ fn scopes_supported(metadata: &Value) -> Vec<&str> {
 }
 
 /// RFC 8707 `resource`: the connector URL, except for an authorization
-/// server known only through OpenID Connect discovery. Entra ID — the case
-/// that path exists for — rejects a `resource` that differs from the
+/// server known only through OpenID Connect discovery. Entra ID - the case
+/// that path exists for - rejects a `resource` that differs from the
 /// requested scope's own resource (AADSTS9010010, confirmed live against
 /// Azure DevOps' MCP server), and there the scope already fixes the token's
 /// audience.
@@ -1648,7 +1721,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn still_discovers_rfc_8414_metadata_appended_to_an_issuer_path() {
+    async fn prefers_appended_rfc_8414_metadata_over_openid_connect_and_keeps_resource() {
         let mut server = mockito::Server::new_async().await;
         let issuer = format!("{}/tenant", server.url());
         mount_protected_mcp(&mut server, "", &issuer, &[]).await;
@@ -1658,6 +1731,17 @@ mod tests {
             json!({
                 "authorization_endpoint": "https://as.example/authorize",
                 "token_endpoint": "https://as.example/token",
+            }),
+        )
+        .await;
+        // Keycloak and Okta publish both appended documents; the OpenID
+        // Connect one must not win, or `resource` would silently be dropped.
+        mount_metadata(
+            &mut server,
+            "/tenant/.well-known/openid-configuration",
+            json!({
+                "authorization_endpoint": "https://oidc.example/authorize",
+                "token_endpoint": "https://oidc.example/token",
             }),
         )
         .await;
@@ -1789,22 +1873,117 @@ mod tests {
         );
     }
 
-    #[test]
-    fn refresh_re_requests_the_granted_scope_only_when_one_was_granted() {
-        install_valid_encryption_key();
-        let user_id = Uuid::new_v4();
-        let crypto = SecretsCrypto::for_user(user_id);
-        let connector = oauth_connector("https://as.example/token");
-        let mut conn = oauth_connection(user_id, connector.id, &crypto);
-        let scope_of = |conn: &McpUserConnection| {
-            refresh_form(&connector, conn, "refresh-token-value")
-                .into_iter()
-                .find(|(name, _)| *name == "scope")
-                .map(|(_, value)| value)
-        };
+    const UNSCOPED_REFRESH: &str = "grant_type=refresh_token&refresh_token=rt&client_id=app";
+    const SCOPED_REFRESH: &str = "grant_type=refresh_token&refresh_token=rt&scope=api%3A%2F%2Fapp%2Fmcp.access&client_id=app";
 
-        assert_eq!(scope_of(&conn), None, "no granted scope, no scope sent");
-        conn.scope = Some("api://app/mcp.access".to_string());
-        assert_eq!(scope_of(&conn).as_deref(), Some("api://app/mcp.access"));
+    async fn mount_refresh(
+        server: &mut mockito::ServerGuard,
+        body: &str,
+        status: usize,
+        response: Value,
+        hits: usize,
+    ) -> mockito::Mock {
+        server
+            .mock("POST", "/token")
+            .match_body(mockito::Matcher::Exact(body.to_string()))
+            .with_status(status)
+            .with_header("content-type", "application/json")
+            .with_body(response.to_string())
+            .expect(hits)
+            .create_async()
+            .await
+    }
+
+    fn refresh_request(token_endpoint: &str) -> RefreshRequest<'_> {
+        RefreshRequest {
+            token_endpoint,
+            client_id: Some("app"),
+            client_secret: None,
+            refresh_token: "rt",
+        }
+    }
+
+    #[tokio::test]
+    async fn refresh_retries_with_the_granted_scope_only_after_a_400() {
+        let mut server = mockito::Server::new_async().await;
+        let entra_rejection =
+            json!({"error": "invalid_request", "error_description": "AADSTS90009: ..."});
+        let unscoped = mount_refresh(&mut server, UNSCOPED_REFRESH, 400, entra_rejection, 1).await;
+        let scoped = mount_refresh(
+            &mut server,
+            SCOPED_REFRESH,
+            200,
+            json!({"access_token": "new"}),
+            1,
+        )
+        .await;
+        let endpoint = format!("{}/token", server.url());
+
+        let outcome = send_refresh(
+            &reqwest::Client::new(),
+            &refresh_request(&endpoint),
+            Some("api://app/mcp.access"),
+            "entra",
+        )
+        .await;
+
+        unscoped.assert_async().await;
+        scoped.assert_async().await;
+        assert!(matches!(outcome, RefreshOutcome::Granted(body) if body["access_token"] == "new"));
+    }
+
+    #[tokio::test]
+    async fn refresh_sends_no_scope_when_the_first_request_succeeds_or_none_was_granted() {
+        let mut server = mockito::Server::new_async().await;
+        let endpoint = format!("{}/token", server.url());
+        let granted = mount_refresh(
+            &mut server,
+            UNSCOPED_REFRESH,
+            200,
+            json!({"access_token": "new"}),
+            1,
+        )
+        .await;
+        let never_scoped = mount_refresh(
+            &mut server,
+            SCOPED_REFRESH,
+            200,
+            json!({"access_token": "x"}),
+            0,
+        )
+        .await;
+
+        let outcome = send_refresh(
+            &reqwest::Client::new(),
+            &refresh_request(&endpoint),
+            Some("api://app/mcp.access"),
+            "working-provider",
+        )
+        .await;
+        assert!(matches!(outcome, RefreshOutcome::Granted(_)));
+        granted.assert_async().await;
+
+        granted.remove_async().await;
+        let rejected = mount_refresh(
+            &mut server,
+            UNSCOPED_REFRESH,
+            400,
+            json!({"error": "invalid_grant"}),
+            1,
+        )
+        .await;
+        let outcome = send_refresh(
+            &reqwest::Client::new(),
+            &refresh_request(&endpoint),
+            None,
+            "no-scope",
+        )
+        .await;
+        assert!(matches!(
+            outcome,
+            RefreshOutcome::Rejected { status: 400, .. }
+        ));
+        rejected.assert_async().await;
+        never_scoped.assert_async().await;
     }
 }
