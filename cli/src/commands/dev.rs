@@ -5,6 +5,7 @@ use std::thread;
 use std::time::Duration;
 
 use anyhow::{Result, bail};
+use nasiko_utils::term;
 use tabled::settings::{Alignment, Style};
 use tabled::{Table, Tabled};
 
@@ -313,7 +314,7 @@ pub fn start(infra_only: bool) -> Result<()> {
     }
     if !healthy {
         println!(" timeout");
-        eprintln!("  Warning: CP did not become healthy in 30s");
+        term::print_warning("CP did not become healthy in 30s");
     }
 
     println!("  CP        http://localhost:8080");
@@ -509,7 +510,7 @@ fn wait_for_agent_healthy(bin: &str, name: &str, port: u16) {
             .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "true")
             .unwrap_or(false);
         if !running {
-            eprintln!("  Warning: container exited immediately — check logs:");
+            term::print_warning("container exited immediately — check logs:");
             eprintln!("    {bin} logs {name}");
             return;
         }
@@ -518,10 +519,10 @@ fn wait_for_agent_healthy(bin: &str, name: &str, port: u16) {
             return;
         }
     }
-    eprintln!(
-        "  Warning: container is running but isn't answering HTTP requests on port {port} \
+    term::print_warning(&format!(
+        "container is running but isn't answering HTTP requests on port {port} \
          after 5s — it may still be starting, or it crashed after binding; check:"
-    );
+    ));
     eprintln!("    {bin} logs {name}");
 }
 

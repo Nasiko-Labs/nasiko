@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use dialoguer::{Confirm, Input, Select};
 use include_dir::{Dir, include_dir};
+use nasiko_utils::term;
 
 use crate::util;
 
@@ -264,7 +265,8 @@ pub fn new_agent_interactive(name: Option<&str>) -> Result<()> {
     }
 
     // ─── Print summary ──────────────────────────────────────────────────────
-    println!("\n✓ {}/", dest.display());
+    println!();
+    term::print_success(&format!("{}/", dest.display()));
     let rel_path = dest.display();
     println!("\nNext steps:");
     println!("  cd {rel_path}");

@@ -1,4 +1,5 @@
-//! Live one-line terminal status animation, plus one-shot success/warning lines.
+//! Live one-line terminal status animation, one-shot success/info/warning/error lines, and
+//! color helpers.
 //! Shared by `nasiko` (oss/cli) and `nasiko-ee` so both CLIs get the
 //! same look and feel.
 //!
@@ -58,22 +59,72 @@ pub fn use_color() -> bool {
     std::env::var_os("NO_COLOR").is_none()
 }
 
-/// Prints a green `✓ msg` line to stdout.
-pub fn print_success(msg: &str) {
-    if use_color() {
-        println!("\x1b[32m✓\x1b[0m {msg}");
+/// [`use_color`], and stdout is a real terminal — so output redirected to a file or piped into
+/// another program stays plain text instead of carrying raw escape codes.
+fn use_color_stdout() -> bool {
+    use std::io::IsTerminal;
+    use_color() && std::io::stdout().is_terminal()
+}
+
+/// Same as [`use_color_stdout`], for output written to stderr.
+fn use_color_stderr() -> bool {
+    use std::io::IsTerminal;
+    use_color() && std::io::stderr().is_terminal()
+}
+
+/// Wraps `s` in the ANSI SGR `code` when `enabled`, otherwise returns it unchanged.
+fn paint(s: &str, code: &str, enabled: bool) -> String {
+    if enabled {
+        format!("\x1b[{code}m{s}\x1b[0m")
     } else {
-        println!("✓ {msg}");
+        s.to_string()
     }
 }
 
-/// Prints a yellow `! msg` warning line to stderr.
+/// `s` in green, for text printed to stdout.
+pub fn green(s: &str) -> String {
+    paint(s, "32", use_color_stdout())
+}
+
+/// `s` in red, for text printed to stdout.
+pub fn red(s: &str) -> String {
+    paint(s, "31", use_color_stdout())
+}
+
+/// `s` in yellow, for text printed to stdout.
+pub fn yellow(s: &str) -> String {
+    paint(s, "33", use_color_stdout())
+}
+
+/// `s` in cyan, for text printed to stdout — used for next-step command hints.
+pub fn cyan(s: &str) -> String {
+    paint(s, "36", use_color_stdout())
+}
+
+/// Like [`cyan`], for text that ends up on stderr — e.g. inside an `anyhow::Error` message,
+/// which the runtime prints to stderr.
+pub fn cyan_stderr(s: &str) -> String {
+    paint(s, "36", use_color_stderr())
+}
+
+/// Prints a green `✓ msg` line to stdout.
+pub fn print_success(msg: &str) {
+    println!("{} {msg}", paint("✓", "32", use_color_stdout()));
+}
+
+/// Prints a cyan `ℹ msg` line to stdout.
+pub fn print_info(msg: &str) {
+    println!("{} {msg}", paint("ℹ", "36", use_color_stdout()));
+}
+
+/// Prints a yellow `⚠ msg` warning line to stderr.
 pub fn print_warning(msg: &str) {
-    if use_color() {
-        eprintln!("\x1b[33m!\x1b[0m {msg}");
-    } else {
-        eprintln!("! {msg}");
-    }
+    eprintln!("{} {msg}", paint("⚠", "33", use_color_stderr()));
+}
+
+/// Prints a red `✗ msg` error line to stderr.
+pub fn print_error(msg: &str) {
+    eprintln!("{} {msg}", paint("✗", "31", use_color_stderr()));
 }
 
 /// Shows a live one-line status with a colored shimmer bar and elapsed time.
@@ -252,12 +303,12 @@ fn wrap_to_width(text: &str, width: usize) -> Vec<String> {
 /// wrapping account for that via [`visible_width`]. Width comes from the real terminal (same
 /// source [`start_status`] uses), clamped so a huge terminal doesn't produce an absurdly wide
 /// box and a narrow one still fits a full sentence. Respects `NO_COLOR` like the rest of this
-/// module.
+/// module, and draws an uncolored border when stderr is not a terminal.
 pub fn print_box(title: Option<&str>, body: &str, color: &str) {
     let line_width = terminal_cols().clamp(40, 92).saturating_sub(2);
     let content_width = line_width.saturating_sub(4).max(10);
 
-    let (open, close) = if use_color() {
+    let (open, close) = if use_color_stderr() {
         (format!("\x1b[{color}m"), "\x1b[0m".to_string())
     } else {
         (String::new(), String::new())
@@ -447,6 +498,16 @@ mod tests {
     fn wrap_to_width_preserves_existing_newlines_as_hard_breaks() {
         let wrapped = wrap_to_width("first line\nsecond line", 80);
         assert_eq!(wrapped, vec!["first line", "second line"]);
+    }
+
+    #[test]
+    fn paint_wraps_text_in_the_sgr_code_when_enabled() {
+        assert_eq!(paint("ok", "32", true), "\x1b[32mok\x1b[0m");
+    }
+
+    #[test]
+    fn paint_leaves_text_plain_when_disabled() {
+        assert_eq!(paint("ok", "32", false), "ok");
     }
 
     #[test]

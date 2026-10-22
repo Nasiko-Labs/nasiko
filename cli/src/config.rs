@@ -1,4 +1,5 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
+use nasiko_utils::term;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -66,8 +67,9 @@ pub fn active_cluster() -> Result<(String, ClusterEntry)> {
     let config = load()?;
     let name = config.active.ok_or_else(|| {
         anyhow::anyhow!(
-            "no active cluster — run `{} connect <url>`",
-            crate::commands::local_agents::cli_name()
+            "no active cluster\n  {}             start one locally\n  {}  use an existing one",
+            term::cyan_stderr("→ nasiko up"),
+            term::cyan_stderr("→ nasiko connect <url>")
         )
     })?;
     let entry = config
@@ -121,52 +123,6 @@ pub fn token_subject(token: &str) -> Option<String> {
 pub fn token_expired(token: &str) -> Option<bool> {
     let exp = token_expiry(token)?;
     Some(exp <= chrono::Utc::now().timestamp())
-}
-
-/// The name `connect <url>` gives a control plane when none is passed: the URL's host up to
-/// its first dot (`cp` for `https://cp.example.com`). Public so a CLI built on this one names
-/// a control plane the same way.
-pub fn cluster_name_from_url(url: &str) -> String {
-    url.replace("https://", "")
-        .replace("http://", "")
-        .split('.')
-        .next()
-        .unwrap_or("cluster")
-        .to_string()
-}
-
-/// Refuses a name derived from a URL when it is already saved for another control plane
-/// (`cp.prod.example.com` and `cp.staging.example.com` both derive `cp`), so `connect <url>`
-/// never silently replaces one. `existing` is what is saved under the name, as a URL or a
-/// bare host; reconnecting to the same control plane is fine.
-pub fn refuse_derived_name_clash(derived: &str, url: &str, existing: Option<&str>) -> Result<()> {
-    match existing {
-        Some(existing) if control_plane_key(existing) != control_plane_key(url) => bail!(
-            "'{derived}' is already saved for {existing}; choose a name for {url}: {} connect {url} --name <name>",
-            crate::commands::local_agents::cli_name()
-        ),
-        _ => Ok(()),
-    }
-}
-
-/// A control-plane address compared the way a saved login is (exactly, but for a trailing
-/// slash), except that `https://`, the default scheme, may be left out — as some CLIs built on
-/// this one store it. `http://` is kept: it is a different address.
-fn control_plane_key(address: &str) -> &str {
-    let address = address.trim();
-    address
-        .strip_prefix("https://")
-        .unwrap_or(address)
-        .trim_end_matches('/')
-}
-
-/// Whether two user ids name the same user. Ids are UUIDs, written as the token has them or in
-/// canonical form, so they are compared as UUIDs; anything else is compared as written.
-pub fn same_principal(left: &str, right: &str) -> bool {
-    match (uuid::Uuid::parse_str(left), uuid::Uuid::parse_str(right)) {
-        (Ok(left), Ok(right)) => left == right,
-        _ => left == right,
-    }
 }
 
 /// Add or update a cluster and set it as active.
@@ -259,42 +215,4 @@ pub fn clear_registry_url() -> Result<()> {
     let mut config = load()?;
     config.registry_url = None;
     save(&config)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_derived_name_never_replaces_another_control_plane() {
-        let url = "https://cp.prod.example.com";
-        assert!(refuse_derived_name_clash("cp", url, None).is_ok());
-        // The same control plane, with or without the default scheme, is a reconnect.
-        for same in ["https://cp.prod.example.com/", "cp.prod.example.com"] {
-            assert!(
-                refuse_derived_name_clash("cp", url, Some(same)).is_ok(),
-                "{same}"
-            );
-        }
-        // Anything a saved login would not match is another control plane.
-        for other in [
-            "https://cp.staging.example.com",
-            "http://cp.prod.example.com",
-            "HTTPS://CP.PROD.EXAMPLE.COM",
-        ] {
-            let error = refuse_derived_name_clash("cp", url, Some(other))
-                .unwrap_err()
-                .to_string();
-            assert!(error.contains("--name"), "{other}: {error}");
-        }
-    }
-
-    #[test]
-    fn a_derived_name_is_the_hosts_first_label() {
-        assert_eq!(cluster_name_from_url("https://cp.example.com"), "cp");
-        assert_eq!(
-            cluster_name_from_url("http://localhost:8080"),
-            "localhost:8080"
-        );
-    }
 }

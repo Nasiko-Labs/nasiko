@@ -128,8 +128,7 @@ fn handle_scroll_key(app: &mut App, key: crossterm::event::KeyEvent) {
 // ─── Session management commands ────────────────────────────────────────────
 
 pub fn create_session(agent: Option<&str>) -> Result<()> {
-    let base_url =
-        crate::config::active_url().context("no active cluster — run `nasiko connect <url>`")?;
+    let base_url = crate::config::active_url()?;
     let token = crate::config::active_token()
         .context("config error")?
         .ok_or_else(|| anyhow::anyhow!("not logged in — run `nasiko auth login`"))?;
@@ -139,7 +138,7 @@ pub fn create_session(agent: Option<&str>) -> Result<()> {
 }
 
 pub fn session_history(session_id: &str) -> Result<()> {
-    let base_url = crate::config::active_url().context("no active cluster")?;
+    let base_url = crate::config::active_url()?;
     let token = crate::config::active_token()
         .context("config error")?
         .ok_or_else(|| anyhow::anyhow!("not logged in — run `nasiko auth login`"))?;
@@ -165,7 +164,7 @@ pub fn delete_session(session_id: &str, yes: bool) -> Result<()> {
             return Ok(());
         }
     }
-    let base_url = crate::config::active_url().context("no active cluster")?;
+    let base_url = crate::config::active_url()?;
     let token = crate::config::active_token()
         .context("config error")?
         .ok_or_else(|| anyhow::anyhow!("not logged in — run `nasiko auth login`"))?;

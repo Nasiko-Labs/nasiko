@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use anyhow::Result;
+use nasiko_utils::term;
 
 use crate::skill;
 
@@ -32,7 +33,7 @@ pub fn add(name: &str, directory: &str) -> Result<()> {
 
     skill::inject_skill(project_dir, &manifest, &impl_code, &framework)?;
 
-    println!("✓ Added {name}");
+    term::print_success(&format!("Added {name}"));
     let module = name.replace('-', "_");
     if project_lang == "go" {
         println!("  → internal/skills/{module}.go");
@@ -68,7 +69,7 @@ pub fn remove(name: &str, directory: &str) -> Result<()> {
 
     println!("Removing skill: {name}...");
     skill::remove_skill(project_dir, name, &framework)?;
-    println!("✓ Removed {name}");
+    term::print_success(&format!("Removed {name}"));
 
     Ok(())
 }
