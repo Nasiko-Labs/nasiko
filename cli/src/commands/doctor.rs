@@ -15,7 +15,9 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Preflight check-up: everything a real command would fail on partway through, checked up front
 /// with the fix printed under each failure. Reuses the checks those commands already rely on
 /// (`Client::health_check`, `config::token_expired`) rather than re-implementing them. Only reads
-/// state — never changes config, starts anything, or logs in.
+/// state — never changes config, starts anything, or logs in. The report is the command's output,
+/// so all of it goes to stdout, each fix right under its problem; only the closing "N problem(s)
+/// found" error goes to stderr.
 pub fn doctor() -> Result<()> {
     let mut problems = 0;
 
@@ -23,40 +25,42 @@ pub fn doctor() -> Result<()> {
         term::print_success("Docker running");
     } else {
         problems += 1;
-        term::print_error("Docker not reachable");
+        failed("Docker not reachable");
         print_fix(&format!("start {} and try again", container_bin()));
     }
 
     match config::active_cluster() {
         Ok((name, entry)) => {
-            if Client::health_check_with_timeout(&entry.url, Some(PROBE_TIMEOUT)).is_ok() {
-                term::print_success(&format!("Cluster '{name}' reachable"));
-            } else {
-                problems += 1;
-                term::print_error(&format!("Cluster '{name}' unreachable ({})", entry.url));
-                print_fix("nasiko status");
+            // The reason tells a cluster that doesn't answer from one that answers with an error.
+            match Client::health_check_with_timeout(&entry.url, Some(PROBE_TIMEOUT)) {
+                Ok(()) => term::print_success(&format!("Cluster '{name}' reachable")),
+                Err(error) => {
+                    problems += 1;
+                    failed(&format!("Cluster '{name}' ({}): {error:#}", entry.url));
+                    print_fix("nasiko status");
+                }
             }
 
             match entry.token.as_deref() {
                 None => {
                     problems += 1;
-                    term::print_error("Not logged in");
+                    failed("Not logged in");
                     print_fix("nasiko auth login");
                 }
                 Some(token) => match config::token_expired(token) {
                     Some(true) => {
                         problems += 1;
-                        term::print_error("Auth token expired");
+                        failed("Auth token expired");
                         print_fix("nasiko auth login");
                     }
                     Some(false) => term::print_success("Auth token valid"),
-                    None => term::print_warning("Auth token present but its expiry can't be read"),
+                    None => caution("Auth token present but its expiry can't be read"),
                 },
             }
         }
         Err(_) => {
             problems += 1;
-            term::print_error("No active cluster");
+            failed("No active cluster");
             print_fix("nasiko up");
             print_fix("nasiko connect <url>");
         }
@@ -66,7 +70,7 @@ pub fn doctor() -> Result<()> {
         Some(_) => term::print_success("Registry URL set"),
         // Advisory only: most commands don't need the artifact registry.
         None => {
-            term::print_warning("Registry URL not set");
+            caution("Registry URL not set");
             print_fix("export NASIKO_REGISTRY_URL=<your registry>");
         }
     }
@@ -76,6 +80,14 @@ pub fn doctor() -> Result<()> {
         bail!("{problems} problem(s) found");
     }
     Ok(())
+}
+
+fn failed(problem: &str) {
+    println!("{} {problem}", term::red("✗"));
+}
+
+fn caution(problem: &str) {
+    println!("{} {problem}", term::yellow("⚠"));
 }
 
 fn print_fix(hint: &str) {

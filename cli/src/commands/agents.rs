@@ -52,6 +52,7 @@ fn watch_ps(client: &Client) -> Result<()> {
             agent_command("ps --json")
         );
     }
+    let mut first = true;
     loop {
         print!("\x1b[2J\x1b[H"); // clear the screen, cursor to the top-left
         let now = chrono::Local::now().format("%H:%M:%S");
@@ -62,7 +63,18 @@ fn watch_ps(client: &Client) -> Result<()> {
                 WATCH_INTERVAL.as_secs()
             ))
         );
-        print_agents(client)?;
+        if let Err(error) = print_agents(client) {
+            // A first failure is a setup problem, so stop; after that, a watch rides out a
+            // blip (a dropped connection, a server restart) and tries again.
+            if first {
+                return Err(error);
+            }
+            println!(
+                "{}",
+                term::red(&format!("refresh failed: {error:#} — retrying"))
+            );
+        }
+        first = false;
         std::thread::sleep(WATCH_INTERVAL);
     }
 }
@@ -177,8 +189,9 @@ impl LogFilters {
             .search
             .as_deref()
             .is_none_or(|want| line.message.to_lowercase().contains(&want.to_lowercase()));
-        // The server applies `since` to proxy and Loki lines but not to container stdout, so
-        // re-check here; a line without a readable timestamp is kept rather than hidden.
+        // Re-checked in case a server ignores `since`; a line without a readable timestamp is
+        // kept rather than hidden. Raw container output can't be filtered by time at all: the
+        // server stamps each of those lines with the moment it read them.
         let since_ok = since.is_none_or(|since| {
             line.timestamp
                 .as_deref()

@@ -238,13 +238,18 @@ pub enum AgentOpsCommands {
         /// Live-tail: stream new log lines as they arrive (SSE)
         #[arg(short = 'f', long)]
         follow: bool,
-        /// Only lines at this level
-        #[arg(long, ignore_case = true, value_parser = ["INFO", "WARN", "ERROR", "DEBUG"])]
+        /// Only lines at exactly this level (WARN does not include WARNING)
+        #[arg(
+            long,
+            ignore_case = true,
+            value_parser = ["DEBUG", "TRACE", "INFO", "WARN", "WARNING", "ERROR", "CRITICAL", "FATAL"]
+        )]
         level: Option<String>,
         /// Only lines whose message contains this text (case-insensitive)
         #[arg(long)]
         search: Option<String>,
-        /// Only lines from this far back: 30m, 2h, 1d, or an ISO-8601 time
+        /// Only lines from this far back: 30m, 2h, 1d, or an ISO-8601 time. Raw container
+        /// output carries no timestamps, so its latest lines are always shown
         #[arg(long, conflicts_with = "follow")]
         since: Option<String>,
     },
