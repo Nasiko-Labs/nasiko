@@ -101,7 +101,7 @@ pub fn restart(deployment_id: &str) -> Result<()> {
         println!("New deployment ID: {new_id}");
     }
     for w in warnings {
-        term::print_warning(&w);
+        println!("{} {w}", term::yellow("Warning:"));
     }
     Ok(())
 }

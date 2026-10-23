@@ -38,8 +38,8 @@ pub fn card(directory: &str, description: Option<&str>) -> Result<()> {
 }
 
 fn try_generate_via_cp(root: &Path, card_path: &Path, description: Option<&str>) -> Result<()> {
-    let client = crate::api::Client::from_active_cluster()
-        .map_err(|e| anyhow::anyhow!("no active cluster ({e}) — run `nasiko connect`"))?;
+    // The error already says what's wrong and what to run; wrapping it would repeat both.
+    let client = crate::api::Client::from_active_cluster()?;
 
     // The server's /capabilities/generate requires source_code unconditionally
     // (there's nothing to generate a card *from* without code) — bailing here

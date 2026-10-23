@@ -49,6 +49,10 @@ impl Health {
 pub fn status(json: bool) -> Result<()> {
     let (name, entry) = config::active_cluster()?;
     let registry_url = config::artifact_registry_url();
+    // Named before the network calls, so a cluster that doesn't answer is still identified.
+    if !json {
+        print_header(&name, &entry.url, registry_url.as_deref());
+    }
     let client = Client::from_active_cluster()?;
     let health = Health::fetch(&client)?;
 
@@ -63,7 +67,7 @@ pub fn status(json: bool) -> Result<()> {
             ))?
         );
     } else {
-        print_status(&name, &entry.url, registry_url.as_deref(), &health);
+        print_health(&health);
     }
 
     if !health.all_ok() {
@@ -72,7 +76,7 @@ pub fn status(json: bool) -> Result<()> {
     Ok(())
 }
 
-fn print_status(name: &str, url: &str, registry_url: Option<&str>, health: &Health) {
+fn print_header(name: &str, url: &str, registry_url: Option<&str>) {
     println!("Cluster:  {name}");
     println!("CP URL:   {url}");
     println!(
@@ -80,7 +84,9 @@ fn print_status(name: &str, url: &str, registry_url: Option<&str>, health: &Heal
         registry_url.unwrap_or("(not set — export NASIKO_REGISTRY_URL)")
     );
     println!();
+}
 
+fn print_health(health: &Health) {
     let check = |ok: bool| {
         if ok {
             term::green("ok")

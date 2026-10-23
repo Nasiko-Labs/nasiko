@@ -272,7 +272,10 @@ fn find_existing_agent_binding(
         return Ok(cached);
     }
     if existing_id.is_some() {
-        term::print_warning("Cached agent binding is stale — checking by name");
+        println!(
+            "  {} Cached agent binding is stale — checking by name",
+            term::yellow("!")
+        );
     }
 
     Ok(client.get_agent(agent_name)?.map(|current| {

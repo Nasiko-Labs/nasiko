@@ -1,5 +1,4 @@
 use anyhow::{Context, Result, bail};
-use nasiko_utils::term;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -66,13 +65,12 @@ pub fn save(config: &Config) -> Result<()> {
 pub fn active_cluster() -> Result<(String, ClusterEntry)> {
     let config = load()?;
     let name = config.active.ok_or_else(|| {
+        // One plain line: callers wrap this error into their own messages and some print it to
+        // stdout, so it must carry no line breaks or color codes. No `up` hint either: the error
+        // is shared with `nasiko-ee`, which has no `up`.
         anyhow::anyhow!(
-            // No `up` hint here: this error is shared with `nasiko-ee`, which has no `up`.
-            "no active cluster\n  {}",
-            term::cyan_stderr(&format!(
-                "→ {} connect <url>",
-                crate::commands::local_agents::cli_name()
-            ))
+            "no active cluster; run: {} connect <url>",
+            crate::commands::local_agents::cli_name()
         )
     })?;
     let entry = config

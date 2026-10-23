@@ -248,10 +248,11 @@ fn prompt_for_version(
         if is_used(&input, used_versions) {
             // Versions are immutable — no overwrite option, just tell them
             // and ask again.
-            term::print_warning(&format!(
-                "version {input} already exists in this agent's history and versions are \
-                 immutable — pick a different version."
-            ));
+            println!(
+                "  {} version {input} already exists in this agent's history and versions are \
+                 immutable — pick a different version.",
+                term::yellow("!")
+            );
             continue;
         }
 
