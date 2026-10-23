@@ -179,3 +179,69 @@ async fn ratios_derived_from_the_live_book_match_anthropic_published_rates() {
         );
     }
 }
+
+#[tokio::test]
+#[ignore = "needs DATABASE_URL and a migrated model_pricing table"]
+async fn a_call_before_the_first_row_takes_the_earliest_price_not_the_estimate() {
+    // Rows open when they are written, so every call older than the first sync
+    // used to miss them all and fall through to the generic estimate.
+    let db = pool().await;
+    let model = format!("history-check-{}", unique_suffix());
+    let first_opened = Utc::now() - chrono::Duration::days(10);
+    let changed_at = Utc::now() - chrono::Duration::days(5);
+
+    sqlx::query(
+        r#"INSERT INTO model_pricing
+               (provider, model, input_price_per_1m, output_price_per_1m, effective_from, effective_until)
+           VALUES ('test', $1, 1.0, 2.0, $2, $3),
+                  ('test', $1, 3.0, 6.0, $3, NULL)"#,
+    )
+    .bind(&model)
+    .bind(first_opened)
+    .bind(changed_at)
+    .execute(&db)
+    .await
+    .expect("insert price history");
+
+    let cases = [
+        (
+            "before the first row",
+            first_opened - chrono::Duration::days(30),
+            1.0,
+        ),
+        (
+            "while the first row was in force",
+            first_opened + chrono::Duration::days(1),
+            1.0,
+        ),
+        (
+            "after the change",
+            changed_at + chrono::Duration::days(1),
+            3.0,
+        ),
+    ];
+    // One book across all cases, so a cached row must not answer outside its window.
+    let book = DbPriceBook::new(db.clone());
+    let mut results = Vec::new();
+    for (label, at, _) in cases {
+        results.push((label, book.exact("test", &model, at).await));
+    }
+
+    sqlx::query("DELETE FROM model_pricing WHERE provider = 'test' AND model = $1")
+        .bind(&model)
+        .execute(&db)
+        .await
+        .expect("clean up price history");
+
+    for ((label, row), (_, _, expected_input)) in results.into_iter().zip(cases) {
+        let row = row.unwrap_or_else(|| panic!("{label}: no row"));
+        assert_eq!(row.input_per_1m, expected_input, "{label}");
+    }
+}
+
+fn unique_suffix() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock after epoch")
+        .as_nanos()
+}
