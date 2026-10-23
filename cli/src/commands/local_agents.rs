@@ -153,6 +153,8 @@ pub struct CliHints {
     pub sessions: String,
     /// The LLM config command group (`<it> create …`, `<it> update …`).
     pub llm_config: String,
+    /// The MAF command group (`<it> workflow run …`, `<it> execution result …`).
+    pub maf: String,
 }
 
 static CLI_HINTS: OnceLock<CliHints> = OnceLock::new();
@@ -168,6 +170,7 @@ fn cli_hints() -> &'static CliHints {
         login: "nasiko auth login".to_string(),
         sessions: "nasiko observe sessions".to_string(),
         llm_config: "nasiko llm-config".to_string(),
+        maf: "nasiko maf".to_string(),
     })
 }
 
@@ -186,6 +189,10 @@ pub fn sessions_hint() -> &'static str {
 
 pub fn llm_config_hint() -> &'static str {
     &cli_hints().llm_config
+}
+
+pub fn maf_hint() -> &'static str {
+    &cli_hints().maf
 }
 
 /// Points a caller of a renamed command at its replacement. The old command still runs.

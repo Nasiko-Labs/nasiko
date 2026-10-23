@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 
 use crate::api::{Client, unwrap_data};
 use crate::commands::agents::resolve_agent_id;
+use crate::commands::local_agents::maf_hint;
 
 // ─── End-to-end trace ───────────────────────────────────────────────────────
 
@@ -192,8 +193,9 @@ fn poll_with_step_progress(
     drop(spin);
     anyhow::bail!(
         "still running after {}s — the run continues server-side. Check it with: \
-nasiko maf execution result {exec_id}",
-        MAX_POLL_ATTEMPTS as u64 * POLL_INTERVAL.as_secs()
+{} execution result {exec_id}",
+        MAX_POLL_ATTEMPTS as u64 * POLL_INTERVAL.as_secs(),
+        maf_hint()
     )
 }
 
@@ -327,8 +329,9 @@ fn print_followups(client: &Client, workflow_id: &str, cleanup: bool) -> Result<
         return Ok(());
     }
     println!("\nWorkflow kept: {workflow_id}");
-    println!("   re-run:  nasiko maf workflow run {workflow_id} --wait");
-    println!("   delete:  nasiko maf workflow delete {workflow_id}");
+    let maf = maf_hint();
+    println!("   re-run:  {maf} workflow run {workflow_id} --wait");
+    println!("   delete:  {maf} workflow delete {workflow_id}");
     Ok(())
 }
 
@@ -349,7 +352,10 @@ pub fn workflow_list(json_out: bool) -> Result<()> {
         return Ok(());
     }
     if workflows.is_empty() {
-        println!("No MAF workflows. Create one with `nasiko maf workflow create`.");
+        println!(
+            "No MAF workflows. Create one with `{} workflow create`.",
+            maf_hint()
+        );
         return Ok(());
     }
     println!("Your MAF workflows:");
@@ -602,7 +608,10 @@ pub fn workflow_run(workflow: &str, wait: bool, content: Option<&str>) -> Result
     println!("Queued execution #{exec_number} ({exec_id}) for workflow '{workflow}'");
 
     if !wait {
-        println!("Check status with: nasiko maf execution result {exec_id}");
+        println!(
+            "Check status with: {} execution result {exec_id}",
+            maf_hint()
+        );
         return Ok(());
     }
     poll_execution(&client, &exec_id)
@@ -705,7 +714,8 @@ fn resolve_workflow_id(client: &Client, workflow: &str) -> Result<String> {
             .unwrap_or("")
             .to_string()),
         [] => anyhow::bail!(
-            "no MAF workflow named '{workflow}' found (run `nasiko maf workflow list`)"
+            "no MAF workflow named '{workflow}' found (run `{} workflow list`)",
+            maf_hint()
         ),
         many => anyhow::bail!(
             "multiple workflows named '{workflow}': {} — use an ID instead",
@@ -956,8 +966,9 @@ fn poll_execution(client: &Client, exec_id: &str) -> Result<()> {
     anyhow::bail!(
         "still waiting after {}s (last status: '{last_status}') — the MAF worker may not be \
 running (e.g. OPENAI_API_KEY not configured on the server). Check again later with: \
-nasiko maf execution result {exec_id}",
-        MAX_POLL_ATTEMPTS as u64 * POLL_INTERVAL.as_secs()
+{} execution result {exec_id}",
+        MAX_POLL_ATTEMPTS as u64 * POLL_INTERVAL.as_secs(),
+        maf_hint()
     );
 }
 
