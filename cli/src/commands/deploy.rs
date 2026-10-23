@@ -88,6 +88,10 @@ struct DeployPlan<'a> {
     /// The version is already in the registry (`nasiko push`), so it would be reused as-is.
     already_pushed: bool,
     port: u16,
+    /// `--coding-agent` or the card's `workloadKind`; `None` for an ordinary HTTP agent.
+    workload_kind: Option<&'a str>,
+    /// Whether the deploy turns HITL on (only ever sent as on).
+    hitl: bool,
     writable: bool,
     writable_path: Option<&'a str>,
     env: &'a HashMap<String, String>,
@@ -120,14 +124,35 @@ fn plan_lines(plan: &DeployPlan) -> Vec<String> {
             .collect::<Vec<_>>()
             .join("  ")
     };
-    vec![
+    // The same rule the deploy itself applies, so the plan can't disagree with it.
+    let port = match deploy_ports(plan.workload_kind, plan.port).as_slice() {
+        [] => "none (driven over stdio)".to_string(),
+        ports => ports
+            .iter()
+            .map(u16::to_string)
+            .collect::<Vec<_>>()
+            .join(", "),
+    };
+    let mut lines = vec![
         format!("Plan for {}:", plan.agent_name),
         format!("  action    {action}"),
         format!("  image     {}   ({image_step})", plan.image_ref),
-        format!("  port      {}", plan.port),
+    ];
+    if let Some(kind) = plan.workload_kind {
+        let kind = if kind == "acp_coding_agent" {
+            "coding agent"
+        } else {
+            kind
+        };
+        let hitl = if plan.hitl { ", HITL on" } else { "" };
+        lines.push(format!("  kind      {kind}{hitl}"));
+    }
+    lines.extend([
+        format!("  port      {port}"),
         format!("  writable  {writable}"),
         format!("  env       {env}"),
-    ]
+    ]);
+    lines
 }
 
 fn print_deploy_plan(plan: &DeployPlan) {
@@ -350,6 +375,8 @@ fn deploy_from_directory(
             image_ref: &image_ref,
             already_pushed: reuse_pushed,
             port,
+            workload_kind: workload_kind.as_deref(),
+            hitl,
             writable,
             writable_path,
             env,
@@ -555,6 +582,8 @@ fn deploy_from_image(
             image_ref: &image_ref,
             already_pushed: reuse_pushed,
             port,
+            workload_kind: workload_kind.as_deref(),
+            hitl,
             writable,
             writable_path,
             env,

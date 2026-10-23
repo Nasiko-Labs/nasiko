@@ -287,6 +287,8 @@ fn plan_for<'a>(
         image_ref: "nasiko/weather:1.3.0",
         already_pushed,
         port: 8000,
+        workload_kind: None,
+        hitl: false,
         writable: false,
         writable_path: None,
         env,
@@ -335,6 +337,21 @@ fn dry_run_plan_shows_the_writable_mount() {
             .join("\n")
             .contains("writable  yes, at /data")
     );
+}
+
+#[test]
+fn dry_run_plan_shows_a_coding_agent_deploys_port_less() {
+    let env = HashMap::new();
+    let plain = plan_lines(&plan_for(None, false, &env)).join("\n");
+    assert!(plain.contains("port      8000"));
+    assert!(!plain.contains("kind"));
+
+    let mut plan = plan_for(None, false, &env);
+    plan.workload_kind = Some("acp_coding_agent");
+    plan.hitl = true;
+    let coding = plan_lines(&plan).join("\n");
+    assert!(coding.contains("kind      coding agent, HITL on"));
+    assert!(coding.contains("port      none (driven over stdio)"));
 }
 
 // ─── resolve_workload_kind / deploy_ports ────────────────────────────────────
