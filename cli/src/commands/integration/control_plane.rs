@@ -14,13 +14,8 @@ pub struct Registration {
 
 pub fn register_agent(agent: Agent) -> Result<Registration> {
     let spec = agent.spec();
-    let (cluster_name, entry) = crate::config::active_cluster()?;
-    let principal_id = entry
-        .token
-        .as_deref()
-        .and_then(crate::config::token_subject)
-        .and_then(|subject| uuid::Uuid::parse_str(&subject).ok())
-        .context("active cluster token has no valid user UUID subject")?;
+    let binding = installation_binding()?;
+    let (_, entry) = crate::config::active_cluster()?;
     let client = crate::api::Client::from_cluster_entry(&entry);
     let response: serde_json::Value = client.post_json(
         "/agents/coding-integrations",
@@ -38,10 +33,23 @@ pub fn register_agent(agent: Agent) -> Result<Registration> {
     Ok(Registration {
         created,
         agent_name,
-        binding: InstallationBinding {
-            cluster_name,
-            cluster_url: entry.url,
-            principal_id,
-        },
+        binding,
+    })
+}
+
+/// The delivery destination for events captured from now on: the active cluster and the
+/// logged-in user, whose agents the server checks every event against.
+pub fn installation_binding() -> Result<InstallationBinding> {
+    let (cluster_name, entry) = crate::config::active_cluster()?;
+    let principal_id = entry
+        .token
+        .as_deref()
+        .and_then(crate::config::token_subject)
+        .and_then(|subject| uuid::Uuid::parse_str(&subject).ok())
+        .context("active cluster token has no valid user UUID subject")?;
+    Ok(InstallationBinding {
+        cluster_name,
+        cluster_url: entry.url,
+        principal_id,
     })
 }
