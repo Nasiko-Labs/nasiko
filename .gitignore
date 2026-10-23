@@ -63,3 +63,13 @@ ui/tests/fixtures/runs/
 
 # Local git worktrees (superpowers workflow)
 .worktrees/
+
+# Sensitive licensing material — never commit (keys live out-of-band)
+.licensing-keys/
+
+# Local experimental coding-agent scaffolds (root only) + their build zips.
+# The real agents live under oss/agents/; these root dirs are scratch.
+/claude-code-agent/
+/codex-agent/
+/opencode-agent/
+/*-agent.zip

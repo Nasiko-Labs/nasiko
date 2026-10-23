@@ -298,6 +298,26 @@ fn deployment_spec_validate_port_zero_fails() {
 }
 
 #[test]
+fn coding_agent_may_have_no_ports() {
+    use nasiko_runtime::WorkloadKind;
+    // A coding agent is driven over stdio and exposes no inbound HTTP port, so
+    // an empty `ports` list is valid for it — unlike every other workload.
+    let mut spec = minimal_spec();
+    spec.workload_kind = WorkloadKind::AcpCodingAgent;
+    spec.ports = vec![];
+    assert!(
+        spec.validate().is_ok(),
+        "coding agent with no ports should validate"
+    );
+    // A declared port is still checked when present.
+    spec.ports = vec![0];
+    assert!(
+        spec.validate().is_err(),
+        "port 0 is invalid even for a coding agent"
+    );
+}
+
+#[test]
 fn deployment_spec_validate_min_replicas_zero_fails() {
     let mut spec = minimal_spec();
     spec.min_replicas = 0;
@@ -455,6 +475,25 @@ fn workload_kind_default_is_agent() {
         WorkloadKind::Agent,
         "default must be Agent for backward compatibility with existing callers"
     );
+}
+
+#[test]
+fn workload_kind_db_str_roundtrips_and_matches_check_constraint() {
+    use nasiko_runtime::WorkloadKind;
+    // These exact strings are the `agents.workload_kind` CHECK set
+    // (migration 0054); if a variant's token drifts, an INSERT would be
+    // rejected at runtime, so pin them here.
+    for (kind, token) in [
+        (WorkloadKind::Agent, "agent"),
+        (WorkloadKind::McpConnector, "mcp_connector"),
+        (WorkloadKind::AcpCodingAgent, "acp_coding_agent"),
+    ] {
+        assert_eq!(kind.as_db_str(), token);
+        assert_eq!(WorkloadKind::from_db_str(token), Some(kind));
+    }
+    // Anything outside the CHECK set is rejected rather than silently mapped.
+    assert_eq!(WorkloadKind::from_db_str("bogus"), None);
+    assert_eq!(WorkloadKind::from_db_str(""), None);
 }
 
 #[test]

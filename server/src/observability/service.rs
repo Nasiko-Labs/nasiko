@@ -10,7 +10,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use chrono::{DateTime, Datelike, Duration, SecondsFormat, TimeZone, Utc};
-use futures::stream::{self, StreamExt};
 use nasiko_config::Config;
 use nasiko_observability::{
     CostBreakdown, ObservabilityError, ObservabilityProvider, TimeBucket, extract_token_attrs,
@@ -25,14 +24,10 @@ use crate::agents::hours_meter;
 
 // ─── Session listing tuning ───────────────────────────────────────────────────
 
-/// Sessions per page when the caller doesn't ask for a size. Every row costs a
-/// trace-store lookup, so this is a work bound, not just a display preference.
+/// Sessions per page when the caller doesn't ask for a size. A page is now one
+/// indexed SQL read, so this is a display preference rather than the work bound
+/// it was while every row cost a trace-store lookup.
 const DEFAULT_SESSION_PAGE: i64 = 25;
-
-/// How many trace-store lookups may be in flight while enriching one page.
-/// High enough that a full page resolves in a couple of round-trips, low enough
-/// not to stampede Tempo when several users load the page at once.
-const SESSION_ENRICH_CONCURRENCY: usize = 8;
 
 // ─── Presentation helpers ─────────────────────────────────────────────────────
 
@@ -40,7 +35,7 @@ const SESSION_ENRICH_CONCURRENCY: usize = 8;
 ///
 /// Tempo stores span timestamps at nanosecond precision; Dart's DateTime.parse
 /// only handles up to microseconds. Capping at millis is safe for all consumers.
-fn fmt_ts(dt: DateTime<Utc>) -> String {
+pub(super) fn fmt_ts(dt: DateTime<Utc>) -> String {
     dt.to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
@@ -447,6 +442,10 @@ pub struct SessionListData {
     pub sessions: Vec<SessionSummary>,
     pub total_agents: usize,
     pub successful_agents: usize,
+    /// Rows matching the filters, so a caller can say "3 failed sessions" from
+    /// one request instead of counting a sampled page. Exact when `status`
+    /// narrows the set; otherwise capped (see `sessions_sql`).
+    pub matching_count: i64,
     pub pagination: Pagination,
 }
 
@@ -465,6 +464,16 @@ pub struct SessionSummary {
     pub trace_latency_ms_p50: Option<f64>,
     pub trace_latency_ms_p99: Option<f64>,
     pub cost_summary: SimpleCostSummary,
+    /// `running` | `ok` | `failed`, derived from the session's flow rows — the
+    /// outcome recorded at the proxy. `null` when the session has no recorded
+    /// flow, which is "unknown", never "ok".
+    pub status: Option<String>,
+    /// Requests in this session that ended in an error.
+    pub failed_flows: u32,
+    /// Unrecovered error spans across the session's traces (the SE-3 rule).
+    /// `null` while none of them has been materialized yet -- "not yet known",
+    /// never "zero".
+    pub error_count: Option<u32>,
     #[schema(value_type = Vec<Object>)]
     pub session_annotations: Vec<Value>,
     #[schema(value_type = Vec<Object>)]
@@ -844,6 +853,27 @@ pub struct AgentFinopsRow {
     pub version: Option<String>,
     /// Replica-hours this agent consumed in the dashboard window.
     pub container_hours: f64,
+    /// This agent's figures for the preceding window of the same length, present
+    /// only with `compare=previous`.
+    ///
+    /// The previous window is already queried on every dashboard call (the KPI
+    /// strip's `change_pct` needs it) and was simply discarded per agent, so a
+    /// caller that wanted per-agent comparison had to issue a second whole
+    /// dashboard request for the earlier window. Omitted by default so the
+    /// default payload is byte-identical to before.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous: Option<AgentFinopsPrevious>,
+}
+
+/// One agent's preceding-window totals. Deliberately a subset: enough to compute
+/// a delta, not a second full row.
+#[derive(Serialize, Clone, ToSchema)]
+pub struct AgentFinopsPrevious {
+    pub total_cost: f64,
+    pub operations: usize,
+    pub total_tokens: u64,
+    pub tool_call_count: u64,
+    pub avg_latency_ms: Option<f64>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -931,6 +961,42 @@ pub struct FinopsSpendTimeseries {
     /// "hour" | "day"
     pub bucket: String,
     pub points: Vec<SpendTimeseriesPoint>,
+    /// Per-agent series, present only with `group_by=agent`. The top `top`
+    /// agents by spend over the whole window, plus one `other` series carrying
+    /// everything below them, so the series still sum to `points`.
+    ///
+    /// Without this a caller charting the top N drivers had to issue one
+    /// `agent_id=`-filtered request per driver — a fan-out whose size grew with
+    /// the chart.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub series: Option<Vec<SpendAgentSeries>>,
+    /// The preceding window of the same length, present only with
+    /// `compare=previous`. Same bucketing, so points line up index-for-index
+    /// once both are zero-filled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous: Option<Vec<SpendTimeseriesPoint>>,
+}
+
+/// One agent's spend over the window's buckets.
+#[derive(Serialize, ToSchema)]
+pub struct SpendAgentSeries {
+    /// Raw trace name, matching `top_agent_name` on the fleet points. `None` for
+    /// the aggregate `other` series.
+    pub agent_name: Option<String>,
+    /// Resolved agent UUID when exactly one live agent carries that name, so
+    /// callers key on the id rather than the name (TK-3, H-5).
+    pub agent_id: Option<String>,
+    /// True for the single aggregate series holding every agent outside the top.
+    pub is_other: bool,
+    pub total_spend_usd: f64,
+    pub points: Vec<SpendAgentPoint>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct SpendAgentPoint {
+    pub bucket_start: String,
+    pub spend_usd: f64,
+    pub operations: usize,
 }
 
 // ─── Spend concentration ────────────────────────────────────────────────────────
@@ -1137,7 +1203,74 @@ pub enum EnsureSessionOutcome {
     Conflict,
 }
 
+/// One turn's token/cost usage within a chat session, from the authoritative
+/// billing ledger (`token_usage` joined to `flows` — one flow == one turn).
+/// Independent of Tempo/the materializer.
+#[derive(Debug, serde::Serialize, sqlx::FromRow)]
+pub struct TurnUsage {
+    /// The user's message for this turn (`flows.title`), when known.
+    pub title: Option<String>,
+    /// The turn's flow id — what `token_usage.session_id` actually stores.
+    pub flow_id: String,
+    /// LLM model calls the agent made in this turn.
+    pub calls: i64,
+    pub tokens: i64,
+    pub cost_usd: f64,
+    pub turn_start: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct SessionTurnsResponse {
+    pub turns: Vec<TurnUsage>,
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct FinopsAccess<'a> {
+    pub user_ids: Option<&'a [uuid::Uuid]>,
+    pub accessible_agent_ids: Option<&'a [uuid::Uuid]>,
+    pub workflow_owner: Option<uuid::Uuid>,
+}
+
+struct ScopeBinds {
+    agent_names: Option<Vec<String>>,
+    has_user_filter: bool,
+    user_ids: Vec<uuid::Uuid>,
+}
+
 impl ObservabilityService {
+    /// Per-turn tokens + cost for a chat session (its A2A contextId), read from
+    /// the `token_usage` ledger joined to `flows`, grouped by flow (one row per
+    /// turn). Scoped to `user_id` unless `is_superuser`. This is the authoritative
+    /// per-turn view and does not depend on the Tempo materializer.
+    pub async fn get_session_turns(
+        &self,
+        context_id: &str,
+        user_id: &str,
+        is_superuser: bool,
+    ) -> Result<SessionTurnsResponse, ObservabilityError> {
+        let turns = sqlx::query_as::<_, TurnUsage>(
+            r#"SELECT f.title                         AS title,
+                      t.session_id                    AS flow_id,
+                      count(*)::bigint                AS calls,
+                      sum(t.total_tokens)::bigint     AS tokens,
+                      round(sum(t.cost_usd), 6)::float8 AS cost_usd,
+                      min(t.created_at)               AS turn_start
+               FROM token_usage t
+               JOIN flows f ON f.flow_id = t.session_id
+               WHERE f.metadata->>'context_id' = $1
+                 AND ($3 OR f.user_id = $2::uuid)
+               GROUP BY f.flow_id, f.title, t.session_id
+               ORDER BY turn_start"#,
+        )
+        .bind(context_id)
+        .bind(user_id)
+        .bind(is_superuser)
+        .fetch_all(&self.db)
+        .await
+        .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
+        Ok(SessionTurnsResponse { turns })
+    }
+
     pub fn from_state(state: &crate::state::AppState) -> Self {
         Self {
             provider: state.observability.clone(),
@@ -1151,6 +1284,34 @@ impl ObservabilityService {
     /// doubles as the Tempo `service.name` (the injector sets OTEL_SERVICE_NAME
     /// to the agent name); `id` is the UUID reported to callers.
     /// OSS: returns all agents (NoopAuthorizer). EE adds RBAC at a higher layer.
+    async fn scope_binds(
+        &self,
+        access: FinopsAccess<'_>,
+    ) -> Result<ScopeBinds, ObservabilityError> {
+        let agent_names = match access.accessible_agent_ids {
+            None => None,
+            Some(ids) => Some(
+                sqlx::query_scalar::<_, String>(
+                    "SELECT name FROM agents WHERE id = ANY($1) AND deleted_at IS NULL",
+                )
+                .bind(ids.to_vec())
+                .fetch_all(&self.db)
+                .await
+                .map_err(|e| ObservabilityError::Internal(e.to_string()))?,
+            ),
+        };
+        let user_ids = access
+            .user_ids
+            .filter(|ids| !ids.is_empty())
+            .map(<[uuid::Uuid]>::to_vec)
+            .unwrap_or_default();
+        Ok(ScopeBinds {
+            agent_names,
+            has_user_filter: !user_ids.is_empty(),
+            user_ids,
+        })
+    }
+
     async fn get_agent_names(
         &self,
         owner_id: Option<uuid::Uuid>,
@@ -1284,84 +1445,14 @@ impl ObservabilityService {
 
     // ── 1. session/list ──────────────────────────────────────────────────────
 
-    /// Row for a session the trace store knows about: token counts, latency and
-    /// cost come from its traces.
-    fn session_summary_from_traces(
-        session_id: String,
-        agent_name: String,
-        details: &nasiko_observability::SessionDetails,
-    ) -> SessionSummary {
-        let total_tokens = details.input_tokens
-            + details.output_tokens
-            + details.cache_read_tokens
-            + details.cache_creation_tokens;
-        let complete = details.metrics_complete;
-        let started_at = details.traces.iter().map(|t| t.root_span.started_at).min();
-        let ended_at = details
-            .traces
-            .iter()
-            .filter_map(|t| t.root_span.ended_at)
-            .max();
-        let duration_ms = started_at
-            .zip(ended_at)
-            .map(|(s, e)| (e - s).num_milliseconds().max(0) as u64);
-
-        SessionSummary {
-            id: session_id.clone(),
-            session_id,
-            agent_id: agent_name,
-            num_traces: Some(details.trace_count as u32),
-            start_time: started_at.map(fmt_ts),
-            // Clients parsing this as a timestamp need a non-empty string — fall back
-            // to start_time when no end time is known.
-            end_time: ended_at.or(started_at).map(fmt_ts),
-            duration_ms,
-            first_input: details.traces.first().and_then(|t| t.input_content.clone()),
-            last_output: details.traces.last().and_then(|t| t.output_content.clone()),
-            token_usage: TokenUsageSummary {
-                total: (complete && total_tokens > 0).then_some(total_tokens),
-            },
-            trace_latency_ms_p50: complete.then_some(details.latency_ms_p50).flatten(),
-            trace_latency_ms_p99: complete.then_some(details.latency_ms_p99).flatten(),
-            cost_summary: SimpleCostSummary {
-                total: CostEntry {
-                    cost: (complete && details.cost.total_usd > 0.0)
-                        .then_some(details.cost.total_usd),
-                },
-            },
-            session_annotations: vec![],
-            session_annotation_summaries: vec![],
-        }
-    }
-
-    /// Row for a session with no traces — the agent isn't OTel-instrumented, or
-    /// the trace store is unavailable. Everything the DB knows, nothing invented.
-    fn session_summary_from_db(
-        session_id: String,
-        agent_name: String,
-        created_at: DateTime<Utc>,
-    ) -> SessionSummary {
-        SessionSummary {
-            id: session_id.clone(),
-            session_id,
-            agent_id: agent_name,
-            num_traces: None,
-            start_time: Some(fmt_ts(created_at)),
-            end_time: Some(fmt_ts(created_at)),
-            duration_ms: None,
-            first_input: None,
-            last_output: None,
-            token_usage: TokenUsageSummary { total: None },
-            trace_latency_ms_p50: None,
-            trace_latency_ms_p99: None,
-            cost_summary: SimpleCostSummary {
-                total: CostEntry { cost: None },
-            },
-            session_annotations: vec![],
-            session_annotation_summaries: vec![],
-        }
-    }
-
+    /// `session/list`, served entirely from SQL — see `super::sessions_sql` for
+    /// the query and for why no field needs the trace store any more.
+    ///
+    /// This used to enrich every row with `provider.get_session`, which is two
+    /// Tempo searches plus a full trace download and three Loki queries per
+    /// trace, per row. A 100-row page cost on the order of 1,400 backend
+    /// requests; it now costs two SQL statements, and the cost no longer grows
+    /// with the number of sessions in the window.
     #[allow(clippy::too_many_arguments)]
     pub async fn get_all_sessions(
         &self,
@@ -1373,121 +1464,80 @@ impl ObservabilityService {
         is_superuser: bool,
         limit: Option<i64>,
         offset: Option<i64>,
+        end_time: Option<&str>,
+        status: Option<&str>,
+        cursor: Option<&str>,
     ) -> Result<SessionListResponse, ObservabilityError> {
-        let start = parse_iso_or_default(start_time, 7);
-        let end = Utc::now();
-
-        // Each row costs a trace-store round-trip, so the page size is the real
-        // cost driver here. This used to load a flat 500 rows and enrich them
-        // one at a time — up to 500 serial Tempo requests per page view, which
-        // is why Execution history took so long to appear.
+        let caller =
+            if is_superuser {
+                None
+            } else {
+                Some(user_id.parse::<uuid::Uuid>().map_err(|_| {
+                    ObservabilityError::Internal("invalid user id in claims".into())
+                })?)
+            };
         let limit = limit.unwrap_or(DEFAULT_SESSION_PAGE).clamp(1, 100);
-        let offset = offset.unwrap_or(0).max(0);
-        // One extra row answers "is there a next page?" without a COUNT query.
-        let fetch = limit + 1;
+        let status = status
+            .map(super::sessions_sql::StatusFilter::parse)
+            .transpose()?;
+        let start = parse_iso_or_default(start_time, 7);
 
-        // 1. Query chat_sessions as the authoritative source — every session
-        //    shows up here regardless of whether the agent is OTel-instrumented.
-        //    Non-superusers only see their own sessions.
-        let mut db_sessions: Vec<(String, Option<uuid::Uuid>, DateTime<Utc>)> = if is_superuser {
-            sqlx::query_as(
-                "SELECT session_id, agent_id, created_at \
-                 FROM chat_sessions \
-                 WHERE deleted_at IS NULL AND created_at >= $1 \
-                 ORDER BY created_at DESC, session_id DESC \
-                 LIMIT $2 OFFSET $3",
-            )
-            .bind(start)
-            .bind(fetch)
-            .bind(offset)
-            .fetch_all(&self.db)
-            .await
-            .map_err(|e| ObservabilityError::Internal(e.to_string()))?
-        } else {
-            let caller_uuid: uuid::Uuid = user_id
-                .parse()
-                .map_err(|_| ObservabilityError::Internal("invalid user id in claims".into()))?;
-            sqlx::query_as(
-                "SELECT session_id, agent_id, created_at \
-                 FROM chat_sessions \
-                 WHERE user_id = $1 AND deleted_at IS NULL AND created_at >= $2 \
-                 ORDER BY created_at DESC, session_id DESC \
-                 LIMIT $3 OFFSET $4",
-            )
-            .bind(caller_uuid)
-            .bind(start)
-            .bind(fetch)
-            .bind(offset)
-            .fetch_all(&self.db)
-            .await
-            .map_err(|e| ObservabilityError::Internal(e.to_string()))?
+        // `cursor` is the paging contract going forward; `offset` is still
+        // accepted because the Sessions page pages on it. An offset is turned
+        // into a cursor by reading the key of the row it would land on, so both
+        // callers share one keyset query rather than two paging implementations.
+        let cursor = match (cursor, offset.filter(|&o| o > 0)) {
+            (Some(raw), _) => Some(super::sessions_sql::decode_cursor(raw).ok_or_else(|| {
+                ObservabilityError::BadRequest("cursor is not a valid page cursor".into())
+            })?),
+            (None, Some(offset)) => match self.cursor_at_offset(caller, start, offset).await? {
+                Some(anchor) => Some(anchor),
+                // The offset is past the end. An absent anchor would otherwise
+                // read as "no cursor" and hand back the *first* page. Anchoring
+                // at `(start, "")` excludes every row -- the page requires
+                // `created_at >= start`, so nothing can also sort before
+                // `(start, "")` -- while still running the count, so
+                // `matching_count` stays right. `DateTime::MIN_UTC` would be
+                // the obvious sentinel and is outside `timestamptz`'s range.
+                None => Some((start, String::new())),
+            },
+            (None, None) => None,
         };
 
-        let has_next_page = db_sessions.len() > limit as usize;
-        if has_next_page {
-            db_sessions.pop();
-        }
-
-        // 2. Build agent_id → name lookup for the agent_id column.
-        let agents = self.get_agent_names(None).await.unwrap_or_default();
-        let total = agents.len();
-        let agent_name_by_id: std::collections::HashMap<uuid::Uuid, String> = agents
-            .into_iter()
-            .map(|(id, name, _display, _version)| (id, name))
-            .collect();
-
-        // 3. Enrich each session from the trace store, concurrently. For agents
-        //    without OTel the provider returns NotFound and we fall back to a
-        //    minimal summary built from the DB row — the session still appears
-        //    in the execution history.
-        //
-        //    Bounded fan-out rather than a serial loop: latency is now roughly
-        //    one round-trip per batch instead of one per session, while the cap
-        //    keeps a large page from stampeding the trace store.
-        let enriched: Vec<SessionSummary> = stream::iter(db_sessions.into_iter().map(
-            |(session_id, agent_id_opt, created_at)| {
-                let agent_name = agent_id_opt
-                    .and_then(|id| agent_name_by_id.get(&id))
-                    .cloned()
-                    .unwrap_or_default();
-                async move {
-                    match self.provider.get_session(&session_id, start, end).await {
-                        Ok(details) => Self::session_summary_from_traces(
-                            session_id,
-                            agent_name,
-                            &details,
-                        ),
-                        Err(e) => {
-                            if !matches!(e, ObservabilityError::NotFound(_)) {
-                                tracing::warn!(%session_id, error = %e, "trace lookup failed for session");
-                            }
-                            Self::session_summary_from_db(session_id, agent_name, created_at)
-                        }
-                    }
-                }
+        super::sessions_sql::list_sessions(
+            &self.db,
+            &super::sessions_sql::SessionListQuery {
+                caller,
+                start,
+                end: parse_iso(end_time),
+                status,
+                limit,
+                cursor,
             },
-        ))
-        .buffered(SESSION_ENRICH_CONCURRENCY)
-        .collect()
-        .await;
+        )
+        .await
+    }
 
-        // `num_traces` is Some only on the trace-store path, so it doubles as
-        // "this session was found in the trace store".
-        let successful = enriched.iter().filter(|s| s.num_traces.is_some()).count();
-        let all_sessions = enriched;
-
-        Ok(SessionListResponse {
-            data: SessionListData {
-                sessions: all_sessions,
-                total_agents: total,
-                successful_agents: successful,
-                pagination: Pagination {
-                    // Offset paging: the next page starts where this one ended.
-                    end_cursor: has_next_page.then(|| (offset + limit).to_string()),
-                    has_next_page,
-                },
-            },
-        })
+    /// The keyset anchor an `offset` would land on, for the legacy paging path.
+    /// One indexed scan of `offset` keys — no aggregates, no joins.
+    async fn cursor_at_offset(
+        &self,
+        caller: Option<uuid::Uuid>,
+        start: chrono::DateTime<Utc>,
+        offset: i64,
+    ) -> Result<Option<(chrono::DateTime<Utc>, String)>, ObservabilityError> {
+        sqlx::query_as::<_, (chrono::DateTime<Utc>, String)>(
+            "SELECT created_at, session_id FROM chat_sessions \
+             WHERE deleted_at IS NULL AND ($1::uuid IS NULL OR user_id = $1) AND created_at >= $2 \
+             ORDER BY created_at DESC, session_id DESC \
+             LIMIT 1 OFFSET $3",
+        )
+        .bind(caller)
+        .bind(start)
+        .bind(offset - 1)
+        .fetch_optional(&self.db)
+        .await
+        .map_err(|e| ObservabilityError::Internal(e.to_string()))
     }
 
     // ── 2. session/{session_id} ──────────────────────────────────────────────
@@ -2065,13 +2115,20 @@ impl ObservabilityService {
         agent_name: Option<&str>,
         model: Option<&str>,
         provider: Option<&str>,
-        // User UUIDs to scope results to (EE org-unit filter). `None` = no filter.
-        user_ids: Option<&[uuid::Uuid]>,
-        accessible_agent_ids: Option<&[uuid::Uuid]>,
+        access: FinopsAccess<'_>,
         // When `Some`, restricts the agent list to agents owned by this user UUID.
         owner_id: Option<&str>,
         view: &str,
+        // `compare=previous`: include each agent's preceding-window totals. The
+        // query runs regardless (the KPI strip needs it); this only controls
+        // whether the per-agent detail is kept instead of discarded.
+        compare_previous: bool,
     ) -> Result<FinopsDashboardResponse, ObservabilityError> {
+        let FinopsAccess {
+            user_ids,
+            accessible_agent_ids,
+            ..
+        } = access;
         let parsed_owner_id = owner_id.and_then(|s| s.parse::<uuid::Uuid>().ok());
         let accessible: Option<HashSet<uuid::Uuid>> =
             accessible_agent_ids.map(|ids| ids.iter().copied().collect());
@@ -2410,6 +2467,20 @@ impl ObservabilityService {
                 tool_call_count: tool_calls,
                 version: Some(version.clone()),
                 container_hours: round6(hours_by_agent.get(agent_uuid).copied().unwrap_or(0.0)),
+                previous: compare_previous.then(|| AgentFinopsPrevious {
+                    total_cost: prev.map(|p| round6(p.total_cost)).unwrap_or(0.0),
+                    operations: prev.map(|p| p.operations as usize).unwrap_or(0),
+                    total_tokens: prev
+                        .map(|p| {
+                            (p.input_tokens
+                                + p.output_tokens
+                                + p.cache_read_tokens
+                                + p.cache_creation_tokens) as u64
+                        })
+                        .unwrap_or(0),
+                    tool_call_count: prev.map(|p| p.tool_call_count as u64).unwrap_or(0),
+                    avg_latency_ms: prev.and_then(|p| p.p50_latency),
+                }),
             });
         }
 
@@ -2502,7 +2573,7 @@ impl ObservabilityService {
 
         let attributions = if view == "workflow" {
             let rows = self
-                .get_workflow_finops_rows(start, now, agent_name)
+                .get_workflow_finops_rows(start, now, agent_name, access)
                 .await
                 .unwrap_or_else(|e| {
                     tracing::warn!(error = %e, "workflow finops aggregation failed");
@@ -2561,27 +2632,20 @@ impl ObservabilityService {
         agent_name: Option<&str>,
         model: Option<&str>,
         provider: Option<&str>,
-        accessible_agent_ids: Option<&[uuid::Uuid]>,
-        user_ids: Option<&[uuid::Uuid]>,
+        // `group_by=agent`: also return the top `top` agents' own series plus an
+        // `other` aggregate.
+        group_by_agent: bool,
+        top: i64,
+        // `compare=previous`: also return the preceding window of equal length.
+        compare_previous: bool,
+        access: FinopsAccess<'_>,
     ) -> Result<FinopsSpendTimeseriesResponse, ObservabilityError> {
+        let scope = self.scope_binds(access).await?;
         let (start, end, bucket) = resolve_window(start_time, end_time, range)?;
         let trunc = match bucket {
             TimeBucket::Hour => "hour",
             TimeBucket::Day => "day",
         };
-        // Empty slice means "no filter" — sqlx binds it as an empty array, and
-        // `= ANY('{}')` already matches nothing, but the explicit boolean keeps
-        // "unrestricted" (None) distinct from "restricted to nobody" (Some([])).
-        let has_agent_filter = accessible_agent_ids.is_some_and(|ids| !ids.is_empty());
-        let agent_id_list: Vec<uuid::Uuid> = accessible_agent_ids
-            .filter(|ids| !ids.is_empty())
-            .map(|ids| ids.to_vec())
-            .unwrap_or_default();
-        let has_user_filter = user_ids.is_some_and(|ids| !ids.is_empty());
-        let user_id_list: Vec<uuid::Uuid> = user_ids
-            .filter(|ids| !ids.is_empty())
-            .map(|ids| ids.to_vec())
-            .unwrap_or_default();
 
         #[derive(sqlx::FromRow)]
         struct BucketRow {
@@ -2614,8 +2678,8 @@ impl ObservabilityService {
                      AND ($3::TEXT IS NULL OR agent_name = $3)
                      AND ($4::TEXT IS NULL OR model = $4)
                      AND ($5::TEXT IS NULL OR provider = $5)
-                     AND (NOT $6::BOOL OR agent_id = ANY($7::UUID[]))
-                     AND (NOT $8::BOOL OR user_id = ANY($9::UUID[]))
+                     AND ($6::TEXT[] IS NULL OR agent_name = ANY($6::TEXT[]))
+                     AND (NOT $7::BOOL OR user_id = ANY($8::UUID[]))
                    GROUP BY bucket_start, agent_name
                ),
                ranked AS (
@@ -2633,8 +2697,8 @@ impl ObservabilityService {
                      AND ($3::TEXT IS NULL OR agent_name = $3)
                      AND ($4::TEXT IS NULL OR model = $4)
                      AND ($5::TEXT IS NULL OR provider = $5)
-                     AND (NOT $6::BOOL OR agent_id = ANY($7::UUID[]))
-                     AND (NOT $8::BOOL OR user_id = ANY($9::UUID[]))
+                     AND ($6::TEXT[] IS NULL OR agent_name = ANY($6::TEXT[]))
+                     AND (NOT $7::BOOL OR user_id = ANY($8::UUID[]))
                    GROUP BY bucket_start
                )
                SELECT r.bucket_start,
@@ -2652,46 +2716,187 @@ impl ObservabilityService {
                ORDER BY r.bucket_start"#
         );
 
-        let rows: Vec<BucketRow> = sqlx::query_as(&query)
-            .bind(start)
-            .bind(end)
-            .bind(agent_name)
-            .bind(model)
-            .bind(provider)
-            .bind(has_agent_filter)
-            .bind(&agent_id_list)
-            .bind(has_user_filter)
-            .bind(&user_id_list)
-            .fetch_all(&self.db)
+        let fetch = |from: DateTime<Utc>, to: DateTime<Utc>| {
+            sqlx::query_as::<_, BucketRow>(&query)
+                .bind(from)
+                .bind(to)
+                .bind(agent_name)
+                .bind(model)
+                .bind(provider)
+                .bind(&scope.agent_names)
+                .bind(scope.has_user_filter)
+                .bind(&scope.user_ids)
+                .fetch_all(&self.db)
+        };
+
+        let to_point = |r: BucketRow| SpendTimeseriesPoint {
+            bucket_start: fmt_ts(r.bucket_start),
+            spend_usd: round6(r.spend_usd),
+            operations: r.operations as usize,
+            tool_calls: r.tool_calls.max(0) as u64,
+            top_agent_name: r.top_agent_name,
+            top_agent_spend_usd: r.top_agent_spend_usd.map(round6),
+            p50_latency_ms: r.p50_latency_ms,
+            p95_latency_ms: r.p95_latency_ms,
+            p99_latency_ms: r.p99_latency_ms,
+        };
+
+        let rows = fetch(start, end)
             .await
             .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
+
+        let previous = if compare_previous {
+            let window = end - start;
+            let rows = fetch(start - window, start)
+                .await
+                .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
+            Some(rows.into_iter().map(to_point).collect())
+        } else {
+            None
+        };
+
+        let series = if group_by_agent {
+            Some(
+                self.spend_series_by_agent(
+                    start, end, trunc, agent_name, model, provider, top, &scope,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
 
         Ok(FinopsSpendTimeseriesResponse {
             data: FinopsSpendTimeseries {
                 bucket: bucket_label(bucket).to_string(),
-                points: rows
-                    .into_iter()
-                    .map(|r| SpendTimeseriesPoint {
-                        bucket_start: fmt_ts(r.bucket_start),
-                        spend_usd: round6(r.spend_usd),
-                        operations: r.operations as usize,
-                        tool_calls: r.tool_calls.max(0) as u64,
-                        top_agent_name: r.top_agent_name,
-                        top_agent_spend_usd: r.top_agent_spend_usd.map(round6),
-                        p50_latency_ms: r.p50_latency_ms,
-                        p95_latency_ms: r.p95_latency_ms,
-                        p99_latency_ms: r.p99_latency_ms,
-                    })
-                    .collect(),
+                points: rows.into_iter().map(to_point).collect(),
+                series,
+                previous,
             },
             status_code: 200,
             message: "Spend timeseries retrieved successfully".into(),
         })
     }
 
+    /// The top `top` agents' own spend series plus one `other` series holding
+    /// everything else, so the series still sum to the fleet points.
+    ///
+    /// One query: the window's top spenders are picked in SQL and every bucket
+    /// is labelled in the same pass, rather than issuing one filtered timeseries
+    /// request per driver.
+    #[allow(clippy::too_many_arguments)]
+    async fn spend_series_by_agent(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        trunc: &str,
+        agent_name: Option<&str>,
+        model: Option<&str>,
+        provider: Option<&str>,
+        top: i64,
+        scope: &ScopeBinds,
+    ) -> Result<Vec<SpendAgentSeries>, ObservabilityError> {
+        #[derive(sqlx::FromRow)]
+        struct SeriesRow {
+            agent_name: Option<String>,
+            bucket_start: DateTime<Utc>,
+            spend_usd: f64,
+            operations: i64,
+        }
+
+        // `ranked` orders agents by their whole-window spend; anything outside
+        // the top `top` collapses to a NULL agent_name, which becomes `other`.
+        let query = format!(
+            r#"WITH filtered AS (
+                   SELECT agent_name, cost_usd, started_at
+                     FROM trace_usage
+                    WHERE started_at >= $1 AND started_at < $2
+                      AND ($3::TEXT IS NULL OR agent_name = $3)
+                      AND ($4::TEXT IS NULL OR model = $4)
+                      AND ($5::TEXT IS NULL OR provider = $5)
+                      AND ($7::TEXT[] IS NULL OR agent_name = ANY($7::TEXT[]))
+                      AND (NOT $8::BOOL OR user_id = ANY($9::UUID[]))
+               ),
+               ranked AS (
+                   SELECT agent_name,
+                          ROW_NUMBER() OVER (ORDER BY SUM(cost_usd) DESC, agent_name) AS rn
+                     FROM filtered
+                    GROUP BY agent_name
+               )
+               SELECT CASE WHEN r.rn <= $6 THEN f.agent_name END AS agent_name,
+                      date_trunc('{trunc}', f.started_at) AS bucket_start,
+                      SUM(f.cost_usd)::FLOAT8 AS spend_usd,
+                      COUNT(*)::BIGINT AS operations
+                 FROM filtered f
+                 JOIN ranked r ON r.agent_name = f.agent_name
+                GROUP BY 1, 2
+                ORDER BY 2"#
+        );
+
+        let rows: Vec<SeriesRow> = sqlx::query_as(&query)
+            .bind(start)
+            .bind(end)
+            .bind(agent_name)
+            .bind(model)
+            .bind(provider)
+            .bind(top.clamp(1, 20))
+            .bind(&scope.agent_names)
+            .bind(scope.has_user_filter)
+            .bind(&scope.user_ids)
+            .fetch_all(&self.db)
+            .await
+            .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
+
+        // Raw trace name → UUID, but only when exactly one live agent carries
+        // that name: a name shared by two agents identifies neither (TK-3).
+        let mut id_by_name: HashMap<String, Option<String>> = HashMap::new();
+        for (id, name, _display, _version) in self.get_agent_names(None).await.unwrap_or_default() {
+            id_by_name
+                .entry(name)
+                .and_modify(|slot| *slot = None)
+                .or_insert_with(|| Some(id.to_string()));
+        }
+
+        let mut by_agent: HashMap<Option<String>, Vec<SpendAgentPoint>> = HashMap::new();
+        let mut totals: HashMap<Option<String>, f64> = HashMap::new();
+        for r in rows {
+            *totals.entry(r.agent_name.clone()).or_insert(0.0) += r.spend_usd;
+            by_agent
+                .entry(r.agent_name)
+                .or_default()
+                .push(SpendAgentPoint {
+                    bucket_start: fmt_ts(r.bucket_start),
+                    spend_usd: round6(r.spend_usd),
+                    operations: r.operations as usize,
+                });
+        }
+
+        let mut series: Vec<SpendAgentSeries> = by_agent
+            .into_iter()
+            .map(|(name, points)| SpendAgentSeries {
+                agent_id: name
+                    .as_ref()
+                    .and_then(|n| id_by_name.get(n).cloned().flatten()),
+                is_other: name.is_none(),
+                total_spend_usd: round6(totals.get(&name).copied().unwrap_or(0.0)),
+                agent_name: name,
+                points,
+            })
+            .collect();
+        // Named series by spend, `other` last whatever it totals.
+        series.sort_by(|a, b| match (a.is_other, b.is_other) {
+            (false, true) => std::cmp::Ordering::Less,
+            (true, false) => std::cmp::Ordering::Greater,
+            _ => b
+                .total_spend_usd
+                .partial_cmp(&a.total_spend_usd)
+                .unwrap_or(std::cmp::Ordering::Equal),
+        });
+        Ok(series)
+    }
+
     // ── 6c. finops/spend-calendar ─────────────────────────────────────────────
 
-    #[allow(clippy::too_many_arguments)]
     pub async fn get_finops_spend_calendar(
         &self,
         month: &str,
@@ -2699,19 +2904,9 @@ impl ObservabilityService {
         agent_name: Option<&str>,
         model: Option<&str>,
         provider: Option<&str>,
-        accessible_agent_ids: Option<&[uuid::Uuid]>,
-        user_ids: Option<&[uuid::Uuid]>,
+        access: FinopsAccess<'_>,
     ) -> Result<FinopsSpendCalendarResponse, ObservabilityError> {
-        let has_agent_filter = accessible_agent_ids.is_some_and(|ids| !ids.is_empty());
-        let agent_id_list: Vec<uuid::Uuid> = accessible_agent_ids
-            .filter(|ids| !ids.is_empty())
-            .map(|ids| ids.to_vec())
-            .unwrap_or_default();
-        let has_user_filter = user_ids.is_some_and(|ids| !ids.is_empty());
-        let user_id_list: Vec<uuid::Uuid> = user_ids
-            .filter(|ids| !ids.is_empty())
-            .map(|ids| ids.to_vec())
-            .unwrap_or_default();
+        let scope = self.scope_binds(access).await?;
         let month_start = chrono::NaiveDateTime::parse_from_str(
             &format!("{month}-01 00:00:00"),
             "%Y-%m-%d %H:%M:%S",
@@ -2742,8 +2937,8 @@ impl ObservabilityService {
                  AND ($3::TEXT IS NULL OR agent_name = $3)
                  AND ($4::TEXT IS NULL OR model = $4)
                  AND ($5::TEXT IS NULL OR provider = $5)
-                 AND (NOT $6::BOOL OR agent_id = ANY($7::UUID[]))
-                 AND (NOT $8::BOOL OR user_id = ANY($9::UUID[]))
+                 AND ($6::TEXT[] IS NULL OR agent_name = ANY($6::TEXT[]))
+                 AND (NOT $7::BOOL OR user_id = ANY($8::UUID[]))
                GROUP BY DATE(started_at)
                ORDER BY date"#,
         )
@@ -2752,10 +2947,9 @@ impl ObservabilityService {
         .bind(agent_name)
         .bind(model)
         .bind(provider)
-        .bind(has_agent_filter)
-        .bind(&agent_id_list)
-        .bind(has_user_filter)
-        .bind(&user_id_list)
+        .bind(&scope.agent_names)
+        .bind(scope.has_user_filter)
+        .bind(&scope.user_ids)
         .fetch_all(&self.db)
         .await
         .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
@@ -2809,19 +3003,9 @@ impl ObservabilityService {
         agent_name: Option<&str>,
         model: Option<&str>,
         provider: Option<&str>,
-        accessible_agent_ids: Option<&[uuid::Uuid]>,
-        user_ids: Option<&[uuid::Uuid]>,
+        access: FinopsAccess<'_>,
     ) -> Result<FinopsDayDrilldownResponse, ObservabilityError> {
-        let has_agent_filter = accessible_agent_ids.is_some_and(|ids| !ids.is_empty());
-        let agent_id_list: Vec<uuid::Uuid> = accessible_agent_ids
-            .filter(|ids| !ids.is_empty())
-            .map(|ids| ids.to_vec())
-            .unwrap_or_default();
-        let has_user_filter = user_ids.is_some_and(|ids| !ids.is_empty());
-        let user_id_list: Vec<uuid::Uuid> = user_ids
-            .filter(|ids| !ids.is_empty())
-            .map(|ids| ids.to_vec())
-            .unwrap_or_default();
+        let scope = self.scope_binds(access).await?;
         let day_start =
             chrono::NaiveDateTime::parse_from_str(&format!("{date} 00:00:00"), "%Y-%m-%d %H:%M:%S")
                 .map(|d| d.and_utc())
@@ -2844,8 +3028,8 @@ impl ObservabilityService {
                  AND ($3::TEXT IS NULL OR agent_name = $3)
                  AND ($4::TEXT IS NULL OR model = $4)
                  AND ($5::TEXT IS NULL OR provider = $5)
-                 AND (NOT $6::BOOL OR agent_id = ANY($7::UUID[]))
-                 AND (NOT $8::BOOL OR user_id = ANY($9::UUID[]))
+                 AND ($6::TEXT[] IS NULL OR agent_name = ANY($6::TEXT[]))
+                 AND (NOT $7::BOOL OR user_id = ANY($8::UUID[]))
                GROUP BY hour, agent_name
                ORDER BY hour"#,
         )
@@ -2854,10 +3038,9 @@ impl ObservabilityService {
         .bind(agent_name)
         .bind(model)
         .bind(provider)
-        .bind(has_agent_filter)
-        .bind(&agent_id_list)
-        .bind(has_user_filter)
-        .bind(&user_id_list)
+        .bind(&scope.agent_names)
+        .bind(scope.has_user_filter)
+        .bind(&scope.user_ids)
         .fetch_all(&self.db)
         .await
         .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
@@ -2958,7 +3141,13 @@ impl ObservabilityService {
         start: DateTime<Utc>,
         end: DateTime<Utc>,
         agent_name: Option<&str>,
+        access: FinopsAccess<'_>,
     ) -> Result<Vec<WorkflowFinopsRow>, ObservabilityError> {
+        let org_user_ids = access
+            .user_ids
+            .filter(|ids| !ids.is_empty())
+            .map(<[uuid::Uuid]>::to_vec)
+            .unwrap_or_default();
         #[derive(sqlx::FromRow)]
         struct ExecRow {
             maf_id: Option<uuid::Uuid>,
@@ -2980,11 +3169,16 @@ impl ObservabilityService {
                          SELECT 1 FROM jsonb_array_elements(e.step_results) elem
                          WHERE elem->>'agent_name' = $3
                      )
-                 )"#,
+                 )
+                 AND ($4::UUID IS NULL OR e.user_id = $4)
+                 AND (NOT $5::BOOL OR e.user_id = ANY($6::UUID[]))"#,
         )
         .bind(start)
         .bind(end)
         .bind(agent_name)
+        .bind(access.workflow_owner)
+        .bind(!org_user_ids.is_empty())
+        .bind(&org_user_ids)
         .fetch_all(&self.db)
         .await
         .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
@@ -3074,7 +3268,6 @@ impl ObservabilityService {
     /// KPI/timeseries work.
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
     pub async fn get_finops_attributions(
         &self,
         start_time: Option<&str>,
@@ -3087,8 +3280,7 @@ impl ObservabilityService {
         sort_dir: Option<&str>,
         limit: Option<i64>,
         offset: Option<i64>,
-        accessible_agent_ids: Option<&[uuid::Uuid]>,
-        user_ids: Option<&[uuid::Uuid]>,
+        access: FinopsAccess<'_>,
     ) -> Result<FinopsAttributionsResponse, ObservabilityError> {
         let start = parse_iso_or_default(start_time, 30);
         let end = end_time
@@ -3099,14 +3291,8 @@ impl ObservabilityService {
         let desc = sort_dir.map(|d| d != "asc").unwrap_or(true);
 
         if view == "workflow" {
-            // TODO(known gap): workflow rows come from `maf_executions.step_results`, a JSONB
-            // array naming agents by `agent_name` text with no `agent_id`/`user_id` column to
-            // filter by — unlike every other finops read here, closing this needs resolving
-            // accessible agent *names* and a JSONB membership check, not a plain `= ANY(uuid[])`.
-            // Left unscoped for now; the agent view (the default, and what this bug report was
-            // about) is scoped below.
             let mut rows = self
-                .get_workflow_finops_rows(start, end, agent_name)
+                .get_workflow_finops_rows(start, end, agent_name, access)
                 .await?;
             sort_workflow_rows(&mut rows, sort_by, desc);
             Ok(FinopsAttributionsResponse {
@@ -3119,19 +3305,8 @@ impl ObservabilityService {
         } else {
             let dashboard = self
                 .get_finops_dashboard(
-                    "",
-                    None,
-                    None,
-                    None,
-                    start_time,
-                    end_time,
-                    agent_name,
-                    model,
-                    provider,
-                    user_ids,
-                    accessible_agent_ids,
-                    None,
-                    "agent",
+                    "", None, None, None, start_time, end_time, agent_name, model, provider,
+                    access, None, "agent", false,
                 )
                 .await?;
             let mut rows = dashboard.data.agents;
@@ -3451,7 +3626,7 @@ mod tests {
     use std::collections::HashMap;
 
     use chrono::{TimeZone, Utc};
-    use nasiko_observability::{CostBreakdown, SessionDetails, Span};
+    use nasiko_observability::Span;
 
     use super::*;
 
@@ -3549,41 +3724,6 @@ mod tests {
 
         let (roots, _) = build_span_tree(&[span]);
         assert_eq!(roots[0].name, "Bash: git status --short");
-    }
-
-    #[test]
-    fn session_summary_total_and_cost_include_cache() {
-        let details = SessionDetails {
-            session_id: "session".into(),
-            traces: vec![],
-            trace_count: 1,
-            input_tokens: 10,
-            output_tokens: 5,
-            cache_read_tokens: 2,
-            cache_creation_tokens: 3,
-            model_used: Some("claude-sonnet-4".into()),
-            latency_ms_p50: None,
-            latency_ms_p99: None,
-            latency_ms_avg: None,
-            has_more_traces: false,
-            metrics_complete: true,
-            cost: CostBreakdown {
-                prompt_usd: 1.0,
-                completion_usd: 2.0,
-                cache_read_usd: 0.25,
-                cache_creation_usd: 0.75,
-                total_usd: 4.0,
-                estimated: false,
-            },
-        };
-
-        let summary = ObservabilityService::session_summary_from_traces(
-            "session".into(),
-            "agent".into(),
-            &details,
-        );
-        assert_eq!(summary.token_usage.total, Some(20));
-        assert_eq!(summary.cost_summary.total.cost, Some(4.0));
     }
 
     // ── KpiValue::new ────────────────────────────────────────────────────────
@@ -3744,6 +3884,7 @@ mod tests {
             tool_call_count: 0,
             version: None,
             container_hours: 0.0,
+            previous: None,
         }
     }
 

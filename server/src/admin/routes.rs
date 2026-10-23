@@ -52,6 +52,12 @@ struct DeployRequest {
     /// `None` = `/workspace`. Implies `writable` when set.
     #[serde(default)]
     writable_path: Option<String>,
+    /// Workload kind for this deploy (`agent`, `mcp_connector`,
+    /// `acp_coding_agent`). Self-describing so the deploy is correct regardless
+    /// of whether the catalog row was written before this call; `None` falls
+    /// back to the catalog's stored kind (then `agent`).
+    #[serde(default)]
+    workload_kind: Option<String>,
 }
 
 async fn deploy(
@@ -125,39 +131,75 @@ async fn deploy(
     // UI "redeploy" that doesn't re-send the flag — can never silently detach a
     // live volume and drop the agent's files. An explicit request flag still wins
     // (so `nasiko deploy --writable` of an as-yet-unregistered image works too).
-    let (db_writable, db_writable_path) = match resolved_agent_id {
-        Some(agent_id) => match sqlx::query_as::<_, (bool, Option<String>)>(
-            "SELECT writable, writable_path FROM agents WHERE id = $1",
+    //
+    // The same catalog read also carries `workload_kind`: an ACP coding agent is
+    // driven over a stdio turn, not reverse-proxied, so it must deploy *port-less*
+    // and always writable (each session needs its workspace), exactly like the
+    // spec the coding-turn path builds (`coding::proxy::build_spec`). Resolving it
+    // here means `nasiko deploy` of a registered coding agent brings its container
+    // up correctly without the ad-hoc deploy request having to know the kind.
+    let (db_writable, db_writable_path, db_workload_kind) = match resolved_agent_id {
+        Some(agent_id) => match sqlx::query_as::<_, (bool, Option<String>, String)>(
+            "SELECT writable, writable_path, workload_kind FROM agents WHERE id = $1",
         )
         .bind(agent_id)
         .fetch_optional(&state.db)
         .await
         {
             // A missing row is a genuinely ad-hoc image with no catalog record —
-            // `false` is correct there. A DB *error*, though, must NOT collapse to
-            // `false`: that would deploy a writable agent with no volume and then
-            // persist `writable=false`, the exact silent detach this block exists
-            // to prevent. Fail the deploy instead of guessing.
-            Ok(row) => row.unwrap_or((false, None)),
+            // `false`/`agent` is correct there. A DB *error*, though, must NOT
+            // collapse to `false`: that would deploy a writable agent with no
+            // volume and then persist `writable=false`, the exact silent detach
+            // this block exists to prevent. Fail the deploy instead of guessing.
+            Ok(row) => row.unwrap_or((false, None, "agent".to_owned())),
             Err(e) => {
                 tracing::error!(%e, %agent_id, "deploy: could not read writable from catalog");
                 return (StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
                     .into_response();
             }
         },
-        None => (false, None),
+        None => (false, None, "agent".to_owned()),
     };
-    let writable_path = req.writable_path.clone().or(db_writable_path);
-    let writable = req.writable || db_writable || writable_path.is_some();
+    // Prefer the self-describing request field (the CLI always sends it for a
+    // coding agent, so a promote-then-deploy in one call is correct even before
+    // the catalog row is updated); fall back to the stored kind, then `agent`. An
+    // explicit but invalid request value is a clean 400.
+    let workload_kind = match req.workload_kind.as_deref() {
+        Some(raw) => match nasiko_runtime::WorkloadKind::from_db_str(raw) {
+            Some(kind) => kind,
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "workload_kind must be one of: agent, mcp_connector, acp_coding_agent",
+                )
+                    .into_response();
+            }
+        },
+        // An unrecognized stored value defaults to `Agent` (the
+        // backward-compatible behavior) rather than failing the deploy.
+        None => nasiko_runtime::WorkloadKind::from_db_str(&db_workload_kind).unwrap_or_default(),
+    };
+    let is_coding = workload_kind == nasiko_runtime::WorkloadKind::AcpCodingAgent;
 
-    let ports = if req.ports.is_empty() {
+    let writable_path = req.writable_path.clone().or(db_writable_path);
+    // A coding agent is always writable — every session runs in its own workspace
+    // subdirectory on the mount.
+    let writable = req.writable || db_writable || writable_path.is_some() || is_coding;
+
+    let ports = if is_coding {
+        // Driven over stdio; a coding-agent container exposes no inbound port.
+        Vec::new()
+    } else if req.ports.is_empty() {
         vec![crate::agents::DEFAULT_AGENT_PORT]
     } else {
         req.ports
     };
-    // The Service/port-mapping targets ports[0], so the agent must listen
-    // there — every in-tree agent honors PORT. Explicit env still wins.
-    crate::agents::set_port_env(&mut env, ports[0]);
+    // The Service/port-mapping targets ports[0], so an HTTP agent must listen
+    // there — every in-tree agent honors PORT. Explicit env still wins. A coding
+    // agent has no port (empty `ports`), so it gets no PORT injection.
+    if !is_coding {
+        crate::agents::set_port_env(&mut env, ports[0]);
+    }
 
     let bounds = match deploy_bounds(scaling.as_deref(), req.replicas, writable).await {
         Ok(bounds) => bounds,
@@ -181,7 +223,7 @@ async fn deploy(
         image_pull_credential_seed: None,
         harden: false,
         network_override: None,
-        workload_kind: Default::default(),
+        workload_kind,
         // Sourced from the catalog (see above) so redeploys keep the mount.
         writable,
         writable_path,

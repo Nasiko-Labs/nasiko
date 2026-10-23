@@ -2,7 +2,6 @@ use std::fs;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use nasiko_utils::term;
 
 use crate::api::Client;
 use crate::oci;
@@ -14,20 +13,22 @@ use crate::version_prompt::{
 /// Push an agent image to the cluster's OCI registry and register in catalog.
 /// Does NOT deploy a container.
 pub fn push(image: &str, name_override: Option<&str>) -> Result<()> {
-    push_with_version_flags(image, name_override, VersionFlags::default())
+    push_with_version_flags(image, name_override, VersionFlags::default(), false, false)
 }
 
 pub fn push_with_version_flags(
     image: &str,
     name_override: Option<&str>,
     flags: VersionFlags,
+    coding_agent: bool,
+    hitl: bool,
 ) -> Result<()> {
     let client = Client::from_active_cluster()?;
 
     if Path::new(image).join("AgentCard.json").exists() {
-        push_from_directory(image, name_override, flags, &client)
+        push_from_directory(image, name_override, flags, coding_agent, hitl, &client)
     } else {
-        push_from_image(image, name_override, flags, &client)
+        push_from_image(image, name_override, flags, coding_agent, hitl, &client)
     }
 }
 
@@ -35,6 +36,8 @@ fn push_from_directory(
     dir: &str,
     name_override: Option<&str>,
     flags: VersionFlags,
+    coding_agent: bool,
+    hitl: bool,
     client: &Client,
 ) -> Result<()> {
     let root = Path::new(dir);
@@ -67,19 +70,24 @@ fn push_from_directory(
 
     // Push to OCI
     let repo = format!("nasiko/{agent_name}");
-    term::print_info(&format!("Pushing {image_tag} → {repo}:{version}..."));
+    println!("Pushing {image_tag} → {repo}:{version}...");
     oci::push_image(&image_tag, &repo, &version)?;
 
     let image_ref = format!("{repo}:{version}");
 
     // Register in catalog
-    register_agent(client, &agent_name, &version, &image_ref, &card)?;
+    register_agent(
+        client,
+        &agent_name,
+        &version,
+        &image_ref,
+        &card,
+        coding_agent,
+        hitl,
+    )?;
 
-    println!();
-    term::print_success(&format!(
-        "Pushed {agent_name}:{version} (image: {image_ref})"
-    ));
-    println!("  {}", term::cyan(&format!("→ nasiko deploy {dir}")));
+    println!("\n✓ Pushed {agent_name}:{version} (image: {image_ref})");
+    println!("  Deploy with: nasiko deploy {dir}");
     Ok(())
 }
 
@@ -87,6 +95,8 @@ fn push_from_image(
     image: &str,
     name_override: Option<&str>,
     flags: VersionFlags,
+    coding_agent: bool,
+    hitl: bool,
     client: &Client,
 ) -> Result<()> {
     // Same guard as `deploy_from_image`: require an explicit tag, not
@@ -118,20 +128,25 @@ fn push_from_image(
     let version = decision.version;
     reject_if_already_pushed(client, &existing, &version, image)?;
 
-    term::print_info(&format!("Pushing {image} → {repo}:{version}..."));
+    println!("Pushing {image} → {repo}:{version}...");
     oci::push_image(image, &repo, &version)?;
 
     let image_ref = format!("{repo}:{version}");
 
     // Register in catalog
     let card = serde_json::json!({});
-    register_agent(client, &agent_name, &version, &image_ref, &card)?;
+    register_agent(
+        client,
+        &agent_name,
+        &version,
+        &image_ref,
+        &card,
+        coding_agent,
+        hitl,
+    )?;
 
-    println!();
-    term::print_success(&format!(
-        "Pushed {agent_name}:{version} (image: {image_ref})"
-    ));
-    println!("  {}", term::cyan(&format!("→ nasiko deploy {image}")));
+    println!("\n✓ Pushed {agent_name}:{version} (image: {image_ref})");
+    println!("  Deploy with: nasiko deploy {image}");
     Ok(())
 }
 
@@ -208,7 +223,13 @@ fn register_agent(
     version: &str,
     image_ref: &str,
     card: &serde_json::Value,
+    coding_agent: bool,
+    hitl: bool,
 ) -> Result<()> {
+    // Flag wins, AgentCard `workloadKind` is the default — the same rule `deploy`
+    // uses, reused here so `push` marks the catalog row identically.
+    let workload_kind = super::deploy::resolve_workload_kind(coding_agent, card);
+
     // Update if the agent already exists (from a prior push/deploy), else create it.
     let existing = client.get_agent(name)?;
     if let Some(existing) = existing {
@@ -225,6 +246,9 @@ fn register_agent(
             "skills": card.get("skills"),
             "capabilities": card.get("capabilities"),
             "activate_version": false,
+            "workload_kind": workload_kind,
+            // Only send when set, so a plain re-push never flips HITL off.
+            "hitl_enabled": hitl.then_some(true),
         });
         let _: serde_json::Value = client.put_json(&format!("/agents/{id}"), &update)?;
         return Ok(());
@@ -239,6 +263,8 @@ fn register_agent(
         "image": image_ref,
         "skills": card.get("skills").unwrap_or(&serde_json::json!([])),
         "capabilities": card.get("capabilities"),
+        "workload_kind": workload_kind,
+        "hitl_enabled": hitl.then_some(true),
     });
     let _: serde_json::Value = client.post_json("/agents", &create)?;
     Ok(())

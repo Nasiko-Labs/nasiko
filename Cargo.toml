@@ -11,6 +11,8 @@ members = [
     "savings",
     "runtime",
     "react-agent",
+    "acp-client",
+    "session-token",
     "orchestrator",
     "types",
     "utils",
@@ -49,6 +51,8 @@ nasiko-secrets = { path = "secrets" }
 nasiko-observability = { path = "observability" }
 nasiko-runtime = { path = "runtime", default-features = false }
 nasiko-react-agent = { path = "react-agent" }
+nasiko-acp-client = { path = "acp-client" }
+nasiko-session-token = { path = "session-token" }
 nasiko-orchestrator = { path = "orchestrator" }
 nasiko-types = { path = "types" }
 nasiko-utils = { path = "utils" }
@@ -103,13 +107,7 @@ rig-core = { version = "=0.11.1", default-features = false, features = ["derive"
 
 # ─── CLI ────────────────────────────────────────────────────────────────────
 toml_edit = "0.25"
-# `string`: lets `nasiko completions` rebuild the command tree without hidden subcommands
-# (clap_complete would otherwise offer internal helpers like `__coding-agent-token` on TAB).
-clap = { version = "4", features = ["derive", "string"] }
-clap_complete = "4"
-clap_mangen = "0.2"
-# Edit distance for the CLI's "did you mean '<agent>'?" hint; already in the build via clap.
-strsim = "0.11"
+clap = { version = "4", features = ["derive"] }
 ureq = { version = "3", features = ["json"] }
 dialoguer = "0.11"
 indicatif = "0.17"
@@ -120,7 +118,7 @@ which = "7"
 include_dir = "0.7"
 ratatui = "0.29"
 crossterm = "0.29"
-tabled = { version = "0.21", features = ["ansi"] }
+tabled = "0.21"
 # Already pulled in transitively via console (dialoguer's dep) at this exact version; declared
 # directly here only for `oss/cli`'s own scoped SIGINT no-op guard (hitl.rs) — see its doc
 # comment for why dialoguer/console's own Ctrl+C handling can't be used for this instead.
@@ -162,6 +160,15 @@ async-trait = "0.1"
 # ─── Streaming ──────────────────────────────────────────────────────────────
 futures = "0.3"
 async-stream = "0.3"
+# `compat` bridges tokio AsyncRead/AsyncWrite (what the runtime's StdioHandle
+# exposes) to the futures-io traits the ACP SDK's `ByteStreams` transport wants,
+# so a coding-agent container attach can drive an `AcpConnection`.
+tokio-util = { version = "0.7", features = ["compat"] }
+
+# ─── Agent Client Protocol (coding-agent transport) ─────────────────────────
+# Official Rust SDK for ACP (Agent Client Protocol). Pinned to the v1 schema;
+# `unstable_*` features are deliberately left off (see oss/acp-client).
+agent-client-protocol = "2.2.0"
 
 # ─── Common utilities ───────────────────────────────────────────────────────
 chrono = { version = "0.4", features = ["serde"] }

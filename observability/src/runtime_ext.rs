@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use nasiko_runtime::{
     ContainerId, ContainerRuntime, DeploymentSpec, DeploymentStatus, InstanceInfo, Result,
-    WorkspaceEntry, WorkspaceFile, WorkspaceRef,
+    SessionAttach, StdioHandle, WorkspaceEntry, WorkspaceFile, WorkspaceRef,
 };
 
 use crate::injector::{AgentContext, InstrumentationInjector};
@@ -93,6 +93,19 @@ impl<R: ContainerRuntime, I: InstrumentationInjector> ContainerRuntime
 
     async fn endpoint(&self, container_id: &ContainerId) -> Result<String> {
         self.inner.endpoint(container_id).await
+    }
+
+    /// Forward the stdio attach to the inner runtime. MUST be overridden here —
+    /// the trait's default is `Unsupported`, so without this a coding-agent
+    /// attach would be rejected at the decorator and never reach the backend
+    /// that supports it (RUN-1). Injection does not apply: the stream carries
+    /// JSON-RPC, not a `DeploymentSpec`.
+    async fn attach_stdio(
+        &self,
+        container_id: &ContainerId,
+        attach: SessionAttach,
+    ) -> Result<StdioHandle> {
+        self.inner.attach_stdio(container_id, attach).await
     }
 
     async fn logs(&self, container_id: &ContainerId, tail: u32) -> Result<Vec<String>> {

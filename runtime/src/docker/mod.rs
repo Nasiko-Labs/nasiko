@@ -2,6 +2,8 @@ mod stats;
 pub use stats::DockerStatsProvider;
 
 use std::collections::HashMap;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -20,12 +22,13 @@ use bollard::models::{
 };
 use bollard::network::ConnectNetworkOptions;
 use bollard::volume::CreateVolumeOptions;
-use futures_util::StreamExt;
+use futures_util::{Stream, StreamExt};
 use std::sync::Arc;
+use tokio::io::{AsyncRead, ReadBuf};
 use tracing::{info, instrument, warn};
 
 use crate::{
-    ContainerRuntime, ImageSource,
+    ContainerRuntime, ImageSource, SessionAttach, StdioHandle,
     error::{Result, RuntimeError},
     types::{
         ContainerId, DeploymentSpec, DeploymentStatus, InstanceInfo, RuntimeState, WorkspaceEntry,
@@ -1219,6 +1222,91 @@ async fn exec_stream(
         .boxed())
 }
 
+/// Adapts bollard's demultiplexed exec-output stream into an [`AsyncRead`] over
+/// the process's **stdout only**.
+///
+/// Docker frames a non-TTY exec's output as tagged `StdOut`/`StdErr` chunks. For
+/// an ACP session only stdout carries JSON-RPC; stderr is the agent's
+/// diagnostics and would corrupt the protocol stream if interleaved, so it is
+/// logged and dropped here. `leftover` holds bytes from a stdout frame that did
+/// not fit the caller's buffer in a single `poll_read`.
+struct AttachStdout {
+    inner:
+        Pin<Box<dyn Stream<Item = std::result::Result<LogOutput, bollard::errors::Error>> + Send>>,
+    leftover: bytes::Bytes,
+}
+
+impl AsyncRead for AttachStdout {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        // The job of this method: fill `buf` with the next bytes of the agent's
+        // stdout. Docker hands us that output as a stream of tagged chunks, so we
+        // pull chunks until we have stdout bytes to give back. Anything that does
+        // not fit `buf` right now is parked in `leftover` for the next call.
+        //
+        // `get_mut` is safe because `AttachStdout` is `Unpin` (a boxed stream and
+        // `Bytes` both are), letting us use plain field access instead of pin
+        // projection.
+        let this = self.get_mut();
+        loop {
+            // Step 1: if we parked leftover stdout bytes last time, hand those
+            // back first before pulling anything new.
+            if !this.leftover.is_empty() {
+                let n = this.leftover.len().min(buf.remaining());
+                if n == 0 {
+                    // The caller's buffer has no room; return without copying so
+                    // we don't busy-loop. The leftover stays for the next call.
+                    return Poll::Ready(Ok(()));
+                }
+                let chunk = this.leftover.split_to(n);
+                buf.put_slice(&chunk);
+                return Poll::Ready(Ok(()));
+            }
+            // Step 2: no leftovers — ask Docker for the next output chunk.
+            match this.inner.as_mut().poll_next(cx) {
+                // A stdout chunk: this is the JSON-RPC the agent is sending us.
+                // Park it in `leftover` and loop to copy it into `buf`.
+                Poll::Ready(Some(Ok(LogOutput::StdOut { message }))) => {
+                    if message.is_empty() {
+                        continue;
+                    }
+                    this.leftover = message;
+                }
+                // A stderr chunk: the agent's own log output, NOT protocol. Send
+                // it to our logs and keep looping — never mix it into the stream
+                // the ACP client reads, or it would corrupt the JSON.
+                //
+                // Note: Docker drains stderr *inline* here (stdout and stderr
+                // share one demuxed stream, and the ACP client reads stdout
+                // continuously, which pumps it). The K8s backend instead drains
+                // stderr in a dedicated task — intentional: there the two are
+                // separate channels on a connection that must be kept alive
+                // independently. See `KubeRuntime::attach_stdio`.
+                Poll::Ready(Some(Ok(LogOutput::StdErr { message }))) => {
+                    let text = String::from_utf8_lossy(&message);
+                    let text = text.trim_end();
+                    if !text.is_empty() {
+                        tracing::debug!(target: "nasiko_runtime::acp", stderr = %text, "coding-agent stderr");
+                    }
+                }
+                // Other frame kinds (`Console`/`StdIn`) never occur on a non-TTY
+                // stdout attach; ignore them and keep looping.
+                Poll::Ready(Some(Ok(_))) => {}
+                // Docker reported a stream error — surface it as an I/O error.
+                Poll::Ready(Some(Err(e))) => return Poll::Ready(Err(std::io::Error::other(e))),
+                // The stream ended: the agent closed stdout, which means the
+                // process finished. Return with `buf` unfilled — that is EOF.
+                Poll::Ready(None) => return Poll::Ready(Ok(())),
+                // Nothing available yet; the runtime will wake us when there is.
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+    }
+}
+
 /// Parses `find … -exec stat -c '%s %n'` output into entries whose paths are
 /// relative to `dir`. Malformed lines are skipped rather than failing the whole
 /// listing — one odd filename should not hide every other file from the user.
@@ -1933,6 +2021,100 @@ impl ContainerRuntime for DockerRuntime {
         })
     }
 
+    #[instrument(skip(self, attach), fields(session_id = %attach.session_id))]
+    async fn attach_stdio(
+        &self,
+        container_id: &ContainerId,
+        attach: SessionAttach,
+    ) -> Result<StdioHandle> {
+        // Reject a bad container id or session request before touching Docker.
+        container_id.validate()?;
+        attach.validate()?;
+
+        let name = DockerRuntime::container_name(container_id);
+
+        // The agent works out of its writable mount root. That folder is already
+        // scoped on the shared volume (to `<owner_id>/<container_id>`) by the
+        // mount set up at deploy time, so from inside the container it is simply
+        // `<mount>`. How on-disk state is partitioned per session is internal to
+        // the ACP agent, so we do not carve a per-session subdirectory here.
+        let workdir = DeploymentSpec::DEFAULT_WRITABLE_PATH.to_owned();
+
+        // Build the command Docker will run. We want to: ensure the workspace
+        // dir exists, move into it, then launch the agent — all in one go, so we
+        // avoid a second round-trip to Docker. A tiny shell script does the
+        // mkdir+cd+launch; the folder path and the agent's command are passed as
+        // *arguments* to that script (`$1`, then the rest), never pasted into the
+        // script text, so they can never be run as code.
+        let mut argv = vec![
+            "sh".to_owned(),
+            "-c".to_owned(),
+            "d=\"$1\"; shift; mkdir -p \"$d\" && cd \"$d\" && exec \"$@\"".to_owned(),
+            "nasiko-acp".to_owned(),
+            workdir,
+        ];
+        argv.extend(attach.command.iter().cloned());
+
+        // Per-session environment variables (e.g. the session credential) as the
+        // `KEY=VALUE` strings Docker expects.
+        let env: Vec<String> = attach.env.iter().map(|(k, v)| format!("{k}={v}")).collect();
+
+        // Create the exec: run our command as a NEW process inside the already
+        // running container (one process per session). We attach stdin+stdout so
+        // we can talk to it, and `tty: false` keeps the pipe raw — a fake
+        // terminal would mangle the line-by-line JSON-RPC.
+        let exec = self
+            .client
+            .create_exec(
+                &name,
+                CreateExecOptions {
+                    attach_stdin: Some(true),
+                    attach_stdout: Some(true),
+                    attach_stderr: Some(true),
+                    tty: Some(false),
+                    cmd: Some(argv),
+                    env: (!env.is_empty()).then_some(env),
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(|e| {
+                // A missing container is a specific, expected error (the caller
+                // should deploy first); anything else is a generic Docker error.
+                if is_not_found(&e) {
+                    RuntimeError::ContainerNotFound(container_id.clone())
+                } else {
+                    map_bollard_err(e)
+                }
+            })?;
+
+        // Start the exec and grab the live pipes. `input` is the agent's stdin
+        // (we write to it); `output` is its combined stdout/stderr stream (we
+        // wrap it so only stdout reaches the caller — see `AttachStdout`).
+        let StartExecResults::Attached { input, output } = self
+            .client
+            .start_exec(&exec.id, None)
+            .await
+            .map_err(map_bollard_err)?
+        else {
+            // We asked to attach, so Docker should always give us an attached
+            // stream; a detached result means something is wrong.
+            return Err(RuntimeError::Internal(
+                "coding-agent exec detached unexpectedly".to_owned(),
+            ));
+        };
+
+        // Hand back the two-way pipe. The caller (the ACP client) writes
+        // JSON-RPC to `stdin` and reads the agent's replies from `stdout`.
+        Ok(StdioHandle {
+            stdin: input,
+            stdout: Box::pin(AttachStdout {
+                inner: output,
+                leftover: bytes::Bytes::new(),
+            }),
+        })
+    }
+
     #[instrument(skip(self))]
     async fn logs(&self, container_id: &ContainerId, tail: u32) -> Result<Vec<String>> {
         container_id.validate()?;
@@ -2491,5 +2673,77 @@ mod workspace_tests {
     #[test]
     fn empty_listing_for_an_agent_that_never_wrote_anything() {
         assert!(parse_workspace_listing("", DIR).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod attach_stdout_tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, ReadBuf};
+
+    fn out(s: &str) -> std::result::Result<LogOutput, bollard::errors::Error> {
+        Ok(LogOutput::StdOut {
+            message: bytes::Bytes::from(s.to_owned()),
+        })
+    }
+    fn err(s: &str) -> std::result::Result<LogOutput, bollard::errors::Error> {
+        Ok(LogOutput::StdErr {
+            message: bytes::Bytes::from(s.to_owned()),
+        })
+    }
+
+    fn reader(frames: Vec<std::result::Result<LogOutput, bollard::errors::Error>>) -> AttachStdout {
+        AttachStdout {
+            inner: futures_util::stream::iter(frames).boxed(),
+            leftover: bytes::Bytes::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn reads_stdout_and_drops_stderr() {
+        // stderr is diagnostics, not JSON-RPC — it must not appear in the read.
+        let mut r = reader(vec![
+            out("hel"),
+            err("a warning"),
+            out("lo\n"),
+            out("world"),
+        ]);
+        let mut buf = String::new();
+        r.read_to_string(&mut buf).await.unwrap();
+        assert_eq!(buf, "hello\nworld");
+    }
+
+    #[tokio::test]
+    async fn frame_larger_than_buffer_is_preserved_across_reads() {
+        // A stdout frame that doesn't fit one buffer must be handed back in full
+        // over successive reads via `leftover`, never truncated.
+        let mut r = reader(vec![out("abcdefghij")]);
+        let mut collected = Vec::new();
+        let mut one = [0u8; 1];
+        loop {
+            let n = r.read(&mut one).await.unwrap();
+            if n == 0 {
+                break;
+            }
+            collected.extend_from_slice(&one[..n]);
+        }
+        assert_eq!(collected, b"abcdefghij");
+    }
+
+    #[tokio::test]
+    async fn zero_capacity_buffer_does_not_spin() {
+        // A read into an empty buffer returns immediately without losing the
+        // pending stdout frame (it is buffered, then delivered on the next read).
+        let mut r = reader(vec![out("data")]);
+        let mut empty: [u8; 0] = [];
+        let mut rb = ReadBuf::new(&mut empty);
+        std::future::poll_fn(|cx| std::pin::Pin::new(&mut r).poll_read(cx, &mut rb))
+            .await
+            .unwrap();
+        assert_eq!(rb.filled().len(), 0);
+        // The frame is still available on the next real read.
+        let mut buf = String::new();
+        r.read_to_string(&mut buf).await.unwrap();
+        assert_eq!(buf, "data");
     }
 }

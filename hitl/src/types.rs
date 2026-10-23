@@ -63,6 +63,7 @@ db_enum!(HitlOrigin {
     Orchestrator => "orchestrator",
     Maf => "maf",
     McpTool => "mcp_tool",
+    CodingAgent => "coding_agent",
 });
 
 db_enum!(HitlStatus {
@@ -345,6 +346,41 @@ impl NewHitlRequest {
         }
     }
 
+    /// `origin = coding_agent`, `kind = tool_approval` always — a coding agent's ACP
+    /// `session/request_permission`, blocked awaiting human approval (NAS-842). Unlike the
+    /// other origins there is no resume dispatcher: the paused thing is one live ACP request
+    /// on the still-open connection, and the turn's permission handler is itself awaiting this
+    /// row (so no `task_id`). `tool_name` is the gated ACP tool kind (e.g. `edit`/`bash`) for
+    /// display; `question` carries the tool-call details and options the human decides on.
+    pub fn coding_agent(
+        agent_id: Uuid,
+        owner_user_id: Uuid,
+        context_id: impl Into<String>,
+        tool_name: impl Into<String>,
+        question: Value,
+    ) -> Self {
+        // For a coding agent the ACP session and the outer chat session are the
+        // same A2A contextId, so set both: `chat_session_id` is what the chat UI's
+        // pending-approval matcher keys on to show an approve/reject prompt inline
+        // (origin `coding_agent` isn't matched by the context_id-only path).
+        let context_id = context_id.into();
+        Self {
+            kind: HitlKind::ToolApproval,
+            origin: HitlOrigin::CodingAgent,
+            agent_id,
+            owner_user_id,
+            task_id: None,
+            context_id: Some(context_id.clone()),
+            chat_session_id: Some(context_id),
+            maf_execution_id: None,
+            maf_step_index: None,
+            connector_id: None,
+            tool_name: Some(tool_name.into()),
+            arguments_hash: None,
+            question,
+        }
+    }
+
     /// Attaches the owning chat session after construction, additively — every existing
     /// constructor call site keeps compiling unchanged. `direct_chat()` has no
     /// `chat_session_id` parameter of its own (unlike `orchestrator()`, which takes one because
@@ -363,9 +399,10 @@ impl NewHitlRequest {
 mod tests {
     use super::*;
 
-    // Mirrors the CHECK constraint lists in `oss/migrations/0007_hitl.sql` verbatim. There's no
-    // sqlx wiring in this crate yet to derive this from the DB directly, so it's asserted by hand
-    // — if one side changes without the other, these tests catch the drift.
+    // Mirrors the CHECK constraint lists in the migrations verbatim (origin from 0056, the rest
+    // from 0007; see `sql_check_values_match_the_migration_exactly`). There's no sqlx wiring in
+    // this crate yet to derive this from the DB directly, so it's asserted by hand — if one side
+    // changes without the other, these tests catch the drift.
     const SQL_KIND_VALUES: &[&str] = &["input_required", "auth_required", "tool_approval"];
     const SQL_ORIGIN_VALUES: &[&str] = &[
         "direct_chat",
@@ -373,6 +410,7 @@ mod tests {
         "orchestrator",
         "maf",
         "mcp_tool",
+        "coding_agent",
     ];
     const SQL_STATUS_VALUES: &[&str] = &["pending", "resolved", "rejected", "expired", "canceled"];
     const SQL_RESUME_STATUS_VALUES: &[&str] = &[
@@ -430,6 +468,7 @@ mod tests {
             HitlOrigin::Orchestrator,
             HitlOrigin::Maf,
             HitlOrigin::McpTool,
+            HitlOrigin::CodingAgent,
         ];
         assert_round_trips(&all);
         assert_matches_sql_check(&all, SQL_ORIGIN_VALUES);
@@ -491,6 +530,7 @@ mod tests {
             HitlOrigin::Orchestrator,
             HitlOrigin::Maf,
             HitlOrigin::McpTool,
+            HitlOrigin::CodingAgent,
         ]);
         assert_serde_agrees_with_as_str(&[
             HitlStatus::Pending,
@@ -531,17 +571,19 @@ mod tests {
         // migration file and compares it against those consts value-for-value, in order — so
         // the migration and the consts above can't silently drift apart in either direction.
         //
-        // `resume_status` reads from 0055, not 0007: sqlx hashes applied migration files, so a
-        // widened CHECK on an already-shipped column has to be re-expressed as a forward-only
-        // ALTER (0011_baseline_deltas.sql's own precedent) rather than edited in place. 0055 (which
-        // re-states 0027's list plus `agent_lost_task`) is the column's current source of truth,
-        // same as 0007 still is for the other three.
+        // `resume_status` reads from 0060 and `origin` from 0064, not 0007: sqlx hashes applied
+        // migration files, so a widened CHECK on an already-shipped column has to be re-expressed
+        // as a forward-only ALTER (0011_baseline_deltas.sql's own precedent) rather than edited in
+        // place. 0060 re-states 0027's resume_status list plus `agent_lost_task`, and 0064_acp_hitl
+        // adds `coding_agent` to origin (NAS-842); each is its column's current source of truth,
+        // same as 0007 still is for `kind` and `status`.
         let migration_0007 = include_str!("../../migrations/0007_hitl.sql");
         let migration_0060 =
             include_str!("../../migrations/0060_hitl_resume_status_agent_lost_task.sql");
+        let migration_0064 = include_str!("../../migrations/0064_acp_hitl.sql");
         for (migration, column, expected) in [
             (migration_0007, "kind", SQL_KIND_VALUES),
-            (migration_0007, "origin", SQL_ORIGIN_VALUES),
+            (migration_0064, "origin", SQL_ORIGIN_VALUES),
             (migration_0007, "status", SQL_STATUS_VALUES),
             (migration_0060, "resume_status", SQL_RESUME_STATUS_VALUES),
         ] {

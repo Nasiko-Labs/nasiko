@@ -261,6 +261,28 @@ pub async fn a2a_dispatch_handler(
     let query = history.with_current_query(&text);
 
     if let Some(agent) = target_agent {
+        // Coding agents have no HTTP endpoint — they're driven over an ACP stdio
+        // turn, not reverse-proxied. Detect and run that path instead of falling
+        // through to `agent_stream`, which would try to resolve a (nonexistent)
+        // endpoint and 500 with "no endpoint found" (NAS-C1). This is what makes
+        // the web UI (which always dispatches here) able to chat coding agents.
+        if let Some(coding_target) = crate::coding::proxy::load_target(&state.db, agent.id)
+            .await
+            .map_err(|e| A2aDispatchError::Internal(e.to_string()))?
+        {
+            return coding_agent_stream(
+                &state,
+                &agent,
+                coding_target,
+                &query,
+                &text,
+                &context_id,
+                &task_id,
+                user_id,
+                session_id.is_some(),
+            )
+            .await;
+        }
         // Supplemental per-agent context (L1A) is no longer injected here: it now rides the EE
         // injection proxy, which sits on every outbound forward `forwarding_endpoint()` resolves
         // to — including this one — so injecting it a second time in-process here would double
@@ -2247,6 +2269,140 @@ async fn ensure_orchestrator_chat_session(
     .bind(context_id)
     .bind(role)
     .bind(query)
+    .execute(&state.db)
+    .await;
+}
+
+/// Run a coding-agent turn for the orchestrator-dispatch path and stream it back
+/// as A2A SSE. The dispatch path has no coding awareness of its own, so this does
+/// the minimal pre-turn bookkeeping the coding turn needs — a `chat_sessions` row
+/// (the lease keys on it), a `flows` row + participant (so the session token is
+/// authorizable), and the user message — then hands off to the shared
+/// `coding::entry::run_coding_turn_sse`, exactly as `agent_proxy` does (NAS-C1).
+#[allow(clippy::too_many_arguments)]
+async fn coding_agent_stream(
+    state: &AppState,
+    agent: &AgentRow,
+    target: crate::coding::proxy::CodingAgentTarget,
+    // History-packed text — recorded on the flow (`flows.title`) like `agent_stream`.
+    query: &str,
+    // The raw user message — the turn's prompt and what's persisted to the transcript.
+    user_message: &str,
+    context_id: &str,
+    task_id: &str,
+    user_id: Uuid,
+    client_owns_transcript: bool,
+) -> Result<Response, A2aDispatchError> {
+    // Session row (the coding lease UPDATEs it) + user message. `agent_id` is set,
+    // so the session is tied to this coding agent for runtime reconcile + the UI.
+    ensure_coding_chat_session(
+        state,
+        context_id,
+        user_id,
+        agent.id,
+        user_message,
+        client_owns_transcript,
+    )
+    .await;
+
+    // Open the flow the session token binds to — same shape as `agent_stream`'s own
+    // flow setup, so the gateway/router authorize the agent's calls off the signed
+    // claims instead of a traceparent.
+    let dispatch_span = tracing::info_span!(
+        "a2a.dispatch",
+        otel.kind = "server",
+        gen_ai.operation.name = "invoke_agent",
+        gen_ai.agent.name = %agent.name,
+        session.id = %context_id,
+    );
+    let flow_ctx = crate::telemetry::flow_context_from_span(&dispatch_span)
+        .unwrap_or_else(FlowContext::new_root);
+    let flow_id = flow_ctx.flow_id.clone();
+    state.flow_guard.init_flow(&flow_ctx, &agent.name).await;
+    let flow_metadata = json!({ "context_id": context_id, "user_message": user_message });
+    let _ = sqlx::query(
+        r#"INSERT INTO flows (flow_id, user_id, root_agent_id, root_agent_name, title, status, metadata)
+           VALUES ($1, $2, $3, $4, $5, 'running', $6)
+           ON CONFLICT (flow_id) DO UPDATE SET status = 'running', completed_at = NULL"#,
+    )
+    .bind(&flow_id)
+    .bind(user_id)
+    .bind(agent.id)
+    .bind(&agent.name)
+    .bind(query)
+    .bind(&flow_metadata)
+    .execute(&state.db)
+    .await;
+    crate::flows::record_participant(&state.db, &flow_id, agent.id).await;
+
+    crate::coding::entry::run_coding_turn_sse(
+        state,
+        agent.id,
+        &target,
+        Some(user_id),
+        context_id,
+        user_message,
+        &flow_id,
+        task_id,
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!(error = %e, agent_id = %agent.id, "coding-agent dispatch turn failed to start");
+        A2aDispatchError::Internal(e.to_string())
+    })
+}
+
+/// Upsert the `chat_sessions` row for a coding-agent dispatch turn (with `agent_id`
+/// set, unlike [`ensure_orchestrator_chat_session`]) and persist the user message
+/// unless the client owns its transcript. Fire-and-forget bookkeeping.
+async fn ensure_coding_chat_session(
+    state: &AppState,
+    context_id: &str,
+    user_id: Uuid,
+    agent_id: Uuid,
+    user_message: &str,
+    client_owns_transcript: bool,
+) {
+    let title = {
+        let t = user_message.trim();
+        if t.is_empty() {
+            "New chat".to_string()
+        } else if t.len() > 60 {
+            let mut n = 60;
+            while !t.is_char_boundary(n) {
+                n -= 1;
+            }
+            format!("{}…", &t[..n])
+        } else {
+            t.to_string()
+        }
+    };
+
+    let _ = sqlx::query(
+        "INSERT INTO chat_sessions (session_id, user_id, agent_id, agent_url, title) \
+         VALUES ($1, $2, $3, $4, $5) ON CONFLICT (session_id) DO NOTHING",
+    )
+    .bind(context_id)
+    .bind(user_id)
+    .bind(agent_id)
+    .bind(format!("/api/agents/{agent_id}"))
+    .bind(&title)
+    .execute(&state.db)
+    .await;
+
+    if client_owns_transcript {
+        return;
+    }
+    // 10s dedup guard, same as the other transcript writers.
+    let _ = sqlx::query(
+        "INSERT INTO chat_messages (session_id, role, content) \
+         SELECT $1, 'user', $2 WHERE NOT EXISTS ( \
+             SELECT 1 FROM chat_messages \
+             WHERE session_id = $1 AND role = 'user' AND content = $2 \
+               AND timestamp > now() - INTERVAL '10 seconds')",
+    )
+    .bind(context_id)
+    .bind(user_message)
     .execute(&state.db)
     .await;
 }
