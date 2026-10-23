@@ -82,12 +82,16 @@ pub fn deploy_with_version_flags(
 /// What a deploy would do, as shown by `deploy --dry-run`.
 struct DeployPlan<'a> {
     agent_name: &'a str,
-    /// The live version being replaced; `None` for a brand-new agent.
+    /// The agent is already registered, so the deploy updates it rather than creating it.
+    agent_exists: bool,
+    /// The live version being replaced; `None` when nothing is deployed yet.
     current_version: Option<&'a str>,
     version: &'a str,
     image_ref: &'a str,
     /// The version is already in the registry (`nasiko push`), so it would be reused as-is.
     already_pushed: bool,
+    /// Deploying from source, so the image is built first; a raw image is only pushed.
+    builds_image: bool,
     port: u16,
     /// `--coding-agent` or the card's `workloadKind`; `None` for an ordinary HTTP agent.
     workload_kind: Option<&'a str>,
@@ -101,14 +105,17 @@ struct DeployPlan<'a> {
 /// The dry-run plan as printable lines. Env values are never included — deploy env commonly
 /// carries API keys and passwords, which must not end up in scrollback or CI logs.
 fn plan_lines(plan: &DeployPlan) -> Vec<String> {
-    let action = match plan.current_version {
-        Some(current) => format!("update {current} → {}", plan.version),
-        None => format!("register new agent at {}", plan.version),
+    let action = match (plan.current_version, plan.agent_exists) {
+        (Some(current), _) => format!("update {current} → {}", plan.version),
+        (None, true) => format!("deploy {} to the existing agent", plan.version),
+        (None, false) => format!("register new agent at {}", plan.version),
     };
     let image_step = if plan.already_pushed {
         "reuse the already-pushed image"
-    } else {
+    } else if plan.builds_image {
         "build + push"
+    } else {
+        "push the local image"
     };
     let writable = match (plan.writable, plan.writable_path) {
         (_, Some(path)) => format!("yes, at {path}"),
@@ -140,13 +147,19 @@ fn plan_lines(plan: &DeployPlan) -> Vec<String> {
         format!("  image     {}   ({image_step})", plan.image_ref),
     ];
     if let Some(kind) = plan.workload_kind {
-        let kind = if kind == "acp_coding_agent" {
-            "coding agent"
+        let line = if kind == "acp_coding_agent" {
+            // HITL is only ever sent as on; otherwise the server leaves an existing agent's
+            // setting alone and creates a new agent with it off.
+            let hitl = match (plan.hitl, plan.agent_exists) {
+                (true, _) => "on",
+                (false, true) => "unchanged",
+                (false, false) => "off",
+            };
+            format!("coding agent, HITL {hitl}")
         } else {
-            kind
+            kind.to_string()
         };
-        let hitl = if plan.hitl { ", HITL on" } else { "" };
-        lines.push(format!("  kind      {kind}{hitl}"));
+        lines.push(format!("  kind      {line}"));
     }
     lines.extend([
         format!("  port      {port}"),
@@ -380,10 +393,12 @@ fn deploy_from_directory(
     if dry_run {
         print_deploy_plan(&DeployPlan {
             agent_name: &agent_name,
+            agent_exists: existing.is_some(),
             current_version: current_deployed_version,
             version: &version,
             image_ref: &image_ref,
             already_pushed: reuse_pushed,
+            builds_image: true,
             port,
             workload_kind: workload_kind.as_deref(),
             hitl,
@@ -587,10 +602,12 @@ fn deploy_from_image(
     if dry_run {
         print_deploy_plan(&DeployPlan {
             agent_name: &agent_name,
+            agent_exists: existing.is_some(),
             current_version: current_deployed_version,
             version: &version,
             image_ref: &image_ref,
             already_pushed: reuse_pushed,
+            builds_image: false,
             port,
             workload_kind: workload_kind.as_deref(),
             hitl,
