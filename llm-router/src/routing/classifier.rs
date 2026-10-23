@@ -151,13 +151,22 @@ const TIER_ARMS: [TierArm; 3] = [
         tier: Tier::Tier2,
         quality_tier: 2,
         cost: 3.0,
-        strengths: &[RequestType::CodeUnderstanding, RequestType::Writing],
+        // `General` is the catch-all for anything the patterns don't recognise, which in
+        // practice includes real work phrased in plain words ("analyze the code in the repo").
+        // Its cold-start lean is the mid tier, not the cheapest: under-serving an unknown
+        // request costs a wrong answer, over-serving it costs a little money. Small talk never
+        // reaches this draw — the salience gate serves it the cheap tier directly.
+        strengths: &[
+            RequestType::CodeUnderstanding,
+            RequestType::Writing,
+            RequestType::General,
+        ],
     },
     TierArm {
         tier: Tier::Tier3,
         quality_tier: 1,
         cost: 0.8,
-        strengths: &[RequestType::FactualLookup, RequestType::General],
+        strengths: &[RequestType::FactualLookup],
     },
 ];
 
@@ -788,6 +797,31 @@ mod tests {
             distinct.len() > 1,
             "expected exploration across arms, got {distinct:?}"
         );
+    }
+
+    #[test]
+    fn general_leans_to_the_mid_tier_at_cold_start() {
+        // No learned cells, production weights: the mid tier must be the usual pick for
+        // `General`, and the cheapest tier the exception rather than the rule.
+        let cells = CellMap::new();
+        let mut rng = StdRng::seed_from_u64(7);
+        let mut counts = HashMap::new();
+        for _ in 0..2_000 {
+            let tier = pick_model_thompson(
+                &cells,
+                RequestType::General,
+                DEFAULT_W_QUALITY,
+                DEFAULT_W_COST,
+                &mut rng,
+            );
+            *counts.entry(tier).or_insert(0) += 1;
+        }
+        let mid = counts.get(&Tier::Tier2).copied().unwrap_or(0);
+        let low = counts.get(&Tier::Tier3).copied().unwrap_or(0);
+        assert!(mid > 1_200, "mid tier picked {mid}/2000 times");
+        assert!(mid > 2 * low, "mid {mid} vs low {low}");
+        assert_eq!(tier_prior(Tier::Tier2, RequestType::General), 0.8);
+        assert_eq!(tier_prior(Tier::Tier3, RequestType::General), 0.5);
     }
 
     #[test]
