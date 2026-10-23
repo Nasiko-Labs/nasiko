@@ -36,6 +36,16 @@ use crate::turn::{NewSessionParams, TurnEvent, TurnStream};
 /// never spawns — the task's error arm takes it to report the transport error.
 type ReadySlot = Arc<Mutex<Option<oneshot::Sender<Result<NegotiatedCapabilities, AcpError>>>>>;
 
+/// Capacity of the per-turn update and event channels. Big enough that a chatty
+/// agent never blocks a consumer that is keeping up, bounded so a stalled one
+/// can't grow memory without limit — an overflow is logged and shed, not stored.
+const STREAM_CHANNEL_CAPACITY: usize = 256;
+
+/// Capacity of the low-volume control channels (commands, cancels). At most one
+/// command is in flight at a time in normal use (a turn holds the slot), so this
+/// only guards against a pathological caller.
+const CONTROL_CHANNEL_CAPACITY: usize = 64;
+
 /// Configuration for opening a connection.
 #[derive(Debug, Clone)]
 pub struct AcpConnectConfig {
@@ -69,11 +79,11 @@ impl Default for AcpConnectConfig {
 /// Cloneable is deliberately *not* derived: the handle owns the shutdown of the
 /// background task on drop.
 pub struct AcpConnection {
-    commands: mpsc::UnboundedSender<Command>,
+    commands: mpsc::Sender<Command>,
     /// Side channel for `session/cancel`, kept separate from `commands` so a
     /// cancel can reach the agent *during* a turn — the command loop is busy
     /// awaiting that turn and can't service a queued `Command` until it ends.
-    cancels: mpsc::UnboundedSender<SessionId>,
+    cancels: mpsc::Sender<SessionId>,
     /// Set while a turn is in flight so a second `prompt` is rejected up front
     /// rather than silently queued behind it (one active turn per connection).
     turn_active: Arc<AtomicBool>,
@@ -95,7 +105,7 @@ enum Command {
     Prompt {
         session_id: SessionId,
         text: String,
-        events: mpsc::UnboundedSender<TurnEvent>,
+        events: mpsc::Sender<TurnEvent>,
     },
     Shutdown,
 }
@@ -111,8 +121,8 @@ impl AcpConnection {
     where
         T: ConnectTo<Client> + Send + 'static,
     {
-        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<Command>();
-        let (cancel_tx, cancel_rx) = mpsc::unbounded_channel::<SessionId>();
+        let (cmd_tx, cmd_rx) = mpsc::channel::<Command>(CONTROL_CHANNEL_CAPACITY);
+        let (cancel_tx, cancel_rx) = mpsc::channel::<SessionId>(CONTROL_CHANNEL_CAPACITY);
         // Shared between the handle (claims it in `prompt`) and the command loop
         // (releases it when the turn ends).
         let turn_active = Arc::new(AtomicBool::new(false));
@@ -124,7 +134,7 @@ impl AcpConnection {
         let ready_for_run = ready_slot.clone();
         // Every streamed notification from the agent lands on this channel; the
         // command loop routes it to the active turn.
-        let (update_tx, update_rx) = mpsc::unbounded_channel::<SessionNotification>();
+        let (update_tx, update_rx) = mpsc::channel::<SessionNotification>(STREAM_CHANNEL_CAPACITY);
 
         let required = config.required;
         let policy = config.permission_policy;
@@ -136,8 +146,16 @@ impl AcpConnection {
                 .builder()
                 .on_receive_notification(
                     async move |notification: SessionNotification, _cx| {
-                        // Receiver gone == command loop ended; drop quietly.
-                        let _ = update_tx.send(notification);
+                        // Never block the agent's event loop on a full channel:
+                        // a closed receiver means the command loop ended (drop
+                        // quietly), a full one means the consumer is behind — shed
+                        // the update and log it rather than stall or grow memory.
+                        match update_tx.try_send(notification) {
+                            Ok(()) | Err(mpsc::error::TrySendError::Closed(_)) => {}
+                            Err(mpsc::error::TrySendError::Full(_)) => tracing::warn!(
+                                "acp update channel full; dropping a session/update (slow consumer)"
+                            ),
+                        }
                         Ok(())
                     },
                     agent_client_protocol::on_receive_notification!(),
@@ -220,6 +238,7 @@ impl AcpConnection {
         let (reply, reply_rx) = oneshot::channel();
         self.commands
             .send(Command::NewSession { params, reply })
+            .await
             .map_err(|_| AcpError::ConnectionClosed)?;
         reply_rx.await.map_err(|_| AcpError::ConnectionClosed)?
     }
@@ -245,6 +264,7 @@ impl AcpConnection {
                 params,
                 reply,
             })
+            .await
             .map_err(|_| AcpError::ConnectionClosed)?;
         reply_rx.await.map_err(|_| AcpError::ConnectionClosed)?
     }
@@ -266,10 +286,10 @@ impl AcpConnection {
         {
             return Err(AcpError::TurnInProgress);
         }
-        let (events_tx, events_rx) = mpsc::unbounded_channel::<TurnEvent>();
+        let (events_tx, events_rx) = mpsc::channel::<TurnEvent>(STREAM_CHANNEL_CAPACITY);
         if self
             .commands
-            .send(Command::Prompt {
+            .try_send(Command::Prompt {
                 session_id,
                 text: text.into(),
                 events: events_tx,
@@ -292,7 +312,7 @@ impl AcpConnection {
     /// cancelled stop reason. A cancel with no matching live turn is dropped.
     pub fn cancel(&self, session_id: SessionId) -> Result<(), AcpError> {
         self.cancels
-            .send(session_id)
+            .try_send(session_id)
             .map_err(|_| AcpError::ConnectionClosed)
     }
 
@@ -305,7 +325,11 @@ impl AcpConnection {
 impl Drop for AcpConnection {
     fn drop(&mut self) {
         // Best-effort graceful shutdown; abort if the loop is already wedged.
-        let _ = self.commands.send(Command::Shutdown);
+        // Aborting the task drops the SDK connection future, which drops the
+        // transport's `ChildGuard`; on a local-process transport (`AcpAgent`) that
+        // guard sends SIGKILL to the whole child process group on drop, so the
+        // agent subprocess and anything it spawned are reaped — not orphaned.
+        let _ = self.commands.try_send(Command::Shutdown);
         self.abort();
     }
 }
@@ -334,9 +358,9 @@ async fn run_connection(
     handshake_timeout: Duration,
     request_timeout: Duration,
     ready_slot: ReadySlot,
-    mut cmd_rx: mpsc::UnboundedReceiver<Command>,
-    mut update_rx: mpsc::UnboundedReceiver<SessionNotification>,
-    mut cancel_rx: mpsc::UnboundedReceiver<SessionId>,
+    mut cmd_rx: mpsc::Receiver<Command>,
+    mut update_rx: mpsc::Receiver<SessionNotification>,
+    mut cancel_rx: mpsc::Receiver<SessionId>,
     turn_active: Arc<AtomicBool>,
 ) {
     // Claim the readiness sender; from here on this task owns signaling, and the
@@ -368,6 +392,13 @@ async fn run_connection(
         }
     };
 
+    // Note: no ACP `authenticate` step. The agent may advertise `auth_methods` at
+    // `initialize`, but Nasiko does not authenticate *to* the agent over ACP — the
+    // agent authenticates to Nasiko's gateway/router out of band via the Layer B
+    // session JWT (TECH-2026-004 §3.5, PRD ACP-1 "authenticate (no-op)"; OpenCode's
+    // `authenticate` is itself a no-op). An agent that genuinely refuses to open a
+    // session without it answers `session/new` with JSON-RPC `auth_required`, which
+    // surfaces as `AcpError::is_auth_required()` so the caller can fall back.
     match negotiate(&init, &required) {
         Ok(caps) => {
             if let Some(tx) = ready
@@ -447,14 +478,26 @@ async fn run_connection(
 /// finish on the prompt response (or a dropped connection).
 async fn run_turn(
     conn: &ConnectionTo<Agent>,
-    updates: &mut mpsc::UnboundedReceiver<SessionNotification>,
-    cancels: &mut mpsc::UnboundedReceiver<SessionId>,
+    updates: &mut mpsc::Receiver<SessionNotification>,
+    cancels: &mut mpsc::Receiver<SessionId>,
     session_id: &SessionId,
     text: &str,
-    events: &mpsc::UnboundedSender<TurnEvent>,
+    events: &mpsc::Sender<TurnEvent>,
 ) {
-    // Clear any stragglers buffered while the connection was idle between turns.
-    while updates.try_recv().is_ok() {}
+    // Clear any stragglers buffered while the connection was idle between turns —
+    // e.g. the `available_commands_update` / mode updates an agent sends after
+    // `session/new`, which belong to no turn's stream. Count and log them so a
+    // surprising number is visible instead of silently swallowed.
+    let mut discarded = 0usize;
+    while updates.try_recv().is_ok() {
+        discarded += 1;
+    }
+    if discarded > 0 {
+        tracing::debug!(
+            count = discarded,
+            "acp: discarded buffered updates before turn"
+        );
+    }
     // Drop cancels left over from a prior turn so they can't abort this one before
     // it has a chance to run.
     while cancels.try_recv().is_ok() {}
@@ -480,13 +523,13 @@ async fn run_turn(
                         // Flush any updates that landed alongside the response.
                         while let Ok(n) = updates.try_recv() {
                             if &n.session_id == session_id {
-                                let _ = events.send(TurnEvent::Update(Box::new(n.update)));
+                                let _ = events.send(TurnEvent::Update(Box::new(n.update))).await;
                             }
                         }
-                        let _ = events.send(TurnEvent::Finished(resp.stop_reason));
+                        let _ = events.send(TurnEvent::Finished(resp.stop_reason)).await;
                     }
                     Err(e) => {
-                        let _ = events.send(TurnEvent::Failed(AcpError::from(e)));
+                        let _ = events.send(TurnEvent::Failed(AcpError::from(e))).await;
                     }
                 }
                 break;
@@ -494,11 +537,11 @@ async fn run_turn(
             maybe = updates.recv() => {
                 match maybe {
                     Some(n) if &n.session_id == session_id => {
-                        let _ = events.send(TurnEvent::Update(Box::new(n.update)));
+                        let _ = events.send(TurnEvent::Update(Box::new(n.update))).await;
                     }
                     Some(_) => {} // update for another session
                     None => {
-                        let _ = events.send(TurnEvent::Failed(AcpError::ConnectionClosed));
+                        let _ = events.send(TurnEvent::Failed(AcpError::ConnectionClosed)).await;
                         break;
                     }
                 }

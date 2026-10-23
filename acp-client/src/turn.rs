@@ -60,7 +60,7 @@ impl TurnEvent {
 /// The stream of events for a single prompt. Drain with [`TurnStream::recv`]
 /// until a terminal event arrives.
 pub struct TurnStream {
-    pub(crate) events: mpsc::UnboundedReceiver<TurnEvent>,
+    pub(crate) events: mpsc::Receiver<TurnEvent>,
 }
 
 impl TurnStream {
