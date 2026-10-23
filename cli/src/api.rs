@@ -247,22 +247,34 @@ impl Client {
         Ok(resp.body_mut().read_json()?)
     }
 
-    /// GET returning `Ok(None)` on 404 instead of erroring, while still bailing
-    /// on other failures. Lets callers tell "resource is gone" (e.g. a stale
-    /// local agent binding after a server-side delete / DB reset) apart from a
-    /// real error, so they can recover rather than fail.
-    pub fn get_json_optional<T: for<'de> Deserialize<'de>>(&self, path: &str) -> Result<Option<T>> {
+    /// GET that answers `Ok(Err(status))` instead of failing when the response status is one of
+    /// `expected` — for callers that treat, say, a 404 as an answer rather than an error. Every
+    /// other failure still fails.
+    pub fn get_json_or_status<T: for<'de> Deserialize<'de>>(
+        &self,
+        path: &str,
+        expected: &[u16],
+    ) -> Result<std::result::Result<T, u16>> {
         let _spin = nasiko_utils::term::start_status(format!("GET {path}"));
         let url = self.api_url(path);
         let mut resp = self
             .auth_get(&url)
             .call()
             .context("cannot reach control plane")?;
-        if resp.status().as_u16() == 404 {
-            return Ok(None);
+        let status = resp.status().as_u16();
+        if expected.contains(&status) {
+            return Ok(Err(status));
         }
         check_status(&mut resp, &url)?;
-        Ok(Some(resp.body_mut().read_json()?))
+        Ok(Ok(resp.body_mut().read_json()?))
+    }
+
+    /// GET returning `Ok(None)` on 404 instead of erroring, while still bailing
+    /// on other failures. Lets callers tell "resource is gone" (e.g. a stale
+    /// local agent binding after a server-side delete / DB reset) apart from a
+    /// real error, so they can recover rather than fail.
+    pub fn get_json_optional<T: for<'de> Deserialize<'de>>(&self, path: &str) -> Result<Option<T>> {
+        Ok(self.get_json_or_status(path, &[404])?.ok())
     }
 
     /// GET returning `Ok(None)` on 403 instead of erroring. For endpoints where
@@ -273,14 +285,7 @@ impl Client {
         &self,
         path: &str,
     ) -> Result<Option<T>> {
-        let _spin = nasiko_utils::term::start_status(format!("GET {path}"));
-        let url = self.api_url(path);
-        let mut resp = self.auth_get(&url).call().context("request failed")?;
-        if resp.status().as_u16() == 403 {
-            return Ok(None);
-        }
-        check_status(&mut resp, &url)?;
-        Ok(Some(resp.body_mut().read_json()?))
+        Ok(self.get_json_or_status(path, &[403])?.ok())
     }
 
     pub fn get_text(&self, path: &str) -> Result<String> {
@@ -561,8 +566,18 @@ impl Client {
     }
 
     pub fn health_check(url: &str) -> Result<()> {
+        Self::health_check_with_timeout(url, None)
+    }
+
+    /// [`Self::health_check`] bounded by `timeout`, so a probe against an address that never
+    /// answers fails instead of hanging.
+    pub(crate) fn health_check_with_timeout(
+        url: &str,
+        timeout: Option<std::time::Duration>,
+    ) -> Result<()> {
         let agent = Agent::new_with_config(
             ureq::config::Config::builder()
+                .timeout_global(timeout)
                 .http_status_as_error(false)
                 .build(),
         );
@@ -1480,8 +1495,17 @@ impl Client {
 
     /// Looks up an agent by UUID or name. `None` if it doesn't exist yet.
     pub fn get_agent(&self, id_or_name: &str) -> Result<Option<serde_json::Value>> {
+        Ok(self.get_agent_or_status(id_or_name, &[404])?.ok())
+    }
+
+    /// [`Client::get_agent`], answering `Ok(Err(status))` for each of `expected`.
+    pub fn get_agent_or_status(
+        &self,
+        id_or_name: &str,
+        expected: &[u16],
+    ) -> Result<std::result::Result<serde_json::Value, u16>> {
         Ok(self
-            .get_json_optional::<serde_json::Value>(&format!("/agents/{id_or_name}"))?
+            .get_json_or_status::<serde_json::Value>(&format!("/agents/{id_or_name}"), expected)?
             .map(|raw| raw.get("data").cloned().unwrap_or(raw)))
     }
 }
@@ -1531,6 +1555,29 @@ mod tests {
         let out: Option<serde_json::Value> = client.get_json_optional("/agents/ghost").unwrap();
         assert!(out.is_none());
         m.assert();
+    }
+
+    #[test]
+    fn get_json_or_status_answers_expected_statuses_and_fails_on_others() {
+        let mut srv = mockito::Server::new();
+        for (path, status) in [("/api/agents/gone", 404), ("/api/agents/theirs", 403)] {
+            srv.mock("GET", path).with_status(status).create();
+        }
+        srv.mock("GET", "/api/agents/broken")
+            .with_status(500)
+            .create();
+        let client = Client::for_test(&srv.url(), None);
+        for (path, status) in [("/agents/gone", 404), ("/agents/theirs", 403)] {
+            let out = client
+                .get_json_or_status::<serde_json::Value>(path, &[403, 404])
+                .unwrap();
+            assert_eq!(out.unwrap_err(), status, "{path}");
+        }
+        assert!(
+            client
+                .get_json_or_status::<serde_json::Value>("/agents/broken", &[403, 404])
+                .is_err()
+        );
     }
 
     #[test]
