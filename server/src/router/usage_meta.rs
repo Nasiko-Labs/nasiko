@@ -230,6 +230,23 @@ async fn platform_paid_agent_usage(db: &PgPool, flow_id: &str) -> AgentUsage {
 /// declining as the established behaviour of this conversation. Only a
 /// `DelegationPolicy` ever produces one, and only it can recognise one — this
 /// function is told, it does not decide.
+/// A routed turn the orchestrator ended with an error: saved so a reload shows
+/// the failure rather than "no reply", tagged so no model ever reads it back.
+pub async fn insert_turn_error(db: &PgPool, session_id: &str, message: &str, trace_id: &str) {
+    let result = sqlx::query(
+        "INSERT INTO chat_messages (session_id, role, content, trace_id, metadata) \
+         VALUES ($1, 'assistant', '', $2, $3)",
+    )
+    .bind(session_id)
+    .bind(trace_id)
+    .bind(crate::chat::models::turn_error_metadata(message, "orchestrator"))
+    .execute(db)
+    .await;
+    if let Err(e) = result {
+        tracing::warn!(error = %e, "failed to persist a failed chat turn");
+    }
+}
+
 pub async fn insert_assistant_message(
     db: &PgPool,
     session_id: &str,

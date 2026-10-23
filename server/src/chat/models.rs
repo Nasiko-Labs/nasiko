@@ -132,6 +132,31 @@ pub struct SendMessage {
     /// Optional per-message usage captured client-side from the stream's
     /// `usage_meta` event (direct-agent chats persist through this route).
     pub usage: Option<MessageUsage>,
+    /// The agent ended this turn as failed: saved so a reload shows the failure
+    /// rather than "no reply".
+    pub error: Option<TurnError>,
+}
+
+/// A failed turn's error, exactly as the agent sent it -- JSON, text or an SDK
+/// dump alike. Stored as text and never parsed here; the UI reads it.
+#[derive(Debug, Deserialize)]
+pub struct TurnError {
+    pub message: String,
+}
+
+/// How much of a failed turn's error is kept.
+pub const TURN_ERROR_MAX_CHARS: usize = 4_000;
+
+/// `metadata` for a failed turn: `{"turn_error": {"message", "source"}}`, under
+/// the key the history readers filter on, so it never reaches a model prompt.
+pub fn turn_error_metadata(message: &str, source: &str) -> serde_json::Value {
+    let message: String = message.chars().take(TURN_ERROR_MAX_CHARS).collect();
+    let mut m = serde_json::Map::new();
+    m.insert(
+        nasiko_orchestrator::session_history::TURN_ERROR_METADATA_KEY.to_string(),
+        serde_json::json!({ "message": message, "source": source }),
+    );
+    serde_json::Value::Object(m)
 }
 
 /// The usage subset a client may attach when persisting an assistant message.
@@ -174,5 +199,26 @@ where
         Some(_) => Err(D::Error::custom(
             "assistant_metadata must be null or a JSON object",
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_failed_turn_is_kept_as_text_under_the_key_history_skips() {
+        let raw = "Error code: 402 - {'code': 'budget_exceeded', 'error': 'used up'}";
+        let m = turn_error_metadata(raw, "agent");
+        let e = &m[nasiko_orchestrator::session_history::TURN_ERROR_METADATA_KEY];
+        assert_eq!(e["message"], raw, "stored as sent, never parsed");
+        assert_eq!(e["source"], "agent");
+    }
+
+    #[test]
+    fn a_long_error_is_cut_to_the_cap() {
+        let m = turn_error_metadata(&"é".repeat(TURN_ERROR_MAX_CHARS + 50), "orchestrator");
+        let kept = m["turn_error"]["message"].as_str().unwrap();
+        assert_eq!(kept.chars().count(), TURN_ERROR_MAX_CHARS);
     }
 }
