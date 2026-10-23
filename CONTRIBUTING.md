@@ -14,7 +14,7 @@ commands, and the PR flow.
 ### Getting Started
 
 ```sh
-# Start backing infrastructure (Postgres, Redis, MinIO)
+# Start backing infrastructure (Postgres, Redis, RustFS)
 just infra
 
 # Configure environment (just run falls back to the example if you skip this)
@@ -37,7 +37,7 @@ sudo cp target/release/nasiko /usr/local/bin/
 
 ```sh
 just run              # Server (foreground; sources server/.env)
-just infra            # Start Postgres, Redis, MinIO
+just infra            # Start Postgres, Redis, RustFS
 just infra-down       # Stop infrastructure
 just logs             # View infra logs (-f to follow)
 just check            # cargo check --workspace
