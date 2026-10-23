@@ -16,6 +16,7 @@ mod state;
 mod sync;
 
 use anyhow::{Context, Result, bail};
+use nasiko_utils::term;
 use std::path::Path;
 
 use agents::Agent;
@@ -160,15 +161,15 @@ pub fn install(options: InstallOptions<'_>) -> Result<()> {
                 agent_name: agent_name.to_string(),
                 binding: control_plane::installation_binding()?,
             };
-            println!(
+            term::print_info(&format!(
                 "Reporting under agent '{}' (the same agent LLM routing uses)",
                 registration.agent_name
-            );
+            ));
             registration
         }
         None => {
             let registration = control_plane::register_agent(agent)?;
-            println!(
+            term::print_success(&format!(
                 "{} agent '{}' in the control plane",
                 if registration.created {
                     "Registered"
@@ -176,7 +177,7 @@ pub fn install(options: InstallOptions<'_>) -> Result<()> {
                     "Found"
                 },
                 registration.agent_name
-            );
+            ));
             registration
         }
     };
@@ -195,18 +196,21 @@ pub fn install(options: InstallOptions<'_>) -> Result<()> {
         || agent.uninstall(),
     )?;
 
-    println!("Installed hook              {}", tildify(&script));
-    println!("Installed integration       {}", tildify(&registration));
+    term::print_success(&format!("Installed hook              {}", tildify(&script)));
+    term::print_success(&format!(
+        "Installed integration       {}",
+        tildify(&registration)
+    ));
     println!(
         "\nStart a new {} session, then: {}",
         spec.display_name,
-        crate::commands::local_agents::sessions_hint()
+        term::cyan(crate::commands::local_agents::sessions_hint())
     );
     if agent.restart_required() {
-        println!("Restart OpenCode first so it loads the new plugin.");
+        term::print_info("Restart OpenCode first so it loads the new plugin.");
     }
     if agent == Agent::Codex {
-        println!("In Codex, run /hooks and trust the new Nasiko command hooks.");
+        term::print_info("In Codex, run /hooks and trust the new Nasiko command hooks.");
     }
     Ok(())
 }
@@ -229,7 +233,7 @@ pub fn uninstall(agent_id: &str) -> Result<()> {
     settings.declined.insert(spec.id.to_string());
     settings.save()?;
 
-    println!("Removed the {} hook.", spec.display_name);
+    term::print_success(&format!("Removed the {} hook.", spec.display_name));
     println!(
         "Agent '{agent_name}' is still registered; its past sessions remain in observability."
     );
@@ -262,24 +266,27 @@ pub fn auto_install_if_authenticated() {
         return;
     };
     let Some(token) = entry.token.as_deref() else {
-        println!(
+        term::print_info(&format!(
             "Coding-agent setup skipped for {cluster}: not authenticated. Run `{}`.",
-            crate::commands::local_agents::login_hint()
-        );
+            term::cyan(crate::commands::local_agents::login_hint())
+        ));
         return;
     };
     if crate::config::token_expired(token) == Some(true) {
-        println!(
+        term::print_info(&format!(
             "Coding-agent setup skipped for {cluster}: login expired. Run `{}`.",
-            crate::commands::local_agents::login_hint()
-        );
+            term::cyan(crate::commands::local_agents::login_hint())
+        ));
         return;
     }
     if let Err(error) = crate::commands::local_agents::offer_reporting() {
-        eprintln!(
-            "Session reporting was not set up ({error:#}). Turn it on with: {} connect <agent> --no-routing --reporting",
-            crate::commands::local_agents::cli_name()
-        );
+        term::print_warning(&format!(
+            "Session reporting was not set up ({error:#}). Turn it on with: {}",
+            term::cyan_stderr(&format!(
+                "{} connect <agent> --no-routing --reporting",
+                crate::commands::local_agents::cli_name()
+            ))
+        ));
     }
 }
 

@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
+use nasiko_utils::term;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
@@ -180,10 +181,10 @@ pub fn connect(options: &RoutingOptions<'_>) -> Result<coding_agent_router::Conf
             // an earlier one failed — the caller ends up with LLM routing rolled back either way,
             // so any partial cleanup miss is worth surfacing rather than swallowing silently.
             if let Err(error) = run_mcp_remove(&claude) {
-                eprintln!(
-                    "warning: failed to remove the Nasiko MCP server from Claude Code: {}",
+                term::print_warning(&format!(
+                    "failed to remove the Nasiko MCP server from Claude Code: {}",
                     coding_agent_router::one_line_warning(&error)
-                );
+                ));
             }
             coding_agent_router::revoke_mcp_credential_best_effort(
                 &mcp_client,
@@ -203,10 +204,10 @@ pub fn connect(options: &RoutingOptions<'_>) -> Result<coding_agent_router::Conf
         .get("model")
         .and_then(Value::as_str)
         .unwrap_or("policy-selected");
-    println!(
+    term::print_success(&format!(
         "Connected Claude Code to Nasiko ({}, {provider}/{model}).",
         state.binding.cluster
-    );
+    ));
     match mcp_outcome {
         McpOutcome::NotRequested => println!("MCP gateway: not requested"),
         McpOutcome::Connected => {
@@ -214,20 +215,23 @@ pub fn connect(options: &RoutingOptions<'_>) -> Result<coding_agent_router::Conf
             println!("{}", coding_agent_router::mcp_multi_machine_note());
         }
         McpOutcome::MintUnavailable(reason) => {
-            eprintln!(
-                "warning: MCP gateway unavailable ({reason}); LLM routing is connected, MCP tools are not"
-            );
+            term::print_warning(&format!(
+                "MCP gateway unavailable ({reason}); LLM routing is connected, MCP tools are not"
+            ));
         }
         McpOutcome::RegistrationFailed(reason) => {
-            eprintln!(
-                "warning: could not register the Nasiko MCP server with Claude Code ({reason}); LLM routing is connected, MCP tools are not. To retry: claude mcp remove --scope user nasiko && {cli} disconnect claude --routing && {cli} connect claude",
+            term::print_warning(&format!(
+                "could not register the Nasiko MCP server with Claude Code ({reason}); LLM routing is connected, MCP tools are not. To retry: claude mcp remove --scope user nasiko && {cli} disconnect claude --routing && {cli} connect claude",
                 cli = crate::commands::local_agents::cli_name()
-            );
+            ));
         }
     }
     println!(
-        "Run `claude` normally. Disconnect with: {} disconnect claude",
-        crate::commands::local_agents::cli_name()
+        "Run `claude` normally. Disconnect with: {}",
+        term::cyan(&format!(
+            "{} disconnect claude",
+            crate::commands::local_agents::cli_name()
+        ))
     );
     Ok(prepared.config_change())
 }
@@ -329,10 +333,10 @@ fn teardown_mcp_gateway(binding: &ConnectionBinding) {
         run_mcp_remove(&claude)
     })();
     if let Err(error) = removal {
-        eprintln!(
-            "warning: failed to remove the Nasiko MCP server from Claude Code: {}",
+        term::print_warning(&format!(
+            "failed to remove the Nasiko MCP server from Claude Code: {}",
             coding_agent_router::one_line_warning(&error)
-        );
+        ));
     }
     coding_agent_router::revoke_bound_mcp_credential_best_effort(binding);
 }
@@ -344,7 +348,7 @@ pub fn disconnect(force: bool) -> Result<()> {
 fn disconnect_internal(print: bool, force: bool) -> Result<()> {
     let Some(state) = load_state()? else {
         if print {
-            println!("Claude Code is not connected to Nasiko.");
+            term::print_info("Claude Code is not connected to Nasiko.");
         }
         return Ok(());
     };
@@ -355,7 +359,7 @@ fn disconnect_internal(print: bool, force: bool) -> Result<()> {
     restore_settings(&state)?;
     fs::remove_file(state_path()).context("failed to remove Claude connection state")?;
     if print {
-        println!("Disconnected Claude Code from Nasiko.");
+        term::print_success("Disconnected Claude Code from Nasiko.");
         println!("Restart Claude Code so the restored API settings take effect.");
     }
     Ok(())
@@ -402,8 +406,11 @@ pub fn status() -> Result<()> {
         println!("Claude Code routing:           {}", value("not connected"));
         println!("Claude Code session reporting: {}", value(&reporting));
         println!(
-            "Connect with: {} connect claude",
-            crate::commands::local_agents::cli_name()
+            "Connect with: {}",
+            term::cyan(&format!(
+                "{} connect claude",
+                crate::commands::local_agents::cli_name()
+            ))
         );
         return Ok(());
     };
@@ -577,7 +584,9 @@ fn restore_top_level(
     original: &SavedValue,
 ) {
     if settings.get(key) != Some(installed) {
-        eprintln!("warning: Claude setting '{key}' changed since connect; leaving it unchanged");
+        term::print_warning(&format!(
+            "Claude setting '{key}' changed since connect; leaving it unchanged"
+        ));
         return;
     }
     if original.present {
@@ -595,15 +604,15 @@ fn restore_env(
     original_env_present: bool,
 ) -> Result<()> {
     let Some(env) = settings.get_mut("env").and_then(Value::as_object_mut) else {
-        eprintln!(
-            "warning: Claude setting 'env.{key}' changed since connect; leaving it unchanged"
-        );
+        term::print_warning(&format!(
+            "Claude setting 'env.{key}' changed since connect; leaving it unchanged"
+        ));
         return Ok(());
     };
     if env.get(key) != Some(installed) {
-        eprintln!(
-            "warning: Claude setting 'env.{key}' changed since connect; leaving it unchanged"
-        );
+        term::print_warning(&format!(
+            "Claude setting 'env.{key}' changed since connect; leaving it unchanged"
+        ));
         return Ok(());
     }
     if original.present {

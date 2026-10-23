@@ -7,6 +7,7 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result, bail};
+use nasiko_utils::term;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -174,12 +175,14 @@ pub fn print_mcp_outcome(mint: Option<&McpMint>, registration_warning: Option<&s
             println!("{}", mcp_multi_machine_note());
         }
         (Some(McpMint::Minted(_)), Some(reason)) => {
-            eprintln!("warning: {reason}; LLM routing is connected, MCP tools are not");
+            term::print_warning(&format!(
+                "{reason}; LLM routing is connected, MCP tools are not"
+            ));
         }
         (Some(McpMint::Unavailable(message)), _) => {
-            eprintln!(
-                "warning: MCP gateway unavailable ({message}); LLM routing is connected, MCP tools are not"
-            );
+            term::print_warning(&format!(
+                "MCP gateway unavailable ({message}); LLM routing is connected, MCP tools are not"
+            ));
         }
     }
 }
@@ -339,10 +342,10 @@ pub fn revoke_mcp_credential(client: &Client, agent_id: &str) -> Result<()> {
 /// control plane is reachable.
 pub fn revoke_mcp_credential_best_effort(client: &Client, agent_id: &str) {
     if let Err(error) = revoke_mcp_credential(client, agent_id) {
-        eprintln!(
-            "warning: failed to revoke the MCP gateway credential: {}",
+        term::print_warning(&format!(
+            "failed to revoke the MCP gateway credential: {}",
             one_line_warning(&error)
-        );
+        ));
     }
 }
 
@@ -388,10 +391,10 @@ fn client_for_binding(binding: &ConnectionBinding) -> Result<Client> {
 pub fn revoke_bound_mcp_credential_best_effort(binding: &ConnectionBinding) {
     match client_for_binding(binding) {
         Ok(client) => revoke_mcp_credential_best_effort(&client, &binding.agent_id),
-        Err(error) => eprintln!(
-            "warning: failed to revoke the MCP gateway credential: {}",
+        Err(error) => term::print_warning(&format!(
+            "failed to revoke the MCP gateway credential: {}",
             one_line_warning(&error)
-        ),
+        )),
     }
 }
 
@@ -406,9 +409,9 @@ fn enforce_disconnect_preflight(display_name: &str, running: &[String], force: b
     }
     let names = running.join(", ");
     if force {
-        eprintln!(
-            "warning: disconnecting while {display_name} is running ({names}); open sessions may fail API requests until restarted"
-        );
+        term::print_warning(&format!(
+            "disconnecting while {display_name} is running ({names}); open sessions may fail API requests until restarted"
+        ));
         return Ok(());
     }
     bail!(
@@ -928,7 +931,6 @@ fn status_tone(value: &str) -> StatusTone {
 /// terminal, so captured output is unchanged. Only for the human-facing status commands —
 /// never the credential-helper path, whose stdout other programs read.
 pub(crate) fn status_value(value: &str) -> String {
-    use nasiko_utils::term;
     match status_tone(value) {
         StatusTone::Good => term::green(value),
         StatusTone::Problem => term::red(value),

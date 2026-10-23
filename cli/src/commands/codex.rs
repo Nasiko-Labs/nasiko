@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
+use nasiko_utils::term;
 use serde::{Deserialize, Serialize};
 use toml_edit::{Array, DocumentMut, Item, Table, value};
 
@@ -155,10 +156,10 @@ pub fn connect(options: &RoutingOptions<'_>) -> Result<coding_agent_router::Conf
             &prepared.binding.agent_id,
         );
     }
-    println!(
+    term::print_success(&format!(
         "Connected Codex routing to Nasiko ({}, {}/{}).",
         prepared.binding.cluster, routed.provider, routed.model
-    );
+    ));
     println!("Config:                    {}", config_path.display());
     println!("Provider:                  nasiko ({})", routed.model);
     coding_agent_router::print_mcp_outcome(mcp_mint.as_ref(), embed_warning.as_deref());
@@ -312,7 +313,9 @@ fn verify_routing(prepared: &coding_agent_router::PreparedConnection, model: &st
             cli = crate::commands::local_agents::cli_name()
         ),
         coding_agent_router::RoutingPreflight::Inconclusive(reason) => {
-            eprintln!("warning: could not verify LLM routing before connecting ({reason})");
+            term::print_warning(&format!(
+                "could not verify LLM routing before connecting ({reason})"
+            ));
             Ok(())
         }
     }
@@ -328,7 +331,7 @@ fn rollback_after<T>(
 
 pub fn disconnect(force: bool) -> Result<()> {
     let Some(state) = load_state()? else {
-        println!("Codex routing: not connected");
+        term::print_info("Codex routing: not connected");
         return Ok(());
     };
     coding_agent_router::disconnect_preflight("Codex", &["codex"], force)?;
@@ -364,7 +367,7 @@ pub fn disconnect(force: bool) -> Result<()> {
         coding_agent_router::atomic_write(&state.config_path, rendered.as_bytes())?;
     }
     fs::remove_file(state_path()).context("failed to remove Codex routing state")?;
-    println!("Disconnected Codex routing from Nasiko.");
+    term::print_success("Disconnected Codex routing from Nasiko.");
     println!("Codex auth, history, and the registered agent were kept.");
     println!("Restart Codex so the restored provider settings take effect.");
     Ok(())
@@ -377,8 +380,11 @@ pub fn status() -> Result<()> {
         println!("Codex routing:           {}", value("not connected"));
         println!("Codex session reporting: {}", value(&reporting));
         println!(
-            "Connect routing with: {} connect codex",
-            crate::commands::local_agents::cli_name()
+            "Connect routing with: {}",
+            term::cyan(&format!(
+                "{} connect codex",
+                crate::commands::local_agents::cli_name()
+            ))
         );
         return Ok(());
     };
@@ -623,7 +629,9 @@ fn restore_if_unchanged(
     original: &SavedItem,
 ) -> Result<()> {
     if current_snapshot(document, key).as_deref() != Some(installed) {
-        eprintln!("warning: Codex setting '{key}' changed since connect; leaving it unchanged");
+        term::print_warning(&format!(
+            "Codex setting '{key}' changed since connect; leaving it unchanged"
+        ));
         return Ok(());
     }
     restore_top_level(document, key, original)
@@ -631,8 +639,8 @@ fn restore_if_unchanged(
 
 fn restore_provider(document: &mut DocumentMut, state: &ConnectionState) -> Result<()> {
     if provider_snapshot(document).as_deref() != Some(state.installed_provider.as_str()) {
-        eprintln!(
-            "warning: Codex setting 'model_providers.nasiko' changed since connect; leaving it unchanged"
+        term::print_warning(
+            "Codex setting 'model_providers.nasiko' changed since connect; leaving it unchanged",
         );
         return Ok(());
     }
@@ -659,10 +667,10 @@ fn restore_mcp_server(document: &mut DocumentMut, state: &ConnectionState) -> Re
         return Ok(());
     };
     if mcp_server_snapshot(document).as_deref() != Some(installed.as_str()) {
-        eprintln!(
-            "warning: Codex setting 'mcp_servers.{}' changed since connect; leaving it unchanged",
+        term::print_warning(&format!(
+            "Codex setting 'mcp_servers.{}' changed since connect; leaving it unchanged",
             coding_agent_router::MCP_SERVER_NAME
-        );
+        ));
         return Ok(());
     }
     let Some(servers) = document.get_mut("mcp_servers").and_then(Item::as_table_mut) else {

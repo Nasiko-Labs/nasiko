@@ -5,6 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use nasiko_utils::term;
 use serde::{Deserialize, Serialize};
 
 use crate::api::Client;
@@ -113,10 +114,10 @@ pub fn connect(options: &RoutingOptions<'_>) -> Result<coding_agent_router::Conf
             );
         }
         if mcp_credential.is_some() && reconnect_shares_the_restored_credential {
-            eprintln!(
-                "warning: OpenCode reconnect failed; the previous MCP gateway credential may need a fresh `{} connect opencode` before its rotation grace window lapses",
+            term::print_warning(&format!(
+                "OpenCode reconnect failed; the previous MCP gateway credential may need a fresh `{} connect opencode` before its rotation grace window lapses",
                 crate::commands::local_agents::cli_name()
-            );
+            ));
         }
         return coding_agent_router::fail_after_prepare(&prepared, "local install failed", error);
     }
@@ -144,10 +145,10 @@ pub fn connect(options: &RoutingOptions<'_>) -> Result<coding_agent_router::Conf
         .get("model")
         .and_then(serde_json::Value::as_str)
         .unwrap_or("policy-selected");
-    println!(
+    term::print_success(&format!(
         "Connected OpenCode to Nasiko ({}, {provider}/{model}).",
         state.binding.cluster
-    );
+    ));
     println!("Routing:          nasiko/router");
     println!("Installed plugin: {}", plugin_path.display());
     coding_agent_router::print_mcp_outcome(mcp_mint.as_ref(), None);
@@ -200,7 +201,7 @@ fn failed_reconnect_shares_the_restored_credential(
 
 pub fn disconnect(force: bool) -> Result<()> {
     let Some(state) = load_state()? else {
-        println!("OpenCode routing is not connected to Nasiko.");
+        term::print_info("OpenCode routing is not connected to Nasiko.");
         return Ok(());
     };
     coding_agent_router::disconnect_preflight("OpenCode", &["opencode"], force)?;
@@ -212,7 +213,7 @@ pub fn disconnect(force: bool) -> Result<()> {
     if path.exists() {
         fs::remove_file(&path).with_context(|| format!("failed to remove {}", path.display()))?;
     }
-    println!("Disconnected OpenCode routing from Nasiko.");
+    term::print_success("Disconnected OpenCode routing from Nasiko.");
     println!("Queued telemetry, history, and the registered agent were kept.");
     println!("Restart OpenCode so it unloads the router plugin.");
     Ok(())
@@ -229,8 +230,11 @@ pub fn status() -> Result<()> {
             )?)
         );
         println!(
-            "Connect routing with: {} connect opencode",
-            crate::commands::local_agents::cli_name()
+            "Connect routing with: {}",
+            term::cyan(&format!(
+                "{} connect opencode",
+                crate::commands::local_agents::cli_name()
+            ))
         );
         return Ok(());
     };
@@ -375,7 +379,7 @@ fn remove_managed_plugin_or_preserve(path: &Path) -> Result<()> {
     }
     let body = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
     if let Err(error) = require_managed_plugin(path, &body) {
-        eprintln!("warning: {error}; leaving it unchanged");
+        term::print_warning(&format!("{error}; leaving it unchanged"));
         return Ok(());
     }
     fs::remove_file(path).with_context(|| format!("failed to remove {}", path.display()))
