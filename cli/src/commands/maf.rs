@@ -44,12 +44,19 @@ pub fn trace(
         print_plan(&workflow, &steps, decompose_secs);
     }
 
-    let exec_id = queue_run(&client, &workflow_id, content)?;
+    let (exec_id, number) = queue_run(&client, &workflow_id, content)?;
+    if !json_out {
+        println!("\n3. Running execution #{number} ({exec_id})");
+    }
     let execution = poll_with_step_progress(&client, &exec_id, &steps, json_out)?;
 
     if json_out {
+        // stdout carries the JSON document and nothing else, so `--cleanup` deletes silently.
         let combined = json!({ "workflow": workflow, "execution": execution });
         println!("{}", serde_json::to_string_pretty(&combined)?);
+        if cleanup {
+            delete_workflow(&client, &workflow_id)?;
+        }
     } else {
         print_trace_summary(&client, &execution, &exec_id);
         print_followups(&client, &workflow_id, cleanup)?;
@@ -125,7 +132,9 @@ fn print_plan(workflow: &Value, steps: &[PlannedStep], decompose_secs: f64) {
     }
 }
 
-fn queue_run(client: &Client, workflow_id: &str, content: Option<&str>) -> Result<String> {
+/// Queues a run of the workflow, returning the execution's id and number. Prints nothing:
+/// under `--json` stdout must stay a single JSON document.
+fn queue_run(client: &Client, workflow_id: &str, content: Option<&str>) -> Result<(String, i64)> {
     let resp: Value = unwrap_data(client.post_json(
         &format!("/maf/workflow/{workflow_id}/run"),
         &json!({ "content": content }),
@@ -139,8 +148,7 @@ fn queue_run(client: &Client, workflow_id: &str, content: Option<&str>) -> Resul
         .get("execution_number")
         .and_then(Value::as_i64)
         .unwrap_or(0);
-    println!("\n3. Running execution #{number} ({exec_id})");
-    Ok(exec_id)
+    Ok((exec_id, number))
 }
 
 /// Polls the execution, printing each step the moment it reaches a terminal
@@ -314,7 +322,7 @@ fn print_agent_usage(client: &Client, exec_id: &str) {
 
 fn print_followups(client: &Client, workflow_id: &str, cleanup: bool) -> Result<()> {
     if cleanup {
-        client.delete(&format!("/maf/workflow/{workflow_id}"))?;
+        delete_workflow(client, workflow_id)?;
         println!("\nDeleted workflow {workflow_id}");
         return Ok(());
     }
@@ -322,6 +330,11 @@ fn print_followups(client: &Client, workflow_id: &str, cleanup: bool) -> Result<
     println!("   re-run:  nasiko maf workflow run {workflow_id} --wait");
     println!("   delete:  nasiko maf workflow delete {workflow_id}");
     Ok(())
+}
+
+/// `trace --cleanup`: removes the workflow the trace created.
+fn delete_workflow(client: &Client, workflow_id: &str) -> Result<()> {
+    client.delete(&format!("/maf/workflow/{workflow_id}"))
 }
 
 // ─── Workflow commands ──────────────────────────────────────────────────────
