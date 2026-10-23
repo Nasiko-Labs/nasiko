@@ -9,9 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::api::Client;
-use crate::commands::coding_agent_router::{
-    self, AgentSpec, ConnectionBinding, McpMint, RoutingOptions, RoutingSummary,
-};
+use crate::commands::coding_agent_router::{self, AgentSpec, ConnectionBinding, McpMint};
 
 const DEFAULT_AGENT_NAME: &str = "claude-code";
 
@@ -44,66 +42,35 @@ struct ConnectionState {
 /// client-side `claude mcp add-json`) gets its own remedy, separate from a mint failure (the
 /// control plane itself couldn't issue a credential).
 enum McpOutcome {
-    NotRequested,
     Connected,
     MintUnavailable(String),
     RegistrationFailed(String),
 }
 
 /// One-time setup. Claude subsequently invokes the hidden credential helper itself.
-fn agent_spec() -> AgentSpec<'static> {
-    AgentSpec {
-        id: "claude",
-        display_name: "Claude Code",
-        default_name: DEFAULT_AGENT_NAME,
-    }
-}
-
-fn claude_binary() -> Result<PathBuf> {
-    which::which("claude").context("Claude Code is not installed or 'claude' is not on PATH")
-}
-
-/// What `connect` needs on this machine before it asks the control plane for anything: the
-/// `claude` binary, and `settings.json` with an `env` object it can write into.
-fn local_requirements() -> Result<(PathBuf, Map<String, Value>, String)> {
-    let claude = claude_binary()?;
-    let settings = read_json_object(&claude_settings_path())?;
-    let helper_command = helper_command()?;
-    // Checked on a copy: `connect` records whether `env` existed before it adds one.
-    ensure_env_object(&mut settings.clone())?;
-    Ok((claude, settings, helper_command))
-}
-
-/// Checks everything `connect` would — what it needs on this machine, then the routing agent and
-/// the LLM config with the control plane. A reconnect runs it before removing the working
-/// connection, so anything that would fail leaves the connection as it is.
-/// Changes nothing on this machine. With the control plane it is not entirely side-effect free:
-/// a new LLM config is attached to the routing agent for the length of the check and then put
-/// back (with its pinned model), and asking for the default agent creates it if it doesn't exist.
-pub fn check(options: &RoutingOptions<'_>) -> Result<()> {
-    local_requirements()?;
-    let executable = std::env::current_exe().context("cannot locate the nasiko executable")?;
-    let prepared =
-        coding_agent_router::prepare(agent_spec(), options.agent, options.llm_config, executable)?;
-    coding_agent_router::put_back_config(&prepared)
-}
-
-/// Connects Claude Code, returning the LLM config change it made to its routing agent.
-pub fn connect(options: &RoutingOptions<'_>) -> Result<coding_agent_router::ConfigChange> {
+pub fn connect(agent: Option<&str>, llm_config: Option<&str>) -> Result<()> {
+    let claude = which::which("claude")
+        .context("Claude Code is not installed or 'claude' is not on PATH")?;
     if state_path().exists() {
         bail!(
-            "Claude Code is already connected; run `{cli} disconnect claude` before reconnecting",
-            cli = crate::commands::local_agents::cli_name()
+            "Claude Code is already connected; run `nasiko disconnect claude` before reconnecting"
         );
     }
-    // Everything local is read and checked before the control plane is changed, so nothing
-    // between `prepare` and the install below can fail without rolling it back.
-    let (claude, mut settings, helper_command) = local_requirements()?;
-    let settings_path = claude_settings_path();
     let executable = std::env::current_exe().context("cannot locate the nasiko executable")?;
-    let prepared =
-        coding_agent_router::prepare(agent_spec(), options.agent, options.llm_config, executable)?;
+    let prepared = coding_agent_router::prepare(
+        AgentSpec {
+            id: "claude",
+            display_name: "Claude Code",
+            default_name: DEFAULT_AGENT_NAME,
+        },
+        agent,
+        llm_config,
+        executable,
+    )?;
 
+    let settings_path = claude_settings_path();
+    let mut settings = read_json_object(&settings_path)?;
+    let helper_command = helper_command()?;
     let original_env_present = settings.contains_key("env");
     let original_helper = capture(settings.get("apiKeyHelper"));
     let original_base_url = capture(
@@ -123,21 +90,18 @@ pub fn connect(options: &RoutingOptions<'_>) -> Result<coding_agent_router::Conf
         &prepared.entry,
         Some(coding_agent_router::CP_CALL_TIMEOUT),
     );
-    let mcp_mint = options.mcp.then(|| {
-        coding_agent_router::mint_mcp_credential(
-            &mcp_client,
-            &prepared.binding.agent_id,
-            &prepared.entry.url,
-        )
-    });
+    let mcp_mint = coding_agent_router::mint_mcp_credential(
+        &mcp_client,
+        &prepared.binding.agent_id,
+        &prepared.entry.url,
+    );
     // Registered with Claude Code's own `claude mcp` store before the atomic write below, so
     // `mcp_installed` reflects the real outcome in that one write rather than needing a second
     // write once client-side registration succeeds. A registration failure (a stale "nasiko"
     // entry, an enterprise policy block, ...) is treated exactly like a mint failure: best-effort
     // revoke, record not installed, warn — LLM routing must still connect either way.
     let (mcp_installed, mcp_outcome) = match &mcp_mint {
-        None => (false, McpOutcome::NotRequested),
-        Some(McpMint::Minted(credential)) => match run_mcp_add(&claude, credential) {
+        McpMint::Minted(credential) => match run_mcp_add(&claude, credential) {
             Ok(()) => (true, McpOutcome::Connected),
             Err(error) => {
                 coding_agent_router::revoke_mcp_credential_best_effort(
@@ -150,9 +114,7 @@ pub fn connect(options: &RoutingOptions<'_>) -> Result<coding_agent_router::Conf
                 )
             }
         },
-        Some(McpMint::Unavailable(message)) => {
-            (false, McpOutcome::MintUnavailable(message.clone()))
-        }
+        McpMint::Unavailable(message) => (false, McpOutcome::MintUnavailable(message.clone())),
     };
 
     let state = ConnectionState {
@@ -190,7 +152,12 @@ pub fn connect(options: &RoutingOptions<'_>) -> Result<coding_agent_router::Conf
                 &prepared.binding.agent_id,
             );
         }
-        return coding_agent_router::fail_after_prepare(&prepared, "local install failed", error);
+        return match coding_agent_router::rollback_config(&prepared) {
+            Ok(()) => Err(error),
+            Err(rollback) => Err(error.context(format!(
+                "local install failed and the prior Nasiko LLM config could not be restored: {rollback:#}"
+            ))),
+        };
     }
 
     let provider = prepared
@@ -208,7 +175,6 @@ pub fn connect(options: &RoutingOptions<'_>) -> Result<coding_agent_router::Conf
         state.binding.cluster
     );
     match mcp_outcome {
-        McpOutcome::NotRequested => println!("MCP gateway: not requested"),
         McpOutcome::Connected => {
             println!("{}", coding_agent_router::mcp_connected_line());
             println!("{}", coding_agent_router::mcp_multi_machine_note());
@@ -220,16 +186,12 @@ pub fn connect(options: &RoutingOptions<'_>) -> Result<coding_agent_router::Conf
         }
         McpOutcome::RegistrationFailed(reason) => {
             eprintln!(
-                "warning: could not register the Nasiko MCP server with Claude Code ({reason}); LLM routing is connected, MCP tools are not. To retry: claude mcp remove --scope user nasiko && {cli} disconnect claude --routing && {cli} connect claude",
-                cli = crate::commands::local_agents::cli_name()
+                "warning: could not register the Nasiko MCP server with Claude Code ({reason}); LLM routing is connected, MCP tools are not. To retry: claude mcp remove --scope user nasiko && nasiko disconnect claude && nasiko connect claude"
             );
         }
     }
-    println!(
-        "Run `claude` normally. Disconnect with: {} disconnect claude",
-        crate::commands::local_agents::cli_name()
-    );
-    Ok(prepared.config_change())
+    println!("Run `claude` normally. Disconnect with: nasiko disconnect claude");
+    Ok(())
 }
 
 /// `claude mcp add-json --scope user <name> '<json>'` args: a single JSON argument carries
@@ -382,28 +344,10 @@ fn restore_settings(state: &ConnectionState) -> Result<()> {
     write_json_atomic(&state.settings_path, &Value::Object(settings))
 }
 
-/// The current connection, if any, for `nasiko status`'s overview.
-pub fn summary() -> Result<Option<RoutingSummary>> {
-    Ok(
-        load_state()?
-            .map(|state| RoutingSummary::from_binding(&state.binding, state.mcp_installed)),
-    )
-}
-
-/// Where `connect` writes Claude Code's routing settings.
-pub fn settings_path() -> PathBuf {
-    claude_settings_path()
-}
-
 pub fn status() -> Result<()> {
-    let reporting = crate::commands::integration::reporting_status_for("claude")?;
     let Some(state) = load_state()? else {
-        println!("Claude Code routing:           not connected");
-        println!("Claude Code session reporting: {reporting}");
-        println!(
-            "Connect with: {} connect claude",
-            crate::commands::local_agents::cli_name()
-        );
+        println!("Claude Code is not connected to Nasiko.");
+        println!("Connect with: nasiko connect claude");
         return Ok(());
     };
     let settings = read_json_object(&state.settings_path)?;
@@ -414,43 +358,37 @@ pub fn status() -> Result<()> {
         .and_then(|env| env.get("ANTHROPIC_BASE_URL"))
         == Some(&Value::String(state.binding.cluster_url.clone()));
     let auth = coding_agent_router::auth_status(&state.binding)?;
-    println!("Claude Code routing:           connected");
+    let value = coding_agent_router::status_value;
+    println!("Claude Code: {}", value("connected"));
     println!(
-        "Cluster:                       {} ({})",
+        "Cluster:     {} ({})",
         state.binding.cluster, state.binding.cluster_url
     );
+    println!("Agent:       {}", state.binding.agent_name);
+    println!("Nasiko auth: {}", value(auth));
     println!(
-        "Agent:                         {}",
-        state.binding.agent_name
-    );
-    println!("Nasiko auth:                   {auth}");
-    println!(
-        "Settings:                      {}",
-        if helper_ok && base_ok {
+        "Settings:    {}",
+        value(if helper_ok && base_ok {
             "active"
         } else {
             "changed since connect"
-        }
+        })
     );
     println!(
-        "MCP gateway:                   {}",
-        if state.mcp_installed {
+        "MCP gateway: {}",
+        value(if state.mcp_installed {
             "configured"
         } else {
             "not configured"
-        }
+        })
     );
-    println!("Claude Code session reporting: {reporting}");
     Ok(())
 }
 
 /// Hidden `apiKeyHelper` entry point. Stdout must contain only the credential.
 pub fn credential() -> Result<()> {
     let state = load_state()?.ok_or_else(|| {
-        anyhow::anyhow!(
-            "Claude Code is not connected; run: {} connect claude",
-            crate::commands::local_agents::cli_name()
-        )
+        anyhow::anyhow!("Claude Code is not connected; run: nasiko connect claude")
     })?;
     println!("{}", coding_agent_router::credential(&state.binding)?.token);
     Ok(())
