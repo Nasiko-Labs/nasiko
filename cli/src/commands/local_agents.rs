@@ -15,6 +15,7 @@ use anyhow::{Context, Result, bail};
 use clap::Args;
 use dialoguer::theme::ColorfulTheme;
 use dialoguer::{Confirm, MultiSelect, Select};
+use nasiko_utils::term;
 use serde_json::Value;
 use tabled::settings::{Alignment, Style};
 use tabled::{Table, Tabled};
@@ -190,9 +191,9 @@ pub fn llm_config_hint() -> &'static str {
 /// Points a caller of a renamed command at its replacement. The old command still runs.
 pub fn note_renamed(old: &str, new: &str) {
     let cli = cli_name();
-    eprintln!(
-        "note: `{cli} {old}` is now `{cli} {new}`; the old name will be removed in a future release."
-    );
+    term::print_note(&format!(
+        "`{cli} {old}` is now `{cli} {new}`; the old name will be removed in a future release."
+    ));
 }
 
 // ─── The agents ──────────────────────────────────────────────────────────────
@@ -640,11 +641,11 @@ pub fn connect(target: Option<&str>, options: &ConnectOptions) -> Result<()> {
                 .filter(|view| plan.agents.iter().any(|p| p.view.local.id == view.local.id))
                 .collect::<Vec<_>>(),
         ),
-        Err(error) => eprintln!("warning: could not show the result: {error:#}"),
+        Err(error) => term::print_warning(&format!("could not show the result: {error:#}")),
     }
     if !failures.is_empty() {
         for (name, error) in &failures {
-            eprintln!("error: {name}: {error}");
+            term::print_error(&format!("{name}: {error}"));
         }
         bail!(
             "{} of {} coding agents could not be connected",
@@ -652,7 +653,10 @@ pub fn connect(target: Option<&str>, options: &ConnectOptions) -> Result<()> {
             plan.agents.len()
         );
     }
-    println!("\nCheck any time with: {} status", cli_name());
+    println!(
+        "\nCheck any time with: {}",
+        term::cyan(&format!("{} status", cli_name()))
+    );
     Ok(())
 }
 
@@ -846,12 +850,16 @@ pub fn offer_reporting() -> Result<()> {
     let turn_on = turn_on_reporting_hint(&ids);
     let prompter = prompter(false);
     match reporting_offer(offered, destination.as_ref(), prompter.as_ref())? {
-        Offer::NotAsked => println!("Session reporting is off. Turn it on with: {turn_on}"),
+        Offer::NotAsked => term::print_info(&format!(
+            "Session reporting is off. Turn it on with: {}",
+            term::cyan(&turn_on)
+        )),
         Offer::Declined => {
             integration::record_declined(&ids)?;
-            println!(
-                "Session reporting left off; it won't be offered again. Turn it on any time with: {turn_on}"
-            );
+            term::print_info(&format!(
+                "Session reporting left off; it won't be offered again. Turn it on any time with: {}",
+                term::cyan(&turn_on)
+            ));
         }
         Offer::Accepted(mut plan) => {
             verify_plan(
@@ -863,7 +871,7 @@ pub fn offer_reporting() -> Result<()> {
             )?;
             print_plan(&plan);
             for (name, error) in apply_plan(&plan, &offer_options(), prompter.as_ref()) {
-                eprintln!("warning: {name}: {error}");
+                term::print_warning(&format!("{name}: {error}"));
             }
         }
     }
@@ -1000,7 +1008,7 @@ fn ensure_logged_in(prompter: &dyn Prompter) -> Result<()> {
         if !prompter.interactive() {
             return Err(error);
         }
-        eprintln!("{error:#}");
+        term::print_warning(&format!("{error:#}"));
         if !prompter.confirm(&format!("Log in to {cluster} now?"), true)? {
             bail!("a Nasiko login is required to connect coding agents");
         }
@@ -1408,10 +1416,13 @@ fn choose_llm_config(
     }
     let configs = load_configs()?;
     if configs.is_empty() && !reconnecting {
-        eprintln!(
-            "You have no LLM configs yet. Create one with `{} create --name <name> --provider <provider> --model <model> --default`.",
-            llm_config_hint()
-        );
+        term::print_warning(&format!(
+            "You have no LLM configs yet. Create one with `{}`.",
+            term::cyan_stderr(&format!(
+                "{} create --name <name> --provider <provider> --model <model> --default",
+                llm_config_hint()
+            ))
+        ));
         if prompter.confirm("Continue without LLM routing?", true)? {
             return Ok(None);
         }
@@ -1640,25 +1651,29 @@ fn reporting_line(agent: &AgentPlan, plan: &Plan) -> String {
 
 /// When `connect` has nothing to change: why, per agent, and how to change it.
 fn print_nothing_to_do(plan: &Plan) {
-    println!("Nothing to change.");
+    term::print_info("Nothing to change.");
     let cli = cli_name();
     for agent in &plan.agents {
         let name = agent.view.local.display_name;
         let id = agent.view.local.id;
         if let Some(reason) = &agent.blocked {
-            println!("{name}: not changed — {reason}");
+            term::print_info(&format!("{name}: not changed — {reason}"));
             continue;
         }
         if let Some(note) = &agent.note {
-            println!("{name}: {note}");
+            term::print_info(&format!("{name}: {note}"));
         } else if agent.routing == RoutingStep::Unsupported
             && agent.reporting == ReportingStep::Skip
         {
-            println!("{name} supports session reporting only: {cli} connect {id} --reporting");
+            term::print_info(&format!(
+                "{name} supports session reporting only: {}",
+                term::cyan(&format!("{cli} connect {id} --reporting"))
+            ));
         } else if agent.routing == RoutingStep::Keep {
-            println!(
-                "{name} is already connected. To change it: {cli} connect {id} --config <name> (or run it on a terminal)."
-            );
+            term::print_info(&format!(
+                "{name} is already connected. To change it: {} (or run it on a terminal).",
+                term::cyan(&format!("{cli} connect {id} --config <name>"))
+            ));
         }
         if agent.view.local.reporting_installed
             && (!agent.view.local.reporting_active
@@ -1690,7 +1705,7 @@ fn apply_plan(
         if !agent.changes_anything() {
             continue;
         }
-        println!("\n── {name} ──");
+        println!("\n{}", term::bold(&format!("── {name} ──")));
         if let Err(error) = apply_agent(
             agent,
             &plan.choices,
@@ -1812,12 +1827,14 @@ fn install_reporting(
         return Ok(());
     };
     if let (Some(Routed::New(change)), Some(router)) = (&routed, agent.view.router) {
-        eprintln!("Session reporting failed; removing the LLM routing set up a moment ago.");
+        term::print_warning(
+            "Session reporting failed; removing the LLM routing set up a moment ago.",
+        );
         if let Err(rollback) = (router.disconnect)(true) {
-            eprintln!("warning: could not remove LLM routing: {rollback:#}");
+            term::print_warning(&format!("could not remove LLM routing: {rollback:#}"));
         }
         if let Err(put_back) = change.undo() {
-            eprintln!("warning: {put_back:#}");
+            term::print_warning(&format!("{put_back:#}"));
         }
         return Err(error.context("session reporting failed"));
     }
@@ -1853,10 +1870,10 @@ fn follow_routing_agent(
     if local.reporting_agent_name.as_deref() == Some(routing.agent_name.as_str()) {
         return Ok(());
     }
-    println!(
+    term::print_info(&format!(
         "Session reporting follows LLM routing to agent {}.",
         routing.agent_name
-    );
+    ));
     integration::install(InstallOptions {
         agent_id: local.id,
         no_content: !local.capture_content,
@@ -1894,10 +1911,10 @@ fn restore_previous_routing(
             "LLM routing failed after the previous connection was removed; {retry}"
         ));
     };
-    eprintln!(
+    term::print_warning(&format!(
         "{}: the new LLM routing failed; reconnecting the previous one.",
         agent.view.local.display_name
-    );
+    ));
     let previous_setup = RoutingOptions {
         agent: Some(&previous.agent_id),
         llm_config: None,
@@ -1991,7 +2008,7 @@ pub fn disconnect(target: Option<&str>, options: &DisconnectOptions) -> Result<(
             let connected: Vec<&AgentView> =
                 views.iter().filter(|view| view.is_connected()).collect();
             if connected.is_empty() {
-                println!("No coding agents are connected to Nasiko.");
+                term::print_info("No coding agents are connected to Nasiko.");
                 return Ok(());
             }
             let labels: Vec<String> = connected
@@ -2045,7 +2062,7 @@ pub fn disconnect(target: Option<&str>, options: &DisconnectOptions) -> Result<(
     }
     if !failures.is_empty() {
         for failure in &failures {
-            eprintln!("error: {failure}");
+            term::print_error(failure);
         }
         bail!(
             "{} coding agent(s) could not be disconnected",
@@ -2082,15 +2099,15 @@ fn choose_removal(
     let has_routing = view.routing.is_some() || view.routing_error.is_some();
     let has_reporting = view.local.reporting_installed;
     if !has_routing && !has_reporting {
-        println!("{name} is not connected to Nasiko.");
+        term::print_info(&format!("{name} is not connected to Nasiko."));
         return Ok(None);
     }
     let (routing, reporting) = if options.routing || options.reporting {
         if options.routing && !has_routing {
-            println!("{name}: LLM routing is not connected.");
+            term::print_info(&format!("{name}: LLM routing is not connected."));
         }
         if options.reporting && !has_reporting {
-            println!("{name}: session reporting is not set up.");
+            term::print_info(&format!("{name}: session reporting is not set up."));
         }
         (
             options.routing && has_routing,
@@ -2136,10 +2153,10 @@ fn default_removal(
         return (false, has_reporting);
     }
     if !has_routing && has_reporting {
-        println!(
-            "LLM routing is not connected. To remove session reporting: {} disconnect {id} --reporting",
-            cli_name()
-        );
+        term::print_info(&format!(
+            "LLM routing is not connected. To remove session reporting: {}",
+            term::cyan(&format!("{} disconnect {id} --reporting", cli_name()))
+        ));
     }
     (has_routing, false)
 }
@@ -2168,13 +2185,16 @@ pub fn status(target: Option<&str>) -> Result<()> {
             match view.router {
                 Some(router) => (router.status)()?,
                 None => {
+                    let value = coding_agent_router::status_value;
                     println!(
-                        "{} LLM routing:       not supported",
-                        view.local.display_name
+                        "{} LLM routing:       {}",
+                        view.local.display_name,
+                        value("not supported")
                     );
                     println!(
                         "{} session reporting: {}",
-                        view.local.display_name, view.local.reporting_status
+                        view.local.display_name,
+                        value(&view.local.reporting_status)
                     );
                 }
             }
@@ -2218,9 +2238,16 @@ pub fn print_overview() -> Result<()> {
     let pending = integration::pending_event_count()?;
     let cli = cli_name();
     if pending > 0 {
-        println!("\nQueued session events: {pending} (deliver now: {cli} agents sync)");
+        println!(
+            "\nQueued session events: {pending} (deliver now: {})",
+            term::cyan(&format!("{cli} agents sync"))
+        );
     }
-    println!("\nConnect: {cli} connect [agent] · Details: {cli} status <agent>");
+    println!(
+        "\nConnect: {} · Details: {}",
+        term::cyan(&format!("{cli} connect [agent]")),
+        term::cyan(&format!("{cli} status <agent>"))
+    );
     Ok(())
 }
 
@@ -2270,8 +2297,20 @@ fn agent_row(view: &AgentView) -> AgentRow {
     }
 }
 
+/// The agent table, its values colored on a terminal; [`agent_row`] itself stays plain text.
 fn print_agent_table(views: &[AgentView]) {
-    let rows: Vec<AgentRow> = views.iter().map(agent_row).collect();
+    let value = coding_agent_router::status_value;
+    let rows: Vec<AgentRow> = views
+        .iter()
+        .map(agent_row)
+        .map(|row| AgentRow {
+            agent: row.agent,
+            installed: value(&row.installed),
+            routing: value(&row.routing),
+            mcp: value(&row.mcp),
+            reporting: value(&row.reporting),
+        })
+        .collect();
     println!(
         "{}",
         Table::new(rows)

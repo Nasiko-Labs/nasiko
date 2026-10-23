@@ -101,6 +101,11 @@ pub fn dim(s: &str) -> String {
     paint(s, "2", use_color_stdout())
 }
 
+/// `s` in bold, for a heading printed to stdout.
+pub fn bold(s: &str) -> String {
+    paint(s, "1", use_color_stdout())
+}
+
 /// `s` in cyan, for text printed to stdout — used for next-step command hints.
 pub fn cyan(s: &str) -> String {
     paint(s, "36", use_color_stdout())
@@ -120,6 +125,11 @@ pub fn print_success(msg: &str) {
 /// Prints a cyan `ℹ msg` line to stdout.
 pub fn print_info(msg: &str) {
     println!("{} {msg}", paint("ℹ", "36", use_color_stdout()));
+}
+
+/// Like [`print_info`], on stderr — for a side note that must not mix into a command's output.
+pub fn print_note(msg: &str) {
+    eprintln!("{} {msg}", paint("ℹ", "36", use_color_stderr()));
 }
 
 /// Prints a yellow `⚠ msg` warning line to stderr.

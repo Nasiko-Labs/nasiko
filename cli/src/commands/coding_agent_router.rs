@@ -905,19 +905,20 @@ enum StatusTone {
 }
 
 /// Classifies the status words these commands print — [`auth_status`], settings/plugin
-/// state, MCP, and session reporting. Anything unrecognized stays plain.
+/// state, MCP, session reporting, and the cells of the `status` agent table. Anything
+/// unrecognized stays plain.
 fn status_tone(value: &str) -> StatusTone {
     match value {
-        "connected" | "authenticated" | "active" | "configured" => StatusTone::Good,
-        v if v.starts_with("active (") => StatusTone::Good,
-        "expired" | "not logged in" | "cluster missing" | "different user" | "missing" => {
-            StatusTone::Problem
-        }
+        "connected" | "authenticated" | "active" | "configured" | "on" | "yes" => StatusTone::Good,
+        v if v.starts_with("active (") || v.starts_with("on (") => StatusTone::Good,
+        "expired" | "not logged in" | "cluster missing" | "different user" | "missing"
+        | "state unreadable" | "?" => StatusTone::Problem,
         "cluster URL changed" | "changed since connect" | "unknown" | "needs reinstall" => {
             StatusTone::Attention
         }
         v if v.starts_with("stale") => StatusTone::Attention,
-        "not connected" | "not configured" | "not installed" => StatusTone::Absent,
+        "not connected" | "not configured" | "not installed" | "not supported" | "off" | "no"
+        | "-" | "detect-only" => StatusTone::Absent,
         _ => StatusTone::Plain,
     }
 }
@@ -1037,6 +1038,18 @@ mod tests {
             ("not connected", Absent),
             ("not configured", Absent),
             ("not installed", Absent),
+            // The `status` agent table's cells.
+            ("on", Good),
+            ("yes", Good),
+            ("on (cp)", Good),
+            ("on (no content)", Good),
+            ("state unreadable", Problem),
+            ("?", Problem),
+            ("not supported", Absent),
+            ("off", Absent),
+            ("no", Absent),
+            ("-", Absent),
+            ("detect-only", Absent),
             ("nasiko/router", Plain),
         ] {
             assert_eq!(status_tone(value), tone, "{value}");
