@@ -6,6 +6,7 @@
 //! mirrors.
 
 use anyhow::Result;
+use nasiko_utils::term;
 use serde_json::{Value, json};
 
 use crate::api::{Client, unwrap_data};
@@ -47,7 +48,10 @@ pub fn trace(
 
     let (exec_id, number) = queue_run(&client, &workflow_id, content)?;
     if !json_out {
-        println!("\n3. Running execution #{number} ({exec_id})");
+        println!(
+            "\n{}",
+            term::bold(&format!("3. Running execution #{number} ({exec_id})"))
+        );
     }
     let execution = poll_with_step_progress(&client, &exec_id, &steps, json_out)?;
 
@@ -124,10 +128,13 @@ fn print_plan(workflow: &Value, steps: &[PlannedStep], decompose_secs: f64) {
     let name = workflow.get("name").and_then(Value::as_str).unwrap_or("?");
     let id = workflow.get("id").and_then(Value::as_str).unwrap_or("?");
     println!(
-        "\n1. Decomposed into {} step(s) in {decompose_secs:.1}s",
-        steps.len()
+        "\n{}",
+        term::bold(&format!(
+            "1. Decomposed into {} step(s) in {decompose_secs:.1}s",
+            steps.len()
+        ))
     );
-    println!("\n2. Workflow '{name}' ({id})");
+    println!("\n{}", term::bold(&format!("2. Workflow '{name}' ({id})")));
     for step in steps {
         println!("     {}. [{}] {}", step.index, step.agent, step.task);
     }
@@ -233,11 +240,14 @@ fn report_finished_steps(
             .unwrap_or("?");
         let latency = step.get("latency_ms").and_then(Value::as_i64).unwrap_or(0);
         let tokens = step.get("tokens_used").and_then(Value::as_i64).unwrap_or(0);
-        println!("     {idx}. [{agent}] {status}  {latency}ms  {tokens} tokens");
+        println!(
+            "     {idx}. [{agent}] {}  {latency}ms  {tokens} tokens",
+            colored_status(status)
+        );
         if let Some(Value::String(error)) = step.get("error")
             && !error.is_empty()
         {
-            println!("        error: {error}");
+            println!("        {}", term::red(&format!("error: {error}")));
         }
     }
     printed
@@ -256,7 +266,11 @@ fn print_trace_summary(client: &Client, execution: &Value, exec_id: &str) {
         .get("tokens_used")
         .and_then(Value::as_i64)
         .unwrap_or(0);
-    println!("\n4. Result: {status}  {duration}ms  {tokens} orchestration tokens");
+    println!(
+        "\n{} {}  {duration}ms  {tokens} orchestration tokens",
+        term::bold("4. Result:"),
+        colored_status(status)
+    );
 
     print_agent_usage(client, exec_id);
 
@@ -268,7 +282,7 @@ fn print_trace_summary(client: &Client, execution: &Value, exec_id: &str) {
     if let Some(Value::String(error)) = execution.get("error")
         && !error.is_empty()
     {
-        println!("\n   error: {error}");
+        println!("\n   {}", term::red(&format!("error: {error}")));
     }
 }
 
@@ -325,13 +339,20 @@ fn print_agent_usage(client: &Client, exec_id: &str) {
 fn print_followups(client: &Client, workflow_id: &str, cleanup: bool) -> Result<()> {
     if cleanup {
         delete_workflow(client, workflow_id)?;
-        println!("\nDeleted workflow {workflow_id}");
+        println!();
+        term::print_success(&format!("Deleted workflow {workflow_id}"));
         return Ok(());
     }
     println!("\nWorkflow kept: {workflow_id}");
     let maf = maf_hint();
-    println!("   re-run:  {maf} workflow run {workflow_id} --wait");
-    println!("   delete:  {maf} workflow delete {workflow_id}");
+    println!(
+        "   re-run:  {}",
+        term::cyan(&format!("{maf} workflow run {workflow_id} --wait"))
+    );
+    println!(
+        "   delete:  {}",
+        term::cyan(&format!("{maf} workflow delete {workflow_id}"))
+    );
     Ok(())
 }
 
@@ -352,10 +373,10 @@ pub fn workflow_list(json_out: bool) -> Result<()> {
         return Ok(());
     }
     if workflows.is_empty() {
-        println!(
-            "No MAF workflows. Create one with `{} workflow create`.",
-            maf_hint()
-        );
+        term::print_info(&format!(
+            "No MAF workflows. Create one with `{}`.",
+            term::cyan(&format!("{} workflow create", maf_hint()))
+        ));
         return Ok(());
     }
     println!("Your MAF workflows:");
@@ -373,7 +394,10 @@ pub fn workflow_list(json_out: bool) -> Result<()> {
             .get("execution_count")
             .and_then(Value::as_i64)
             .unwrap_or(0);
-        println!("  {name:<28} {id}  {n_steps} step(s)  {exec_count} run(s)  [{status}]");
+        println!(
+            "  {name:<28} {id}  {n_steps} step(s)  {exec_count} run(s)  [{}]",
+            colored_status(status)
+        );
     }
     print_truncation_note(workflows.len(), total);
     Ok(())
@@ -430,7 +454,9 @@ fn print_created(resp: &Value, known_step_count: Option<usize>) -> Result<()> {
             .map(Vec::len)
             .unwrap_or(0)
     });
-    println!("Created workflow '{created_name}' ({id}) with {step_count} step(s)");
+    term::print_success(&format!(
+        "Created workflow '{created_name}' ({id}) with {step_count} step(s)"
+    ));
     Ok(())
 }
 
@@ -543,7 +569,7 @@ pick one way of changing steps"
     let resp: Value =
         unwrap_data(client.put_json(&format!("/maf/workflow/{id}"), &Value::Object(body))?)?;
     let updated_name = resp.get("name").and_then(Value::as_str).unwrap_or("?");
-    println!("Updated workflow '{updated_name}' ({id})");
+    term::print_success(&format!("Updated workflow '{updated_name}' ({id})"));
     Ok(())
 }
 
@@ -583,7 +609,7 @@ pub fn workflow_delete(workflow: &str, force: bool) -> Result<()> {
         }
     }
     client.delete(&format!("/maf/workflow/{id}"))?;
-    println!("Deleted workflow '{workflow}'");
+    term::print_success(&format!("Deleted workflow '{workflow}'"));
     Ok(())
 }
 
@@ -605,12 +631,14 @@ pub fn workflow_run(workflow: &str, wait: bool, content: Option<&str>) -> Result
         .get("execution_number")
         .and_then(Value::as_i64)
         .unwrap_or(0);
-    println!("Queued execution #{exec_number} ({exec_id}) for workflow '{workflow}'");
+    term::print_success(&format!(
+        "Queued execution #{exec_number} ({exec_id}) for workflow '{workflow}'"
+    ));
 
     if !wait {
         println!(
-            "Check status with: {} execution result {exec_id}",
-            maf_hint()
+            "Check status with: {}",
+            term::cyan(&format!("{} execution result {exec_id}", maf_hint()))
         );
         return Ok(());
     }
@@ -811,7 +839,7 @@ fn print_execution_list(executions: &[Value], total: usize, json_out: bool) -> R
         return Ok(());
     }
     if executions.is_empty() {
-        println!("No executions found.");
+        term::print_info("No executions found.");
         return Ok(());
     }
     for e in executions {
@@ -820,7 +848,7 @@ fn print_execution_list(executions: &[Value], total: usize, json_out: bool) -> R
             .and_then(Value::as_i64)
             .unwrap_or(0);
         let id = e.get("id").and_then(Value::as_str).unwrap_or("?");
-        let status = e.get("status").and_then(Value::as_str).unwrap_or("?");
+        let status = colored_status(e.get("status").and_then(Value::as_str).unwrap_or("?"));
         let tokens = e.get("tokens_used").and_then(Value::as_i64).unwrap_or(0);
         let workflow_name = e.get("workflow_name").and_then(Value::as_str);
         match workflow_name {
@@ -841,7 +869,10 @@ fn print_execution(e: &Value) {
     if e.get("workflow_name").is_some() {
         print_field("workflow_name", e.get("workflow_name"));
     }
-    print_field("status", e.get("status"));
+    match e.get("status").and_then(Value::as_str) {
+        Some(status) => println!("  {:<18} {}", "status", colored_status(status)),
+        None => print_field("status", e.get("status")),
+    }
     print_field("attempt_count", e.get("attempt_count"));
     print_field("max_attempts", e.get("max_attempts"));
     print_field("tokens_used", e.get("tokens_used"));
@@ -854,7 +885,7 @@ fn print_execution(e: &Value) {
     if let Some(Value::String(error)) = e.get("error")
         && !error.is_empty()
     {
-        println!("  error: {error}");
+        println!("  {}", term::red(&format!("error: {error}")));
     }
 }
 
@@ -952,10 +983,10 @@ fn poll_execution(client: &Client, exec_id: &str) -> Result<()> {
                 .and_then(|r| r.get("id"))
                 .and_then(Value::as_str);
             match pending_id {
-                Some(id) => println!(
-                    "  awaiting human input — resolve via POST /api/hitl/{id}/resolve (id: {id})"
-                ),
-                None => println!("  awaiting human input"),
+                Some(id) => term::print_info(&format!(
+                    "awaiting human input — resolve via POST /api/hitl/{id}/resolve (id: {id})"
+                )),
+                None => term::print_info("awaiting human input"),
             }
             return Ok(());
         }
@@ -998,6 +1029,17 @@ fn pending_hitl_pause(resp: &Value) -> Option<crate::hitl::HitlPause> {
             .and_then(Value::as_i64)
             .map(|i| format!("step {i}")),
     })
+}
+
+/// A workflow, execution or step status, colored on a terminal: green once it worked, red when
+/// it failed, yellow while it is still going. Anything else stays plain.
+fn colored_status(status: &str) -> String {
+    match status {
+        "success" | "completed" | "active" => term::green(status),
+        "failed" => term::red(status),
+        "pending" | "running" | nasiko_types::maf::AWAITING_HUMAN => term::yellow(status),
+        _ => status.to_string(),
+    }
 }
 
 /// Print `  <label>  <value>`, showing `-` for null/missing so the layout stays stable.
