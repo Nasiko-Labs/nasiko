@@ -293,16 +293,25 @@ fn snapshot_in(raw: &str, spool_dir: &Path) -> Result<SessionSnapshot> {
     // watermarks, not this event spool, decide whether export is pending.
     atomic_write(&path, serde_json::to_vec(&pending)?.as_slice())?;
 
-    // Only a completed turn is sent, so only then is it worth asking whether the thread is a subagent's.
+    // Only a completed turn is sent, so only then is it worth reading the rollout's meta: whether the
+    // thread is a subagent's, and which provider served it.
     Ok(match snapshot {
-        Some(snapshot) => SessionSnapshot {
-            parent: payload
+        Some(mut snapshot) => {
+            let meta = payload
                 .transcript_path
                 .as_deref()
-                .and_then(rollout_session_meta)
-                .and_then(|meta| spawned_by(&snapshot.session_id, &meta)),
-            ..snapshot
-        },
+                .and_then(rollout_session_meta);
+            if let Some(meta) = &meta {
+                let model_provider = meta["model_provider"].as_str();
+                for call in snapshot.turns.iter_mut().flat_map(|turn| &mut turn.calls) {
+                    call.provider = provider_for(&call.model, model_provider).to_string();
+                }
+            }
+            SessionSnapshot {
+                parent: meta.and_then(|meta| spawned_by(&snapshot.session_id, &meta)),
+                ..snapshot
+            }
+        }
         None => SessionSnapshot {
             session_id: payload.session_id,
             title: None,
@@ -506,7 +515,8 @@ fn apply_event(
             ended_at,
             calls: vec![LlmCall {
                 uuid: call_id,
-                provider: provider_for(&model).to_string(),
+                // Relabelled from the rollout's meta once the turn is complete (`snapshot_in`).
+                provider: provider_for(&model, None).to_string(),
                 model,
                 input_tokens: usage.fresh_input(),
                 output_tokens: usage.output,
@@ -594,7 +604,18 @@ pub(super) fn nonempty(value: Option<&str>) -> Option<String> {
         .map(str::to_string)
 }
 
-pub(super) fn provider_for(model: &str) -> &'static str {
+/// The provider label a call is priced under, which must be the label the platform's price book uses.
+///
+/// `model_provider` is the provider id Codex recorded in the rollout's `session_meta`. Its built-in
+/// ids say who was really called — the same model costs more on Bedrock than direct — so they win.
+/// `nasiko` (whose calls the server relabels from the router's own records) and user-defined ids
+/// carry nothing usable, so the model name decides.
+pub(super) fn provider_for(model: &str, model_provider: Option<&str>) -> &'static str {
+    match model_provider {
+        Some("amazon-bedrock") => return "aws-bedrock",
+        Some("openai") => return "openai",
+        _ => {}
+    }
     let model = model.to_ascii_lowercase();
     if model.starts_with("claude") {
         "anthropic"
@@ -893,6 +914,37 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn a_completed_turn_is_labelled_with_the_provider_codex_called() {
+        let dir = tempfile::tempdir().unwrap();
+        let rollout = dir.path().join("rollout.jsonl");
+        let meta = json!({"type": "session_meta",
+                          "payload": {"id": "s", "model_provider": "amazon-bedrock"}});
+        std::fs::write(&rollout, meta.to_string() + "\n").unwrap();
+        let event = |name: &str, extra: Value| {
+            let mut raw = json!({"session_id": "s", "turn_id": "t", "hook_event_name": name,
+                                 "model": "openai.gpt-6-astra", "transcript_path": rollout});
+            raw.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            raw.to_string()
+        };
+
+        snapshot_in(
+            &event("UserPromptSubmit", json!({"prompt": "go"})),
+            dir.path(),
+        )
+        .unwrap();
+        let stopped = snapshot_in(
+            &event("Stop", json!({"last_assistant_message": "done"})),
+            dir.path(),
+        )
+        .unwrap();
+
+        // The model name alone says OpenAI; Bedrock prices it differently.
+        assert_eq!(stopped.turns[0].calls[0].provider, "aws-bedrock");
+    }
+
+    #[test]
     fn a_thread_codex_started_itself_has_no_parent() {
         let meta = json!({"id": "t", "source": "cli", "thread_source": "user"});
         assert!(spawned_by("t", &meta).is_none());
@@ -1114,9 +1166,22 @@ not-json
 
     #[test]
     fn provider_defaults_to_openai_with_clear_vendor_exceptions() {
-        assert_eq!(provider_for("gpt-5-codex"), "openai");
-        assert_eq!(provider_for("custom"), "openai");
-        assert_eq!(provider_for("Claude-Sonnet"), "anthropic");
-        assert_eq!(provider_for("gemini-3"), "google");
+        assert_eq!(provider_for("gpt-5-codex", None), "openai");
+        assert_eq!(provider_for("custom", None), "openai");
+        assert_eq!(provider_for("Claude-Sonnet", None), "anthropic");
+        assert_eq!(provider_for("gemini-3", None), "google");
+    }
+
+    #[test]
+    fn codexs_built_in_providers_win_and_others_fall_back_to_the_model_name() {
+        assert_eq!(
+            provider_for("openai.gpt-6-astra", Some("amazon-bedrock")),
+            "aws-bedrock"
+        );
+        assert_eq!(provider_for("gpt-5.2", Some("openai")), "openai");
+        // The router's own records relabel `nasiko` calls server-side.
+        assert_eq!(provider_for("claude-opus-4-7", Some("nasiko")), "anthropic");
+        // A user-defined id says nothing about who serves it.
+        assert_eq!(provider_for("gpt-5.2", Some("openai-api")), "openai");
     }
 }
