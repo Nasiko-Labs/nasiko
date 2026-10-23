@@ -5,6 +5,7 @@ use anyhow::{Context, Result};
 use nasiko_utils::term;
 
 use crate::api::Client;
+use crate::commands::local_agents::agent_command;
 use crate::oci;
 use crate::util::parse_image_name_and_tag;
 use crate::version_prompt::{
@@ -91,7 +92,10 @@ fn push_from_directory(
     term::print_success(&format!(
         "Pushed {agent_name}:{version} (image: {image_ref})"
     ));
-    println!("  {}", term::cyan(&format!("→ nasiko deploy {dir}")));
+    println!(
+        "  {}",
+        term::cyan(&format!("→ {}", agent_command(&format!("deploy {dir}"))))
+    );
     Ok(())
 }
 
@@ -153,7 +157,10 @@ fn push_from_image(
     term::print_success(&format!(
         "Pushed {agent_name}:{version} (image: {image_ref})"
     ));
-    println!("  {}", term::cyan(&format!("→ nasiko deploy {image}")));
+    println!(
+        "  {}",
+        term::cyan(&format!("→ {}", agent_command(&format!("deploy {image}"))))
+    );
     Ok(())
 }
 

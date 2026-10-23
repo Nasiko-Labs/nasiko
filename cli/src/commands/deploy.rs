@@ -6,6 +6,7 @@ use anyhow::{Context, Result};
 use nasiko_utils::term;
 
 use crate::api::{Client, ContainerStatus, DeploySpec};
+use crate::commands::local_agents::agent_command;
 use crate::oci;
 use crate::util::parse_image_name_and_tag;
 use crate::version_prompt::{
@@ -181,8 +182,14 @@ fn print_deploy_success(
     }
     println!(
         "  {}   ·   {}",
-        term::cyan(&format!("→ nasiko logs {agent_name}")),
-        term::cyan(&format!("→ nasiko chat {agent_name}"))
+        term::cyan(&format!(
+            "→ {}",
+            agent_command(&format!("logs {agent_name}"))
+        )),
+        term::cyan(&format!(
+            "→ {}",
+            agent_command(&format!("chat {agent_name}"))
+        ))
     );
     if references_mcp_gateway {
         print_mcp_gateway_hint(agent_name);

@@ -13,6 +13,7 @@ use tabled::{Table, Tabled};
 use crate::api::{
     AgentRecord, AgentVersion, Client, DeletedAgent, UpdateQueued, UploadedAgent, unwrap_data,
 };
+use crate::commands::local_agents::agent_command;
 
 #[derive(Debug, Deserialize)]
 struct LogLine {
@@ -45,7 +46,11 @@ pub fn ps(json: bool, watch: bool) -> Result<()> {
 fn watch_ps(client: &Client) -> Result<()> {
     use std::io::IsTerminal;
     if !std::io::stdout().is_terminal() {
-        bail!("--watch needs an interactive terminal; use `nasiko ps` or `nasiko ps --json`");
+        bail!(
+            "--watch needs an interactive terminal; use `{}` or `{}`",
+            agent_command("ps"),
+            agent_command("ps --json")
+        );
     }
     loop {
         print!("\x1b[2J\x1b[H"); // clear the screen, cursor to the top-left
@@ -497,8 +502,8 @@ pub fn resolve_agent_id(name_or_id: &str) -> Result<String> {
                 .map(|name| format!(" — did you mean '{name}'?"))
                 .unwrap_or_default();
             bail!(
-                "no agent named '{name_or_id}' found on the active cluster{hint} \
-                 (run `nasiko agents ls`)"
+                "no agent named '{name_or_id}' found on the active cluster{hint} (run `{}`)",
+                agent_command("ps")
             )
         }
         many => bail!(

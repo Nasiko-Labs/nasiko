@@ -6,6 +6,7 @@ use anyhow::{Result, bail};
 use nasiko_utils::term;
 
 use crate::api::Client;
+use crate::commands::local_agents::agent_command;
 use crate::util::container_bin;
 use crate::version_prompt::{VersionContext, VersionFlags, resolve_deploy_version};
 
@@ -66,10 +67,16 @@ pub fn build_with_version_flags(
 
     println!();
     term::print_success(&format!("Built {resolved_tag}"));
-    println!("  {}", term::cyan(&format!("→ nasiko run {directory}")));
     println!(
         "  {}",
-        term::cyan(&format!("→ nasiko deploy {resolved_tag}"))
+        term::cyan(&format!("→ {}", agent_command(&format!("run {directory}"))))
+    );
+    println!(
+        "  {}",
+        term::cyan(&format!(
+            "→ {}",
+            agent_command(&format!("deploy {resolved_tag}"))
+        ))
     );
 
     Ok(())
