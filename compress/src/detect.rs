@@ -3,10 +3,6 @@
 
 use crate::content_type::ContentType;
 
-const LOG_LEVELS: [&str; 7] = [
-    "ERROR", "WARN", "WARNING", "INFO", "DEBUG", "TRACE", "FATAL",
-];
-
 /// Classify `text`. Never fails; unrecognised input is [`ContentType::Prose`].
 pub fn detect(text: &str) -> ContentType {
     let trimmed = text.trim();
@@ -79,9 +75,7 @@ fn is_log(trimmed: &str) -> bool {
 }
 
 pub(crate) fn has_log_level(line: &str) -> bool {
-    // Bounded scan: a level token appears in the prefix of a log line, never deep in a payload.
-    let prefix = crate::text::take_chars(line, 120);
-    LOG_LEVELS.iter().any(|lvl| prefix.contains(lvl))
+    crate::levels::has_level(line)
 }
 
 fn starts_with_timestamp(line: &str) -> bool {
@@ -300,6 +294,12 @@ mod tests {
     #[test]
     fn detects_log_by_bracketed_timestamp() {
         let s = "[12:00:01] a\n[12:00:02] b\n[12:00:03] c\n[12:00:04] d";
+        assert_eq!(detect(s), ContentType::Log);
+    }
+
+    #[test]
+    fn detects_log_by_bracketed_lower_case_levels() {
+        let s = "[error] a failed\n[notice] b\n[warn] c\n[info] d";
         assert_eq!(detect(s), ContentType::Log);
     }
 
