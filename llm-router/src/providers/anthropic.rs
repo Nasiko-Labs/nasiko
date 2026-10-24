@@ -387,14 +387,18 @@ fn to_anthropic_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Value {
             body["tools"] = json!(translated);
         }
     }
-    if let Some(mut choice) = req.tool_choice.as_ref().and_then(tool_choice_to_anthropic) {
-        // `disable_parallel_tool_use` is carried on the `tool_choice` object itself in
-        // the Anthropic API, not as a sibling request field.
-        if req.parallel_tool_calls == Some(false)
-            && let Value::Object(map) = &mut choice
-        {
+    let mut choice = req.tool_choice.as_ref().and_then(tool_choice_to_anthropic);
+    // `disable_parallel_tool_use` is carried on the `tool_choice` object itself in the
+    // Anthropic API, not as a sibling request field — so a bare `parallel_tool_calls:
+    // false` (no explicit tool_choice) needs a `tool_choice` synthesized to carry it,
+    // or the restriction is silently lost.
+    if req.parallel_tool_calls == Some(false) && body.get("tools").is_some() {
+        let choice = choice.get_or_insert_with(|| json!({ "type": "auto" }));
+        if let Value::Object(map) = choice {
             map.insert("disable_parallel_tool_use".to_string(), json!(true));
         }
+    }
+    if let Some(choice) = choice {
         body["tool_choice"] = choice;
     }
     body
@@ -464,11 +468,17 @@ fn tool_choice_to_anthropic(choice: &Value) -> Option<Value> {
         },
         Value::Object(o) => {
             if o.get("type").and_then(Value::as_str) == Some("allowed_tools") {
-                // Anthropic has no subset-restriction choice; a single allowed tool
-                // maps onto the named-tool choice it already supports. A multi-tool
-                // subset has no Anthropic equivalent and is left unmapped.
-                let names: Vec<&str> = o
-                    .get("allowed_tools")
+                // Anthropic's `{"type": "tool", "name": ...}` *forces* that tool to be
+                // called — the counterpart of OpenAI's `mode: "required"`, not
+                // `"auto"`. Only a single-tool `required` subset round-trips; a
+                // `mode: "auto"` subset would need Anthropic's declared `tools` list
+                // itself filtered down, which this function can't do, so it's left
+                // unmapped rather than wrongly turned mandatory. A multi-tool subset
+                // has no Anthropic equivalent either way.
+                let allowed_tools = o.get("allowed_tools");
+                let required = allowed_tools.and_then(|a| a.get("mode")).and_then(Value::as_str)
+                    == Some("required");
+                let names: Vec<&str> = allowed_tools
                     .and_then(|a| a.get("tools"))
                     .and_then(Value::as_array)
                     .map(|tools| {
@@ -479,7 +489,7 @@ fn tool_choice_to_anthropic(choice: &Value) -> Option<Value> {
                     })
                     .unwrap_or_default();
                 return match names.as_slice() {
-                    [name] => Some(json!({ "type": "tool", "name": name })),
+                    [name] if required => Some(json!({ "type": "tool", "name": name })),
                     _ => None,
                 };
             }
@@ -779,6 +789,40 @@ mod tests {
             body["tool_choice"],
             json!({ "type": "tool", "name": "tool_a", "disable_parallel_tool_use": true })
         );
+    }
+
+    #[test]
+    fn parallel_tool_calls_false_without_tool_choice_still_disables_it() {
+        // Regression: no explicit tool_choice must not silently drop the restriction.
+        let req: ChatRequest = serde_json::from_value(json!({
+            "messages": [{ "role": "user", "content": "hi" }],
+            "parallel_tool_calls": false,
+            "tools": [{ "type": "function", "function": { "name": "tool_a" } }]
+        }))
+        .unwrap();
+        let body = to_anthropic_request(&req, &resolved());
+        assert_eq!(
+            body["tool_choice"],
+            json!({ "type": "auto", "disable_parallel_tool_use": true })
+        );
+    }
+
+    #[test]
+    fn allowed_tools_auto_mode_is_not_forced_mandatory() {
+        // A single-tool subset in "auto" mode permits, but doesn't require, the call.
+        // Anthropic's named-tool choice would force the call, so it must stay unmapped
+        // rather than silently turning an optional tool into a mandatory one.
+        let req: ChatRequest = serde_json::from_value(json!({
+            "messages": [{ "role": "user", "content": "hi" }],
+            "tool_choice": {
+                "type": "allowed_tools",
+                "allowed_tools": { "mode": "auto", "tools": [{ "type": "function", "function": { "name": "tool_a" } }] }
+            },
+            "tools": [{ "type": "function", "function": { "name": "tool_a" } }]
+        }))
+        .unwrap();
+        let body = to_anthropic_request(&req, &resolved());
+        assert!(body.get("tool_choice").is_none());
     }
 
     #[test]

@@ -246,6 +246,11 @@ fn strip_param(req: &mut ChatRequest, cfg: &mut ResolvedConfig, param: &str) -> 
             cfg.max_tokens = None;
             had
         }
+        "parallel_tool_calls" => {
+            let had = req.parallel_tool_calls.is_some();
+            req.parallel_tool_calls = None;
+            had
+        }
         other => req.extra.remove(other).is_some(),
     }
 }

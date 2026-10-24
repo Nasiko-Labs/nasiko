@@ -89,6 +89,10 @@ pub fn parse_request(body: &Value) -> Result<ResponsesRequest, GatewayError> {
             messages,
             tools: (!tools.is_empty()).then_some(tools),
             tool_choice,
+            // `reject_top_level` above already rejects `parallel_tool_calls: false`
+            // outright (it's unsupported for cross-provider Responses), so by this
+            // point the only valid values are absent or `true` — the IR default.
+            parallel_tool_calls: None,
             temperature,
             max_tokens,
             stream: Some(stream),
@@ -495,6 +499,9 @@ fn collect_tool(
             name,
             description: custom_tool_description(tool, tool_kind),
             parameters: Some(parameters),
+            // `strict: true` is rejected above for function tools; `None` matches
+            // every value that can actually reach this point.
+            strict: None,
         },
         extra: Map::new(),
     });
