@@ -387,7 +387,14 @@ fn to_anthropic_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Value {
             body["tools"] = json!(translated);
         }
     }
-    if let Some(choice) = req.tool_choice.as_ref().and_then(tool_choice_to_anthropic) {
+    if let Some(mut choice) = req.tool_choice.as_ref().and_then(tool_choice_to_anthropic) {
+        // `disable_parallel_tool_use` is carried on the `tool_choice` object itself in
+        // the Anthropic API, not as a sibling request field.
+        if req.parallel_tool_calls == Some(false)
+            && let Value::Object(map) = &mut choice
+        {
+            map.insert("disable_parallel_tool_use".to_string(), json!(true));
+        }
         body["tool_choice"] = choice;
     }
     body
@@ -439,6 +446,9 @@ fn tool_to_anthropic(t: &ToolDef) -> Value {
     if let Some(desc) = &t.function.description {
         out["description"] = json!(desc);
     }
+    if let Some(strict) = t.function.strict {
+        out["strict"] = json!(strict);
+    }
     out
 }
 
@@ -446,14 +456,38 @@ fn tool_choice_to_anthropic(choice: &Value) -> Option<Value> {
     match choice {
         Value::String(s) => match s.as_str() {
             "required" => Some(json!({ "type": "any" })),
-            "none" => None, // Anthropic has no "none"; omit
+            // Anthropic Messages does define `{"type": "none"}`; it was previously
+            // treated as unrepresentable and dropped, which left every declared tool
+            // callable despite the caller asking for none of them.
+            "none" => Some(json!({ "type": "none" })),
             _ => Some(json!({ "type": "auto" })),
         },
-        Value::Object(o) => o
-            .get("function")
-            .and_then(|f| f.get("name"))
-            .and_then(Value::as_str)
-            .map(|name| json!({ "type": "tool", "name": name })),
+        Value::Object(o) => {
+            if o.get("type").and_then(Value::as_str) == Some("allowed_tools") {
+                // Anthropic has no subset-restriction choice; a single allowed tool
+                // maps onto the named-tool choice it already supports. A multi-tool
+                // subset has no Anthropic equivalent and is left unmapped.
+                let names: Vec<&str> = o
+                    .get("allowed_tools")
+                    .and_then(|a| a.get("tools"))
+                    .and_then(Value::as_array)
+                    .map(|tools| {
+                        tools
+                            .iter()
+                            .filter_map(|t| t.get("function")?.get("name")?.as_str())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                return match names.as_slice() {
+                    [name] => Some(json!({ "type": "tool", "name": name })),
+                    _ => None,
+                };
+            }
+            o.get("function")
+                .and_then(|f| f.get("name"))
+                .and_then(Value::as_str)
+                .map(|name| json!({ "type": "tool", "name": name }))
+        }
         _ => None,
     }
 }
@@ -701,6 +735,68 @@ mod tests {
                 .unwrap();
         let body = to_anthropic_request(&req, &resolved());
         assert_eq!(body["max_tokens"], DEFAULT_MAX_TOKENS);
+    }
+
+    #[test]
+    fn tool_choice_none_is_forwarded_not_dropped() {
+        // Regression: "none" used to be silently omitted, leaving every declared tool
+        // callable despite the caller explicitly asking for none of them.
+        let req: ChatRequest = serde_json::from_value(json!({
+            "messages": [{ "role": "user", "content": "hi" }],
+            "tool_choice": "none",
+            "tools": [{ "type": "function", "function": { "name": "tool_a" } }]
+        }))
+        .unwrap();
+        let body = to_anthropic_request(&req, &resolved());
+        assert_eq!(body["tool_choice"], json!({ "type": "none" }));
+    }
+
+    #[test]
+    fn strict_survives_tool_translation() {
+        let req: ChatRequest = serde_json::from_value(json!({
+            "messages": [{ "role": "user", "content": "hi" }],
+            "tools": [{
+                "type": "function",
+                "function": { "name": "tool_a", "strict": true, "parameters": { "type": "object" } }
+            }]
+        }))
+        .unwrap();
+        let body = to_anthropic_request(&req, &resolved());
+        assert_eq!(body["tools"][0]["strict"], true);
+    }
+
+    #[test]
+    fn parallel_tool_calls_false_sets_disable_parallel_tool_use() {
+        let req: ChatRequest = serde_json::from_value(json!({
+            "messages": [{ "role": "user", "content": "hi" }],
+            "parallel_tool_calls": false,
+            "tool_choice": { "type": "function", "function": { "name": "tool_a" } },
+            "tools": [{ "type": "function", "function": { "name": "tool_a" } }]
+        }))
+        .unwrap();
+        let body = to_anthropic_request(&req, &resolved());
+        assert_eq!(
+            body["tool_choice"],
+            json!({ "type": "tool", "name": "tool_a", "disable_parallel_tool_use": true })
+        );
+    }
+
+    #[test]
+    fn single_tool_allowed_tools_maps_to_named_choice() {
+        let req: ChatRequest = serde_json::from_value(json!({
+            "messages": [{ "role": "user", "content": "hi" }],
+            "tool_choice": {
+                "type": "allowed_tools",
+                "allowed_tools": { "mode": "required", "tools": [{ "type": "function", "function": { "name": "tool_a" } }] }
+            },
+            "tools": [
+                { "type": "function", "function": { "name": "tool_a" } },
+                { "type": "function", "function": { "name": "tool_b" } }
+            ]
+        }))
+        .unwrap();
+        let body = to_anthropic_request(&req, &resolved());
+        assert_eq!(body["tool_choice"], json!({ "type": "tool", "name": "tool_a" }));
     }
 
     #[test]

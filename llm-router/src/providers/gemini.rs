@@ -444,13 +444,39 @@ fn tool_choice_to_gemini(choice: &Value) -> Option<Value> {
             };
             Some(json!({ "functionCallingConfig": { "mode": mode } }))
         }
-        Value::Object(o) => o
-            .get("function")
-            .and_then(|f| f.get("name"))
-            .and_then(Value::as_str)
-            .map(|name| {
-                json!({ "functionCallingConfig": { "mode": "ANY", "allowedFunctionNames": [name] } })
-            }),
+        Value::Object(o) => {
+            if o.get("type").and_then(Value::as_str) == Some("allowed_tools") {
+                // Unlike Anthropic, Gemini's `allowedFunctionNames` takes a list, so a
+                // multi-tool subset round-trips exactly, not just a single tool.
+                let names: Vec<&str> = o
+                    .get("allowed_tools")
+                    .and_then(|a| a.get("tools"))
+                    .and_then(Value::as_array)
+                    .map(|tools| {
+                        tools
+                            .iter()
+                            .filter_map(|t| t.get("function")?.get("name")?.as_str())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if names.is_empty() {
+                    return None;
+                }
+                let mode = match o.get("allowed_tools").and_then(|a| a.get("mode")).and_then(Value::as_str) {
+                    Some("required") => "ANY",
+                    _ => "AUTO",
+                };
+                return Some(
+                    json!({ "functionCallingConfig": { "mode": mode, "allowedFunctionNames": names } }),
+                );
+            }
+            o.get("function")
+                .and_then(|f| f.get("name"))
+                .and_then(Value::as_str)
+                .map(|name| {
+                    json!({ "functionCallingConfig": { "mode": "ANY", "allowedFunctionNames": [name] } })
+                })
+        }
         _ => None,
     }
 }
@@ -615,6 +641,36 @@ mod tests {
         assert_eq!(decl["parameters"]["properties"]["text"]["type"], "string");
         assert_eq!(body["generationConfig"]["temperature"], 0.1);
         assert_eq!(body["generationConfig"]["maxOutputTokens"], 4000);
+    }
+
+    #[test]
+    fn allowed_tools_subset_maps_to_allowed_function_names() {
+        // Regression: an OpenAI `tool_choice.allowed_tools` subset used to fall through
+        // to no toolConfig at all, leaving every declared tool callable.
+        let req: ChatRequest = serde_json::from_value(json!({
+            "messages": [{ "role": "user", "content": "hi" }],
+            "tool_choice": {
+                "type": "allowed_tools",
+                "allowed_tools": {
+                    "mode": "required",
+                    "tools": [
+                        { "type": "function", "function": { "name": "tool_a" } },
+                        { "type": "function", "function": { "name": "tool_b" } }
+                    ]
+                }
+            },
+            "tools": [
+                { "type": "function", "function": { "name": "tool_a" } },
+                { "type": "function", "function": { "name": "tool_b" } }
+            ]
+        }))
+        .unwrap();
+        let body = to_gemini_request(&req, &resolved());
+        assert_eq!(body["toolConfig"]["functionCallingConfig"]["mode"], "ANY");
+        assert_eq!(
+            body["toolConfig"]["functionCallingConfig"]["allowedFunctionNames"],
+            json!(["tool_a", "tool_b"])
+        );
     }
 
     #[test]
