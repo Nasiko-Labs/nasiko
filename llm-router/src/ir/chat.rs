@@ -29,6 +29,11 @@ pub struct ChatRequest {
     pub tools: Option<Vec<ToolDef>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<Value>,
+    /// `false` disables parallel tool calls (OpenAI `parallel_tool_calls`; maps onto
+    /// Anthropic's `tool_choice.disable_parallel_tool_use`). Named here instead of
+    /// left in `extra` so providers can read it without re-parsing raw JSON.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parallel_tool_calls: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -102,6 +107,10 @@ pub struct FunctionDef {
     /// JSON Schema for the tool's arguments.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parameters: Option<Value>,
+    /// OpenAI structured-output strict mode. Carried through untouched for OpenAI-shaped
+    /// outbound requests; dropped by providers (e.g. Gemini) that have no equivalent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strict: Option<bool>,
 }
 
 /// An assistant tool call (OpenAI shape). `function.arguments` is a JSON **string**.

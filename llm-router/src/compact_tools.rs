@@ -105,7 +105,7 @@ pub(crate) fn apply(
     {
         return Err(Skipped::ToolChoice);
     }
-    if req.extra.get("parallel_tool_calls") == Some(&Value::Bool(false)) {
+    if req.parallel_tool_calls == Some(false) {
         return Err(Skipped::SequentialOnly);
     }
     if req
