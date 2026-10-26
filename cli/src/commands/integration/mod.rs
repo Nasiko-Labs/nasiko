@@ -1,32 +1,21 @@
 //! Detect local coding agents and report their sessions to Nasiko.
 //!
-//! [`local_agents`](super::local_agents) answers "what coding agents are on this machine" and
-//! drives setup. [`install`] registers an agent in the control plane (or reuses the one LLM
+//! [`local_agents`](super::local_agents) answers "what coding agents are on this machine", 
+//! "what A2A agents are running on this machine" and drives setup. 
+//! [`install`] registers an agent in the control plane (or reuses the one LLM
 //! routing already uses) and installs a hook that durably queues completed turns for delivery
 //! to the cluster and account reporting was installed for — not whichever is active later.
-//! `nasiko agents setup` installs every detected agent and imports the sessions they kept from
-//! before (`import`), newest first, reporting its progress to the server (`onboarding`).
 
+mod a2a;
 mod agents;
-mod background;
-mod backlog;
 mod catalog;
 mod control_plane;
-mod courier;
-mod import;
 mod launcher;
-mod ledger;
-mod locality;
 mod model;
-mod onboarding;
-mod pace;
 mod queue;
 mod report;
-mod sanitize;
-mod setup;
 mod state;
 mod sync;
-mod windows;
 
 use anyhow::{Context, Result, bail};
 use nasiko_utils::term;
@@ -34,14 +23,7 @@ use std::path::Path;
 
 use agents::Agent;
 use catalog::Support;
-use onboarding::AgentReport;
-use state::{AgentState, InstallationBinding, IntegrationState, decline_key};
-
-pub use locality::{
-    USAGE, chat_history_question, chat_history_warning, content_refused, content_unconfirmed,
-    is_local_cluster, privacy_unknown, synced, usage_only_notice,
-};
-pub use setup::SetupOptions;
+use state::{AgentState, InstallationBinding, IntegrationState};
 
 /// Options accepted by `nasiko agents install`.
 pub struct InstallOptions<'a> {
@@ -81,21 +63,13 @@ pub struct ReportingDestination {
     pub cluster_name: String,
     pub cluster_url: String,
     pub principal_id: String,
-    /// Whether this control plane keeps coding agents' chat history. For the active cluster
-    /// ([`Self::current`]) the server's own answer; for a recorded binding, whether it runs on
-    /// this machine (the fallback, not used to decide anything). `None` when the server couldn't
-    /// be asked: new reporting then gets usage only, and existing reporting keeps its setting.
-    pub accepts_chat_history: Option<bool>,
 }
 
 impl ReportingDestination {
     /// Where reporting would be bound if installed now: the active cluster and its login.
     pub fn current() -> Result<Self> {
         let binding = control_plane::installation_binding()?;
-        Ok(Self {
-            accepts_chat_history: locality::server_accepts_chat_history(&binding.cluster_url),
-            ..Self::from(&binding)
-        })
+        Ok(Self::from(&binding))
     }
 
     pub fn same_as(&self, other: &Self) -> bool {
@@ -123,7 +97,6 @@ impl From<&InstallationBinding> for ReportingDestination {
             cluster_name: binding.cluster_name.clone(),
             cluster_url: binding.cluster_url.clone(),
             principal_id: binding.principal_id.to_string(),
-            accepts_chat_history: Some(is_local_cluster(&binding.cluster_url)),
         }
     }
 }
@@ -131,8 +104,6 @@ impl From<&InstallationBinding> for ReportingDestination {
 /// Every catalogued coding agent with its detection and reporting state.
 pub fn local_agents() -> Result<Vec<LocalAgent>> {
     let settings = IntegrationState::load()?;
-    // Declines count on the cluster and account signed in now; elsewhere the agent is offered.
-    let here = current_decline_key();
     Ok(Agent::ALL
         .iter()
         .copied()
@@ -145,15 +116,12 @@ pub fn local_agents() -> Result<Vec<LocalAgent>> {
                 display_name: spec.display_name,
                 detected: detect(agent).is_present(),
                 reporting_supported: spec.support == Support::Instrumented,
-                reporting_declined: settings.is_declined(spec.id, here.as_deref()),
+                reporting_declined: settings.declined.contains(spec.id),
                 reporting_agent_name: state.map(|state| state.agent_name.clone()),
                 reporting_active: reporting.connected,
                 reporting_installed: state.is_some(),
                 reporting_status: reporting.status,
-                // Chat history only with the consent this CLI records (`chat_history`): a yes
-                // saved by an older one, under its default, doesn't count.
-                capture_content: state
-                    .is_some_and(|state| state.capture_content && state.chat_history),
+                capture_content: state.is_none_or(|state| state.capture_content),
                 hook_location: tildify(&agent.config_path()),
                 reporting_destination: state
                     .and_then(|state| state.binding.as_ref())
@@ -180,6 +148,146 @@ pub fn pending_event_count() -> Result<usize> {
 }
 
 // ─── Commands ────────────────────────────────────────────────────────────────
+
+/// Print every catalogued coding agent and every A2A agent running on this
+/// machine in one table: whether each is here, and whether it reports to Nasiko.
+pub fn status() -> Result<()> {
+    let settings = IntegrationState::load()?;
+    let discovery = a2a::discover_local(&local_control_plane_ports());
+
+    let mut rows: Vec<StatusRow> = Agent::ALL
+        .iter()
+        .copied()
+        .map(|agent| coding_agent_row(agent, &settings))
+        .collect();
+    rows.extend(discovery.agents.iter().map(a2a_agent_row));
+    print_status_table(&rows);
+
+    println!("\nInstall session reporting:  nasiko agents install <agent>");
+
+    for agent in &discovery.agents {
+        if let Err(errors) = &agent.card {
+            for error in errors {
+                eprintln!(
+                    "warning: {} serves an invalid agent card: {error}",
+                    agent.name
+                );
+            }
+        }
+    }
+    for warning in &discovery.warnings {
+        eprintln!("warning: {warning}\n  Retry with: nasiko agents discover");
+    }
+    Ok(())
+}
+
+/// One line of the `nasiko agents discover` table.
+struct StatusRow {
+    agent: String,
+    detected: bool,
+    connected: bool,
+    version: String,
+    config: String,
+    /// Where an A2A agent serves its agent card; `None` for coding agents.
+    a2a_card: Option<String>,
+}
+
+fn coding_agent_row(agent: Agent, settings: &IntegrationState) -> StatusRow {
+    let reporting = reporting_details(agent, settings);
+    StatusRow {
+        agent: agent.spec().id.to_string(),
+        detected: detect(agent).is_present(),
+        connected: reporting.connected,
+        version: reporting.version,
+        config: tildify(&agent.config_path()),
+        a2a_card: None,
+    }
+}
+
+/// A running A2A agent: found by its card, so always detected; not connected
+/// until registration of discovered agents exists. A2A CARD is the card URL as
+/// fetched from this machine — not the card's own `url`, which inside a Docker
+/// container names the unpublished port.
+fn a2a_agent_row(agent: &a2a::DiscoveredAgent) -> StatusRow {
+    StatusRow {
+        agent: agent.name.clone(),
+        detected: true,
+        connected: false,
+        version: agent.version().unwrap_or("-").to_string(),
+        config: "-".to_string(),
+        a2a_card: Some(agent.card_url.clone()),
+    }
+}
+
+fn print_status_table(rows: &[StatusRow]) {
+    print!("{}", format_status_table(rows));
+}
+
+/// With only coding agents the table is exactly what it has always been. A2A
+/// agents widen the AGENT column for long names and add an A2A CARD column,
+/// which needs CONFIG padded to a fixed width.
+fn format_status_table(rows: &[StatusRow]) -> String {
+    let width = rows
+        .iter()
+        .map(|row| row.agent.len())
+        .max()
+        .unwrap_or(0)
+        .max(10);
+    let has_cards = rows.iter().any(|row| row.a2a_card.is_some());
+    let config_width = rows
+        .iter()
+        .map(|row| row.config.len())
+        .max()
+        .unwrap_or(0)
+        .max("CONFIG".len());
+
+    let mut table = format!(
+        "{:<width$} {:<10} {:<11} {:<20} ",
+        "AGENT", "DETECTED", "CONNECTED", "VERSION"
+    );
+    let mut rule_len = 88 + width - 10;
+    if has_cards {
+        table.push_str(&format!("{:<config_width$} A2A CARD\n", "CONFIG"));
+        rule_len += config_width + 1;
+    } else {
+        table.push_str("CONFIG\n");
+    }
+    table.push_str(&format!("{}\n", "-".repeat(rule_len)));
+    for row in rows {
+        table.push_str(&format!(
+            "{:<width$} {:<10} {:<11} {:<20} ",
+            row.agent,
+            if row.detected { "yes" } else { "-" },
+            if row.connected { "yes" } else { "no" },
+            row.version,
+        ));
+        if has_cards {
+            let card = row.a2a_card.as_deref().unwrap_or("-");
+            table.push_str(&format!("{:<config_width$} {card}\n", row.config));
+        } else {
+            table.push_str(&format!("{}\n", row.config));
+        }
+    }
+    table
+}
+
+/// Port of the active cluster when it runs on this machine, so a local
+/// control plane is never reported as an agent.
+fn local_control_plane_ports() -> Vec<u16> {
+    let Ok((_, entry)) = crate::config::active_cluster() else {
+        return Vec::new();
+    };
+    local_port_of(&entry.url).into_iter().collect()
+}
+
+/// The port of a loopback URL (`http://localhost:8443` → 8443); `None` for
+/// remote hosts or URLs without an explicit port.
+fn local_port_of(url: &str) -> Option<u16> {
+    let authority = url.split("://").nth(1)?.split('/').next()?;
+    let (host, port) = authority.rsplit_once(':')?;
+    let is_loopback = matches!(host, "localhost" | "127.0.0.1" | "[::1]" | "0.0.0.0");
+    is_loopback.then(|| port.parse().ok()).flatten()
+}
 
 /// Register a coding agent with the control plane and install its hook.
 pub fn install(options: InstallOptions<'_>) -> Result<()> {
@@ -254,18 +362,12 @@ pub fn uninstall(agent_id: &str) -> Result<()> {
     let mut settings = IntegrationState::load()?;
     // The agent reporting was installed under — the routing agent or an account-scoped name —
     // not the catalog default.
-    let removed = settings.agents.remove(spec.id);
-    // Removing reporting is a no on the cluster it reported to: it isn't offered again there
-    // after the next login, and still is on any other.
-    let key = removed
-        .as_ref()
-        .and_then(|state| state.binding.as_ref())
-        .map(|binding| decline_key(&binding.cluster_url, &binding.principal_id.to_string()))
-        .or_else(current_decline_key);
-    if let Some(key) = key {
-        settings.decline(spec.id, &key);
-    }
-    let agent_name = removed.map_or_else(|| spec.agent_name.to_string(), |state| state.agent_name);
+    let agent_name = settings
+        .agents
+        .remove(spec.id)
+        .map_or_else(|| spec.agent_name.to_string(), |state| state.agent_name);
+    // Removing reporting is a no: it isn't offered again after the next login.
+    settings.declined.insert(spec.id.to_string());
     settings.save()?;
 
     term::print_success(&format!("Removed the {} hook.", spec.display_name));
@@ -280,203 +382,18 @@ pub fn report(agent_id: &str) -> Result<()> {
     report::run(resolve(agent_id)?)
 }
 
-/// Connects every detected coding agent to the active cluster and account, for `nasiko agents
-/// setup`. Running setup is the user's yes, so an agent declined at a login offer is connected
-/// too, and one reporting elsewhere is moved here with its content setting kept. One broken
-/// adapter must not block the others.
-pub(super) fn auto_install_detected() -> Result<()> {
-    let settings = IntegrationState::load()?;
-    let agents: Vec<_> = Agent::ALL
-        .iter()
-        .copied()
-        .filter(|agent| agent.spec().support == Support::Instrumented)
-        .filter(|agent| detect(*agent).is_present())
-        .collect();
-    if agents.is_empty() {
-        println!("No supported local coding agents detected.");
-        return Ok(());
-    }
-
-    let here = ReportingDestination::current()?;
-    let steps: Vec<_> = agents
-        .into_iter()
-        .map(|agent| (agent, setup_step(settings.get(agent.spec().id), &here)))
-        .collect();
-    // Asked only when its answer is used: agents already reporting here are kept as they are.
-    let chat_history = if steps.iter().any(|(_, step)| *step != SetupStep::Keep) {
-        chat_history_for_setup(&here)?
-    } else {
-        false
-    };
-    println!("\nConfiguring detected coding agents for this account...");
-    let mut installed = 0usize;
-    for (agent, step) in steps {
-        let spec = agent.spec();
-        let reconnect = format!(
-            "{} connect {} --no-routing --reporting",
-            crate::commands::local_agents::cli_name(),
-            spec.id
-        );
-        let capture_content = match step {
-            SetupStep::Keep => {
-                println!(
-                    "{} already reports sessions to {}.",
-                    spec.display_name, here.cluster_name
-                );
-                installed += 1;
-                continue;
-            }
-            SetupStep::Install => chat_history,
-            SetupStep::Move { from } => {
-                println!(
-                    "{} reports sessions to {from}; moving it to {}.",
-                    spec.display_name, here.cluster_name
-                );
-                // Asked for here, like a new install: an earlier yes was for another cluster.
-                chat_history
-            }
-        };
-        match install(InstallOptions {
-            agent_id: spec.id,
-            no_content: !capture_content,
-            agent_name: None,
-        }) {
-            Ok(()) => installed += 1,
-            Err(error) => term::print_warning(&format!(
-                "Automatic {} setup failed: {error:#}\n  Retry with: {}",
-                spec.display_name,
-                term::cyan_stderr(&reconnect)
-            )),
-        }
-    }
-    println!("Automatic coding-agent setup completed for {installed} agent(s).");
-    Ok(())
-}
-
-/// Whether `nasiko agents setup` syncs chat history for the agents it connects or moves here. A
-/// control plane that doesn't keep it never gets it (and is said so); one that does is asked
-/// once, on a terminal, defaulting to no. Without a terminal (the desktop app, a script), or when
-/// the control plane couldn't be asked, usage only.
-fn chat_history_for_setup(here: &ReportingDestination) -> Result<bool> {
-    use std::io::IsTerminal;
-    match here.accepts_chat_history {
-        Some(true) => {}
-        Some(false) => {
-            term::print_info(&usage_only_notice(&here.cluster_name));
-            return Ok(false);
-        }
-        None => {
-            term::print_warning(&privacy_unknown(&here.cluster_name));
-            return Ok(false);
-        }
-    }
-    if !std::io::stdin().is_terminal() {
-        return Ok(false);
-    }
-    term::print_warning(&chat_history_warning(&here.cluster_name));
-    Ok(
-        dialoguer::Confirm::with_theme(&dialoguer::theme::ColorfulTheme::default())
-            .with_prompt(chat_history_question(&here.cluster_name))
-            .default(false)
-            .interact()?,
-    )
-}
-
-/// What `nasiko agents setup` does with one detected agent's reporting.
-#[derive(Debug, PartialEq, Eq)]
-enum SetupStep {
-    /// Nothing installed yet: install it here.
-    Install,
-    /// Already reporting to this cluster and account.
-    Keep,
-    /// Reporting goes to `from` (another cluster or account, or none recorded): reinstall it
-    /// here, with this run's chat-history answer.
-    Move { from: String },
-}
-
-/// Running setup is the user's yes, so reporting that goes elsewhere is moved to `here`, the
-/// cluster and account setup runs for.
-fn setup_step(state: Option<&AgentState>, here: &ReportingDestination) -> SetupStep {
-    let Some(state) = state else {
-        return SetupStep::Install;
-    };
-    let from = match &state.binding {
-        Some(binding) if ReportingDestination::from(binding).same_as(here) => {
-            return SetupStep::Keep;
-        }
-        Some(binding) => binding.cluster_name.clone(),
-        None => "an older install with no cluster recorded".to_string(),
-    };
-    SetupStep::Move { from }
-}
-
-/// `nasiko agents sync` — see [`setup::sync`].
-pub fn sync(retry_rejected: bool) -> Result<()> {
-    setup::sync(retry_rejected)
-}
-
-/// `nasiko agents setup` — see [`setup`].
-pub fn setup(options: SetupOptions) -> Result<()> {
-    setup::setup(options)
-}
-
-/// `nasiko agents import` — see [`setup`].
-pub fn import() -> Result<()> {
-    setup::import()
-}
-
-/// Imports the connected agents' past sessions in the background, each to where it reports now —
-/// see [`setup::start_background_import`].
-pub fn import_in_background() -> Result<()> {
-    setup::start_background_import()
-}
-
-/// `nasiko agents status` — see [`setup::status`].
-pub fn import_status() -> Result<()> {
-    setup::status()
-}
-
-/// `nasiko agents import-worker`, which `nasiko agents setup` starts in the background — see
-/// [`setup::import_worker`].
-pub fn import_worker() -> Result<()> {
-    setup::import_worker()
-}
-
-/// Every catalogued agent as a sync-report row: on this computer, and connected, as they stand now.
-fn agent_rows() -> Vec<AgentReport> {
-    let settings = IntegrationState::load().unwrap_or_default();
-    Agent::ALL
-        .iter()
-        .copied()
-        .map(|agent| {
-            onboarding::agent_row(
-                agent,
-                detect(agent).is_present(),
-                agent.is_instrumented() && settings.get(agent.spec().id).is_some(),
-            )
-        })
-        .collect()
+pub fn sync() -> Result<()> {
+    sync::run()
 }
 
 /// Remembers that the user said no when reporting was offered for these agents after logging
-/// in, so it isn't offered again on this cluster and account. Without a login to record it
-/// against, nothing is recorded (the offer is only made to a signed-in user).
+/// in, so it isn't offered again.
 pub fn record_declined(agent_ids: &[&str]) -> Result<()> {
-    let Some(key) = current_decline_key() else {
-        return Ok(());
-    };
     let mut settings = IntegrationState::load()?;
-    for id in agent_ids {
-        settings.decline(id, &key);
-    }
+    settings
+        .declined
+        .extend(agent_ids.iter().map(|id| id.to_string()));
     settings.save()
-}
-
-/// The cluster and account a decline made now is kept under, if anyone is signed in.
-fn current_decline_key() -> Option<String> {
-    control_plane::installation_binding()
-        .ok()
-        .map(|binding| decline_key(&binding.cluster_url, &binding.principal_id.to_string()))
 }
 
 /// Rewrites every detected agent's outdated reporting hook in place, so a hook fix reaches
@@ -557,15 +474,7 @@ fn refresh_hook(agent: Agent, state: &AgentState, binding: &InstallationBinding)
     let artifacts = agent.install()?;
     persist_installed_artifacts(
         artifacts,
-        // A yes saved without this CLI's recorded consent is dropped here, not carried on.
-        || {
-            save_agent_state(
-                agent,
-                &state.agent_name,
-                state.capture_content && state.chat_history,
-                binding,
-            )
-        },
+        || save_agent_state(agent, &state.agent_name, state.capture_content, binding),
         || agent.uninstall(),
     )?;
     Ok(())
@@ -741,14 +650,12 @@ fn save_agent_state(
 ) -> Result<()> {
     let spec = agent.spec();
     let mut settings = IntegrationState::load()?;
-    settings.clear_declines(spec.id);
+    settings.declined.remove(spec.id);
     settings.agents.insert(
         spec.id.to_string(),
         AgentState {
             agent_name: agent_name.to_string(),
             capture_content,
-            // Saved only by a run that asked (or read --content) for a cluster that keeps it.
-            chat_history: capture_content,
             hook_version: agent.install_version().expect("instrumented adapter"),
             binding: Some(binding.clone()),
         },
@@ -793,6 +700,86 @@ mod tests {
 
     fn claude() -> Agent {
         catalog::find("claude").unwrap()
+    }
+
+    #[test]
+    fn a2a_agents_join_the_coding_agent_table_as_detected_and_not_connected() {
+        let agent = a2a::DiscoveredAgent {
+            name: "research-crew".into(),
+            card_url: "http://127.0.0.1:8000/.well-known/agent-card.json".into(),
+            card: Err(Vec::new()),
+        };
+
+        let row = a2a_agent_row(&agent);
+
+        assert!(row.detected);
+        assert!(!row.connected);
+        assert_eq!(row.agent, "research-crew");
+        assert_eq!(row.config, "-");
+        assert_eq!(
+            row.a2a_card.as_deref(),
+            Some("http://127.0.0.1:8000/.well-known/agent-card.json")
+        );
+    }
+
+    fn coding_row(agent: &str, config: &str) -> StatusRow {
+        StatusRow {
+            agent: agent.into(),
+            detected: true,
+            connected: false,
+            version: "-".into(),
+            config: config.into(),
+            a2a_card: None,
+        }
+    }
+
+    #[test]
+    fn the_table_is_unchanged_without_a2a_agents() {
+        let table = format_status_table(&[
+            coding_row("claude", "~/.claude"),
+            coding_row("opencode", "~/.config/opencode"),
+        ]);
+
+        assert_eq!(
+            table,
+            format!(
+                "AGENT      DETECTED   CONNECTED   VERSION              CONFIG\n{}\n\
+                 claude     yes        no          -                    ~/.claude\n\
+                 opencode   yes        no          -                    ~/.config/opencode\n",
+                "-".repeat(88)
+            )
+        );
+    }
+
+    #[test]
+    fn a2a_agents_add_an_a2a_card_column_after_config() {
+        let mut crew = coding_row("research-crew", "-");
+        crew.a2a_card = Some("http://127.0.0.1:8765/.well-known/agent-card.json".into());
+
+        let table = format_status_table(&[coding_row("claude", "~/.claude"), crew]);
+        let lines: Vec<&str> = table.lines().collect();
+
+        assert_eq!(
+            lines[0],
+            "AGENT         DETECTED   CONNECTED   VERSION              CONFIG    A2A CARD"
+        );
+        assert_eq!(
+            lines[2],
+            "claude        yes        no          -                    ~/.claude -"
+        );
+        assert_eq!(
+            lines[3],
+            "research-crew yes        no          -                    -         \
+             http://127.0.0.1:8765/.well-known/agent-card.json"
+        );
+    }
+
+    #[test]
+    fn only_loopback_cluster_urls_exclude_a_local_port() {
+        assert_eq!(local_port_of("http://localhost:8443"), Some(8443));
+        assert_eq!(local_port_of("http://127.0.0.1:8080/api"), Some(8080));
+        assert_eq!(local_port_of("https://cloud.nasiko.dev:443"), None);
+        assert_eq!(local_port_of("http://localhost"), None);
     }
 
     #[test]
@@ -872,7 +859,6 @@ mod tests {
         let state = AgentState {
             agent_name: "claude-code".into(),
             capture_content: true,
-            chat_history: true,
             hook_version: expected.saturating_sub(1),
             binding: None,
         };
@@ -883,7 +869,6 @@ mod tests {
         AgentState {
             agent_name: "user-opencode".into(),
             capture_content: true,
-            chat_history: true,
             hook_version,
             binding: Some(InstallationBinding {
                 cluster_name: "cp".into(),
@@ -891,47 +876,6 @@ mod tests {
                 principal_id: uuid::Uuid::nil(),
             }),
         }
-    }
-
-    fn signed_in_to(cluster_name: &str, cluster_url: &str) -> ReportingDestination {
-        ReportingDestination {
-            cluster_name: cluster_name.into(),
-            cluster_url: cluster_url.into(),
-            principal_id: uuid::Uuid::nil().to_string(),
-            accepts_chat_history: Some(false),
-        }
-    }
-
-    #[test]
-    fn setup_moves_reporting_bound_to_another_cluster_here() {
-        let state = bound_state(7);
-
-        assert_eq!(
-            setup_step(None, &signed_in_to("cp", "https://cp.example")),
-            SetupStep::Install
-        );
-        assert_eq!(
-            setup_step(Some(&state), &signed_in_to("cp", "https://cp.example")),
-            SetupStep::Keep
-        );
-        assert_eq!(
-            setup_step(Some(&state), &signed_in_to("cp2", "https://cp2.example")),
-            SetupStep::Move { from: "cp".into() }
-        );
-    }
-
-    #[test]
-    fn setup_moves_an_older_install_with_no_cluster_recorded() {
-        let mut state = bound_state(7);
-        state.binding = None;
-        state.capture_content = false;
-
-        assert_eq!(
-            setup_step(Some(&state), &signed_in_to("cp", "https://cp.example")),
-            SetupStep::Move {
-                from: "an older install with no cluster recorded".into(),
-            }
-        );
     }
 
     #[test]
