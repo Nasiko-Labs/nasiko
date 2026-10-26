@@ -119,6 +119,12 @@ export const errorCopy = {
       "The agent may already have acted on your answer, so sending the message again could repeat it.",
     action: "Refresh status, or send a new message.",
   },
+  // The agent lost the paused task (hitl resume_status agent_lost_task): nothing ran, asking again is safe.
+  routedAgentLostTask: {
+    problem: "Your answer could not be delivered.",
+    cause: "The agent no longer had the paused task, so it never received your answer.",
+    action: "Send your message again to start over.",
+  },
   routedMayStillArrive: {
     problem: "The reply may still be arriving.",
     cause: "OpenRuntime couldn't replay the resumed reply.",

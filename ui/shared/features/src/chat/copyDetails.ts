@@ -22,6 +22,7 @@ const ANCHOR: Partial<Record<ErrorKey, string>> = {
   routedFailed: "failed",
   tooManyLive: "cap",
   routedAnsweredNoReply: "answered",
+  routedAgentLostTask: "answered",
 };
 
 export const docAnchor = (key: ErrorKey) => `docs/chat.md#errors-${ANCHOR[key] ?? "failed"}`;

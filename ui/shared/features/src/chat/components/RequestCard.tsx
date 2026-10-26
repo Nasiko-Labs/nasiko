@@ -40,6 +40,29 @@ export interface RequestActions {
   onDone: (req: HitlDto) => void;
 }
 
+/**
+ * A coding tool approval's `action` (server: `coding/permission.rs` `permission_action`)
+ * is a normalized summary of what the tool will do — a file diff, a shell command,
+ * or raw input — so the approver sees the effect, not just the tool name. Returns the
+ * text to show in a code block, or `null` when the question carries none (e.g. an
+ * orchestrator MCP approval, which has no arguments).
+ */
+function actionPreview(action: unknown): string | null {
+  if (!action || typeof action !== "object") return null;
+  const a = action as Record<string, unknown>;
+  if (a.type === "diff" && typeof a.diff === "string") return a.diff;
+  if (a.type === "edit") {
+    const oldText = typeof a.oldText === "string" ? a.oldText : "";
+    const newText = typeof a.newText === "string" ? a.newText : "";
+    const minus = oldText ? oldText.split("\n").map((l) => `- ${l}`) : [];
+    const plus = newText.split("\n").map((l) => `+ ${l}`);
+    return [...minus, ...plus].join("\n");
+  }
+  if (a.type === "command" && typeof a.command === "string") return a.command;
+  if (a.type === "raw" && a.value !== undefined) return JSON.stringify(a.value, null, 2);
+  return null;
+}
+
 export function RequestCard({
   request,
   frame,
@@ -188,8 +211,18 @@ export function RequestCard({
                 {requestedBy}
                 {request?.created_at ? ` · ${fmtUtcTime(request.created_at)} UTC` : ""}
               </div>
-              {/* quirk: §10.5 — tool approvals carry no arguments. */}
-              <p className="text-xs text-muted-foreground">{copy.request.noArguments}</p>
+              {(() => {
+                // Coding approvals carry the action (file diff / shell command) so
+                // the approver can judge it; orchestrator MCP approvals carry none.
+                const preview = actionPreview(question?.action);
+                return preview ? (
+                  <pre className="max-h-48 overflow-auto rounded-md border bg-muted/40 p-2 font-mono text-xs whitespace-pre-wrap">
+                    {preview}
+                  </pre>
+                ) : (
+                  <p className="text-xs text-muted-foreground">{copy.request.noArguments}</p>
+                );
+              })()}
             </>
           ) : (
             <>

@@ -75,14 +75,25 @@ export interface ChatMessage {
 
 export type HitlKind = "input_required" | "auth_required" | "tool_approval";
 type HitlStatus = "pending" | "resolved" | "rejected" | "expired" | "canceled";
-type ResumeStatus = "not_started" | "completed" | "failed" | "delivery_outcome_unknown" | "skipped";
+type ResumeStatus =
+  | "not_started"
+  | "completed"
+  | "failed"
+  | "delivery_outcome_unknown"
+  | "skipped"
+  | "agent_lost_task";
 
 export interface HitlOption {
   label: string;
   description?: string | undefined;
 }
 
-/** `question` JSON; tool approvals carry `connector_id`/`tool_name`, never arguments (protocol.rs:700-730). */
+/**
+ * `question` JSON. Orchestrator MCP tool approvals carry `connector_id`/`tool_name`
+ * and no arguments (protocol.rs:700-730); coding-agent approvals (`acp_tool_permission`)
+ * also carry `action` — a normalized summary of the file diff / shell command the tool
+ * will run (server: `coding/permission.rs` `permission_action`).
+ */
 interface HitlQuestion {
   message?: string | undefined;
   header?: string | undefined;
@@ -94,6 +105,8 @@ interface HitlQuestion {
   expected_input?: string | undefined;
   connector_id?: string | undefined;
   tool_name?: string | undefined;
+  /** Coding tool approval: what the tool will do (diff / command / raw). */
+  action?: unknown;
   [key: string]: unknown;
 }
 

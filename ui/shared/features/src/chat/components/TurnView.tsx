@@ -600,7 +600,12 @@ function TurnViewBody({
         />
       ) : resume ? (
         <ErrorNotice
-          error={{ key: "routedAnsweredNoReply", certainty: "unknown" } as ChatError}
+          error={
+            {
+              key: resume.agentLostTask ? "routedAgentLostTask" : "routedAnsweredNoReply",
+              certainty: "unknown",
+            } as ChatError
+          }
           actions={[{ label: copy.refreshStatus, onClick: handlers.refresh, primary: true }]}
         />
       ) : null}

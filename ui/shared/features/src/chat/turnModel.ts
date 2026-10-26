@@ -110,7 +110,12 @@ export function replyStatus(
   const newest = after[after.length - 1];
   if (newest && (newest.status === "canceled" || newest.status === "expired")) return null;
   // The server gave up resuming it (hitl resume_status): no reply is coming, so no checking wait.
-  if (newest && (newest.resume_status === "failed" || newest.resume_status === "skipped"))
+  if (
+    newest &&
+    (newest.resume_status === "failed" ||
+      newest.resume_status === "skipped" ||
+      newest.resume_status === "agent_lost_task")
+  )
     return "unconfirmed";
   // A resolved (or rejected) request resumes the agent and the server saves its reply;
   // the clock starts at resolution.
@@ -133,13 +138,16 @@ export function answeredResume(
   turn: DisplayTurn | undefined,
   now: number,
   opts: { seenEnded: boolean; firstSeen(id: string, now: number): number },
-): { mayArrive: boolean } | null {
+): { mayArrive: boolean; agentLostTask?: true } | null {
   if (!turn?.user || turn.replies.length || turn.requests.some((r) => r.status === "pending"))
     return null;
   const answered = turn.requests.filter((r) => r.status === "resolved" || r.status === "rejected");
   if (!answered.length) return null;
   // Only the newest answer can still reply: an older one's continuation already ran (it asked again).
   const r = answered.reduce((a, b) => (at(b.created_at) >= at(a.created_at) ? b : a));
+  // `agent_lost_task`: the agent no longer held the paused task, so the answer reached nothing and
+  // no reply is coming. It is safe to ask again (nothing ran), unlike an unknown outcome.
+  if (r.resume_status === "agent_lost_task") return { mayArrive: false, agentLostTask: true };
   // `completed` is set when delivery succeeds, anywhere in the retry window, before the
   // orchestrator's turn runs: it gets the whole window too (hitl/mod.rs, cb3aaf0c).
   const wait =

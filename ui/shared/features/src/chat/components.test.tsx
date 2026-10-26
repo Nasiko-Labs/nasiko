@@ -160,6 +160,35 @@ describe("RequestCard", () => {
     expect(a.resolve).toHaveBeenCalledWith("h1", { decision: "approve", scope: "session" });
   });
 
+  it("tool approval shows the file diff a coding agent will write", async () => {
+    const a = actions();
+    await renderInApp(
+      <RequestCard
+        request={request({
+          kind: "tool_approval",
+          question: {
+            tool_name: "Edit /workspace/ganesh.txt",
+            action: {
+              type: "diff",
+              path: "/workspace/ganesh.txt",
+              diff: "@@ -0,0 +1 @@\n+hello world\n",
+            },
+          },
+          allowed_actions: ["approve", "reject", "cancel"],
+        })}
+        agentName="opencode"
+        actions={a}
+      />,
+    );
+    // The heading is the tool name, and the diff (the effect) is shown — not the
+    // "no arguments" fallback.
+    expect(screen.getByText("Edit /workspace/ganesh.txt")).toBeInTheDocument();
+    expect(screen.getByText(/\+hello world/)).toBeInTheDocument();
+    expect(
+      screen.queryByText("This server doesn't send the tool's arguments."),
+    ).not.toBeInTheDocument();
+  });
+
   it("sign-in is a real link (opens inside the click), names its host, then confirms", async () => {
     const a = actions({ resolve: vi.fn(async () => request({ kind: "auth_required" })) });
     await renderInApp(

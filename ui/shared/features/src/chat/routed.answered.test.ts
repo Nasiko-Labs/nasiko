@@ -117,6 +117,19 @@ describe("answeredResume", () => {
     });
   });
 
+  it("a lost task never waits and is flagged so its own message shows (the agent lost the paused task)", () => {
+    const lost = req({ resume_status: "agent_lost_task" });
+    expect(answeredResume(turn([lost]), T0 + 1000, opts)).toEqual({
+      mayArrive: false,
+      agentLostTask: true,
+    });
+    // Not stretched by the delivery window either, unlike an unknown outcome.
+    expect(answeredResume(turn([lost]), T0, opts)).toEqual({
+      mayArrive: false,
+      agentLostTask: true,
+    });
+  });
+
   it("an attempt this tab saw end with nothing does not wait", () => {
     expect(answeredResume(turn([req({})]), T0 + 1000, { ...opts, seenEnded: true })).toEqual({
       mayArrive: false,
@@ -160,6 +173,13 @@ describe("replyStatus after a failed resume", () => {
     expect(
       replyStatus(
         [turn([req({ resume_status: "skipped" })])],
+        T0 + 1000,
+        tuning.LOST_REPLY_AFTER_MS,
+      ),
+    ).toBe("unconfirmed");
+    expect(
+      replyStatus(
+        [turn([req({ resume_status: "agent_lost_task" })])],
         T0 + 1000,
         tuning.LOST_REPLY_AFTER_MS,
       ),
