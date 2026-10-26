@@ -331,22 +331,65 @@ async fn dispatch(state: &AppState, token: &str, headers: &HeaderMap, body: Valu
     let traceparent: Option<&str> = synthesized_tp.as_deref().or(header_traceparent);
 
     let started = std::time::Instant::now();
-    let Some(result) = protocol::handle_request(
+
+    // For a `tools/call`, wrap the execution in an exported `execute_tool` span
+    // so the invocation surfaces in the trace timeline's Tool lane — the
+    // server-side counterpart of the coding-agent path, which synthesises the
+    // same span shape (`gen_ai.operation.name = "execute_tool"` + `tool.name`)
+    // from its ACP turn report (`coding_agent_otlp.rs`). The MCP path never
+    // emitted a span, so a tool call was recorded only as a `token_usage` row,
+    // never in Tempo. Only a real tool invocation gets a span —
+    // `tools/list`/`initialize`/`ping` do not. Model/provider are deliberately
+    // left unset so the read-path classifier buckets it as a tool, not an LLM.
+    // The span joins the caller's trace via the inbound traceparent (the same
+    // one `handle_request` forwards), so it nests under the agent-call subtree
+    // beside the LLM spans; with no traceparent (owner-fallback coding-agent
+    // row) it is a local child instead.
+    let tool_span = (method == "tools/call").then(|| {
+        let span = tracing::info_span!(
+            "execute_tool",
+            otel.kind = "client",
+            otel.status_code = tracing::field::Empty,
+            gen_ai.operation.name = "execute_tool",
+            gen_ai.agent.id = %agent_id,
+            tool.name = %tool_name,
+            tool.success = tracing::field::Empty,
+        );
+        if let Some(cx) = traceparent.and_then(crate::telemetry::remote_context_from_traceparent) {
+            use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+            span.set_parent(cx);
+        }
+        span
+    });
+
+    let request = protocol::handle_request(
         &state.mcp,
         user_id,
         agent_id,
         &body,
         traceparent,
         verified_flow_id.as_deref(),
-    )
-    .await
-    else {
+    );
+    let result = match &tool_span {
+        Some(span) => {
+            use tracing::Instrument as _;
+            request.instrument(span.clone()).await
+        }
+        None => request.await,
+    };
+    let Some(result) = result else {
         return (StatusCode::ACCEPTED, Json(json!({}))).into_response();
     };
 
     if method == "tools/call" {
         let latency_ms = started.elapsed().as_millis().min(i32::MAX as u128) as i32;
         let success = result.get("error").is_none();
+        if let Some(span) = &tool_span {
+            span.record("tool.success", success);
+            if !success {
+                span.record("otel.status_code", "ERROR");
+            }
+        }
         record_tool_usage(
             state, user_id, agent_id, &tool_name, latency_ms, success, None,
         );
