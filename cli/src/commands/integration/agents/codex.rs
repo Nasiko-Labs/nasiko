@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::super::catalog::{self, AgentSpec, Support};
 use super::super::launcher;
-use super::super::model::{LlmCall, SessionSnapshot, ToolCall, Turn, subagent_parent};
+use super::super::model::{LlmCall, SessionSnapshot, ToolCall, Turn};
 use super::super::state;
 
 pub const INSTALL_VERSION: u32 = 2;
@@ -74,28 +74,11 @@ struct ToolCallRecord {
     status: CodingAgentToolCallStatus,
 }
 
-/// Usage as Codex reports it: `input` is the whole prompt, so it already contains
-/// `cache_read` and `cache_write` (`input + output = total` in every rollout).
-/// [`TokenUsage::fresh_input`] is the uncached part the platform's prices expect.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub(super) struct TokenUsage {
-    pub(super) input: u64,
-    pub(super) output: u64,
-    pub(super) cache_read: u64,
-    /// Absent from rollouts (and spooled turns) written before Codex reported it.
-    #[serde(default)]
-    pub(super) cache_write: u64,
-}
-
-impl TokenUsage {
-    /// The prompt tokens neither read from nor written to the cache. The platform
-    /// prices the three apart, so sending Codex's inclusive `input` would charge
-    /// every cached token twice.
-    pub(super) fn fresh_input(&self) -> u64 {
-        self.input
-            .saturating_sub(self.cache_read)
-            .saturating_sub(self.cache_write)
-    }
+struct TokenUsage {
+    input: u64,
+    output: u64,
+    cache_read: u64,
 }
 
 pub fn config_path() -> PathBuf {
@@ -293,62 +276,11 @@ fn snapshot_in(raw: &str, spool_dir: &Path) -> Result<SessionSnapshot> {
     // watermarks, not this event spool, decide whether export is pending.
     atomic_write(&path, serde_json::to_vec(&pending)?.as_slice())?;
 
-    // Only a completed turn is sent, so only then is it worth reading the rollout's meta: whether the
-    // thread is a subagent's, and which provider served it.
-    Ok(match snapshot {
-        Some(mut snapshot) => {
-            let meta = payload
-                .transcript_path
-                .as_deref()
-                .and_then(rollout_session_meta);
-            if let Some(meta) = &meta {
-                let model_provider = meta["model_provider"].as_str();
-                for call in snapshot.turns.iter_mut().flat_map(|turn| &mut turn.calls) {
-                    call.provider = provider_for(&call.model, model_provider).to_string();
-                }
-            }
-            SessionSnapshot {
-                parent: meta.and_then(|meta| spawned_by(&snapshot.session_id, &meta)),
-                ..snapshot
-            }
-        }
-        None => SessionSnapshot {
-            session_id: payload.session_id,
-            title: None,
-            turns: Vec::new(),
-            parent: None,
-        },
-    })
-}
-
-/// The `session_meta` payload a rollout opens with; none when it can't be read or has none.
-fn rollout_session_meta(path: &Path) -> Option<Value> {
-    use std::io::BufRead;
-    let file = std::fs::File::open(path).ok()?;
-    std::io::BufReader::new(file)
-        .lines()
-        .map_while(Result::ok)
-        .take(SESSION_META_SEARCH_LINES)
-        .filter_map(|line| serde_json::from_str::<Value>(&line).ok())
-        .find(|entry| entry["type"] == "session_meta")
-        .map(|entry| entry["payload"].clone())
-}
-
-/// How far into a rollout its `session_meta` line is looked for: it is the first line Codex writes.
-const SESSION_META_SEARCH_LINES: usize = 8;
-
-/// The link from thread `thread_id` to the thread that spawned it, from its `session_meta`: Codex
-/// records a subagent's thread as `source: {"subagent": {"thread_spawn": {"parent_thread_id", ..}}}`.
-pub(super) fn spawned_by(
-    thread_id: &str,
-    session_meta: &Value,
-) -> Option<nasiko_types::coding_agent::CodingAgentSessionParent> {
-    let spawn = &session_meta["source"]["subagent"]["thread_spawn"];
-    let parent_id = spawn["parent_thread_id"].as_str()?;
-    let agent_type = spawn["agent_role"]
-        .as_str()
-        .or_else(|| spawn["agent_nickname"].as_str());
-    subagent_parent(thread_id, parent_id, None, agent_type)
+    Ok(snapshot.unwrap_or_else(|| SessionSnapshot {
+        session_id: payload.session_id,
+        title: None,
+        turns: Vec::new(),
+    }))
 }
 
 fn validate_payload(payload: &HookPayload) -> Result<()> {
@@ -506,7 +438,6 @@ fn apply_event(
     Some(SessionSnapshot {
         session_id: payload.session_id.clone(),
         title: None,
-        parent: None,
         turns: vec![Turn {
             uuid: payload.turn_id.clone(),
             prompt,
@@ -515,13 +446,12 @@ fn apply_event(
             ended_at,
             calls: vec![LlmCall {
                 uuid: call_id,
-                // Relabelled from the rollout's meta once the turn is complete (`snapshot_in`).
-                provider: provider_for(&model, None).to_string(),
+                provider: provider_for(&model).to_string(),
                 model,
-                input_tokens: usage.fresh_input(),
+                input_tokens: usage.input,
                 output_tokens: usage.output,
                 cache_read_tokens: usage.cache_read,
-                cache_creation_tokens: usage.cache_write,
+                cache_creation_tokens: 0,
                 accounting: None,
                 started_at,
                 ended_at,
@@ -538,7 +468,7 @@ fn value_text(value: &Value) -> String {
         .unwrap_or_else(|| value.to_string())
 }
 
-pub(super) fn tool_response_status(
+fn tool_response_status(
     response: Option<&Value>,
     hook_error: Option<&Value>,
 ) -> (CodingAgentToolCallStatus, Option<String>) {
@@ -597,25 +527,14 @@ pub(super) fn tool_response_status(
     (CodingAgentToolCallStatus::Unknown, None)
 }
 
-pub(super) fn nonempty(value: Option<&str>) -> Option<String> {
+fn nonempty(value: Option<&str>) -> Option<String> {
     value
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
 }
 
-/// The provider label a call is priced under, which must be the label the platform's price book uses.
-///
-/// `model_provider` is the provider id Codex recorded in the rollout's `session_meta`. Its built-in
-/// ids say who was really called — the same model costs more on Bedrock than direct — so they win.
-/// `nasiko` (whose calls the server relabels from the router's own records) and user-defined ids
-/// carry nothing usable, so the model name decides.
-pub(super) fn provider_for(model: &str, model_provider: Option<&str>) -> &'static str {
-    match model_provider {
-        Some("amazon-bedrock") => return "aws-bedrock",
-        Some("openai") => return "openai",
-        _ => {}
-    }
+fn provider_for(model: &str) -> &'static str {
     let model = model.to_ascii_lowercase();
     if model.starts_with("claude") {
         "anthropic"
@@ -626,7 +545,7 @@ pub(super) fn provider_for(model: &str, model_provider: Option<&str>) -> &'stati
     }
 }
 
-pub(super) fn usage_delta(start: Option<TokenUsage>, end: Option<TokenUsage>) -> TokenUsage {
+fn usage_delta(start: Option<TokenUsage>, end: Option<TokenUsage>) -> TokenUsage {
     let (Some(start), Some(end)) = (start, end) else {
         return TokenUsage::default();
     };
@@ -634,7 +553,6 @@ pub(super) fn usage_delta(start: Option<TokenUsage>, end: Option<TokenUsage>) ->
         input: end.input.saturating_sub(start.input),
         output: end.output.saturating_sub(start.output),
         cache_read: end.cache_read.saturating_sub(start.cache_read),
-        cache_write: end.cache_write.saturating_sub(start.cache_write),
     }
 }
 
@@ -658,11 +576,7 @@ fn parse_token_usage_lines(content: &str) -> Option<TokenUsage> {
 }
 
 fn token_usage_line(line: &str) -> Option<TokenUsage> {
-    token_usage_entry(&serde_json::from_str(line).ok()?)
-}
-
-/// The cumulative session usage a rollout `token_count` event carries; `None` for any other line.
-pub(super) fn token_usage_entry(entry: &Value) -> Option<TokenUsage> {
+    let entry: Value = serde_json::from_str(line).ok()?;
     if entry["type"] != "event_msg" || entry["payload"]["type"] != "token_count" {
         return None;
     }
@@ -674,10 +588,6 @@ pub(super) fn token_usage_entry(entry: &Value) -> Option<TokenUsage> {
         output: usage.get("output_tokens")?.as_u64()?,
         cache_read: usage
             .get("cached_input_tokens")
-            .and_then(Value::as_u64)
-            .unwrap_or(0),
-        cache_write: usage
-            .get("cache_write_input_tokens")
             .and_then(Value::as_u64)
             .unwrap_or(0),
     })
@@ -730,7 +640,7 @@ fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
 }
 
 #[cfg(test)]
-pub(super) mod tests {
+mod tests {
     use super::*;
 
     fn payload(event: &str) -> HookPayload {
@@ -839,8 +749,7 @@ pub(super) mod tests {
                 Some(TokenUsage {
                     input: 10,
                     output: 4,
-                    cache_read: 2,
-                    cache_write: 0,
+                    cache_read: 2
                 })
             )
             .is_none()
@@ -853,7 +762,6 @@ pub(super) mod tests {
                 input: 17,
                 output: 9,
                 cache_read: 5,
-                cache_write: 0,
             }),
         )
         .unwrap();
@@ -861,96 +769,9 @@ pub(super) mod tests {
         assert_eq!(turn.prompt, "Build it");
         assert_eq!(turn.response.as_deref(), Some("Built"));
         assert_eq!(turn.calls.len(), 1);
-        // 7 prompt tokens this turn, 3 of them cached.
-        assert_eq!(turn.calls[0].input_tokens, 4);
+        assert_eq!(turn.calls[0].input_tokens, 7);
         assert_eq!(turn.calls[0].output_tokens, 5);
         assert_eq!(turn.calls[0].cache_read_tokens, 3);
-    }
-
-    /// A rollout opening the way Codex writes a subagent's thread.
-    pub(in super::super) fn subagent_rollout_meta(thread: &str, parent: &str) -> String {
-        json!({"timestamp": "2026-01-01T00:00:00Z", "type": "session_meta", "payload": {
-            "id": thread, "cwd": "/tmp", "originator": "codex_cli_rs", "cli_version": "0.157.0",
-            "source": {"subagent": {"thread_spawn": {
-                "parent_thread_id": parent, "depth": 1,
-                "agent_nickname": "Ada", "agent_role": "explorer"}}},
-            "thread_source": "subagent"}})
-        .to_string()
-    }
-
-    #[test]
-    fn a_subagent_threads_completed_turn_is_linked_to_the_thread_that_spawned_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let rollout = dir.path().join("rollout.jsonl");
-        std::fs::write(&rollout, subagent_rollout_meta("child", "parent") + "\n").unwrap();
-        let event = |name: &str, extra: Value| {
-            let mut raw = json!({"session_id": "child", "turn_id": "t", "hook_event_name": name,
-                                 "model": "gpt-5", "transcript_path": rollout});
-            raw.as_object_mut()
-                .unwrap()
-                .extend(extra.as_object().unwrap().clone());
-            raw.to_string()
-        };
-
-        let started = snapshot_in(
-            &event("UserPromptSubmit", json!({"prompt": "look"})),
-            dir.path(),
-        );
-        let stopped = snapshot_in(
-            &event("Stop", json!({"last_assistant_message": "found"})),
-            dir.path(),
-        )
-        .unwrap();
-
-        assert!(
-            started.unwrap().parent.is_none(),
-            "nothing complete, nothing looked up"
-        );
-        assert_eq!(stopped.turns.len(), 1);
-        let parent = stopped.parent.unwrap();
-        assert_eq!(parent.source_id, "parent");
-        assert_eq!(parent.tool_call_id, None);
-        assert_eq!(parent.agent_type.as_deref(), Some("explorer"));
-    }
-
-    #[test]
-    fn a_completed_turn_is_labelled_with_the_provider_codex_called() {
-        let dir = tempfile::tempdir().unwrap();
-        let rollout = dir.path().join("rollout.jsonl");
-        let meta = json!({"type": "session_meta",
-                          "payload": {"id": "s", "model_provider": "amazon-bedrock"}});
-        std::fs::write(&rollout, meta.to_string() + "\n").unwrap();
-        let event = |name: &str, extra: Value| {
-            let mut raw = json!({"session_id": "s", "turn_id": "t", "hook_event_name": name,
-                                 "model": "openai.gpt-6-astra", "transcript_path": rollout});
-            raw.as_object_mut()
-                .unwrap()
-                .extend(extra.as_object().unwrap().clone());
-            raw.to_string()
-        };
-
-        snapshot_in(
-            &event("UserPromptSubmit", json!({"prompt": "go"})),
-            dir.path(),
-        )
-        .unwrap();
-        let stopped = snapshot_in(
-            &event("Stop", json!({"last_assistant_message": "done"})),
-            dir.path(),
-        )
-        .unwrap();
-
-        // The model name alone says OpenAI; Bedrock prices it differently.
-        assert_eq!(stopped.turns[0].calls[0].provider, "aws-bedrock");
-    }
-
-    #[test]
-    fn a_thread_codex_started_itself_has_no_parent() {
-        let meta = json!({"id": "t", "source": "cli", "thread_source": "user"});
-        assert!(spawned_by("t", &meta).is_none());
-        let review = json!({"id": "t", "source": {"subagent": "review"}});
-        assert!(spawned_by("t", &review).is_none());
-        assert!(rollout_session_meta(Path::new("/nonexistent/rollout.jsonl")).is_none());
     }
 
     #[test]
@@ -1075,44 +896,9 @@ not-json
             Some(TokenUsage {
                 input: 21,
                 output: 7,
-                cache_read: 8,
-                cache_write: 0,
+                cache_read: 8
             })
         );
-    }
-
-    #[test]
-    fn cached_prompt_tokens_are_taken_out_of_input_not_counted_twice() {
-        // A real rollout's cumulative usage: `input_tokens` contains both cache
-        // counts (input + output == total).
-        let start = token_usage_line(
-            r#"{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":130428,"cached_input_tokens":102826,"cache_write_input_tokens":27350,"output_tokens":1147,"reasoning_output_tokens":450,"total_tokens":131575}}}}"#,
-        );
-        let end = token_usage_line(
-            r#"{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":273061,"cached_input_tokens":235423,"cache_write_input_tokens":37218,"output_tokens":3293,"reasoning_output_tokens":1206,"total_tokens":276354}}}}"#,
-        );
-        let turn = usage_delta(start, end);
-        assert_eq!(
-            (
-                turn.fresh_input(),
-                turn.cache_read,
-                turn.cache_write,
-                turn.output
-            ),
-            (168, 132_597, 9_868, 2_146)
-        );
-        // The three prompt classes add back up to what Codex reported.
-        assert_eq!(
-            turn.fresh_input() + turn.cache_read + turn.cache_write,
-            273_061 - 130_428
-        );
-    }
-
-    #[test]
-    fn a_spooled_turn_from_before_cache_writes_still_reads() {
-        let usage: TokenUsage =
-            serde_json::from_str(r#"{"input":10,"output":4,"cache_read":3}"#).unwrap();
-        assert_eq!((usage.cache_write, usage.fresh_input()), (0, 7));
     }
 
     #[test]
@@ -1153,8 +939,7 @@ not-json
             TokenUsage {
                 input: 37929,
                 output: 496,
-                cache_read: 0,
-                cache_write: 0,
+                cache_read: 0
             }
         );
 
@@ -1166,22 +951,9 @@ not-json
 
     #[test]
     fn provider_defaults_to_openai_with_clear_vendor_exceptions() {
-        assert_eq!(provider_for("gpt-5-codex", None), "openai");
-        assert_eq!(provider_for("custom", None), "openai");
-        assert_eq!(provider_for("Claude-Sonnet", None), "anthropic");
-        assert_eq!(provider_for("gemini-3", None), "google");
-    }
-
-    #[test]
-    fn codexs_built_in_providers_win_and_others_fall_back_to_the_model_name() {
-        assert_eq!(
-            provider_for("openai.gpt-6-astra", Some("amazon-bedrock")),
-            "aws-bedrock"
-        );
-        assert_eq!(provider_for("gpt-5.2", Some("openai")), "openai");
-        // The router's own records relabel `nasiko` calls server-side.
-        assert_eq!(provider_for("claude-opus-4-7", Some("nasiko")), "anthropic");
-        // A user-defined id says nothing about who serves it.
-        assert_eq!(provider_for("gpt-5.2", Some("openai-api")), "openai");
+        assert_eq!(provider_for("gpt-5-codex"), "openai");
+        assert_eq!(provider_for("custom"), "openai");
+        assert_eq!(provider_for("Claude-Sonnet"), "anthropic");
+        assert_eq!(provider_for("gemini-3"), "google");
     }
 }

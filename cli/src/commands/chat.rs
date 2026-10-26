@@ -560,7 +560,7 @@ fn handle_sse_stream(
                     // explicitly rather than silently falling through to
                     // the interactive prompt as if nothing happened.
                     None if state != "TASK_STATE_COMPLETED" => {
-                        status::print_error(&format!("agent task {state} (no details provided)"));
+                        eprintln!("Error: agent task {} (no details provided)", state);
                     }
                     None => {}
                 }
@@ -839,7 +839,7 @@ fn handle_status_update(event: &serde_json::Value, spin: &mut Spinner) {
             {
                 for part in parts {
                     if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
-                        status::print_error(text);
+                        eprintln!("  \x1b[31merror: {text}\x1b[0m");
                         printed = true;
                     }
                 }
@@ -848,7 +848,7 @@ fn handle_status_update(event: &serde_json::Value, spin: &mut Spinner) {
             // explicitly rather than silently falling through to the
             // interactive prompt as if nothing happened.
             if !printed {
-                status::print_error("agent task failed (no details provided)");
+                eprintln!("  \x1b[31merror: agent task failed (no details provided)\x1b[0m");
             }
         }
         _ => {}
