@@ -167,7 +167,7 @@ const SESSION_LIST_SELECT: &str = r#"
     LEFT JOIN users u ON u.id = cs.user_id
     LEFT JOIN LATERAL (
         SELECT content FROM chat_messages
-        WHERE session_id = cs.session_id AND (metadata->'turn_error') IS NULL
+        WHERE session_id = cs.session_id
         ORDER BY timestamp DESC LIMIT 1
     ) lm ON true
     LEFT JOIN LATERAL (
@@ -803,6 +803,14 @@ async fn list_messages(
         rows.reverse();
     }
 
+    // Attachments are served from `chat_message_files`, never from a stored copy of them.
+    // `send_message` claims a client's uploads onto the row by setting `message_id` and flips
+    // `has_file_parts`, but writes no inline `file_parts`; `delete_file` removes a row without
+    // rewriting any JSON that named it. Deriving the array at read time is what keeps those two
+    // honest — one history page costs one extra query instead of a `/files` call per message,
+    // and a part can never outlive the file it points at.
+    hydrate_file_parts(&state, &mut rows).await;
+
     let out_prev_cursor = rows
         .first()
         .map(|r| encode_cursor(r.timestamp, &r.id.to_string()));
@@ -916,20 +924,6 @@ async fn send_message(
             .into_response();
     }
 
-    // A failed turn is the agent's, so only an assistant row can carry one.
-    let metadata = match &body.error {
-        Some(_) if body.role != CHAT_MESSAGE_ROLE_ASSISTANT => {
-            return (
-                StatusCode::BAD_REQUEST,
-                "error is only for assistant messages",
-            )
-                .into_response();
-        }
-        Some(e) => Some(sqlx::types::Json(turn_error_metadata(&e.message, "agent"))),
-        None => None,
-    };
-    let is_failure = metadata.is_some();
-
     // Dedupe: a client sending the same file_id twice would otherwise cause
     // `claimed != file_ids.len()` to false-positive (the UPDATE affects each
     // distinct row once, but `ANY($2)` with a duplicate doesn't double-count
@@ -966,8 +960,8 @@ async fn send_message(
         r#"INSERT INTO chat_messages
                (session_id, role, content, file_parts, has_file_parts,
                 input_tokens, output_tokens, model, duration_ms, cost_usd,
-                usage_estimated, trace_id, cache_read_tokens, cache_creation_tokens, metadata)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+                usage_estimated, trace_id, cache_read_tokens, cache_creation_tokens)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
            RETURNING *"#,
     )
     .bind(&session_id)
@@ -984,7 +978,6 @@ async fn send_message(
     .bind(usage.and_then(|u| u.trace_id.as_deref()))
     .bind(usage.and_then(|u| u.cache_read_tokens))
     .bind(usage.and_then(|u| u.cache_creation_tokens))
-    .bind(&metadata)
     .fetch_one(&mut *tx)
     .await
     {
@@ -1040,7 +1033,7 @@ async fn send_message(
     // reader (the first turn after install can wait on a pod pull) must never
     // stall the user seeing their completed answer. On timeout the message is
     // returned without chips; the files are still on disk for a later turn.
-    if msg.role == "assistant" && !is_failure {
+    if msg.role == "assistant" {
         let capture = tokio::time::timeout(
             CAPTURE_TIMEOUT,
             capture_turn_files(&state, &session_id, msg.id, &msg.content),
@@ -1343,6 +1336,65 @@ async fn capture_turn_files(
     .execute(&state.db)
     .await;
     Some(file_parts)
+}
+
+/// The one shape a file reaches a client as. `capture_turn_files` writes these same four keys
+/// into `chat_messages.file_parts`, so a hydrated page and a captured reply are indistinguishable
+/// to the frontend.
+fn file_part_json(f: &ChatMessageFile) -> serde_json::Value {
+    serde_json::json!({
+        "id": f.id,
+        "name": f.filename,
+        "size": f.size_bytes,
+        "mime": f.mime_type,
+    })
+}
+
+/// Fill `file_parts` for one history page from `chat_message_files`, in a single query.
+///
+/// Only rows already flagged `has_file_parts` are looked up, so a page with no attachments
+/// costs nothing. A message with no file rows keeps whatever it already carries: a capture
+/// inserts its rows before it writes the JSON, so the rows are a superset and a lookup failure
+/// degrades to the stored copy rather than to an empty transcript.
+async fn hydrate_file_parts(state: &AppState, rows: &mut [ChatMessage]) {
+    let ids: Vec<Uuid> = rows
+        .iter()
+        .filter(|m| m.has_file_parts)
+        .map(|m| m.id)
+        .collect();
+    if ids.is_empty() {
+        return;
+    }
+    let files = match sqlx::query_as::<_, ChatMessageFile>(
+        "SELECT * FROM chat_message_files WHERE message_id = ANY($1) ORDER BY created_at ASC",
+    )
+    .bind(&ids)
+    .fetch_all(&state.db)
+    .await
+    {
+        Ok(f) => f,
+        Err(e) => {
+            tracing::warn!(%e, "list_messages: file hydrate failed; serving stored file_parts");
+            return;
+        }
+    };
+
+    let mut by_message: std::collections::HashMap<Uuid, Vec<serde_json::Value>> =
+        std::collections::HashMap::new();
+    for f in &files {
+        let Some(message_id) = f.message_id else {
+            continue;
+        };
+        by_message
+            .entry(message_id)
+            .or_default()
+            .push(file_part_json(f));
+    }
+    for m in rows.iter_mut() {
+        if let Some(parts) = by_message.remove(&m.id) {
+            m.file_parts = Some(sqlx::types::Json(serde_json::Value::Array(parts)));
+        }
+    }
 }
 
 // ─── File upload ─────────────────────────────────────────────────────────────
