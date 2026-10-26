@@ -1,0 +1,74 @@
+[
+  {
+    "id": "late-parcel",
+    "kind": "support",
+    "repository": "northline",
+    "label": "shipping",
+    "goal": "Order 1842 was placed Monday and still has no tracking email. The customer asks when it will arrive.",
+    "required_phrases": ["5 business days", "tracking"],
+    "context": "# Northline fulfillment policy\n\n## Shipping\nOrders placed before 15:00 local warehouse time ship the same day. Standard ground delivery is 5 business days after shipment. Tracking is emailed when the carrier scans the parcel. Address changes are allowed only before the carrier scan.\n\n## Billing\nDuplicate card captures are reversed within 3 business days of the dispute ticket. Subscriptions may be cancelled any day; service continues through the paid period. Invoices are issued within 1 business day of a written request.\n\n## Access\nPassword resets go through the email link that expires in 30 minutes. Two-factor recovery requires the backup code printed at enrollment. Locked accounts reopen after a successful reset."
+  },
+  {
+    "id": "double-charge",
+    "kind": "support",
+    "repository": "northline",
+    "label": "billing",
+    "goal": "The customer sees two identical card captures for invoice NL-4401 and wants the extra capture reversed.",
+    "required_phrases": ["3 business days", "duplicate"],
+    "context": "# Northline fulfillment policy\n\n## Shipping\nOrders placed before 15:00 local warehouse time ship the same day. Standard ground delivery is 5 business days after shipment. Tracking is emailed when the carrier scans the parcel. Address changes are allowed only before the carrier scan.\n\n## Billing\nDuplicate card captures are reversed within 3 business days of the dispute ticket. Subscriptions may be cancelled any day; service continues through the paid period. Invoices are issued within 1 business day of a written request.\n\n## Access\nPassword resets go through the email link that expires in 30 minutes. Two-factor recovery requires the backup code printed at enrollment. Locked accounts reopen after a successful reset."
+  },
+  {
+    "id": "reset-lockout",
+    "kind": "support",
+    "repository": "northline",
+    "label": "access",
+    "goal": "The customer cannot sign in after forgetting the password and asks how to reopen the locked account.",
+    "required_phrases": ["30 minutes", "reset"],
+    "context": "# Northline fulfillment policy\n\n## Shipping\nOrders placed before 15:00 local warehouse time ship the same day. Standard ground delivery is 5 business days after shipment. Tracking is emailed when the carrier scans the parcel. Address changes are allowed only before the carrier scan.\n\n## Billing\nDuplicate card captures are reversed within 3 business days of the dispute ticket. Subscriptions may be cancelled any day; service continues through the paid period. Invoices are issued within 1 business day of a written request.\n\n## Access\nPassword resets go through the email link that expires in 30 minutes. Two-factor recovery requires the backup code printed at enrollment. Locked accounts reopen after a successful reset."
+  },
+  {
+    "id": "address-change",
+    "kind": "support",
+    "repository": "northline",
+    "label": "shipping",
+    "goal": "The customer wants the delivery address on order 1904 changed. The parcel has not been scanned by a carrier yet.",
+    "required_phrases": ["address", "carrier scan"],
+    "context": "# Northline fulfillment policy\n\n## Shipping\nOrders placed before 15:00 local warehouse time ship the same day. Standard ground delivery is 5 business days after shipment. Tracking is emailed when the carrier scans the parcel. Address changes are allowed only before the carrier scan.\n\n## Billing\nDuplicate card captures are reversed within 3 business days of the dispute ticket. Subscriptions may be cancelled any day; service continues through the paid period. Invoices are issued within 1 business day of a written request.\n\n## Access\nPassword resets go through the email link that expires in 30 minutes. Two-factor recovery requires the backup code printed at enrollment. Locked accounts reopen after a successful reset."
+  },
+  {
+    "id": "cancel-plan",
+    "kind": "support",
+    "repository": "northline",
+    "label": "billing",
+    "goal": "The customer wants the Northline subscription cancelled today and asks whether they lose the remaining days they already paid for.",
+    "required_phrases": ["cancelled", "paid period"],
+    "context": "# Northline fulfillment policy\n\n## Shipping\nOrders placed before 15:00 local warehouse time ship the same day. Standard ground delivery is 5 business days after shipment. Tracking is emailed when the carrier scans the parcel. Address changes are allowed only before the carrier scan.\n\n## Billing\nDuplicate card captures are reversed within 3 business days of the dispute ticket. Subscriptions may be cancelled any day; service continues through the paid period. Invoices are issued within 1 business day of a written request.\n\n## Access\nPassword resets go through the email link that expires in 30 minutes. Two-factor recovery requires the backup code printed at enrollment. Locked accounts reopen after a successful reset."
+  },
+  {
+    "id": "backup-codes",
+    "kind": "support",
+    "repository": "northline",
+    "label": "access",
+    "goal": "The customer lost their phone and cannot complete two-factor prompts. They still have the paper codes from enrollment.",
+    "required_phrases": ["backup code", "two-factor"],
+    "context": "# Northline fulfillment policy\n\n## Shipping\nOrders placed before 15:00 local warehouse time ship the same day. Standard ground delivery is 5 business days after shipment. Tracking is emailed when the carrier scans the parcel. Address changes are allowed only before the carrier scan.\n\n## Billing\nDuplicate card captures are reversed within 3 business days of the dispute ticket. Subscriptions may be cancelled any day; service continues through the paid period. Invoices are issued within 1 business day of a written request.\n\n## Access\nPassword resets go through the email link that expires in 30 minutes. Two-factor recovery requires the backup code printed at enrollment. Locked accounts reopen after a successful reset."
+  },
+  {
+    "id": "same-day-cutoff",
+    "kind": "support",
+    "repository": "northline",
+    "label": "shipping",
+    "goal": "The customer placed an order at 14:40 warehouse time and asks whether it ships today.",
+    "required_phrases": ["15:00", "same day"],
+    "context": "# Northline fulfillment policy\n\n## Shipping\nOrders placed before 15:00 local warehouse time ship the same day. Standard ground delivery is 5 business days after shipment. Tracking is emailed when the carrier scans the parcel. Address changes are allowed only before the carrier scan.\n\n## Billing\nDuplicate card captures are reversed within 3 business days of the dispute ticket. Subscriptions may be cancelled any day; service continues through the paid period. Invoices are issued within 1 business day of a written request.\n\n## Access\nPassword resets go through the email link that expires in 30 minutes. Two-factor recovery requires the backup code printed at enrollment. Locked accounts reopen after a successful reset."
+  },
+  {
+    "id": "invoice-copy",
+    "kind": "support",
+    "repository": "northline",
+    "label": "billing",
+    "goal": "The finance team emailed asking for a written invoice copy for last week's paid subscription.",
+    "required_phrases": ["invoice", "1 business day"],
+    "context": "# Northline fulfillment policy\n\n## Shipping\nOrders placed before 15:00 local warehouse time ship the same day. Standard ground delivery is 5 business days after shipment. Tracking is emailed when the carrier scans the parcel. Address changes are allowed only before the carrier scan.\n\n## Billing\nDuplicate card captures are reversed within 3 business days of the dispute ticket. Subscriptions may be cancelled any day; service continues through the paid period. Invoices are issued within 1 business day of a written request.\n\n## Access\nPassword resets go through the email link that expires in 30 minutes. Two-factor recovery requires the backup code printed at enrollment. Locked accounts reopen after a successful reset."
+  }
+]

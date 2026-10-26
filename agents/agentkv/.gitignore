@@ -1,0 +1,29 @@
+.env
+.env.*
+!.env.example
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+.DS_Store
+results/
+artifacts/
+# Historical working notes stay local; final scope lives in docs/PRD.md.
+RESEARCH_PLAN_ARCHIVE.md
+FINAL_PLAN.md
+docs/BUILD_EVIDENCE.md
+docs/DEMO_DASHBOARD.md
+docs/PITCH_AND_EVIDENCE.md
+
+web/node_modules/
+web/.next/
+web/.vercel/
+web/out/
+
+# Local control-plane state can contain workflow evidence.
+*.sqlite3
+*.sqlite3-*
