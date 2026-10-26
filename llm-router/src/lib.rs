@@ -55,14 +55,14 @@ pub use routing::{
 
 /// Shared context for the LLM router.
 ///
-/// Holds the resources the router needs, supplied by whatever host mounts it (the
-/// server passes its own `PgPool` and HTTP client). Cheap to clone — it is the Axum
-/// router state.
+/// Holds the resources the router needs. The host supplies the `PgPool`; the router
+/// builds its own provider HTTP client (see [`provider_client`]). Cheap to clone — it is
+/// the Axum router state.
 #[derive(Clone)]
 pub struct LlmRouterCtx {
     /// Postgres pool — reads `agents.llm_config` / `user_secrets`, writes `token_usage`.
     pub db: PgPool,
-    /// Pooled outbound HTTP client for provider calls.
+    /// Pooled outbound HTTP client for provider calls, built by [`provider_client`].
     pub http: reqwest::Client,
     /// Gateway configuration (JWT secret, defaults, provider base URLs).
     pub cfg: Arc<GatewayConfig>,
@@ -94,10 +94,15 @@ pub struct LlmRouterCtx {
 }
 
 impl LlmRouterCtx {
-    /// Build from resources the host already owns (the server's `PgPool` + HTTP
-    /// client). Gateway-specific config is read from the environment.
-    pub fn from_shared(db: PgPool, http: reqwest::Client) -> Self {
+    /// Build from the host's `PgPool`. Gateway-specific config is read from the
+    /// environment.
+    ///
+    /// The provider client is the router's own, not the host's: a host client is
+    /// sized for short calls, and its total timeout cut off slow model replies and
+    /// long streams alike.
+    pub fn from_shared(db: PgPool) -> Self {
         let cfg = GatewayConfig::from_env();
+        let http = provider_client(Duration::from_secs(cfg.provider_timeout_secs));
         tracing::info!(
             target: "nasiko::llm_router::startup",
             default_provider = %cfg.default_provider,
@@ -108,6 +113,7 @@ impl LlmRouterCtx {
             platform_anthropic_api_key_set = !cfg.platform_anthropic_api_key.is_empty(),
             platform_gemini_api_key_set = !cfg.platform_gemini_api_key.is_empty(),
             llm_config_cache_ttl_secs = cfg.llm_config_cache_ttl_secs,
+            provider_timeout_secs = cfg.provider_timeout_secs,
             redis_url_set = !cfg.redis_url.is_empty(),
             router_decision_ttl_secs = cfg.router_decision_ttl_secs,
             openai_api_base = %cfg.openai_api_base,
@@ -147,6 +153,20 @@ impl LlmRouterCtx {
             pricing,
         }
     }
+}
+
+/// The outbound client for provider calls.
+///
+/// `read_timeout`, not `timeout`: it restarts after every read, so a stream that keeps
+/// sending chunks runs as long as it needs, a non-streaming call (silent until the reply
+/// is ready) still fails after `read_timeout`, and so does a stalled connection.
+pub fn provider_client(read_timeout: Duration) -> reqwest::Client {
+    reqwest::Client::builder()
+        .pool_max_idle_per_host(20)
+        .connect_timeout(Duration::from_secs(10))
+        .read_timeout(read_timeout)
+        .build()
+        .expect("failed to build provider http client")
 }
 
 /// Build the request classifier from config. The only place backend selection happens, shared by
@@ -346,6 +366,106 @@ pub fn router(ctx: LlmRouterCtx) -> Router {
 /// `GET /v1/health` → `{"status":"ok"}`.
 async fn health() -> Json<Value> {
     Json(json!({ "status": "ok" }))
+}
+
+#[cfg(test)]
+mod provider_client_tests {
+    use std::time::Duration;
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+
+    use super::provider_client;
+
+    const READ_TIMEOUT: Duration = Duration::from_millis(500);
+
+    /// Accepts one connection, waits for the request head, then hands the socket to
+    /// `respond`. Returns the URL to call.
+    async fn serve_once<F, Fut>(respond: F) -> String
+    where
+        F: FnOnce(TcpStream) -> Fut + Send + 'static,
+        Fut: Future<Output = ()> + Send,
+    {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut head = Vec::new();
+            let mut buf = [0u8; 1024];
+            while !head.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = socket.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    return;
+                }
+                head.extend_from_slice(&buf[..n]);
+            }
+            respond(socket).await;
+        });
+        url
+    }
+
+    async fn reply_after(delay: Duration, mut socket: TcpStream) {
+        tokio::time::sleep(delay).await;
+        // The client may already have given up; a failed write is the expected outcome then.
+        let _ = socket
+            .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok")
+            .await;
+    }
+
+    async fn stream_chunks(count: usize, every: Duration, mut socket: TcpStream) {
+        socket
+            .write_all(
+                b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        for _ in 0..count {
+            tokio::time::sleep(every).await;
+            socket.write_all(b"1\r\nx\r\n").await.unwrap();
+        }
+        socket.write_all(b"0\r\n\r\n").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn reply_slower_than_the_read_timeout_fails() {
+        let url = serve_once(|s| reply_after(READ_TIMEOUT * 3, s)).await;
+        let err = provider_client(READ_TIMEOUT)
+            .get(url)
+            .send()
+            .await
+            .unwrap_err();
+        assert!(err.is_timeout(), "expected a timeout, got {err}");
+    }
+
+    #[tokio::test]
+    async fn reply_inside_the_read_timeout_succeeds() {
+        let url = serve_once(|s| reply_after(READ_TIMEOUT / 5, s)).await;
+        let body = provider_client(READ_TIMEOUT)
+            .get(url)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert_eq!(body, "ok");
+    }
+
+    #[tokio::test]
+    async fn steady_stream_longer_than_the_read_timeout_arrives_complete() {
+        // 8 chunks 200 ms apart: 1.6 s in all, more than 3× the read timeout, which a
+        // total `timeout` of the same length would have cut.
+        let url = serve_once(|s| stream_chunks(8, READ_TIMEOUT * 2 / 5, s)).await;
+        let body = provider_client(READ_TIMEOUT)
+            .get(url)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert_eq!(body, "x".repeat(8));
+    }
 }
 
 #[cfg(test)]

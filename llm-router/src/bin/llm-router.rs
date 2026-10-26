@@ -8,9 +8,8 @@
 //!
 //! Env: `DATABASE_URL` (required), `LLM_ROUTER_BIND` (default `0.0.0.0:8081`), plus the
 //! gateway config read by `GatewayConfig::from_env` (`AGENT_JWT_SECRET`,
-//! `SECRETS_ENCRYPTION_KEY`, `PLATFORM_OPENAI_API_KEY`, provider bases, …).
-
-use std::time::Duration;
+//! `SECRETS_ENCRYPTION_KEY`, `PLATFORM_OPENAI_API_KEY`, `LLM_PROVIDER_TIMEOUT_SECS`,
+//! provider bases, …).
 
 use nasiko_llm_router::{LlmRouterCtx, router};
 use tracing_subscriber::EnvFilter;
@@ -29,13 +28,9 @@ async fn main() {
     let db = sqlx::PgPool::connect(&database_url)
         .await
         .expect("failed to connect to postgres");
-    let http = reqwest::Client::builder()
-        .timeout(Duration::from_secs(120))
-        .build()
-        .expect("failed to build http client");
-
-    // Same context + routes as the in-server mount; gateway config from env.
-    let ctx = LlmRouterCtx::from_shared(db, http);
+    // Same context + routes as the in-server mount; gateway config (including the
+    // provider client's timeout) from env.
+    let ctx = LlmRouterCtx::from_shared(db);
     let app = router(ctx).route("/health", axum::routing::get(|| async { "ok" }));
 
     let listener = tokio::net::TcpListener::bind(&bind)
