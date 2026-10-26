@@ -137,6 +137,10 @@ pub enum AgentOpsCommands {
         /// meaningful with --coding-agent; HITL is on by default otherwise.
         #[arg(long, conflicts_with = "hitl")]
         no_hitl: bool,
+        /// Show what would be deployed (version, image, env keys) without building, pushing,
+        /// or deploying anything
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Push image to cluster OCI registry (without deploying)
     Push {
@@ -220,8 +224,11 @@ pub enum AgentOpsCommands {
     /// List running agents
     Ps {
         /// Output as JSON
-        #[arg(short = 'j', long)]
+        #[arg(short = 'j', long, conflicts_with = "watch")]
         json: bool,
+        /// Refresh the list every 2s until Ctrl-C
+        #[arg(short = 'w', long)]
+        watch: bool,
     },
     /// Stream agent container logs
     Logs {
@@ -231,6 +238,20 @@ pub enum AgentOpsCommands {
         /// Live-tail: stream new log lines as they arrive (SSE)
         #[arg(short = 'f', long)]
         follow: bool,
+        /// Only lines at exactly this level (WARN does not include WARNING)
+        #[arg(
+            long,
+            ignore_case = true,
+            value_parser = ["DEBUG", "TRACE", "INFO", "WARN", "WARNING", "ERROR", "CRITICAL", "FATAL"]
+        )]
+        level: Option<String>,
+        /// Only lines whose message contains this text (case-insensitive)
+        #[arg(long)]
+        search: Option<String>,
+        /// Only lines from this far back: 30m, 2h, 1d, or an ISO-8601 time. Raw container
+        /// output carries no timestamps, so its latest lines are always shown
+        #[arg(long, conflicts_with = "follow")]
+        since: Option<String>,
     },
     /// Stop agent container
     Stop { agent: String },
@@ -292,11 +313,11 @@ pub enum AgentOpsCommands {
     },
     /// Terminate + deregister agent
     Rm {
-        /// Agent UUID (preferred; use --name to look up by name instead)
-        #[arg(conflicts_with = "name")]
-        id: Option<String>,
-        /// Delete by agent name (resolved to UUID via the CP registry)
-        #[arg(long, short = 'n', conflicts_with = "id")]
+        /// Agent name or UUID
+        #[arg(required_unless_present = "name", conflicts_with = "name")]
+        agent: Option<String>,
+        /// Older spelling of the positional argument, kept so existing scripts keep working
+        #[arg(long, short = 'n', hide = true)]
         name: Option<String>,
         #[arg(short, long)]
         force: bool,
@@ -765,9 +786,11 @@ pub enum MafExecutionCommands {
 
 #[derive(Subcommand)]
 pub enum AgentsCommands {
-    /// Discover coding agents installed on this machine
+    /// Discover coding agents installed on this machine (now: `status`)
+    #[command(hide = true)]
     Discover,
-    /// Install session reporting for a local coding agent
+    /// Install session reporting for a local coding agent (now: `connect <agent> --reporting`)
+    #[command(hide = true)]
     Install {
         /// Agent to install (e.g. claude or opencode)
         agent: String,
@@ -775,12 +798,13 @@ pub enum AgentsCommands {
         #[arg(long)]
         no_content: bool,
     },
-    /// Remove session reporting for a local coding agent
+    /// Remove session reporting for a local coding agent (now: `disconnect <agent> --reporting`)
+    #[command(hide = true)]
     Uninstall {
         /// Agent to uninstall (e.g. claude or opencode)
         agent: String,
     },
-    /// Validate and deliver queued coding-agent events
+    /// Deliver queued coding-agent session events now
     Sync,
     /// Export one session's new turns. Invoked by installed hooks.
     #[command(hide = true)]
@@ -1122,6 +1146,7 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             coding_agent,
             hitl: _,
             no_hitl,
+            dry_run,
         } => commands::deploy::deploy_with_version_flags(
             &image,
             name.as_deref(),
@@ -1137,6 +1162,7 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             coding_agent,
             // HITL is on by default for coding agents; --no-hitl opts out.
             coding_agent && !no_hitl,
+            dry_run,
         ),
         AgentOpsCommands::Push {
             image,
@@ -1179,12 +1205,24 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             coding_agent,
         ),
         AgentOpsCommands::Import { reference } => commands::import::from_registry(&reference),
-        AgentOpsCommands::Ps { json } => commands::agents::ps(json),
+        AgentOpsCommands::Ps { json, watch } => commands::agents::ps(json, watch),
         AgentOpsCommands::Logs {
             agent,
             tail,
             follow,
-        } => commands::agents::logs(&agent, tail, follow),
+            level,
+            search,
+            since,
+        } => commands::agents::logs(
+            &agent,
+            tail,
+            follow,
+            &commands::agents::LogFilters {
+                level,
+                search,
+                since,
+            },
+        ),
         AgentOpsCommands::Stop { agent } => commands::agents::stop(&agent),
         AgentOpsCommands::Start { agent } => commands::agents::start(&agent),
         AgentOpsCommands::Restart { agent } => commands::agents::restart(&agent),
@@ -1223,8 +1261,10 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             version.as_deref(),
             reason.as_deref(),
         ),
-        AgentOpsCommands::Rm { id, name, force } => {
-            commands::agents::rm(id.as_deref(), name.as_deref(), force)
+        AgentOpsCommands::Rm { agent, name, force } => {
+            // Parsing guarantees exactly one of the two is set.
+            let agent = agent.or(name).unwrap_or_default();
+            commands::agents::rm(&agent, force)
         }
         AgentOpsCommands::Chat {
             url,
@@ -1328,14 +1368,14 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             }
         },
         AgentOpsCommands::Agents { command } => match command {
-            AgentsCommands::Discover => commands::integration::status(),
-            AgentsCommands::Install { agent, no_content } => {
-                commands::integration::install(commands::integration::InstallOptions {
-                    agent_id: &agent,
-                    no_content,
-                })
+            AgentsCommands::Discover => {
+                commands::local_agents::note_renamed("agents discover", "status");
+                commands::local_agents::print_overview()
             }
-            AgentsCommands::Uninstall { agent } => commands::integration::uninstall(&agent),
+            AgentsCommands::Install { agent, no_content } => {
+                install_reporting_renamed("agents", &agent, no_content)
+            }
+            AgentsCommands::Uninstall { agent } => uninstall_reporting_renamed("agents", &agent),
             AgentsCommands::Sync => commands::integration::sync(),
             AgentsCommands::Report { agent } => commands::integration::report(&agent),
             AgentsCommands::Ls => commands::agents::cmd_ls(),
@@ -1614,6 +1654,43 @@ pub fn dispatch_registry(cmd: RegistrySubCommands) -> Result<()> {
 
 // ─── Coding-agent integrations ──────────────────────────────────────────────
 
+/// `agents install` / `integration install`, now `connect <agent> --no-routing --reporting`:
+/// runs exactly the command the note names. The old command reported prompt and response text
+/// unless `--no-content`, so the new one says which explicitly.
+/// `old` is the group the caller used (`agents` or `integration`), for the note.
+pub fn install_reporting_renamed(old: &str, agent: &str, no_content: bool) -> Result<()> {
+    let content = if no_content {
+        " --no-content"
+    } else {
+        " --content"
+    };
+    commands::local_agents::note_renamed(
+        &format!("{old} install"),
+        &format!("connect {agent} --no-routing --reporting{content} -y"),
+    );
+    // Exactly the command the note names, so the two never behave differently.
+    commands::local_agents::connect(
+        Some(agent),
+        &commands::local_agents::ConnectOptions {
+            no_routing: true,
+            reporting: true,
+            content: !no_content,
+            no_content,
+            yes: true,
+            ..Default::default()
+        },
+    )
+}
+
+/// `agents uninstall` / `integration uninstall`, now `disconnect <agent> --reporting`.
+pub fn uninstall_reporting_renamed(old: &str, agent: &str) -> Result<()> {
+    commands::local_agents::note_renamed(
+        &format!("{old} uninstall"),
+        &format!("disconnect {agent} --reporting"),
+    );
+    commands::integration::uninstall(agent)
+}
+
 #[derive(Subcommand)]
 pub enum IntegrationSubCommands {
     /// Show which coding agents are on this machine and their reporting status
@@ -1643,14 +1720,16 @@ pub enum IntegrationSubCommands {
 
 pub fn dispatch_integration(cmd: IntegrationSubCommands) -> Result<()> {
     match cmd {
-        IntegrationSubCommands::Status => commands::integration::status(),
-        IntegrationSubCommands::Install { agent, no_content } => {
-            commands::integration::install(commands::integration::InstallOptions {
-                agent_id: &agent,
-                no_content,
-            })
+        IntegrationSubCommands::Status => {
+            commands::local_agents::note_renamed("integration status", "status");
+            commands::local_agents::print_overview()
         }
-        IntegrationSubCommands::Uninstall { agent } => commands::integration::uninstall(&agent),
+        IntegrationSubCommands::Install { agent, no_content } => {
+            install_reporting_renamed("integration", &agent, no_content)
+        }
+        IntegrationSubCommands::Uninstall { agent } => {
+            uninstall_reporting_renamed("integration", &agent)
+        }
         IntegrationSubCommands::Report { agent } => commands::integration::report(&agent),
         IntegrationSubCommands::Sync => commands::integration::sync(),
     }

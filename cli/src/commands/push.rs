@@ -2,8 +2,10 @@ use std::fs;
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use nasiko_utils::term;
 
 use crate::api::Client;
+use crate::commands::local_agents::agent_command;
 use crate::oci;
 use crate::util::parse_image_name_and_tag;
 use crate::version_prompt::{
@@ -70,7 +72,7 @@ fn push_from_directory(
 
     // Push to OCI
     let repo = format!("nasiko/{agent_name}");
-    println!("Pushing {image_tag} → {repo}:{version}...");
+    term::print_info(&format!("Pushing {image_tag} → {repo}:{version}..."));
     oci::push_image(&image_tag, &repo, &version)?;
 
     let image_ref = format!("{repo}:{version}");
@@ -86,8 +88,14 @@ fn push_from_directory(
         hitl,
     )?;
 
-    println!("\n✓ Pushed {agent_name}:{version} (image: {image_ref})");
-    println!("  Deploy with: nasiko deploy {dir}");
+    println!();
+    term::print_success(&format!(
+        "Pushed {agent_name}:{version} (image: {image_ref})"
+    ));
+    println!(
+        "  {}",
+        term::cyan(&format!("→ {}", agent_command(&format!("deploy {dir}"))))
+    );
     Ok(())
 }
 
@@ -128,7 +136,7 @@ fn push_from_image(
     let version = decision.version;
     reject_if_already_pushed(client, &existing, &version, image)?;
 
-    println!("Pushing {image} → {repo}:{version}...");
+    term::print_info(&format!("Pushing {image} → {repo}:{version}..."));
     oci::push_image(image, &repo, &version)?;
 
     let image_ref = format!("{repo}:{version}");
@@ -145,8 +153,14 @@ fn push_from_image(
         hitl,
     )?;
 
-    println!("\n✓ Pushed {agent_name}:{version} (image: {image_ref})");
-    println!("  Deploy with: nasiko deploy {image}");
+    println!();
+    term::print_success(&format!(
+        "Pushed {agent_name}:{version} (image: {image_ref})"
+    ));
+    println!(
+        "  {}",
+        term::cyan(&format!("→ {}", agent_command(&format!("deploy {image}"))))
+    );
     Ok(())
 }
 

@@ -6,6 +6,7 @@
 //! `GET /api/llm-router/providers` (the catalog of valid provider/model values).
 
 use anyhow::Result;
+use nasiko_utils::term;
 use serde_json::{Value, json};
 
 use crate::EmbeddingArgs;
@@ -169,7 +170,7 @@ pub fn create(
         body[*field] = json!(value);
     }
     let _: Value = client.post_json("/llm-configs", &body)?;
-    println!("Created LLM config '{name}' → {provider}/{model}");
+    term::print_success(&format!("Created LLM config '{name}' → {provider}/{model}"));
     print_tier_note(&body);
     if let (Some(p), Some(m)) = (&embedding.embedding_provider, &embedding.embedding_model) {
         println!("  embeddings → {p}/{m}");
@@ -197,7 +198,13 @@ pub fn list(json_out: bool) -> Result<()> {
         return Ok(());
     }
     if configs.is_empty() {
-        println!("No LLM configs in your library. Create one with `nasiko llm-config create`.");
+        term::print_info(&format!(
+            "No LLM configs in your library. Create one with `{}`.",
+            term::cyan(&format!(
+                "{} create",
+                crate::commands::local_agents::llm_config_hint()
+            ))
+        ));
         return Ok(());
     }
     println!("Your LLM configs:");
@@ -209,7 +216,11 @@ pub fn list(json_out: bool) -> Result<()> {
             .get("is_default")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        let marker = if is_default { " (default)" } else { "" };
+        let marker = if is_default {
+            format!(" {}", term::green("(default)"))
+        } else {
+            String::new()
+        };
         let embedding = match (
             c.get("embedding_provider").and_then(|v| v.as_str()),
             c.get("embedding_model").and_then(|v| v.as_str()),
@@ -218,9 +229,9 @@ pub fn list(json_out: bool) -> Result<()> {
             _ => String::new(),
         };
         let pinned = if c.get("pinned").and_then(|v| v.as_bool()).unwrap_or(false) {
-            " [pinned]"
+            format!(" {}", term::yellow("[pinned]"))
         } else {
-            ""
+            String::new()
         };
         let tiers = tier_summary(c)
             .map(|t| format!("  tiers: {t}"))
@@ -322,7 +333,7 @@ pub fn update(
 
     let p = body.get("provider").and_then(|v| v.as_str()).unwrap_or("?");
     let m = body.get("model").and_then(|v| v.as_str()).unwrap_or("?");
-    println!("Updated LLM config '{config}' → {p}/{m}");
+    term::print_success(&format!("Updated LLM config '{config}' → {p}/{m}"));
     print_tier_note(&body);
     if body
         .get("pinned")
@@ -437,7 +448,7 @@ pub fn delete(config: &str, force: bool) -> Result<()> {
         }
     }
     client.delete(&format!("/llm-configs/{id}"))?;
-    println!("Deleted LLM config '{config}'");
+    term::print_success(&format!("Deleted LLM config '{config}'"));
     Ok(())
 }
 
@@ -446,7 +457,7 @@ pub fn set_default(config: &str) -> Result<()> {
     let client = Client::from_active_cluster()?;
     let id = resolve_config_id(&client, config)?;
     client.post_void(&format!("/llm-configs/{id}/default"))?;
-    println!("'{config}' is now your default LLM config");
+    term::print_success(&format!("'{config}' is now your default LLM config"));
     Ok(())
 }
 
@@ -457,7 +468,7 @@ pub fn attach(agent: &str, config: &str, inbound_format: Option<String>) -> Resu
     let id = resolve_config_id(&client, config)?;
     let body = json!({ "llm_config_id": id, "inbound_format": inbound_format });
     let _: Value = client.patch_json(&format!("/agents/{agent_id}/llm-config"), &body)?;
-    println!("Attached config '{config}' to agent '{agent}'");
+    term::print_success(&format!("Attached config '{config}' to agent '{agent}'"));
     Ok(())
 }
 
@@ -468,7 +479,9 @@ pub fn detach(agent: &str) -> Result<()> {
     // Explicit JSON null ⇒ detach (vs. an absent field, which leaves it unchanged).
     let body = json!({ "llm_config_id": Value::Null });
     let _: Value = client.patch_json(&format!("/agents/{agent_id}/llm-config"), &body)?;
-    println!("Detached the config from agent '{agent}' (now uses your default, if any)");
+    term::print_success(&format!(
+        "Detached the config from agent '{agent}' (now uses your default, if any)"
+    ));
     Ok(())
 }
 

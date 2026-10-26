@@ -7,6 +7,7 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result, bail};
+use nasiko_utils::term;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -31,6 +32,161 @@ pub struct ConnectionBinding {
     pub executable: Option<PathBuf>,
 }
 
+/// What a routing `connect` installs, chosen by `nasiko connect` (flags or prompts).
+#[derive(Debug, Clone, Copy)]
+pub struct RoutingOptions<'a> {
+    /// Existing routing agent name or UUID; `None` uses the account's default integration agent.
+    pub agent: Option<&'a str>,
+    /// LLM config name or UUID to attach; `None` keeps the agent's current (or default) config.
+    pub llm_config: Option<&'a str>,
+    /// Whether to mint and register an MCP gateway credential alongside LLM routing.
+    pub mcp: bool,
+    /// Set when the agent's `check` accepted these same options just before, so `connect`
+    /// can skip the router probe it would otherwise repeat.
+    pub checked: bool,
+}
+
+/// A check or a failed connect changed the agent's LLM config on the control plane and could not
+/// change it back: the agent may now route through the config being tried.
+#[derive(Debug)]
+pub struct ConfigNotRestored(pub String);
+
+impl std::fmt::Display for ConfigNotRestored {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the agent's previous LLM config could not be put back ({}); it may now route through the one being tried",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for ConfigNotRestored {}
+
+/// Puts back the agent's LLM config after a check or a failed connect changed it, failing with
+/// [`ConfigNotRestored`] so callers can say so.
+pub fn put_back_config(prepared: &PreparedConnection) -> Result<()> {
+    prepared.config_change().undo()
+}
+
+/// What an agent's LLM settings were before `connect` changed its config: the attached config
+/// and the model pinned in it. The server clears the pin whenever the config changes, so putting
+/// the config back must put the pin back too.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PreviousConfig {
+    llm_config_id: Option<String>,
+    pinned_model: Option<String>,
+}
+
+/// Attaches `previous` to the agent again: the config, then (a separate request, since the server
+/// ignores a pin sent with a config change) its pinned model. Fails with [`ConfigNotRestored`].
+fn put_back(client: &Client, agent_id: &str, previous: &PreviousConfig) -> Result<()> {
+    let path = format!("/agents/{agent_id}/llm-config");
+    let put_back = || -> Result<()> {
+        client.patch_json::<Value, _>(&path, &json!({"llm_config_id": previous.llm_config_id}))?;
+        if let Some(model) = &previous.pinned_model {
+            client.patch_json::<Value, _>(&path, &json!({"pinned_model": model}))?;
+        }
+        Ok(())
+    };
+    put_back().map_err(|error| anyhow::Error::new(ConfigNotRestored(format!("{error:#}"))))
+}
+
+/// Ends a connect that failed after [`prepare`] changed the agent's LLM config: puts the config
+/// back and returns `error`, or — when that fails too — both, marked [`ConfigNotRestored`].
+pub fn fail_after_prepare<T>(
+    prepared: &PreparedConnection,
+    what_failed: &str,
+    error: anyhow::Error,
+) -> Result<T> {
+    match put_back_config(prepared) {
+        Ok(()) => Err(error),
+        Err(put_back) => Err(put_back.context(format!("{what_failed}: {error:#}"))),
+    }
+}
+
+/// The LLM config change a `connect` made to its routing agent — kept so that undoing the
+/// connection right after (when a later step fails) undoes the change too.
+#[derive(Debug, Clone)]
+pub struct ConfigChange {
+    entry: ClusterEntry,
+    agent_id: String,
+    /// `Some(previous)` when the config was changed; `None` when it was left as it was.
+    previous: Option<PreviousConfig>,
+}
+
+impl ConfigChange {
+    /// A connect that left the agent's LLM config as it was.
+    #[cfg(test)]
+    pub fn unchanged() -> Self {
+        Self {
+            entry: ClusterEntry {
+                url: String::new(),
+                username: None,
+                token: None,
+            },
+            agent_id: String::new(),
+            previous: None,
+        }
+    }
+
+    /// Puts the previous LLM config (and its pinned model) back; a no-op when nothing was
+    /// changed. Fails with [`ConfigNotRestored`].
+    pub fn undo(&self) -> Result<()> {
+        let Some(previous) = &self.previous else {
+            return Ok(());
+        };
+        let client = Client::from_cluster_entry_with_timeout(&self.entry, Some(CP_CALL_TIMEOUT));
+        put_back(&client, &self.agent_id, previous)
+    }
+}
+
+/// A connected routing integration, as `nasiko status` summarizes it.
+#[derive(Debug, Clone)]
+pub struct RoutingSummary {
+    pub cluster: String,
+    pub cluster_url: String,
+    /// The user the connection was made as; `None` for connections from older versions.
+    pub principal_id: Option<String>,
+    pub agent_id: String,
+    pub agent_name: String,
+    pub mcp_installed: bool,
+}
+
+impl RoutingSummary {
+    pub fn from_binding(binding: &ConnectionBinding, mcp_installed: bool) -> Self {
+        Self {
+            cluster: binding.cluster.clone(),
+            cluster_url: binding.cluster_url.clone(),
+            principal_id: binding.principal_id.clone(),
+            agent_id: binding.agent_id.clone(),
+            agent_name: binding.agent_name.clone(),
+            mcp_installed,
+        }
+    }
+}
+
+/// The MCP outcome every routing `connect` reports once its install has completed.
+pub fn print_mcp_outcome(mint: Option<&McpMint>, registration_warning: Option<&str>) {
+    match (mint, registration_warning) {
+        (None, _) => println!("MCP gateway: not requested"),
+        (Some(McpMint::Minted(_)), None) => {
+            println!("{}", mcp_connected_line());
+            println!("{}", mcp_multi_machine_note());
+        }
+        (Some(McpMint::Minted(_)), Some(reason)) => {
+            term::print_warning(&format!(
+                "{reason}; LLM routing is connected, MCP tools are not"
+            ));
+        }
+        (Some(McpMint::Unavailable(message)), _) => {
+            term::print_warning(&format!(
+                "MCP gateway unavailable ({message}); LLM routing is connected, MCP tools are not"
+            ));
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AgentSpec<'a> {
     pub id: &'a str,
@@ -43,7 +199,18 @@ pub struct PreparedConnection {
     pub binding: ConnectionBinding,
     pub resolved_config: Value,
     pub entry: ClusterEntry,
-    previous_llm_config_id: Option<Option<String>>,
+    previous: Option<PreviousConfig>,
+}
+
+impl PreparedConnection {
+    /// The LLM config change `prepare` made, for undoing it later.
+    pub fn config_change(&self) -> ConfigChange {
+        ConfigChange {
+            entry: self.entry.clone(),
+            agent_id: self.binding.agent_id.clone(),
+            previous: self.previous.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -175,10 +342,10 @@ pub fn revoke_mcp_credential(client: &Client, agent_id: &str) -> Result<()> {
 /// control plane is reachable.
 pub fn revoke_mcp_credential_best_effort(client: &Client, agent_id: &str) {
     if let Err(error) = revoke_mcp_credential(client, agent_id) {
-        eprintln!(
-            "warning: failed to revoke the MCP gateway credential: {}",
+        term::print_warning(&format!(
+            "failed to revoke the MCP gateway credential: {}",
             one_line_warning(&error)
-        );
+        ));
     }
 }
 
@@ -224,10 +391,10 @@ fn client_for_binding(binding: &ConnectionBinding) -> Result<Client> {
 pub fn revoke_bound_mcp_credential_best_effort(binding: &ConnectionBinding) {
     match client_for_binding(binding) {
         Ok(client) => revoke_mcp_credential_best_effort(&client, &binding.agent_id),
-        Err(error) => eprintln!(
-            "warning: failed to revoke the MCP gateway credential: {}",
+        Err(error) => term::print_warning(&format!(
+            "failed to revoke the MCP gateway credential: {}",
             one_line_warning(&error)
-        ),
+        )),
     }
 }
 
@@ -242,9 +409,9 @@ fn enforce_disconnect_preflight(display_name: &str, running: &[String], force: b
     }
     let names = running.join(", ");
     if force {
-        eprintln!(
-            "warning: disconnecting while {display_name} is running ({names}); open sessions may fail API requests until restarted"
-        );
+        term::print_warning(&format!(
+            "disconnecting while {display_name} is running ({names}); open sessions may fail API requests until restarted"
+        ));
         return Ok(());
     }
     bail!(
@@ -310,8 +477,7 @@ pub fn prepare(
         Some(reference) => resolve_owned_agent(&client, reference, &principal_id, spec.id)?,
         None => ensure_local_agent(&client, &spec, &principal_id)?,
     };
-    let (resolved_config, previous_llm_config_id) =
-        configure_agent_for_install(&client, &agent_id, llm_config)?;
+    let (resolved_config, previous) = configure_agent_for_install(&client, &agent_id, llm_config)?;
     Ok(PreparedConnection {
         binding: ConnectionBinding {
             version: STATE_VERSION,
@@ -325,15 +491,19 @@ pub fn prepare(
         },
         resolved_config,
         entry,
-        previous_llm_config_id,
+        previous,
     })
 }
 
 pub fn require_current_login() -> Result<(String, ClusterEntry, String)> {
     let (cluster, entry) = config::active_cluster()?;
     let token = usable_login_token(&entry)?;
-    let principal = config::token_subject(token)
-        .ok_or_else(|| anyhow::anyhow!("invalid Nasiko login; run: nasiko auth login"))?;
+    let principal = config::token_subject(token).ok_or_else(|| {
+        anyhow::anyhow!(
+            "invalid Nasiko login; run: {}",
+            crate::commands::local_agents::login_hint()
+        )
+    })?;
     Ok((cluster, entry, principal))
 }
 
@@ -423,12 +593,17 @@ fn normalize_agent_name_part(value: &str) -> String {
 }
 
 fn usable_login_token(entry: &ClusterEntry) -> Result<&str> {
-    let token = entry
-        .token
-        .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("not logged in to Nasiko; run: nasiko auth login"))?;
+    let token = entry.token.as_deref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "not logged in to Nasiko; run: {}",
+            crate::commands::local_agents::login_hint()
+        )
+    })?;
     if config::token_expired(token) == Some(true) {
-        bail!("Nasiko session expired; run: nasiko auth login");
+        bail!(
+            "Nasiko session expired; run: {}",
+            crate::commands::local_agents::login_hint()
+        );
     }
     Ok(token)
 }
@@ -442,14 +617,49 @@ pub fn resolve_owned_agent(
     let agent = client
         .get_agent(reference)?
         .ok_or_else(|| anyhow::anyhow!("agent '{reference}' not found"))?;
-    if agent
-        .get("coding_agent_integration_id")
-        .and_then(Value::as_str)
-        != Some(integration_id)
-    {
+    if !is_integration_agent(&agent, integration_id) {
         bail!("agent '{reference}' is not the {integration_id} coding-agent integration");
     }
     owned_agent_fields(&agent, principal_id, reference)
+}
+
+/// What the control plane says about reusing an agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentLookup {
+    /// The current user's agent for this coding agent — what [`resolve_owned_agent`] accepts.
+    Usable,
+    /// No such agent (404).
+    Gone,
+    /// It exists, but isn't the current user's agent for this coding agent.
+    NotYours,
+    /// Access was refused (403): someone else's, or the user's own under a permission problem —
+    /// the response doesn't say which.
+    Refused,
+}
+
+/// Looks `reference` up the way [`resolve_owned_agent`] would, answering instead of failing.
+/// Errors only when the control plane can't be asked.
+pub fn look_up_owned_agent(reference: &str, integration_id: &str) -> Result<AgentLookup> {
+    let (_, entry, principal_id) = require_current_login()?;
+    let client = Client::from_cluster_entry_with_timeout(&entry, Some(CP_CALL_TIMEOUT));
+    Ok(match client.get_agent_or_status(reference, &[403, 404])? {
+        Err(404) => AgentLookup::Gone,
+        Err(_) => AgentLookup::Refused,
+        Ok(agent)
+            if is_integration_agent(&agent, integration_id)
+                && owned_agent_fields(&agent, &principal_id, reference).is_ok() =>
+        {
+            AgentLookup::Usable
+        }
+        Ok(_) => AgentLookup::NotYours,
+    })
+}
+
+fn is_integration_agent(agent: &Value, integration_id: &str) -> bool {
+    agent
+        .get("coding_agent_integration_id")
+        .and_then(Value::as_str)
+        == Some(integration_id)
 }
 
 fn owned_agent_fields(
@@ -458,7 +668,7 @@ fn owned_agent_fields(
     fallback_name: &str,
 ) -> Result<(String, String)> {
     let owner = agent.get("owner_id").and_then(Value::as_str);
-    if owner != Some(principal_id) {
+    if !owner.is_some_and(|owner| config::same_principal(owner, principal_id)) {
         bail!("agent '{fallback_name}' is not owned by the current Nasiko user");
     }
     let id = agent
@@ -492,14 +702,18 @@ fn configure_agent_for_install(
     client: &Client,
     agent_id: &str,
     llm_config: Option<&str>,
-) -> Result<(Value, Option<Option<String>>)> {
+) -> Result<(Value, Option<PreviousConfig>)> {
     let path = format!("/agents/{agent_id}/llm-config");
     let current: Value = client.get_json(&path)?;
-    let current_id = current
-        .get("data")
-        .and_then(|data| data.get("llm_config_id"))
-        .and_then(Value::as_str)
-        .map(str::to_string);
+    let current_field = |field: &str| {
+        current
+            .get("data")
+            .and_then(|data| data.get(field))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
+    let current_id = current_field("llm_config_id");
+    let current_pin = current_field("pinned_model");
     let (response, previous) = if let Some(reference) = llm_config {
         let config = fetch_config_by_ref(client, reference)?;
         let config_id = config
@@ -509,9 +723,13 @@ fn configure_agent_for_install(
         if current_id.as_deref() == Some(config_id) {
             (current, None)
         } else {
+            let previous = PreviousConfig {
+                llm_config_id: current_id,
+                pinned_model: current_pin,
+            };
             (
                 client.patch_json(&path, &json!({"llm_config_id": config_id}))?,
-                Some(current_id),
+                Some(previous),
             )
         }
     } else {
@@ -521,23 +739,21 @@ fn configure_agent_for_install(
         .get("data")
         .and_then(|data| data.get("llm_config"))
         .filter(|value| !value.is_null())
-        .cloned()
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "no Nasiko LLM config is available; create a default config or pass --config <name>"
-            )
-        })?;
-    Ok((resolved, previous))
-}
-
-pub fn rollback_config(prepared: &PreparedConnection) -> Result<()> {
-    let Some(previous) = &prepared.previous_llm_config_id else {
-        return Ok(());
+        .cloned();
+    let Some(resolved) = resolved else {
+        let error = anyhow::anyhow!(
+            "no Nasiko LLM config is available; create a default config or pass --config <name>"
+        );
+        // The config was changed above but can't be used: put the previous one back, so a
+        // failed connect never leaves the agent on it — and say so when that fails too.
+        if let Some(previous) = &previous
+            && let Err(put_back) = put_back(client, agent_id, previous)
+        {
+            return Err(put_back.context(format!("{error:#}")));
+        }
+        return Err(error);
     };
-    let client = Client::from_cluster_entry_with_timeout(&prepared.entry, Some(CP_CALL_TIMEOUT));
-    let path = format!("/agents/{}/llm-config", prepared.binding.agent_id);
-    let _: Value = client.patch_json(&path, &json!({"llm_config_id": previous}))?;
-    Ok(())
+    Ok((resolved, previous))
 }
 
 /// What [`preflight_routing`] established about an agent's LLM configuration.
@@ -631,17 +847,22 @@ fn credential_from_config(binding: &ConnectionBinding, cfg: &Config) -> Result<R
         binding,
         cfg,
         &format!(
-            "run: nasiko connect {}",
+            "run: {} connect {}",
+            crate::commands::local_agents::cli_name(),
             binding.integration_id.as_deref().unwrap_or("claude")
         ),
     )?;
     let token = usable_login_token(entry)?;
-    let principal = config::token_subject(token)
-        .ok_or_else(|| anyhow::anyhow!("invalid Nasiko login; run: nasiko auth login"))?;
+    let principal = config::token_subject(token).ok_or_else(|| {
+        anyhow::anyhow!(
+            "invalid Nasiko login; run: {}",
+            crate::commands::local_agents::login_hint()
+        )
+    })?;
     if binding
         .principal_id
         .as_deref()
-        .is_some_and(|expected| expected != principal)
+        .is_some_and(|expected| !config::same_principal(expected, &principal))
     {
         bail!("Nasiko login changed since connect; reconnect this coding agent");
     }
@@ -669,11 +890,54 @@ pub fn auth_status(binding: &ConnectionBinding) -> Result<&'static str> {
     if binding
         .principal_id
         .as_deref()
-        .is_some_and(|expected| expected != principal)
+        .is_some_and(|expected| !config::same_principal(expected, &principal))
     {
         return Ok("different user");
     }
     Ok("authenticated")
+}
+
+/// How a `nasiko status claude|codex|opencode` value reads at a glance.
+#[derive(Debug, PartialEq, Eq)]
+enum StatusTone {
+    Good,
+    Problem,
+    Attention,
+    Absent,
+    Plain,
+}
+
+/// Classifies the status words these commands print — [`auth_status`], settings/plugin
+/// state, MCP, session reporting, and the cells of the `status` agent table. Anything
+/// unrecognized stays plain.
+fn status_tone(value: &str) -> StatusTone {
+    match value {
+        "connected" | "authenticated" | "active" | "configured" | "on" | "yes" => StatusTone::Good,
+        v if v.starts_with("active (") || v.starts_with("on (") => StatusTone::Good,
+        "expired" | "not logged in" | "cluster missing" | "different user" | "missing"
+        | "state unreadable" | "?" => StatusTone::Problem,
+        "cluster URL changed" | "changed since connect" | "unknown" | "needs reinstall" => {
+            StatusTone::Attention
+        }
+        v if v.starts_with("stale") => StatusTone::Attention,
+        "not connected" | "not configured" | "not installed" | "not supported" | "off" | "no"
+        | "-" | "detect-only" => StatusTone::Absent,
+        _ => StatusTone::Plain,
+    }
+}
+
+/// `value` colored by [`status_tone`] for a status row: green when healthy, red when broken,
+/// yellow when it needs a look, dim when simply not set up. Plain text when stdout isn't a
+/// terminal, so captured output is unchanged. Only for the human-facing status commands —
+/// never the credential-helper path, whose stdout other programs read.
+pub(crate) fn status_value(value: &str) -> String {
+    match status_tone(value) {
+        StatusTone::Good => term::green(value),
+        StatusTone::Problem => term::red(value),
+        StatusTone::Attention => term::yellow(value),
+        StatusTone::Absent => term::dim(value),
+        StatusTone::Plain => value.to_string(),
+    }
 }
 
 pub fn state_path(agent_id: &str) -> PathBuf {
@@ -752,6 +1016,47 @@ fn normalize_url(url: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn status_tone_classifies_every_value_the_status_commands_print() {
+        use StatusTone::*;
+        for (value, tone) in [
+            ("connected", Good),
+            ("authenticated", Good),
+            ("active", Good),
+            ("active (v3)", Good),
+            ("configured", Good),
+            ("expired", Problem),
+            ("not logged in", Problem),
+            ("cluster missing", Problem),
+            ("different user", Problem),
+            ("missing", Problem),
+            ("cluster URL changed", Attention),
+            ("changed since connect", Attention),
+            ("unknown", Attention),
+            ("needs reinstall", Attention),
+            ("stale (v2; current v3)", Attention),
+            ("stale or changed (v2)", Attention),
+            ("not connected", Absent),
+            ("not configured", Absent),
+            ("not installed", Absent),
+            // The `status` agent table's cells.
+            ("on", Good),
+            ("yes", Good),
+            ("on (cp)", Good),
+            ("on (no content)", Good),
+            ("state unreadable", Problem),
+            ("?", Problem),
+            ("not supported", Absent),
+            ("off", Absent),
+            ("no", Absent),
+            ("-", Absent),
+            ("detect-only", Absent),
+            ("nasiko/router", Plain),
+        ] {
+            assert_eq!(status_tone(value), tone, "{value}");
+        }
+    }
 
     #[test]
     fn disconnect_preflight_preserves_state_when_agent_is_running() {
@@ -1179,7 +1484,7 @@ mod tests {
             )
             .create();
         let client = Client::for_test(&server.url(), None);
-        let (resolved, previous_llm_config_id) =
+        let (resolved, previous) =
             configure_agent_for_install(&client, "agent", Some("new-config")).unwrap();
         assert_eq!(resolved["model"], "new-model");
         let prepared = PreparedConnection {
@@ -1199,12 +1504,81 @@ mod tests {
                 username: None,
                 token: None,
             },
-            previous_llm_config_id,
+            previous,
         };
-        rollback_config(&prepared).unwrap();
+        put_back_config(&prepared).unwrap();
         current.assert();
         configs.assert();
         attach.assert();
         restore.assert();
+    }
+
+    #[test]
+    fn putting_a_config_back_puts_its_pinned_model_back_too() {
+        let mut server = mockito::Server::new();
+        server
+            .mock("GET", "/api/agents/agent/llm-config")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"data":{"llm_config_id":"old","pinned_model":"pinned","llm_config":{"id":"old"}}}"#,
+            )
+            .create();
+        server
+            .mock("GET", "/api/llm-configs")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"data":[{"id":"new","name":"new-config"}]}"#)
+            .create();
+        let ok = r#"{"data":{"llm_config_id":"new","llm_config":{"id":"new"}}}"#;
+        server
+            .mock("PATCH", "/api/agents/agent/llm-config")
+            .match_body(mockito::Matcher::Json(json!({"llm_config_id": "new"})))
+            .with_status(200)
+            .with_body(ok)
+            .create();
+        // The server clears the pin when the config changes, so it must come back separately.
+        let config_back = server
+            .mock("PATCH", "/api/agents/agent/llm-config")
+            .match_body(mockito::Matcher::Json(json!({"llm_config_id": "old"})))
+            .with_status(200)
+            .with_body(ok)
+            .create();
+        let pin_back = server
+            .mock("PATCH", "/api/agents/agent/llm-config")
+            .match_body(mockito::Matcher::Json(json!({"pinned_model": "pinned"})))
+            .with_status(200)
+            .with_body(ok)
+            .create();
+        let client = Client::for_test(&server.url(), None);
+        let (_, previous) =
+            configure_agent_for_install(&client, "agent", Some("new-config")).unwrap();
+        let previous = previous.expect("the config was changed");
+        put_back(&client, "agent", &previous).unwrap();
+        config_back.assert();
+        pin_back.assert();
+    }
+
+    #[test]
+    fn a_pin_that_cannot_be_put_back_is_reported_as_not_restored() {
+        let mut server = mockito::Server::new();
+        server
+            .mock("PATCH", "/api/agents/agent/llm-config")
+            .match_body(mockito::Matcher::Json(json!({"llm_config_id": "old"})))
+            .with_status(200)
+            .with_body("{}")
+            .create();
+        server
+            .mock("PATCH", "/api/agents/agent/llm-config")
+            .match_body(mockito::Matcher::Json(json!({"pinned_model": "pinned"})))
+            .with_status(500)
+            .create();
+        let client = Client::for_test(&server.url(), None);
+        let previous = PreviousConfig {
+            llm_config_id: Some("old".into()),
+            pinned_model: Some("pinned".into()),
+        };
+        let error = put_back(&client, "agent", &previous).unwrap_err();
+        assert!(error.chain().any(|cause| cause.is::<ConfigNotRestored>()));
     }
 }
