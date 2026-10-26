@@ -116,6 +116,7 @@
     "./settings/components/SettingRow": "./src/settings/components/SettingRow.tsx",
     "./settings/logic": "./src/settings/logic.ts",
     "./settings/SecretsRoute": "./src/settings/SecretsRoute.tsx",
+    "./settings/SettingsLayout": "./src/settings/SettingsLayout.tsx",
     "./settings/WorkspaceSettingsRoute": "./src/settings/WorkspaceSettingsRoute.tsx",
     "./tokenops/api": "./src/tokenops/api.ts",
     "./tokenops/attribution": "./src/tokenops/attribution.ts",

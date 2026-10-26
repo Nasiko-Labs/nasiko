@@ -54,13 +54,8 @@ import { CORE_SECTIONS } from "./search";
 interface Row {
   key: string;
   label: string;
-  to:
-    | "/settings"
-    | "/settings/secrets"
-    | "/settings/optimization-tiers"
-    | "/account/appearance"
-    | "/account/password"
-    | "/account/shortcuts";
+  // A layer's `personalSettingsLinks` entry carries its own route (e.g. `/settings/memory`), not one of the core's.
+  to: string;
   section?: string | undefined;
 }
 
@@ -87,7 +82,7 @@ export function SettingsLayout({
   // Chat's breakpoint for an inline rail (ChatPage `wide`).
   const wide = useMediaQuery("(min-width: 1024px)");
   const [sheetOpen, setSheetOpen] = useState(false);
-  const { settingsSections } = useSlots();
+  const { settingsSections, personalSettingsLinks } = useSlots();
   const pathname = usePathname();
   const params = useSearchParams();
   const admin = me.data?.is_superuser === true;
@@ -141,6 +136,8 @@ export function SettingsLayout({
           rows: [
             ...withLayer([], admin ? inGroup("security") : []),
             { key: "secrets", label: copy.secrets.title, to: "/settings/secrets" },
+            // Every user's own, like Secrets — never gated by `admin` (a layer's own route, not a `?section=` page).
+            ...personalSettingsLinks.map((l): Row => ({ key: l.key, label: l.label, to: l.to })),
           ],
         },
       ];
