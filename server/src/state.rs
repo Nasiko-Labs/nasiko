@@ -187,8 +187,8 @@ impl AppState {
         let resource_stats = crate::observability::resources::build_provider(&config, db.clone());
 
         // Shared client for short, bounded calls: embeddings, registry probes,
-        // OAuth. Agent hops are *not* short, and go through `agent_client`
-        // instead; LLM provider calls go through the router's own client.
+        // OAuth, provider requests. Agent hops are *not* short, and go through
+        // `agent_client` instead.
         let http_client = reqwest::Client::builder()
             .pool_max_idle_per_host(20)
             .timeout(std::time::Duration::from_secs(60))
