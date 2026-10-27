@@ -38,6 +38,21 @@ const REVALIDATE: &str = "no-cache";
 /// own fix.
 const NO_STORE: &str = "no-store";
 
+/// Browser hardening on everything the bundle serves: the shell, its assets
+/// and the 404s. The opener policy allows popups because the MCP OAuth sign-in
+/// watches its popup's `closed` (`ui/common/src/features/mcp/oauth.ts`), and
+/// `same-origin` severs that handle as soon as the provider's page loads.
+const HARDENING: [(&str, &str); 5] = [
+    ("x-content-type-options", "nosniff"),
+    ("referrer-policy", "strict-origin-when-cross-origin"),
+    ("x-frame-options", "DENY"),
+    (
+        "permissions-policy",
+        "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+    ),
+    ("cross-origin-opener-policy", "same-origin-allow-popups"),
+];
+
 #[derive(Deserialize, Default)]
 struct RoutesFile {
     #[serde(default)]
@@ -268,7 +283,12 @@ pub fn serve<E: RustEmbed>(
     #[cfg(not(debug_assertions))]
     let spa = cache.get_or_init(|| Spa::load::<E>(extras));
 
-    serve_from::<E>(req, spa)
+    let mut response = serve_from::<E>(req, spa);
+    let headers = response.headers_mut();
+    for (name, value) in HARDENING {
+        headers.insert(name, HeaderValue::from_static(value));
+    }
+    response
 }
 
 fn serve_from<E: RustEmbed>(req: &Request<Body>, spa: &Spa) -> Response {
@@ -434,6 +454,24 @@ mod tests {
         assert!(!looks_like_an_asset("agents/my.agent"));
         assert!(!looks_like_an_asset("sessions/abc"));
         assert!(!looks_like_an_asset(""));
+    }
+
+    /// This crate's own sources stand in for a bundle: a real file, an asset
+    /// that is gone and a bundle with no shell each take a different path.
+    #[derive(RustEmbed)]
+    #[folder = "src"]
+    struct Sources;
+
+    #[test]
+    fn every_response_is_hardened() {
+        static SPA: OnceLock<Spa> = OnceLock::new();
+        for path in ["/lib.rs", "/assets/gone.js", "/agents"] {
+            let req = Request::get(path).body(Body::empty()).expect("request");
+            let res = serve::<Sources>(&req, &SPA, &CspExtras::default());
+            for (name, value) in HARDENING {
+                assert_eq!(res.headers()[name], value, "{name} on {path}");
+            }
+        }
     }
 
     #[test]
