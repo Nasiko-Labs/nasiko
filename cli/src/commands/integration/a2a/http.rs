@@ -61,18 +61,24 @@ pub trait Transport: Sync {
     fn post(&self, url: &str, body: &Value, timeout: Duration) -> Reply;
 }
 
-/// [`Transport`] over ureq: a capped body and no proxy.
+/// [`Transport`] over ureq: a capped body, no proxy and no redirects.
 pub struct UreqCardHttp {
     agent: ureq::Agent,
 }
 
 impl UreqCardHttp {
-    /// Probes only ever target local addresses, so any proxy from the
-    /// environment (`HTTP_PROXY`, `ALL_PROXY`) is ignored: routing them
-    /// through a proxy would either fail or reach the proxy's localhost.
+    /// Probes only ever target local addresses, and nothing they send may
+    /// leave the machine:
+    /// - any proxy from the environment (`HTTP_PROXY`, `ALL_PROXY`) is ignored:
+    ///   routing probes through a proxy would either fail or reach the proxy's
+    ///   localhost;
+    /// - redirects are not followed: a local app commonly redirects an unknown
+    ///   path to a login page on another host, and following it would send a
+    ///   request there. The 3xx comes back as a reply instead.
     pub fn new() -> Self {
         let config = ureq::config::Config::builder()
             .proxy(None)
+            .max_redirects(0)
             .user_agent(USER_AGENT)
             .build();
         Self {
@@ -95,6 +101,8 @@ impl Transport for UreqCardHttp {
 
 fn to_reply(result: Result<ureq::http::Response<ureq::Body>, ureq::Error>) -> Reply {
     match result {
+        // Not followed, so a redirect's body is never taken for the card.
+        Ok(response) if !response.status().is_success() => Reply::Other,
         Ok(mut response) => response
             .body_mut()
             .with_config()

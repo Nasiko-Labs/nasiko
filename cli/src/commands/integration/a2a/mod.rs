@@ -467,6 +467,34 @@ mod tests {
     }
 
     #[test]
+    fn a_redirect_is_not_followed_and_yields_nothing() {
+        // Stands in for another host: a login page a local app redirects to.
+        let mut elsewhere = mockito::Server::new();
+        let card = json!({
+            "name": "elsewhere", "url": "http://127.0.0.1:1/",
+            "skills": [{"id": "r", "name": "R", "description": "d"}]
+        });
+        let never_contacted = elsewhere
+            .mock("GET", mockito::Matcher::Any)
+            .with_body(json_body(card.clone()))
+            .expect(0)
+            .create();
+        let mut server = mockito::Server::new();
+        server
+            .mock("GET", mockito::Matcher::Any)
+            .with_status(302)
+            .with_header("location", &format!("{}/login", elsewhere.url()))
+            // A card-shaped body on the redirect itself is not a card either.
+            .with_body(json_body(card))
+            .create();
+
+        let found = discover_at(&[endpoint_of(&server)], Framework::ALL, &real_http());
+
+        assert!(found.is_empty(), "{found:?}");
+        never_contacted.assert();
+    }
+
+    #[test]
     fn a_port_that_never_answers_costs_one_timeout() {
         // Accepts connections and never replies, like a hung service.
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
