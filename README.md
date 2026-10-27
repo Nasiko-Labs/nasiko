@@ -74,10 +74,11 @@ nasiko agents discover
 
 `nasiko agents discover` reads your machine, prints what it finds, and exits. You get a row per
 supported harness: whether it is detected, whether it is reporting to Nasiko, its version, and
-where its config lives. A2A agents running on the machine, from any framework, are listed in
-the same table: discovery looks for an A2A agent card on listening ports and Docker published
-ports (and asks LangGraph servers for one card per assistant), and shows where each agent serves
-its card in an A2A CARD column. A card the platform could not register is reported as a warning.
+where its config lives. `nasiko status` also lists A2A agents running on the machine, from any
+framework, in a second table: discovery looks for an A2A agent card on listening ports and Docker
+published ports (and asks LangGraph servers for one card per assistant), and shows each agent's
+version, whether its card is valid, and where it serves the card. A card the platform could not
+register is also reported as a warning naming the field at fault.
 Discovery changes no harness settings, requires no account, and sends nothing off the machine.
 
 > If `nasiko agents discover` is not listed by `nasiko agents --help`, reinstall with the

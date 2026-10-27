@@ -93,7 +93,7 @@ test-unit:
     # is everything it has.
     cargo test --lib -p nasiko-hitl -p nasiko-mcp-gateway -p nasiko-react-agent
 
-# End-to-end check of `nasiko agents discover` against a real CrewAI agent and a real
+# End-to-end check of A2A discovery in `nasiko status` against a real CrewAI agent and a real
 # LangGraph server. Needs python3 (3.10+); the first run installs both frameworks.
 test-discovery:
     scripts/a2a-discovery-e2e/run.sh

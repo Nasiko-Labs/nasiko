@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# End-to-end check of `nasiko agents discover`: start a real CrewAI agent and a
-# real LangGraph server, run discovery, and expect all three agents in the table.
+# End-to-end check of A2A discovery in `nasiko status`: start a real CrewAI agent and a
+# real LangGraph server, run status, and expect all three agents in its A2A table.
 #
 # The first run installs both frameworks into virtualenvs under .work/ (needs
 # network); later runs reuse them. Both agents run on free ports picked here.
@@ -47,11 +47,12 @@ echo "Waiting for the agents ..."
 wait_for crewai "http://127.0.0.1:$crewai_port/.well-known/agent-card.json"
 wait_for langgraph "http://127.0.0.1:$langgraph_port/info"
 
-output=$(cargo run -q -p nasiko -- agents discover)
+# `status` exits non-zero when no cluster is connected; the agent tables print regardless.
+output=$(cargo run -q -p nasiko -- status || true)
 echo "$output"
 
 for agent in crew-researcher planner writer; do
-  if ! grep -q "^$agent " <<< "$output"; then
+  if ! grep -qE "^ *$agent " <<< "$output"; then
     echo "FAIL: $agent was not discovered (logs in $work)" >&2
     exit 1
   fi

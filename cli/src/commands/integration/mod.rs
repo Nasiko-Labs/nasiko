@@ -1,7 +1,7 @@
 //! Detect local coding agents and report their sessions to Nasiko.
 //!
-//! [`local_agents`](super::local_agents) answers "what coding agents are on this machine", 
-//! "what A2A agents are running on this machine" and drives setup. 
+//! [`local_agents`](super::local_agents) answers "what coding agents are on this machine",
+//! "what A2A agents are running on this machine" and drives setup.
 //! [`install`] registers an agent in the control plane (or reuses the one LLM
 //! routing already uses) and installs a hook that durably queues completed turns for delivery
 //! to the cluster and account reporting was installed for — not whichever is active later.
@@ -20,6 +20,8 @@ mod sync;
 use anyhow::{Context, Result, bail};
 use nasiko_utils::term;
 use std::path::Path;
+use tabled::settings::{Alignment, Style};
+use tabled::{Table, Tabled};
 
 use agents::Agent;
 use catalog::Support;
@@ -149,125 +151,62 @@ pub fn pending_event_count() -> Result<usize> {
 
 // ─── Commands ────────────────────────────────────────────────────────────────
 
-/// Print every catalogued coding agent and every A2A agent running on this
-/// machine in one table: whether each is here, and whether it reports to Nasiko.
-pub fn status() -> Result<()> {
-    let settings = IntegrationState::load()?;
+/// Print the A2A agents running on this machine as a second table after the coding agents, then
+/// a warning per invalid card and per source that could not be read. Prints no table when none
+/// are running, so `status` is unchanged on machines without A2A agents.
+pub fn print_running_a2a_agents(cli: &str) {
     let discovery = a2a::discover_local(&local_control_plane_ports());
-
-    let mut rows: Vec<StatusRow> = Agent::ALL
-        .iter()
-        .copied()
-        .map(|agent| coding_agent_row(agent, &settings))
-        .collect();
-    rows.extend(discovery.agents.iter().map(a2a_agent_row));
-    print_status_table(&rows);
-
-    println!("\nInstall session reporting:  nasiko agents install <agent>");
-
+    if !discovery.agents.is_empty() {
+        println!("\nRunning A2A agents:");
+        println!("{}", a2a_agent_table(&discovery.agents));
+    }
     for agent in &discovery.agents {
         if let Err(errors) = &agent.card {
             for error in errors {
-                eprintln!(
-                    "warning: {} serves an invalid agent card: {error}",
+                term::print_warning(&format!(
+                    "{} serves an invalid agent card: {error}",
                     agent.name
-                );
+                ));
             }
         }
     }
     for warning in &discovery.warnings {
-        eprintln!("warning: {warning}\n  Retry with: nasiko agents discover");
+        term::print_warning(&format!("{warning}\n  Retry with: {cli} status"));
     }
-    Ok(())
 }
 
-/// One line of the `nasiko agents discover` table.
-struct StatusRow {
+/// One line of the running A2A agents table.
+#[derive(Tabled)]
+struct A2aAgentRow {
+    #[tabled(rename = "AGENT")]
     agent: String,
-    detected: bool,
-    connected: bool,
+    #[tabled(rename = "VERSION")]
     version: String,
-    config: String,
-    /// Where an A2A agent serves its agent card; `None` for coding agents.
-    a2a_card: Option<String>,
+    #[tabled(rename = "CARD")]
+    card: &'static str,
+    /// The card URL as fetched from this machine — not the card's own `url`,
+    /// which inside a Docker container names the unpublished port.
+    #[tabled(rename = "A2A CARD")]
+    card_url: String,
 }
 
-fn coding_agent_row(agent: Agent, settings: &IntegrationState) -> StatusRow {
-    let reporting = reporting_details(agent, settings);
-    StatusRow {
-        agent: agent.spec().id.to_string(),
-        detected: detect(agent).is_present(),
-        connected: reporting.connected,
-        version: reporting.version,
-        config: tildify(&agent.config_path()),
-        a2a_card: None,
-    }
-}
-
-/// A running A2A agent: found by its card, so always detected; not connected
-/// until registration of discovered agents exists. A2A CARD is the card URL as
-/// fetched from this machine — not the card's own `url`, which inside a Docker
-/// container names the unpublished port.
-fn a2a_agent_row(agent: &a2a::DiscoveredAgent) -> StatusRow {
-    StatusRow {
+fn a2a_agent_row(agent: &a2a::DiscoveredAgent) -> A2aAgentRow {
+    A2aAgentRow {
         agent: agent.name.clone(),
-        detected: true,
-        connected: false,
         version: agent.version().unwrap_or("-").to_string(),
-        config: "-".to_string(),
-        a2a_card: Some(agent.card_url.clone()),
-    }
-}
-
-fn print_status_table(rows: &[StatusRow]) {
-    print!("{}", format_status_table(rows));
-}
-
-/// With only coding agents the table is exactly what it has always been. A2A
-/// agents widen the AGENT column for long names and add an A2A CARD column,
-/// which needs CONFIG padded to a fixed width.
-fn format_status_table(rows: &[StatusRow]) -> String {
-    let width = rows
-        .iter()
-        .map(|row| row.agent.len())
-        .max()
-        .unwrap_or(0)
-        .max(10);
-    let has_cards = rows.iter().any(|row| row.a2a_card.is_some());
-    let config_width = rows
-        .iter()
-        .map(|row| row.config.len())
-        .max()
-        .unwrap_or(0)
-        .max("CONFIG".len());
-
-    let mut table = format!(
-        "{:<width$} {:<10} {:<11} {:<20} ",
-        "AGENT", "DETECTED", "CONNECTED", "VERSION"
-    );
-    let mut rule_len = 88 + width - 10;
-    if has_cards {
-        table.push_str(&format!("{:<config_width$} A2A CARD\n", "CONFIG"));
-        rule_len += config_width + 1;
-    } else {
-        table.push_str("CONFIG\n");
-    }
-    table.push_str(&format!("{}\n", "-".repeat(rule_len)));
-    for row in rows {
-        table.push_str(&format!(
-            "{:<width$} {:<10} {:<11} {:<20} ",
-            row.agent,
-            if row.detected { "yes" } else { "-" },
-            if row.connected { "yes" } else { "no" },
-            row.version,
-        ));
-        if has_cards {
-            let card = row.a2a_card.as_deref().unwrap_or("-");
-            table.push_str(&format!("{:<config_width$} {card}\n", row.config));
+        card: if agent.card.is_ok() {
+            "valid"
         } else {
-            table.push_str(&format!("{}\n", row.config));
-        }
+            "invalid"
+        },
+        card_url: agent.card_url.clone(),
     }
+}
+
+/// Laid out like the coding-agent table in `local_agents`, so the two read as one overview.
+fn a2a_agent_table(agents: &[a2a::DiscoveredAgent]) -> Table {
+    let mut table = Table::new(agents.iter().map(a2a_agent_row));
+    table.with(Style::blank()).with(Alignment::left());
     table
 }
 
@@ -702,75 +641,60 @@ mod tests {
         catalog::find("claude").unwrap()
     }
 
-    #[test]
-    fn a2a_agents_join_the_coding_agent_table_as_detected_and_not_connected() {
-        let agent = a2a::DiscoveredAgent {
-            name: "research-crew".into(),
-            card_url: "http://127.0.0.1:8000/.well-known/agent-card.json".into(),
-            card: Err(Vec::new()),
-        };
-
-        let row = a2a_agent_row(&agent);
-
-        assert!(row.detected);
-        assert!(!row.connected);
-        assert_eq!(row.agent, "research-crew");
-        assert_eq!(row.config, "-");
-        assert_eq!(
-            row.a2a_card.as_deref(),
-            Some("http://127.0.0.1:8000/.well-known/agent-card.json")
-        );
-    }
-
-    fn coding_row(agent: &str, config: &str) -> StatusRow {
-        StatusRow {
-            agent: agent.into(),
-            detected: true,
-            connected: false,
-            version: "-".into(),
-            config: config.into(),
-            a2a_card: None,
+    fn discovered(name: &str, card: Result<String, Vec<a2a::CardIssue>>) -> a2a::DiscoveredAgent {
+        a2a::DiscoveredAgent {
+            name: name.into(),
+            card_url: "http://127.0.0.1:8765/.well-known/agent-card.json".into(),
+            card,
         }
     }
 
     #[test]
-    fn the_table_is_unchanged_without_a2a_agents() {
-        let table = format_status_table(&[
-            coding_row("claude", "~/.claude"),
-            coding_row("opencode", "~/.config/opencode"),
-        ]);
+    fn a_valid_card_shows_its_version_and_where_it_was_fetched() {
+        let row = a2a_agent_row(&discovered("research-crew", Ok("1.0.0".into())));
 
+        assert_eq!(row.agent, "research-crew");
+        assert_eq!(row.version, "1.0.0");
+        assert_eq!(row.card, "valid");
         assert_eq!(
-            table,
-            format!(
-                "AGENT      DETECTED   CONNECTED   VERSION              CONFIG\n{}\n\
-                 claude     yes        no          -                    ~/.claude\n\
-                 opencode   yes        no          -                    ~/.config/opencode\n",
-                "-".repeat(88)
-            )
+            row.card_url,
+            "http://127.0.0.1:8765/.well-known/agent-card.json"
         );
     }
 
     #[test]
-    fn a2a_agents_add_an_a2a_card_column_after_config() {
-        let mut crew = coding_row("research-crew", "-");
-        crew.a2a_card = Some("http://127.0.0.1:8765/.well-known/agent-card.json".into());
+    fn an_invalid_card_is_marked_invalid_with_no_version() {
+        let issue = a2a::CardIssue {
+            field: "skills[0].description".into(),
+            message: "is required".into(),
+        };
 
-        let table = format_status_table(&[coding_row("claude", "~/.claude"), crew]);
-        let lines: Vec<&str> = table.lines().collect();
+        let row = a2a_agent_row(&discovered("half-built", Err(vec![issue])));
 
+        assert_eq!(row.version, "-");
+        assert_eq!(row.card, "invalid");
+    }
+
+    #[test]
+    fn the_a2a_table_lists_one_agent_per_line_under_its_header() {
+        let table = a2a_agent_table(&[
+            discovered("research-crew", Ok("1.0.0".into())),
+            discovered("half-built", Err(Vec::new())),
+        ])
+        .to_string();
+        let lines: Vec<Vec<&str>> = table
+            .lines()
+            .map(|line| line.split_whitespace().collect())
+            .collect();
+
+        let url = "http://127.0.0.1:8765/.well-known/agent-card.json";
         assert_eq!(
-            lines[0],
-            "AGENT         DETECTED   CONNECTED   VERSION              CONFIG    A2A CARD"
-        );
-        assert_eq!(
-            lines[2],
-            "claude        yes        no          -                    ~/.claude -"
-        );
-        assert_eq!(
-            lines[3],
-            "research-crew yes        no          -                    -         \
-             http://127.0.0.1:8765/.well-known/agent-card.json"
+            lines,
+            [
+                vec!["AGENT", "VERSION", "CARD", "A2A", "CARD"],
+                vec!["research-crew", "1.0.0", "valid", url],
+                vec!["half-built", "-", "invalid", url],
+            ]
         );
     }
 
