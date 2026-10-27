@@ -263,6 +263,7 @@ async fn internal_agent_seed_deploy_carries_the_credentials_and_keeps_its_direct
                 ("OPENAI_BASE_URL".into(), "http://direct.test/v1".into()),
             ]),
             public: false,
+            writable_path: None,
         },
     )
     .await;
@@ -273,6 +274,41 @@ async fn internal_agent_seed_deploy_carries_the_credentials_and_keeps_its_direct
     assert_eq!(spec.env_vars["EDITION_SETTING"], "kept");
     assert_eq!(spec.env_vars["OPENAI_API_KEY"], "direct-key");
     assert_eq!(spec.env_vars["OPENAI_BASE_URL"], "http://direct.test/v1");
+    assert!(!spec.writable);
+    f.server.cleanup().await;
+}
+
+/// An internal agent that writes files gets its volume where it asked, and the
+/// row records it so a later redeploy (the internal-agent watch) mounts the same.
+#[tokio::test]
+#[serial]
+async fn internal_agent_seed_with_a_writable_path_mounts_it_and_records_it() {
+    let f = start().await;
+
+    seed_internal_agent(
+        &f.server.state,
+        InternalAgentSeed {
+            name: "internal-writer".into(),
+            image: "nasiko/writer:1".into(),
+            force_pull: false,
+            env: HashMap::new(),
+            public: false,
+            writable_path: Some("/data".into()),
+        },
+    )
+    .await;
+
+    let agent_id = f.agent_id_by_name("internal-writer").await;
+    let spec = f.first_spec(agent_id).await;
+    assert!(spec.writable);
+    assert_eq!(spec.writable_path.as_deref(), Some("/data"));
+    let row: (bool, Option<String>) =
+        sqlx::query_as("SELECT writable, writable_path FROM agents WHERE id = $1")
+            .bind(agent_id)
+            .fetch_one(&f.server.state.db)
+            .await
+            .unwrap();
+    assert_eq!(row, (true, Some("/data".to_string())));
     f.server.cleanup().await;
 }
 
