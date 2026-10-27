@@ -93,10 +93,12 @@ test-unit:
     # is everything it has.
     cargo test --lib -p nasiko-hitl -p nasiko-mcp-gateway -p nasiko-react-agent
 
-# End-to-end check of `nasiko agents discover` against a real CrewAI agent and a real
-# LangGraph server. Needs python3 (3.10+); the first run installs both frameworks.
-test-discovery:
-    scripts/a2a-discovery-e2e/run.sh
+# End-to-end check of local A2A agents against a real CrewAI agent and a real LangGraph server:
+# `nasiko agents discover`, then registration and LLM routing through a real nasiko-server
+# (`nasiko connect`/`disconnect`). Needs python3 (3.10+) and `just infra`; the first run installs
+# both frameworks. `just test-discovery --discovery-only` skips the server half.
+test-discovery *args:
+    scripts/a2a-discovery-e2e/run.sh {{args}}
 
 # Phase II — library-crate integration tests that need Postgres (run `just infra` first).
 # Serial for the same reason `test-server` is: they share one database, and `nasiko-hitl`'s own
