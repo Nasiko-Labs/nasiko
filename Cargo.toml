@@ -17,7 +17,6 @@ members = [
     "types",
     "utils",
     "server",
-    "spa",
     "coding-policy",
     "oci",
     "flow",
@@ -58,7 +57,6 @@ nasiko-orchestrator = { path = "orchestrator" }
 nasiko-types = { path = "types" }
 nasiko-utils = { path = "utils" }
 nasiko-server = { path = "server" }
-nasiko-spa = { path = "spa" }
 nasiko-coding-policy = { path = "coding-policy" }
 nasiko-oci = { path = "oci" }
 nasiko-llm-router = { path = "llm-router" }

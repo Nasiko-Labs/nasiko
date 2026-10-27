@@ -21,8 +21,6 @@ use super::sync as delivery;
 
 /// Bounds each progress and retry-request call, so a server that stops answering can't stall the run.
 const SERVER_CALL_TIMEOUT: Duration = Duration::from_secs(10);
-const SETUP_HINT: &str =
-    "To discover your coding agents and load your previous sessions, run: nasiko agents setup";
 const ALREADY_IMPORTING: &str = "An import is already running on this computer; follow it with \
      `nasiko agents status` or in Nasiko (Coding harnesses).";
 /// The progress line's width when the terminal's can't be read.
@@ -143,11 +141,6 @@ pub fn sync(retry_rejected: bool) -> Result<()> {
     })?;
     printer.finish(&run);
     Ok(())
-}
-
-/// What a login says about coding agents: it connects none of them itself.
-pub fn print_setup_hint() {
-    println!("{SETUP_HINT}");
 }
 
 fn signed_in_client() -> Result<Client> {

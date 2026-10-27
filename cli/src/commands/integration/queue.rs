@@ -105,17 +105,17 @@ pub fn reject_invalid(record: &QueueRecord, error: &str) -> Result<PathBuf> {
     reject_invalid_at(&super::state::integrations_dir(), record, error)
 }
 
-/// Every queued record file, whatever its retry time — without reading, moving or rewriting any.
-pub fn queued_count() -> Result<usize> {
-    queued_count_at(&super::state::integrations_dir())
-}
-
 pub(super) fn enqueue_at(root: &Path, record: &QueueRecord) -> Result<PathBuf> {
     validate_record(record)?;
     let path = record_path(root, &record.destination, &record.event.event_id);
     create_owner_dirs(&root.join("queue"))?;
     atomic_owner_write(&path, &serde_json::to_vec(record)?)?;
     Ok(path)
+}
+
+/// Every queued record file, whatever its retry time — without reading, moving or rewriting any.
+pub fn queued_count() -> Result<usize> {
+    queued_count_at(&super::state::integrations_dir(), None)
 }
 
 fn validate_record(record: &QueueRecord) -> Result<()> {
@@ -254,9 +254,35 @@ pub(super) fn records_at(root: &Path, backoff: Backoff) -> Result<Vec<(PathBuf, 
     Ok(records)
 }
 
-/// Counts queued record files, paused or waiting on a retry included, from the file names alone.
-fn queued_count_at(root: &Path) -> Result<usize> {
-    Ok(record_files(&root.join("queue"))?.len())
+/// Counts queued record files, stopping once `limit` are found (`None` counts them all).
+fn queued_count_at(root: &Path, limit: Option<usize>) -> Result<usize> {
+    let queue = root.join("queue");
+    if !queue.exists() {
+        return Ok(0);
+    }
+    let limit = limit.unwrap_or(usize::MAX);
+    let mut count = 0;
+    for cluster in std::fs::read_dir(queue)? {
+        let cluster = cluster?;
+        if !cluster.file_type()?.is_dir() {
+            continue;
+        }
+        for entry in std::fs::read_dir(cluster.path())? {
+            let is_record = entry.is_ok_and(|entry| {
+                entry
+                    .path()
+                    .extension()
+                    .is_some_and(|extension| extension == "json")
+            });
+            if is_record {
+                count += 1;
+                if count >= limit {
+                    return Ok(count);
+                }
+            }
+        }
+    }
+    Ok(count)
 }
 
 fn quarantine_at(root: &Path, path: &Path, record: &QueueRecord) -> Result<PathBuf> {
@@ -589,8 +615,8 @@ mod tests {
         let records = records_at(dir.path(), Backoff::Honour).unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].1.event.turn.id, "ready");
-        assert_eq!(queued_ids_at(dir.path()).unwrap().len(), 2);
-        assert_eq!(queued_count_at(dir.path()).unwrap(), 2);
+        assert_eq!(queued_count_at(dir.path(), None).unwrap(), 2);
+        assert_eq!(queued_count_at(dir.path(), Some(1)).unwrap(), 1);
     }
 
     #[test]
@@ -605,9 +631,10 @@ mod tests {
         let malformed = enqueue_at(dir.path(), &malformed).unwrap();
         std::fs::write(&malformed, b"not-json").unwrap();
 
-        assert_eq!(queued_count_at(dir.path()).unwrap(), 2);
+        assert_eq!(queued_count_at(dir.path(), None).unwrap(), 2);
         assert!(malformed.exists());
         assert!(!dir.path().join("rejected").exists());
+        assert_eq!(queued_ids_at(dir.path()).unwrap().len(), 2);
     }
 
     #[test]
@@ -638,7 +665,6 @@ mod tests {
         assert!(records_at(dir.path(), Backoff::Honour).unwrap().is_empty());
         assert!(paused_until(destination_dir, now).is_some());
         assert_eq!(queued_ids_at(dir.path()).unwrap().len(), 1);
-        assert_eq!(queued_count_at(dir.path()).unwrap(), 1);
 
         pause(destination_dir, now - chrono::Duration::seconds(1)).unwrap();
         assert_eq!(paused_until(destination_dir, now), None);

@@ -571,21 +571,21 @@ mod tests {
         // migration file and compares it against those consts value-for-value, in order — so
         // the migration and the consts above can't silently drift apart in either direction.
         //
-        // `resume_status` reads from 0070 and `origin` from 0074, not 0007: sqlx hashes applied
+        // `resume_status` reads from 0060 and `origin` from 0064, not 0007: sqlx hashes applied
         // migration files, so a widened CHECK on an already-shipped column has to be re-expressed
         // as a forward-only ALTER (0011_baseline_deltas.sql's own precedent) rather than edited in
-        // place. 0070 re-states 0027's resume_status list plus `agent_lost_task`, and 0074_acp_hitl
+        // place. 0060 re-states 0027's resume_status list plus `agent_lost_task`, and 0064_acp_hitl
         // adds `coding_agent` to origin (NAS-842); each is its column's current source of truth,
         // same as 0007 still is for `kind` and `status`.
         let migration_0007 = include_str!("../../migrations/0007_hitl.sql");
-        let migration_0070 =
-            include_str!("../../migrations/0070_hitl_resume_status_agent_lost_task.sql");
-        let migration_0074 = include_str!("../../migrations/0074_acp_hitl.sql");
+        let migration_0060 =
+            include_str!("../../migrations/0060_hitl_resume_status_agent_lost_task.sql");
+        let migration_0064 = include_str!("../../migrations/0064_acp_hitl.sql");
         for (migration, column, expected) in [
             (migration_0007, "kind", SQL_KIND_VALUES),
-            (migration_0074, "origin", SQL_ORIGIN_VALUES),
+            (migration_0064, "origin", SQL_ORIGIN_VALUES),
             (migration_0007, "status", SQL_STATUS_VALUES),
-            (migration_0070, "resume_status", SQL_RESUME_STATUS_VALUES),
+            (migration_0060, "resume_status", SQL_RESUME_STATUS_VALUES),
         ] {
             let actual = parse_check_values(migration, column);
             assert_eq!(

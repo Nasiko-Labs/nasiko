@@ -255,6 +255,56 @@ pub fn report(agent_id: &str) -> Result<()> {
     report::run(resolve(agent_id)?)
 }
 
+/// Connects every detected coding agent that has no reporting yet, for `nasiko agents setup`.
+/// Running setup is the user's yes, so an agent declined at a login offer is connected too.
+/// Agents already reporting keep their binding. One broken adapter must not block the others.
+pub(super) fn auto_install_detected() -> Result<()> {
+    let settings = IntegrationState::load()?;
+    let agents: Vec<_> = Agent::ALL
+        .iter()
+        .copied()
+        .filter(|agent| agent.spec().support == Support::Instrumented)
+        .filter(|agent| detect(*agent).is_present())
+        .collect();
+    if agents.is_empty() {
+        println!("No supported local coding agents detected.");
+        return Ok(());
+    }
+
+    println!("\nConfiguring detected coding agents for this account...");
+    let mut installed = 0usize;
+    for agent in agents {
+        let spec = agent.spec();
+        let reconnect = format!(
+            "{} connect {} --no-routing --reporting",
+            crate::commands::local_agents::cli_name(),
+            spec.id
+        );
+        if settings.get(spec.id).is_some() {
+            println!(
+                "{} reporting is already installed; keeping its existing cluster binding. Rebind explicitly with: {reconnect}",
+                spec.display_name
+            );
+            installed += 1;
+            continue;
+        }
+        match install(InstallOptions {
+            agent_id: spec.id,
+            no_content: false,
+            agent_name: None,
+        }) {
+            Ok(()) => installed += 1,
+            Err(error) => term::print_warning(&format!(
+                "Automatic {} setup failed: {error:#}\n  Retry with: {}",
+                spec.display_name,
+                term::cyan_stderr(&reconnect)
+            )),
+        }
+    }
+    println!("Automatic coding-agent setup completed for {installed} agent(s).");
+    Ok(())
+}
+
 /// `nasiko agents sync` — see [`setup::sync`].
 pub fn sync(retry_rejected: bool) -> Result<()> {
     setup::sync(retry_rejected)
@@ -295,60 +345,6 @@ fn agent_rows() -> Vec<AgentReport> {
             )
         })
         .collect()
-}
-
-/// `nasiko agents setup`'s connect step: brings every installed hook up to date, then installs
-/// reporting for each detected agent that has none. Running setup is the user's OK, so an agent
-/// declined at login is installed too. One broken adapter must not block the others.
-fn auto_install_detected() -> Result<()> {
-    if let Err(error) = refresh_outdated_hooks() {
-        term::print_warning(&format!("Reporting hooks were not refreshed ({error:#})."));
-    }
-    let settings = IntegrationState::load()?;
-    let agents: Vec<_> = Agent::ALL
-        .iter()
-        .copied()
-        .filter(|agent| agent.spec().support == Support::Instrumented)
-        .filter(|agent| detect(*agent).is_present())
-        .collect();
-    if agents.is_empty() {
-        println!("No supported local coding agents detected.");
-        return Ok(());
-    }
-
-    println!("\nConfiguring detected coding agents for this account...");
-    let mut installed = 0usize;
-    for agent in agents {
-        let spec = agent.spec();
-        let connect_hint = format!(
-            "{} connect {} --no-routing --reporting",
-            crate::commands::local_agents::cli_name(),
-            spec.id
-        );
-        if settings.get(spec.id).is_some() {
-            term::print_info(&format!(
-                "{} reporting is already installed; keeping its existing cluster binding. Rebind explicitly with: {}",
-                spec.display_name,
-                term::cyan(&connect_hint)
-            ));
-            installed += 1;
-            continue;
-        }
-        match install(InstallOptions {
-            agent_id: spec.id,
-            no_content: false,
-            agent_name: None,
-        }) {
-            Ok(()) => installed += 1,
-            Err(error) => term::print_warning(&format!(
-                "Setting up {} failed ({error:#}). Retry with: {}",
-                spec.display_name,
-                term::cyan_stderr(&connect_hint)
-            )),
-        }
-    }
-    println!("Coding-agent setup completed for {installed} agent(s).");
-    Ok(())
 }
 
 /// Remembers that the user said no when reporting was offered for these agents after logging
@@ -478,7 +474,6 @@ pub fn auto_install_if_authenticated() {
     if let Err(error) = refresh_outdated_hooks() {
         term::print_warning(&format!("Reporting hooks were not refreshed ({error:#})."));
     }
-    // Asks first; nothing new is installed without a yes.
     if let Err(error) = crate::commands::local_agents::offer_reporting() {
         term::print_warning(&format!(
             "Session reporting was not set up ({error:#}). Turn it on with: {}",
@@ -488,8 +483,6 @@ pub fn auto_install_if_authenticated() {
             ))
         ));
     }
-    // Importing past sessions is only ever started by the user.
-    setup::print_setup_hint();
 }
 
 // ─── Detection ───────────────────────────────────────────────────────────────

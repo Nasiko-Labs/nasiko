@@ -804,7 +804,7 @@ pub enum AgentsCommands {
         /// Agent to uninstall (e.g. claude or opencode)
         agent: String,
     },
-    /// Deliver queued coding-agent session events now
+    /// Validate and deliver queued coding-agent events
     Sync {
         /// Queue the turns that were set aside again, then deliver them
         #[arg(long)]

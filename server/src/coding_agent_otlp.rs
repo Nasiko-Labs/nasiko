@@ -107,7 +107,7 @@ pub async fn export_once(
 /// crashed or restarted mid-export — so its claim is taken over. `$1` is
 /// `STALE_AFTER`. `e` is the receipt.
 ///
-/// The leading `IN` restates the claim index's (0066) predicate verbatim: the
+/// The leading `IN` restates the claim index's (0071) predicate verbatim: the
 /// planner does not infer it from the `OR` below, and without it every user's
 /// pick falls back to scanning all their receipts — hundreds of milliseconds
 /// per claim at an import's scale instead of under one.
@@ -125,7 +125,7 @@ const CLAIMABLE: &str = "(e.otlp_state IN ('pending', 'failed', 'processing')
 /// in front of everyone else's live session until it drained.
 ///
 /// Built to stay cheap under that backlog: a skip scan over the claim index
-/// (0066) visits each user once, and each user contributes at most a batch of
+/// (0071) visits each user once, and each user contributes at most a batch of
 /// candidates, so the cost follows users × batch, not the backlog's size.
 /// The candidates are then locked `SKIP LOCKED`, re-checking that each is still
 /// claimable, so a concurrent worker never claims the same receipt twice.

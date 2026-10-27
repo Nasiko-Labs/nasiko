@@ -240,7 +240,6 @@ pub(crate) async fn upsert_row(
         None => None,
     };
 
-    // Written under the resolved name, not the UUID a coding agent's row may have arrived under.
     let row = TraceUsageRow {
         agent_name,
         ..row.clone()

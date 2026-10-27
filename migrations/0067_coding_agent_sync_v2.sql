@@ -13,5 +13,5 @@ ALTER TABLE coding_agent_sync_runs ADD CONSTRAINT coding_agent_sync_runs_phase_c
 ));
 
 -- Consent moved to the local client: running `nasiko agents setup` is the answer, and the desktop
--- app stores its own. The server-side answer 0061 introduced has no reader or writer left.
+-- app stores its own. The server-side answer 0066 introduced has no reader or writer left.
 DROP TABLE IF EXISTS coding_agent_consent;

@@ -28,7 +28,7 @@ pub struct Backlog {
 
 impl Backlog {
     /// Both counts are served by partial indexes over just the waiting rows
-    /// (0066 and 0045), so this stays cheap however large the table grows.
+    /// (0071 and 0045), so this stays cheap however large the table grows.
     pub async fn measure(db: &PgPool) -> Result<Self, sqlx::Error> {
         sqlx::query_as(
             "SELECT

@@ -17,7 +17,7 @@ ALTER TABLE coding_agent_telemetry_events
 -- timestamps: the delivered columns keep meaning "the collector accepted it".
 --
 -- NOT VALID so adding the constraint does not scan the table under this migration's exclusive
--- lock; 0065 validates it under a lock that does not block reads or writes. The new set is a
+-- lock; 0070 validates it under a lock that does not block reads or writes. The new set is a
 -- superset of the old one, so validation cannot fail.
 ALTER TABLE coding_agent_telemetry_events
     DROP CONSTRAINT coding_agent_telemetry_events_otlp_state_check,

@@ -79,9 +79,9 @@ aes-gcm = "0.10"
 hkdf = { workspace = true }
 sha2 = { workspace = true }
 base64 = { workspace = true }
-nasiko-spa = { workspace = true }
 rust-embed = { workspace = true }
 mime_guess = { workspace = true }
+percent-encoding = { workspace = true }
 hex = { workspace = true }
 dashmap = { workspace = true }
 async-trait = { workspace = true }
@@ -95,7 +95,6 @@ tracing-opentelemetry = "0.29"
 tonic = "0.12"
 
 [dev-dependencies]
-percent-encoding = { workspace = true }
 serial_test = { workspace = true }
 reqwest = { workspace = true, features = ["multipart"] }
 uuid = { workspace = true }

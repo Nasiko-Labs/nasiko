@@ -1,4 +1,4 @@
-//! Summarizes coding-agent receipts that predate migration 0063's typed turn
+//! Summarizes coding-agent receipts that predate migration 0068's typed turn
 //! columns, in bounded chunks, after the server has started.
 //!
 //! The migration used to do this itself with one table-wide UPDATE: every
@@ -22,7 +22,7 @@ const CHUNK: i64 = 500;
 /// Pause between chunks, so the backfill never monopolizes the database.
 const BETWEEN_CHUNKS: Duration = Duration::from_millis(100);
 /// How often to look again once nothing is left. Cheap — the pending set is a
-/// partial index (0067) that is empty once done — and it picks up receipts an
+/// partial index (0072) that is empty once done — and it picks up receipts an
 /// older binary still wrote, unsummarized, during a rolling deploy.
 const RECHECK: Duration = Duration::from_secs(10 * 60);
 /// Back-off after a failed chunk.
