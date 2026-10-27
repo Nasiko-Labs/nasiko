@@ -2219,7 +2219,7 @@ pub fn status(target: Option<&str>) -> Result<()> {
 }
 
 /// Where an installed reporting hook lives and where it delivers — what `agents discover`
-/// used to show as its CONFIG column, plus the cluster a rebind would move it from.
+/// showed as its CONFIG column before coding agents moved to `status`, plus the cluster a rebind would move it from.
 fn print_reporting_details(local: &LocalAgent) {
     if !local.reporting_installed {
         return;
@@ -2250,7 +2250,6 @@ pub fn print_overview() -> Result<()> {
     println!("Coding agents:");
     print_agent_table(&views);
     let cli = cli_name();
-    integration::print_running_a2a_agents(cli);
     let pending = integration::pending_event_count()?;
     if pending > 0 {
         println!(
@@ -2263,6 +2262,8 @@ pub fn print_overview() -> Result<()> {
         term::cyan(&format!("{cli} connect [agent]")),
         term::cyan(&format!("{cli} status <agent>"))
     );
+    println!("Discover agents:            {cli} agents discover");
+    println!("Install session reporting:  {cli} connect <agent> --reporting");
     Ok(())
 }
 

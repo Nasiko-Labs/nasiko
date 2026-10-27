@@ -21,8 +21,8 @@ const HELP_TEXT: &str = "\
 \x1b[33mUsage:\x1b[0m nasiko <COMMAND>
 
 \x1b[33mSetup:\x1b[0m
-  up         Start Nasiko locally from a clone (Docker Compose)
-  down       Stop the local Nasiko stack
+  up         Start local Nasiko cluster (agent devs)
+  down       Stop local Nasiko cluster
   connect    Register a CP by URL, or connect local coding agents
   disconnect Disconnect local coding agents
   use        Switch active cluster
@@ -47,8 +47,6 @@ const HELP_TEXT: &str = "\
   create-session  Create a new session on the active cluster
   history    Show message history for a session
   delete-session  Delete a session
-  harnesses  List coding-agent harnesses
-  session    Harness sessions (new/show/suspend); chat with `chat --session <id>`
   context-strategy  How your chat history is selected (pacms/topk/lastk)
   budget     How much chat history a request carries (low/medium/high)
 
@@ -96,17 +94,14 @@ Coding agents get up to three things: LLM routing through the Nasiko LLM router,
 connectors through the Nasiko gateway, and session reporting to Nasiko observability.
 On a terminal, connect asks about each; flags answer the same questions in scripts.
 Without a terminal, new routing gets MCP and reporting is off unless --reporting, --content
-or --no-content is given. Reporting always syncs usage (tokens, cost, latency, models, tools
-and subagents). Chat history (prompts, responses, tool output) is synced only to a cluster that
-keeps it, after asking or with --content; one that doesn't (a hosted Nasiko) gets usage only.
+or --no-content is given; scripts report prompt and response text only with --content.
 
 Examples:
   nasiko connect                       pick from the coding agents on this machine
   nasiko connect claude                set up Claude Code, asking about each part
   nasiko connect codex --config team -y
   nasiko connect cursor --reporting    Cursor supports session reporting only
-  nasiko connect https://cp.example.com --name prod
-  nasiko connect prod --url https://cp.example.com --login=false";
+  nasiko connect https://cp.example.com --name prod";
 
 #[derive(Subcommand)]
 #[command(subcommand_help_heading = "Commands")]
@@ -142,33 +137,20 @@ enum IntegrationCommands {
 #[derive(Subcommand)]
 #[command(next_help_heading = "Setup")]
 enum CpCommands {
-    /// Start Nasiko locally: builds and runs this checkout's Docker Compose stack
-    #[command(after_help = "Run from a clone of the repository. Config: .env in the checkout")]
+    /// Start local Nasiko cluster (pulls CP image from DockerHub)
+    #[command(after_help = "Config: ~/.nasiko/.env")]
     Up,
-    /// Stop the local Nasiko stack (data is kept)
+    /// Stop local Nasiko cluster
     Down,
     /// Register a CP by URL, or connect local coding agents
     #[command(after_help = CONNECT_HELP)]
     Connect {
-        /// Control-plane name (with --url), control-plane URL, or a coding agent: claude, codex,
-        /// opencode, cursor. Omit to pick from the coding agents installed on this machine
+        /// Control-plane URL, or a coding agent: claude, codex, opencode, cursor.
+        /// Omit to pick from the coding agents installed on this machine
         target: Option<String>,
-        /// Control-plane URL to register
-        #[arg(long, short = 'u')]
-        url: Option<String>,
-        /// Control-plane name when TARGET is a URL (defaults to the URL's first label)
+        /// Name for a control plane registered by URL
         #[arg(long)]
         name: Option<String>,
-        /// Log in after registering; pass --login=false to only register
-        /// (a bare `--login` still means true).
-        #[arg(
-            long = "login",
-            default_value_t = true,
-            action = clap::ArgAction::Set,
-            num_args = 0..=1,
-            default_missing_value = "true"
-        )]
-        do_login: bool,
         #[command(flatten)]
         coding_agent: ConnectOptions,
     },
@@ -252,16 +234,8 @@ enum McpCommands {
 
 #[derive(Subcommand)]
 enum AuthCommands {
-    /// Sign in to the active control plane — in the browser through its SSO when it has one,
-    /// otherwise with a username and password
-    Login {
-        /// Sign in through the control plane's SSO in your browser
-        #[arg(long, conflicts_with = "password")]
-        sso: bool,
-        /// Sign in with a username and password instead of SSO
-        #[arg(long)]
-        password: bool,
-    },
+    /// Save API token for active cluster
+    Login,
     /// Show current auth status
     Status,
     /// Clear stored token
@@ -294,33 +268,33 @@ enum ContextStrategyCommands {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    nasiko::config::enable_default_cloud();
 
     match cli.command {
         Commands::Agent(cmd) => nasiko::dispatch_agent_dev(cmd),
         Commands::Ops(cmd) => nasiko::dispatch_agent_ops(cmd),
         Commands::Cp(cmd) => match cmd {
-            CpCommands::Up => commands::dev::start(),
+            CpCommands::Up => commands::dev::start(false),
             CpCommands::Down => commands::dev::stop(),
             CpCommands::Connect {
                 target,
-                url,
                 name,
-                do_login,
                 coding_agent,
-            } => {
-                let agent_target = target.as_deref().is_none_or(local_agents::is_coding_agent);
-                if agent_target && url.is_none() && name.is_none() {
-                    return local_agents::connect(target.as_deref(), &coding_agent);
+            } => match target.as_deref() {
+                Some(url) if !local_agents::is_coding_agent(url) => {
+                    if coding_agent.is_set() {
+                        anyhow::bail!(
+                            "coding-agent flags apply only to `nasiko connect [claude|codex|opencode|cursor]`"
+                        );
+                    }
+                    commands::cluster::connect(url, name.as_deref())
                 }
-                if coding_agent.is_set() {
-                    anyhow::bail!(
-                        "coding-agent flags apply only to `nasiko connect [claude|codex|opencode|cursor]`"
-                    );
+                agent => {
+                    if name.is_some() {
+                        anyhow::bail!("--name applies only when connecting a control-plane URL");
+                    }
+                    local_agents::connect(agent, &coding_agent)
                 }
-                let (url, name) = commands::cluster::control_plane_to_register(target, url, name)?;
-                commands::cluster::connect(&url, name.as_deref(), do_login)
-            }
+            },
             CpCommands::Disconnect { target, options } => {
                 local_agents::disconnect(target.as_deref(), &options)
             }
@@ -351,9 +325,7 @@ fn main() -> Result<()> {
                 }
             },
             CpCommands::Auth { command } => match command {
-                AuthCommands::Login { sso, password } => {
-                    commands::auth::login(commands::auth::LoginMethod::from_flags(sso, password))
-                }
+                AuthCommands::Login => commands::auth::login(),
                 AuthCommands::Status => commands::auth::status(),
                 AuthCommands::Logout => commands::auth::logout(),
                 AuthCommands::Whoami => commands::auth::whoami(),
@@ -521,38 +493,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_connect_with_name_and_url() {
-        let cli = Cli::try_parse_from([
-            "nasiko",
-            "connect",
-            "prod",
-            "--url",
-            "https://cp.example.com",
-            "--login=false",
-        ])
-        .unwrap();
-        let Commands::Cp(CpCommands::Connect {
-            target,
-            url,
-            do_login,
-            ..
-        }) = cli.command
-        else {
-            panic!("expected connect command");
-        };
-        assert_eq!(target.as_deref(), Some("prod"));
-        assert_eq!(url.as_deref(), Some("https://cp.example.com"));
-        assert!(!do_login);
-
-        let cli =
-            Cli::try_parse_from(["nasiko", "connect", "-u", "https://cp.example.com"]).unwrap();
-        let Commands::Cp(CpCommands::Connect { do_login, .. }) = cli.command else {
-            panic!("expected connect command");
-        };
-        assert!(do_login, "login is on unless --login=false");
-    }
-
-    #[test]
     fn bare_connect_and_disconnect_pick_from_local_agents() {
         let connect = Cli::try_parse_from(["nasiko", "connect"]).unwrap();
         assert!(matches!(
@@ -687,27 +627,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_upload_coding_agent_hitl_flags() {
-        // --coding-agent with --no-hitl parses (mirrors push/deploy).
-        let cli =
-            Cli::try_parse_from(["nasiko", "upload", ".", "--coding-agent", "--no-hitl"]).unwrap();
-        assert!(matches!(
-            cli.command,
-            Commands::Ops(AgentOpsCommands::Upload {
-                coding_agent: true,
-                no_hitl: true,
-                hitl: false,
-                ..
-            })
-        ));
-        // --hitl and --no-hitl are mutually exclusive.
-        assert!(
-            Cli::try_parse_from(["nasiko", "upload", ".", "--hitl", "--no-hitl"]).is_err(),
-            "--hitl and --no-hitl cannot be combined"
-        );
-    }
-
-    #[test]
     fn parses_deploy_dry_run() {
         let cli = Cli::try_parse_from(["nasiko", "deploy", ".", "--dry-run", "--yes"]).unwrap();
         assert!(matches!(
@@ -718,55 +637,6 @@ mod tests {
                 ..
             })
         ));
-    }
-
-    #[test]
-    fn parses_session_and_harness_commands() {
-        let cli = Cli::try_parse_from([
-            "nasiko",
-            "session",
-            "new",
-            "--harness",
-            "opencode",
-            "--repo",
-            "https://x/y.git",
-        ])
-        .unwrap();
-        let Commands::Ops(AgentOpsCommands::Session {
-            command:
-                nasiko::SessionCommands::New {
-                    harness,
-                    repo,
-                    json,
-                },
-        }) = cli.command
-        else {
-            panic!("expected session new");
-        };
-        assert_eq!(harness, "opencode");
-        assert_eq!(repo.as_deref(), Some("https://x/y.git"));
-        assert!(!json);
-
-        assert!(Cli::try_parse_from(["nasiko", "session", "new"]).is_err());
-        assert!(
-            Cli::try_parse_from(["nasiko", "session", "ls", "--all", "--state", "running"]).is_ok()
-        );
-        assert!(Cli::try_parse_from(["nasiko", "session", "rm", "s1", "--yes"]).is_ok());
-        assert!(Cli::try_parse_from(["nasiko", "session", "rm"]).is_err());
-        assert!(Cli::try_parse_from(["nasiko", "harnesses"]).is_ok());
-    }
-
-    #[test]
-    fn chat_session_conflicts_with_explicit_routing() {
-        assert!(Cli::try_parse_from(["nasiko", "chat", "--session", "s1", "hi"]).is_ok());
-        for flag in [["--agent", "a"], ["--session-id", "x"]] {
-            let args = ["nasiko", "chat", "--session", "s1", flag[0], flag[1]];
-            assert!(Cli::try_parse_from(args).is_err(), "{flag:?}");
-        }
-        for flag in ["--new", "--coding-agent", "--tui"] {
-            let args = ["nasiko", "chat", "--session", "s1", flag];
-            assert!(Cli::try_parse_from(args).is_err(), "{flag}");
-        }
     }
 
     #[test]
@@ -813,9 +683,9 @@ mod tests {
             assert!(!script.contains("__claude-token"), "{shell}");
         }
 
-        // Hidden subcommands are dropped at every level, not just the top: `agents discover`
-        // (hidden, renamed to `status`) is gone while its visible siblings stay. Checked on the
-        // tree rather than the scripts, where "discover" also appears in other commands' help.
+        // Hidden subcommands are dropped at every level, not just the top: `agents install`
+        // (hidden, renamed to `connect --reporting`) is gone while its visible siblings stay.
+        // Checked on the tree rather than the scripts, where "install" also appears elsewhere.
         let tree = without_hidden_subcommands(&Cli::command());
         let agents = tree
             .get_subcommands()
@@ -823,7 +693,8 @@ mod tests {
             .expect("agents command");
         let names: Vec<&str> = agents.get_subcommands().map(|c| c.get_name()).collect();
         assert!(names.contains(&"list-uploaded"), "{names:?}");
-        assert!(!names.contains(&"discover"), "{names:?}");
+        assert!(names.contains(&"discover"), "{names:?}");
+        assert!(!names.contains(&"install"), "{names:?}");
         assert!(!names.contains(&"report"), "{names:?}");
     }
 
@@ -870,70 +741,6 @@ mod tests {
             Commands::Ops(AgentOpsCommands::Agents {
                 command: nasiko::AgentsCommands::Report { agent }
             }) if agent == "opencode"
-        ));
-    }
-
-    #[test]
-    fn parses_coding_agent_setup_and_import_under_agents() {
-        let setup = Cli::try_parse_from(["nasiko", "agents", "setup"]).unwrap();
-        assert!(matches!(
-            setup.command,
-            Commands::Ops(AgentOpsCommands::Agents {
-                command: nasiko::AgentsCommands::Setup {
-                    yes: false,
-                    no_import: false,
-                    wait: false
-                }
-            })
-        ));
-
-        let consented =
-            Cli::try_parse_from(["nasiko", "agents", "setup", "--yes", "--no-import"]).unwrap();
-        assert!(matches!(
-            consented.command,
-            Commands::Ops(AgentOpsCommands::Agents {
-                command: nasiko::AgentsCommands::Setup {
-                    yes: true,
-                    no_import: true,
-                    wait: false
-                }
-            })
-        ));
-
-        let import = Cli::try_parse_from(["nasiko", "agents", "import"]).unwrap();
-        assert!(matches!(
-            import.command,
-            Commands::Ops(AgentOpsCommands::Agents {
-                command: nasiko::AgentsCommands::Import
-            })
-        ));
-    }
-
-    #[test]
-    fn parses_a_foreground_setup_the_import_status_and_the_background_worker() {
-        let waiting = Cli::try_parse_from(["nasiko", "agents", "setup", "--wait"]).unwrap();
-        assert!(matches!(
-            waiting.command,
-            Commands::Ops(AgentOpsCommands::Agents {
-                command: nasiko::AgentsCommands::Setup { wait: true, .. }
-            })
-        ));
-
-        let status = Cli::try_parse_from(["nasiko", "agents", "status"]).unwrap();
-        assert!(matches!(
-            status.command,
-            Commands::Ops(AgentOpsCommands::Agents {
-                command: nasiko::AgentsCommands::Status
-            })
-        ));
-
-        // What `agents setup` runs in the background.
-        let worker = Cli::try_parse_from(["nasiko", "agents", "import-worker"]).unwrap();
-        assert!(matches!(
-            worker.command,
-            Commands::Ops(AgentOpsCommands::Agents {
-                command: nasiko::AgentsCommands::ImportWorker
-            })
         ));
     }
 }

@@ -64,22 +64,26 @@ Codex asks you to trust the new Nasiko hooks.
 
 ## Start here: see what is already running
 
-Install the current CLI from this checkout, then run its read-only discovery command:
+Install the current CLI from this checkout, then run its two read-only commands:
 
 ```sh
 git clone https://github.com/Nasiko-Labs/nasiko.git && cd nasiko
 cargo install --path cli/ --force
+nasiko status
 nasiko agents discover
 ```
 
-`nasiko agents discover` reads your machine, prints what it finds, and exits. You get a row per
-supported harness: whether it is detected, whether it is reporting to Nasiko, its version, and
-where its config lives. `nasiko status` also lists A2A agents running on the machine, from any
-framework, in a second table: discovery looks for an A2A agent card on listening ports and Docker
-published ports (and asks LangGraph servers for one card per assistant), and shows each agent's
-version, whether its card is valid, and where it serves the card. A card the platform could not
-register is also reported as a warning naming the field at fault.
-Discovery changes no harness settings, requires no account, and sends nothing off the machine.
+`nasiko status` reads your machine's harness config and prints a row per supported harness:
+whether it is installed, and whether its LLM routing, MCP and session reporting go through Nasiko.
+`nasiko agents discover` prints one table of everything on the machine: a row per supported harness
+(whether it is detected, whether it is reporting to Nasiko, its version, and where its config
+lives), plus a row per A2A agent running on the machine, from any framework, with an A2A CARD
+column showing where it serves its card. It finds A2A agents by looking for an agent card on
+listening ports and Docker published ports (and asks LangGraph servers for one card per assistant).
+A card the platform could not register is reported as a warning naming the field at fault.
+Discovery sends a few HTTP requests to each local listening port, so it is a separate command
+rather than part of `status`.
+Discovery changes no settings, requires no account, and sends nothing off the machine.
 
 > If `nasiko agents discover` is not listed by `nasiko agents --help`, reinstall with the
 > `--force` command above. Older builds use the same `0.1.0` version number, so `nasiko --version`
