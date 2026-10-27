@@ -11,6 +11,7 @@ import tailwindcss from '@tailwindcss/vite'
 import { tanstackRouter } from '@tanstack/router-plugin/vite'
 import react, { reactCompilerPreset } from '@vitejs/plugin-react'
 import { loadEnv, type Plugin, type UserConfig } from 'vite'
+import { BOOT_GUARD_SCRIPT } from './common/src/lib/staleBuildBoot.ts'
 
 export const ROOT = dirname(fileURLToPath(import.meta.url))
 export const COMMON_SRC = join(ROOT, 'common/src')
@@ -177,6 +178,23 @@ function cspHashes(): Plugin {
   }
 }
 
+/**
+ * The stale-build boot guard (common/src/lib/staleBuildBoot.ts), inline right after `<title>`: after `<meta charset>`
+ * (the shell is served without a charset, so it must stay in the first 1024 bytes) and before the entry module and the
+ * stylesheets, whose load errors it catches. `cspHashes` hashes it with the page's other inline scripts.
+ */
+function bootGuard(): Plugin {
+  return {
+    name: 'nasiko:boot-guard',
+    apply: 'build',
+    transformIndexHtml(html) {
+      if (!html.includes('</title>'))
+        throw new Error('index.html needs a <title> for the boot guard to follow')
+      return html.replace('</title>', `</title>\n    <script>${BOOT_GUARD_SCRIPT}</script>`)
+    },
+  }
+}
+
 export function nasikoApp(o: AppOptions): UserConfig {
   const env = loadEnv(o.mode, ROOT, '')
   const proxy = o.proxy ?? { paths: PROXIED, target: env.NASIKO_API_URL || 'http://localhost:8080' }
@@ -239,6 +257,7 @@ export function nasikoApp(o: AppOptions): UserConfig {
       }),
       tailwindcss(),
       routesManifest(routes),
+      bootGuard(),
       cspHashes(),
     ],
     resolve: {
