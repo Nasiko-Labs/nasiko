@@ -14,6 +14,13 @@
 //! Selecting on role alone, with compression a pure function of the message's own content, makes
 //! each message render to identical bytes on every turn it appears in. The prefix stays stable
 //! from message 1, and tool results are where the JSON/logs/diffs live anyway.
+//!
+//! The precise invariant is narrower than "role only": a message's rendering may depend only on
+//! bytes that never change once sent. One input besides the content meets it — the tool call that
+//! produced the result. A result whose call asked for an exact line range is sent whole
+//! ([`crate::range_view`]): the agent asked for those lines, and cutting them only makes it read
+//! them again. Recovery handles meet it too: they are derived from the flow and the content, and
+//! minted only when the request offers the recovery tool, which is fixed for an agent.
 
 use std::time::Instant;
 
@@ -22,6 +29,7 @@ use serde_json::Value;
 
 use crate::config::GatewayConfig;
 use crate::ir::ChatRequest;
+use crate::range_view;
 use crate::resolver::ResolvedConfig;
 
 /// Build the policy for one request.
@@ -50,10 +58,57 @@ pub(crate) struct Original {
     pub content_type: &'static str,
 }
 
+/// The tool an agent calls to fetch an elided original back (served by the MCP gateway).
+const RECOVER_TOOL: &str = "recover_compressed";
+
 /// Mint a recovery handle for any payload at least this large.
+///
+/// The handle is **derived, not minted**: it is a UUIDv5 over a fixed namespace with the
+/// `"{flow}|{content}"` name, so the same payload inside the same flow always yields the same
+/// handle — and therefore the same elision marker — and the provider prefix cache keeps holding.
+/// A random UUIDv4 per call drifted the marker bytes every turn, which is what re-broke the
+/// prefix cache on every compressed message (the P1 regression in the eval handoff).
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct Recovery {
+pub(crate) struct Recovery<'a> {
     pub min_bytes: usize,
+    /// The flow the payload belongs to. Recovery is scoped to the flow, so the handle is too:
+    /// identical content in two flows must not land on one row only the first flow can read.
+    pub flow_id: &'a str,
+}
+
+impl<'a> Recovery<'a> {
+    /// Recovery for this request, or `None` when a handle could never be used.
+    ///
+    /// A handle is only worth minting when the agent can call [`RECOVER_TOOL`] and the request is
+    /// flow-scoped (originals are stored per flow). Without the tool the marker advertises a path
+    /// the agent cannot take, and every call stores an original nobody reads.
+    pub(crate) fn for_request(
+        enabled: bool,
+        min_bytes: usize,
+        flow_id: Option<&'a str>,
+        req: &ChatRequest,
+    ) -> Option<Self> {
+        if !enabled || !offers_recovery_tool(req) {
+            return None;
+        }
+        flow_id.map(|flow_id| Recovery { min_bytes, flow_id })
+    }
+}
+
+/// Whether the request lists the recovery tool. A suffix match, because MCP clients commonly
+/// prefix tool names with their server (`nasiko__recover_compressed`).
+fn offers_recovery_tool(req: &ChatRequest) -> bool {
+    req.tools.as_deref().is_some_and(|tools| {
+        tools
+            .iter()
+            .any(|t| t.function.name.ends_with(RECOVER_TOOL))
+    })
+}
+
+/// Deterministic recovery handle: UUIDv5 (SHA-1) over the payload, namespaced by flow.
+fn mint_handle(flow_id: &str, content: &str) -> uuid::Uuid {
+    let name = format!("{flow_id}|{content}");
+    uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, name.as_bytes())
 }
 
 /// What ran, for `token_usage.metadata` and the span.
@@ -105,7 +160,7 @@ impl CompressionStats {
 pub(crate) fn apply(
     req: &mut ChatRequest,
     policy: &Policy<'_>,
-    recovery: Option<Recovery>,
+    recovery: Option<Recovery<'_>>,
 ) -> CompressionStats {
     let mut stats = CompressionStats {
         level: policy.level.as_label(),
@@ -117,9 +172,17 @@ pub(crate) fn apply(
     }
 
     let started = Instant::now();
+    let requested_ranges = range_view::requested_range_call_ids(&req.messages);
     for msg in req.messages.iter_mut() {
         // Assistant turns carrying tool calls are never tool results, whatever their role says.
         if msg.role != "tool" || msg.tool_calls.is_some() {
+            continue;
+        }
+        if msg
+            .tool_call_id
+            .as_ref()
+            .is_some_and(|id| requested_ranges.contains(id))
+        {
             continue;
         }
         if let Some(content) = msg.content.as_mut() {
@@ -131,86 +194,10 @@ pub(crate) fn apply(
     stats
 }
 
-/// What a compression pass leaves for the usage row: its metadata block and, when it really reduced
-/// the payload, the `(bytes_in, bytes_out)` the savings ledger credits.
-#[derive(Debug, Default, Clone)]
-pub(crate) struct Ledger {
-    pub metadata: Option<Value>,
-    pub bytes: Option<(usize, usize)>,
-}
-
-impl CompressionStats {
-    pub(crate) fn ledger(&self) -> Ledger {
-        Ledger {
-            metadata: self.to_metadata(),
-            bytes: self.applied.then_some((self.bytes_in, self.bytes_out)),
-        }
-    }
-}
-
-/// The Responses item types that carry a tool's result: Codex's function tools, and its freeform
-/// (`apply_patch`-style) custom tools.
-const RESPONSES_TOOL_OUTPUTS: [&str; 2] = ["function_call_output", "custom_tool_call_output"];
-
-/// [`apply`] for the Responses surface (`/v1/responses`, Codex), on the raw `input` array: its
-/// tool results are items, not `role: "tool"` messages. The same rule as [`apply`] holds — an item
-/// is picked by its type alone and compressed as a pure function of its own content — so the
-/// stable prefix providers cache on stays stable. `output` is a string, or an array of text parts.
-pub(crate) fn apply_responses_input(
-    input: &mut Value,
-    policy: &Policy<'_>,
-    recovery: Option<Recovery>,
-) -> CompressionStats {
-    let mut stats = CompressionStats {
-        level: policy.level.as_label(),
-        dry_run: policy.dry_run,
-        ..Default::default()
-    };
-    if !policy.enabled {
-        return stats;
-    }
-    let Some(items) = input.as_array_mut() else {
-        return stats;
-    };
-
-    let started = Instant::now();
-    for item in items.iter_mut() {
-        let is_output = item
-            .get("type")
-            .and_then(Value::as_str)
-            .is_some_and(|kind| RESPONSES_TOOL_OUTPUTS.contains(&kind));
-        if !is_output {
-            continue;
-        }
-        match item.get_mut("output") {
-            Some(Value::String(text)) => compress_str(text, policy, recovery, &mut stats),
-            Some(Value::Array(parts)) => {
-                for part in parts.iter_mut() {
-                    // `input_text`/`output_text`; images and files pass untouched.
-                    let is_text = part
-                        .get("type")
-                        .and_then(Value::as_str)
-                        .is_some_and(|kind| kind.ends_with("text"));
-                    if !is_text {
-                        continue;
-                    }
-                    if let Some(Value::String(text)) = part.get_mut("text") {
-                        compress_str(text, policy, recovery, &mut stats);
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    stats.applied = !policy.dry_run && stats.bytes_out < stats.bytes_in;
-    stats.elapsed_us = started.elapsed().as_micros() as u64;
-    stats
-}
-
 fn compress_content(
     content: &mut Value,
     policy: &Policy<'_>,
-    recovery: Option<Recovery>,
+    recovery: Option<Recovery<'_>>,
     stats: &mut CompressionStats,
 ) {
     match content {
@@ -242,7 +229,7 @@ fn compress_content(
 fn compress_str(
     text: &mut String,
     policy: &Policy<'_>,
-    recovery: Option<Recovery>,
+    recovery: Option<Recovery<'_>>,
     stats: &mut CompressionStats,
 ) {
     // The handle has to exist *before* compression, because the marker builder interpolates it
@@ -250,7 +237,7 @@ fn compress_str(
     // never reaches the store.
     let minted = recovery
         .filter(|r| text.len() >= r.min_bytes)
-        .map(|_| uuid::Uuid::new_v4());
+        .map(|r| mint_handle(r.flow_id, text));
     let handle_ref = minted.map(|h| h.to_string());
 
     let policy = match handle_ref.as_deref() {
@@ -332,61 +319,11 @@ mod tests {
 
     // ── IP-5: recovery handles ──────────────────────────────────────────────
 
-    fn recovery() -> Option<Recovery> {
-        Some(Recovery { min_bytes: 0 })
-    }
-
-    // ── the Responses surface (Codex) ───────────────────────────────────────
-
-    #[test]
-    fn responses_tool_outputs_are_compressed_and_everything_else_is_left_alone() {
-        let log = noisy_log();
-        let mut input = json!([
-            {"role": "user", "content": [{"type": "input_text", "text": log}]},
-            {"type": "function_call", "call_id": "c1", "name": "shell", "arguments": "{}"},
-            {"type": "function_call_output", "call_id": "c1", "output": log},
-            {"type": "custom_tool_call_output", "call_id": "c2",
-             "output": [{"type": "input_text", "text": log}, {"type": "input_image", "image_url": "x"}]},
-        ]);
-
-        let stats = apply_responses_input(&mut input, &on(), None);
-
-        assert_eq!(stats.messages_touched, 2);
-        assert!(stats.applied && stats.bytes_out < stats.bytes_in);
-        assert!(input[2]["output"].as_str().unwrap().len() < log.len());
-        assert!(input[3]["output"][0]["text"].as_str().unwrap().len() < log.len());
-        assert_eq!(input[3]["output"][1]["image_url"], "x");
-        // The user's own words are never compressed, whatever they contain.
-        assert_eq!(input[0]["content"][0]["text"], log.as_str());
-        let ledger = stats.ledger();
-        assert_eq!(ledger.bytes, Some((stats.bytes_in, stats.bytes_out)));
-        assert!(ledger.metadata.is_some());
-    }
-
-    #[test]
-    fn responses_compression_is_off_unless_the_agent_opted_in() {
-        let mut input =
-            json!([{"type": "function_call_output", "call_id": "c1", "output": noisy_log()}]);
-        let before = input.clone();
-
-        let stats = apply_responses_input(&mut input, &Policy::default(), None);
-
-        assert_eq!(input, before);
-        assert_eq!(stats.messages_touched, 0);
-        assert_eq!(stats.ledger().bytes, None);
-    }
-
-    #[test]
-    fn responses_compression_is_the_same_bytes_every_turn() {
-        // The stable prefix: the same output item renders identically however much follows it.
-        let item = json!({"type": "function_call_output", "call_id": "c1", "output": noisy_log()});
-        let mut one = json!([item.clone()]);
-        let mut two = json!([item, {"role": "user", "content": "next"}]);
-
-        apply_responses_input(&mut one, &on(), None);
-        apply_responses_input(&mut two, &on(), None);
-
-        assert_eq!(one[0], two[0]);
+    fn recovery() -> Option<Recovery<'static>> {
+        Some(Recovery {
+            min_bytes: 0,
+            flow_id: "flow-1",
+        })
     }
 
     #[test]
@@ -433,6 +370,7 @@ mod tests {
             &on(),
             Some(Recovery {
                 min_bytes: usize::MAX,
+                flow_id: "flow-1",
             }),
         );
 
@@ -457,7 +395,11 @@ mod tests {
     }
 
     #[test]
-    fn each_compressed_message_gets_its_own_handle() {
+    fn identical_payloads_in_one_flow_mint_the_same_stable_handle() {
+        // The handoff plan (Remedy 1 / P1): the handle is derived from the payload, so identical
+        // content compresses to byte-identical markers and the provider prefix cache holds across
+        // calls. A fresh UUIDv4 per call made the marker — and the compressed prefix — drift on
+        // every turn, so the cache broke after the first compression.
         let mut r = req(vec![
             msg("tool", json!(noisy_log())),
             msg("tool", json!(noisy_log())),
@@ -465,11 +407,164 @@ mod tests {
 
         let stats = apply(&mut r, &on(), recovery());
 
+        assert_eq!(stats.originals.len(), 2, "two elisions recorded");
+        assert_eq!(
+            stats.originals[0].handle, stats.originals[1].handle,
+            "identical content in one flow must derive one stable handle"
+        );
+        let sent = r.messages[0].content.as_ref().unwrap().as_str().unwrap();
+        let sent2 = r.messages[1].content.as_ref().unwrap().as_str().unwrap();
+        assert_eq!(
+            sent, sent2,
+            "markers must be byte-identical for identical content"
+        );
+    }
+
+    #[test]
+    fn handles_are_scoped_by_flow_so_content_does_not_leak_across_flows() {
+        let in_flow = |flow_id| {
+            let mut r = req(vec![msg("tool", json!(noisy_log()))]);
+            apply(
+                &mut r,
+                &on(),
+                Some(Recovery {
+                    min_bytes: 0,
+                    flow_id,
+                }),
+            )
+        };
+        let stats_a = in_flow("flow-a");
+        let stats_b = in_flow("flow-b");
+
+        assert_eq!(stats_a.originals.len(), 1);
+        assert_eq!(stats_b.originals.len(), 1);
+        assert_ne!(
+            stats_a.originals[0].handle, stats_b.originals[0].handle,
+            "the same content in two flows must not share a handle"
+        );
+    }
+
+    #[test]
+    fn different_payloads_in_one_flow_get_different_handles() {
+        let mut r = req(vec![
+            msg("tool", json!(noisy_log())),
+            msg(
+                "tool",
+                json!(noisy_log().replace("handled request", "served page")),
+            ),
+        ]);
+
+        let stats = apply(&mut r, &on(), recovery());
+
         assert_eq!(stats.originals.len(), 2);
         assert_ne!(
             stats.originals[0].handle, stats.originals[1].handle,
-            "one handle for two payloads would make recovery ambiguous"
+            "distinct payloads must never alias each other's handle"
         );
+    }
+
+    fn tool(name: &str) -> crate::ir::chat::ToolDef {
+        serde_json::from_value(json!({"type": "function", "function": {"name": name}})).unwrap()
+    }
+
+    #[test]
+    fn recovery_needs_the_recovery_tool_and_a_flow() {
+        let mut with_tool = req(vec![]);
+        with_tool.tools = Some(vec![tool("bash"), tool("nasiko__recover_compressed")]);
+        let mut bash_only = req(vec![]);
+        bash_only.tools = Some(vec![tool("bash")]);
+
+        assert!(Recovery::for_request(true, 0, Some("f"), &with_tool).is_some());
+        assert!(Recovery::for_request(true, 0, Some("f"), &bash_only).is_none());
+        assert!(Recovery::for_request(true, 0, None, &with_tool).is_none());
+        assert!(Recovery::for_request(false, 0, Some("f"), &with_tool).is_none());
+    }
+
+    fn call(id: &str, command: &str) -> ToolCall {
+        ToolCall {
+            id: id.into(),
+            kind: "function".into(),
+            function: crate::ir::chat::FunctionCall {
+                name: "bash".into(),
+                arguments: json!({ "command": command }).to_string(),
+            },
+            extra: Default::default(),
+        }
+    }
+
+    fn result_of(id: &str, content: &str) -> Message {
+        let mut m = msg("tool", json!(content));
+        m.tool_call_id = Some(id.into());
+        m
+    }
+
+    #[test]
+    fn a_requested_line_range_is_sent_whole() {
+        let log = noisy_log();
+        let mut assistant = msg("assistant", Value::Null);
+        assistant.tool_calls = Some(vec![
+            call("ranged", "cd /repo && sed -n '1,300p' app.log"),
+            call("whole", "cat app.log"),
+        ]);
+        let mut r = req(vec![
+            assistant,
+            result_of("ranged", &log),
+            result_of("whole", &log),
+        ]);
+
+        let stats = apply(&mut r, &on(), None);
+
+        assert_eq!(
+            stats.messages_touched, 1,
+            "only the whole-file read is compressed"
+        );
+        assert_eq!(
+            r.messages[1].content.as_ref().unwrap().as_str().unwrap(),
+            log
+        );
+        assert!(
+            r.messages[2]
+                .content
+                .as_ref()
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .len()
+                < log.len()
+        );
+    }
+
+    #[test]
+    fn json_for_an_agent_that_cannot_recover_keeps_every_item() {
+        // No recovery handle: cutting 96 of 100 search results would lose them for good.
+        let items: Vec<String> = (0..100)
+            .map(|i| format!(r#"{{"repo": "org/r{i}", "stars": {i}}}"#))
+            .collect();
+        let payload = format!(r#"{{"items": [{}]}}"#, items.join(", "));
+        let mut r = req(vec![msg("tool", json!(payload.clone()))]);
+
+        apply(&mut r, &on(), None);
+
+        let sent = r.messages[0].content.as_ref().unwrap().as_str().unwrap();
+        let before: Value = serde_json::from_str(&payload).unwrap();
+        let after: Value = serde_json::from_str(sent).unwrap();
+        assert_eq!(after, before, "an item went missing");
+        assert!(sent.len() < payload.len(), "whitespace should still go");
+    }
+
+    #[test]
+    fn json_with_a_recovery_handle_may_collapse_its_list() {
+        let items: Vec<String> = (0..100)
+            .map(|i| format!(r#"{{"repo": "org/r{i}", "stars": {i}}}"#))
+            .collect();
+        let payload = format!(r#"{{"items": [{}]}}"#, items.join(", "));
+        let mut r = req(vec![msg("tool", json!(payload))]);
+
+        let stats = apply(&mut r, &on(), recovery());
+
+        let sent = r.messages[0].content.as_ref().unwrap().as_str().unwrap();
+        assert!(sent.contains("items elided"), "{sent}");
+        assert_eq!(stats.originals.len(), 1, "the dropped items are stored");
     }
 
     #[test]
@@ -594,14 +689,15 @@ mod tests {
 
     #[test]
     fn metadata_carries_counts_per_content_type() {
+        // Spaced out, so the lossless rewrite (no recovery handle here) has whitespace to drop.
         let items: Vec<String> = (0..80)
-            .map(|i| format!(r#"{{"id":{i},"ok":true}}"#))
+            .map(|i| format!(r#"{{"id": {i}, "ok": true}}"#))
             .collect();
         let mut r = req(vec![
             msg("tool", json!(noisy_log())),
             msg(
                 "tool",
-                json!(format!(r#"{{"items":[{}]}}"#, items.join(","))),
+                json!(format!(r#"{{"items": [{}]}}"#, items.join(", "))),
             ),
         ]);
 

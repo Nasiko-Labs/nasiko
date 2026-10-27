@@ -43,9 +43,6 @@ pub(crate) struct RoutedRequest {
     pub resolved: crate::resolver::ResolvedConfig,
     pub flow_id: Option<String>,
     pub attribution_source: Option<routing::attribution::AttributionSource>,
-    /// What payload compression did to this request, for its usage rows. Set by the Responses
-    /// surface after routing; `chat_core` passes its own stats straight to its rows instead.
-    pub compression: crate::compress::Ledger,
 }
 
 /// Prompt-derived signals `resolve_routed_request` needs beyond the resolved config,
@@ -316,7 +313,6 @@ async fn chat_core(
         resolved,
         flow_id,
         attribution_source,
-        compression: _,
     } = routed;
 
     // ── compression seam ──────────────────────────────────────────────────────────────────
@@ -337,12 +333,12 @@ async fn chat_core(
         "compress: policy for this request"
     );
 
-    let recovery = ctx
-        .cfg
-        .compress_recovery_enabled
-        .then_some(crate::compress::Recovery {
-            min_bytes: ctx.cfg.compress_recovery_min_bytes,
-        });
+    let recovery = crate::compress::Recovery::for_request(
+        ctx.cfg.compress_recovery_enabled,
+        ctx.cfg.compress_recovery_min_bytes,
+        flow_id.as_deref(),
+        &req,
+    );
 
     let compression = crate::compress::apply(&mut req, &compress_policy, recovery);
     if compression.messages_touched > 0 {
@@ -722,7 +718,6 @@ pub(crate) async fn resolve_routed_request(
         resolved,
         flow_id,
         attribution_source,
-        compression: crate::compress::Ledger::default(),
     })
 }
 

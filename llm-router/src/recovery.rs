@@ -29,7 +29,8 @@ pub(crate) async fn persist(
         if let Err(e) = sqlx::query(
             "INSERT INTO compression_originals \
                  (handle, flow_id, owner_id, agent_id, content, content_type) \
-             VALUES ($1, $2, $3, $4, $5, $6)",
+             VALUES ($1, $2, $3, $4, $5, $6) \
+             ON CONFLICT (handle) DO NOTHING",
         )
         .bind(original.handle)
         .bind(flow_id)
