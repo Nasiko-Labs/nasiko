@@ -383,6 +383,7 @@ export default tseslint.config(
   {
     files: [
       'scripts/**',
+      '*/scripts/**',
       '*/*/scripts/**',
       'vite.shared.ts',
       'vitest.config.ts',
