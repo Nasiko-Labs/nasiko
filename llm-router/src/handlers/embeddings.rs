@@ -11,11 +11,11 @@ use axum::response::{IntoResponse, Response};
 use serde_json::Value;
 
 use crate::LlmRouterCtx;
+use crate::auth::verify_agent_jwt;
 use crate::error::GatewayError;
 use crate::inbound::{InboundFormat, inbound_for};
-use crate::payer;
 use crate::providers::execute_embeddings_once;
-use crate::resolver::{ConfigSubject, PgRegistry, RegistryStore, resolve_embeddings_for};
+use crate::resolver::{PgRegistry, RegistryStore, resolve_embeddings};
 use crate::routing::boundary::{TRACEPARENT_HEADER, parse_flow_id};
 use crate::usage::{self, UsageRecord};
 
@@ -36,7 +36,7 @@ async fn embeddings_core(
     body: Value,
 ) -> Result<Response, GatewayError> {
     let authz = headers.get(AUTHORIZATION).and_then(|v| v.to_str().ok());
-    let (agent_id, owner_id) = super::chat::verify_agent_identity(ctx, store, authz).await?;
+    let (agent_id, owner_id) = verify_agent_jwt(authz, &ctx.cfg)?;
 
     // Strict flow attribution — same rule as chat (previously embeddings
     // attempted none at all): the traceparent must name a live flow this agent
@@ -67,83 +67,34 @@ async fn embeddings_core(
     // fallback.
     let inbound = inbound_for(InboundFormat::OpenAi);
     let req = inbound.parse_embeddings(body)?;
-    // A shared agent embeds on the same config and keys it chats on.
-    let (subject, retry_after) = payer::subject_for_call(
+    let resolved = resolve_embeddings(
         store,
-        ctx.payer.as_ref(),
+        &ctx.cache,
+        &ctx.cfg,
         &agent_id,
         &owner_id,
-        attribution.user_id,
+        req.model.as_deref(),
     )
     .await?;
-    let resolve = |subject| {
-        resolve_embeddings_for(
-            store,
-            &ctx.cache,
-            &ctx.cfg,
-            &agent_id,
-            subject,
-            req.model.as_deref(),
-        )
-    };
-    let resolved = match resolve(subject).await {
-        // An owner's own call that found no key: the deployment may cover it.
-        Err(no_key @ GatewayError::NoApiKey { .. })
-            if matches!(subject, ConfigSubject::Owner(_)) =>
-        {
-            match payer::cover_owner_call(ctx.payer.as_ref(), &owner_id, attribution.user_id)
-                .await?
-            {
-                Some(covered) => resolve(covered).await?,
-                None => return Err(no_key),
-            }
-        }
-        resolved => resolved.map_err(|e| payer::allowance_error(e, retry_after))?,
-    };
 
     // Exactly one attempt. A failure here is the caller's answer — swapping in another
     // embedding model would return vectors in a different space, which is worse than an
     // error because it is silent.
     let started = Instant::now();
-    // Billed to the flow's caller (strict attribution guarantees a flow); the JWT's owner is
-    // only the no-user safety net.
-    let owner_id = attribution
-        .user_id
-        .map(|u| u.to_string())
-        .unwrap_or(owner_id);
-    let mut attempts = crate::providers::attempts::AttemptLog::default();
-    let answered =
-        execute_embeddings_once(&ctx.http, &ctx.cfg, &resolved, &req, &mut attempts).await;
-    let failed_scope = usage::CallScope {
-        owner_id: owner_id.clone(),
-        agent_id: agent_id.clone(),
-        operation_type: "embedding",
-        streaming: false,
-        flow_id: Some(attribution.flow_id.clone()),
-        attribution_source: Some(attribution.source),
-        // The input as sent, for the prompt estimate when the provider reports no usage.
-        request_bytes: serde_json::to_string(&req.input).ok().map(|s| s.len()),
-        // `/v1/embeddings` picks its model in the resolver, not through the precedence chain, so
-        // there is no routing decision to record (`embeddings::select_model`).
-        routing_metadata: None,
-    };
-    usage::spawn_log_failed(
-        &ctx.db,
-        &ctx.pricing,
-        &ctx.ledger,
-        &failed_scope,
-        attempts.take_failed(),
-    );
-    let resp = answered?;
+    let resp = execute_embeddings_once(&ctx.http, &ctx.cfg, &resolved, &req).await?;
     let latency_ms = started.elapsed().as_millis() as i64;
     let (provider, model) = (resolved.provider.clone(), resolved.model.clone());
 
     usage::spawn_log(
         ctx.db.clone(),
         ctx.pricing.clone(),
-        ctx.ledger.clone(),
         UsageRecord {
-            owner_id,
+            // Billed to the flow's caller (strict attribution guarantees a
+            // flow); the JWT's owner is only the no-user safety net.
+            owner_id: attribution
+                .user_id
+                .map(|u| u.to_string())
+                .unwrap_or(owner_id),
             agent_id,
             operation_type: "embedding",
             provider,
@@ -160,15 +111,10 @@ async fn embeddings_core(
             compress_metadata: None,
             // Embeddings are not chat completions; IP-2 never runs here.
             brevity_metadata: None,
-            compact_tools_metadata: None,
-            // Model routing (and its tier) is a chat-path decision; see the scope above.
-            routing_metadata: None,
             // Nothing was compressed, so there is nothing to credit to a savings layer.
             compress_bytes: None,
-            compact_tools_bytes: None,
             request_bytes: None,
             platform_paid: resolved.platform_paid,
-            failure: None,
         },
     );
 
@@ -196,8 +142,6 @@ mod tests {
     struct Store {
         config: Option<crate::resolver::LLMConfig>,
         org_embedding_default: Option<crate::resolver::OrgEmbeddingDefault>,
-        /// The user the flow belongs to; `None` is unattributed.
-        flow_user: Option<Uuid>,
     }
 
     /// An agent configured for *chat* against Anthropic — which has no embeddings API at
@@ -234,11 +178,9 @@ mod tests {
                 config: self.config.clone(),
                 agent_pinned_model: None,
                 is_coding_agent: false,
+                is_discovered_agent: false,
                 compress_enabled: false,
             }))
-        }
-        async fn fetch_agent_owner(&self, _: Uuid) -> Result<Option<Uuid>, sqlx::Error> {
-            Ok(Uuid::parse_str(OWNER).ok())
         }
         async fn fetch_user_secret(&self, _: Uuid, _: &str) -> Result<Option<String>, sqlx::Error> {
             Ok(None)
@@ -250,7 +192,7 @@ mod tests {
             _: i64,
         ) -> Result<Option<crate::routing::attribution::LiveFlow>, sqlx::Error> {
             Ok(Some(crate::routing::attribution::LiveFlow {
-                user_id: self.flow_user,
+                user_id: None,
                 context_id: None,
                 mode: None,
                 user_message: None,
@@ -292,15 +234,6 @@ mod tests {
             pricing: Arc::new(nasiko_pricing::PricingEngine::new(
                 PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
             )),
-            body_permits: crate::handlers::auth_layer::body_permit_pool(256 * 1024 * 1024),
-            attachment_store: Arc::new(crate::attachments::NoAttachmentStore),
-            attachment_cache: Arc::new(crate::attachments::AttachmentCache::new(
-                1024 * 1024,
-                crate::attachments::ATTACHMENT_CACHE_TTL,
-            )),
-            marker_signer: None,
-            ledger: Arc::new(nasiko_pricing::NoUsageLedger),
-            payer: Arc::new(crate::payer::CallerPays),
         }
     }
 
@@ -458,7 +391,6 @@ mod tests {
                 model: "org-embedding-model".into(),
                 api_key: Some("sk-org".into()),
             }),
-            ..Default::default()
         };
         let token =
             crate::auth::mint_agent_token(AGENT, OWNER, SECRET, 3600, Algorithm::HS256).unwrap();
@@ -501,7 +433,6 @@ mod tests {
                 model: "org-embedding-model".into(),
                 api_key: Some("sk-org".into()),
             }),
-            ..Default::default()
         };
         let token =
             crate::auth::mint_agent_token(AGENT, OWNER, SECRET, 3600, Algorithm::HS256).unwrap();
@@ -509,44 +440,8 @@ mod tests {
         let err = embeddings_core(&ctx, &store, &auth_headers(&token), body)
             .await
             .unwrap_err();
-        assert_eq!(err.status(), axum::http::StatusCode::BAD_REQUEST);
-        assert!(err.to_string().contains("unknown model"));
+        assert!(matches!(err, GatewayError::Upstream(_)));
         mock.assert_async().await;
-    }
-
-    #[tokio::test]
-    async fn the_owner_pays_for_a_shared_callers_embeddings() {
-        // The caller has no config of their own; the owner's embedding model is what the
-        // provider must receive, and the payer is asked once, about this owner and caller.
-        let (server, mock) = openai_embeddings_mock("text-embedding-3-small").await;
-        let payer = crate::payer::RecordingPayer::answering(Some(crate::payer::Payer::Owner));
-        let ctx = LlmRouterCtx {
-            payer: payer.clone(),
-            ..ctx_with(server.url())
-        };
-        let caller = Uuid::parse_str("33333333-3333-3333-3333-333333333333").unwrap();
-        let store = Store {
-            config: Some(anthropic_chat_config(Some((
-                "openai",
-                "text-embedding-3-small",
-            )))),
-            flow_user: Some(caller),
-            ..Default::default()
-        };
-        let token =
-            crate::auth::mint_agent_token(AGENT, OWNER, SECRET, 3600, Algorithm::HS256).unwrap();
-        let resp = embeddings_core(
-            &ctx,
-            &store,
-            &auth_headers(&token),
-            json!({ "input": "hello" }),
-        )
-        .await
-        .unwrap();
-        assert_eq!(body_json(resp).await["model"], "text-embedding-3-small");
-        mock.assert_async().await;
-        let owner = Uuid::parse_str(OWNER).unwrap();
-        assert_eq!(*payer.calls.lock().unwrap(), [(owner, caller)]);
     }
 
     #[tokio::test]
@@ -567,54 +462,5 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, GatewayError::BadRequest(_)));
-    }
-
-    #[tokio::test]
-    async fn an_owner_without_a_key_embeds_on_the_platform_key() {
-        let mut server = mockito::Server::new_async().await;
-        let mock = server
-            .mock("POST", "/embeddings")
-            .match_header("authorization", "Bearer sk-service")
-            .match_body(mockito::Matcher::PartialJson(
-                json!({ "model": "text-embedding-3-small" }),
-            ))
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(
-                json!({
-                    "object": "list",
-                    "data": [{ "object": "embedding", "embedding": [0.1, 0.2], "index": 0 }],
-                    "model": "text-embedding-3-small",
-                    "usage": { "prompt_tokens": 4, "total_tokens": 4 }
-                })
-                .to_string(),
-            )
-            .expect(1)
-            .create_async()
-            .await;
-        let base = ctx_with(server.url());
-        // Agents get no platform key; the platform keeps its own.
-        let cfg = GatewayConfig {
-            generic_key_fallback: false,
-            platform_openai_api_key: String::new(),
-            service_openai_api_key: "sk-service".into(),
-            ..(*base.cfg).clone()
-        };
-        let ctx = LlmRouterCtx {
-            cfg: Arc::new(cfg),
-            payer: crate::payer::RecordingPayer::answering(Some(crate::payer::Payer::Platform)),
-            ..base
-        };
-        let store = Store {
-            flow_user: Uuid::parse_str(OWNER).ok(),
-            ..Store::default()
-        };
-        let token =
-            crate::auth::mint_agent_token(AGENT, OWNER, SECRET, 3600, Algorithm::HS256).unwrap();
-        let body = json!({ "model": "text-embedding-3-small", "input": "hello" });
-        embeddings_core(&ctx, &store, &auth_headers(&token), body)
-            .await
-            .unwrap();
-        mock.assert_async().await;
     }
 }

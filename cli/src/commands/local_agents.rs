@@ -2004,6 +2004,124 @@ fn reporting_agent_name(agent: &AgentPlan) -> Result<Option<String>> {
     Ok((router.summary)()?.map(|summary| summary.agent_name))
 }
 
+// ─── connecting an A2A agent ─────────────────────────────────────────────────
+
+/// The running A2A agent `target` names, with everything running here (registration reports
+/// the whole machine). `None` when `target` is a URL or no running agent has that name, so
+/// `connect` keeps treating it as a control plane.
+pub fn running_a2a_agent(
+    target: &str,
+) -> Option<(integration::A2aAgent, integration::RunningA2aAgents)> {
+    if target.contains("://") || is_coding_agent(target) {
+        return None;
+    }
+    let running = integration::running_a2a_agents();
+    let agent = running
+        .agents
+        .iter()
+        .find(|agent| agent.name == target)?
+        .clone();
+    Some((agent, running))
+}
+
+/// `nasiko connect <a2a agent>`: register it and route its LLM calls through Nasiko. The
+/// variables go into the file it reads at startup when that file can be determined from its
+/// process, after the user sees the change and agrees; otherwise they are shown to set.
+pub fn connect_a2a(
+    agent: &integration::A2aAgent,
+    running: &integration::RunningA2aAgents,
+    options: &ConnectOptions,
+) -> Result<()> {
+    let prompter = prompter(options.yes);
+    ensure_logged_in(prompter.as_ref())?;
+    let connection = integration::prepare_a2a_connection(agent, running)?;
+    let cli = cli_name();
+    let name = quoted(&connection.card_name);
+    let written = match &connection.target {
+        integration::EnvTarget::File(file) => {
+            let header = format!(
+                "LLM routing for {}, added by `{cli} connect {name}`. Undo: `{cli} disconnect {name}`",
+                connection.card_name
+            );
+            let text = integration::a2a_connected_text(&connection, file, &header)?;
+            print_planned_write(&connection, file);
+            let agreed = options.yes
+                || prompter.confirm(
+                    &format!("Write these variables to {}?", file.display()),
+                    true,
+                )?;
+            if agreed {
+                integration::save_a2a_connection(&connection, Some((file, &text)))?;
+                term::print_success(&format!("Wrote the Nasiko variables to {}", file.display()));
+                term::print_info(&format!(
+                    "{} now holds this agent's Nasiko key; keep it out of version control.",
+                    file.display()
+                ));
+            }
+            agreed
+        }
+        integration::EnvTarget::Unknown(_) => false,
+    };
+    if !written {
+        print_variables_to_set(&connection);
+        integration::save_a2a_connection(&connection, None)?;
+    }
+    println!(
+        "\nRestart {} to apply. {} shows its LLM ROUTING as on after its first call.",
+        connection.card_name,
+        term::cyan(&format!("{cli} status"))
+    );
+    Ok(())
+}
+
+fn print_planned_write(connection: &integration::A2aConnection, file: &std::path::Path) {
+    if let Some(folder) = &connection.folder {
+        println!("Agent folder: {}", folder.display());
+    }
+    println!(
+        "{} {} will set (your own lines for these are kept, commented out):",
+        if file.exists() {
+            "Updating"
+        } else {
+            "Creating"
+        },
+        file.display()
+    );
+    for (key, value) in &connection.vars {
+        let shown = if key.ends_with("_KEY") {
+            "<this agent's Nasiko key>"
+        } else {
+            value
+        };
+        println!("  {key}={shown}");
+    }
+}
+
+fn print_variables_to_set(connection: &integration::A2aConnection) {
+    if let integration::EnvTarget::Unknown(reason) = &connection.target {
+        term::print_info(&format!(
+            "Not writing a file for {}: {reason}.",
+            connection.card_name
+        ));
+    }
+    println!(
+        "Set these where {} reads its environment:",
+        connection.card_name
+    );
+    for (key, value) in &connection.vars {
+        println!("  {key}={value}");
+    }
+}
+
+/// `name` as a shell word: quoted when it has whitespace.
+fn quoted(name: &str) -> String {
+    if name.chars().any(char::is_whitespace) {
+        format!("\"{name}\"")
+    } else {
+        name.to_string()
+    }
+}
+
 // ─── disconnect ──────────────────────────────────────────────────────────────
 
 struct Removal {
@@ -2014,6 +2132,12 @@ struct Removal {
 
 /// `nasiko disconnect [agent]`: remove LLM routing (with the MCP gateway) and/or reporting.
 pub fn disconnect(target: Option<&str>, options: &DisconnectOptions) -> Result<()> {
+    if let Some(name) = target.filter(|name| !is_coding_agent(name))
+        && let Some(message) = integration::disconnect_a2a_agent(name)?
+    {
+        term::print_success(&format!("{message}. Restart {name} to apply."));
+        return Ok(());
+    }
     let prompter = prompter(options.yes);
     let views = load_views()?;
     let targets: Vec<AgentView> = match target {

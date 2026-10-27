@@ -6,19 +6,18 @@
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use axum::Json;
 use axum::body::{Body, Bytes};
 use axum::extract::State;
-use axum::extract::rejection::JsonRejection;
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::{Extension, Json};
 use futures::StreamExt;
 use serde_json::{Value, json};
 
-use super::auth_layer::rejected_body;
 use super::chat::{
-    AuthedCaller, RequestSignals, RoutedRequest, lookup_agent_owner, resolve_routed_request,
+    AuthedCaller, RequestSignals, RoutedRequest, authenticate_caller, lookup_agent_owner,
+    resolve_routed_request,
 };
 use crate::LlmRouterCtx;
 use crate::error::GatewayError;
@@ -26,10 +25,9 @@ use crate::inbound::responses::{
     ResponsesRequest, ResponsesStreamRenderer, TerminalOutcome, parse_request, render_response,
 };
 use crate::ir::Usage;
-use crate::providers::attempts::{failure_of, mid_stream_failure};
 use crate::providers::{ProviderError, fallback, provider_for};
 use crate::resolver::{PgRegistry, RegistryStore, RequestHint};
-use crate::usage::{self, CallFailure, UsageRecord};
+use crate::usage::{self, UsageRecord};
 
 const MAX_INSPECTION_BYTES: usize = 1024 * 1024;
 const TRANSLATION_HEADER: &str = "x-nasiko-responses-translation";
@@ -66,62 +64,35 @@ const RESPONSE_HEADERS: &[&str] = &[
 
 pub async fn responses(
     State(ctx): State<LlmRouterCtx>,
-    Extension(caller): Extension<AuthedCaller>,
     headers: HeaderMap,
-    body: Result<Json<Value>, JsonRejection>,
+    Json(body): Json<Value>,
 ) -> Response {
-    let body = match body {
-        Ok(Json(body)) => body,
-        Err(rejection) => {
-            return rejected_body(rejection, ctx.cfg.max_body_bytes, gateway_error_response);
-        }
-    };
     let store = PgRegistry::new(ctx.db.clone());
-    match responses_core_as(&ctx, &store, caller, &headers, body).await {
+    match responses_core(&ctx, &store, &headers, body).await {
         Ok(response) => response,
         Err(error) => gateway_error_response(error),
     }
 }
 
-pub(crate) fn gateway_error_response(error: GatewayError) -> Response {
+fn gateway_error_response(error: GatewayError) -> Response {
     let status = error.status();
     let code = error_code(&error);
-    let retry_after = match &error {
-        GatewayError::OwnerAllowanceSpent { retry_after_secs } => Some(*retry_after_secs),
-        _ => None,
-    };
     let message = if matches!(error, GatewayError::Internal(_)) {
         tracing::error!(error = %error, "Responses handler internal error");
         "Internal server error".to_string()
     } else {
         error.to_string()
     };
-    let mut response = responses_error(status, message, code);
-    if let Some(secs) = retry_after {
-        crate::error::mark_allowance_spent(&mut response, secs);
-    }
-    response
+    responses_error(status, message, code)
 }
 
-#[cfg(test)]
 async fn responses_core(
     ctx: &LlmRouterCtx,
     store: &dyn RegistryStore,
     headers: &HeaderMap,
-    body: Value,
-) -> Result<Response, GatewayError> {
-    let caller = super::chat::authenticate_caller(ctx, store, headers).await?;
-    responses_core_as(ctx, store, caller, headers, body).await
-}
-
-async fn responses_core_as(
-    ctx: &LlmRouterCtx,
-    store: &dyn RegistryStore,
-    caller: AuthedCaller,
-    headers: &HeaderMap,
     mut body: Value,
 ) -> Result<Response, GatewayError> {
-    let (agent_id, owner_id, session) = match caller {
+    let (agent_id, owner_id, session) = match authenticate_caller(ctx, headers).await? {
         AuthedCaller::Agent { agent_id, owner_id } => (agent_id, owner_id, None),
         AuthedCaller::Session(claims) => {
             let owner_id = lookup_agent_owner(&ctx.db, &claims.agent_id).await?;
@@ -149,7 +120,7 @@ async fn responses_core_as(
         is_tool_continuation: is_tool_continuation(body.get("input")),
         query,
     };
-    let mut routed = resolve_routed_request(
+    let routed = resolve_routed_request(
         ctx,
         store,
         headers,
@@ -163,7 +134,6 @@ async fn responses_core_as(
         session,
     )
     .await?;
-    routed.compression = compress_input(ctx, &routed, &mut body).await;
     let attempts = fallback::build_attempts(&routed.resolved, &ctx.cfg);
     let native_primary = routed.resolved.provider == "openai";
     let mut translated = if native_primary {
@@ -185,10 +155,7 @@ async fn responses_core_as(
             };
             let started = Instant::now();
             match translated_attempt(ctx, &routed, &attempt, parsed, started).await {
-                Ok(response) => {
-                    forget_unless_routed_model_answered(ctx, &routed, &attempt).await;
-                    return Ok(response);
-                }
+                Ok(response) => return Ok(response),
                 Err(TranslatedAttemptError::Terminal(response)) => return Ok(*response),
                 Err(TranslatedAttemptError::Configuration(error)) => return Err(error),
                 Err(TranslatedAttemptError::Retry(error)) => {
@@ -207,8 +174,7 @@ async fn responses_core_as(
             object.insert("max_output_tokens".into(), json!(max_tokens));
         }
         let started = Instant::now();
-        let request_bytes = serde_json::to_string(&body).ok().map(|s| s.len());
-        let mut guard = AttemptGuard::new(ctx, &routed, &attempt, started, stream, request_bytes);
+        let mut guard = AttemptGuard::new(ctx, &routed, &attempt, started, stream);
         let mut request = ctx
             .http
             .post(format!(
@@ -221,7 +187,7 @@ async fn responses_core_as(
         let upstream = match request.send().await {
             Ok(upstream) => upstream,
             Err(error) => {
-                guard.fail("send", Some(CallFailure::new("transport", None)), &error);
+                guard.fail("send", &error);
                 let retryable = is_retryable_transport_error(&error);
                 let error = GatewayError::Upstream(error.to_string());
                 if retryable {
@@ -235,25 +201,16 @@ async fn responses_core_as(
         if !status.is_success() {
             guard.fail_status(status.as_u16());
             let response = passthrough_error(upstream).await?;
-            if matches!(status.as_u16(), 404 | 429) || status.is_server_error() {
+            if status.as_u16() == 429 || status.is_server_error() {
                 last_response = Some(response);
                 continue;
             }
             return Ok(response);
         }
-        forget_unless_routed_model_answered(ctx, &routed, &attempt).await;
         let status = StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::OK);
         return if stream {
             guard.disarm();
-            stream_response(
-                ctx,
-                upstream,
-                routed,
-                attempt.clone(),
-                started,
-                status,
-                request_bytes,
-            )
+            stream_response(ctx, upstream, routed, attempt.clone(), started, status)
         } else {
             nonstream_response(
                 ctx,
@@ -270,66 +227,6 @@ async fn responses_core_as(
     last_response.map(Ok).unwrap_or_else(|| {
         Err(last_error.unwrap_or_else(|| GatewayError::Upstream("no Responses attempts".into())))
     })
-}
-
-/// The compression seam for this surface, as `chat_core`'s: after routing (the signals that pick
-/// the model were read from the uncompressed input), per agent (`compress_enabled`), on tool
-/// results only. Once, before any attempt, so the passthrough and the translated path (which
-/// parses this same body) send the same bytes. Originals are stored before the request carrying
-/// their markers goes out; only a flow-scoped request can be recovered.
-async fn compress_input(
-    ctx: &LlmRouterCtx,
-    routed: &RoutedRequest,
-    body: &mut Value,
-) -> crate::compress::Ledger {
-    let policy = crate::compress::policy_for(&ctx.cfg, &routed.resolved);
-    let recovery = crate::compress::Recovery::for_responses(
-        ctx.cfg.compress_recovery_enabled,
-        ctx.cfg.compress_recovery_min_bytes,
-        routed.flow_id.as_deref(),
-        body,
-    );
-    let Some(input) = body.get_mut("input") else {
-        return crate::compress::Ledger::default();
-    };
-    let stats = crate::compress::apply_responses_input(input, &policy, recovery);
-    if stats.messages_touched > 0 {
-        tracing::debug!(
-            target: "nasiko::llm_router::compress",
-            agent_id = %routed.agent_id,
-            applied = stats.applied,
-            dry_run = stats.dry_run,
-            bytes_in = stats.bytes_in,
-            bytes_out = stats.bytes_out,
-            messages_touched = stats.messages_touched,
-            elapsed_us = stats.elapsed_us,
-            "compress: Responses tool outputs reduced"
-        );
-    }
-    if !stats.originals.is_empty() {
-        match (
-            routed.flow_id.as_deref(),
-            routed.owner_id.parse::<uuid::Uuid>(),
-        ) {
-            (Some(flow), Ok(owner)) => {
-                crate::recovery::persist(
-                    &ctx.db,
-                    &stats.originals,
-                    flow,
-                    owner,
-                    routed.agent_id.parse().ok(),
-                )
-                .await
-            }
-            _ => tracing::debug!(
-                target: "nasiko::llm_router::recovery",
-                agent_id = %routed.agent_id,
-                count = stats.originals.len(),
-                "recovery: request is not flow-scoped; originals not stored"
-            ),
-        }
-    }
-    stats.ledger()
 }
 
 fn is_retryable_transport_error(error: &reqwest::Error) -> bool {
@@ -356,14 +253,7 @@ async fn translated_attempt(
             "lossy Responses translation accepted advisory controls"
         );
     }
-    let mut guard = AttemptGuard::new(
-        ctx,
-        routed,
-        attempt,
-        started,
-        parsed.stream,
-        Some(crate::brevity::estimated_bytes(&parsed.chat)),
-    );
+    let mut guard = AttemptGuard::new(ctx, routed, attempt, started, parsed.stream);
     let provider = provider_for(
         &attempt.provider,
         attempt.custom_endpoint.as_ref(),
@@ -371,8 +261,7 @@ async fn translated_attempt(
         &ctx.cfg,
     )
     .map_err(|error| {
-        // Nothing was sent: a row, but not a failed call.
-        guard.fail("routing", None, &error);
+        guard.fail("routing", &error);
         TranslatedAttemptError::Configuration(error)
     })?;
     let mut request = parsed.chat.clone();
@@ -385,11 +274,7 @@ async fn translated_attempt(
                     let response =
                         translated_stream_response(ctx, routed, attempt, parsed, stream, started)
                             .map_err(|error| {
-                            guard.fail(
-                                "stream_setup",
-                                Some(CallFailure::new("stream", None)),
-                                &error,
-                            );
+                            guard.fail("stream_setup", &error);
                             TranslatedAttemptError::Retry(ProviderError::Parse(error.to_string()))
                         })?;
                     guard.disarm();
@@ -405,7 +290,7 @@ async fn translated_attempt(
                     ) {
                         continue;
                     }
-                    guard.fail("provider", failure_of(&error), &error);
+                    guard.fail("provider", &error);
                     return Err(classify_translated_error(error));
                 }
             }
@@ -423,12 +308,13 @@ async fn translated_attempt(
                     });
                     let value = render_response(chat, &attempt.model, &parsed.tool_kinds).map_err(
                         |error| {
-                            guard.fail("render", Some(CallFailure::new("parse", None)), &error);
+                            guard.fail("render", &error);
                             classify_translated_error(ProviderError::Parse(error.to_string()))
                         },
                     )?;
-                    let outcome = response_outcome(&value);
-                    let finish_reason = outcome.map(outcome_finish_reason).or(finish_reason);
+                    let finish_reason = response_outcome(&value)
+                        .map(outcome_finish_reason)
+                        .or(finish_reason);
                     guard.disarm();
                     log_response_usage(
                         ctx,
@@ -436,12 +322,8 @@ async fn translated_attempt(
                         attempt,
                         started,
                         false,
-                        ResponseStreamState {
-                            details: usage,
-                            finish_reason,
-                            failure: outcome.and_then(outcome_failure),
-                            request_bytes: Some(crate::brevity::estimated_bytes(&parsed.chat)),
-                        },
+                        usage,
+                        finish_reason,
                     );
                     return Ok(mark_lossy(Json(value).into_response()));
                 }
@@ -455,7 +337,7 @@ async fn translated_attempt(
                     ) {
                         continue;
                     }
-                    guard.fail("provider", failure_of(&error), &error);
+                    guard.fail("provider", &error);
                     return Err(classify_translated_error(error));
                 }
             }
@@ -463,23 +345,8 @@ async fn translated_attempt(
     }
 }
 
-async fn forget_unless_routed_model_answered(
-    ctx: &LlmRouterCtx,
-    routed: &RoutedRequest,
-    attempt: &crate::resolver::ResolvedConfig,
-) {
-    super::chat::forget_route_that_did_not_answer(
-        ctx,
-        &routed.agent_id,
-        routed.sticky_conv_id.as_deref(),
-        &routed.resolved,
-        (&attempt.provider, &attempt.model),
-    )
-    .await;
-}
-
 fn classify_translated_error(error: ProviderError) -> TranslatedAttemptError {
-    if error.retryable() || matches!(error, ProviderError::Status { status: 404, .. }) {
+    if error.retryable() {
         return TranslatedAttemptError::Retry(error);
     }
     let (status, message) = match &error {
@@ -489,7 +356,6 @@ fn classify_translated_error(error: ProviderError) -> TranslatedAttemptError {
             StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_REQUEST),
             message.clone(),
         ),
-        ProviderError::Rejected(message) => (StatusCode::BAD_REQUEST, message.clone()),
         _ => (StatusCode::BAD_GATEWAY, error.to_string()),
     };
     TranslatedAttemptError::Terminal(Box::new(mark_lossy(responses_error(
@@ -514,10 +380,7 @@ fn translated_stream_response(
     >,
     started: Instant,
 ) -> Result<Response, GatewayError> {
-    let usage_state = Arc::new(Mutex::new(ResponseStreamState {
-        request_bytes: Some(crate::brevity::estimated_bytes(&parsed.chat)),
-        ..Default::default()
-    }));
+    let usage_state = Arc::new(Mutex::new(ResponseStreamState::default()));
     let guard = ResponsesUsageGuard {
         ctx: ctx.clone(),
         routed: Some((routed.clone(), attempt.clone())),
@@ -547,11 +410,7 @@ fn translated_stream_response(
                     for frame in renderer.render(chunk) { yield Ok(frame); }
                 }
                 Err(error) => {
-                    {
-                        let mut state = usage_state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                        state.finish_reason = Some("failed:stream".into());
-                        state.failure = Some(mid_stream_failure(&error));
-                    }
+                    usage_state.lock().unwrap_or_else(|error| error.into_inner()).finish_reason = Some("failed:stream".into());
                     for frame in renderer.fail(error.to_string()) { yield Ok(frame); }
                     return;
                 }
@@ -559,9 +418,8 @@ fn translated_stream_response(
         }
         for frame in renderer.finish() { yield Ok(frame); }
         if let Some(outcome) = renderer.outcome() {
-            let mut state = usage_state.lock().unwrap_or_else(|error| error.into_inner());
-            state.finish_reason = Some(outcome_finish_reason(outcome));
-            state.failure = outcome_failure(outcome);
+            usage_state.lock().unwrap_or_else(|error| error.into_inner()).finish_reason =
+                Some(outcome_finish_reason(outcome));
         }
     };
     Response::builder()
@@ -607,11 +465,7 @@ async fn nonstream_response(
     let bytes = match upstream.bytes().await {
         Ok(bytes) => bytes,
         Err(error) => {
-            guard.fail(
-                "body_read",
-                Some(CallFailure::new("transport", None)),
-                &error,
-            );
+            guard.fail("body_read", &error);
             return Err(GatewayError::Upstream(error.to_string()));
         }
     };
@@ -619,8 +473,10 @@ async fn nonstream_response(
     let details = parsed
         .as_ref()
         .and_then(|value| response_usage(value.get("usage")));
-    let outcome = parsed.as_ref().and_then(response_outcome);
-    let request_bytes = guard.request_bytes();
+    let finish_reason = parsed
+        .as_ref()
+        .and_then(response_outcome)
+        .map(outcome_finish_reason);
     guard.disarm();
     log_response_usage(
         ctx,
@@ -628,12 +484,8 @@ async fn nonstream_response(
         &attempt,
         started,
         false,
-        ResponseStreamState {
-            details,
-            finish_reason: outcome.map(outcome_finish_reason),
-            failure: outcome.and_then(outcome_failure),
-            request_bytes,
-        },
+        details,
+        finish_reason,
     );
     build_success_response(status, &headers, Body::from(bytes))
 }
@@ -645,13 +497,9 @@ fn stream_response(
     attempt: crate::resolver::ResolvedConfig,
     started: Instant,
     status: StatusCode,
-    request_bytes: Option<usize>,
 ) -> Result<Response, GatewayError> {
     let headers = upstream.headers().clone();
-    let state = Arc::new(Mutex::new(ResponseStreamState {
-        request_bytes,
-        ..Default::default()
-    }));
+    let state = Arc::new(Mutex::new(ResponseStreamState::default()));
     let guard = ResponsesUsageGuard {
         ctx: ctx.clone(),
         routed: Some((routed, attempt)),
@@ -671,8 +519,6 @@ fn stream_response(
                 }
                 Err(error) => {
                     tracing::warn!(error = %error, "Responses upstream stream failed midstream");
-                    state.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).failure =
-                        Some(CallFailure::new("stream", None));
                     yield Err(std::io::Error::other(error));
                     return;
                 }
@@ -825,7 +671,6 @@ fn inspect_event(event: &[u8], state: &Arc<Mutex<ResponseStreamState>>) {
     let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
     state.details = details;
     state.finish_reason = Some(outcome_finish_reason(outcome));
-    state.failure = outcome_failure(outcome);
 }
 
 fn terminal_event_outcome(kind: Option<&str>) -> Option<TerminalOutcome> {
@@ -855,21 +700,10 @@ fn outcome_finish_reason(outcome: TerminalOutcome) -> String {
     .into()
 }
 
-/// How a Responses call ended, as its usage row records it.
 #[derive(Clone, Default)]
 struct ResponseStreamState {
     details: Option<ResponseUsage>,
     finish_reason: Option<String>,
-    /// Set when the stream broke off, or the provider ended it as `response.failed`.
-    failure: Option<CallFailure>,
-    /// The bytes sent, for a failed call's prompt estimate when no usage was reported.
-    request_bytes: Option<usize>,
-}
-
-/// A response the provider itself reported as failed is a failed call; its usage, when
-/// reported, is priced as usual.
-fn outcome_failure(outcome: TerminalOutcome) -> Option<CallFailure> {
-    matches!(outcome, TerminalOutcome::Failed).then_some(CallFailure::new("response_failed", None))
 }
 
 #[derive(Clone)]
@@ -919,7 +753,15 @@ impl Drop for ResponsesUsageGuard {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .clone();
-        log_response_usage(&self.ctx, routed, &attempt, self.started, true, state);
+        log_response_usage(
+            &self.ctx,
+            routed,
+            &attempt,
+            self.started,
+            true,
+            state.details,
+            state.finish_reason,
+        );
     }
 }
 
@@ -936,8 +778,6 @@ impl AttemptGuard {
         attempt: &crate::resolver::ResolvedConfig,
         started: Instant,
         streaming: bool,
-        // What this attempt sends, so a failure with no reported usage can estimate its prompt.
-        request_bytes: Option<usize>,
     ) -> Self {
         Self {
             ctx: ctx.clone(),
@@ -957,34 +797,21 @@ impl AttemptGuard {
                 flow_id: routed.flow_id.clone(),
                 attribution_source: routed.attribution_source,
                 platform_paid: attempt.platform_paid,
-                // Compressed once before any attempt (`compress_input`).
-                compress_metadata: routed.compression.metadata.clone(),
-                // /v1/responses does not share chat_core, so IP-2 never runs here (PRD §9).
+                // Never compressed: this surface does not go through `chat_core`.
+                compress_metadata: None,
+                // /v1/responses does not share chat_core, so IP-1/IP-2 never run here (PRD §9).
                 brevity_metadata: None,
-                compact_tools_metadata: None,
-                routing_metadata: routed.routing_metadata.clone(),
-                compress_bytes: routed.compression.bytes,
-                compact_tools_bytes: None,
-                // Only ever written for a failed attempt (a success disarms the guard), where it
-                // is the basis of the prompt estimate.
-                request_bytes,
-                failure: None,
+                // Nothing was compressed, so there is nothing to credit to a savings layer.
+                compress_bytes: None,
+                request_bytes: None,
             }),
         }
     }
 
-    /// The attempt failed at `stage`. `failure` is `None` when nothing reached the provider
-    /// (the row is still written, as before, but is not a failed call).
-    fn fail(
-        &mut self,
-        stage: &'static str,
-        failure: Option<CallFailure>,
-        error: &dyn std::fmt::Display,
-    ) {
+    fn fail(&mut self, stage: &'static str, error: &dyn std::fmt::Display) {
         if let Some(record) = &mut self.record {
             record.latency_ms = record.latency_ms.max(1);
             record.finish_reason = Some(format!("failed:{stage}"));
-            record.failure = failure;
             tracing::warn!(stage, model = %record.model, error = %error, "Responses upstream attempt failed");
         }
     }
@@ -993,18 +820,12 @@ impl AttemptGuard {
         if let Some(record) = &mut self.record {
             record.latency_ms = record.latency_ms.max(1);
             record.finish_reason = Some(format!("http:{status}"));
-            record.failure = Some(CallFailure::new("status", Some(status)));
             tracing::warn!(status, model = %record.model, "Responses upstream attempt returned non-success status");
         }
     }
 
     fn disarm(&mut self) {
         self.record = None;
-    }
-
-    /// What this attempt sent, for the row written once it is known how the call ended.
-    fn request_bytes(&self) -> Option<usize> {
-        self.record.as_ref().and_then(|record| record.request_bytes)
     }
 }
 
@@ -1014,12 +835,7 @@ impl Drop for AttemptGuard {
             record.latency_ms = record
                 .latency_ms
                 .max(self.started.elapsed().as_millis() as i64);
-            usage::spawn_log(
-                self.ctx.db.clone(),
-                self.ctx.pricing.clone(),
-                self.ctx.ledger.clone(),
-                record,
-            );
+            usage::spawn_log(self.ctx.db.clone(), self.ctx.pricing.clone(), record);
         }
     }
 }
@@ -1030,14 +846,9 @@ fn log_response_usage(
     attempt: &crate::resolver::ResolvedConfig,
     started: Instant,
     streaming: bool,
-    end: ResponseStreamState,
+    details: Option<ResponseUsage>,
+    finish_reason: Option<String>,
 ) {
-    let ResponseStreamState {
-        details,
-        finish_reason,
-        failure,
-        request_bytes,
-    } = end;
     let cached_tokens = details.as_ref().and_then(|details| details.cached_tokens);
     let reasoning_tokens = details
         .as_ref()
@@ -1045,7 +856,6 @@ fn log_response_usage(
     usage::spawn_log(
         ctx.db.clone(),
         ctx.pricing.clone(),
-        ctx.ledger.clone(),
         UsageRecord {
             owner_id: routed.owner_id,
             agent_id: routed.agent_id,
@@ -1061,32 +871,23 @@ fn log_response_usage(
             flow_id: routed.flow_id,
             attribution_source: routed.attribution_source,
             platform_paid: attempt.platform_paid,
-            compress_metadata: routed.compression.metadata,
+            // Never compressed: this surface does not go through `chat_core`.
+            compress_metadata: None,
             brevity_metadata: None,
-            compact_tools_metadata: None,
-            routing_metadata: routed.routing_metadata,
-            compress_bytes: routed.compression.bytes,
-            // Compact tools runs in chat_core only.
-            compact_tools_bytes: None,
-            // Only a failed call carries it (its prompt estimate); a success keeps the savings
-            // ledger's fixed divisor, as before.
-            request_bytes: failure.and(request_bytes),
-            failure,
+            compress_bytes: None,
+            request_bytes: None,
         },
     );
 }
 
-/// The latest user message's text for routing, with coding-harness wrappers removed the
-/// same way the chat surface does (`routing::latest_user_query`, NAS-1257).
 fn latest_user_text(input: Option<&Value>) -> Option<String> {
-    let text = input
+    input
         .and_then(Value::as_array)?
         .iter()
         .rev()
         .find(|item| item.get("role").and_then(Value::as_str) == Some("user"))
         .and_then(|item| item.get("content"))
-        .and_then(content_text)?;
-    crate::routing::strip_harness_wrappers(&text)
+        .and_then(content_text)
 }
 
 /// Number of top-level user turns so far in a Responses-API `input` array — the
@@ -1132,27 +933,16 @@ fn content_text(content: &Value) -> Option<String> {
 fn error_code(error: &GatewayError) -> &'static str {
     match error {
         GatewayError::MissingAuthHeader
+        | GatewayError::JwtSecretNotConfigured
         | GatewayError::TokenExpired
         | GatewayError::InvalidToken(_)
-        | GatewayError::MissingAgentId
-        | GatewayError::TokenRevoked => "invalid_api_key",
+        | GatewayError::MissingAgentId => "invalid_api_key",
         GatewayError::Forbidden(_) => "permission_denied",
         GatewayError::BadRequest(_) => "invalid_request_error",
         GatewayError::NoRegistryEntry(_)
-        | GatewayError::SecretNotFound(_)
-        | GatewayError::SecretUnreadable(_)
-        | GatewayError::NoApiKey { .. }
-        | GatewayError::NoSharedUserConfig => "routing_configuration_error",
-        GatewayError::OwnerAllowanceSpent { .. } => "allowance_exhausted",
-        GatewayError::Upstream(_) | GatewayError::UpstreamTimeout(_) => "upstream_error",
-        GatewayError::Provider { status, .. } if *status == StatusCode::TOO_MANY_REQUESTS => {
-            "rate_limit_exceeded"
-        }
-        GatewayError::Provider { .. } => "invalid_request_error",
-        GatewayError::PayloadTooLarge { .. } => "request_too_large",
-        GatewayError::StorageUnavailable
-        | GatewayError::Busy
-        | GatewayError::JwtSecretNotConfigured => "service_unavailable",
+        | GatewayError::SecretNotFound(_, _)
+        | GatewayError::NoApiKey => "routing_configuration_error",
+        GatewayError::Upstream(_) => "upstream_error",
         GatewayError::Internal(_) => "internal_error",
     }
 }
@@ -1197,7 +987,6 @@ mod tests {
     struct Store {
         provider: &'static str,
         fallback_models: Vec<String>,
-        tier1_model: Option<&'static str>,
     }
 
     struct NoTiers;
@@ -1214,14 +1003,6 @@ mod tests {
             Self {
                 provider,
                 fallback_models: Vec::new(),
-                tier1_model: None,
-            }
-        }
-
-        fn tiered(provider: &'static str, tier1_model: &'static str) -> Self {
-            Self {
-                tier1_model: Some(tier1_model),
-                ..Self::new(provider)
             }
         }
     }
@@ -1243,7 +1024,7 @@ mod tests {
                     api_key_secret_name: None,
                     pinned: false,
                     pinned_model: None,
-                    tier1_model: self.tier1_model.map(str::to_string),
+                    tier1_model: None,
                     tier2_model: None,
                     tier3_model: None,
                     embedding_provider: None,
@@ -1253,6 +1034,7 @@ mod tests {
                 }),
                 agent_pinned_model: None,
                 is_coding_agent: true,
+                is_discovered_agent: false,
             }))
         }
 
@@ -1263,10 +1045,6 @@ mod tests {
             _: i64,
         ) -> Result<Option<crate::routing::attribution::LiveFlow>, sqlx::Error> {
             Ok(None)
-        }
-
-        async fn fetch_agent_owner(&self, _: Uuid) -> Result<Option<Uuid>, sqlx::Error> {
-            Ok(Uuid::parse_str(OWNER).ok())
         }
 
         async fn fetch_user_secret(&self, _: Uuid, _: &str) -> Result<Option<String>, sqlx::Error> {
@@ -1310,15 +1088,6 @@ mod tests {
             pricing: Arc::new(nasiko_pricing::PricingEngine::new(
                 PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
             )),
-            body_permits: crate::handlers::auth_layer::body_permit_pool(256 * 1024 * 1024),
-            attachment_store: Arc::new(crate::attachments::NoAttachmentStore),
-            attachment_cache: Arc::new(crate::attachments::AttachmentCache::new(
-                1024 * 1024,
-                crate::attachments::ATTACHMENT_CACHE_TTL,
-            )),
-            marker_signer: None,
-            ledger: Arc::new(nasiko_pricing::NoUsageLedger),
-            payer: Arc::new(crate::payer::CallerPays),
         }
     }
 
@@ -1339,14 +1108,12 @@ mod tests {
 
     #[tokio::test]
     async fn auth_is_required_before_upstream() {
-        let ctx = ctx("http://unused".into());
-        let request = axum::http::Request::post("/v1/responses")
-            .header("content-type", "application/json")
-            .body(Body::from("{}"))
-            .unwrap();
-        let response = tower::ServiceExt::oneshot(crate::router(ctx), request)
-            .await
-            .unwrap();
+        let response = responses(
+            State(ctx("http://unused".into())),
+            HeaderMap::new(),
+            Json(json!({})),
+        )
+        .await;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         let value: Value = serde_json::from_slice(&body(response).await).unwrap();
         assert_eq!(value["error"]["code"], "invalid_api_key");
@@ -1361,29 +1128,6 @@ mod tests {
         assert_eq!(value["error"]["message"], "Internal server error");
         assert_eq!(value["error"]["type"], "server_error");
         assert_eq!(value["error"]["code"], "internal_error");
-    }
-
-    #[tokio::test]
-    async fn a_spent_allowance_is_a_429_allowance_exhausted() {
-        let response = gateway_error_response(GatewayError::OwnerAllowanceSpent {
-            retry_after_secs: 120,
-        });
-        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
-        assert_eq!(response.headers()["retry-after"], "120");
-        assert_eq!(
-            response.extensions().get::<crate::error::AllowanceSpent>(),
-            Some(&crate::error::AllowanceSpent {
-                retry_after_secs: 120
-            })
-        );
-        let value: Value = serde_json::from_slice(&body(response).await).unwrap();
-        assert_eq!(value["error"]["code"], "allowance_exhausted");
-        assert_eq!(value["error"]["type"], "invalid_request_error");
-        assert!(
-            value["error"]["message"]
-                .as_str()
-                .is_some_and(|m| { m.starts_with("Today's free model calls are used up.") })
-        );
     }
 
     #[tokio::test]
@@ -1492,8 +1236,8 @@ mod tests {
             .match_header("x-api-key", "anthropic-key")
             .match_body(mockito::Matcher::PartialJson(json!({
                 "model":"resolved-model",
-                "system":[{"type":"text","text":"be useful","cache_control":{"type":"ephemeral"}}],
-                "messages":[{"role":"user","content":[{"type":"text","text":"edit","cache_control":{"type":"ephemeral"}}]}],
+                "system":"be useful",
+                "messages":[{"role":"user","content":"edit"}],
                 "tools":[{"name":"apply_patch","input_schema":{"type":"object","properties":{"input":{"type":"string"}},"required":["input"],"additionalProperties":false}}]
             })))
             .with_status(200).with_header("content-type", "application/json")
@@ -1531,7 +1275,7 @@ mod tests {
             .match_header("x-goog-api-key", "gemini-key")
             .match_body(mockito::Matcher::PartialJson(json!({
                 "contents":[{"role":"user","parts":[{"text":"weather"}]}],
-                "tools":[{"functionDeclarations":[{"name":"weather","parametersJsonSchema":{"type":"object"}}]}]
+                "tools":[{"functionDeclarations":[{"name":"weather","parameters":{"type":"object"}}]}]
             })))
             .with_status(200).with_header("content-type", "application/json")
             .with_body(json!({
@@ -1757,7 +1501,6 @@ mod tests {
     async fn unsupported_provider_configuration_is_terminal_internal_error() {
         let context = ctx("http://unused".into());
         let attempt = crate::resolver::ResolvedConfig {
-            agent_id: String::new(),
             provider: "unsupported".into(),
             model: "model".into(),
             litellm_model: "unsupported/model".into(),
@@ -1773,6 +1516,7 @@ mod tests {
             platform_paid: false,
             custom_endpoint: None,
             is_coding_agent: false,
+            is_discovered_agent: false,
             compress_enabled: false,
         };
         let routed = RoutedRequest {
@@ -1781,9 +1525,6 @@ mod tests {
             resolved: attempt.clone(),
             flow_id: None,
             attribution_source: None,
-            compression: crate::compress::Ledger::default(),
-            routing_metadata: None,
-            sticky_conv_id: None,
         };
         let parsed = parse_request(&json!({"input":"hi"})).unwrap();
         let result = translated_attempt(&context, &routed, &attempt, &parsed, Instant::now()).await;
@@ -1907,7 +1648,6 @@ mod tests {
             &Store {
                 provider: "openai",
                 fallback_models: vec!["openai/gpt-fallback".into()],
-                tier1_model: None,
             },
             &headers(),
             json!({"model":"requested","input":[]}),
@@ -1922,7 +1662,7 @@ mod tests {
             .mock("POST", "/messages")
             .match_body(mockito::Matcher::PartialJson(json!({
                 "model":"claude-opus-4",
-                "messages":[{"role":"user","content":[{"type":"text","text":"hello","cache_control":{"type":"ephemeral"}}]}]
+                "messages":[{"role":"user","content":"hello"}]
             })))
             .with_status(200)
             .with_header("content-type", "application/json")
@@ -1941,7 +1681,6 @@ mod tests {
             &Store {
                 provider: "openai",
                 fallback_models: vec!["anthropic/claude-opus-4".into()],
-                tier1_model: None,
             },
             &headers(),
             json!({"model":"requested","input":[{"role":"user","content":"hello"}]}),
@@ -1952,97 +1691,6 @@ mod tests {
         assert_eq!(value["model"], "claude-opus-4");
         assert_eq!(value["output"][0]["content"][0]["text"], "from claude");
         anthropic.assert_async().await;
-    }
-
-    #[tokio::test]
-    async fn a_missing_tier_model_falls_back_to_the_configured_model_and_drops_the_sticky_choice() {
-        let mut server = mockito::Server::new_async().await;
-        for model in ["gpt-5.5", "gpt-5.4", "gpt-4o-mini"] {
-            server
-                .mock("POST", "/responses")
-                .match_body(mockito::Matcher::PartialJson(json!({ "model": model })))
-                .with_status(404)
-                .with_header("content-type", "application/json")
-                .with_body(
-                    r#"{"error":{"message":"The model does not exist","code":"model_not_found"}}"#,
-                )
-                .create_async()
-                .await;
-        }
-        let configured = server
-            .mock("POST", "/responses")
-            .match_body(mockito::Matcher::PartialJson(
-                json!({"model":"resolved-model"}),
-            ))
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(r#"{"id":"resp_configured","usage":{}}"#)
-            .expect(1)
-            .create_async()
-            .await;
-        let mut context = ctx(server.url());
-        context.tier_registry = Arc::new(crate::routing::registry::test_support::StubRegistry);
-        let log = Arc::new(crate::routing::cache::test_support::ForgetLog::default());
-        context.router_cache = log.clone();
-        let response = responses_core(
-            &context,
-            &Store::tiered("openai", "gpt-5.5"),
-            &headers(),
-            json!({"model":"requested","input":[{"role":"user","content":"write a function that reverses a string"}]}),
-        )
-        .await
-        .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        configured.assert_async().await;
-        assert_eq!(log.forgotten.lock().unwrap().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn a_missing_translated_tier_model_falls_back_to_the_configured_model() {
-        let mut server = mockito::Server::new_async().await;
-        for model in ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"] {
-            server
-                .mock("POST", "/messages")
-                .match_body(mockito::Matcher::PartialJson(json!({ "model": model })))
-                .with_status(404)
-                .with_header("content-type", "application/json")
-                .with_body(r#"{"type":"error","error":{"type":"not_found_error","message":"model: not found"}}"#)
-                .create_async()
-                .await;
-        }
-        let configured = server
-            .mock("POST", "/messages")
-            .match_body(mockito::Matcher::PartialJson(
-                json!({"model":"resolved-model"}),
-            ))
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(
-                json!({
-                    "id":"msg_configured","type":"message","role":"assistant",
-                    "content":[{"type":"text","text":"ok"}],
-                    "stop_reason":"end_turn","usage":{"input_tokens":2,"output_tokens":2}
-                })
-                .to_string(),
-            )
-            .expect(1)
-            .create_async()
-            .await;
-        let mut context = ctx(server.url());
-        context.tier_registry = Arc::new(crate::routing::registry::test_support::StubRegistry);
-        let log = Arc::new(crate::routing::cache::test_support::ForgetLog::default());
-        context.router_cache = log.clone();
-        let response = responses_core(
-            &context,
-            &Store::tiered("anthropic", "claude-opus-4-8"),
-            &headers(),
-            json!({"model":"requested","input":[{"role":"user","content":"write a function that reverses a string"}]}),
-        )
-        .await
-        .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        configured.assert_async().await;
-        assert_eq!(log.forgotten.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]
@@ -2069,7 +1717,6 @@ mod tests {
         let store = Store {
             provider: "openai",
             fallback_models: vec!["openai/gpt-fallback".into()],
-            tier1_model: None,
         };
         let response = responses_core(
             &ctx(server.url()),
@@ -2139,7 +1786,6 @@ mod tests {
             &Store {
                 provider: "anthropic",
                 fallback_models: vec!["gemini/gemini-fallback".into()],
-                tier1_model: None,
             },
             &headers(),
             json!({"input":"hello"}),
@@ -2217,25 +1863,6 @@ mod tests {
     }
 
     #[test]
-    fn routing_query_drops_harness_reminders() {
-        let input = json!([
-            {"role": "user", "content": "first prompt"},
-            {"role": "user", "content": [
-                {"type": "input_text", "text": "<system-reminder>harness rules</system-reminder>"},
-                {"type": "input_text", "text": "refactor this function"},
-            ]},
-        ]);
-        assert_eq!(
-            latest_user_text(Some(&input)).as_deref(),
-            Some("refactor this function")
-        );
-        let only_reminder = json!([
-            {"role": "user", "content": "<system-reminder>harness rules</system-reminder>"},
-        ]);
-        assert_eq!(latest_user_text(Some(&only_reminder)), None);
-    }
-
-    #[test]
     fn inspector_accounts_for_all_terminal_outcomes() {
         for (event, expected) in [
             ("response.completed", "completed"),
@@ -2263,7 +1890,6 @@ mod tests {
             agent_id: AGENT.into(),
             owner_id: OWNER.into(),
             resolved: crate::resolver::ResolvedConfig {
-                agent_id: String::new(),
                 provider: "openai".into(),
                 model: "model".into(),
                 litellm_model: "openai/model".into(),
@@ -2279,78 +1905,20 @@ mod tests {
                 platform_paid: true,
                 custom_endpoint: None,
                 is_coding_agent: false,
+                is_discovered_agent: false,
                 compress_enabled: false,
             },
             flow_id: None,
             attribution_source: None,
-            compression: crate::compress::Ledger::default(),
-            routing_metadata: None,
-            sticky_conv_id: None,
         };
-        let mut guard = AttemptGuard::new(
-            &context,
-            &routed,
-            &routed.resolved,
-            Instant::now(),
-            false,
-            Some(400),
-        );
+        let mut guard =
+            AttemptGuard::new(&context, &routed, &routed.resolved, Instant::now(), false);
         let record = guard.record.as_ref().unwrap();
         assert_eq!(record.provider, "openai");
         assert_eq!(record.model, "model");
         assert!(record.platform_paid);
         assert!(record.finish_reason.is_none());
-        assert!(record.failure.is_none(), "armed is not yet failed");
         guard.disarm();
         assert!(guard.record.is_none());
-    }
-
-    /// An attempt the provider answered with an error is a failed call; one never sent is not.
-    #[tokio::test]
-    async fn attempt_guard_marks_only_calls_that_reached_the_provider_as_failed() {
-        let context = ctx("http://unused".into());
-        let routed = RoutedRequest {
-            agent_id: AGENT.into(),
-            owner_id: OWNER.into(),
-            resolved: crate::resolver::ResolvedConfig {
-                agent_id: String::new(),
-                provider: "openai".into(),
-                model: "model".into(),
-                litellm_model: "openai/model".into(),
-                api_key: "key".into(),
-                fallback_models: vec![],
-                temperature: None,
-                max_tokens: None,
-                has_llm_config: true,
-                pinned_model: None,
-                tier1_model: None,
-                tier2_model: None,
-                tier3_model: None,
-                platform_paid: true,
-                custom_endpoint: None,
-                is_coding_agent: false,
-                compress_enabled: false,
-            },
-            flow_id: None,
-            attribution_source: None,
-            compression: crate::compress::Ledger::default(),
-            routing_metadata: None,
-            sticky_conv_id: None,
-        };
-        let mut guard = AttemptGuard::new(
-            &context,
-            &routed,
-            &routed.resolved,
-            Instant::now(),
-            false,
-            Some(400),
-        );
-        guard.fail_status(503);
-        let record = guard.record.as_ref().unwrap();
-        assert_eq!(record.failure, Some(CallFailure::new("status", Some(503))));
-        assert_eq!(record.request_bytes, Some(400));
-        guard.fail("routing", None, &"no provider");
-        assert!(guard.record.as_ref().unwrap().failure.is_none());
-        guard.disarm();
     }
 }

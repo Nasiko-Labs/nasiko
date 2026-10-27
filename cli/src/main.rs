@@ -281,6 +281,14 @@ fn main() -> Result<()> {
                 coding_agent,
             } => match target.as_deref() {
                 Some(url) if !local_agents::is_coding_agent(url) => {
+                    if let Some((agent, running)) = local_agents::running_a2a_agent(url) {
+                        if name.is_some() {
+                            anyhow::bail!(
+                                "--name applies only when connecting a control-plane URL"
+                            );
+                        }
+                        return local_agents::connect_a2a(&agent, &running, &coding_agent);
+                    }
                     if coding_agent.is_set() {
                         anyhow::bail!(
                             "coding-agent flags apply only to `nasiko connect [claude|codex|opencode|cursor]`"

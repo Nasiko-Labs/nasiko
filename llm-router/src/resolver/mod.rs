@@ -9,18 +9,6 @@
 //! per-user, so the resolved config's owner always matches the agent owner whose secret store
 //! the API key is read from.
 //!
-//! **A shared agent runs on the caller's config, not the owner's.** When the user a call is
-//! attributed to (`flows.user_id`) is not the agent's owner — the agent was shared with them —
-//! the call resolves against *that user's* config (the one they chose for this agent, else their
-//! default) and secret store ([`ConfigSubject::SharedUser`]); the agent's attached config and the
-//! owner's keys are not read. A shared user with no such config is refused
-//! ([`GatewayError::NoSharedUserConfig`]), never silently put on the owner's key. The one way
-//! onto the owner's config and keys is [`crate::payer::SharedCallPayer`] answering
-//! [`crate::payer::Payer::Owner`], which selects [`ConfigSubject::Sponsored`] instead: the
-//! owner's config and keys, and the platform's own key where the config stores none.
-//! [`ConfigSubject::Platform`] is a call the deployment covers outright: the platform defaults
-//! and the platform's own key, with no config, no agent pin and no requested model read.
-//!
 //! **When the agent resolves to a config it is authoritative** — the incoming request's
 //! `model`/provider are ignored (a configured agent is routed where its config says).
 //! **When the agent has no `llm_config`** we honor what the request itself asked for — the
@@ -32,7 +20,6 @@
 //! testable without a database; [`PgRegistry`] is the Postgres implementation.
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 use nasiko_secrets::SecretsCrypto;
 use serde::Deserialize;
 use sqlx::PgPool;
@@ -133,13 +120,12 @@ pub struct ResolvedConfig {
     /// model-routing boundary signals from the transcript instead of the (permanently
     /// unreachable, for these agents) `flows`-table lookup.
     pub is_coding_agent: bool,
+    /// Whether this agent is an A2A agent the CLI discovered on a user's machine. See
+    /// [`AgentConfigResult::is_discovered_agent`].
+    pub is_discovered_agent: bool,
     /// Whether this agent opted into payload compression. Per-agent by design: compression
     /// changes what the model sees, so its blast radius is one agent. See `crate::compress`.
     pub compress_enabled: bool,
-    /// The agent the call is for. OpenAI groups its prompt cache by it (`prompt_cache_key`,
-    /// see `providers::openai`). Empty when no agent is known, or once the endpoint has
-    /// rejected the key (`providers::fallback::strip_param`).
-    pub agent_id: String,
 }
 
 /// The resolved **embedding** call configuration.
@@ -249,6 +235,11 @@ pub struct AgentConfigResult {
     /// `flows` row; the chat handler uses this to derive boundary signals from the
     /// transcript instead ([`crate::routing::BoundarySignals::for_coding_agent`]).
     pub is_coding_agent: bool,
+    /// Whether this agent is an A2A agent the CLI discovered running on a user's machine
+    /// (`agents.discovered_on` set). Like a coding agent it is never dispatched through the
+    /// orchestrator, so its calls carry no flow to attribute and are billed to its owner; unlike
+    /// one it is an ordinary agent in every other respect (brevity, tool compaction).
+    pub is_discovered_agent: bool,
     /// Per-agent opt-in for payload compression (`agents.compress_enabled`).
     pub compress_enabled: bool,
 }
@@ -281,15 +272,6 @@ pub struct CustomProvider {
 }
 
 /// Storage seam for the resolver — mockable in tests.
-/// What the router needs to know about a live agent to accept its identity token.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AgentIdentity {
-    pub owner_id: Uuid,
-    /// When the owner last revoked the agent's LLM routing tokens; a token issued before it is
-    /// refused. `None` = never revoked.
-    pub llm_tokens_revoked_at: Option<DateTime<Utc>>,
-}
-
 #[async_trait]
 pub trait RegistryStore: Send + Sync {
     /// Resolve the agent's config: attached (`agents.llm_config_id`) → agent owner's default
@@ -299,67 +281,6 @@ pub trait RegistryStore: Send + Sync {
         &self,
         agent_id: Uuid,
     ) -> Result<Option<AgentConfigResult>, sqlx::Error>;
-
-    /// The current owner of a live (not deleted) agent, or `None` when there is
-    /// no such agent. Read per request, never cached: it decides whose keys pay,
-    /// and an ownership transfer must take effect at once.
-    async fn fetch_agent_owner(&self, agent_id: Uuid) -> Result<Option<Uuid>, sqlx::Error>;
-
-    /// [`fetch_agent_owner`](Self::fetch_agent_owner) plus when the owner last revoked the
-    /// agent's LLM routing tokens, in one read. Read per request for the same reason. The
-    /// default reports no revocation, for stores that do not track it.
-    async fn fetch_agent_identity(
-        &self,
-        agent_id: Uuid,
-    ) -> Result<Option<AgentIdentity>, sqlx::Error> {
-        Ok(self
-            .fetch_agent_owner(agent_id)
-            .await?
-            .map(|owner_id| AgentIdentity {
-                owner_id,
-                llm_tokens_revoked_at: None,
-            }))
-    }
-
-    /// [`fetch_llm_config`](Self::fetch_llm_config) without the config: the agent-level pin and
-    /// flags only, for a caller whose config came from the cache. What it returns in `config` is
-    /// unspecified. The default reads everything, so stores that do not care need not implement it.
-    async fn fetch_agent_flags(
-        &self,
-        agent_id: Uuid,
-    ) -> Result<Option<AgentConfigResult>, sqlx::Error> {
-        self.fetch_llm_config(agent_id).await
-    }
-
-    /// The user's own default config (`llm_configs.is_default`, created by them), or `None` when
-    /// they have none — what a shared agent runs on when this user chats with it. The default
-    /// answers `None`, so a store that does not implement it refuses shared callers.
-    async fn fetch_user_default_config(
-        &self,
-        _user_id: Uuid,
-    ) -> Result<Option<LLMConfig>, sqlx::Error> {
-        Ok(None)
-    }
-
-    /// Whether `user` chose one of their own live configs for `agent` (`agent_user_llm_configs`).
-    /// The default answers `false`, so a store that does not implement it never reports a choice.
-    async fn has_user_agent_config(
-        &self,
-        _user_id: Uuid,
-        _agent_id: Uuid,
-    ) -> Result<bool, sqlx::Error> {
-        Ok(false)
-    }
-
-    /// The config `user` runs `agent` on: the one they chose for it, else their default, or `None`
-    /// when they have neither. The default skips the choice and answers their default.
-    async fn fetch_user_agent_config(
-        &self,
-        user_id: Uuid,
-        _agent_id: Uuid,
-    ) -> Result<Option<LLMConfig>, sqlx::Error> {
-        self.fetch_user_default_config(user_id).await
-    }
 
     /// Encrypted secret value for `(owner_id, name)`, or `None` if absent.
     async fn fetch_user_secret(
@@ -379,20 +300,6 @@ pub trait RegistryStore: Send + Sync {
         agent_id: Uuid,
         window_secs: i64,
     ) -> Result<Option<crate::routing::attribution::LiveFlow>, sqlx::Error>;
-
-    /// The flow a session-token call is attributed to (the traceparent's flow, else the
-    /// session's newest flow, else the claim). Infallible: a lookup failure keeps the claim.
-    /// The default keeps the claim, so mocks that do not care need not implement it.
-    async fn attribute_session_flow(
-        &self,
-        _trace_flow: Option<&str>,
-        session: &nasiko_session_token::SessionClaims,
-    ) -> nasiko_session_token::attribution::AttributedFlow {
-        nasiko_session_token::attribution::AttributedFlow {
-            flow_id: session.flow_id.clone(),
-            source: nasiko_session_token::attribution::FlowSource::Claim,
-        }
-    }
 
     /// The active custom provider registered under `label`, or `None`. Decryption
     /// of the stored api key happens in the impl, so mocks can supply a plaintext
@@ -467,23 +374,7 @@ fn row_to_config(r: ConfigRow) -> LLMConfig {
     }
 }
 
-/// `agents` columns the resolver reads: attached config id, owner, pin, coding-agent flag,
-/// compression flag.
-type AgentColumns = (Option<Uuid>, Uuid, Option<String>, bool, bool);
-
 impl PgRegistry {
-    async fn load_agent(&self, agent_id: Uuid) -> Result<Option<AgentColumns>, sqlx::Error> {
-        sqlx::query_as(
-            "SELECT llm_config_id, owner_id, pinned_model, \
-                    coding_agent_integration_id IS NOT NULL, \
-                    compress_enabled \
-             FROM agents WHERE id = $1",
-        )
-        .bind(agent_id)
-        .fetch_optional(&self.db)
-        .await
-    }
-
     async fn load_config_by_id(&self, id: Uuid) -> Result<Option<LLMConfig>, sqlx::Error> {
         let row: Option<ConfigRow> = sqlx::query_as(&format!(
             "SELECT {CONFIG_COLS} FROM llm_configs WHERE id = $1 AND deleted_at IS NULL"
@@ -515,8 +406,25 @@ impl RegistryStore for PgRegistry {
         // The agent's attached config id, owner, agent-level pin, and server-managed
         // coding-agent identity. Generic agent metadata must never grant this exemption.
         // A missing row → NoRegistryEntry upstream.
-        let Some((config_id, owner_id, agent_pinned_model, is_coding_agent, compress_enabled)) =
-            self.load_agent(agent_id).await?
+        #[allow(clippy::type_complexity)]
+        let agent: Option<(Option<Uuid>, Uuid, Option<String>, bool, bool, bool)> = sqlx::query_as(
+            "SELECT llm_config_id, owner_id, pinned_model, \
+                        coding_agent_integration_id IS NOT NULL, \
+                        discovered_on IS NOT NULL, \
+                        compress_enabled \
+                 FROM agents WHERE id = $1",
+        )
+        .bind(agent_id)
+        .fetch_optional(&self.db)
+        .await?;
+        let Some((
+            config_id,
+            owner_id,
+            agent_pinned_model,
+            is_coding_agent,
+            is_discovered_agent,
+            compress_enabled,
+        )) = agent
         else {
             return Ok(None);
         };
@@ -534,94 +442,9 @@ impl RegistryStore for PgRegistry {
             config,
             agent_pinned_model,
             is_coding_agent,
+            is_discovered_agent,
             compress_enabled,
         }))
-    }
-
-    async fn fetch_agent_owner(&self, agent_id: Uuid) -> Result<Option<Uuid>, sqlx::Error> {
-        sqlx::query_scalar("SELECT owner_id FROM agents WHERE id = $1 AND deleted_at IS NULL")
-            .bind(agent_id)
-            .fetch_optional(&self.db)
-            .await
-    }
-
-    async fn fetch_agent_identity(
-        &self,
-        agent_id: Uuid,
-    ) -> Result<Option<AgentIdentity>, sqlx::Error> {
-        let row: Option<(Uuid, Option<DateTime<Utc>>)> = sqlx::query_as(
-            "SELECT owner_id, llm_tokens_revoked_at FROM agents \
-             WHERE id = $1 AND deleted_at IS NULL",
-        )
-        .bind(agent_id)
-        .fetch_optional(&self.db)
-        .await?;
-        Ok(row.map(|(owner_id, llm_tokens_revoked_at)| AgentIdentity {
-            owner_id,
-            llm_tokens_revoked_at,
-        }))
-    }
-
-    async fn fetch_agent_flags(
-        &self,
-        agent_id: Uuid,
-    ) -> Result<Option<AgentConfigResult>, sqlx::Error> {
-        Ok(self.load_agent(agent_id).await?.map(
-            |(_, _, agent_pinned_model, is_coding_agent, compress_enabled)| AgentConfigResult {
-                config: None,
-                agent_pinned_model,
-                is_coding_agent,
-                compress_enabled,
-            },
-        ))
-    }
-
-    async fn fetch_user_default_config(
-        &self,
-        user_id: Uuid,
-    ) -> Result<Option<LLMConfig>, sqlx::Error> {
-        self.load_owner_default(user_id).await
-    }
-
-    async fn has_user_agent_config(
-        &self,
-        user_id: Uuid,
-        agent_id: Uuid,
-    ) -> Result<bool, sqlx::Error> {
-        // The cascades only cover hard deletes: a soft-deleted config, or one row naming
-        // another user's config, must read as no choice.
-        sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM agent_user_llm_configs a \
-             JOIN llm_configs c ON c.id = a.llm_config_id \
-             WHERE a.user_id = $1 AND a.agent_id = $2 \
-               AND c.created_by = $1 AND c.deleted_at IS NULL)",
-        )
-        .bind(user_id)
-        .bind(agent_id)
-        .fetch_one(&self.db)
-        .await
-    }
-
-    async fn fetch_user_agent_config(
-        &self,
-        user_id: Uuid,
-        agent_id: Uuid,
-    ) -> Result<Option<LLMConfig>, sqlx::Error> {
-        // One read for both cases: the chosen config sorts ahead of the default.
-        let row: Option<ConfigRow> = sqlx::query_as(&format!(
-            "SELECT {CONFIG_COLS} FROM llm_configs c \
-             LEFT JOIN agent_user_llm_configs a \
-                    ON a.llm_config_id = c.id AND a.user_id = $1 AND a.agent_id = $2 \
-             WHERE c.created_by = $1 AND c.deleted_at IS NULL \
-               AND (a.llm_config_id IS NOT NULL OR c.is_default) \
-             ORDER BY a.llm_config_id IS NULL \
-             LIMIT 1"
-        ))
-        .bind(user_id)
-        .bind(agent_id)
-        .fetch_optional(&self.db)
-        .await?;
-        Ok(row.map(row_to_config))
     }
 
     async fn fetch_user_secret(
@@ -637,14 +460,6 @@ impl RegistryStore for PgRegistry {
         .fetch_optional(&self.db)
         .await?;
         Ok(row.map(|(v,)| v))
-    }
-
-    async fn attribute_session_flow(
-        &self,
-        trace_flow: Option<&str>,
-        session: &nasiko_session_token::SessionClaims,
-    ) -> nasiko_session_token::attribution::AttributedFlow {
-        nasiko_session_token::attribution::attributed_flow(&self.db, trace_flow, session).await
     }
 
     async fn fetch_live_flow(
@@ -753,61 +568,7 @@ impl RegistryStore for PgRegistry {
     }
 }
 
-/// Whose LLM config and provider keys an agent's call runs on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConfigSubject<'a> {
-    /// The agent's owner, as the agent token names them (empty for a token minted without an
-    /// owner, which takes the platform-key path): the agent's attached config, else the owner's
-    /// default, with the owner's keys.
-    Owner(&'a str),
-    /// The agent's owner, paying for a call someone else made because the payer said so
-    /// ([`crate::payer::Payer::Owner`]): the owner's config and keys as for `Owner`, but a config
-    /// with no stored key runs on the platform's own key ([`GatewayConfig::service_key_for`]), not
-    /// the one agents may fall back to. The payer sponsors the call; the agent did not choose it.
-    Sponsored(&'a str),
-    /// A user the agent is shared with: their own chosen-or-default config and keys. The agent's
-    /// attached config and its owner's keys are never read for them.
-    SharedUser(Uuid),
-    /// A call the deployment covers ([`crate::payer::Payer::Platform`]): the platform's default
-    /// provider and model on the platform's own key. No config, no agent pin and no user secret
-    /// is read, and the requested chat model is ignored: the agent is user code, and honouring
-    /// its choice would let it pick a pricier model on the platform's key.
-    Platform,
-}
-
-impl<'a> ConfigSubject<'a> {
-    /// Pure: who pays for a call by an agent owned by `owner_id`, made on behalf of
-    /// `acting_user` (the attributed flow's user, when there is one). Anyone other than the owner
-    /// is a shared user. A token without an owner claim stays on the owner path — it pays with
-    /// the platform key, never an owner's.
-    pub fn for_call(owner_id: &'a str, acting_user: Option<Uuid>) -> Self {
-        let owner = Uuid::parse_str(owner_id).ok();
-        match (owner, acting_user) {
-            (Some(owner), Some(user)) if owner != user => Self::SharedUser(user),
-            _ => Self::Owner(owner_id),
-        }
-    }
-
-    /// The user whose `user_secrets` hold the config's named key (empty = none).
-    fn key_holder(&self) -> String {
-        match self {
-            Self::Owner(owner_id) | Self::Sponsored(owner_id) => (*owner_id).to_string(),
-            Self::SharedUser(user) => user.to_string(),
-            Self::Platform => String::new(),
-        }
-    }
-
-    /// The platform-owned key a call with no stored key of its own runs on for `provider`:
-    /// the platform's own key for a sponsored call, else the one agents may fall back to.
-    fn platform_key<'c>(&self, cfg: &'c GatewayConfig, provider: &str) -> &'c str {
-        match self {
-            Self::Sponsored(_) | Self::Platform => cfg.service_key_for(provider),
-            Self::Owner(_) | Self::SharedUser(_) => cfg.platform_key_for(provider),
-        }
-    }
-}
-
-/// Resolve `(agent_id, owner_id)` into a [`ResolvedConfig`] on the owner's config and keys.
+/// Resolve `(agent_id, owner_id)` into a [`ResolvedConfig`].
 pub async fn resolve(
     store: &dyn RegistryStore,
     cache: &ConfigCache,
@@ -816,33 +577,15 @@ pub async fn resolve(
     owner_id: &str,
     hint: RequestHint<'_>,
 ) -> Result<ResolvedConfig, GatewayError> {
-    let subject = ConfigSubject::Owner(owner_id);
-    resolve_for(store, cache, cfg, agent_id, subject, hint).await
-}
-
-/// Resolve an agent's call into a [`ResolvedConfig`] on `subject`'s config and keys.
-pub async fn resolve_for(
-    store: &dyn RegistryStore,
-    cache: &ConfigCache,
-    cfg: &GatewayConfig,
-    agent_id: &str,
-    subject: ConfigSubject<'_>,
-    hint: RequestHint<'_>,
-) -> Result<ResolvedConfig, GatewayError> {
     // A non-UUID agent_id can't match any row → treat as "no registry entry".
     let agent_uuid = Uuid::parse_str(agent_id)
         .map_err(|_| GatewayError::NoRegistryEntry(agent_id.to_string()))?;
 
-    let agent_result = load_subject_config(store, cache, agent_uuid, agent_id, subject).await?;
-    let hint = match subject {
-        ConfigSubject::Platform => RequestHint::default(),
-        _ => hint,
-    };
-    let key_holder = subject.key_holder();
-    let owner_id = key_holder.as_str();
+    let agent_result = load_llm_config(store, cache, agent_uuid, agent_id).await?;
     let llm_config = agent_result.config;
     let agent_pinned_model = agent_result.agent_pinned_model;
     let is_coding_agent = agent_result.is_coding_agent;
+    let is_discovered_agent = agent_result.is_discovered_agent;
     let compress_enabled = agent_result.compress_enabled;
     let has_llm_config = llm_config.is_some();
     let secret_name = plan_secret_name(&llm_config);
@@ -880,12 +623,8 @@ pub async fn resolve_for(
     let api_key = resolve_api_key(
         store,
         cfg,
-        subject,
         owner_id,
-        Destination {
-            provider: &plan.provider,
-            model: &plan.model,
-        },
+        &plan.provider,
         plan.api_key_secret_name.as_deref(),
         custom.as_ref(),
     )
@@ -914,16 +653,13 @@ pub async fn resolve_for(
             dialect: c.dialect.clone(),
         }),
         is_coding_agent,
+        is_discovered_agent,
         compress_enabled,
-        agent_id: agent_id.to_string(),
     };
     tracing::info!(
         target: "nasiko::llm_router::resolver",
         %agent_id,
         has_llm_config,
-        shared_user = matches!(subject, ConfigSubject::SharedUser(_)),
-        sponsored = matches!(subject, ConfigSubject::Sponsored(_)),
-        platform = matches!(subject, ConfigSubject::Platform),
         provider = %resolved.provider,
         model = %resolved.model,
         litellm_model = %resolved.litellm_model,
@@ -975,27 +711,11 @@ pub async fn resolve_embeddings(
     owner_id: &str,
     request_model: Option<&str>,
 ) -> Result<ResolvedEmbeddingConfig, GatewayError> {
-    let subject = ConfigSubject::Owner(owner_id);
-    resolve_embeddings_for(store, cache, cfg, agent_id, subject, request_model).await
-}
-
-/// [`resolve_embeddings`] on `subject`'s config and keys: a shared user's own config stands in
-/// for the agent's at levels 1 and 3.
-pub async fn resolve_embeddings_for(
-    store: &dyn RegistryStore,
-    cache: &ConfigCache,
-    cfg: &GatewayConfig,
-    agent_id: &str,
-    subject: ConfigSubject<'_>,
-    request_model: Option<&str>,
-) -> Result<ResolvedEmbeddingConfig, GatewayError> {
     let agent_uuid = Uuid::parse_str(agent_id)
         .map_err(|_| GatewayError::NoRegistryEntry(agent_id.to_string()))?;
-    let llm_config = load_subject_config(store, cache, agent_uuid, agent_id, subject)
+    let llm_config = load_llm_config(store, cache, agent_uuid, agent_id)
         .await?
         .config;
-    let key_holder = subject.key_holder();
-    let owner_id = key_holder.as_str();
 
     let (source, pick) = match pick_embedding(llm_config.as_ref(), request_model) {
         Some(picked) => picked,
@@ -1031,12 +751,8 @@ pub async fn resolve_embeddings_for(
             resolve_api_key(
                 store,
                 cfg,
-                subject,
                 owner_id,
-                Destination {
-                    provider: &pick.provider,
-                    model: &pick.model,
-                },
+                &pick.provider,
                 pick.owner_key_secret_name.as_deref(),
                 custom.as_ref(),
             )
@@ -1187,79 +903,6 @@ fn plan_secret_name(llm_config: &Option<LLMConfig>) -> Option<String> {
         .and_then(|c| c.api_key_secret_name.clone())
 }
 
-/// The agent's flags plus the config `subject` runs on: the owner's through
-/// [`load_llm_config`], a shared user's own, or none for a platform call.
-async fn load_subject_config(
-    store: &dyn RegistryStore,
-    cache: &ConfigCache,
-    agent_uuid: Uuid,
-    agent_id: &str,
-    subject: ConfigSubject<'_>,
-) -> Result<AgentConfigResult, GatewayError> {
-    match subject {
-        ConfigSubject::Owner(_) | ConfigSubject::Sponsored(_) => {
-            load_llm_config(store, cache, agent_uuid, agent_id).await
-        }
-        ConfigSubject::SharedUser(user) => {
-            load_shared_user_config(store, agent_uuid, agent_id, user).await
-        }
-        ConfigSubject::Platform => load_agent_flags_only(store, agent_uuid, agent_id).await,
-    }
-}
-
-/// The agent's flags alone, for a platform-covered call: the config and the agent's model pin are
-/// cleared, since a platform call runs on the platform defaults.
-async fn load_agent_flags_only(
-    store: &dyn RegistryStore,
-    agent_uuid: Uuid,
-    agent_id: &str,
-) -> Result<AgentConfigResult, GatewayError> {
-    let flags = store
-        .fetch_agent_flags(agent_uuid)
-        .await
-        .map_err(|e| GatewayError::Internal(format!("registry read failed: {e}")))?
-        .ok_or_else(|| GatewayError::NoRegistryEntry(agent_id.to_string()))?;
-    Ok(AgentConfigResult {
-        config: None,
-        agent_pinned_model: None,
-        ..flags
-    })
-}
-
-/// A shared user's own config (their choice for this agent, else their default), with the agent's
-/// flags. Not cached: the agent-keyed cache holds the owner's config, and this read is one
-/// indexed row.
-///
-/// The owner's agent-level model pin is dropped along with the owner's config: it names a
-/// model on the owner's provider, which the shared user's config may not reach.
-async fn load_shared_user_config(
-    store: &dyn RegistryStore,
-    agent_uuid: Uuid,
-    agent_id: &str,
-    user: Uuid,
-) -> Result<AgentConfigResult, GatewayError> {
-    let flags = store
-        .fetch_agent_flags(agent_uuid)
-        .await
-        .map_err(|e| GatewayError::Internal(format!("registry read failed: {e}")))?
-        .ok_or_else(|| GatewayError::NoRegistryEntry(agent_id.to_string()))?;
-    let config = store
-        .fetch_user_agent_config(user, agent_uuid)
-        .await
-        .map_err(|e| GatewayError::Internal(format!("shared user config read failed: {e}")))?
-        .ok_or(GatewayError::NoSharedUserConfig)?;
-    tracing::info!(
-        target: "nasiko::llm_router::resolver",
-        %agent_id, %user, provider = %config.provider,
-        "resolver: shared agent, running on the calling user's own config"
-    );
-    Ok(AgentConfigResult {
-        config: Some(config),
-        agent_pinned_model: None,
-        ..flags
-    })
-}
-
 /// Load `llm_config` via the cache (for the config part), falling back to the store.
 /// A missing agent row is an error (not cached); a present row is cached. The agent-level
 /// pin and the coding-agent flag are always read from the store (not cached) so changes
@@ -1284,16 +927,18 @@ async fn load_llm_config(
         );
         // Config is cached, but we still need the agent-level pin and coding-agent flag
         // from the store. Re-fetch just the agent row; fall back to safe defaults on error.
-        let agent_row = store.fetch_agent_flags(agent_uuid).await.ok().flatten();
+        let agent_row = store.fetch_llm_config(agent_uuid).await.ok().flatten();
         let agent_pin = agent_row
             .as_ref()
             .and_then(|r| r.agent_pinned_model.clone());
         let compress_enabled = agent_row.as_ref().is_some_and(|r| r.compress_enabled);
-        let is_coding_agent = agent_row.is_some_and(|r| r.is_coding_agent);
+        let is_coding_agent = agent_row.as_ref().is_some_and(|r| r.is_coding_agent);
+        let is_discovered_agent = agent_row.is_some_and(|r| r.is_discovered_agent);
         return Ok(AgentConfigResult {
             config: hit,
             agent_pinned_model: agent_pin,
             is_coding_agent,
+            is_discovered_agent,
             compress_enabled,
         });
     }
@@ -1350,87 +995,6 @@ struct ConfigPlan {
     tier3_model: Option<String>,
 }
 
-/// Picks the destination for an unconfigured agent. The inbound SDK surface only fixes the
-/// wire format; the router translates any format to any provider, so the surface never picks
-/// the provider.
-///
-/// 1. `provider/model` naming a keyed built-in provider → that provider, bare model.
-/// 2. Otherwise the platform `DEFAULT_PROVIDER`. The requested model is kept only when the
-///    SDK surface is that provider's own family (an OpenAI SDK on an OpenAI deployment);
-///    any other pairing gets `DEFAULT_MODEL`, since a model named for another wire format
-///    is not something the default provider serves. No model-name guessing.
-fn usable_hint<'a>(cfg: &'a GatewayConfig, hint: RequestHint<'a>) -> RequestHint<'a> {
-    let default_provider: &'a str = cfg.default_provider.as_str();
-    if let Some((provider, model)) = hint.model.and_then(|m| explicit_provider(cfg, m)) {
-        return RequestHint {
-            provider: Some(provider),
-            model: Some(model),
-        };
-    }
-    // No SDK surface means no evidence the model belongs to the default provider, so the
-    // family check fails and the model falls back to `DEFAULT_MODEL`.
-    let surface: &'a str = hint.provider.unwrap_or("");
-    // OpenRouter ids are `vendor/model`; an OpenRouter default serves them as-is.
-    let openrouter_id: bool =
-        default_provider == "openrouter" && hint.model.is_some_and(|m| m.contains('/'));
-    // A prefix naming an unavailable built-in provider is not a model the default serves.
-    let foreign_prefix: bool = hint.model.is_some_and(names_builtin_provider);
-    let keep_model: bool = openrouter_id
-        || (!foreign_prefix && !surface.is_empty() && same_family(surface, default_provider));
-    let model: Option<&'a str> = if keep_model {
-        hint.model
-    } else {
-        Some(cfg.default_model.as_str())
-    };
-    if surface != default_provider || model != hint.model {
-        tracing::info!(
-            surface,
-            to = default_provider,
-            requested_model = ?hint.model,
-            model = ?model,
-            "resolver: routing unconfigured agent to platform default provider"
-        );
-    }
-    RequestHint {
-        provider: Some(default_provider),
-        model,
-    }
-}
-
-/// `provider/model` where `provider` is a keyed built-in → `(provider, model)`.
-fn explicit_provider<'a>(cfg: &'a GatewayConfig, model: &'a str) -> Option<(&'a str, &'a str)> {
-    let (prefix, rest) = model.split_once('/')?;
-    let provider: &'static str = ["openai", "anthropic", "gemini", "vertex", "openrouter"]
-        .into_iter()
-        .find(|p| p.eq_ignore_ascii_case(prefix.trim()))?;
-    if rest.is_empty() || cfg.platform_key_for(provider).is_empty() {
-        return None;
-    }
-    Some((provider, rest))
-}
-
-/// Whether `model` is `provider/...` with `provider` a recognized built-in.
-fn names_builtin_provider(model: &str) -> bool {
-    model.split_once('/').is_some_and(|(prefix, _)| {
-        let prefix: String = prefix.trim().to_ascii_lowercase();
-        is_builtin_provider(&prefix)
-    })
-}
-
-/// Whether the SDK surface `surface` natively belongs to `provider` (Gemini and Vertex share
-/// one model namespace).
-fn same_family(surface: &str, provider: &str) -> bool {
-    fn family(p: &str) -> String {
-        let p: String = p.trim().to_ascii_lowercase();
-        if p == "vertex" {
-            "gemini".to_string()
-        } else {
-            p
-        }
-    }
-    family(surface) == family(provider)
-}
-
 /// Whether `provider` is one of the built-in providers the router speaks natively.
 /// Everything else is a candidate custom (DB-registered) provider.
 ///
@@ -1440,10 +1004,7 @@ fn same_family(surface: &str, provider: &str) -> bool {
 /// here while present in both of those, so a config naming it resolved to
 /// "not a registered custom provider" despite the rest of the stack supporting it.
 fn is_builtin_provider(provider: &str) -> bool {
-    matches!(
-        provider,
-        "openai" | "anthropic" | "gemini" | "vertex" | "openrouter"
-    )
+    matches!(provider, "openai" | "anthropic" | "gemini" | "openrouter")
 }
 
 /// The destination provider name, decided exactly as [`plan_config`] decides it:
@@ -1455,7 +1016,6 @@ fn destination_provider(
     cfg: &GatewayConfig,
     hint: RequestHint<'_>,
 ) -> String {
-    let hint: RequestHint<'_> = usable_hint(cfg, hint);
     match llm_config {
         Some(c) => c.provider.clone(),
         None => hint
@@ -1477,7 +1037,6 @@ fn plan_config(
     let default_model = custom
         .and_then(|c| c.default_model.clone())
         .unwrap_or_else(|| cfg.default_model.clone());
-    let hint: RequestHint<'_> = usable_hint(cfg, hint);
     match llm_config {
         Some(c) => {
             // Configured agent: the config is authoritative — the request hint is ignored.
@@ -1533,23 +1092,13 @@ fn plan_config(
     }
 }
 
-/// The provider and model a key is being resolved for; the model only names the call in a
-/// refusal the user reads.
-#[derive(Clone, Copy)]
-struct Destination<'a> {
-    provider: &'a str,
-    model: &'a str,
-}
-
 /// Resolve the provider API key. Per-user secret lookup requires a secret name **and**
-/// a non-empty owner; an empty owner_id means "no per-user lookup" → platform key, the one
-/// `subject` runs on ([`ConfigSubject::platform_key`]).
+/// a non-empty owner; an empty owner_id means "no per-user lookup" → platform key.
 async fn resolve_api_key(
     store: &dyn RegistryStore,
     cfg: &GatewayConfig,
-    subject: ConfigSubject<'_>,
     owner_id: &str,
-    destination: Destination<'_>,
+    provider: &str,
     secret_name: Option<&str>,
     custom: Option<&CustomProvider>,
 ) -> Result<String, GatewayError> {
@@ -1564,38 +1113,26 @@ async fn resolve_api_key(
             .fetch_user_secret(owner, name)
             .await
             .map_err(|e| GatewayError::Internal(format!("secret read failed: {e}")))?
-            .ok_or_else(|| {
-                tracing::warn!(%owner, secret = name, "LLM config names a secret the owner never stored");
-                GatewayError::SecretNotFound(name.to_string())
-            })?;
+            .ok_or_else(|| GatewayError::SecretNotFound(name.to_string(), owner_id.to_string()))?;
         let crypto = SecretsCrypto::try_for_user(owner)
             .map_err(|e| GatewayError::Internal(format!("secret cipher init failed: {e}")))?;
-        return crypto.decrypt(&encrypted).map_err(|e| {
-            tracing::warn!(%owner, secret = name, error = %e, "stored LLM secret can't be decrypted");
-            GatewayError::SecretUnreadable(name.to_string())
-        });
+        return crypto
+            .decrypt(&encrypted)
+            .map_err(|e| GatewayError::Internal(format!("secret decryption failed: {e}")));
     }
     // No per-user secret: a custom provider pays with its own stored (platform-owned)
     // key; a built-in provider pays with the platform key for that provider.
     if let Some(cp) = custom {
         return Ok(cp.api_key.clone());
     }
-    platform_key(cfg, subject, destination)
+    platform_key(cfg, provider)
 }
 
-/// Pure: the platform-owned fallback key `subject` runs on for the destination's provider, or
-/// the 400 when none is configured.
-fn platform_key(
-    cfg: &GatewayConfig,
-    subject: ConfigSubject<'_>,
-    destination: Destination<'_>,
-) -> Result<String, GatewayError> {
-    let key = subject.platform_key(cfg, destination.provider);
+/// Pure: the platform-owned fallback key for `provider`, or the 400 when none is configured.
+fn platform_key(cfg: &GatewayConfig, provider: &str) -> Result<String, GatewayError> {
+    let key = cfg.platform_key_for(provider);
     if key.is_empty() {
-        Err(GatewayError::NoApiKey {
-            provider: destination.provider.to_string(),
-            model: destination.model.to_string(),
-        })
+        Err(GatewayError::NoApiKey)
     } else {
         Ok(key.to_string())
     }
@@ -1630,11 +1167,9 @@ mod tests {
                 // Coding-agent detection and compression opt-in are exercised at the
                 // handler level (handlers::chat), where they're actually consumed.
                 is_coding_agent: false,
+                is_discovered_agent: false,
                 compress_enabled: false,
             }))
-        }
-        async fn fetch_agent_owner(&self, _: Uuid) -> Result<Option<Uuid>, sqlx::Error> {
-            Ok(Uuid::parse_str(OWNER).ok())
         }
         async fn fetch_user_secret(&self, _: Uuid, _: &str) -> Result<Option<String>, sqlx::Error> {
             Ok(self.secret.clone())
@@ -1724,7 +1259,6 @@ mod tests {
         assert_eq!(r.api_key, "platform-key");
         assert!(r.fallback_models.is_empty());
         assert_eq!(r.temperature, None);
-        assert_eq!(r.agent_id, AGENT);
     }
 
     #[tokio::test]
@@ -1753,197 +1287,6 @@ mod tests {
         );
     }
 
-    /// Agents' platform key off (the Free plane), the platform's own Gemini key set.
-    fn free_plane_cfg() -> GatewayConfig {
-        GatewayConfig {
-            default_provider: "gemini".into(),
-            default_model: "gemini-4-hydrogen".into(),
-            generic_key_fallback: false,
-            service_gemini_api_key: "sk-platform-gemini".into(),
-            ..Default::default()
-        }
-    }
-
-    fn unconfigured_agent() -> MockRegistry {
-        MockRegistry {
-            config: Some(None),
-            ..Default::default()
-        }
-    }
-
-    #[tokio::test]
-    async fn an_owners_own_unconfigured_agent_never_gets_the_platforms_own_key() {
-        let err = resolve_for(
-            &unconfigured_agent(),
-            &cache(),
-            &free_plane_cfg(),
-            AGENT,
-            ConfigSubject::Owner(OWNER),
-            RequestHint::default(),
-        )
-        .await
-        .unwrap_err();
-        assert!(matches!(err, GatewayError::NoApiKey { .. }));
-    }
-
-    #[tokio::test]
-    async fn a_sponsored_unconfigured_agent_runs_on_the_platforms_own_key() {
-        let r = resolve_for(
-            &unconfigured_agent(),
-            &cache(),
-            &free_plane_cfg(),
-            AGENT,
-            ConfigSubject::Sponsored(OWNER),
-            RequestHint::default(),
-        )
-        .await
-        .unwrap();
-        assert_eq!(r.provider, "gemini");
-        assert_eq!(r.model, "gemini-4-hydrogen");
-        assert_eq!(r.api_key, "sk-platform-gemini");
-        assert!(r.platform_paid);
-    }
-
-    #[tokio::test]
-    async fn a_sponsored_agent_asking_for_an_openai_model_runs_on_the_platform_default() {
-        // The platform holds no OpenAI key for agents: the hint is dropped, not served.
-        let hint = RequestHint {
-            provider: Some("openai"),
-            model: Some("gpt-4o-mini"),
-        };
-        let r = resolve_for(
-            &unconfigured_agent(),
-            &cache(),
-            &free_plane_cfg(),
-            AGENT,
-            ConfigSubject::Sponsored(OWNER),
-            hint,
-        )
-        .await
-        .unwrap();
-        assert_eq!(r.provider, "gemini");
-        assert_eq!(r.api_key, "sk-platform-gemini");
-    }
-
-    #[tokio::test]
-    async fn a_sponsored_agents_embeddings_run_on_the_platforms_own_key() {
-        let cfg = GatewayConfig {
-            service_openai_api_key: "sk-platform-openai".into(),
-            ..free_plane_cfg()
-        };
-        let store = MockRegistry {
-            config: Some(Some(embedding_config(
-                "openai",
-                "text-embedding-3-small",
-                None,
-            ))),
-            ..Default::default()
-        };
-        let r = resolve_embeddings_for(
-            &store,
-            &cache(),
-            &cfg,
-            AGENT,
-            ConfigSubject::Sponsored(OWNER),
-            None,
-        )
-        .await
-        .unwrap();
-        assert_eq!(r.api_key, "sk-platform-openai");
-        let err = resolve_embeddings_for(
-            &store,
-            &cache(),
-            &cfg,
-            AGENT,
-            ConfigSubject::Owner(OWNER),
-            None,
-        )
-        .await
-        .unwrap_err();
-        assert!(matches!(err, GatewayError::NoApiKey { .. }));
-    }
-
-    /// An agent whose owner attached a keyed config and pinned a model: a platform call must
-    /// read neither.
-    fn configured_and_pinned_agent() -> MockRegistry {
-        MockRegistry {
-            config: Some(Some(llm_config("gemini", "owner-model", Some("KEY")))),
-            secret: Some("user-key".into()),
-            agent_pinned_model: Some("pinned-pro".into()),
-            ..Default::default()
-        }
-    }
-
-    #[tokio::test]
-    async fn a_platform_call_runs_on_the_platform_defaults_and_its_own_key() {
-        let r = resolve_for(
-            &configured_and_pinned_agent(),
-            &cache(),
-            &free_plane_cfg(),
-            AGENT,
-            ConfigSubject::Platform,
-            RequestHint::default(),
-        )
-        .await
-        .unwrap();
-        assert_eq!(r.provider, "gemini");
-        assert_eq!(r.model, "gemini-4-hydrogen");
-        assert_eq!(r.api_key, "sk-platform-gemini");
-        assert!(r.platform_paid);
-        assert!(!r.has_llm_config);
-        assert!(r.pinned_model.is_none());
-    }
-
-    #[tokio::test]
-    async fn a_platform_call_ignores_the_requested_model() {
-        let hints = [
-            RequestHint {
-                provider: Some("gemini"),
-                model: Some("gemini-pro-x"),
-            },
-            RequestHint {
-                provider: None,
-                model: Some("anthropic/claude-x"),
-            },
-        ];
-        for hint in hints {
-            let r = resolve_for(
-                &configured_and_pinned_agent(),
-                &cache(),
-                &free_plane_cfg(),
-                AGENT,
-                ConfigSubject::Platform,
-                hint,
-            )
-            .await
-            .unwrap();
-            assert_eq!(r.provider, "gemini");
-            assert_eq!(r.model, "gemini-4-hydrogen");
-        }
-    }
-
-    #[tokio::test]
-    async fn a_platform_embedding_call_runs_on_the_platform_key() {
-        let cfg = GatewayConfig {
-            service_openai_api_key: "sk-platform-openai".into(),
-            ..free_plane_cfg()
-        };
-        let r = resolve_embeddings_for(
-            &configured_and_pinned_agent(),
-            &cache(),
-            &cfg,
-            AGENT,
-            ConfigSubject::Platform,
-            Some("text-embedding-3-small"),
-        )
-        .await
-        .unwrap();
-        assert_eq!(r.provider, "openai");
-        assert_eq!(r.model, "text-embedding-3-small");
-        assert_eq!(r.api_key, "sk-platform-openai");
-        assert!(r.platform_paid);
-    }
-
     #[tokio::test]
     async fn no_secret_and_no_platform_key_is_bad_request() {
         let store = MockRegistry {
@@ -1963,11 +1306,7 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(
-            matches!(&err, GatewayError::NoApiKey { provider, model }
-                if provider == "openai" && model == "gpt-4o-mini"),
-            "{err}"
-        );
+        assert!(matches!(err, GatewayError::NoApiKey));
     }
 
     #[tokio::test]
@@ -2029,11 +1368,7 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert_eq!(
-            err.to_string(),
-            "No API key for provider 'anthropic' (model claude-haiku-4-5). Connect a model with \
-             your own key in LLM router, or ask your admin to set PLATFORM_ANTHROPIC_API_KEY."
-        );
+        assert!(matches!(err, GatewayError::NoApiKey));
     }
 
     #[tokio::test]
@@ -2075,9 +1410,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn no_config_routes_to_explicit_provider_prefix() {
-        // No llm_config: the SDK surface never picks the provider; an explicit
-        // `provider/model` naming a keyed provider does. Key follows that provider.
+    async fn no_config_honors_request_hint_over_defaults() {
+        // No llm_config: the request's own provider (from the SDK surface) + model are
+        // honored, not the platform defaults. Anthropic platform key follows the provider.
         let config = GatewayConfig {
             default_provider: "openai".into(),
             default_model: "gpt-4o-mini".into(),
@@ -2093,8 +1428,8 @@ mod tests {
             org_embedding_default: None,
         };
         let hint = RequestHint {
-            provider: Some("openai"),
-            model: Some("anthropic/claude-3-5-sonnet-20241022"),
+            provider: Some("anthropic"),
+            model: Some("claude-3-5-sonnet-20241022"),
         };
         let r = resolve(&store, &cache(), &config, AGENT, OWNER, hint)
             .await
@@ -2158,13 +1493,11 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(matches!(err, GatewayError::SecretNotFound(_)));
+        assert!(matches!(err, GatewayError::SecretNotFound(_, _)));
         assert_eq!(
             err.to_string(),
-            "Your LLM config uses the secret 'ANTHROPIC_API_KEY', which doesn't exist. Add it in \
-             Settings → Secrets or edit the config."
+            format!("Secret 'ANTHROPIC_API_KEY' not found for owner_id={OWNER}")
         );
-        assert!(!err.to_string().contains(OWNER));
     }
 
     #[tokio::test]
@@ -2739,496 +2072,5 @@ mod tests {
         assert_eq!(EmbeddingSource::Request.label(), "request");
         assert_eq!(EmbeddingSource::Config.label(), "config");
         assert_eq!(EmbeddingSource::OrgDefault.label(), "org-default");
-    }
-}
-
-/// A shared agent runs on its caller's own config and keys (NAS-1459).
-#[cfg(test)]
-mod shared_user_tests {
-    use super::*;
-    use std::sync::Mutex;
-    use std::time::Duration;
-
-    const AGENT: &str = "11111111-1111-1111-1111-111111111111";
-    const OWNER: &str = "22222222-2222-2222-2222-222222222222";
-    const SHARED_USER: &str = "33333333-3333-3333-3333-333333333333";
-
-    /// The agent's owner has a config naming their key; the shared user may have their own.
-    struct SharedAgentStore {
-        user_default: Option<LLMConfig>,
-        /// Every `user_secrets` owner read — the owner's must never appear for a shared caller.
-        secret_reads: Mutex<Vec<Uuid>>,
-    }
-
-    impl SharedAgentStore {
-        fn new(user_default: Option<LLMConfig>) -> Self {
-            Self {
-                user_default,
-                secret_reads: Mutex::new(Vec::new()),
-            }
-        }
-        fn read_owners_secret(&self) -> bool {
-            let owner = Uuid::parse_str(OWNER).unwrap();
-            self.secret_reads.lock().unwrap().contains(&owner)
-        }
-    }
-
-    fn config(provider: &str, model: &str, secret_name: Option<&str>) -> LLMConfig {
-        LLMConfig {
-            provider: provider.into(),
-            model: Some(model.into()),
-            fallback_models: vec![],
-            temperature: None,
-            max_tokens: None,
-            api_key_secret_name: secret_name.map(str::to_string),
-            pinned: false,
-            pinned_model: None,
-            tier1_model: None,
-            tier2_model: None,
-            tier3_model: None,
-            embedding_provider: None,
-            embedding_model: None,
-            embedding_api_key_secret_name: None,
-            embedding_model_override: false,
-        }
-    }
-
-    #[async_trait]
-    impl RegistryStore for SharedAgentStore {
-        async fn fetch_llm_config(
-            &self,
-            _: Uuid,
-        ) -> Result<Option<AgentConfigResult>, sqlx::Error> {
-            Ok(Some(AgentConfigResult {
-                config: Some(config("anthropic", "owner-model", Some("OWNER_KEY"))),
-                agent_pinned_model: Some("owner-pin".into()),
-                is_coding_agent: false,
-                compress_enabled: true,
-            }))
-        }
-        async fn fetch_agent_owner(&self, _: Uuid) -> Result<Option<Uuid>, sqlx::Error> {
-            Ok(Uuid::parse_str(OWNER).ok())
-        }
-        async fn fetch_user_default_config(
-            &self,
-            user_id: Uuid,
-        ) -> Result<Option<LLMConfig>, sqlx::Error> {
-            assert_eq!(
-                user_id.to_string(),
-                SHARED_USER,
-                "only the caller's own config"
-            );
-            Ok(self.user_default.clone())
-        }
-        async fn fetch_user_secret(
-            &self,
-            owner_id: Uuid,
-            _: &str,
-        ) -> Result<Option<String>, sqlx::Error> {
-            self.secret_reads.lock().unwrap().push(owner_id);
-            let plaintext = format!("key-of-{owner_id}");
-            Ok(Some(SecretsCrypto::for_user(owner_id).encrypt(&plaintext)))
-        }
-        async fn fetch_live_flow(
-            &self,
-            _: &str,
-            _: Uuid,
-            _: i64,
-        ) -> Result<Option<crate::routing::attribution::LiveFlow>, sqlx::Error> {
-            unreachable!("resolution never attributes flows")
-        }
-        async fn fetch_custom_provider(
-            &self,
-            _: &str,
-        ) -> Result<Option<CustomProvider>, sqlx::Error> {
-            Ok(None)
-        }
-        async fn fetch_org_embedding_default(
-            &self,
-        ) -> Result<Option<OrgEmbeddingDefault>, sqlx::Error> {
-            Ok(None)
-        }
-    }
-
-    fn install_master_key() {
-        use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
-        // SAFETY: serialized via #[serial]; no other test reads the env concurrently.
-        unsafe {
-            std::env::set_var("SECRETS_ENCRYPTION_KEY", BASE64.encode([7u8; 32]));
-        }
-    }
-
-    fn gemini_cfg() -> GatewayConfig {
-        GatewayConfig {
-            default_provider: "gemini".into(),
-            default_model: "gemini-4-hydrogen".into(),
-            platform_gemini_api_key: "g-key".into(),
-            platform_openai_api_key: "sk".into(),
-            ..GatewayConfig::default()
-        }
-    }
-
-    fn hint<'a>(provider: &'a str, model: &'a str) -> RequestHint<'a> {
-        RequestHint {
-            provider: Some(provider),
-            model: Some(model),
-        }
-    }
-
-    #[test]
-    fn openai_sdk_on_gemini_platform_uses_default_provider_and_model() {
-        let cfg = gemini_cfg();
-        // Provider comes from the platform, not the SDK surface — even with an OpenAI key.
-        for model in ["gpt-4o-mini", "o3", "ft:gpt-4o:x", "gemini-2.0-flash"] {
-            let h = super::usable_hint(&cfg, hint("openai", model));
-            assert_eq!(h.provider, Some("gemini"), "{model}");
-            assert_eq!(h.model, Some("gemini-4-hydrogen"), "{model}");
-        }
-        let h = super::usable_hint(&cfg, hint("anthropic", "claude-haiku-5-5"));
-        assert_eq!(
-            (h.provider, h.model),
-            (Some("gemini"), Some("gemini-4-hydrogen"))
-        );
-    }
-
-    #[test]
-    fn native_surface_keeps_requested_model() {
-        let cfg = gemini_cfg();
-        let h = super::usable_hint(&cfg, hint("gemini", "gemini-2.5-pro"));
-        assert_eq!(
-            (h.provider, h.model),
-            (Some("gemini"), Some("gemini-2.5-pro"))
-        );
-        let openai = GatewayConfig {
-            default_provider: "openai".into(),
-            default_model: "gpt-4o-mini".into(),
-            platform_openai_api_key: "sk".into(),
-            ..GatewayConfig::default()
-        };
-        let h = super::usable_hint(&openai, hint("openai", "gpt-4o"));
-        assert_eq!((h.provider, h.model), (Some("openai"), Some("gpt-4o")));
-    }
-
-    #[test]
-    fn explicit_prefix_picks_keyed_provider() {
-        let cfg = gemini_cfg();
-        let h = super::usable_hint(&cfg, hint("openai", "gemini/gemini-2.5-pro"));
-        assert_eq!(
-            (h.provider, h.model),
-            (Some("gemini"), Some("gemini-2.5-pro"))
-        );
-        let h = super::usable_hint(&cfg, hint("openai", "openai/gpt-6.1-sol"));
-        assert_eq!((h.provider, h.model), (Some("openai"), Some("gpt-6.1-sol")));
-        // Unkeyed prefix is ignored → platform default.
-        let h = super::usable_hint(&cfg, hint("openai", "anthropic/claude-haiku-5-5"));
-        assert_eq!(
-            (h.provider, h.model),
-            (Some("gemini"), Some("gemini-4-hydrogen"))
-        );
-    }
-
-    #[test]
-    fn no_surface_foreign_model_gets_default_model() {
-        let cfg = gemini_cfg();
-        let h = super::usable_hint(
-            &cfg,
-            RequestHint {
-                provider: None,
-                model: Some("gpt-4o"),
-            },
-        );
-        assert_eq!(
-            (h.provider, h.model),
-            (Some("gemini"), Some("gemini-4-hydrogen"))
-        );
-    }
-
-    #[test]
-    fn surface_family_match_ignores_case() {
-        let cfg = gemini_cfg();
-        let h = super::usable_hint(&cfg, hint("Gemini", "gemini-2.5-pro"));
-        assert_eq!(
-            (h.provider, h.model),
-            (Some("gemini"), Some("gemini-2.5-pro"))
-        );
-    }
-
-    #[test]
-    fn openrouter_default_keeps_vendor_model_ids() {
-        let cfg = GatewayConfig {
-            default_provider: "openrouter".into(),
-            default_model: "openai/gpt-6.1-sol".into(),
-            platform_openrouter_api_key: "or-key".into(),
-            ..GatewayConfig::default()
-        };
-        let h = super::usable_hint(&cfg, hint("openai", "meta-llama/llama-4"));
-        assert_eq!(
-            (h.provider, h.model),
-            (Some("openrouter"), Some("meta-llama/llama-4"))
-        );
-        let h = super::usable_hint(&cfg, hint("anthropic", "claude-haiku-5-5"));
-        assert_eq!(
-            (h.provider, h.model),
-            (Some("openrouter"), Some("openai/gpt-6.1-sol"))
-        );
-    }
-
-    #[test]
-    fn unavailable_provider_prefix_falls_back_to_default_model() {
-        let cfg: GatewayConfig = gateway();
-        let h: RequestHint<'_> =
-            super::usable_hint(&cfg, hint("openai", "anthropic/claude-haiku-5-5"));
-        assert_eq!((h.provider, h.model), (Some("openai"), Some("gpt-4o-mini")));
-        let h: RequestHint<'_> = super::usable_hint(&cfg, hint("openai", "Gemini/gemini-2.5-pro"));
-        assert_eq!((h.provider, h.model), (Some("openai"), Some("gpt-4o-mini")));
-        let h: RequestHint<'_> = super::usable_hint(&cfg, hint("openai", "gpt-4o"));
-        assert_eq!((h.provider, h.model), (Some("openai"), Some("gpt-4o")));
-    }
-
-    fn gateway() -> GatewayConfig {
-        GatewayConfig {
-            default_provider: "openai".into(),
-            default_model: "gpt-4o-mini".into(),
-            platform_openai_api_key: "sk-platform".into(),
-            ..Default::default()
-        }
-    }
-
-    async fn resolve_as(
-        store: &SharedAgentStore,
-        subject: ConfigSubject<'_>,
-    ) -> Result<ResolvedConfig, GatewayError> {
-        let cache = ConfigCache::new(Duration::from_secs(30));
-        let hint = RequestHint::default();
-        resolve_for(store, &cache, &gateway(), AGENT, subject, hint).await
-    }
-
-    fn shared_user() -> Uuid {
-        Uuid::parse_str(SHARED_USER).unwrap()
-    }
-
-    #[test]
-    fn a_caller_other_than_the_owner_is_a_shared_user() {
-        assert_eq!(
-            ConfigSubject::for_call(OWNER, Some(shared_user())),
-            ConfigSubject::SharedUser(shared_user())
-        );
-    }
-
-    #[test]
-    fn the_owner_on_their_own_agent_and_an_unattributed_call_stay_on_the_owner() {
-        let owner = Uuid::parse_str(OWNER).unwrap();
-        assert_eq!(
-            ConfigSubject::for_call(OWNER, Some(owner)),
-            ConfigSubject::Owner(OWNER)
-        );
-        assert_eq!(
-            ConfigSubject::for_call(OWNER, None),
-            ConfigSubject::Owner(OWNER)
-        );
-        // A token without an owner claim already pays with the platform key, never an owner's.
-        assert_eq!(
-            ConfigSubject::for_call("", Some(shared_user())),
-            ConfigSubject::Owner("")
-        );
-    }
-
-    #[tokio::test]
-    #[serial_test::serial]
-    async fn a_shared_user_runs_on_their_own_default_config_and_key() {
-        install_master_key();
-        let store = SharedAgentStore::new(Some(config("openai", "user-model", Some("MY_KEY"))));
-        let r = resolve_as(&store, ConfigSubject::SharedUser(shared_user()))
-            .await
-            .unwrap();
-        assert_eq!(r.provider, "openai");
-        assert_eq!(r.model, "user-model");
-        assert_eq!(r.api_key, format!("key-of-{SHARED_USER}"));
-        assert!(!r.platform_paid);
-        assert!(!store.read_owners_secret(), "the owner's key is never read");
-        // The owner's agent-level pin names a model on the owner's provider: not carried over.
-        assert_eq!(r.pinned_model, None);
-        // Agent flags still apply.
-        assert!(r.compress_enabled);
-    }
-
-    #[tokio::test]
-    #[serial_test::serial]
-    async fn a_shared_user_without_a_config_is_refused_never_put_on_the_owners_key() {
-        install_master_key();
-        let store = SharedAgentStore::new(None);
-        let err = resolve_as(&store, ConfigSubject::SharedUser(shared_user()))
-            .await
-            .unwrap_err();
-        assert!(matches!(err, GatewayError::NoSharedUserConfig));
-        assert_eq!(err.status(), axum::http::StatusCode::BAD_REQUEST);
-        assert!(err.to_string().starts_with("Connect a model in LLM router"));
-        assert!(!store.read_owners_secret());
-    }
-
-    #[tokio::test]
-    #[serial_test::serial]
-    async fn a_shared_users_embeddings_without_a_config_are_refused_too() {
-        install_master_key();
-        let store = SharedAgentStore::new(None);
-        let cache = ConfigCache::new(Duration::from_secs(30));
-        let subject = ConfigSubject::SharedUser(shared_user());
-        let err = resolve_embeddings_for(&store, &cache, &gateway(), AGENT, subject, Some("m"))
-            .await
-            .unwrap_err();
-        assert!(matches!(err, GatewayError::NoSharedUserConfig));
-    }
-
-    #[tokio::test]
-    #[serial_test::serial]
-    async fn the_owner_still_runs_on_the_agents_config_and_their_key() {
-        install_master_key();
-        let store = SharedAgentStore::new(None);
-        let r = resolve_as(&store, ConfigSubject::Owner(OWNER))
-            .await
-            .unwrap();
-        assert_eq!(r.model, "owner-model");
-        assert_eq!(r.api_key, format!("key-of-{OWNER}"));
-        assert_eq!(r.pinned_model.as_deref(), Some("owner-pin"));
-    }
-
-    const MIGRATIONS: sqlx::migrate::Migrator = sqlx::migrate!("../migrations");
-
-    async fn insert_user(pool: &PgPool) -> Result<Uuid, sqlx::Error> {
-        let name = Uuid::new_v4().simple().to_string();
-        sqlx::query_scalar("INSERT INTO users (username, email) VALUES ($1, $2) RETURNING id")
-            .bind(format!("u-{name}"))
-            .bind(format!("{name}@test.local"))
-            .fetch_one(pool)
-            .await
-    }
-
-    async fn insert_agent(pool: &PgPool, owner: Uuid) -> Result<Uuid, sqlx::Error> {
-        sqlx::query_scalar("INSERT INTO agents (name, owner_id) VALUES ($1, $2) RETURNING id")
-            .bind(format!("a-{}", Uuid::new_v4().simple()))
-            .bind(owner)
-            .fetch_one(pool)
-            .await
-    }
-
-    /// A config whose model is its name, so a read says which row it returned.
-    async fn insert_config(
-        pool: &PgPool,
-        owner: Uuid,
-        name: &str,
-        is_default: bool,
-    ) -> Result<Uuid, sqlx::Error> {
-        sqlx::query_scalar(
-            "INSERT INTO llm_configs (created_by, name, provider, model, is_default) \
-             VALUES ($1, $2, 'openai', $2, $3) RETURNING id",
-        )
-        .bind(owner)
-        .bind(name)
-        .bind(is_default)
-        .fetch_one(pool)
-        .await
-    }
-
-    async fn choose(
-        pool: &PgPool,
-        user: Uuid,
-        agent: Uuid,
-        config: Uuid,
-    ) -> Result<(), sqlx::Error> {
-        sqlx::query(
-            "INSERT INTO agent_user_llm_configs (user_id, agent_id, llm_config_id) \
-             VALUES ($1, $2, $3)",
-        )
-        .bind(user)
-        .bind(agent)
-        .bind(config)
-        .execute(pool)
-        .await
-        .map(|_| ())
-    }
-
-    /// A config that is neither the owner's default nor attached to the agent is not the agent's,
-    /// so the owner's call finds no key and a deployment may cover it.
-    #[sqlx::test(migrator = "MIGRATIONS")]
-    #[ignore = "requires disposable PostgreSQL"]
-    async fn an_owner_config_neither_default_nor_attached_resolves_to_none(
-        pool: PgPool,
-    ) -> Result<(), sqlx::Error> {
-        let store = PgRegistry::new(pool.clone());
-        let alice = insert_user(&pool).await?;
-        let agent = insert_agent(&pool, alice).await?;
-        insert_config(&pool, alice, "spare", false).await?;
-        let read = store.fetch_llm_config(agent).await?.expect("agent row");
-        assert!(read.config.is_none());
-
-        insert_config(&pool, alice, "alice-default", true).await?;
-        let read = store.fetch_llm_config(agent).await?.expect("agent row");
-        let model = read.config.and_then(|c| c.model);
-        assert_eq!(model.as_deref(), Some("alice-default"));
-        Ok(())
-    }
-
-    #[sqlx::test(migrator = "MIGRATIONS")]
-    #[ignore = "requires disposable PostgreSQL"]
-    async fn a_users_choice_for_an_agent_is_read_live_and_never_anothers(
-        pool: PgPool,
-    ) -> Result<(), sqlx::Error> {
-        let store = PgRegistry::new(pool.clone());
-        let model = |config: Option<LLMConfig>| config.and_then(|c| c.model);
-        let (alice, bob, carol) = (
-            insert_user(&pool).await?,
-            insert_user(&pool).await?,
-            insert_user(&pool).await?,
-        );
-        let (agent, other_agent) = (
-            insert_agent(&pool, alice).await?,
-            insert_agent(&pool, alice).await?,
-        );
-        insert_config(&pool, alice, "alice-default", true).await?;
-        let chosen = insert_config(&pool, alice, "alice-chosen", false).await?;
-        insert_config(&pool, bob, "bob-default", true).await?;
-        choose(&pool, alice, agent, chosen).await?;
-
-        // The choice wins for its own agent; every other agent gets the default.
-        assert!(store.has_user_agent_config(alice, agent).await?);
-        let on_agent = store.fetch_user_agent_config(alice, agent).await?;
-        assert_eq!(model(on_agent).as_deref(), Some("alice-chosen"));
-        assert!(!store.has_user_agent_config(alice, other_agent).await?);
-        let on_other = store.fetch_user_agent_config(alice, other_agent).await?;
-        assert_eq!(model(on_other).as_deref(), Some("alice-default"));
-
-        // Alice's choice is not Bob's, even from a row of his that names her config: the
-        // payer is still asked about him, not short-circuited by that row.
-        choose(&pool, bob, agent, chosen).await?;
-        let payer = crate::payer::RecordingPayer::answering(Some(crate::payer::Payer::Owner));
-        let alice_id = alice.to_string();
-        let (subject, _) = crate::payer::subject_for_call(
-            &store,
-            payer.as_ref(),
-            &agent.to_string(),
-            &alice_id,
-            Some(bob),
-        )
-        .await
-        .unwrap();
-        assert_eq!(subject, ConfigSubject::Sponsored(&alice_id));
-        assert_eq!(*payer.calls.lock().unwrap(), [(alice, bob)]);
-        assert!(!store.has_user_agent_config(bob, agent).await?);
-        let bobs = store.fetch_user_agent_config(bob, agent).await?;
-        assert_eq!(model(bobs).as_deref(), Some("bob-default"));
-
-        // A soft-deleted config reads as no choice: the default takes over.
-        sqlx::query("UPDATE llm_configs SET deleted_at = now() WHERE id = $1")
-            .bind(chosen)
-            .execute(&pool)
-            .await?;
-        assert!(!store.has_user_agent_config(alice, agent).await?);
-        let after_delete = store.fetch_user_agent_config(alice, agent).await?;
-        assert_eq!(model(after_delete).as_deref(), Some("alice-default"));
-
-        // Neither a choice nor a default is no config.
-        assert!(!store.has_user_agent_config(carol, agent).await?);
-        assert!(store.fetch_user_agent_config(carol, agent).await?.is_none());
-        Ok(())
     }
 }

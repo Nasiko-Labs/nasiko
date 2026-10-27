@@ -149,27 +149,63 @@ pub fn pending_event_count() -> Result<usize> {
 
 // ─── Commands ────────────────────────────────────────────────────────────────
 
+pub use a2a::DiscoveredAgent as A2aAgent;
+pub use a2a::env_file::EnvTarget;
+pub use control_plane::RegisteredA2aAgent;
+
+/// The A2A agents running on this machine, and what discovery could not look at.
+pub struct RunningA2aAgents {
+    pub agents: Vec<A2aAgent>,
+    pub warnings: Vec<String>,
+}
+
+pub fn running_a2a_agents() -> RunningA2aAgents {
+    let discovery = a2a::discover_local(&local_control_plane_ports());
+    RunningA2aAgents {
+        agents: discovery.agents,
+        warnings: discovery.warnings,
+    }
+}
+
 /// `agents discover`: every catalogued coding agent and every A2A agent running on this machine
-/// in one table (whether each is here, and whether it reports to Nasiko), then a warning per
-/// invalid card and per source that could not be read.
+/// in one table (whether each is here, and whether it is connected to Nasiko), then a warning
+/// per invalid card and per source that could not be read.
+///
+/// When logged in, also registers the running A2A agents with the active cluster (agents no
+/// longer running are marked stopped there), which is what their CONNECTED column reports on.
 ///
 /// Its own command, not part of `status`: it lists sockets and containers and sends HTTP
 /// probes to every listening port, which takes time and shows up in those services' logs.
 pub fn discover(cli: &str) -> Result<()> {
     let settings = IntegrationState::load()?;
-    let discovery = a2a::discover_local(&local_control_plane_ports());
+    let running = running_a2a_agents();
+    let registered = match register_running(&running) {
+        Ok(registered) => registered,
+        Err(error) => {
+            term::print_warning(&format!(
+                "A2A agents were not registered with Nasiko: {error:#}"
+            ));
+            Vec::new()
+        }
+    };
+    let connections = a2a::connections::Connections::load().unwrap_or_default();
 
     let mut rows: Vec<DiscoverRow> = Agent::ALL
         .iter()
         .copied()
         .map(|agent| coding_agent_row(agent, &settings))
         .collect();
-    rows.extend(discovery.agents.iter().map(a2a_agent_row));
+    rows.extend(
+        running
+            .agents
+            .iter()
+            .map(|agent| a2a_agent_row(agent, llm_routing_state(agent, &registered, &connections))),
+    );
     print!("{}", format_discover_table(&rows));
 
     println!("\nInstall session reporting:  {cli} connect <agent> --reporting");
 
-    for agent in &discovery.agents {
+    for agent in &running.agents {
         if let Err(errors) = &agent.card {
             for error in errors {
                 term::print_warning(&format!(
@@ -179,17 +215,79 @@ pub fn discover(cli: &str) -> Result<()> {
             }
         }
     }
-    for warning in &discovery.warnings {
+    for warning in &running.warnings {
         term::print_warning(&format!("{warning}\n  Retry with: {cli} agents discover"));
     }
     Ok(())
+}
+
+/// Register every running agent with a valid card under this machine. Skipped (empty) when
+/// not logged in, when the machine has no name, or when a discovery source failed: a partial
+/// list would mark agents stopped that are still running.
+pub fn register_running(running: &RunningA2aAgents) -> Result<Vec<RegisteredA2aAgent>> {
+    if !running.warnings.is_empty() || crate::config::active_cluster().is_err() {
+        return Ok(Vec::new());
+    }
+    let Some(machine) = a2a::machine_name() else {
+        return Ok(Vec::new());
+    };
+    let cards: Vec<serde_json::Value> = running
+        .agents
+        .iter()
+        .filter(|agent| agent.card.is_ok())
+        .map(|agent| agent.raw_card.clone())
+        .collect();
+    Ok(control_plane::register_discovered(&machine, &cards)?.unwrap_or_default())
+}
+
+/// Whether an A2A agent's LLM calls go through Nasiko.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LlmRouting {
+    /// Not connected (or not registered, so it cannot be).
+    Off,
+    /// `connect` pointed it at Nasiko; no routed call has arrived yet (it needs a restart).
+    Waiting,
+    /// The router has seen a call with its key since `connect`.
+    On,
+}
+
+impl LlmRouting {
+    /// As the CONNECTED column shows it, beside the coding agents' `yes`/`no`.
+    fn connected(self) -> &'static str {
+        match self {
+            Self::Off => "no",
+            Self::Waiting => "waiting",
+            Self::On => "yes",
+        }
+    }
+}
+
+fn llm_routing_state(
+    agent: &A2aAgent,
+    registered: &[RegisteredA2aAgent],
+    connections: &a2a::connections::Connections,
+) -> LlmRouting {
+    match registered
+        .iter()
+        .find(|entry| entry.card_name == agent.name)
+    {
+        // Only `connect` points an agent at Nasiko; after `disconnect` its past calls no longer count.
+        Some(entry) if connections.agents.contains_key(&entry.id) => {
+            if entry.last_llm_call_at.is_some() {
+                LlmRouting::On
+            } else {
+                LlmRouting::Waiting
+            }
+        }
+        _ => LlmRouting::Off,
+    }
 }
 
 /// One line of the `agents discover` table.
 struct DiscoverRow {
     agent: String,
     detected: bool,
-    connected: bool,
+    connected: &'static str,
     version: String,
     config: String,
     /// Where an A2A agent serves its agent card; `None` for coding agents.
@@ -201,22 +299,21 @@ fn coding_agent_row(agent: Agent, settings: &IntegrationState) -> DiscoverRow {
     DiscoverRow {
         agent: agent.spec().id.to_string(),
         detected: detect(agent).is_present(),
-        connected: reporting.connected,
+        connected: if reporting.connected { "yes" } else { "no" },
         version: reporting.version,
         config: tildify(&agent.config_path()),
         a2a_card: None,
     }
 }
 
-/// A running A2A agent: found by its card, so always detected; not connected until
-/// registration of discovered agents exists. A2A CARD is the card URL as fetched from this
-/// machine — not the card's own `url`, which inside a Docker container names the unpublished
-/// port.
-fn a2a_agent_row(agent: &a2a::DiscoveredAgent) -> DiscoverRow {
+/// A running A2A agent: found by its card, so always detected; connected once its LLM calls
+/// go through Nasiko. A2A CARD is the card URL as fetched from this machine — not the card's
+/// own `url`, which inside a Docker container names the unpublished port.
+fn a2a_agent_row(agent: &A2aAgent, routing: LlmRouting) -> DiscoverRow {
     DiscoverRow {
         agent: agent.name.clone(),
         detected: true,
-        connected: false,
+        connected: routing.connected(),
         version: agent.version().unwrap_or("-").to_string(),
         config: "-".to_string(),
         a2a_card: Some(agent.card_url.clone()),
@@ -258,7 +355,7 @@ fn format_discover_table(rows: &[DiscoverRow]) -> String {
             "{:<width$} {:<10} {:<11} {:<20} ",
             row.agent,
             if row.detected { "yes" } else { "-" },
-            if row.connected { "yes" } else { "no" },
+            row.connected,
             row.version,
         ));
         if has_cards {
@@ -269,6 +366,138 @@ fn format_discover_table(rows: &[DiscoverRow]) -> String {
         }
     }
     table
+}
+
+// ─── Connecting an A2A agent ─────────────────────────────────────────────────
+
+/// What `connect` does for one running A2A agent: its catalog identity, the variables that
+/// route its LLM calls through Nasiko, and where they go.
+pub struct A2aConnection {
+    pub agent_id: uuid::Uuid,
+    pub card_name: String,
+    /// Its catalog name.
+    pub name: String,
+    pub vars: Vec<(&'static str, String)>,
+    /// The agent's working folder, when known.
+    pub folder: Option<std::path::PathBuf>,
+    /// The file to write them to, or why the user must set them.
+    pub target: EnvTarget,
+}
+
+/// Register the running agents, then prepare `agent`'s connection: its key and the file
+/// decided from its process (see [`a2a::env_file`]).
+pub fn prepare_a2a_connection(
+    agent: &A2aAgent,
+    running: &RunningA2aAgents,
+) -> Result<A2aConnection> {
+    if let Err(issues) = &agent.card {
+        let issues: Vec<String> = issues.iter().map(ToString::to_string).collect();
+        bail!(
+            "{} serves an invalid agent card, so it can't be registered: {}",
+            agent.name,
+            issues.join("; ")
+        );
+    }
+    let registered = register_running(running)?;
+    let entry = registered
+        .iter()
+        .find(|entry| entry.card_name == agent.name)
+        .with_context(|| {
+            format!(
+                "{} was not registered (is this machine's hostname readable, and did discovery finish without warnings?)",
+                agent.name
+            )
+        })?;
+    let (key, cluster_url) = control_plane::routing_key(entry.id)?;
+    let (folder, target) = match &agent.origin {
+        a2a::EndpointOrigin::Docker { container } => (
+            None,
+            EnvTarget::Unknown(format!(
+                "it runs in the Docker container {container}; set them in its container settings"
+            )),
+        ),
+        a2a::EndpointOrigin::Process { pid: None, .. } => (
+            None,
+            EnvTarget::Unknown("its process could not be identified".to_string()),
+        ),
+        a2a::EndpointOrigin::Process { pid: Some(pid), .. } => {
+            let facts = a2a::process::inspect(*pid);
+            let target = match a2a::env_file::locate(&facts) {
+                EnvTarget::File(file) => {
+                    let folder = facts.cwd.clone().unwrap_or_default();
+                    match a2a::env_file::refusal(&file, &folder) {
+                        Some(reason) => EnvTarget::Unknown(reason),
+                        None => EnvTarget::File(file),
+                    }
+                }
+                unknown => unknown,
+            };
+            (facts.cwd, target)
+        }
+    };
+    Ok(A2aConnection {
+        agent_id: entry.id,
+        card_name: agent.name.clone(),
+        name: entry.name.clone(),
+        vars: a2a::env_file::routing_vars(&cluster_url, &key),
+        folder,
+        target,
+    })
+}
+
+/// The text `file` will hold once connected, for showing and writing.
+pub fn a2a_connected_text(connection: &A2aConnection, file: &Path, header: &str) -> Result<String> {
+    let current = match std::fs::read_to_string(file) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error).with_context(|| format!("cannot read {}", file.display())),
+    };
+    Ok(a2a::env_file::with_block(
+        &current,
+        header,
+        &connection.vars,
+    ))
+}
+
+/// Record the connection, writing `text` to `file` first when there is one.
+pub fn save_a2a_connection(connection: &A2aConnection, file: Option<(&Path, &str)>) -> Result<()> {
+    if let Some((file, text)) = file {
+        a2a::env_file::write(file, text)
+            .with_context(|| format!("cannot write {}", file.display()))?;
+    }
+    let mut connections = a2a::connections::Connections::load()?;
+    connections.agents.insert(
+        connection.agent_id,
+        a2a::connections::Connection {
+            card_name: connection.card_name.clone(),
+            name: connection.name.clone(),
+            file: file.map(|(file, _)| file.to_path_buf()),
+        },
+    );
+    connections.save()
+}
+
+/// Undo `connect` for the A2A agent named `name`: remove Nasiko's block from the file it
+/// wrote and forget the connection. `Ok(None)` when no A2A agent of that name is connected.
+pub fn disconnect_a2a_agent(name: &str) -> Result<Option<String>> {
+    let mut connections = a2a::connections::Connections::load()?;
+    let Some((id, connection)) = connections.find(name) else {
+        return Ok(None);
+    };
+    let message = match connection.file.clone() {
+        Some(file) => match std::fs::read_to_string(&file) {
+            Ok(text) if a2a::env_file::has_block(&text) => {
+                a2a::env_file::write(&file, &a2a::env_file::without_block(&text))
+                    .with_context(|| format!("cannot write {}", file.display()))?;
+                format!("Removed the Nasiko variables from {}", file.display())
+            }
+            _ => format!("{} no longer holds the Nasiko variables", file.display()),
+        },
+        None => "Remove the Nasiko variables you set for it".to_string(),
+    };
+    connections.agents.remove(&id);
+    connections.save()?;
+    Ok(Some(message))
 }
 
 /// Port of the active cluster when it runs on this machine, so a local
@@ -710,18 +939,27 @@ mod tests {
         catalog::find("claude").unwrap()
     }
 
-    #[test]
-    fn a2a_agents_join_the_coding_agent_table_as_detected_and_not_connected() {
-        let agent = a2a::DiscoveredAgent {
-            name: "research-crew".into(),
+    fn discovered(name: &str, card: Result<String, Vec<a2a::CardIssue>>) -> a2a::DiscoveredAgent {
+        a2a::DiscoveredAgent {
+            name: name.into(),
             card_url: "http://127.0.0.1:8000/.well-known/agent-card.json".into(),
-            card: Ok("1.0.0".into()),
-        };
+            card,
+            origin: a2a::EndpointOrigin::Process {
+                pid: Some(4242),
+                command: "python".into(),
+            },
+            raw_card: serde_json::json!({"name": name}),
+        }
+    }
 
-        let row = a2a_agent_row(&agent);
+    #[test]
+    fn a2a_agents_join_the_coding_agent_table_as_detected() {
+        let agent = discovered("research-crew", Ok("1.0.0".into()));
+
+        let row = a2a_agent_row(&agent, LlmRouting::Off);
 
         assert!(row.detected);
-        assert!(!row.connected);
+        assert_eq!(row.connected, "no");
         assert_eq!(row.agent, "research-crew");
         assert_eq!(row.version, "1.0.0");
         assert_eq!(row.config, "-");
@@ -732,21 +970,27 @@ mod tests {
     }
 
     #[test]
-    fn an_invalid_card_has_no_version() {
-        let agent = a2a::DiscoveredAgent {
-            name: "half-built".into(),
-            card_url: "http://127.0.0.1:8000/.well-known/agent-card.json".into(),
-            card: Err(Vec::new()),
-        };
+    fn an_a2a_agents_connected_column_is_its_llm_routing() {
+        let agent = discovered("research-crew", Ok("1.0.0".into()));
+        let connected = |routing| a2a_agent_row(&agent, routing).connected;
 
-        assert_eq!(a2a_agent_row(&agent).version, "-");
+        assert_eq!(connected(LlmRouting::Off), "no");
+        assert_eq!(connected(LlmRouting::Waiting), "waiting");
+        assert_eq!(connected(LlmRouting::On), "yes");
+    }
+
+    #[test]
+    fn an_invalid_card_has_no_version() {
+        let agent = discovered("half-built", Err(Vec::new()));
+
+        assert_eq!(a2a_agent_row(&agent, LlmRouting::Off).version, "-");
     }
 
     fn coding_row(agent: &str, config: &str) -> DiscoverRow {
         DiscoverRow {
             agent: agent.into(),
             detected: true,
-            connected: false,
+            connected: "no",
             version: "-".into(),
             config: config.into(),
             a2a_card: None,
@@ -774,6 +1018,7 @@ mod tests {
     #[test]
     fn a2a_agents_add_an_a2a_card_column_after_config() {
         let mut crew = coding_row("research-crew", "-");
+        crew.connected = "waiting";
         crew.a2a_card = Some("http://127.0.0.1:8765/.well-known/agent-card.json".into());
 
         let table = format_discover_table(&[coding_row("claude", "~/.claude"), crew]);
@@ -789,9 +1034,48 @@ mod tests {
         );
         assert_eq!(
             lines[3],
-            "research-crew yes        no          -                    -         \
+            "research-crew yes        waiting     -                    -         \
              http://127.0.0.1:8765/.well-known/agent-card.json"
         );
+    }
+
+    fn registered(card_name: &str, called: bool) -> RegisteredA2aAgent {
+        RegisteredA2aAgent {
+            card_name: card_name.into(),
+            id: uuid::Uuid::new_v4(),
+            name: card_name.into(),
+            last_llm_call_at: called.then(chrono::Utc::now),
+        }
+    }
+
+    #[test]
+    fn llm_routing_is_waiting_after_connect_on_after_a_call_and_off_after_disconnect() {
+        let agent = discovered("research-crew", Ok("1.0.0".into()));
+        let none = a2a::connections::Connections::default();
+
+        assert_eq!(llm_routing_state(&agent, &[], &none), LlmRouting::Off);
+        assert_eq!(
+            llm_routing_state(&agent, &[registered("research-crew", false)], &none),
+            LlmRouting::Off
+        );
+        // Disconnected: calls it made while connected do not keep it on.
+        assert_eq!(
+            llm_routing_state(&agent, &[registered("research-crew", true)], &none),
+            LlmRouting::Off
+        );
+        for (called, state) in [(false, LlmRouting::Waiting), (true, LlmRouting::On)] {
+            let entry = registered("research-crew", called);
+            let mut connected = a2a::connections::Connections::default();
+            connected.agents.insert(
+                entry.id,
+                a2a::connections::Connection {
+                    card_name: "research-crew".into(),
+                    name: "research-crew".into(),
+                    file: None,
+                },
+            );
+            assert_eq!(llm_routing_state(&agent, &[entry], &connected), state);
+        }
     }
 
     #[test]

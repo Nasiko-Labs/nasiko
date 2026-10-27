@@ -18,7 +18,7 @@ const PLATFORM_CONTAINER_PREFIX: &str = "nasiko-agent-";
 
 /// Longest an external listing command (`lsof`, `docker ps`) may run. A
 /// half-started Docker daemon can block `docker ps` indefinitely.
-const COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
+pub(super) const COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Ports of well-known services that do not speak HTTP. Probing them gains
 /// nothing and is not harmless: Redis logs an HTTP request as a "Possible
@@ -71,7 +71,8 @@ impl LocalEndpoint {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EndpointOrigin {
     /// A process listening directly on the host.
-    Process { command: String },
+    /// `pid` is known when `lsof` listed the socket (always for the user's own processes).
+    Process { pid: Option<u32>, command: String },
     /// A Docker container publishing the port.
     Docker { container: String },
 }
@@ -195,7 +196,7 @@ fn split_host_port(address: &str) -> Option<(String, u16)> {
 
 /// How running an external listing command went.
 #[derive(Debug, PartialEq, Eq)]
-enum CommandOutcome {
+pub(super) enum CommandOutcome {
     /// Exited successfully; its stdout.
     Output(String),
     /// Not installed, or could not be started.
@@ -208,7 +209,7 @@ enum CommandOutcome {
 }
 
 /// Run `program args`, killing it if it outlives `timeout`.
-fn run_command(program: &str, args: &[&str], timeout: Duration) -> CommandOutcome {
+pub(super) fn run_command(program: &str, args: &[&str], timeout: Duration) -> CommandOutcome {
     let Ok(mut child) = Command::new(program)
         .args(args)
         .stdin(Stdio::null())
@@ -338,6 +339,7 @@ fn proc_net_listening() -> Option<Vec<LocalEndpoint>> {
             host,
             port,
             origin: EndpointOrigin::Process {
+                pid: None,
                 command: "-".into(),
             },
         })
@@ -390,11 +392,15 @@ fn parse_proc_ip(hex: &str) -> Option<IpAddr> {
 fn parse_lsof(output: &str) -> Vec<LocalEndpoint> {
     let mut endpoints = Vec::new();
     let mut seen = HashSet::new();
+    let mut pid = None;
     let mut command = String::from("-");
     for line in output.lines() {
         let (tag, value) = line.split_at(line.len().min(1));
         match tag {
-            "p" => command = "-".into(),
+            "p" => {
+                pid = value.parse().ok();
+                command = "-".into();
+            }
             "c" => command = value.to_string(),
             "n" => {
                 let Some((host, port)) = split_host_port(value) else {
@@ -405,6 +411,7 @@ fn parse_lsof(output: &str) -> Vec<LocalEndpoint> {
                         host,
                         port,
                         origin: EndpointOrigin::Process {
+                            pid,
                             command: command.clone(),
                         },
                     });
@@ -528,6 +535,7 @@ mod tests {
             host: "127.0.0.1".into(),
             port,
             origin: EndpointOrigin::Process {
+                pid: None,
                 command: command.into(),
             },
         }
@@ -581,6 +589,7 @@ mod tests {
         assert_eq!(
             endpoints[0].origin,
             EndpointOrigin::Process {
+                pid: Some(101),
                 command: "python3.12".into()
             }
         );
@@ -601,7 +610,7 @@ mod tests {
         let found: Vec<(String, &str)> = endpoints
             .iter()
             .map(|endpoint| match &endpoint.origin {
-                EndpointOrigin::Process { command } => (endpoint.base_url(), command.as_str()),
+                EndpointOrigin::Process { command, .. } => (endpoint.base_url(), command.as_str()),
                 EndpointOrigin::Docker { .. } => panic!("lsof yields processes only"),
             })
             .collect();

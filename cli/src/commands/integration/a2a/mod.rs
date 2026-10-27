@@ -24,9 +24,12 @@
 //! card name is printed to the user's terminal.
 
 mod card;
+pub mod connections;
 mod endpoints;
+pub mod env_file;
 mod frameworks;
 mod http;
+pub mod process;
 
 use std::collections::HashSet;
 use std::sync::Mutex;
@@ -35,7 +38,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use card::check_card;
 
 pub use card::CardIssue;
-pub use endpoints::LocalEndpoint;
+pub use endpoints::{EndpointOrigin, LocalEndpoint};
 pub use frameworks::{FoundCard, Framework};
 pub use http::{CardHttp, Transport};
 
@@ -54,6 +57,10 @@ pub struct DiscoveredAgent {
     /// The version the catalog would store from this card, or every reason
     /// it could not store the card ([`card::check_card`]).
     pub card: Result<String, Vec<CardIssue>>,
+    /// What serves it: a process (with its pid when known) or a Docker container.
+    pub origin: EndpointOrigin,
+    /// The card exactly as served; what registration sends to the control plane.
+    pub raw_card: serde_json::Value,
 }
 
 impl DiscoveredAgent {
@@ -61,6 +68,20 @@ impl DiscoveredAgent {
     pub fn version(&self) -> Option<&str> {
         self.card.as_deref().ok()
     }
+}
+
+/// This machine's name as the control plane records discovered agents under it: the
+/// hostname, without a trailing `.local`. `None` when it cannot be read, so nothing is
+/// registered under a made-up identity.
+pub fn machine_name() -> Option<String> {
+    let endpoints::CommandOutcome::Output(name) =
+        endpoints::run_command("hostname", &[], endpoints::COMMAND_TIMEOUT)
+    else {
+        return None;
+    };
+    let name = name.trim();
+    let name = name.strip_suffix(".local").unwrap_or(name);
+    (!name.is_empty()).then(|| name.to_string())
 }
 
 /// What a discovery run found, and what it could not look at.
@@ -166,7 +187,7 @@ fn probe_endpoint(
         .iter()
         .flat_map(|framework| framework.probe(&base, &http))
         .filter(|found| seen_cards.insert(found.card.to_string()))
-        .filter_map(to_discovered)
+        .filter_map(|found| to_discovered(found, &endpoint.origin))
         .collect();
     Probed {
         agents,
@@ -174,12 +195,15 @@ fn probe_endpoint(
     }
 }
 
-fn to_discovered(found: FoundCard) -> Option<DiscoveredAgent> {
+fn to_discovered(found: FoundCard, origin: &EndpointOrigin) -> Option<DiscoveredAgent> {
     let name = printable(found.card.get("name")?.as_str()?.trim());
     Some(DiscoveredAgent {
         name,
         card: check_card(&found.card).map(|version| printable(&version)),
         card_url: printable(&found.card_url),
+        origin: origin.clone(),
+        // Sent to the server as JSON, never printed.
+        raw_card: found.card,
     })
 }
 
@@ -205,7 +229,6 @@ fn is_unsafe_to_print(c: char) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::endpoints::EndpointOrigin;
     use super::http::PROBE_TIMEOUT;
     use super::http::tests::FakeHttp;
     use super::*;
@@ -228,6 +251,7 @@ mod tests {
             host: "127.0.0.1".into(),
             port,
             origin: EndpointOrigin::Process {
+                pid: Some(42),
                 command: "python".into(),
             },
         }
