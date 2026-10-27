@@ -120,11 +120,16 @@ fn to_reply(result: Result<ureq::http::Response<ureq::Body>, ureq::Error>) -> Re
 ///   swallows requests costs one [`PROBE_TIMEOUT`], not one per probe path;
 /// - once the port has answered HTTP, requests get [`ANSWERED_TIMEOUT`];
 /// - all of it stays within [`ENDPOINT_BUDGET`].
+///
+/// A port that answered and then a request to it went unanswered or unsent
+/// (it hung, or the budget ran out) [`gave_up`](Self::gave_up): what it would
+/// have served next is missing, which the caller reports.
 pub struct EndpointHttp<'a> {
     inner: &'a dyn Transport,
     deadline: Instant,
     answered: AtomicBool,
     unreachable: AtomicBool,
+    gave_up: AtomicBool,
 }
 
 impl<'a> EndpointHttp<'a> {
@@ -138,22 +143,37 @@ impl<'a> EndpointHttp<'a> {
             deadline: Instant::now() + budget,
             answered: AtomicBool::new(false),
             unreachable: AtomicBool::new(false),
+            gave_up: AtomicBool::new(false),
         }
     }
 
+    /// Whether a live port stopped being asked before probing was done.
+    pub fn gave_up(&self) -> bool {
+        self.gave_up.load(Ordering::Relaxed)
+    }
+
     fn send(&self, request: impl FnOnce(Duration) -> Reply) -> Reply {
+        let answered = self.answered.load(Ordering::Relaxed);
         let remaining = self.deadline.saturating_duration_since(Instant::now());
         if self.unreachable.load(Ordering::Relaxed) || remaining.is_zero() {
+            if answered {
+                self.gave_up.store(true, Ordering::Relaxed);
+            }
             return Reply::Unreachable;
         }
-        let limit = if self.answered.load(Ordering::Relaxed) {
+        let limit = if answered {
             ANSWERED_TIMEOUT
         } else {
             PROBE_TIMEOUT
         };
         let reply = request(limit.min(remaining));
         match reply {
-            Reply::Unreachable => self.unreachable.store(true, Ordering::Relaxed),
+            Reply::Unreachable => {
+                self.unreachable.store(true, Ordering::Relaxed);
+                if answered {
+                    self.gave_up.store(true, Ordering::Relaxed);
+                }
+            }
             Reply::Json(_) | Reply::Other => self.answered.store(true, Ordering::Relaxed),
         }
         reply
@@ -184,6 +204,7 @@ pub(crate) mod tests {
         gets: HashMap<String, Value>,
         posts: HashMap<String, Value>,
         unreachable_ports: Vec<u16>,
+        hanging_urls: Vec<String>,
         requests: AtomicUsize,
         post_requests: AtomicUsize,
         timeouts: Mutex<Vec<Duration>>,
@@ -202,6 +223,13 @@ pub(crate) mod tests {
 
         pub fn unreachable(mut self, port: u16) -> Self {
             self.unreachable_ports.push(port);
+            self
+        }
+
+        /// `url` gets no answer, like a request that hung, while the rest of
+        /// its port still answers.
+        pub fn hangs(mut self, url: &str) -> Self {
+            self.hanging_urls.push(url.to_string());
             self
         }
 
@@ -225,7 +253,7 @@ pub(crate) mod tests {
                 .unreachable_ports
                 .iter()
                 .any(|port| url.contains(&format!(":{port}/")));
-            if dead {
+            if dead || self.hanging_urls.iter().any(|hanging| hanging == url) {
                 return Reply::Unreachable;
             }
             table.get(url).cloned().map_or(Reply::Other, Reply::Json)
@@ -294,6 +322,47 @@ pub(crate) mod tests {
             fake.timeouts(),
             vec![PROBE_TIMEOUT, ANSWERED_TIMEOUT, ANSWERED_TIMEOUT]
         );
+    }
+
+    #[test]
+    fn a_port_that_answered_and_then_hung_gave_up() {
+        let fake = FakeHttp::default()
+            .get("http://127.0.0.1:2024/info", serde_json::json!({}))
+            .hangs("http://127.0.0.1:2024/card");
+        let endpoint = EndpointHttp::new(&fake);
+
+        endpoint.get("http://127.0.0.1:2024/info");
+        endpoint.get("http://127.0.0.1:2024/card");
+
+        assert!(endpoint.gave_up());
+    }
+
+    #[test]
+    fn a_port_that_answered_and_then_ran_out_of_time_gave_up() {
+        let fake = FakeHttp::default().get("http://127.0.0.1:2024/info", serde_json::json!({}));
+        let endpoint = EndpointHttp::with_budget(&fake, Duration::from_millis(20));
+
+        endpoint.get("http://127.0.0.1:2024/info");
+        std::thread::sleep(Duration::from_millis(30));
+        endpoint.get("http://127.0.0.1:2024/card");
+
+        assert!(endpoint.gave_up());
+        assert_eq!(fake.request_count(), 1);
+    }
+
+    #[test]
+    fn a_port_that_never_answered_or_finished_did_not_give_up() {
+        let silent = FakeHttp::default().unreachable(41000);
+        let endpoint = EndpointHttp::new(&silent);
+        endpoint.get("http://127.0.0.1:41000/a");
+        endpoint.get("http://127.0.0.1:41000/b");
+        assert!(!endpoint.gave_up());
+
+        let done = FakeHttp::default().get("http://127.0.0.1:2024/info", serde_json::json!({}));
+        let endpoint = EndpointHttp::new(&done);
+        endpoint.get("http://127.0.0.1:2024/info");
+        endpoint.get("http://127.0.0.1:2024/missing");
+        assert!(!endpoint.gave_up());
     }
 
     #[test]

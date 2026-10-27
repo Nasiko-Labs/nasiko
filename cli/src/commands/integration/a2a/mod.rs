@@ -78,23 +78,24 @@ pub struct Discovery {
 pub fn discover_local(excluded_ports: &[u16]) -> Discovery {
     let scan = endpoints::collect(&endpoints::default_sources(), excluded_ports);
     let http = http::UreqCardHttp::new();
-    Discovery {
-        agents: discover_at(&scan.endpoints, Framework::ALL, &http),
-        // A source's warning can quote a command's stderr.
-        warnings: scan.warnings.iter().map(|w| printable_lines(w)).collect(),
-    }
+    let mut discovery = discover_at(&scan.endpoints, Framework::ALL, &http);
+    // A source's warning can quote a command's stderr.
+    let source_warnings = scan.warnings.iter().map(|w| printable_lines(w));
+    discovery.warnings.splice(0..0, source_warnings);
+    discovery
 }
 
 /// Probe `endpoints` with every adapter in `frameworks` on a pool of up to [`MAX_PARALLEL_PROBES`]
 /// workers. Each worker takes the next endpoint as soon as it is free, so one
-/// slow endpoint delays only itself. Results keep the order of `endpoints`.
+/// slow endpoint delays only itself. Results keep the order of `endpoints`,
+/// with a warning per endpoint that stopped answering part-way.
 pub fn discover_at(
     endpoints: &[LocalEndpoint],
     frameworks: &[Framework],
     http: &dyn Transport,
-) -> Vec<DiscoveredAgent> {
+) -> Discovery {
     let next = AtomicUsize::new(0);
-    let results: Mutex<Vec<(usize, Vec<DiscoveredAgent>)>> = Mutex::new(Vec::new());
+    let results: Mutex<Vec<(usize, Probed)>> = Mutex::new(Vec::new());
     let workers = endpoints.len().min(MAX_PARALLEL_PROBES);
 
     std::thread::scope(|scope| {
@@ -105,12 +106,12 @@ pub fn discover_at(
                     let Some(endpoint) = endpoints.get(index) else {
                         break;
                     };
-                    let found = probe_endpoint(endpoint, frameworks, http);
-                    if !found.is_empty() {
+                    let probed = probe_endpoint(endpoint, frameworks, http);
+                    if !probed.agents.is_empty() || probed.gave_up {
                         results
                             .lock()
                             .unwrap_or_else(|poisoned| poisoned.into_inner())
-                            .push((index, found));
+                            .push((index, probed));
                     }
                 }
             });
@@ -121,7 +122,31 @@ pub fn discover_at(
         .into_inner()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     results.sort_by_key(|(index, _)| *index);
-    results.into_iter().flat_map(|(_, found)| found).collect()
+    let mut discovery = Discovery::default();
+    for (index, probed) in results {
+        if probed.gave_up {
+            discovery.warnings.push(gave_up_warning(&endpoints[index]));
+        }
+        discovery.agents.extend(probed.agents);
+    }
+    discovery
+}
+
+/// What probing one endpoint found, and whether it stopped answering before
+/// every adapter was done with it.
+struct Probed {
+    agents: Vec<DiscoveredAgent>,
+    gave_up: bool,
+}
+
+fn gave_up_warning(endpoint: &LocalEndpoint) -> String {
+    format!(
+        "{}:{} stopped answering part-way (a request hung, or it took over {} s); \
+         agents it serves may be missing",
+        endpoint.host,
+        endpoint.port,
+        http::ENDPOINT_BUDGET.as_secs()
+    )
 }
 
 /// Run every adapter against one endpoint, through one [`http::EndpointHttp`]
@@ -133,16 +158,20 @@ fn probe_endpoint(
     endpoint: &LocalEndpoint,
     frameworks: &[Framework],
     http: &dyn Transport,
-) -> Vec<DiscoveredAgent> {
+) -> Probed {
     let base = endpoint.base_url();
     let http = http::EndpointHttp::new(http);
     let mut seen_cards = HashSet::new();
-    frameworks
+    let agents = frameworks
         .iter()
         .flat_map(|framework| framework.probe(&base, &http))
         .filter(|found| seen_cards.insert(found.card.to_string()))
         .filter_map(to_discovered)
-        .collect()
+        .collect();
+    Probed {
+        agents,
+        gave_up: http.gave_up(),
+    }
 }
 
 fn to_discovered(found: FoundCard) -> Option<DiscoveredAgent> {
@@ -185,6 +214,15 @@ mod tests {
     use std::sync::Arc;
     use std::time::Instant;
 
+    /// The agents [`discover_at`] finds, for tests that do not look at warnings.
+    fn agents_at(
+        endpoints: &[LocalEndpoint],
+        frameworks: &[Framework],
+        http: &dyn Transport,
+    ) -> Vec<DiscoveredAgent> {
+        discover_at(endpoints, frameworks, http).agents
+    }
+
     fn process_endpoint(port: u16) -> LocalEndpoint {
         LocalEndpoint {
             host: "127.0.0.1".into(),
@@ -202,7 +240,7 @@ mod tests {
             json!({"name": "researcher", "version": "1.2.0", "url": "http://127.0.0.1:9000/"}),
         );
 
-        let found = discover_at(&[process_endpoint(9000)], Framework::ALL, &http);
+        let found = agents_at(&[process_endpoint(9000)], Framework::ALL, &http);
 
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].name, "researcher");
@@ -215,7 +253,7 @@ mod tests {
 
     #[test]
     fn an_endpoint_without_a_card_yields_nothing() {
-        let found = discover_at(
+        let found = agents_at(
             &[process_endpoint(8000)],
             Framework::ALL,
             &FakeHttp::default(),
@@ -229,7 +267,7 @@ mod tests {
     fn a_web_server_without_a_card_gets_three_reads_and_no_writes() {
         let http = FakeHttp::default();
 
-        discover_at(&[process_endpoint(8000)], Framework::ALL, &http);
+        agents_at(&[process_endpoint(8000)], Framework::ALL, &http);
 
         assert_eq!(http.request_count(), 3);
         assert_eq!(http.post_count(), 0);
@@ -239,7 +277,7 @@ mod tests {
     fn an_unresponsive_endpoint_is_asked_only_once() {
         let http = FakeHttp::default().unreachable(41000);
 
-        let found = discover_at(&[process_endpoint(41000)], Framework::ALL, &http);
+        let found = agents_at(&[process_endpoint(41000)], Framework::ALL, &http);
 
         assert!(found.is_empty());
         assert_eq!(http.request_count(), 1);
@@ -264,7 +302,7 @@ mod tests {
             // DEFAULT_A2A_ASSISTANT_ID set: the bare card path serves the same agent.
             .get("http://127.0.0.1:2024/.well-known/agent-card.json", card);
 
-        let found = discover_at(&[process_endpoint(2024)], Framework::ALL, &http);
+        let found = agents_at(&[process_endpoint(2024)], Framework::ALL, &http);
 
         assert_eq!(found.len(), 1);
         assert_eq!(
@@ -294,7 +332,7 @@ mod tests {
                 untitled("a2"),
             );
 
-        let found = discover_at(&[process_endpoint(2024)], Framework::ALL, &http);
+        let found = agents_at(&[process_endpoint(2024)], Framework::ALL, &http);
 
         assert_eq!(found.len(), 2);
     }
@@ -314,7 +352,7 @@ mod tests {
                 });
         let endpoints: Vec<_> = ports.iter().copied().map(process_endpoint).collect();
 
-        let found = discover_at(&endpoints, Framework::ALL, &http);
+        let found = agents_at(&endpoints, Framework::ALL, &http);
 
         let found_names: Vec<&str> = found.iter().map(|agent| agent.name.as_str()).collect();
         let expected: Vec<String> = ports
@@ -328,7 +366,7 @@ mod tests {
     #[test]
     fn no_endpoints_means_no_work() {
         let http = FakeHttp::default();
-        assert!(discover_at(&[], Framework::ALL, &http).is_empty());
+        assert!(agents_at(&[], Framework::ALL, &http).is_empty());
         assert_eq!(http.request_count(), 0);
     }
 
@@ -339,7 +377,7 @@ mod tests {
             json!({"name": "broken", "url": "http://127.0.0.1:9000/", "skills": [{"id": "s", "name": "S"}]}),
         );
 
-        let found = discover_at(&[process_endpoint(9000)], Framework::ALL, &http);
+        let found = agents_at(&[process_endpoint(9000)], Framework::ALL, &http);
 
         assert_eq!(found.len(), 1);
         let issues = found[0].card.as_ref().expect_err("card should be invalid");
@@ -355,7 +393,7 @@ mod tests {
             json!({"name": "dockerised", "url": "http://0.0.0.0:8000/rpc", "skills": []}),
         );
 
-        let found = discover_at(&[process_endpoint(8080)], Framework::ALL, &http);
+        let found = agents_at(&[process_endpoint(8080)], Framework::ALL, &http);
 
         assert_eq!(
             found[0].card_url,
@@ -385,13 +423,63 @@ mod tests {
                 card,
             );
 
-        let found = discover_at(&[process_endpoint(2024)], Framework::ALL, &http);
+        let found = agents_at(&[process_endpoint(2024)], Framework::ALL, &http);
 
         assert_eq!(
             found[0].card_url,
             "http://127.0.0.1:2024/.well-known/agent-card.json?assistant_id=a1"
         );
         assert!(found[0].card.is_ok());
+    }
+
+    #[test]
+    fn a_langgraph_server_that_stops_answering_part_way_is_reported() {
+        let base = "http://127.0.0.1:2024";
+        let card = |name: &str| json!({"name": name, "url": format!("{base}/a2a/{name}")});
+        let http = FakeHttp::default()
+            .get(
+                &format!("{base}/info"),
+                json!({"version": "0.16.4", "langgraph_py_version": "1.2.16", "flags": {}}),
+            )
+            .post(
+                &format!("{base}/assistants/search"),
+                json!([{"assistant_id": "a1"}, {"assistant_id": "a2"}, {"assistant_id": "a3"}]),
+            )
+            .get(
+                &format!("{base}/.well-known/agent-card.json?assistant_id=a1"),
+                card("planner"),
+            )
+            .hangs(&format!(
+                "{base}/.well-known/agent-card.json?assistant_id=a2"
+            ))
+            .get(
+                &format!("{base}/.well-known/agent-card.json?assistant_id=a3"),
+                card("writer"),
+            );
+
+        let discovery = discover_at(&[process_endpoint(2024)], Framework::ALL, &http);
+
+        let names: Vec<&str> = discovery.agents.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, ["planner"]);
+        assert_eq!(discovery.warnings.len(), 1, "{:?}", discovery.warnings);
+        assert!(
+            discovery.warnings[0].starts_with("127.0.0.1:2024 stopped answering part-way"),
+            "{:?}",
+            discovery.warnings
+        );
+    }
+
+    #[test]
+    fn a_complete_probe_has_no_warnings() {
+        let http = FakeHttp::default().get(
+            "http://127.0.0.1:8000/.well-known/agent-card.json",
+            json!({"name": "crew", "url": "http://127.0.0.1:8000/"}),
+        );
+
+        let discovery = discover_at(&[process_endpoint(8000)], Framework::ALL, &http);
+
+        assert_eq!(discovery.agents.len(), 1);
+        assert!(discovery.warnings.is_empty());
     }
 
     #[test]
@@ -406,7 +494,7 @@ mod tests {
             }),
         );
 
-        let found = discover_at(&[process_endpoint(8000)], Framework::ALL, &http);
+        let found = agents_at(&[process_endpoint(8000)], Framework::ALL, &http);
 
         assert_eq!(found[0].name, "evil?[2J?]8;;http://x?agent?");
         assert_eq!(found[0].version(), Some("1.0?[31m"));
@@ -451,7 +539,7 @@ mod tests {
             })))
             .create();
 
-        let found = discover_at(&[endpoint_of(&server)], Framework::ALL, &real_http());
+        let found = agents_at(&[endpoint_of(&server)], Framework::ALL, &real_http());
 
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].name, "crew-researcher");
@@ -493,7 +581,7 @@ mod tests {
                 .create();
         }
 
-        let found = discover_at(&[endpoint_of(&server)], Framework::ALL, &real_http());
+        let found = agents_at(&[endpoint_of(&server)], Framework::ALL, &real_http());
 
         let names: Vec<&str> = found.iter().map(|agent| agent.name.as_str()).collect();
         assert_eq!(names, vec!["planner", "writer"]);
@@ -513,7 +601,7 @@ mod tests {
             .expect(0)
             .create();
 
-        let found = discover_at(&[endpoint_of(&server)], Framework::ALL, &real_http());
+        let found = agents_at(&[endpoint_of(&server)], Framework::ALL, &real_http());
 
         assert!(found.is_empty());
         no_post.assert();
@@ -541,7 +629,7 @@ mod tests {
             .with_body(json_body(card))
             .create();
 
-        let found = discover_at(&[endpoint_of(&server)], Framework::ALL, &real_http());
+        let found = agents_at(&[endpoint_of(&server)], Framework::ALL, &real_http());
 
         assert!(found.is_empty(), "{found:?}");
         never_contacted.assert();
@@ -561,7 +649,7 @@ mod tests {
         });
 
         let started = Instant::now();
-        let found = discover_at(&[process_endpoint(port)], Framework::ALL, &real_http());
+        let found = agents_at(&[process_endpoint(port)], Framework::ALL, &real_http());
         let elapsed = started.elapsed();
 
         assert!(found.is_empty());
@@ -581,7 +669,7 @@ mod tests {
             .port();
 
         let started = Instant::now();
-        let found = discover_at(&[process_endpoint(port)], Framework::ALL, &real_http());
+        let found = agents_at(&[process_endpoint(port)], Framework::ALL, &real_http());
 
         assert!(found.is_empty());
         assert!(
