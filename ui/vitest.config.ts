@@ -15,7 +15,10 @@ export default defineConfig({
       test: {
         name: id,
         environment: 'jsdom',
-        setupFiles: ['./common/src/test/setup.ts'],
+        setupFiles:
+          id === 'ee'
+            ? ['./common/src/test/setup.ts', `./${dir}/src/test/setup.ts`]
+            : ['./common/src/test/setup.ts'],
         // Prints once when nasiko-cloud-rs has server changes since the live fixtures were recorded (never fails).
         globalSetup: ['./common/src/test/liveStaleness.globalSetup.ts'],
         include:
@@ -39,7 +42,7 @@ export default defineConfig({
         '**/*.gen.ts',
         // Vendored, framework-free, and not ours to cover. Matched by shape
         // rather than by edition path: a published config names no edition.
-        '**/src/genui/lang/**',
+        '**/src/weave/core/**',
         '**/main.tsx',
       ],
       thresholds: { lines: 60, statements: 60, functions: 60, branches: 60 },
