@@ -4,7 +4,9 @@
 //! properties that must hold before any of it is wired into a request path: nothing grows, and
 //! nothing is classified as something it is not.
 
-use nasiko_compress::{ContentType, Level, Policy, TypeMask, compress, contains_marker, detect};
+use nasiko_compress::{
+    ContentType, Level, Policy, TypeMask, compress, contains_marker, detect, expand_tables,
+};
 
 struct Fixture {
     name: &'static str,
@@ -153,17 +155,28 @@ fn the_search_fixture_keeps_its_diagnostic_hit_when_enabled() {
 }
 
 /// A shrunk output either says what it dropped, or dropped nothing: a JSON document rewritten
-/// without a recovery handle must parse to exactly the original value.
+/// without a recovery handle (whitespace gone, lists tabled) must expand back to exactly the
+/// original value.
 #[test]
 fn every_shrunk_fixture_says_so_in_the_text_or_lost_nothing() {
     for f in corpus() {
         let out = compress(f.body, &default_on());
-        if !out.is_changed() || contains_marker(out.text()) {
+        if !out.is_changed() {
             continue;
         }
-        let before: serde_json::Value = serde_json::from_str(f.body)
-            .unwrap_or_else(|_| panic!("{} shrank silently and is not lossless JSON", f.name));
-        let after: serde_json::Value = serde_json::from_str(out.text()).unwrap();
-        assert_eq!(before, after, "{} shrank silently and lost data", f.name);
+        if let Ok(before) = serde_json::from_str::<serde_json::Value>(f.body) {
+            assert_eq!(
+                expand_tables(out.text()),
+                Some(before),
+                "{} lost data",
+                f.name
+            );
+        } else {
+            assert!(
+                contains_marker(out.text()),
+                "{} shrank silently — the model cannot tell data is missing",
+                f.name
+            );
+        }
     }
 }

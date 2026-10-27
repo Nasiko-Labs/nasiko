@@ -715,9 +715,17 @@ mod tests {
 
         let sent = r.messages[0].content.as_ref().unwrap().as_str().unwrap();
         let before: Value = serde_json::from_str(&payload).unwrap();
-        let after: Value = serde_json::from_str(sent).unwrap();
+        let after = nasiko_compress::expand_tables(sent).unwrap();
         assert_eq!(after, before, "an item went missing");
-        assert!(sent.len() < payload.len(), "whitespace should still go");
+        assert!(
+            sent.contains("table: 100 rows"),
+            "the list should be tabled: {sent}"
+        );
+        assert!(
+            sent.len() < payload.len() / 2,
+            "keys written once: {} bytes",
+            sent.len()
+        );
     }
 
     #[test]

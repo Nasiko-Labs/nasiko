@@ -49,6 +49,7 @@ mod error;
 mod levels;
 mod marker;
 mod policy;
+mod table;
 mod text;
 
 pub use compress::compress;
@@ -58,3 +59,4 @@ pub use detect::detect;
 pub use error::CompressError;
 pub use marker::contains_marker;
 pub use policy::{Level, Policy};
+pub use table::expand_tables;

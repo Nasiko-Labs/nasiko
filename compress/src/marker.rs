@@ -41,6 +41,16 @@ pub(crate) fn elided_line_range(first: u64, last: u64, recovery_ref: Option<&str
     wrap(&format!("lines {first}–{last} elided"), recovery_ref)
 }
 
+/// First line of a lossless table ([`crate::table`]). It opens with the marker sigil, so a
+/// second pass recognises the output as already compressed and leaves it alone.
+pub(crate) fn table_header(rows: usize) -> String {
+    format!("{}{rows} rows{MARKER_CLOSE}", table_header_prefix())
+}
+
+pub(crate) fn table_header_prefix() -> String {
+    format!("{MARKER_OPEN}table: ")
+}
+
 pub(crate) fn elided_items(n: usize, of: usize, recovery_ref: Option<&str>) -> String {
     wrap(&format!("{n} of {of} items elided"), recovery_ref)
 }

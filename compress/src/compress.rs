@@ -39,13 +39,29 @@ pub fn compress<'a>(input: &'a str, policy: &Policy<'_>) -> Compressed<'a> {
 
     // Idempotency: input already carrying one of our breadcrumbs is our own prior output (or
     // contains it), and re-eliding around a marker would produce different bytes on every pass.
+    //
+    // The size floor exists because a marker costs about what eliding a small payload saves.
+    // JSON is the exception: below the floor it is still rewritten, but only losslessly (no
+    // recovery handle, so nothing is cut) — dropping whitespace from a 600-byte tool schema
+    // costs no marker and loses nothing.
+    let below_floor = input.len() < policy.min_bytes;
     if !policy.enabled
-        || input.len() < policy.min_bytes
+        || (below_floor && kind != ContentType::Json)
         || !policy.types.contains(kind)
         || marker::contains_marker(input)
     {
         return Compressed::unchanged(input, kind);
     }
+    let lossless_only;
+    let policy = if below_floor {
+        lossless_only = Policy {
+            recovery_ref: None,
+            ..*policy
+        };
+        &lossless_only
+    } else {
+        policy
+    };
 
     // Fail-closed: compressors return `None` for "no saving found", which is indistinguishable
     // from "could not parse this". There is no error path out of here.
@@ -66,6 +82,7 @@ pub fn compress<'a>(input: &'a str, policy: &Policy<'_>) -> Compressed<'a> {
 mod tests {
     use super::*;
     use crate::content_type::TypeMask;
+    use crate::marker::contains_marker;
 
     fn enabled() -> Policy<'static> {
         Policy {
@@ -74,6 +91,43 @@ mod tests {
             types: TypeMask::ALL,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn small_json_below_the_floor_is_rewritten_losslessly() {
+        // A BFCL-style tool schema: 600 bytes, mostly indentation.
+        let schema = serde_json::json!([{
+            "name": "calculate_triangle_area",
+            "description": "Calculate the area of a triangle given its base and height.",
+            "parameters": {"type": "dict", "properties": {
+                "base": {"type": "integer", "description": "The base of the triangle."},
+                "height": {"type": "integer", "description": "The height of the triangle."}
+            }, "required": ["base", "height"]}
+        }]);
+        let input = serde_json::to_string_pretty(&schema).unwrap();
+        let policy = Policy {
+            min_bytes: 2048,
+            recovery_ref: Some("h-ignored-below-the-floor"),
+            ..enabled()
+        };
+        assert!(input.len() < policy.min_bytes);
+
+        let out = compress(&input, &policy);
+
+        assert!(out.is_changed(), "indentation should go");
+        let back: serde_json::Value = serde_json::from_str(out.text()).unwrap();
+        assert_eq!(back, schema, "nothing may be cut below the floor");
+        assert!(!contains_marker(out.text()));
+    }
+
+    #[test]
+    fn small_non_json_below_the_floor_is_untouched() {
+        let log = "2026-01-01T00:00:00Z INFO a\n".repeat(20);
+        let policy = Policy {
+            min_bytes: 2048,
+            ..enabled()
+        };
+        assert!(!compress(&log, &policy).is_changed());
     }
 
     fn noisy_log() -> String {

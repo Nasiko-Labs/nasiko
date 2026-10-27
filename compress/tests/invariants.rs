@@ -3,7 +3,9 @@
 //! These are the tests that must still pass when a new compressor is added — they are the reason
 //! the compressors are private and every rule lives in one funnel.
 
-use nasiko_compress::{ContentType, Level, Policy, TypeMask, compress, contains_marker, detect};
+use nasiko_compress::{
+    ContentType, Level, Policy, TypeMask, compress, contains_marker, detect, expand_tables,
+};
 
 /// Every type, the most aggressive level, and a recovery handle — the handle is what licenses
 /// irreversible cuts (JSON item and string elision), so without it these invariants would only
@@ -199,7 +201,7 @@ fn json_without_a_recovery_handle_never_loses_data() {
             }
             let out = compress(&input, &policy);
             let before: serde_json::Value = serde_json::from_str(&input).unwrap();
-            let after: serde_json::Value = serde_json::from_str(out.text()).unwrap();
+            let after = expand_tables(out.text()).expect("output is still JSON");
             assert_eq!(
                 before, after,
                 "{name} lost data at {level:?} without a handle"
