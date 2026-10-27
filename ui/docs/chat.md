@@ -1,6 +1,6 @@
 # Chat (v1a direct chat, v1b routed chat, v1c layout)
 
-Chat talks to your agents in the browser. **Direct chat** (v1a) talks to one agent you pick. **Routed chat** (v1b) lets **the Orchestrator** choose: it calls agents as tools and writes the reply. Specs: `plans/feat-chat.md` (v1a, state/action matrix §7.7), `plans/feat-chat-v1b.md` (v1b; end states §5.5, errors §5.6) and `plans/feat-chat-v1c.md` (v1c; §1-§9 bind). Supported server: nasiko-cloud-rs `cb3aaf0c`. Recorded harness chats are read-only.
+Chat talks to your agents in the browser. **Direct chat** (v1a) talks to one agent you pick. **Routed chat** (v1b) lets **the Orchestrator** choose: it calls agents as tools and writes the reply. Specs: `plans/feat-chat.md` (v1a, state/action matrix §7.7), `plans/feat-chat-v1b.md` (v1b; end states §5.5, errors §5.6) and `plans/feat-chat-v1c.md` (v1c; §1-§9 bind). Supported server: the one in this repository. Recorded harness chats are read-only.
 
 Routes:
 - `/chat`: a new chat. Choose where to send with the chip in the composer or the **Choose where to send** list: the Orchestrator or an agent (see [New chat](#new-chat-v1c));
@@ -211,9 +211,9 @@ Run one file with `npx vitest run src/features/chat/ChatPage.v1c.test.tsx`.
 
 ## Stack quickstart (8 steps, under 10 minutes)
 
-nasiko-cloud-rs is used read-only.
+The server side is used read-only.
 
-1. Preflight. In nasiko-cloud-rs, `just infra && just run-oss`, then `curl -fsS http://localhost:8080/health` prints `ok`. The server needs an LLM key (`OPENAI_API_KEY` in `oss/server/.env`) for titles and the orchestrator.
+1. Preflight. From the repository root, `just infra && just run-oss`, then `curl -fsS http://localhost:8080/health` prints `ok`. The server needs an LLM key (`OPENAI_API_KEY` in `oss/server/.env`) for titles and the orchestrator.
 2. `nasiko upload oss/agents/currency-agent` (server-side build and deploy; it converts currencies at fixed rates, with no LLM and no network calls, so its answer is predictable).
 3. `nasiko ps` lists `currency-agent` as running.
 4. Here, `npm run dev:live`.
@@ -325,7 +325,7 @@ The smoke names the stage it failed at, with the chat and trace ids:
 ## Notes
 
 - **Two tabs in one chat:** the server interleaves them; each tab settles only on its own reply (by trace id).
-- **Ownership:** the page only sends to a chat whose history loaded, which the server checks is yours. That prevents accidental cross-writes, not a hand-made request (server issue Nasiko-Labs/nasiko-cloud-rs#492).
+- **Ownership:** the page only sends to a chat whose history loaded, and the server refuses a chat that is not yours (`/api/orchestrator/a2a` checks the session's owner before reading or writing it).
 - **Old chats:** a chat that isn't in the rail's first pages is looked up on its own (up to 20 pages). Past that, the page says "Couldn't find this chat's details" and keeps Send off unless it knows the chat's kind.
 
 ## v1b → v1c (M0)

@@ -83,7 +83,7 @@ States: `?mock=usage-404|prev-fail|usage-500|all-unpriced|no-activity`, plus `dr
 ## Quickstart: live OSS server
 
 ```sh
-# in nasiko-cloud-rs (unchanged by this repo)
+# from the repository root
 just run-stack
 
 # here
