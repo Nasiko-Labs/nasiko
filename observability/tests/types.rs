@@ -207,13 +207,13 @@ fn router_span_supersedes_the_agents_copy_of_the_same_call() {
 }
 
 #[test]
-fn an_unattributable_router_span_is_dropped_rather_than_double_counted() {
-    // Nothing above it from another service, because the agent propagated the
-    // context it was *called* with rather than its own LLM span's. Its copy of
-    // the call is then a sibling instead of an ancestor — still a duplicate, but
-    // one this pairing cannot see. Counting the router's span as well would
-    // double the tokens, so it is dropped and the agent's figure stands.
-    let mut agent = gen_ai_span("llm", "gpt-4o-mini", 440, 67);
+fn an_unmatched_router_span_is_dropped_rather_than_double_counted() {
+    // Nothing above it from another service (the agent propagated the context
+    // it was *called* with rather than its own LLM span's), and no sibling
+    // reports the same output token count either -- there is truly nothing to
+    // attribute this call to. Counting it anyway would double the tokens, so
+    // it is dropped and the agent's own figure stands.
+    let mut agent = gen_ai_span("llm", "gpt-4o-mini", 300, 50);
     agent.service_name = "devops-agent".to_owned();
     let trace = make_trace(vec![
         agent,
@@ -221,7 +221,62 @@ fn an_unattributable_router_span_is_dropped_rather_than_double_counted() {
     ]);
 
     let (input, output, _) = trace.token_totals();
-    assert_eq!((input, output), (440, 67), "counted once, not twice");
+    assert_eq!((input, output), (300, 50), "the router's unmatched copy is dropped");
+}
+
+#[test]
+fn a_sibling_duplicate_is_still_caught_when_its_token_count_differs() {
+    // Found 2026-10-27: a coding agent's own legacy instrumentation
+    // (`ChatCompletion`-style spans, not the GenAI semconv) recorded the same
+    // call as a *sibling* of the router's span rather than nesting it -- both
+    // rooted under the agent's own request handling instead of one inside the
+    // other. Ancestry alone can't see that, and the legacy span is also not
+    // cache-aware: it reports the full cumulative prompt on every call where
+    // the router's span reports only the fresh (uncached) tokens actually
+    // billed. Before this, the router's correct span went unattributed and
+    // was dropped, leaving the agent's bigger, uncached number standing --
+    // inflating cost for every call in the trace. Output tokens are unaffected
+    // by caching, so matching on those (within an overlapping time window)
+    // still finds the duplicate and keeps the router's count instead.
+    let mut agent = gen_ai_span("llm", "gpt-4o-mini", 26670, 63);
+    agent.service_name = "devops-agent".to_owned();
+    let trace = make_trace(vec![
+        agent,
+        router_span("chat", "sibling-parent", "openai.gpt-6-astra", 5917, 63),
+    ]);
+
+    let (input, output, model) = trace.token_totals();
+    assert_eq!(
+        input, 5917,
+        "the router's cache-aware count, not the agent's cache-blind one"
+    );
+    assert_eq!(output, 63);
+    assert_eq!(model.as_deref(), Some("openai.gpt-6-astra"));
+}
+
+#[test]
+fn a_sibling_duplicate_outside_the_time_window_is_not_mistaken_for_a_match() {
+    // Same output token count elsewhere in a long trace is not enough on its
+    // own -- it must also overlap in time, or an unrelated call an hour away
+    // would be mistaken for the duplicate and silently swapped in for it.
+    // The router's own (unrelated, unmatched) span is still dropped, same as
+    // any other unmatched router span -- what matters here is that the
+    // agent's real, separate call is *not* replaced by the distant one.
+    let mut agent = gen_ai_span("llm", "gpt-4o-mini", 9000, 63);
+    agent.service_name = "devops-agent".to_owned();
+    agent.started_at = Utc.with_ymd_and_hms(2024, 6, 1, 13, 0, 0).unwrap();
+    agent.ended_at = Some(Utc.with_ymd_and_hms(2024, 6, 1, 13, 0, 1).unwrap());
+    let trace = make_trace(vec![
+        agent,
+        router_span("chat", "sibling-parent", "openai.gpt-6-astra", 5917, 63),
+    ]);
+
+    let (input, output, _) = trace.token_totals();
+    assert_eq!(
+        (input, output),
+        (9000, 63),
+        "the agent's real call stands, untouched by an unrelated same-length span an hour away"
+    );
 }
 
 #[test]
