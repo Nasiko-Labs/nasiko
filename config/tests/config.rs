@@ -196,6 +196,8 @@ fn optional_fields_use_defaults_when_not_set() {
         "REGISTRY_IMPORT_ALLOWED_HOSTS",
         "ADMIN_USERNAME",
         "BUILD_CONCURRENCY",
+        "MAF_WORKER_CONCURRENCY",
+        "MAF_HEARTBEAT_SECS",
     ]);
 
     let cfg = Config::from_env().expect("Config::from_env() should succeed with all defaults");
@@ -254,6 +256,9 @@ fn optional_fields_use_defaults_when_not_set() {
     // Concurrent by default: shipping 1 here would mean every deployment keeps
     // queuing builds serially until someone discovers the env var.
     assert_eq!(cfg.build_concurrency, 4);
+    // Same reasoning for MAF runs.
+    assert_eq!(cfg.maf_worker_concurrency, 4);
+    assert_eq!(cfg.maf_heartbeat_secs, 20);
 
     // git_clone_allowed_hosts has a hardcoded default
     assert!(
@@ -432,6 +437,42 @@ fn agent_state_limits_are_parsed_and_clamped() {
     assert_eq!(cfg.agent_state_list_bytes_budget, 4096);
 
     unset_vars(&AGENT_STATE_KEYS);
+    unset_required_vars();
+}
+
+#[test]
+#[serial]
+fn maf_worker_concurrency_is_parsed_and_clamped() {
+    set_required_vars();
+
+    for (env_value, expected) in [("8", 8), ("1", 1), ("0", 1), ("1000", 32)] {
+        unsafe { std::env::set_var("MAF_WORKER_CONCURRENCY", env_value) };
+        let cfg = Config::from_env().unwrap();
+        assert_eq!(
+            cfg.maf_worker_concurrency, expected,
+            "MAF_WORKER_CONCURRENCY={env_value} should resolve to {expected}"
+        );
+    }
+
+    unsafe { std::env::remove_var("MAF_WORKER_CONCURRENCY") };
+    unset_required_vars();
+}
+
+#[test]
+#[serial]
+fn maf_heartbeat_secs_is_parsed_and_clamped() {
+    set_required_vars();
+
+    for (env_value, expected) in [("30", 30), ("5", 5), ("1", 5), ("1000", 120)] {
+        unsafe { std::env::set_var("MAF_HEARTBEAT_SECS", env_value) };
+        let cfg = Config::from_env().unwrap();
+        assert_eq!(
+            cfg.maf_heartbeat_secs, expected,
+            "MAF_HEARTBEAT_SECS={env_value} should resolve to {expected}"
+        );
+    }
+
+    unsafe { std::env::remove_var("MAF_HEARTBEAT_SECS") };
     unset_required_vars();
 }
 

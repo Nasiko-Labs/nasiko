@@ -689,8 +689,6 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
     Config {
         bind: "127.0.0.1:0".into(),
         domain: None,
-        delegation_audience: "nasiko-cp-test".to_string(),
-        delegation_enabled: true,
         database_url: db_url,
         redis_url,
         agent_runtime: "local".into(),
@@ -841,6 +839,9 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         // Serial builds in tests: several suites seed build_jobs rows and assert
         // on them, and a concurrent worker would make those assertions racy.
         build_concurrency: 1,
+        // Serial MAF runs in tests, for the same reason as build_concurrency above.
+        maf_worker_concurrency: 1,
+        maf_heartbeat_secs: 20,
         agent_default_memory: "512Mi".to_string(),
         agent_memory_volume: "nasiko-agent-memory".to_string(),
         agent_memory_init_image: "alpine:3.21".to_string(),

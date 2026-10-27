@@ -22,9 +22,9 @@ enum AgentCallOutcome {
 
 /// What one step's execution produced — shared between a fresh step (`execute_step`) and a
 /// resumed one (`continue_paused_step`), so `run_maf`/`run_maf_from` branch on the same three
-/// outcomes regardless of which path produced them.
-enum StepLoopOutcome {
-    Advance,
+/// outcomes regardless of which path produced them. `Advance` carries the agent's raw reply.
+pub enum StepLoopOutcome {
+    Advance(String),
     AwaitingHuman(PausedStep),
     Failed(String),
 }
@@ -103,7 +103,7 @@ async fn timed<T>(
 /// Metering must never break a run: a failed usage write is logged and
 /// swallowed, matching `write_selector_token_usage` and the router's
 /// `spawn_log`.
-async fn metered_llm<T>(
+pub async fn metered_llm<T>(
     phase: &'static str,
     db: &PgPool,
     execution_id: Uuid,
@@ -112,6 +112,34 @@ async fn metered_llm<T>(
     llm: &LlmClient,
     fut: impl std::future::Future<Output = Result<(T, LlmUsage), String>>,
 ) -> Result<(T, LlmUsage), String> {
+    let source = UsageSource {
+        provider: llm.provider(),
+        key_source: "platform",
+    };
+    metered_call(phase, db, execution_id, user_id, step_index, source, fut).await
+}
+
+/// Who served a metered call and whose key paid for it, as recorded on its span and
+/// `token_usage` row.
+#[derive(Debug, Clone, Copy)]
+pub struct UsageSource<'a> {
+    pub provider: &'a str,
+    /// `"platform"` for the platform's own key, `"user"` for the run owner's.
+    pub key_source: &'a str,
+}
+
+/// [`metered_llm`] for a model call that does not go through [`LlmClient`]: the same span,
+/// timing log and `token_usage` row, attributed to `source`. The error type is the
+/// caller's, so a call that cannot fail can say so with `Infallible`.
+pub async fn metered_call<T, E>(
+    phase: &'static str,
+    db: &PgPool,
+    execution_id: Uuid,
+    user_id: Uuid,
+    step_index: Option<i32>,
+    source: UsageSource<'_>,
+    fut: impl std::future::Future<Output = Result<(T, LlmUsage), E>>,
+) -> Result<(T, LlmUsage), E> {
     let start = Instant::now();
     // `otel.name` renames the span for OTel export, which is how one helper
     // emits distinctly-named spans despite `info_span!` needing a constant
@@ -123,7 +151,7 @@ async fn metered_llm<T>(
         otel.name = phase,
         otel.kind = "client",
         gen_ai.operation.name = "chat",
-        gen_ai.system = llm.provider(),
+        gen_ai.system = source.provider,
         execution_id = %execution_id,
         step_index = step_index,
         gen_ai.request.model = tracing::field::Empty,
@@ -145,7 +173,7 @@ async fn metered_llm<T>(
         span.record("gen_ai.usage.input_tokens", usage.input_tokens);
         span.record("gen_ai.usage.output_tokens", usage.output_tokens);
         span.record("gen_ai.usage.cached_tokens", usage.cached_tokens);
-        write_token_usage(db, execution_id, user_id, phase, step_index, llm, usage).await;
+        write_token_usage(db, execution_id, user_id, phase, step_index, source, usage).await;
     }
 
     tracing::info!(
@@ -165,45 +193,32 @@ async fn metered_llm<T>(
 /// sends its step agents — so MAF's own spend and its agents' spend aggregate
 /// under one session, the same convention the LLM router follows by writing
 /// the flow id there.
-///
-/// `cost_usd` is not bound: leaving it NULL is what lets the DB trigger price
-/// the row. Writing a zero here would defeat it.
 async fn write_token_usage(
     db: &PgPool,
     execution_id: Uuid,
     user_id: Uuid,
     phase: &'static str,
     step_index: Option<i32>,
-    llm: &LlmClient,
+    source: UsageSource<'_>,
     usage: &LlmUsage,
 ) {
     let metadata = serde_json::json!({
-        "key_source": "platform",
+        "key_source": source.key_source,
         "component": "maf",
         "phase": phase,
         "execution_id": execution_id.to_string(),
         "step_index": step_index,
     });
 
-    let result = sqlx::query(
-        r#"INSERT INTO token_usage
-               (user_id, operation_type, session_id, provider, model,
-                input_tokens, output_tokens, total_tokens,
-                cached_tokens, cache_read_input_tokens,
-                latency_ms, streaming, metadata)
-           VALUES ($1, 'maf_orchestration', $2, $3, $4, $5, $6, $7, $8, $8, $9, false, $10)"#,
+    let session_id = execution_id.to_string();
+    let result = insert_token_usage(
+        db,
+        user_id,
+        Some(&session_id),
+        source.provider,
+        usage,
+        metadata,
     )
-    .bind(user_id)
-    .bind(execution_id.to_string())
-    .bind(llm.provider())
-    .bind(&usage.model)
-    .bind(usage.input_tokens as i32)
-    .bind(usage.output_tokens as i32)
-    .bind(usage.total_tokens as i32)
-    .bind(usage.cached_tokens as i32)
-    .bind(usage.latency_ms as i32)
-    .bind(metadata)
-    .execute(db)
     .await;
 
     if let Err(e) = result {
@@ -214,6 +229,65 @@ async fn write_token_usage(
             "maf: token_usage write failed (non-fatal)"
         );
     }
+}
+
+/// The `token_usage` row of one MAF orchestration LLM call, `maf_orchestration`
+/// for `user_id`. The one place the row's columns are written, so every MAF call
+/// is recorded and priced alike; each caller describes its call in `metadata`.
+/// `session_id` is `None` for a call that belongs to no run.
+///
+/// `cost_usd` is not bound: leaving it NULL is what lets the DB trigger price
+/// the row. Writing a zero here would defeat it.
+pub async fn insert_token_usage(
+    db: &PgPool,
+    user_id: Uuid,
+    session_id: Option<&str>,
+    provider: &str,
+    usage: &LlmUsage,
+    metadata: serde_json::Value,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"INSERT INTO token_usage
+               (user_id, operation_type, session_id, provider, model,
+                input_tokens, output_tokens, total_tokens,
+                cached_tokens, cache_read_input_tokens,
+                latency_ms, streaming, metadata)
+           VALUES ($1, 'maf_orchestration', $2, $3, $4, $5, $6, $7, $8, $8, $9, false, $10)"#,
+    )
+    .bind(user_id)
+    .bind(session_id)
+    .bind(provider)
+    .bind(&usage.model)
+    .bind(usage.input_tokens as i32)
+    .bind(usage.output_tokens as i32)
+    .bind(usage.total_tokens as i32)
+    .bind(usage.cached_tokens as i32)
+    .bind(usage.latency_ms as i32)
+    .bind(metadata)
+    .execute(db)
+    .await
+    .map(|_| ())
+}
+
+/// Every step as the planner sees it: this run's content, when it has any,
+/// folded into step 0's task description. Lets one saved workflow shape (e.g.
+/// "summarise this, then translate to japanese") be re-run against different
+/// content each time instead of baking it in at creation. Every step past 0
+/// still gets its input purely from prior steps' extracted context (see
+/// `build_context`), unchanged.
+pub fn planning_steps(definition: &MafDefinition, content: Option<&str>) -> Vec<MafStep> {
+    definition
+        .steps
+        .iter()
+        .enumerate()
+        .map(|(i, step)| match (i, content) {
+            (0, Some(content)) => MafStep {
+                task_description: format!("{} \"{content}\"", step.task_description),
+                ..step.clone()
+            },
+            _ => step.clone(),
+        })
+        .collect()
 }
 
 /// Runs one MAF execution under a `maf.execution` span.
@@ -328,59 +402,9 @@ async fn run_maf_inner(
         .sum();
     persist_progress(db, execution_id, &step_results, resumed_tokens, total_cost).await;
 
-    // Register the execution as a platform session.
-    //
-    // `chat_sessions.session_id` is the A2A `contextId` — per its own schema
-    // comment, "the platform-wide session key shared by chat history, agent
-    // tasks, and observability". MAF already sends `execution_id` as the
-    // contextId to every step agent, so the run IS a session; it just never
-    // said so. `agent_proxy` upserts this row before forwarding any message,
-    // and MAF has to as well, because `session_traces.session_id` is a
-    // foreign key onto this table — without the row, the per-step trace index
-    // below cannot be written and the run's agent spend stays undiscoverable.
-    //
-    // `agent_id` is left NULL deliberately: a MAF run spans several agents
-    // and no single one owns the session.
-    let session_title = maf_def
-        .description
-        .clone()
-        .filter(|d| !d.trim().is_empty())
-        .unwrap_or_else(|| format!("MAF execution {execution_id}"));
-    if let Err(e) = sqlx::query(
-        "INSERT INTO chat_sessions (session_id, user_id, title, session_type)
-         VALUES ($1, $2, $3, 'maf_execution')
-         ON CONFLICT (session_id) DO NOTHING",
-    )
-    .bind(execution_id.to_string())
-    .bind(user_id)
-    .bind(&session_title)
-    .execute(db)
-    .await
-    {
-        tracing::warn!(
-            error = %e, execution_id = %execution_id,
-            "maf: could not register the execution as a session — its agent spend will not be discoverable"
-        );
-    }
+    register_execution_session(db, execution_id, user_id, maf_def).await;
 
-    // Run-time data for this execution only, folded into step 0's task
-    // description before planning — lets one saved workflow shape (e.g.
-    // "summarise this, then translate to japanese") be re-run against
-    // different content each time instead of baking it in at creation.
-    // Every step past 0 still gets its input purely from prior steps'
-    // extracted context (see `build_context`), unchanged.
-    let planning_steps: Vec<MafStep> = maf_def
-        .steps
-        .iter()
-        .enumerate()
-        .map(|(i, step)| match (i, content) {
-            (0, Some(content)) => MafStep {
-                task_description: format!("{} \"{content}\"", step.task_description),
-                ..step.clone()
-            },
-            _ => step.clone(),
-        })
-        .collect();
+    let planning = planning_steps(maf_def, content);
 
     // ── LLM call 1: plan all steps at runtime ────────────────────────────────
     // Generates prompt templates (with <placeholders>), to_extract goals, and
@@ -393,7 +417,7 @@ async fn run_maf_inner(
         user_id,
         None,
         llm,
-        plan_execution(&planning_steps, llm),
+        plan_execution(&planning, llm, None),
     )
     .await?;
     let mut total_tokens = plan_usage.total_tokens + resumed_tokens;
@@ -450,7 +474,7 @@ async fn run_maf_inner(
         )
         .await
         {
-            StepLoopOutcome::Advance => {}
+            StepLoopOutcome::Advance(_) => {}
             StepLoopOutcome::AwaitingHuman(paused) => {
                 return Ok(StepOutcome::AwaitingHuman(paused));
             }
@@ -471,6 +495,49 @@ async fn run_maf_inner(
         outbound_prefix.as_deref(),
     )
     .await
+}
+
+/// Registers a run as a platform session (a `chat_sessions` row keyed by the execution id).
+pub async fn register_execution_session(
+    db: &PgPool,
+    execution_id: Uuid,
+    user_id: Uuid,
+    maf_def: &MafDefinition,
+) {
+    // Register the execution as a platform session.
+    //
+    // `chat_sessions.session_id` is the A2A `contextId` — per its own schema
+    // comment, "the platform-wide session key shared by chat history, agent
+    // tasks, and observability". MAF already sends `execution_id` as the
+    // contextId to every step agent, so the run IS a session; it just never
+    // said so. `agent_proxy` upserts this row before forwarding any message,
+    // and MAF has to as well, because `session_traces.session_id` is a
+    // foreign key onto this table — without the row, the per-step trace index
+    // `execute_step` writes cannot be written and the run's agent spend stays undiscoverable.
+    //
+    // `agent_id` is left NULL deliberately: a MAF run spans several agents
+    // and no single one owns the session.
+    let session_title = maf_def
+        .description
+        .clone()
+        .filter(|d| !d.trim().is_empty())
+        .unwrap_or_else(|| format!("MAF execution {execution_id}"));
+    if let Err(e) = sqlx::query(
+        "INSERT INTO chat_sessions (session_id, user_id, title, session_type)
+         VALUES ($1, $2, $3, 'maf_execution')
+         ON CONFLICT (session_id) DO NOTHING",
+    )
+    .bind(execution_id.to_string())
+    .bind(user_id)
+    .bind(&session_title)
+    .execute(db)
+    .await
+    {
+        tracing::warn!(
+            error = %e, execution_id = %execution_id,
+            "maf: could not register the execution as a session — its agent spend will not be discoverable"
+        );
+    }
 }
 
 /// Resumes a MAF execution that paused mid-step, invoked by the HITL resume dispatcher
@@ -572,7 +639,7 @@ pub async fn run_maf_from(
     )
     .await
     {
-        StepLoopOutcome::Advance => {}
+        StepLoopOutcome::Advance(_) => {}
         StepLoopOutcome::AwaitingHuman(paused) => return Ok(StepOutcome::AwaitingHuman(paused)),
         StepLoopOutcome::Failed(e) => return Err(e),
     }
@@ -598,7 +665,7 @@ pub async fn run_maf_from(
         )
         .await
         {
-            StepLoopOutcome::Advance => {}
+            StepLoopOutcome::Advance(_) => {}
             StepLoopOutcome::AwaitingHuman(paused) => {
                 return Ok(StepOutcome::AwaitingHuman(paused));
             }
@@ -625,7 +692,7 @@ pub async fn run_maf_from(
 /// persisting progress at every transition exactly as the original inline loop body did. Shared by
 /// `run_maf` and, for every step after the resumed one, `run_maf_from`.
 #[allow(clippy::too_many_arguments)]
-async fn execute_step(
+pub async fn execute_step(
     client: &reqwest::Client,
     db: &PgPool,
     flow_guard: &Arc<FlowGuard>,
@@ -998,7 +1065,7 @@ async fn execute_step(
 /// prompt sent before the pause) is read back from `step_results[i]`, where `execute_step` already
 /// persisted it on pausing.
 #[allow(clippy::too_many_arguments)]
-async fn continue_paused_step(
+pub async fn continue_paused_step(
     client: &reqwest::Client,
     db: &PgPool,
     flow_guard: &Arc<FlowGuard>,
@@ -1240,7 +1307,7 @@ async fn finish_step(
     step_results[i].context = Some(new_context);
     persist_progress(db, execution_id, step_results, *total_tokens, *total_cost).await;
 
-    StepLoopOutcome::Advance
+    StepLoopOutcome::Advance(raw_response)
 }
 
 /// Builds the `PausedStep` a `hitl_requests` row is created from, out of a `Paused`-classified raw
@@ -1272,10 +1339,42 @@ async fn finish_run(
     db: &PgPool,
     execution_id: Uuid,
     user_id: Uuid,
+    step_results: Vec<StepResult>,
+    total_tokens: i64,
+    total_cost: f64,
+    output_generation: &str,
+    llm: &LlmClient,
+    outbound: &dyn OutboundPrefix,
+    outbound_prefix: Option<&str>,
+) -> Result<StepOutcome, String> {
+    let context = build_context(&step_results);
+    finish_run_with_context(
+        db,
+        execution_id,
+        user_id,
+        step_results,
+        total_tokens,
+        total_cost,
+        output_generation,
+        &context,
+        llm,
+        outbound,
+        outbound_prefix,
+    )
+    .await
+}
+
+/// [`finish_run`] for a caller that assembles the synthesis context itself.
+#[allow(clippy::too_many_arguments)]
+pub async fn finish_run_with_context(
+    db: &PgPool,
+    execution_id: Uuid,
+    user_id: Uuid,
     mut step_results: Vec<StepResult>,
     mut total_tokens: i64,
     total_cost: f64,
     output_generation: &str,
+    context: &str,
     llm: &LlmClient,
     outbound: &dyn OutboundPrefix,
     outbound_prefix: Option<&str>,
@@ -1291,7 +1390,7 @@ async fn finish_run(
         user_id,
         None,
         llm,
-        generate_final_output(&step_results, guidelines, llm, outbound, outbound_prefix),
+        generate_final_output(context, guidelines, llm, outbound, outbound_prefix),
     )
     .await
     .map_err(|e| format!("final output generation failed: {e}"))?;
@@ -1353,7 +1452,7 @@ async fn finish_run(
 /// Persists the planner's synthesis guideline (LLM call 1's output) so a resumed run's final
 /// output generation (`finish_run`) can reuse it — see the migration comment in
 /// `oss/migrations/0024_maf_hitl.sql` for why this can't just be re-derived on resume.
-async fn persist_output_generation(db: &PgPool, execution_id: Uuid, output_generation: &str) {
+pub async fn persist_output_generation(db: &PgPool, execution_id: Uuid, output_generation: &str) {
     let _ = sqlx::query("UPDATE maf_executions SET output_generation = $1 WHERE id = $2")
         .bind(output_generation)
         .bind(execution_id)
@@ -1433,7 +1532,7 @@ pub(super) struct PlatformSpend {
 
 /// Builds a placeholder "pending" entry for a step before planning/execution
 /// has produced any of its actual content.
-fn pending_result(step: &MafStep) -> StepResult {
+pub fn pending_result(step: &MafStep) -> StepResult {
     StepResult {
         step_id: step.step_id,
         step_index: step.step_index,
@@ -1456,6 +1555,7 @@ fn pending_result(step: &MafStep) -> StepResult {
         latency_ms: 0,
         context: None,
         obs_logs: serde_json::Value::Null,
+        ext: serde_json::Map::new(),
     }
 }
 
@@ -1465,7 +1565,7 @@ fn pending_result(step: &MafStep) -> StepResult {
 /// An unreadable or malformed snapshot is not an error: `resume_from` treats
 /// an empty prior as "start clean", which is exactly the old behaviour. A
 /// retry that re-runs everything is wasteful, never wrong.
-async fn load_prior_results(db: &PgPool, execution_id: Uuid) -> Vec<StepResult> {
+pub async fn load_prior_results(db: &PgPool, execution_id: Uuid) -> Vec<StepResult> {
     let stored: Option<serde_json::Value> =
         sqlx::query_scalar("SELECT step_results FROM maf_executions WHERE id = $1")
             .bind(execution_id)
@@ -1537,7 +1637,7 @@ fn resume_from(steps: &[MafStep], prior: &[StepResult]) -> Vec<StepResult> {
 /// Best-effort: a transient write failure here shouldn't abort the run — the
 /// next transition will just overwrite with fresher data, and the final
 /// write in worker.rs remains the source of truth once the run completes.
-async fn persist_progress(
+pub async fn persist_progress(
     db: &PgPool,
     execution_id: Uuid,
     step_results: &[StepResult],
@@ -1558,16 +1658,18 @@ async fn persist_progress(
 
 // ─── Step plan produced by plan_execution ────────────────────────────────────
 
-struct StepPlan {
-    prompt: String,
-    to_extract: String,
+pub struct StepPlan {
+    pub prompt: String,
+    pub to_extract: String,
 }
 
 // ─── LLM call 1: runtime planner ─────────────────────────────────────────────
 
-async fn plan_execution(
+/// `planner_note`, when given, is appended to the step list as extra guidance for the planner.
+pub async fn plan_execution(
     steps: &[MafStep],
     llm: &LlmClient,
+    planner_note: Option<&str>,
 ) -> Result<((Vec<StepPlan>, String), LlmUsage), String> {
     let system = "You are a MAF (Multi-Agent Flow) step planner.\n\
                   Given a list of steps (each with a task description and the agent that will \
@@ -1604,7 +1706,10 @@ async fn plan_execution(
         .collect::<Vec<_>>()
         .join("\n");
 
-    let user = format!("Steps:\n{step_list}");
+    let user = match planner_note {
+        Some(note) => format!("Steps:\n{step_list}\n\n{note}"),
+        None => format!("Steps:\n{step_list}"),
+    };
 
     // Schema matches Python's MAFTemplate Pydantic model — strict enforcement via
     // OpenAI structured outputs, equivalent to `with_structured_output(MAFTemplate)`.
@@ -1888,7 +1993,7 @@ async fn extract_info(
 // ─── LLM call 4: final output synthesiser ────────────────────────────────────
 
 async fn generate_final_output(
-    step_results: &[StepResult],
+    context: &str,
     guidelines: &str,
     llm: &LlmClient,
     outbound: &dyn OutboundPrefix,
@@ -1944,7 +2049,6 @@ async fn generate_final_output(
 
     let one_shot_assistant = r#"{"final_output": "Here are the top three fantasy book recommendations with their best online deals:\n\n1. **The Way of Kings** by Brandon Sanderson\n   Best deal: Amazon — $18.99\n\n2. **The Name of the Wind** by Patrick Rothfuss\n   Best deal: Powell's Books — $15.99\n\n3. **The Lies of Locke Lamora** by Scott Lynch\n   Best deal: Target — $14.99"}"#;
 
-    let context = build_context(step_results);
     let user = format!(
         "Guidelines for Output Generation: {guidelines}\n\nContext from All Steps:\n{context}"
     );
@@ -2221,7 +2325,7 @@ fn extract_text(json: &serde_json::Value) -> String {
 /// Goal of Extraction: <to_extract>
 /// Actual Extracted Information: <extracted_info>
 /// ```
-fn build_context(step_results: &[StepResult]) -> String {
+pub fn build_context(step_results: &[StepResult]) -> String {
     step_results
         .iter()
         .filter_map(|s| {
@@ -2257,6 +2361,7 @@ mod resume_tests {
             agent_name: format!("agent-{index}"),
             agent_endpoint: "http://localhost:1".to_string(),
             task_description: format!("task {index}"),
+            ext: serde_json::Map::new(),
         }
     }
 
@@ -2278,6 +2383,23 @@ mod resume_tests {
             error: Some("agent timed out".to_string()),
             ..pending_result(step)
         }
+    }
+
+    #[test]
+    fn every_step_is_planned_and_content_goes_to_step_0() {
+        let definition = MafDefinition {
+            description: None,
+            steps: vec![step(0), step(1)],
+            output_generation: None,
+        };
+        let planned = planning_steps(&definition, Some("refund me"));
+        assert_eq!(planned.len(), 2);
+        assert_eq!(planned[0].task_description, "task 0 \"refund me\"");
+        assert_eq!(planned[1].task_description, "task 1");
+        assert_eq!(
+            planning_steps(&definition, None)[0].task_description,
+            "task 0"
+        );
     }
 
     #[test]
@@ -2541,7 +2663,7 @@ mod resume_tests {
             "test-model".into(),
         );
         let prefix = FixedPrefix("ORG POLICY");
-        let (out, _) = generate_final_output(&[], "guidelines", &llm, &prefix, Some("ORG POLICY"))
+        let (out, _) = generate_final_output("", "guidelines", &llm, &prefix, Some("ORG POLICY"))
             .await
             .expect("synthesiser call");
 
@@ -2573,7 +2695,7 @@ mod resume_tests {
             "test-model".into(),
         );
         let (_, _) = generate_final_output(
-            &[],
+            "",
             "guidelines",
             &llm,
             &crate::outbound::NoOutboundPrefix,

@@ -916,17 +916,22 @@ async fn deliver_maf(state: &AppState, row: HitlRequest) {
 
     match enqueue {
         Ok(_) => {
-            // Interim status while the continuation job is in flight — `worker.rs::process_job`
-            // unconditionally sets `running` again on pickup, so this is cosmetic-but-correct,
-            // mirroring `worker.rs::re_enqueue`'s own `status='pending'` convention on a
-            // retryable failure. Flipped only now, after a confirmed `XADD`, not before it: doing
-            // it earlier meant a Redis outage (or any other pre-enqueue failure) left the
-            // execution stuck at `pending` — indistinguishable from "queued" to the API/CLI —
-            // with no job ever landing in the stream to move it forward.
-            let _ = sqlx::query("UPDATE maf_executions SET status = 'pending' WHERE id = $1")
-                .bind(execution_id)
-                .execute(&state.db)
-                .await;
+            // Interim status while the continuation job is in flight, mirroring
+            // `worker.rs::re_enqueue`'s own `status='pending'` convention on a retryable
+            // failure. Flipped only now, after a confirmed `XADD`, not before it: doing it
+            // earlier meant a Redis outage (or any other pre-enqueue failure) left the execution
+            // stuck at `pending` — indistinguishable from "queued" to the API/CLI — with no job
+            // ever landing in the stream to move it forward. Only from `awaiting_human`: a
+            // worker can pick the job up before this runs (it accepts a resume while the row
+            // still says `awaiting_human`, `worker.rs::claimable_statuses`), and must not have
+            // its `running` turned back into `pending`.
+            let _ = sqlx::query(
+                "UPDATE maf_executions SET status = 'pending' WHERE id = $1 AND status = $2",
+            )
+            .bind(execution_id)
+            .bind(nasiko_types::maf::AWAITING_HUMAN)
+            .execute(&state.db)
+            .await;
             complete_resume(state, &row).await;
         }
         Err(e) => {

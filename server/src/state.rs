@@ -40,6 +40,15 @@ pub struct AppState {
     /// `NoOrchestratorPolicy`, which imposes nothing; the EE composition root
     /// replaces it, the same way it replaces `routing_engine`.
     pub orchestrator_policy: Arc<dyn crate::orchestrator_policy::OrchestratorPolicySource>,
+    /// What the MAF worker runs each queued workflow through. OSS wires
+    /// `LinearMafExecutor` (steps in array order); the EE composition root
+    /// replaces it before the app is built, the same way it replaces
+    /// `routing_engine`, so the worker started by the app sees the swap.
+    pub maf_executor: Arc<dyn nasiko_orchestrator::maf::MafExecutor>,
+    /// What the MAF workflow routes consult beyond their own checks when a
+    /// workflow is saved or run. OSS wires `NoMafWorkflowPolicy`, which changes
+    /// nothing; the EE composition root replaces it.
+    pub maf_policy: Arc<dyn crate::maf_policy::MafWorkflowPolicy>,
     /// Supplemental per-agent prompt context (e.g. admin-authored knowledge) added before an
     /// agent runs. OSS default is a no-op; the EE composition root installs the real
     /// implementation through this cell (`SwappablePromptContext::install`, not a plain
@@ -205,6 +214,10 @@ impl AppState {
         );
         let orchestrator_policy: Arc<dyn crate::orchestrator_policy::OrchestratorPolicySource> =
             Arc::new(crate::orchestrator_policy::NoOrchestratorPolicy);
+        let maf_executor: Arc<dyn nasiko_orchestrator::maf::MafExecutor> =
+            Arc::new(nasiko_orchestrator::maf::LinearMafExecutor);
+        let maf_policy: Arc<dyn crate::maf_policy::MafWorkflowPolicy> =
+            Arc::new(crate::maf_policy::NoMafWorkflowPolicy);
         let prompt_context = Arc::new(SwappablePromptContext::new(Arc::new(
             crate::prompt_context::NoopPromptContextProvider,
         )));
@@ -322,6 +335,8 @@ impl AppState {
             config: Arc::new(config),
             routing_engine,
             orchestrator_policy,
+            maf_executor,
+            maf_policy,
             prompt_context,
             agent_deletion_hook,
             agent_scaling,

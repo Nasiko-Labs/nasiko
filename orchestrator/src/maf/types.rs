@@ -11,6 +11,11 @@ pub struct MafStep {
     /// What this step should accomplish — used by the runtime planner to generate
     /// the actual prompt and extraction goal at execution time (Python MAF parity).
     pub task_description: String,
+    /// Fields this crate does not define, kept verbatim for a `MafExecutor` that
+    /// reads them. Empty by default, and an empty map serializes to nothing, so a
+    /// step without extensions stores exactly the JSON it always did.
+    #[serde(flatten)]
+    pub ext: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -89,6 +94,10 @@ pub struct StepResult {
     pub latency_ms: i64,
     pub context: Option<String>,
     pub obs_logs: serde_json::Value,
+    /// Per-step data recorded by a `MafExecutor` beyond the fields above. Same
+    /// contract as `MafStep::ext`: empty unless an executor writes to it.
+    #[serde(flatten)]
+    pub ext: serde_json::Map<String, serde_json::Value>,
 }
 
 fn default_pending_status() -> String {
@@ -114,7 +123,10 @@ pub enum StepOutcome {
 /// resume exactly this step via `executor::run_maf_from`.
 pub struct PausedStep {
     pub step_index: i32,
-    /// The agent's own `taskId` — the A2A continuation must target this, never a synthetic one.
+    /// The `taskId` the pause was raised under. For a pause the step's agent raised, the agent's
+    /// own: the A2A continuation must target it, never one made up for it. An executor that
+    /// raises a question of its own uses an id of its own, which no agent ever receives, and
+    /// handles the answer itself in `MafExecutor::resume`.
     pub task_id: String,
     /// The MAF execution id (stringified) — doubles as the A2A `contextId` for every step, per
     /// `executor.rs::call_agent`'s existing convention.
