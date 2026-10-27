@@ -109,7 +109,13 @@ rig-core = { version = "=0.11.1", default-features = false, features = ["derive"
 
 # ─── CLI ────────────────────────────────────────────────────────────────────
 toml_edit = "0.25"
-clap = { version = "4", features = ["derive"] }
+# `string`: lets `nasiko completions` rebuild the command tree without hidden subcommands
+# (clap_complete would otherwise offer internal helpers like `__coding-agent-token` on TAB).
+clap = { version = "4", features = ["derive", "string"] }
+clap_complete = "4"
+clap_mangen = "0.2"
+# Edit distance for the CLI's "did you mean '<agent>'?" hint; already in the build via clap.
+strsim = "0.11"
 ureq = { version = "3", features = ["json"] }
 dialoguer = "0.11"
 indicatif = "0.17"
@@ -120,11 +126,16 @@ which = "7"
 include_dir = "0.7"
 ratatui = "0.29"
 crossterm = "0.29"
-tabled = "0.21"
+tabled = { version = "0.21", features = ["ansi"] }
 # Already pulled in transitively via console (dialoguer's dep) at this exact version; declared
 # directly here only for `oss/cli`'s own scoped SIGINT no-op guard (hitl.rs) — see its doc
 # comment for why dialoguer/console's own Ctrl+C handling can't be used for this instead.
 libc = "0.2"
+# Read-only access to coding agents' local history stores (OpenCode's opencode.db, Cursor's
+# state.vscdb) for `nasiko agents setup/import`. Pinned to 0.32 because it links the same
+# libsqlite3-sys (0.30) that sqlx's optional sqlite driver already puts in the lockfile — two
+# crates may not both link `sqlite3`.
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 # ─── Observability ──────────────────────────────────────────────────────────
 tracing = "0.1"
