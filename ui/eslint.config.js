@@ -14,8 +14,6 @@ import tseslint from 'typescript-eslint'
 const PUBLIC = {
   agents: [
     'api',
-    // The Harnesses page's Token optimization switch names itself as the agent's does.
-    'copy',
     'types',
     'format',
     'normalize',
@@ -31,8 +29,6 @@ const PUBLIC = {
     'components/Markdown',
     'components/RequestCard',
     'api',
-    // The Overview's canvas chat box hands its question to a new routed chat as that chat's draft.
-    'drafts',
     'identity',
     'rememberTarget',
     'types',
@@ -60,16 +56,7 @@ const PUBLIC = {
   // Flows (plans/feat-flows.md): the call model and its duration format (the flow narrative), and "Open flow" (F19).
   // The agent hub's Flows list reads the list query (plans/feat-agent-centric.md eng PUBLIC adds).
   flows: ['calls', 'precision', 'components/OpenFlowLink', 'paused', 'api'],
-  // Monitor's note while the desktop imports coding agents.
-  harnesses: [
-    'types',
-    'rollup',
-    'copy',
-    'api',
-    'constants',
-    'liveIndividual',
-    'components/ImportNotice',
-  ],
+  harnesses: ['types', 'rollup', 'copy', 'api', 'constants', 'liveIndividual'],
   // The agent hub (plans/feat-agent-centric.md PR1a): the agent detail's Overview hosts its timeline.
   // The home's last change links a marker on the hub inside the hub's default window (PR2b).
   hub: ['components/HubTimeline', 'events', 'search'],
@@ -346,17 +333,10 @@ export default tseslint.config(
     ],
     rules: { 'no-restricted-syntax': ['error', ...banned, noRawElements[0]] },
   },
-  // The one fetch wrapper, and the streams it doesn't cover (SSE bodies need the raw Response): chat turns, the
-  // agent log tail (`useLogStream`), a build's deploy stream (`useBuildStream`) and EE's Weave generation; API
-  // modules, so still no fetch in components.
+  // The one fetch wrapper. Streams (SSE bodies need the raw Response) go through its `fetchApi`, so they resolve
+  // against the same API base.
   {
-    files: [
-      'common/src/lib/api/client.ts',
-      'common/src/features/chat/registry.ts',
-      'common/src/features/sessions/api.ts',
-      'common/src/features/deploy/api.ts',
-      'ee/web/src/genui/conversation/api.ts',
-    ],
+    files: ['common/src/lib/api/client.ts'],
     rules: {
       'no-restricted-syntax': [
         'error',

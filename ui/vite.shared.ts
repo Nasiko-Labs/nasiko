@@ -25,11 +25,28 @@ export interface AppOptions {
   /** One alias per layer (EE: `@ee`). */
   alias?: Record<string, string>
   mode: string
+  /**
+   * false: the app serves only its own `src/routes` (with its own `__root.tsx`), none of the core's. For an app that
+   * uses the core's components but is not the control plane. Default true.
+   */
+  commonRoutes?: boolean
+  /** The dev server's API paths and the server they go to. Default: the control plane's (`PROXIED`, NASIKO_API_URL). */
+  proxy?: { paths: readonly string[]; target: string }
+  /** Dev and preview port. Default 3000. */
+  port?: number
 }
 
 // The OSS nasiko-server. Proxying makes the browser see one origin, which is what the server expects: CORS is
 // deny-by-default (empty CORS_ALLOWED_ORIGINS) and the login cookie is `HttpOnly; SameSite=Strict`.
-const PROXIED = ['/api', '/health', '/a2a', '/.well-known']
+const PROXIED = ['/api', '/health', '/a2a', '/.well-known'] as const
+
+/**
+ * The dev proxy key for an API path: a whole path segment, as a regex (Vite reads a key starting with `^` as one). A
+ * plain key is a string prefix, so `/api` would also take `/api.ts`, the URL Vite serves an app's own `src/api.ts` at.
+ */
+export function proxyKey(path: string): string {
+  return `^${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=[/?#]|$)`
+}
 
 /** URL path of a file-based route file under a routes dir (`_app/agents.$agentId.tsx` → `/agents/$agentId`). */
 export function routePath(file: string): string {
@@ -162,12 +179,15 @@ function cspHashes(): Plugin {
 
 export function nasikoApp(o: AppOptions): UserConfig {
   const env = loadEnv(o.mode, ROOT, '')
-  const target = env.NASIKO_API_URL || 'http://localhost:8080'
+  const proxy = o.proxy ?? { paths: PROXIED, target: env.NASIKO_API_URL || 'http://localhost:8080' }
+  const port = o.port ?? 3000
   const src = join(o.appDir, 'src')
-  const routes = shippedRoutes([
-    join(COMMON_SRC, 'routes'),
-    ...(o.layers ?? []).map((l) => join(l, 'routes')),
-  ])
+  const ownRoutes = o.commonRoutes === false
+  const routes = shippedRoutes(
+    ownRoutes
+      ? [join(src, 'routes')]
+      : [join(COMMON_SRC, 'routes'), ...(o.layers ?? []).map((l) => join(l, 'routes'))],
+  )
   return {
     root: src,
     envDir: ROOT,
@@ -178,10 +198,10 @@ export function nasikoApp(o: AppOptions): UserConfig {
       // Must run before react(): it generates the edition's src/routeTree.gen.ts from the core's routes.
       tanstackRouter({
         target: 'react',
-        routesDirectory: join(COMMON_SRC, 'routes'),
+        routesDirectory: ownRoutes ? join(src, 'routes') : join(COMMON_SRC, 'routes'),
         // A layer's own `routes/` (EE: `/weave`) mount beside the core's; `shippedRoutes` above already failed a
-        // path served twice. Without layers the core's directory is read as is.
-        ...(o.layers?.length
+        // path served twice. Without layers the core's directory (or the app's own) is read as is.
+        ...(o.layers?.length && !ownRoutes
           ? {
               virtualRouteConfig: {
                 type: 'root' as const,
@@ -230,11 +250,13 @@ export function nasikoApp(o: AppOptions): UserConfig {
     },
     // Port 3000 is deliberate: gstack /qa only probes 3000, 4000 and 8080.
     server: {
-      port: 3000,
+      port,
       strictPort: true,
-      proxy: Object.fromEntries(PROXIED.map((p) => [p, { target, changeOrigin: false }])),
+      proxy: Object.fromEntries(
+        proxy.paths.map((p) => [proxyKey(p), { target: proxy.target, changeOrigin: false }]),
+      ),
     },
-    preview: { port: 3000, strictPort: true },
+    preview: { port, strictPort: true },
     build: {
       outDir: join(o.appDir, 'dist'),
       emptyOutDir: true,

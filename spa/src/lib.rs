@@ -14,8 +14,8 @@
 //! `.` in them, so any id containing a dot — `/agents/my.agent` — fell through
 //! to the 404 page even though the app owns that route.
 //!
-//! Both editions serve the same way, so the logic lives here once and each
-//! binary supplies its own embed type. EE wraps it rather than copying it.
+//! Every binary that embeds a UI bundle serves it the same way, so the logic
+//! lives here once and each binary supplies its own embed type and CSP extras.
 
 use axum::body::Body;
 use axum::http::{HeaderMap, HeaderValue, Request, StatusCode, header};
@@ -194,8 +194,8 @@ impl Spa {
 }
 
 /// Extensions a browser only ever requests as a subresource. Mirrors the list
-/// in `crate::auth::middleware`, for the same reason: "does it contain a dot"
-/// cannot tell `/agents/my.agent` from `/app.js`.
+/// in `nasiko-server`'s `auth::middleware`, for the same reason: "does it
+/// contain a dot" cannot tell `/agents/my.agent` from `/app.js`.
 const ASSET_EXTENSIONS: &[&str] = &[
     "css",
     "js",
@@ -241,9 +241,9 @@ fn looks_like_an_asset(path: &str) -> bool {
 ///     that must not fall through: a stale `/assets/x.js` answered with a 200
 ///     HTML body is how a cached page ends up executing markup as JavaScript.
 ///  4. Anything else gets the shell too, so the app renders its own not-found
-///     page — with its navigation — rather than a bare server 404. Unknown
-///     `/api/*` paths never reach here; `api_not_found` in `lib.rs` claims them
-///     ahead of this fallback.
+///     page — with its navigation — rather than a bare server 404. A binary
+///     must claim its own API prefixes ahead of this fallback (`nasiko-server`'s
+///     `api_not_found`), or an unknown API path comes back as the shell.
 pub fn serve<E: RustEmbed>(
     req: &Request<Body>,
     cache: &'static OnceLock<Spa>,

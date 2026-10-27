@@ -16,6 +16,8 @@
         ".storybook/*.{ts,tsx}",
         "*/src/main.tsx",
         "*/*/src/main.tsx",
+        "*/src/edition.ts",
+        "*/*/src/edition.ts",
         "*/src/mocks.ts",
         "*/*/src/mocks/index.ts",
         "*/*/src/genui/frame/runtime.tsx",

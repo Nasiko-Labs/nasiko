@@ -1,0 +1,17 @@
+[package]
+name = "nasiko-spa"
+edition.workspace = true
+version.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+axum = { workspace = true }
+hex = { workspace = true }
+mime_guess = { workspace = true }
+percent-encoding = { workspace = true }
+rust-embed = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }

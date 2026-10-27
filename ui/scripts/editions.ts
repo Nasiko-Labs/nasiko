@@ -6,7 +6,7 @@ import { join, relative } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 export interface EditionDir {
-  /** 'oss', 'ee', … (the app dir's first segment). */
+  /** The app dir's own name ('oss' for `oss`), or its parent's when the dir is `<edition>/web`. */
   id: string
   /** Relative to the repo root, e.g. 'oss'. */
   dir: string
@@ -39,8 +39,15 @@ export function findEditions(root: string): EditionDir[] {
   }
   return found
     .map((p) => relative(root, p))
-    .map((dir) => ({ id: dir.split(/[/\\]/)[0]!, dir }))
+    .map((dir) => ({ id: editionId(dir), dir }))
     .sort((x, y) => (x.id === 'oss' ? -1 : y.id === 'oss' ? 1 : x.id.localeCompare(y.id)))
+}
+
+/** An app dir is named for its edition, except `<edition>/web`, the web app of the edition its parent names. */
+export function editionId(dir: string): string {
+  const parts = dir.split(/[/\\]/)
+  const last = parts.at(-1)!
+  return last === 'web' && parts.length > 1 ? parts.at(-2)! : last
 }
 
 /**
