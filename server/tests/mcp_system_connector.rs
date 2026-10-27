@@ -1357,10 +1357,11 @@ async fn nasiko_call_tool_runs_a_found_system_tool_identically_to_the_direct_cal
     );
 
     // The search result must be readable the way an MCP client reads any
-    // `tools/call` result — through `content` — and agree with the
-    // `structuredContent` and bare `tools` views of the same payload. A
-    // fixed-menu client that only sees `content` would otherwise be told the
-    // search found nothing.
+    // `tools/call` result — through `content` for a text-only client, through
+    // `structuredContent` for a schema-aware one — and carry NOTHING else: a
+    // strict client (Codex) deserializes `CallToolResult` with unknown fields
+    // denied, so a bare top-level `tools`/`search_mode` made every direct
+    // search call fail there with "unexpected response type".
     let res = mcp(json!({
         "jsonrpc": "2.0", "id": 5, "method": "tools/call",
         "params": {"name": "nasiko_search_tools", "arguments": {"query": "save file", "limit": 5}},
@@ -1379,16 +1380,22 @@ async fn nasiko_call_tool_runs_a_found_system_tool_identically_to_the_direct_cal
         serde_json::from_str(result["content"][0]["text"].as_str().expect("content text"))
             .expect("content text is the JSON payload");
     assert_eq!(
-        from_content["tools"], result["tools"],
-        "content and bare `tools` views must agree: {search:?}"
-    );
-    assert_eq!(
-        result["structuredContent"]["tools"], result["tools"],
-        "structuredContent and bare `tools` views must agree: {search:?}"
+        from_content["tools"], result["structuredContent"]["tools"],
+        "content and structuredContent views must agree: {search:?}"
     );
     assert!(
-        result["search_mode"].is_string() && from_content["search_mode"] == result["search_mode"],
-        "search_mode must be present in every view: {search:?}"
+        result["structuredContent"]["search_mode"].is_string()
+            && from_content["search_mode"] == result["structuredContent"]["search_mode"],
+        "search_mode must be present in both views: {search:?}"
+    );
+    assert!(
+        result.get("tools").is_none() && result.get("search_mode").is_none(),
+        "no non-spec top-level fields — a strict MCP client refuses unknown keys: {search:?}"
+    );
+    assert_eq!(
+        result["isError"],
+        Value::Bool(false),
+        "a successful search is not an error: {search:?}"
     );
 
     let arguments = json!({ "path": "notes.md" });
