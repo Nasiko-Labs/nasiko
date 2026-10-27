@@ -34,7 +34,7 @@ pub(super) fn compress(input: &str, policy: &Policy<'_>) -> Option<String> {
     Some(render(&lines, &keep, policy))
 }
 
-fn render(lines: &[&str], keep: &[bool], policy: &Policy<'_>) -> String {
+pub(super) fn render(lines: &[&str], keep: &[bool], policy: &Policy<'_>) -> String {
     let mut out = String::with_capacity(lines.iter().map(|l| l.len() + 1).sum::<usize>());
     let mut dropped = 0usize;
 
@@ -59,7 +59,14 @@ fn render(lines: &[&str], keep: &[bool], policy: &Policy<'_>) -> String {
 }
 
 fn is_severe(line: &str) -> bool {
-    crate::levels::is_severe(line)
+    // A traceback header is the failure it is about to narrate; the frames that follow it must
+    // stay attached to it, and it carries no level word of its own.
+    crate::levels::is_severe(line) || starts_with_traceback(line)
+}
+
+fn starts_with_traceback(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with("Traceback") || trimmed.starts_with("Caused by")
 }
 
 fn is_stack_frame(line: &str) -> bool {
@@ -121,6 +128,21 @@ mod tests {
         let out = compress(&input, &policy()).unwrap();
         assert!(out.contains("handled request 0"));
         assert!(out.contains("handled request 199"));
+    }
+
+    #[test]
+    fn keeps_stack_frames_attached_to_their_traceback() {
+        // Tracebacks arrive without any log-level line, so the only retention signal is the
+        // traceback header itself.
+        let mut input = noisy(&[], 10);
+        input.push_str("Traceback (most recent call last):\n");
+        input.push_str("  File \"/app/src/main.py\", line 9, in <module>\n");
+        input.push_str("    run()\n");
+
+        let out = compress(&input, &policy()).unwrap();
+
+        assert!(out.contains("Traceback (most recent call last)"));
+        assert!(out.contains("File \"/app/src/main.py\""));
     }
 
     #[test]

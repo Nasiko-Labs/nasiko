@@ -37,6 +37,7 @@ pub mod inbound;
 pub mod inject;
 pub mod ir;
 pub mod providers;
+mod range_view;
 pub mod recovery;
 pub mod resolver;
 pub mod routing;
