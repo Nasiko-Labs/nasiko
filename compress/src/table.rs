@@ -340,21 +340,36 @@ mod tests {
 
     #[test]
     fn writes_keys_once_and_flattens_nested_objects() {
+        // Column order follows serde_json's map order, which is insertion order when a crate in
+        // the build enables `preserve_order` (the server binaries do) and sorted otherwise — so
+        // compare columns as a set and leave exact contents to the round-trip tests.
         let table = tabulate(&search_results(5)).unwrap();
         let mut lines = table.lines();
         assert_eq!(lines.next(), Some("[⋯ table: 5 rows ⋯]"));
+        let mut columns: Vec<&str> = lines
+            .next()
+            .and_then(|l| l.strip_prefix(COLUMNS_PREFIX))
+            .unwrap()
+            .split(", ")
+            .collect();
+        columns.sort_unstable();
         assert_eq!(
-            lines.next(),
-            Some(
-                "columns: fork:bool, path:str, repository.full_name:str, \
-                 repository.stars:int, score:num, topics:json"
-            )
+            columns,
+            [
+                "fork:bool",
+                "path:str",
+                "repository.full_name:str",
+                "repository.stars:int",
+                "score:num",
+                "topics:json",
+            ]
         );
+        assert_eq!(lines.count(), 5, "one row per record");
         assert_eq!(
-            lines.next(),
-            Some(r#"true,src/mod_0/handler.py,org/repo0,0,1.5,["auth","jwt"]"#)
+            table.matches("full_name").count(),
+            1,
+            "each key written once"
         );
-        assert_eq!(table.matches("full_name").count(), 1);
     }
 
     #[test]
