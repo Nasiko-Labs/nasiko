@@ -233,6 +233,14 @@ pub async fn a2a_dispatch_handler(
         }
         Some(agent)
     };
+    // The caller picks `contextId` and `metadata.session_id`, and both are used to read history
+    // and to append messages. A session that already belongs to someone else is answered exactly
+    // like a missing agent would be, so ids cannot be probed; superusers keep their access.
+    for sid in std::iter::once(context_id.as_str()).chain(session_id.as_deref()) {
+        if session_owned_by_other(&state, sid, user_id, claims.is_superuser).await? {
+            return Err(A2aDispatchError::Forbidden("session not found".into()));
+        }
+    }
     // Whoever reads this history decides whether it is compressed: the addressed agent on a direct
     // chat, nobody on an orchestrator-routed one (the Orchestrator's own model reads it, and what
     // reaches an agent afterwards is what that model wrote). Read off the row already in hand
@@ -2218,6 +2226,26 @@ fn to_sse(event: StreamResponse) -> Event {
 /// only because the UI sent a throwaway random `contextId`, so the two writes
 /// landed in different sessions; now that contextId *is* the session id, doing
 /// both would store every user message twice.
+/// Whether `session_id` names an existing chat session that belongs to a user other than
+/// `user_id`. Superusers own every session for this purpose.
+async fn session_owned_by_other(
+    state: &AppState,
+    session_id: &str,
+    user_id: Uuid,
+    is_superuser: bool,
+) -> Result<bool, A2aDispatchError> {
+    if is_superuser {
+        return Ok(false);
+    }
+    let owner: Option<Uuid> =
+        sqlx::query_scalar("SELECT user_id FROM chat_sessions WHERE session_id = $1")
+            .bind(session_id)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(|e| A2aDispatchError::Internal(format!("session lookup failed: {e}")))?;
+    Ok(owner.is_some_and(|owner| owner != user_id))
+}
+
 async fn ensure_orchestrator_chat_session(
     state: &AppState,
     context_id: &str,
