@@ -18,6 +18,10 @@
 //! more on a confirmed LangGraph server), no writes, nothing sent off the
 //! host. A port that does not answer costs one timeout, after which it is
 //! asked nothing more.
+//!
+//! Everything a discovered agent or a source said is made [`printable`]
+//! before it leaves this module: any local process can serve a card, and a
+//! card name is printed to the user's terminal.
 
 mod card;
 mod endpoints;
@@ -76,7 +80,8 @@ pub fn discover_local(excluded_ports: &[u16]) -> Discovery {
     let http = http::UreqCardHttp::new();
     Discovery {
         agents: discover_at(&scan.endpoints, Framework::ALL, &http),
-        warnings: scan.warnings,
+        // A source's warning can quote a command's stderr.
+        warnings: scan.warnings.iter().map(|w| printable_lines(w)).collect(),
     }
 }
 
@@ -141,12 +146,32 @@ fn probe_endpoint(
 }
 
 fn to_discovered(found: FoundCard) -> Option<DiscoveredAgent> {
-    let name = found.card.get("name")?.as_str()?.trim().to_string();
+    let name = printable(found.card.get("name")?.as_str()?.trim());
     Some(DiscoveredAgent {
         name,
-        card: check_card(&found.card),
-        card_url: found.card_url,
+        card: check_card(&found.card).map(|version| printable(&version)),
+        card_url: printable(&found.card_url),
     })
+}
+
+/// `text` with every character that could act on a terminal replaced by `?`:
+/// control characters (ESC, which starts colour, cursor and hyperlink
+/// sequences; CR; tab; newline) and the bidirectional overrides that reorder
+/// what is displayed. Other text, any script, is kept as is.
+pub fn printable(text: &str) -> String {
+    text.chars()
+        .map(|c| if is_unsafe_to_print(c) { '?' } else { c })
+        .collect()
+}
+
+/// [`printable`], line by line: multi-line text such as a command's stderr
+/// keeps its line breaks.
+fn printable_lines(text: &str) -> String {
+    text.lines().map(printable).collect::<Vec<_>>().join("\n")
+}
+
+fn is_unsafe_to_print(c: char) -> bool {
+    c.is_control() || matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
 }
 
 #[cfg(test)]
@@ -367,6 +392,34 @@ mod tests {
             "http://127.0.0.1:2024/.well-known/agent-card.json?assistant_id=a1"
         );
         assert!(found[0].card.is_ok());
+    }
+
+    #[test]
+    fn terminal_control_sequences_from_a_card_are_never_printed() {
+        let http = FakeHttp::default().get(
+            "http://127.0.0.1:8000/.well-known/agent-card.json",
+            json!({
+                // Clear the screen, then a hyperlink: both start with ESC.
+                "name": "evil\u{1b}[2J\u{1b}]8;;http://x\u{7}agent\u{202E}",
+                "version": "1.0\u{1b}[31m",
+                "url": "http://127.0.0.1:8000/"
+            }),
+        );
+
+        let found = discover_at(&[process_endpoint(8000)], Framework::ALL, &http);
+
+        assert_eq!(found[0].name, "evil?[2J?]8;;http://x?agent?");
+        assert_eq!(found[0].version(), Some("1.0?[31m"));
+    }
+
+    #[test]
+    fn printable_keeps_ordinary_text_in_any_script() {
+        assert_eq!(printable("café 规划 planner-2"), "café 规划 planner-2");
+        assert_eq!(printable("tab\there"), "tab?here");
+        assert_eq!(
+            printable_lines("permission denied\nsee \u{1b}[1mdocs"),
+            "permission denied\nsee ?[1mdocs"
+        );
     }
 
     // ─── Over real HTTP ─────────────────────────────────────────────────────
