@@ -1,0 +1,81 @@
+Testing against Django installed in '/repo/django' with up to 10 processes
+Importing application schema
+Found 1 test(s).
+Skipping setup of unused database(s): other.
+Creating test database for alias 'default' ('file:memorydb_default?mode=memory&cache=shared')...
+Operations to perform:
+  Synchronize unmigrated apps: auth, contenttypes, messages, schema, sessions, staticfiles
+  Apply all migrations: admin, sites
+Synchronizing apps without migrations:
+  Creating tables...
+    Creating table django_content_type
+    Creating table auth_permission
+    Creating table auth_group
+    Creating table auth_user
+    Creating table django_session
+    Running deferred SQL...
+Running migrations:
+  Applying admin.0001_initial... OK
+  Applying admin.0002_logentry_remove_auto_add... OK
+  Applying admin.0003_logentry_add_action_flag_choices... OK
+  Applying sites.0001_initial... OK
+  Applying sites.0002_alter_domain_unique... OK
+System check identified no issues (0 silenced).
+test_func_unique_constraint_lookups (schema.tests.SchemaTests.test_func_unique_constraint_lookups) ... ERROR
+
+======================================================================
+ERROR: test_func_unique_constraint_lookups (schema.tests.SchemaTests.test_func_unique_constraint_lookups)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/repo/django/db/models/sql/query.py", line 1831, in transform
+    return self.try_transform(wrapped, name)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/repo/django/db/models/sql/query.py", line 1341, in try_transform
+    raise FieldError(
+django.core.exceptions.FieldError: Unsupported lookup 'lower' for CharField or join on the field not permitted.
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/repo/django/test/testcases.py", line 1571, in skip_wrapper
+    return test_func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/repo/tests/schema/tests.py", line 2782, in test_func_unique_constraint_lookups
+    editor.remove_constraint(Author, constraint)
+  File "/repo/django/db/backends/sqlite3/schema.py", line 545, in remove_constraint
+    super().remove_constraint(model, constraint)
+  File "/repo/django/db/backends/base/schema.py", line 494, in remove_constraint
+    sql = constraint.remove_sql(model, self)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/repo/django/db/models/constraints.py", line 219, in remove_sql
+    expressions = self._get_index_expressions(model, schema_editor)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/repo/django/db/models/constraints.py", line 174, in _get_index_expressions
+    return ExpressionList(*index_expressions).resolve_expression(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/repo/django/db/models/expressions.py", line 893, in resolve_expression
+    c.source_expressions[pos] = arg.resolve_expression(
+                                ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/repo/django/db/models/indexes.py", line 261, in resolve_expression
+    resolve_root_expression = root_expression.resolve_expression(
+                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/repo/django/db/models/expressions.py", line 785, in resolve_expression
+    return query.resolve_ref(self.name, allow_joins, reuse, summarize)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/repo/django/db/models/sql/query.py", line 1973, in resolve_ref
+    transform = join_info.transform_function(targets[0], final_alias)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/repo/django/db/models/sql/query.py", line 1835, in transform
+    raise last_field_exception
+  File "/repo/django/db/models/sql/query.py", line 1808, in setup_joins
+    path, final_field, targets, rest = self.names_to_path(
+                                       ^^^^^^^^^^^^^^^^^^^
+  File "/repo/django/db/models/sql/query.py", line 1746, in names_to_path
+    raise FieldError(
+django.core.exceptions.FieldError: Cannot resolve keyword 'lower' into field. Join on 'name' not permitted.
+
+----------------------------------------------------------------------
+Ran 1 test in 0.006s
+
+FAILED (errors=1)
+Destroying test database for alias 'default' ('file:memorydb_default?mode=memory&cache=shared')...

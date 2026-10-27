@@ -9,6 +9,7 @@ mod diff;
 mod json;
 mod log;
 mod search;
+mod test_output;
 
 use crate::content_type::ContentType;
 use crate::policy::Policy;
@@ -21,6 +22,7 @@ pub(crate) fn dispatch(kind: ContentType, input: &str, policy: &Policy<'_>) -> O
         ContentType::SearchResults => search::compress(input, policy),
         // Off by default (`TypeMask::DEFAULT`): for a coding agent the code is often the answer.
         ContentType::Code => code::compress(input, policy),
+        ContentType::TestOutput => test_output::compress(input, policy),
         // Variants exist so the enum and the config surface are stable; compressors land in a
         // later release once the eval suite shows they clear the never-grows bar on real inputs.
         ContentType::Markup | ContentType::Prose => None,

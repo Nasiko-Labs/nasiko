@@ -10,7 +10,7 @@ struct Fixture {
     name: &'static str,
     body: &'static str,
     expect_type: ContentType,
-    /// Whether the default policy (`json,log,diff`) should shrink it.
+    /// Whether the default policy (`json,log,diff,test`) should shrink it.
     expect_shrinks: bool,
 }
 
@@ -46,6 +46,18 @@ fn corpus() -> Vec<Fixture> {
             body: include_str!("fixtures/dashboard.html"),
             expect_type: ContentType::Markup,
             expect_shrinks: false,
+        },
+        Fixture {
+            name: "django_runtests_ok.txt",
+            body: include_str!("fixtures/django_runtests_ok.txt"),
+            expect_type: ContentType::TestOutput,
+            expect_shrinks: true,
+        },
+        Fixture {
+            name: "django_runtests_error.txt",
+            body: include_str!("fixtures/django_runtests_error.txt"),
+            expect_type: ContentType::TestOutput,
+            expect_shrinks: true,
         },
         Fixture {
             name: "incident_summary.md",
@@ -140,16 +152,18 @@ fn the_search_fixture_keeps_its_diagnostic_hit_when_enabled() {
     assert!(out.text().contains("FIXME"), "dropped the diagnostic hit");
 }
 
+/// A shrunk output either says what it dropped, or dropped nothing: a JSON document rewritten
+/// without a recovery handle must parse to exactly the original value.
 #[test]
-fn every_shrunk_fixture_says_so_in_the_text() {
+fn every_shrunk_fixture_says_so_in_the_text_or_lost_nothing() {
     for f in corpus() {
         let out = compress(f.body, &default_on());
-        if out.is_changed() {
-            assert!(
-                contains_marker(out.text()),
-                "{} shrank silently — the model cannot tell data is missing",
-                f.name
-            );
+        if !out.is_changed() || contains_marker(out.text()) {
+            continue;
         }
+        let before: serde_json::Value = serde_json::from_str(f.body)
+            .unwrap_or_else(|_| panic!("{} shrank silently and is not lossless JSON", f.name));
+        let after: serde_json::Value = serde_json::from_str(out.text()).unwrap();
+        assert_eq!(before, after, "{} shrank silently and lost data", f.name);
     }
 }

@@ -10,10 +10,12 @@ pub enum ContentType {
     Code,
     Markup,
     Prose,
+    /// A test runner's report (unittest, Django's `runtests.py`, pytest).
+    TestOutput,
 }
 
 impl ContentType {
-    pub const COUNT: usize = 7;
+    pub const COUNT: usize = 8;
 
     pub const ALL: [ContentType; Self::COUNT] = [
         ContentType::Json,
@@ -23,6 +25,7 @@ impl ContentType {
         ContentType::Code,
         ContentType::Markup,
         ContentType::Prose,
+        ContentType::TestOutput,
     ];
 
     pub const fn as_label(self) -> &'static str {
@@ -34,6 +37,7 @@ impl ContentType {
             ContentType::Code => "code",
             ContentType::Markup => "markup",
             ContentType::Prose => "prose",
+            ContentType::TestOutput => "test",
         }
     }
 
@@ -46,6 +50,7 @@ impl ContentType {
             "code" => Ok(ContentType::Code),
             "markup" | "html" => Ok(ContentType::Markup),
             "prose" | "text" => Ok(ContentType::Prose),
+            "test" | "tests" | "test_output" => Ok(ContentType::TestOutput),
             other => Err(CompressError::UnknownContentType(other.to_string())),
         }
     }
@@ -62,7 +67,7 @@ impl ContentType {
 
 /// Which content types a [`Policy`](crate::Policy) will compress.
 ///
-/// A `u8` bitset rather than an `EnumSet` — a seven-element set does not justify a dependency.
+/// A `u8` bitset rather than an `EnumSet` — an eight-element set does not justify a dependency.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TypeMask(u8);
 
@@ -70,15 +75,23 @@ impl TypeMask {
     pub const NONE: Self = TypeMask(0);
 
     /// Every type, including the ones whose compressors are not written yet.
-    pub const ALL: Self = TypeMask(0b0111_1111);
+    pub const ALL: Self = TypeMask(0b1111_1111);
 
-    /// `json | log | diff`.
+    /// `json | log | diff | test`.
+    ///
+    /// `test` is on because its compressor only drops what carries no failure information —
+    /// passing-test lines, clean progress dots, repeated chatter — and keeps every failure block,
+    /// traceback and summary verbatim.
     ///
     /// `search` is deliberately absent: its detector fires on ripgrep output, which for a coding
     /// agent is frequently the answer itself. Enabling it by default reproduces the tool-side
     /// pathology this whole project exists to avoid.
-    pub const DEFAULT: Self =
-        TypeMask(ContentType::Json.bit() | ContentType::Log.bit() | ContentType::Diff.bit());
+    pub const DEFAULT: Self = TypeMask(
+        ContentType::Json.bit()
+            | ContentType::Log.bit()
+            | ContentType::Diff.bit()
+            | ContentType::TestOutput.bit(),
+    );
 
     pub const fn contains(self, kind: ContentType) -> bool {
         self.0 & kind.bit() != 0
@@ -119,10 +132,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_mask_is_json_log_diff_and_excludes_search() {
+    fn default_mask_is_json_log_diff_test_and_excludes_search() {
         assert!(TypeMask::DEFAULT.contains(ContentType::Json));
         assert!(TypeMask::DEFAULT.contains(ContentType::Log));
         assert!(TypeMask::DEFAULT.contains(ContentType::Diff));
+        assert!(TypeMask::DEFAULT.contains(ContentType::TestOutput));
+        assert!(!TypeMask::DEFAULT.contains(ContentType::Code));
         assert!(!TypeMask::DEFAULT.contains(ContentType::SearchResults));
         assert!(!TypeMask::DEFAULT.contains(ContentType::Prose));
     }

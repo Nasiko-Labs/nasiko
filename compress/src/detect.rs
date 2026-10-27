@@ -1,5 +1,5 @@
 //! Deterministic content-type detection. First match wins, in the order
-//! Json → Diff → Log → SearchResults → Code → Markup → Prose.
+//! Json → Diff → TestOutput → Log → SearchResults → Code → Markup → Prose.
 
 use crate::content_type::ContentType;
 
@@ -16,7 +16,16 @@ pub fn detect(text: &str) -> ContentType {
     if is_diff(trimmed) {
         return ContentType::Diff;
     }
-    if is_log(trimmed) {
+    // Before the log rule: a failing run carries tracebacks and `ERROR:` lines that would
+    // otherwise make it a log, and the log compressor drops exactly the assertion messages a
+    // failing test is about.
+    if is_test_output(trimmed) {
+        return ContentType::TestOutput;
+    }
+    // A stack trace is log-shaped: it is precisely the thing that went wrong, and it arrives
+    // without any log-level line to give the level scan something to bite on. The signature is
+    // what makes it recognisable.
+    if is_log(trimmed) || is_traceback(trimmed) {
         return ContentType::Log;
     }
     if is_search_results(trimmed) {
@@ -100,7 +109,116 @@ fn starts_with_timestamp(line: &str) -> bool {
     {
         return inner.contains(':') && inner.chars().any(|c| c.is_ascii_digit());
     }
-    false
+    starts_with_syslog_date(line)
+}
+
+/// RFC 3164 syslog date: `Jan  1 12:34:56 host tag[pid]: message`. The day is space-padded, so
+/// the three parts are whitespace tokens: a month name, a bare day number, a clock.
+fn starts_with_syslog_date(line: &str) -> bool {
+    const MONTHS: [&str; 12] = [
+        "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
+    ];
+    let mut tokens = line.split_whitespace();
+    let (Some(month), Some(day), Some(clock)) = (tokens.next(), tokens.next(), tokens.next())
+    else {
+        return false;
+    };
+    MONTHS.iter().any(|m| m.eq_ignore_ascii_case(month))
+        && day.bytes().all(|c| c.is_ascii_digit())
+        && clock.contains(':')
+        && clock.bytes().filter(u8::is_ascii_digit).count() >= 3
+}
+
+/// A stack trace has no log-level line for the level scan to find, so it is recognised by shape:
+/// a header that starts a line (`Traceback (most recent call last):` or Java's `Caused by:`) and
+/// frames making up a real share of the text.
+///
+/// Both conditions matter. A source file quoting a traceback in a docstring (sympy and Django
+/// doctests do this constantly) has the header indented and almost no frames; classifying it as
+/// a log would hand a code view to the log compressor, which keeps only head, tail and severe
+/// lines and drops the code in between.
+pub(crate) fn is_traceback(trimmed: &str) -> bool {
+    let (mut header, mut frames, mut non_blank) = (false, 0usize, 0usize);
+    for line in trimmed.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        non_blank += 1;
+        header |=
+            line.starts_with("Traceback (most recent call last)") || line.starts_with("Caused by");
+        let indented = line.len() != line.trim_start().len();
+        if indented && is_frame(line.trim_start()) {
+            frames += 1;
+        }
+    }
+    header && frames * 5 >= non_blank
+}
+
+/// A Python (`File "…", line N`) or JVM (`at pkg.Class.method(…)`) stack frame, indent removed.
+fn is_frame(line: &str) -> bool {
+    line.starts_with("File \"") || line.starts_with("at ")
+}
+
+/// A test runner's report, recognised by the summary line every runner prints at column 0:
+/// unittest/Django `Ran 12 tests in 0.4s`, `FAILED (errors=1)`, Django's `Found 614 test(s).`,
+/// pytest's `==== 2 failed, 10 passed in 1.2s ====` and `==== test session starts ====`.
+///
+/// Column 0 matters: a source file that builds one of these strings (Django's own runner, a
+/// doctest) has it indented or quoted, so a code view is never mistaken for a run.
+pub(crate) fn is_test_output(trimmed: &str) -> bool {
+    trimmed.lines().any(is_runner_summary)
+}
+
+fn is_runner_summary(line: &str) -> bool {
+    let line = line.trim_end();
+    if line.len() != line.trim_start().len() {
+        return false;
+    }
+    is_unittest_ran(line)
+        || is_unittest_failed(line)
+        || is_django_found(line)
+        || is_pytest_banner(line)
+}
+
+/// `Ran 1 test in 0.003s`, `Ran 12 tests in 1.204s`.
+fn is_unittest_ran(line: &str) -> bool {
+    let Some(rest) = line.strip_prefix("Ran ") else {
+        return false;
+    };
+    let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+    let Some(rest) = rest.get(digits..) else {
+        return false;
+    };
+    digits > 0
+        && (rest.starts_with(" test in ") || rest.starts_with(" tests in "))
+        && line.ends_with('s')
+}
+
+/// `FAILED (errors=1)`, `FAILED (failures=2, errors=1)`.
+fn is_unittest_failed(line: &str) -> bool {
+    line.strip_prefix("FAILED (").is_some_and(|rest| {
+        (rest.starts_with("errors=") || rest.starts_with("failures=")) && rest.ends_with(')')
+    })
+}
+
+/// Django's `Found 614 test(s).`
+fn is_django_found(line: &str) -> bool {
+    line.strip_prefix("Found ")
+        .and_then(|rest| rest.strip_suffix(" test(s)."))
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|c| c.is_ascii_digit()))
+}
+
+/// pytest's `=== test session starts ===` and `=== 2 failed, 10 passed in 1.23s ===`.
+fn is_pytest_banner(line: &str) -> bool {
+    if !line.starts_with("===") || !line.ends_with("===") {
+        return false;
+    }
+    let inner = line.trim_matches('=').trim();
+    inner == "test session starts"
+        || (inner.contains(" in ")
+            && ["passed", "failed", "error", "errors", "skipped"]
+                .iter()
+                .any(|w| inner.split([' ', ',']).any(|t| t == *w)))
 }
 
 /// `path:line:content` or `path:line:col:content`, as emitted by grep/ripgrep.
@@ -300,6 +418,80 @@ mod tests {
     #[test]
     fn detects_log_by_bracketed_lower_case_levels() {
         let s = "[error] a failed\n[notice] b\n[warn] c\n[info] d";
+        assert_eq!(detect(s), ContentType::Log);
+    }
+
+    #[test]
+    fn detects_python_traceback_as_a_log() {
+        // Tracebacks arrive with no log-level line to give the level scan anything to bite on;
+        // the traceback signature is what makes them recognisable.
+        let s = "Traceback (most recent call last):\n  File \"/app/src/worker.py\", line 12, in run\n    boom\n";
+        assert_eq!(detect(s), ContentType::Log);
+    }
+
+    #[test]
+    fn a_source_file_quoting_a_traceback_in_a_doctest_stays_code() {
+        let mut s = String::from(
+            "class Point(Entity):\n    \"\"\"A point.\n\n    >>> Point([1])\n    \
+             Traceback (most recent call last):\n      ...\n    ValueError: needs 2 coords.\n    \"\"\"\n",
+        );
+        for i in 0..12 {
+            s.push_str(&format!(
+                "\n    def op_{i}(self, other):\n        a = self.x + other\n        return a\n"
+            ));
+        }
+        assert_eq!(detect(&s), ContentType::Code);
+    }
+
+    #[test]
+    fn a_long_output_with_one_short_traceback_is_not_reclassified() {
+        // Mostly ordinary output: the frames are too small a share to call the whole thing a log.
+        let mut s: String = (0..60)
+            .map(|i| format!("collected item {i} ok\n"))
+            .collect();
+        s.push_str("Traceback (most recent call last):\n  File \"a.py\", line 1, in <module>\n");
+        s.push_str("ValueError: boom\n");
+        assert_ne!(detect(&s), ContentType::Log);
+    }
+
+    #[test]
+    fn detects_django_and_unittest_runs_as_test_output() {
+        let django = "Testing against Django installed in '/repo/django'\n\
+                      Found 614 test(s).\n\
+                      Creating test database for alias 'default'...\n\
+                      ........\n\
+                      Ran 614 tests in 12.004s\n\nOK";
+        assert_eq!(detect(django), ContentType::TestOutput);
+        let failed = "E\n====\nERROR: test_x (a.B)\n----\nTraceback (most recent call last):\n  \
+                      File \"a.py\", line 1, in test_x\nValueError: boom\n\nRan 1 test in 0.001s\n\n\
+                      FAILED (errors=1)";
+        assert_eq!(detect(failed), ContentType::TestOutput);
+    }
+
+    #[test]
+    fn detects_pytest_runs_as_test_output() {
+        let s = "============ test session starts ============\ncollected 3 items\n\n\
+                 tests/test_a.py ...                    [100%]\n\n\
+                 ============ 3 passed in 0.12s ============";
+        assert_eq!(detect(s), ContentType::TestOutput);
+    }
+
+    #[test]
+    fn source_that_builds_a_summary_string_is_not_test_output() {
+        // Django's own runner prints the summary from an indented, quoted format string.
+        let s = "class TextTestResult:\n    def printSummary(self, run, elapsed):\n        \
+                 self.stream.writeln(\"Ran %d test%s in %.3fs\" % (run, run != 1 and \"s\" or \"\", elapsed))\n        \
+                 return None\n\n    def stopTest(self, test):\n        super().stopTest(test)\n";
+        assert_ne!(detect(s), ContentType::TestOutput);
+    }
+
+    #[test]
+    fn detects_syslog_rfc3164_timestamps_as_a_log() {
+        // RFC 3164 syslog dates: `Mon DD HH:MM:SS host tag[pid]: msg`.
+        let s = "Jan  1 12:00:01 host agent[42]: ERROR failure number 7\n\
+                 Jan  1 12:00:02 host agent[42]: INFO handled request 8\n\
+                 Jan  1 12:00:03 host agent[42]: INFO ok\n\
+                 Jan  1 12:00:04 host agent[42]: INFO done";
         assert_eq!(detect(s), ContentType::Log);
     }
 
