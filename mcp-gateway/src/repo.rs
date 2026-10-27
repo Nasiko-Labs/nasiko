@@ -71,6 +71,12 @@ pub struct McpConnector {
     pub oauth_client_id: Option<String>,
     pub oauth_client_secret: Option<String>,
     pub source_kind: SourceKind,
+    /// A `provider_type = 'system'` connector with this true is enabled for every
+    /// agent by default — unioned into each agent's enabled set at the gateway's
+    /// sole [`crate::permissions::PermissionContext`] builder
+    /// (`load_permission_context`), independent of any `mcp_agent_connector_access`
+    /// row. Non-system rows carry it as `false` and it has no effect on them.
+    pub auto_enable: bool,
     // uploaded_build-only
     pub build_status: Option<String>,
     pub container_image_tag: Option<String>,
@@ -138,6 +144,10 @@ pub struct NewConnector {
     /// than relying on the derived `Default`, so it's never ambiguous at a
     /// call site which kind of row is being created.
     pub source_kind: SourceKind,
+    /// See [`McpConnector::auto_enable`]. Defaults to `false` (matches the
+    /// column's own DB default); only a `provider_type = 'system'` registration
+    /// that wants default-on-for-every-agent behaviour sets it true.
+    pub auto_enable: bool,
     /// `Some("pending")` for a freshly queued `uploaded_build` connector;
     /// `None` for every `external_url`/composio row (column is nullable).
     pub build_status: Option<String>,
@@ -217,8 +227,8 @@ pub async fn create_connector(db: &PgPool, c: &NewConnector) -> Result<McpConnec
              (provider_type, owner_id, name, display_name, logo_url, description,
               instructions, auth_config_id, auth_scheme, use_composio_managed,
               url, transport, auth_type, url_param_name, credential_header_name,
-              headers, is_active, source_kind, build_status)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+              headers, is_active, source_kind, auto_enable, build_status)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
            RETURNING *"#,
     )
     .bind(&c.provider_type)
@@ -239,6 +249,7 @@ pub async fn create_connector(db: &PgPool, c: &NewConnector) -> Result<McpConnec
     .bind(&c.headers)
     .bind(c.is_active)
     .bind(c.source_kind)
+    .bind(c.auto_enable)
     .bind(&c.build_status)
     .fetch_one(db)
     .await?;
@@ -358,6 +369,53 @@ pub async fn list_accessible_mcp_connectors(
     .fetch_all(db)
     .await?;
     Ok(rows)
+}
+
+/// Ids of the `system` connectors with `auto_enable = true` that `agent_id`'s
+/// `PUBLIC`-granted `system` connectors — the default-on set the gateway unions
+/// into this agent's enabled connectors at
+/// [`crate::permissions::load_permission_context`].
+///
+/// Keyed on `agent_id` (not a request user id) on purpose: the permission
+/// context is cached per agent (`mcp:perm:{agent_id}`), so its inputs must be a
+/// pure function of the agent, independent of who is calling through it.
+///
+/// Default-on therefore requires a **public** grant specifically — not the
+/// broader owner/user reachability [`list_accessible_mcp_connectors`] uses — so
+/// "default-on for every agent" is true for every *user* too, matching the
+/// intended model (a `system` connector that should instead be opt-in per agent
+/// ships `auto_enable = false` and rides the normal `mcp_agent_connector_access`
+/// path). This keeps the agent-keyed enabled set a pure membership flag that
+/// never diverges from per-user reachability. It is not the sole guard against
+/// cross-user exposure: the tools an agent actually sees come from the
+/// request-user-scoped server list ([`list_accessible_mcp_connectors`] via
+/// `build_generic_servers`) and a `user_id`-keyed manifest cache, so a connector
+/// a caller cannot reach yields no server config and nothing to route regardless
+/// of this flag. Requiring a public grant here is enforced intent plus
+/// defense-in-depth. The agent-liveness join drops a deleted/absent agent to the
+/// empty set; `is_active = false` rows are excluded, matching the live-server build.
+pub async fn list_auto_enabled_system_connector_ids(
+    db: &PgPool,
+    agent_id: Uuid,
+) -> Result<Vec<Uuid>> {
+    let ids = sqlx::query_scalar::<_, Uuid>(
+        r#"SELECT c.id
+           FROM mcp_connectors c
+           JOIN agents a ON a.id = $1 AND a.deleted_at IS NULL
+           WHERE c.provider_type = 'system'
+             AND c.auto_enable = true
+             AND c.is_active = true
+             AND EXISTS (
+                   SELECT 1 FROM mcp_connector_grants g
+                   WHERE g.connector_id = c.id
+                     AND g.grant_type = 'public'
+                     AND g.grantee_id = '*'
+                 )"#,
+    )
+    .bind(agent_id)
+    .fetch_all(db)
+    .await?;
+    Ok(ids)
 }
 
 /// Connectors owned by the user (custom servers they registered).

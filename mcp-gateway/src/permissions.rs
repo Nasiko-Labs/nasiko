@@ -150,11 +150,20 @@ pub async fn load_permission_context(
     }
 
     let rows = repo::get_agent_connector_access(&state.db, agent_id).await?;
-    let enabled_connectors: HashSet<Uuid> = rows
+    let mut enabled_connectors: HashSet<Uuid> = rows
         .iter()
         .filter(|r| r.enabled)
         .map(|r| r.connector_id)
         .collect();
+    // Default-on system connectors: a `provider_type = 'system'` connector with
+    // `auto_enable = true` the agent's owner can reach is enabled for this agent
+    // without any `mcp_agent_connector_access` row. A PURE ADDITIVE UNION at this
+    // one chokepoint — the set feeds both `tools/list` (aggregator) and
+    // `tools/call` (protocol) through `decide`, and `compute_hash` below folds the
+    // unioned ids so the manifest cache busts correctly. Nothing else changes: an
+    // existing access row's meaning, `decide`, and `get_stance` are untouched.
+    enabled_connectors
+        .extend(repo::list_auto_enabled_system_connector_ids(&state.db, agent_id).await?);
     let mut rules = Vec::new();
     for row in &rows {
         for tr in parse_tool_rules(&row.tool_rules) {

@@ -787,6 +787,7 @@ fn decrypt_build_secrets(env: &HashMap<String, String>, owner_id: Uuid) -> HashM
 mod tests {
     use super::super::upload::McpBuildSourcePayload;
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn mcp_server_upload_payload_round_trips_through_json() {
@@ -807,7 +808,10 @@ mod tests {
         assert_eq!(payload.label(), restored.label());
     }
 
+    /// Mutates process environment, so it must not overlap another test in
+    /// this binary that sets the same variable.
     #[test]
+    #[serial]
     fn decrypt_build_secrets_recovers_encrypted_values_and_drops_bad_ones() {
         // 32 bytes of 0x41 ('A'), base64-encoded — same fixture value used by
         // oss/server/tests/common/mod.rs's test harness.

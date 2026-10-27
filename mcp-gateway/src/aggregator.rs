@@ -705,4 +705,153 @@ mod tests {
         assert_eq!(merged.len(), 1, "{merged:?}");
         assert_eq!(merged[0]["name"], json!("save_file"));
     }
+
+    // ─── auto_enable default-on system connectors (Task 2.8) ──────────────────
+    //
+    // The DB-side union that puts a `system`+`auto_enable=true` connector into an
+    // agent's `enabled_connectors` with NO `mcp_agent_connector_access` row lives
+    // in `permissions::load_permission_context` (keyed on `agent_id`'s owner) and
+    // is exercised against real infra by the enterprise integration suite plus a
+    // manual gateway check. Here we pin the LIST-level contract the aggregator is
+    // responsible for, given the enabled set that union produces.
+
+    /// Default-on: a system connector whose id the union placed into
+    /// `enabled_connectors` (standing in for an auto_enable row the agent never
+    /// configured) has its tools listed with an empty rule set, un-prefixed.
+    #[tokio::test]
+    async fn auto_enabled_system_connector_tools_are_listed_with_no_rules() {
+        let mut backend = mockito::Server::new_async().await;
+        backend
+            .mock("POST", "/mcp")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"save_file"}]}}"#)
+            .create_async()
+            .await;
+
+        let sys_id = Uuid::new_v4();
+        let mut sys = srv(ServerType::Mcp, sys_id, &format!("{}/mcp", backend.url()));
+        sys.system = true;
+        sys.tool_names = vec!["save_file".to_string()];
+
+        let state = test_state();
+        // Enabled with zero rules — exactly what the auto_enable union yields for
+        // an agent with no access row for this connector.
+        let merged = aggregate_tools(
+            &state,
+            Uuid::new_v4(),
+            &[sys],
+            &[],
+            &perms_enabling(&[sys_id]),
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(merged.len(), 1, "{merged:?}");
+        assert_eq!(
+            merged[0]["name"],
+            json!("save_file"),
+            "a default-on system connector's tool keeps its bare name"
+        );
+    }
+
+    /// Opt-in / off: a system connector whose id is NOT in `enabled_connectors`
+    /// (the state for `auto_enable = false` with no access row) is dropped
+    /// wholesale; adding its id (an explicit `enabled = true` access row) opts it
+    /// back in.
+    #[tokio::test]
+    async fn system_connector_absent_from_enabled_set_is_off_until_opted_in() {
+        let body = r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"save_file"}]}}"#;
+        let mut off_backend = mockito::Server::new_async().await;
+        off_backend
+            .mock("POST", "/mcp")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let sys_id = Uuid::new_v4();
+        let mut off = srv(
+            ServerType::Mcp,
+            sys_id,
+            &format!("{}/mcp", off_backend.url()),
+        );
+        off.system = true;
+        off.tool_names = vec!["save_file".to_string()];
+        let on = off.clone();
+
+        let state = test_state();
+
+        // Not enabled → dropped.
+        let merged = aggregate_tools(
+            &state,
+            Uuid::new_v4(),
+            &[off],
+            &[],
+            &perms_enabling(&[]),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(merged.is_empty(), "off until opted in: {merged:?}");
+
+        // Enabled (explicit opt-in) → listed.
+        let merged = aggregate_tools(
+            &state,
+            Uuid::new_v4(),
+            &[on],
+            &[],
+            &perms_enabling(&[sys_id]),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(merged.len(), 1, "opted in → listed: {merged:?}");
+        assert_eq!(merged[0]["name"], json!("save_file"));
+    }
+
+    /// A per-tool `block` rule still suppresses one named tool of a default-on
+    /// system connector while its siblings stay listed — the union enables the
+    /// connector but does not override an explicit block.
+    #[tokio::test]
+    async fn blocked_tool_of_a_default_on_system_connector_is_suppressed() {
+        let mut backend = mockito::Server::new_async().await;
+        backend
+            .mock("POST", "/mcp")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"delete_file"},{"name":"read_file"}]}}"#,
+            )
+            .create_async()
+            .await;
+
+        let sys_id = Uuid::new_v4();
+        let mut sys = srv(ServerType::Mcp, sys_id, &format!("{}/mcp", backend.url()));
+        sys.system = true;
+        sys.tool_names = vec!["delete_file".to_string(), "read_file".to_string()];
+
+        let state = test_state();
+        let perms = PermissionContext {
+            agent_id: Uuid::nil(),
+            enabled_connectors: [sys_id].into_iter().collect(),
+            rules: vec![PermissionRule {
+                connector_id: sys_id,
+                tool_pattern: "delete_file".into(),
+                stance: Stance::Block,
+            }],
+            hash: "h".into(),
+        };
+        let merged = aggregate_tools(&state, Uuid::new_v4(), &[sys], &[], &perms, None)
+            .await
+            .unwrap();
+        assert_eq!(merged.len(), 1, "{merged:?}");
+        assert_eq!(
+            merged[0]["name"],
+            json!("read_file"),
+            "the blocked tool is suppressed, its sibling survives"
+        );
+    }
 }

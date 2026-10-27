@@ -460,6 +460,7 @@ mod tests {
             oauth_client_id: None,
             oauth_client_secret: None,
             source_kind: crate::repo::SourceKind::ExternalUrl,
+            auto_enable: false,
             build_status: None,
             container_image_tag: None,
             setup_status: None,
