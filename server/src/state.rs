@@ -11,6 +11,7 @@ use tokio::sync::mpsc;
 
 use crate::agent_lifecycle::SwappableAgentDeletionHook;
 use crate::agent_scaling::{AgentScaling, SingleReplica};
+use crate::chat::turn_artifacts::{NoTurnArtifacts, SwappableTurnArtifactSource};
 use crate::prompt_context::SwappablePromptContext;
 use crate::telemetry::GenAiMetrics;
 use crate::usage::UsageTracker;
@@ -33,8 +34,6 @@ pub struct AppState {
     pub flow_guard: FlowGuard,
     pub flow_events: FlowEventBus,
     pub genai_metrics: GenAiMetrics,
-    /// Rate limit, concurrency cap and counters of the coding-agent ingest route.
-    pub coding_agent_ingest: crate::coding_agent_ingest_guard::IngestGuard,
     pub config: Arc<Config>,
     pub routing_engine: Arc<dyn RoutingEngine>,
     /// Where both orchestrators read the operator's policy from — the chat-path
@@ -69,6 +68,15 @@ pub struct AppState {
     /// build worker and HITL dispatcher copy `AppState` while it is built. OSS wires
     /// `SingleReplica`.
     pub agent_scaling: Arc<dyn AgentScaling>,
+    /// Where a completed chat turn's files may also come from — files a turn
+    /// produced outside this crate's own chat store. OSS default is a no-op
+    /// ([`NoTurnArtifacts`]): no chips are added and no download scheme beyond
+    /// the ones the chat routes own is claimed. The EE composition root installs
+    /// the real implementation through this cell
+    /// (`SwappableTurnArtifactSource::install`, not a plain reassignment) for the
+    /// same reason `prompt_context` does — see that field's doc comment and the
+    /// `chat::turn_artifacts` module docs.
+    pub turn_artifacts: Arc<SwappableTurnArtifactSource>,
     /// PACMS candidate/query embedding cache for the history enrichment done
     /// directly in `a2a_dispatch.rs` (shared across requests, like the one
     /// `OssRoutingEngine` holds internally for its own `fetch_pacms` call —
@@ -227,6 +235,7 @@ impl AppState {
             Arc::new(crate::agent_lifecycle::SwappableAgentDeletionHook::new(
                 Arc::new(crate::agent_lifecycle::NoopAgentDeletionHook),
             ));
+        let turn_artifacts = Arc::new(SwappableTurnArtifactSource::new(Arc::new(NoTurnArtifacts)));
         let history_embedding_cache: TextEmbeddingCache = Arc::new(DashMap::new());
 
         let flow_config = FlowConfig {
@@ -288,7 +297,8 @@ impl AppState {
 
         let (build_tx, build_rx) = mpsc::channel(64);
         let (hitl_resume_tx, hitl_resume_rx) = mpsc::channel(64);
-        let continuation_events = crate::hitl::continuation::ContinuationRegistry::new(); // Pauses and resume outcomes are written from several places (the store, the MCP
+        let continuation_events = crate::hitl::continuation::ContinuationRegistry::new();
+        // Pauses and resume outcomes are written from several places (the store, the MCP
         // gateway's inserts, both resume dispatchers); each reports through this one observer. A
         // second AppState in the same process (tests) keeps the first one's: the instruments sit
         // on the process-wide meter either way.
@@ -333,9 +343,6 @@ impl AppState {
             flow_guard,
             flow_events,
             genai_metrics,
-            coding_agent_ingest: crate::coding_agent_ingest_guard::IngestGuard::new(
-                &config.coding_agent_ingest,
-            ),
             config: Arc::new(config),
             routing_engine,
             orchestrator_policy,
@@ -344,6 +351,7 @@ impl AppState {
             prompt_context,
             agent_deletion_hook,
             agent_scaling,
+            turn_artifacts,
             history_embedding_cache,
             observability,
             github_svc,
@@ -409,14 +417,6 @@ impl AppState {
                     state.config.hitl_resume_retry_delay_secs,
                 ),
             },
-        ));
-
-        tokio::spawn(crate::coding_agent_turn_summary_backfill::run(
-            state.db.clone(),
-        ));
-        tokio::spawn(crate::coding_agent_backlog::run(
-            state.db.clone(),
-            state.coding_agent_ingest.metrics.clone(),
         ));
 
         if let Some(endpoint) = state.config.coding_agent_otlp_endpoint.clone() {

@@ -1,8 +1,5 @@
 use nasiko_utils::{env_bool, env_or, env_parse, required_env};
 
-mod coding_agent_ingest;
-pub use coding_agent_ingest::CodingAgentIngestConfig;
-
 #[derive(Debug, Clone)]
 pub struct Config {
     pub bind: String,
@@ -24,9 +21,6 @@ pub struct Config {
     pub s3_access_key: String,
     pub s3_secret_key: String,
     pub s3_region: String,
-    /// Where `POST /api/assessments` forwards the free-assessment form: the Nasiko
-    /// intake that stores it. Unset → the route answers 503.
-    pub assessment_intake_url: Option<String>,
     pub secrets_encryption_key: String,
     pub oci_storage_bucket: String,
     /// Registry prefix prepended to agent image tags at build time.
@@ -100,8 +94,6 @@ pub struct Config {
     /// OTLP/HTTP JSON base endpoint used only by the durable coding-agent
     /// telemetry outbox. Unset leaves receipts pending and disables its worker.
     pub coding_agent_otlp_endpoint: Option<String>,
-    /// Rate, concurrency and Tempo-age limits on coding-agent telemetry ingest.
-    pub coding_agent_ingest: CodingAgentIngestConfig,
     pub tempo_url: String,
     pub loki_url: String,
     /// Whether the Tempo/Loki observability backend is enabled — the SINGLE
@@ -562,10 +554,6 @@ impl Config {
                 String::new()
             },
             s3_region: env_or("S3_REGION", "us-east-1"),
-            assessment_intake_url: std::env::var("ASSESSMENT_INTAKE_URL")
-                .ok()
-                .map(|s| s.trim().to_owned())
-                .filter(|s| !s.is_empty()),
             secrets_encryption_key: required_env("SECRETS_ENCRYPTION_KEY")?,
             oci_storage_bucket: env_or("OCI_STORAGE_BUCKET", "nasiko-artifacts"),
             agent_image_registry: env_or("AGENT_IMAGE_REGISTRY", ""),
@@ -624,7 +612,6 @@ impl Config {
                 .or_else(coding_agent_otlp_fallback)
                 .map(|value| value.trim_end_matches('/').to_owned())
                 .filter(|value| !value.is_empty()),
-            coding_agent_ingest: CodingAgentIngestConfig::from_env(),
             tempo_url: env_or("TEMPO_URL", ""),
             loki_url: env_or("LOKI_URL", ""),
             // Enabled only when BOTH backends are explicitly configured; a

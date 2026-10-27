@@ -13,21 +13,14 @@ pub mod agent_proxy;
 pub mod agent_scaling;
 pub mod agent_state;
 pub mod agents;
-pub mod assessment;
 pub mod auth;
 pub mod build;
 pub mod capabilities;
 pub mod catalog;
 pub mod chat;
 pub mod coding;
-pub mod coding_agent_backlog;
-pub mod coding_agent_ingest_guard;
-pub mod coding_agent_onboarding;
 pub mod coding_agent_otlp;
-pub mod coding_agent_subagents;
 pub mod coding_agent_telemetry;
-pub mod coding_agent_turn_summary_backfill;
-mod coding_agent_usage;
 pub mod context_selection;
 pub mod embedding_change;
 pub mod flows;
@@ -43,7 +36,6 @@ pub mod observability;
 pub mod onboarding;
 pub mod openapi;
 pub mod orchestrator_policy;
-pub mod overview;
 pub mod pool;
 pub mod prompt_context;
 pub mod rate_limit;
@@ -295,8 +287,6 @@ where
     // costs two bcrypt cost-12 hashes. 10/min is generous for a human changing
     // their own password and still bounds the CPU burn from a scripted loop.
     let change_password_limiter = RateLimiter::new(10, Duration::from_secs(60));
-    // Each assessment is an S3 write; a human submits the form once or twice.
-    let assessment_limiter = RateLimiter::new(5, Duration::from_secs(60));
     // Starting a MAF run is the single most expensive authenticated action in
     // the product: the executor makes 4 LLM calls minimum (plan, per-step
     // placeholder fill, per-step extraction, final synthesis) plus one agent
@@ -335,10 +325,7 @@ where
         .merge(chat::router())
         .merge(context_selection::router())
         .merge(onboarding::router())
-        .merge(assessment::router(assessment_limiter))
-        .merge(overview::router())
-        .merge(coding_agent_onboarding::router())
-        .merge(coding_agent_telemetry::router(state.clone()))
+        .merge(coding_agent_telemetry::router())
         .merge(maf::router(maf_run_limiter, maf_read_limiter))
         .merge(secrets::router())
         .merge(llm_configs::router())
