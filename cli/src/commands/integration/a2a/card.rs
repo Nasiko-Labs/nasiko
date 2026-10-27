@@ -108,6 +108,9 @@ fn check_name(card: &Map<String, Value>, errors: &mut Vec<CardIssue>) {
 
 /// Each skill needs string `id`, `name` and `description`; `id` and `name`
 /// non-empty and within `VARCHAR(255)`; `tags` and modes lists of strings.
+/// The catalog's `Skill` gives `tags` and `examples` `#[serde(default)]`, which
+/// fills an absent field but rejects `null`, and `description` is a plain
+/// `String`, so `null` is an error for those three though absent lists are not.
 fn check_skills(skills: Option<&Value>, errors: &mut Vec<CardIssue>) {
     let skills = match skills {
         None | Some(Value::Null) => return,
@@ -126,18 +129,27 @@ fn check_skills(skills: Option<&Value>, errors: &mut Vec<CardIssue>) {
         let description = format!("{path}.description");
         match skill.get("description") {
             None => errors.push(issue(description, "is required")),
-            value => expect_type(value, &description, Value::is_string, "a string", errors),
+            Some(Value::String(_)) => {}
+            Some(_) => errors.push(issue(description, "must be a string")),
         }
-        for field in ["tags", "inputModes", "outputModes"] {
-            check_string_list(skill.get(field), &format!("{path}.{field}"), errors);
-        }
-        expect_type(
+        expect_list_if_present(
+            skill.get("tags"),
+            &format!("{path}.tags"),
+            is_string_list,
+            "an array of strings",
+            errors,
+        );
+        expect_list_if_present(
             skill.get("examples"),
             &format!("{path}.examples"),
             Value::is_array,
             "an array",
             errors,
         );
+        // Not decoded by the catalog, so `null` is harmless there.
+        for field in ["inputModes", "outputModes"] {
+            check_string_list(skill.get(field), &format!("{path}.{field}"), errors);
+        }
     }
 }
 
@@ -172,14 +184,29 @@ fn expect_type(
     }
 }
 
+/// A list field decoded with `#[serde(default)]`: absent is fine, anything
+/// else, `null` included, must be `expected`.
+fn expect_list_if_present(
+    value: Option<&Value>,
+    path: &str,
+    is_expected: fn(&Value) -> bool,
+    expected: &str,
+    errors: &mut Vec<CardIssue>,
+) {
+    if value.is_some_and(|value| !is_expected(value)) {
+        errors.push(issue(path, format!("must be {expected}")));
+    }
+}
+
 /// An optional list of strings: absent or `null` is fine.
 fn check_string_list(value: Option<&Value>, path: &str, errors: &mut Vec<CardIssue>) {
-    let is_string_list = |value: &Value| {
-        value
-            .as_array()
-            .is_some_and(|items| items.iter().all(Value::is_string))
-    };
     expect_type(value, path, is_string_list, "an array of strings", errors);
+}
+
+fn is_string_list(value: &Value) -> bool {
+    value
+        .as_array()
+        .is_some_and(|items| items.iter().all(Value::is_string))
 }
 
 fn issue(field: impl Into<String>, message: impl Into<String>) -> CardIssue {
@@ -295,6 +322,32 @@ mod tests {
                 "skills[3].tags: must be an array of strings",
                 "skills[4].id: longer than 255 characters",
                 "skills[5]: must be an object",
+            ]
+        );
+    }
+
+    /// `null` where the catalog's `Skill` has a `#[serde(default)]` list or a
+    /// plain `String` fails its decode, so it fails here too; absent lists,
+    /// and `null` in fields the catalog ignores, do not.
+    #[test]
+    fn null_is_rejected_where_the_catalog_would_reject_it() {
+        let card = json!({
+            "name": "a", "url": "http://h/",
+            "skills": [
+                {"id": "a", "name": "A", "description": null},
+                {"id": "b", "name": "B", "description": "d", "tags": null},
+                {"id": "c", "name": "C", "description": "d", "examples": null},
+                {"id": "d", "name": "D", "description": "d",
+                 "inputModes": null, "outputModes": null},
+                {"id": "e", "name": "E", "description": "d"}
+            ]
+        });
+        assert_eq!(
+            errors_of(card),
+            vec![
+                "skills[0].description: must be a string",
+                "skills[1].tags: must be an array of strings",
+                "skills[2].examples: must be an array",
             ]
         );
     }
